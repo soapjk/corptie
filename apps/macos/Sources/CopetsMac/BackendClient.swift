@@ -1,0 +1,938 @@
+import Foundation
+
+@MainActor
+final class BackendClient: ObservableObject {
+    static let shared = BackendClient()
+
+    @Published private(set) var sessions: [TaskSession] = []
+    @Published private(set) var selectedSession: TaskSession?
+    @Published private(set) var selectedDetail: CodexThreadDetail?
+    @Published private(set) var isLoadingDetail = false
+    @Published private(set) var isSendingMessage = false
+    @Published private(set) var sendStatusMessage: String?
+    @Published private(set) var isOnline = false
+    @Published private(set) var lastError: String?
+    @Published private(set) var isCreatingTask = false
+    @Published private(set) var settings: BackendSettings?
+    @Published private(set) var isUpdatingSettings = false
+    @Published private(set) var codexModels: [CodexModel] = []
+    @Published private(set) var codexDefaultModel: String?
+    @Published private(set) var codexDefaultReasoningLevel: String?
+    @Published private(set) var isLoadingCodexModels = false
+    @Published private(set) var isSwitchingModel = false
+    @Published private(set) var isSwitchingReasoning = false
+    @Published private(set) var connectionTransitionSessionIds = Set<String>()
+    @Published var isShowingArchivedSessions = false
+
+    private let baseURL = CopetsAppEnvironment.backendBaseURL
+    var defaultWorkspacePath: String {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("copets", isDirectory: true).path
+    }
+    private var pollingTask: Task<Void, Never>?
+
+    func start() {
+        pollingTask?.cancel()
+        Task {
+            await loadSettings()
+            await loadCodexModels()
+        }
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refresh()
+                await self?.refreshSelectedDetailFromPolling()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    func stop() {
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
+    func loadSettings() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "settings"))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            settings = try JSONDecoder().decode(BackendSettings.self, from: data)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func updateDataDirectory(_ dataDir: String) async {
+        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser)
+    }
+
+    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?) async {
+        let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            lastError = "Data directory is required."
+            return
+        }
+
+        isUpdatingSettings = true
+        defer { isUpdatingSettings = false }
+
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "settings"))
+            request.httpMethod = "PATCH"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            var body: [String: Any] = ["dataDir": trimmed]
+            if let choiceParser {
+                body["choiceParser"] = [
+                    "provider": choiceParser.provider,
+                    "openaiApiKey": choiceParser.openaiApiKey,
+                    "openaiModel": choiceParser.openaiModel,
+                    "localCommand": choiceParser.localCommand,
+                    "localArgs": choiceParser.localArgs,
+                    "localModel": choiceParser.localModel,
+                    "timeoutMs": choiceParser.timeoutMs
+                ]
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            if !(200..<300).contains(httpResponse.statusCode) {
+                let text = String(data: data, encoding: .utf8) ?? "Bad server response"
+                throw BackendError.message(text)
+            }
+            settings = try JSONDecoder().decode(BackendSettings.self, from: data)
+            lastError = nil
+            await refresh()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func loadCodexModels() async {
+        if isLoadingCodexModels {
+            return
+        }
+        isLoadingCodexModels = true
+        defer { isLoadingCodexModels = false }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "codex/models"))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            let decoded = try JSONDecoder().decode(CodexModelsResponse.self, from: data)
+            codexDefaultModel = decoded.currentModel
+            codexDefaultReasoningLevel = decoded.currentReasoningLevel
+            codexModels = decoded.models
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func lookupCodexSession(_ sessionId: String) async throws -> CodexSessionLookupResponse {
+        let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSessionId.isEmpty else {
+            throw BackendError.message("Session ID is required.")
+        }
+
+        let url = baseURL
+            .appending(path: "codex")
+            .appending(path: "sessions")
+            .appending(path: trimmedSessionId)
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        let decoded = try? JSONDecoder().decode(CodexSessionLookupResponse.self, from: data)
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw BackendError.message(decoded?.error ?? String(data: data, encoding: .utf8) ?? "Codex session not found.")
+        }
+        if let decoded {
+            return decoded
+        }
+        throw URLError(.cannotParseResponse)
+    }
+
+    func refresh() async {
+        do {
+            var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)!
+            if isShowingArchivedSessions {
+                components.queryItems = [URLQueryItem(name: "archived", value: "true")]
+            }
+            let url = components.url!
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+
+            let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
+            sessions = decoded.sessions
+            isOnline = true
+            lastError = nil
+        } catch {
+            isOnline = false
+            lastError = error.localizedDescription
+        }
+    }
+
+    func createPtyTask(title: String, command: String, arguments: [String], initialInput: String, cwd: String, onSuccess: @escaping () -> Void = {}) {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty else {
+            lastError = "Command is required."
+            return
+        }
+
+        Task {
+            isCreatingTask = true
+            defer { isCreatingTask = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "command": trimmedCommand,
+                    "args": arguments,
+                    "initialInput": initialInput,
+                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
+                ])
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(message)
+                }
+
+                onSuccess()
+                sendStatusMessage = "Started PTY agent"
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func createCodexPtyTask(
+        title: String,
+        prompt: String,
+        cwd: String,
+        existingSessionId: String = "",
+        sandbox: String = "workspace-write",
+        approvalPolicy: String = "on-request",
+        onSuccess: @escaping () -> Void = {}
+    ) {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedExistingSessionId = existingSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        Task {
+            isCreatingTask = true
+            defer { isCreatingTask = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "codex/pty-sessions"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "prompt": trimmedPrompt,
+                    "existingSessionId": trimmedExistingSessionId,
+                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
+                    "sandbox": sandbox,
+                    "approvalPolicy": approvalPolicy
+                ])
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(message)
+                }
+
+                onSuccess()
+                sendStatusMessage = "Started Codex CLI"
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func respondToCodexApproval(option: CodexApprovalOption) {
+        guard let session = selectedSession,
+              isPtyProvider(session.external?.provider),
+              let threadId = session.external?.threadId else {
+            sendStatusMessage = "No Codex approval is active."
+            return
+        }
+
+        Task {
+            isSendingMessage = true
+            sendStatusMessage = "Selecting Codex option..."
+            defer { isSendingMessage = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/codex-approval"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "optionId": option.id,
+                    "optionIndex": option.index ?? 0,
+                    "approved": option.role?.localizedCaseInsensitiveContains("deny") != true
+                ])
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+
+                sendStatusMessage = "Selected \(option.label)"
+                await loadDetail(for: session)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Approval failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func respondToCodexApproval(approved: Bool) {
+        let fallback = CodexApprovalOption(
+            id: approved ? "approve" : "deny",
+            label: approved ? "Approve" : "Deny",
+            role: approved ? "approve" : "deny",
+            index: approved ? 0 : 1,
+            selected: approved
+        )
+        respondToCodexApproval(option: fallback)
+    }
+
+    func respondToPtyChoice(option: CodexApprovalOption) {
+        guard let session = selectedSession,
+              isPtyProvider(session.external?.provider),
+              let threadId = session.external?.threadId else {
+            sendStatusMessage = "No terminal choice is active."
+            return
+        }
+
+        Task {
+            isSendingMessage = true
+            sendStatusMessage = "Selecting option..."
+            defer { isSendingMessage = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/choice"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "optionId": option.id,
+                    "optionIndex": option.index ?? 0
+                ])
+
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+
+                sendStatusMessage = "Selected \(option.label)"
+                await loadDetail(for: session)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Choice failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func createCodexTask(prompt: String, cwd: String, onSuccess: @escaping () -> Void = {}) {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else {
+            lastError = "Task prompt is required."
+            return
+        }
+
+        Task {
+            isCreatingTask = true
+            defer { isCreatingTask = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "codex/threads"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "prompt": trimmedPrompt,
+                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
+                ])
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                let decoded = try? JSONDecoder().decode(CreateCodexThreadResponse.self, from: data)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(message)
+                }
+
+                onSuccess()
+                sendStatusMessage = decoded?.warning ?? "Started Codex"
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func select(session: TaskSession) {
+        selectedSession = session
+        selectedDetail = nil
+        Task {
+            await loadDetail(for: session)
+        }
+    }
+
+    func closeDetail() {
+        selectedSession = nil
+        selectedDetail = nil
+        isLoadingDetail = false
+    }
+
+    func loadSelectedDetail() {
+        guard let selectedSession else {
+            return
+        }
+
+        Task {
+            await loadDetail(for: selectedSession)
+        }
+    }
+
+    func sendMessage(_ text: String, onSuccess: @escaping () -> Void = {}) {
+        if selectedDetail?.canSend == false {
+            sendStatusMessage = selectedDetail?.sendUnavailableReason ?? "This thread is read-only in Copets."
+            return
+        }
+
+        guard let selectedSession, selectedSession.external?.threadId != nil else {
+            lastError = "This task does not expose a Codex thread id."
+            sendStatusMessage = lastError
+            return
+        }
+
+        sendText(text, to: selectedSession, reloadDetail: true, onSuccess: onSuccess)
+    }
+
+    func sendMessage(_ text: String, to session: TaskSession, onSuccess: @escaping () -> Void = {}) {
+        sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, onSuccess: onSuccess)
+    }
+
+    private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, onSuccess: @escaping () -> Void) {
+        guard let threadId = session.external?.threadId else {
+            lastError = "This task does not expose a Codex thread id."
+            sendStatusMessage = lastError
+            return
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return
+        }
+        if reloadDetail {
+            appendOptimisticUserMessage(trimmed, to: session)
+        }
+
+        Task {
+            isSendingMessage = true
+            sendStatusMessage = isPtyProvider(session.external?.provider) ? "Sending to terminal agent..." : "Sending to Codex..."
+            defer { isSendingMessage = false }
+
+            do {
+                let path = isPtyProvider(session.external?.provider)
+                    ? "pty/sessions/\(threadId)/input"
+                    : "codex/threads/\(threadId)/messages"
+                var request = URLRequest(url: baseURL.appending(path: path))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "text": trimmed
+                ])
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                let decoded = try? JSONDecoder().decode(SendMessageResponse.self, from: data)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    let hint = decoded?.hint.map { "\n\($0)" } ?? ""
+                    throw BackendError.message("\(message)\(hint)")
+                }
+
+                onSuccess()
+                if isPtyProvider(session.external?.provider) {
+                    sendStatusMessage = session.external?.provider == "codex-pty" ? "Sent to Codex CLI" : "Sent to PTY agent"
+                } else if decoded?.visibleInCodexDesktop == false {
+                    sendStatusMessage = decoded?.warning ?? "Sent to background Codex; Desktop may not refresh."
+                } else {
+                    sendStatusMessage = "Sent to Codex"
+                }
+                if reloadDetail {
+                    await loadDetail(for: session)
+                }
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Send failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func appendOptimisticUserMessage(_ text: String, to session: TaskSession) {
+        guard let detail = selectedDetail, detail.id == (session.external?.threadId ?? session.id) || selectedSession?.id == session.id else {
+            return
+        }
+        let item = CodexThreadItem(
+            id: "optimistic:\(session.id):\(UUID().uuidString)",
+            turnId: session.id,
+            turnStatus: "running",
+            type: "userMessage",
+            title: "User",
+            text: text,
+            options: nil,
+            status: "sent"
+        )
+        selectedDetail = CodexThreadDetail(
+            id: detail.id,
+            title: detail.title,
+            status: detail.status,
+            source: detail.source,
+            connectionStatus: detail.connectionStatus,
+            currentModel: detail.currentModel,
+            currentReasoningLevel: detail.currentReasoningLevel,
+            activityStatus: detail.activityStatus,
+            cwd: detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: ISO8601DateFormatter().string(from: Date()),
+            canSend: detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            turnCount: detail.turnCount,
+            items: detail.items + [item]
+        )
+    }
+
+    func cancel(session: TaskSession) {
+        Task {
+            do {
+                let path = isPtyProvider(session.external?.provider)
+                    ? "pty/sessions/\(session.external?.threadId ?? session.id)/terminate"
+                    : "tasks/\(session.id)/cancel"
+                var request = URLRequest(url: baseURL.appending(path: path))
+                request.httpMethod = "POST"
+                _ = try await URLSession.shared.data(for: request)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func interrupt(session: TaskSession) {
+        guard let threadId = session.external?.threadId, isPtyProvider(session.external?.provider) else {
+            cancel(session: session)
+            return
+        }
+
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/interrupt"))
+                request.httpMethod = "POST"
+                _ = try await URLSession.shared.data(for: request)
+                sendStatusMessage = session.external?.provider == "codex-pty" ? "Interrupted Codex CLI" : "Interrupted PTY agent"
+                await refresh()
+                if selectedSession?.id == session.id {
+                    await loadDetail(for: session)
+                }
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Interrupt failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func togglePtyConnection(for session: TaskSession) {
+        guard session.external?.provider == "codex-pty",
+              let threadId = session.external?.threadId else {
+            return
+        }
+
+        Task {
+            connectionTransitionSessionIds.insert(session.id)
+            defer {
+                connectionTransitionSessionIds.remove(session.id)
+            }
+            do {
+                let action = session.isConnected ? "disconnect" : "reconnect"
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/\(action)"))
+                request.httpMethod = "POST"
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                if !(200..<300).contains(httpResponse.statusCode) {
+                    let text = String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(text)
+                }
+                sendStatusMessage = session.isConnected ? "PTY disconnected" : "PTY reconnected"
+                await refresh()
+                if selectedSession?.id == session.id {
+                    await loadDetail(for: session, showLoading: false)
+                }
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = session.isConnected
+                    ? "Disconnect failed: \(error.localizedDescription)"
+                    : "Reconnect failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func setArchived(_ archived: Bool, session: TaskSession) {
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)/archive"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["archived": archived])
+                _ = try await URLSession.shared.data(for: request)
+                if selectedSession?.id == session.id {
+                    closeDetail()
+                }
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func setPinned(_ pinned: Bool, session: TaskSession) {
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)/pin"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["pinned": pinned])
+                _ = try await URLSession.shared.data(for: request)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func moveSession(draggedSessionId: String, before targetSessionId: String?) {
+        guard draggedSessionId != targetSessionId,
+              let fromIndex = sessions.firstIndex(where: { $0.id == draggedSessionId }) else {
+            return
+        }
+
+        let movedSession = sessions.remove(at: fromIndex)
+        guard let targetSessionId,
+              let targetIndex = sessions.firstIndex(where: { $0.id == targetSessionId }) else {
+            if fromIndex == sessions.count {
+                sessions.insert(movedSession, at: fromIndex)
+                return
+            }
+            sessions.append(movedSession)
+            return
+        }
+        let insertionIndex = fromIndex < targetIndex ? targetIndex : targetIndex
+        if insertionIndex == fromIndex {
+            sessions.insert(movedSession, at: fromIndex)
+            return
+        }
+        sessions.insert(movedSession, at: max(0, min(insertionIndex, sessions.count)))
+    }
+
+    func persistSessionOrder() {
+        let orderedIds = sessions.map { $0.external?.sessionId ?? $0.id }
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions/reorder"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["sessionIds": orderedIds])
+                _ = try await URLSession.shared.data(for: request)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func rename(session: TaskSession, title: String, onSuccess: @escaping () -> Void = {}) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else {
+            lastError = "Title is required."
+            return
+        }
+
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)"))
+                request.httpMethod = "PATCH"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["title": trimmedTitle])
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                onSuccess()
+                await refresh()
+                if selectedSession?.id == session.id {
+                    selectedSession = sessions.first(where: { $0.id == session.id }) ?? selectedSession
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func updateAvatar(session: TaskSession, avatarPath: String?) {
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)"))
+                request.httpMethod = "PATCH"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                let payload: [String: Any] = ["avatarPath": avatarPath ?? NSNull()]
+                request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                await refresh()
+                if selectedSession?.id == session.id {
+                    selectedSession = sessions.first(where: { $0.id == session.id }) ?? selectedSession
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func delete(session: TaskSession) {
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)"))
+                request.httpMethod = "DELETE"
+                _ = try await URLSession.shared.data(for: request)
+                if selectedSession?.id == session.id {
+                    closeDetail()
+                }
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func interruptSelectedSession() {
+        guard let selectedSession, let threadId = selectedSession.external?.threadId, isPtyProvider(selectedSession.external?.provider) else {
+            return
+        }
+
+        Task {
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/interrupt"))
+                request.httpMethod = "POST"
+                _ = try await URLSession.shared.data(for: request)
+                sendStatusMessage = selectedSession.external?.provider == "codex-pty" ? "Interrupted Codex CLI" : "Interrupted PTY agent"
+                await loadDetail(for: selectedSession)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Interrupt failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func switchSelectedCodexModel(to model: CodexModel) {
+        guard let selectedSession,
+              selectedSession.external?.provider == "codex-pty",
+              let threadId = selectedSession.external?.threadId else {
+            sendStatusMessage = "Model switching is only available for Codex CLI sessions."
+            return
+        }
+
+        Task {
+            isSwitchingModel = true
+            defer { isSwitchingModel = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/model"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model.id])
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                if !(200..<300).contains(httpResponse.statusCode) {
+                    let text = String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(text)
+                }
+                sendStatusMessage = "Switching Codex model to \(model.name)"
+                await loadDetail(for: selectedSession)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Model switch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func switchSelectedCodexReasoning(to reasoningLevel: String) {
+        let trimmedReasoningLevel = reasoningLevel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedReasoningLevel.isEmpty else {
+            return
+        }
+        guard let selectedSession,
+              selectedSession.external?.provider == "codex-pty",
+              let threadId = selectedSession.external?.threadId else {
+            sendStatusMessage = "Reasoning switching is only available for Codex CLI sessions."
+            return
+        }
+
+        Task {
+            isSwitchingReasoning = true
+            defer { isSwitchingReasoning = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reasoning"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["reasoningLevel": trimmedReasoningLevel])
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                if !(200..<300).contains(httpResponse.statusCode) {
+                    let text = String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(text)
+                }
+                sendStatusMessage = "Switching Codex reasoning to \(reasoningLabel(trimmedReasoningLevel))"
+                await loadDetail(for: selectedSession)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Reasoning switch failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func reconnectSelectedSession() {
+        guard let selectedSession, let threadId = selectedSession.external?.threadId, isPtyProvider(selectedSession.external?.provider) else {
+            return
+        }
+
+        Task {
+            do {
+                sendStatusMessage = "Reconnecting PTY..."
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reconnect"))
+                request.httpMethod = "POST"
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
+                sendStatusMessage = "PTY reconnected"
+                await loadDetail(for: selectedSession)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Reconnect failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func refreshSelectedDetailFromPolling() async {
+        guard let selectedSession else {
+            return
+        }
+        await loadDetail(for: selectedSession, showLoading: false)
+    }
+
+    private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
+        guard let threadId = session.external?.threadId else {
+            lastError = "No Codex detail is available for this task."
+            return
+        }
+
+        if showLoading {
+            isLoadingDetail = true
+        }
+        defer {
+            if showLoading {
+                isLoadingDetail = false
+            }
+        }
+
+        do {
+            let path = isPtyProvider(session.external?.provider)
+                ? "pty/sessions/\(threadId)"
+                : "codex/threads/\(threadId)"
+            let url = baseURL.appending(path: path)
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+
+            let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
+            selectedDetail = decoded.thread
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+}
+
+private func isPtyProvider(_ provider: String?) -> Bool {
+    provider == "pty" || provider == "codex-pty"
+}
+
+private func reasoningLabel(_ value: String) -> String {
+    switch value.lowercased() {
+    case "low": "Low"
+    case "medium": "Medium"
+    case "high": "High"
+    case "xhigh": "Extra High"
+    default: value
+    }
+}
+
+enum BackendError: LocalizedError {
+    case message(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .message(let message):
+            message
+        }
+    }
+}

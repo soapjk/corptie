@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment and local config
+.env
+.env.*
+!.env.example
+*.local
+
+# Local data and databases
+apps/backend/data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Swift Package Manager / Xcode
+.build/
+DerivedData/
+Packages/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Build and release artifacts
+build/
+dist/
+*.app
+*.dmg
+*.pkg
+*.xcarchive
+
+# Temporary files
+.tmp/
+tmp/
+*.tmp
+*.swp
