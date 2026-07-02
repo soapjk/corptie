@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { accessSync, constants, readFileSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync } from "node:fs";
 import os from "node:os";
-import { promisify } from "node:util";
+import path from "node:path";
 import * as pty from "node-pty";
+import { CodexAppServerClient } from "./codexAppServer.mjs";
 
 const ansiPattern = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
-const execFileAsync = promisify(execFile);
 const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
 
 export class PtyAgentManager {
@@ -462,16 +461,21 @@ export class PtyAgentManager {
       throw new Error("Session is not a Codex PTY session");
     }
 
-    const options = codexApprovalOptions(session);
     const approved = input.approved === true;
+    if (!hasLiveCodexApprovalPrompt(session)) {
+      throw new Error("No active Codex approval prompt is visible in the terminal");
+    }
+
+    const options = liveCodexApprovalOptions(session);
     const optionId = typeof input.optionId === "string" ? input.optionId : "";
     const optionIndex = Number.isInteger(input.optionIndex)
       ? input.optionIndex
-      : options.findIndex((option) => option.id === optionId);
+      : options.findIndex((option) => option.id === optionId || option.role === optionId);
     const targetIndex = optionIndex >= 0
       ? optionIndex
       : options.findIndex((option) => option.role === (approved ? "approve" : "deny"));
-    const value = input.optionId || Number.isInteger(input.optionIndex)
+    const hasExplicitOption = optionId.length > 0 || Number.isInteger(input.optionIndex);
+    const value = hasExplicitOption
       ? optionSelectionSequence(options, targetIndex)
       : (approved ? optionSelectionSequence(options, Math.max(0, targetIndex)) : "\x1b");
     session.terminal.write(value);
@@ -480,6 +484,7 @@ export class PtyAgentManager {
     session.lastSubmittedText = "";
     session.phase = targetIndex >= 0 && options[targetIndex]?.role === "deny" ? "ready" : "working";
     const label = targetIndex >= 0 ? options[targetIndex]?.label : (approved ? "Approve" : "Deny");
+    this.markPendingApprovalItemsSelected(session, targetIndex);
     this.appendSystemItem(session, `Selected Codex option: ${label}.`);
     this.persistSession(session);
     return this.toSessionSummary(session);
@@ -724,11 +729,12 @@ export class PtyAgentManager {
       ...(settings.choiceParser ?? {}),
       agentProxy: settings.agentProxy
     };
+    const parserEnabled = configuredParserSettings.provider && configuredParserSettings.provider !== "disabled";
     const configured = await parseChoiceStageWithConfiguredParser(screenText, configuredParserSettings, session).catch((error) => {
       logChoiceParser("configured-error", session, { error: error.message });
       return null;
     });
-    const parsed = configured ?? parseChoiceStageWithRules(screenText);
+    const parsed = parserEnabled ? configured : parseChoiceStageWithRules(screenText);
     if (!parsed || parsed.options.length < 2 || parsed.confidence < 0.45) {
       logChoiceParser("rejected", session, {
         source: parsed?.source ?? "none",
@@ -793,6 +799,19 @@ export class PtyAgentManager {
   markPendingChoiceItemsSelected(session, optionIndex) {
     for (const item of session.items) {
       if (item.type !== "choice" || item.status !== "pending") {
+        continue;
+      }
+      item.status = "selected";
+      item.options = (item.options ?? []).map((option) => ({
+        ...option,
+        selected: option.index === optionIndex
+      }));
+    }
+  }
+
+  markPendingApprovalItemsSelected(session, optionIndex) {
+    for (const item of session.items) {
+      if (item.type !== "approval" || item.status !== "pending") {
         continue;
       }
       item.status = "selected";
@@ -946,6 +965,132 @@ export class PtyAgentManager {
     };
   }
 }
+
+class LocalChoiceParserRuntime {
+  constructor() {
+    this.process = null;
+    this.output = "";
+    this.signature = "";
+    this.settings = null;
+    this.ready = false;
+    this.startPromise = null;
+    this.queue = Promise.resolve();
+    this.client = null;
+  }
+
+  configure(settings = {}) {
+    if (!settings || settings.provider !== "local-agent") {
+      this.stop("provider-disabled");
+      return;
+    }
+    const signature = localChoiceParserSettingsSignature(settings);
+    if (this.client && this.signature === signature) {
+      return;
+    }
+    this.stop("reconfigure");
+    this.signature = signature;
+    this.settings = settings;
+    this.startPromise = this.start(settings);
+  }
+
+  stop(reason = "stop") {
+    if (this.process) {
+      logChoiceParser("local-agent-stop", { id: "choice-parser-runtime", provider: "local-agent" }, { reason });
+      this.process.kill();
+    }
+    this.client?.close().catch(() => {});
+    this.client = null;
+    this.process = null;
+    this.output = "";
+    this.ready = false;
+    this.startPromise = null;
+  }
+
+  async start(settings = {}) {
+    const command = settings.localCommand || defaultCodexCommand();
+    const args = localChoiceParserAppServerArgs(settings);
+    const cwd = localChoiceParserWorkspace();
+    mkdirSync(cwd, { recursive: true });
+    logChoiceParser("local-agent-start", { id: "choice-parser-runtime", provider: "local-agent" }, {
+      command,
+      args: redactLocalAgentArgs(args),
+      model: settings.localModel || "",
+      cwd
+    });
+    const startedAt = Date.now();
+    this.client = new CodexAppServerClient({
+      command,
+      args,
+      requestTimeoutMs: Math.max(30000, settings.timeoutMs ?? 12000),
+      env: {
+        ...sanitizeEnv(process.env, "codex-pty"),
+        ...proxyEnvForAgent(settings.agentProxy, "choiceParser"),
+        COPETS_CHOICE_PARSER: "1"
+      }
+    });
+    await this.client.initialize();
+    this.ready = true;
+    logChoiceParser("local-agent-ready", { id: "choice-parser-runtime", provider: "local-agent" }, {
+      ready: this.ready,
+      durationMs: Date.now() - startedAt
+    });
+  }
+
+  async parse(screenText = "", settings = {}, session = null) {
+    this.configure(settings);
+    this.queue = this.queue
+      .catch(() => {})
+      .then(() => this.parseNow(screenText, settings, session));
+    return this.queue;
+  }
+
+  async parseNow(screenText = "", settings = {}, session = null) {
+    if (this.startPromise) {
+      await this.startPromise;
+    }
+    if (!this.client) {
+      throw new Error("Local choice parser app-server is not running.");
+    }
+    const prompt = localChoiceParserPrompt(screenText);
+    const startedAt = Date.now();
+    logChoiceParser("local-agent-request", session, {
+      chars: screenText.length,
+      model: settings.localModel || "",
+      promptChars: prompt.length
+    });
+    const timeoutMs = settings.timeoutMs ?? 12000;
+    const result = await this.client.runChoiceParser({
+      prompt,
+      cwd: localChoiceParserWorkspace(),
+      model: settings.localModel || undefined,
+      timeoutMs
+    });
+    const json = extractChoiceParserJsonObject(result.text);
+    if (json) {
+      const normalized = normalizeChoiceParserJson(JSON.parse(json), screenText, "local-agent");
+      logChoiceParser("local-agent-response", session, {
+        ok: true,
+        durationMs: Date.now() - startedAt,
+        appServerDurationMs: result.durationMs,
+        accepted: Boolean(normalized),
+        options: normalized?.options?.length ?? 0,
+        confidence: normalized?.confidence ?? 0,
+        raw: normalized ? undefined : previewLogText(json)
+      });
+      return normalized;
+    }
+    logChoiceParser("local-agent-response", session, {
+      ok: false,
+      durationMs: Date.now() - startedAt,
+      reason: "timeout-missing-json",
+      timedOut: result.timedOut === true,
+      output: previewLogText(result.text)
+    });
+    return null;
+  }
+}
+
+const localChoiceParserRuntime = new LocalChoiceParserRuntime();
 
 function modelFromArgs(args = []) {
   for (let index = 0; index < args.length; index += 1) {
@@ -1540,7 +1685,11 @@ function canonicalCodexItems(session, maxItems) {
     }
   }
 
-  return mergeReadableCodexItems(items).slice(-maxItems);
+  const merged = mergeReadableCodexItems(items).slice(-maxItems);
+  if (hasLiveCodexApprovalPrompt(session)) {
+    return merged;
+  }
+  return merged.filter((item) => !(item.type === "approval" && item.status === "pending"));
 }
 
 function matchingSentItemForText(sentItems, matchedSentIndexes, text) {
@@ -1587,6 +1736,9 @@ function latestSuggestedOptions(session) {
 function codexRolloutActivityStatus(session) {
   const rolloutPath = session.resume?.rolloutPath;
   if (session.provider !== "codex-pty" || !rolloutPath) {
+    return "";
+  }
+  if (isInterruptedCodexScreen(session.screenText ?? "")) {
     return "";
   }
 
@@ -1919,6 +2071,10 @@ export async function parseChoiceStageWithConfiguredParser(screenText = "", sett
   return parseChoiceStageWithOpenAi(screenText, settings, session);
 }
 
+export function configureChoiceParserRuntime(settings = {}) {
+  localChoiceParserRuntime.configure(settings);
+}
+
 async function parseChoiceStageWithOpenAi(screenText = "", settings = {}, session = null) {
   const apiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || process.env.COPETS_OPENAI_API_KEY;
   if (!apiKey) {
@@ -1928,7 +2084,7 @@ async function parseChoiceStageWithOpenAi(screenText = "", settings = {}, sessio
   const model = settings.openaiModel || process.env.COPETS_CHOICE_PARSER_MODEL || "gpt-4o-mini";
   const endpoint = openAiCompatibleChatCompletionsURL(settings.openaiBaseURL || process.env.COPETS_CHOICE_PARSER_BASE_URL);
   const startedAt = Date.now();
-  logChoiceParser("openai-request", session, { model, endpoint: redactURL(endpoint), chars: screenText.length });
+  logChoiceParser("openai-request-start", session, { model, endpoint: redactURL(endpoint), chars: screenText.length });
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -1958,27 +2114,49 @@ async function parseChoiceStageWithOpenAi(screenText = "", settings = {}, sessio
       ]
     })
   });
+  const headersAt = Date.now();
+  logChoiceParser("openai-response-headers", session, {
+    ok: response.ok,
+    status: response.status,
+    durationMs: headersAt - startedAt,
+    contentType: response.headers.get("content-type") ?? ""
+  });
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
     const errorMessage = choiceParserHttpErrorMessage(response.status, errorText);
-    logChoiceParser("openai-response", session, {
+    logChoiceParser("openai-response-error", session, {
       ok: false,
       status: response.status,
       durationMs: Date.now() - startedAt,
+      bodyReadMs: Date.now() - headersAt,
       error: errorMessage
     });
     throw new Error(errorMessage);
   }
-  const data = await response.json();
+  const responseText = await response.text();
+  const bodyAt = Date.now();
+  logChoiceParser("openai-response-body", session, {
+    durationMs: bodyAt - startedAt,
+    bodyReadMs: bodyAt - headersAt,
+    bytes: Buffer.byteLength(responseText)
+  });
+  const data = JSON.parse(responseText);
+  const parsedAt = Date.now();
+  logChoiceParser("openai-response-json", session, {
+    durationMs: parsedAt - startedAt,
+    parseMs: parsedAt - bodyAt
+  });
   const raw = data?.choices?.[0]?.message?.content;
   if (!raw) {
-    logChoiceParser("openai-response", session, { ok: true, durationMs: Date.now() - startedAt, reason: "empty-content" });
+    logChoiceParser("openai-response-final", session, { ok: true, durationMs: Date.now() - startedAt, reason: "empty-content" });
     return null;
   }
   const normalized = normalizeChoiceParserJson(JSON.parse(raw), screenText, "openai");
-  logChoiceParser("openai-response", session, {
+  const normalizedAt = Date.now();
+  logChoiceParser("openai-response-final", session, {
     ok: true,
-    durationMs: Date.now() - startedAt,
+    durationMs: normalizedAt - startedAt,
+    normalizeMs: normalizedAt - parsedAt,
     accepted: Boolean(normalized),
     options: normalized?.options?.length ?? 0,
     confidence: normalized?.confidence ?? 0
@@ -2015,46 +2193,68 @@ function choiceParserHttpErrorMessage(status, body = "") {
 }
 
 async function parseChoiceStageWithLocalAgent(screenText = "", settings = {}, session = null) {
-  const command = settings.localCommand || defaultCodexCommand();
+  return localChoiceParserRuntime.parse(screenText, settings, session);
+}
+
+function localChoiceParserPrompt(screenText = "") {
+  const compactScreenText = screenText.replace(/\s*\n\s*/g, " \\n ").trim();
+  return [
+    "Return JSON only. Detect whether this terminal text is asking the user to choose.",
+    "Fields: kind, prompt, options, selectedIndex, confidence.",
+    "options items: id, label, role. Roles: approve, approve-always, deny, edit, other.",
+    "Use only visible option labels. If no choice: kind none, options empty, selectedIndex -1, confidence 0.",
+    `Terminal candidate choice region: ${compactScreenText}`
+  ].join(" ");
+}
+
+function localChoiceParserAppServerArgs(settings = {}) {
   const configuredArgs = splitShellArgs(settings.localArgs || "");
-  const modelArgs = settings.localModel ? ["-m", settings.localModel] : [];
-  const prompt = [
-    "Extract the current interactive terminal choice prompt as JSON only.",
-    "Schema: {\"kind\":\"choice_request|none\",\"prompt\":\"...\",\"options\":[{\"id\":\"...\",\"label\":\"...\",\"role\":\"approve|approve-always|deny|edit|other\"}],\"selectedIndex\":0,\"confidence\":0.0}.",
-    "Only extract options that are visibly present in the supplied candidate region.",
-    "Do not infer options from queued user messages, chat history, previous user requests, tool logs, or status text.",
-    "If an option label is not literally visible in the candidate region, do not include it.",
-    "If no choice is visible, return {\"kind\":\"none\",\"options\":[],\"selectedIndex\":-1,\"confidence\":0}.",
-    "",
-    "Terminal candidate choice region:",
-    screenText
-  ].join("\n");
-  const args = [...configuredArgs, ...modelArgs, prompt].filter(Boolean);
-  const startedAt = Date.now();
-  logChoiceParser("local-request", session, { command, model: settings.localModel || "", chars: screenText.length });
-  const { stdout } = await execFileAsync(command, args, {
-    timeout: settings.timeoutMs ?? 12000,
-    maxBuffer: 256 * 1024,
-    env: {
-      ...process.env,
-      ...proxyEnvForAgent(settings.agentProxy, "choiceParser"),
-      COPETS_CHOICE_PARSER: "1"
+  return [
+    "app-server",
+    "--listen",
+    "stdio://",
+    "--disable",
+    "hooks",
+    "-c",
+    "model_reasoning_effort=\"low\"",
+    "-c",
+    "mcp_servers={}",
+    "-c",
+    "features.rmcp_client=false",
+    "-c",
+    "web_search=\"disabled\"",
+    ...configuredArgs
+  ].filter(Boolean);
+}
+
+function localChoiceParserWorkspace() {
+  return path.join(os.tmpdir(), "copets-choice-parser-workspace");
+}
+
+function localChoiceParserSettingsSignature(settings = {}) {
+  return JSON.stringify({
+    command: settings.localCommand || defaultCodexCommand(),
+    args: settings.localArgs || "",
+    model: settings.localModel || "",
+    proxy: settings.agentProxy?.choiceParser ?? null
+  });
+}
+
+function redactLocalAgentArgs(args = []) {
+  return args.map((arg) => {
+    if (typeof arg !== "string") {
+      return arg;
     }
+    if (arg.length > 120 || arg.includes("\n")) {
+      return `<prompt:${arg.length} chars>`;
+    }
+    return arg;
   });
-  const json = extractFirstJsonObject(stdout);
-  if (!json) {
-    logChoiceParser("local-response", session, { ok: false, durationMs: Date.now() - startedAt, reason: "missing-json" });
-    return null;
-  }
-  const normalized = normalizeChoiceParserJson(JSON.parse(json), screenText, "local-agent");
-  logChoiceParser("local-response", session, {
-    ok: true,
-    durationMs: Date.now() - startedAt,
-    accepted: Boolean(normalized),
-    options: normalized?.options?.length ?? 0,
-    confidence: normalized?.confidence ?? 0
-  });
-  return normalized;
+}
+
+function previewLogText(value = "") {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
 function normalizeChoiceParserJson(parsed, screenText, source) {
@@ -2137,12 +2337,68 @@ function normalizeForChoiceGrounding(value = "") {
 }
 
 function extractFirstJsonObject(text = "") {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    return "";
+  return extractJsonObjects(text)[0] ?? "";
+}
+
+function extractChoiceParserJsonObject(text = "") {
+  for (const candidate of extractJsonObjects(text)) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        if (Object.prototype.hasOwnProperty.call(parsed, "options")
+            || Object.prototype.hasOwnProperty.call(parsed, "kind")
+            || Object.prototype.hasOwnProperty.call(parsed, "prompt")) {
+          return candidate;
+        }
+      }
+    } catch {
+      // Candidates are already parsed in extractJsonObjects, but keep this defensive.
+    }
   }
-  return text.slice(start, end + 1);
+  return "";
+}
+
+function extractJsonObjects(text = "") {
+  const results = [];
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = inString;
+        continue;
+      }
+      if (char === "\"") {
+        inString = !inString;
+        continue;
+      }
+      if (inString) {
+        continue;
+      }
+      if (char === "{") {
+        depth += 1;
+      } else if (char === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = text.slice(start, index + 1);
+          try {
+            JSON.parse(candidate);
+            results.push(candidate);
+          } catch {
+            // Keep scanning; terminal output often contains partial objects while streaming.
+          }
+          break;
+        }
+      }
+    }
+  }
+  return results;
 }
 
 function splitShellArgs(value = "") {
@@ -2434,8 +2690,43 @@ function hasPendingCodexApproval(session) {
   if (session.provider !== "codex-pty") {
     return false;
   }
+  if (!hasLiveCodexApprovalPrompt(session)) {
+    return false;
+  }
   const canonical = canonicalCodexItems(session, maxItemsForPendingCheck(session));
   return Boolean(canonical?.some((item) => item.type === "approval" && item.status === "pending"));
+}
+
+function hasLiveCodexApprovalPrompt(session) {
+  if (session.provider !== "codex-pty" || session.status !== "running") {
+    return false;
+  }
+  const screenText = session.screenText ?? "";
+  if (!screenText || isInterruptedCodexScreen(screenText)) {
+    return false;
+  }
+  return isApprovalPrompt(screenText);
+}
+
+function isInterruptedCodexScreen(screenText = "") {
+  return /Conversation interrupted/i.test(screenText);
+}
+
+function liveCodexApprovalOptions(session) {
+  const parsed = parseTerminalOptions(choiceOptionBlockText(session.screenText ?? ""));
+  const options = parsed.options.length >= 2
+    ? parsed.options.map((option, index) => ({
+      id: approvalOptionRole(option.label) === "deny" ? "deny" : `approve-${index}`,
+      label: option.label,
+      role: approvalOptionRole(option.label),
+      index,
+      selected: option.selected === true
+    }))
+    : [];
+  if (options.some((option) => option.role === "approve") && options.some((option) => option.role === "deny")) {
+    return options;
+  }
+  return codexApprovalOptions(session);
 }
 
 function hasFinalCodexAnswer(session) {

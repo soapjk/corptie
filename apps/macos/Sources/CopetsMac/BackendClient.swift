@@ -348,10 +348,12 @@ final class BackendClient: ObservableObject {
                     "approved": option.role?.localizedCaseInsensitiveContains("deny") != true
                 ])
 
-                let (_, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode) else {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
+                }
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
                 }
 
                 sendStatusMessage = "Selected \(option.label)"
@@ -397,10 +399,12 @@ final class BackendClient: ObservableObject {
                     "optionIndex": option.index ?? 0
                 ])
 
-                let (_, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode) else {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
+                }
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
                 }
 
                 sendStatusMessage = "Selected \(option.label)"
@@ -1147,6 +1151,13 @@ final class BackendClient: ObservableObject {
                 && serverItems[index].type == "userMessage"
                 && normalizedMessageText(serverItems[index].text) == pendingText
         }
+    }
+
+    private static func errorMessage(from data: Data) -> String? {
+        if let decoded = try? JSONDecoder().decode(BackendErrorResponse.self, from: data) {
+            return decoded.error
+        }
+        return String(data: data, encoding: .utf8)
     }
 }
 

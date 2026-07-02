@@ -12,7 +12,7 @@ import {
   mapCodexThreadToSession,
   readCodexRolloutDetail
 } from "./adapters/codexAppServer.mjs";
-import { PtyAgentManager, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
+import { PtyAgentManager, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { CopetsStore } from "./store/copetsStore.mjs";
 
 const environmentName = normalizeEnvironment(process.env.COPETS_ENV);
@@ -409,8 +409,12 @@ function normalizeCodexSandbox(value) {
 
 function normalizeCodexApprovalPolicy(value) {
   const approval = typeof value === "string" ? value.trim() : "";
-  const allowed = new Set(["on-request", "on-failure", "never"]);
+  const allowed = new Set(["on-request", "ask-risky", "on-failure", "never"]);
   return allowed.has(approval) ? approval : "on-request";
+}
+
+function codexApprovalPolicyForCli(approvalPolicy) {
+  return approvalPolicy === "ask-risky" ? "on-request" : approvalPolicy;
 }
 
 function sendJson(response, statusCode, body) {
@@ -503,6 +507,10 @@ function route(request, response) {
         return store.updateSettings(input);
       })
       .then((settings) => {
+        configureChoiceParserRuntime({
+          ...(settings.choiceParser ?? {}),
+          agentProxy: settings.agentProxy
+        });
         sendJson(response, 200, settings);
       })
       .catch((error) => {
@@ -518,6 +526,7 @@ function route(request, response) {
           ...(input?.choiceParser ?? {}),
           agentProxy: input?.agentProxy ?? store.settings().agentProxy
         };
+        configureChoiceParserRuntime(choiceParser);
         const sample = [
           "The agent is waiting for your choice:",
           "",
@@ -779,7 +788,8 @@ function route(request, response) {
         const launchPrompt = prompt || "Reply exactly: Ready";
         const codexCommand = resolveCodexCommand(input.command);
         const sandbox = normalizeCodexSandbox(input.sandbox);
-        const approval = normalizeCodexApprovalPolicy(input.approvalPolicy);
+        const approvalMode = normalizeCodexApprovalPolicy(input.approvalPolicy);
+        const approval = codexApprovalPolicyForCli(approvalMode);
         const safetyArgs = [
           "-c",
           `approval_policy="${approval}"`,
@@ -1388,6 +1398,10 @@ const server = http.createServer(route);
 
 await store.initialize();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
+configureChoiceParserRuntime({
+  ...(store.settings().choiceParser ?? {}),
+  agentProxy: store.settings().agentProxy
+});
 
 seedSessions();
 setInterval(updateMockProgress, 2500).unref();

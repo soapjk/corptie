@@ -12,6 +12,7 @@ struct FloatingRootView: View {
     @State private var draggedSessionId: String?
     @State private var sessionCardFrames: [String: CGRect] = [:]
     @State private var reorderStartFrames: [String: CGRect] = [:]
+    @State private var hoverPreviewSessionId: String?
 
     var body: some View {
         ZStack {
@@ -107,7 +108,10 @@ struct FloatingRootView: View {
             .padding(.horizontal, 6)
             .padding(.bottom, 4)
             .measureListHeight(.cards)
-            .coordinateSpace(name: "session-list")
+        }
+        .coordinateSpace(name: "session-list")
+        .overlay(alignment: .topLeading) {
+            sessionHoverPreviewOverlay
         }
         .onPreferenceChange(SessionCardFramePreferenceKey.self) { frames in
             sessionCardFrames = frames
@@ -124,9 +128,9 @@ struct FloatingRootView: View {
     @ViewBuilder
     private func sessionCard(for session: TaskSession) -> some View {
         if backendClient.isShowingArchivedSessions {
-            TaskCardView(session: session, namespace: taskNavigationNamespace)
+            TaskCardView(session: session, namespace: taskNavigationNamespace, hoverPreviewChanged: updateHoverPreview)
         } else {
-            TaskCardView(session: session, namespace: taskNavigationNamespace)
+            TaskCardView(session: session, namespace: taskNavigationNamespace, hoverPreviewChanged: updateHoverPreview)
                 .opacity(draggedSessionId == session.id ? 0.82 : 1)
                 .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
                 .shadow(
@@ -139,6 +143,27 @@ struct FloatingRootView: View {
                 .animation(.spring(response: 0.28, dampingFraction: 0.82), value: backendClient.sessions.map(\.id))
                 .animation(.spring(response: 0.20, dampingFraction: 0.78), value: draggedSessionId)
         }
+    }
+
+    @ViewBuilder
+    private var sessionHoverPreviewOverlay: some View {
+        if let session = backendClient.sessions.first(where: { $0.id == hoverPreviewSessionId }),
+           let frame = sessionCardFrames[session.id] {
+            SessionReplyHoverBubble(text: session.summary, showsArrow: true)
+                .frame(width: 248, alignment: .topLeading)
+                .frame(maxHeight: 92, alignment: .topLeading)
+                .offset(x: max(8, frame.minX + 54), y: max(0, frame.minY - 24))
+                .zIndex(30)
+                .onHover { hovering in
+                    if !hovering {
+                        hoverPreviewSessionId = nil
+                    }
+                }
+        }
+    }
+
+    private func updateHoverPreview(sessionId: String, isVisible: Bool) {
+        hoverPreviewSessionId = isVisible ? sessionId : (hoverPreviewSessionId == sessionId ? nil : hoverPreviewSessionId)
     }
 
     private func updatePreferredListHeight(_ values: [ListHeightMetric: CGFloat]) {
@@ -669,6 +694,8 @@ private struct FloatingActionOrb: View {
 
 private struct NewPtyAgentTaskSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @AppStorage("newTask.defaultSandboxMode", store: CopetsAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
+    @AppStorage("newTask.defaultApprovalPolicy", store: CopetsAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
     @State private var title = ""
     @State private var command = "codex"
     @State private var arguments = ""
@@ -676,6 +703,7 @@ private struct NewPtyAgentTaskSheet: View {
     @State private var cwd = ""
     @State private var sandboxMode = "workspace-write"
     @State private var approvalPolicy = "on-request"
+    @State private var defaultSaveMessage: String?
     @State private var sessionLookupTask: Task<Void, Never>?
     @State private var isLookingUpSession = false
     @State private var sessionLookupMessage: String?
@@ -868,6 +896,7 @@ private struct NewPtyAgentTaskSheet: View {
                                 .foregroundStyle(Color.black)
                             Picker("", selection: $approvalPolicy) {
                                 Text("Ask").tag("on-request")
+                                Text("Ask for Risky Actions").tag("ask-risky")
                                 Text("Never Ask").tag("never")
                                 Text("On Failure").tag("on-failure")
                             }
@@ -881,6 +910,24 @@ private struct NewPtyAgentTaskSheet: View {
                         Label("Full Access lets Codex operate outside the workspace. Use it only for trusted tasks.", systemImage: "exclamationmark.triangle")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(CopetsPalette.amber)
+                    }
+                    HStack(spacing: 8) {
+                        Button {
+                            savePermissionDefaults()
+                        } label: {
+                            Label("Set as Future Default", systemImage: "checkmark.seal")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(CopetsPalette.softBlue)
+                        .help("Use the selected permission and approval mode for future new sessions")
+
+                        if let defaultSaveMessage {
+                            Text(defaultSaveMessage)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(CopetsPalette.secondaryText)
+                                .transition(.opacity)
+                        }
                     }
 
                 }
@@ -923,6 +970,8 @@ private struct NewPtyAgentTaskSheet: View {
             if cwd.isEmpty {
                 cwd = backendClient.defaultWorkspacePath
             }
+            sandboxMode = validatedSandboxMode(defaultSandboxMode)
+            approvalPolicy = validatedApprovalPolicy(defaultApprovalPolicy)
         }
         .onDisappear {
             sessionLookupTask?.cancel()
@@ -932,6 +981,37 @@ private struct NewPtyAgentTaskSheet: View {
     private func selectAgent(_ preset: AgentPreset) {
         command = preset.command
         arguments = preset.arguments
+    }
+
+    private func savePermissionDefaults() {
+        defaultSandboxMode = validatedSandboxMode(sandboxMode)
+        defaultApprovalPolicy = validatedApprovalPolicy(approvalPolicy)
+        withAnimation(.easeOut(duration: 0.12)) {
+            defaultSaveMessage = "Saved"
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            withAnimation(.easeOut(duration: 0.12)) {
+                defaultSaveMessage = nil
+            }
+        }
+    }
+
+    private func validatedSandboxMode(_ value: String) -> String {
+        switch value {
+        case "workspace-write", "danger-full-access", "read-only":
+            return value
+        default:
+            return "workspace-write"
+        }
+    }
+
+    private func validatedApprovalPolicy(_ value: String) -> String {
+        switch value {
+        case "on-request", "ask-risky", "never", "on-failure":
+            return value
+        default:
+            return "on-request"
+        }
     }
 
     private func startSelectedAgent() {
@@ -1189,6 +1269,7 @@ private struct TaskCardView: View {
 
     let session: TaskSession
     let namespace: Namespace.ID
+    var hoverPreviewChanged: (String, Bool) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1230,18 +1311,6 @@ private struct TaskCardView: View {
                 .foregroundStyle(CopetsPalette.cardPreviewText)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .popover(isPresented: hoverPreviewBinding, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
-                    if let replyPreviewText {
-                        SessionReplyHoverBubble(text: replyPreviewText)
-                            .padding(4)
-                            .onHover { hovering in
-                                isHoveringPreviewBubble = hovering
-                                if !hovering {
-                                    hideHoverPreviewImmediately()
-                                }
-                            }
-                    }
-                }
 
             HStack(spacing: 10) {
                 Text(session.agent)
@@ -1535,10 +1604,13 @@ private struct TaskCardView: View {
                 }
                 await MainActor.run {
                     isHoveringCard = true
+                    if replyPreviewText != nil {
+                        hoverPreviewChanged(session.id, true)
+                    }
                 }
             }
         } else {
-            scheduleHoverPreviewClose()
+            hideHoverPreviewImmediately()
         }
     }
 
@@ -1562,6 +1634,7 @@ private struct TaskCardView: View {
         hoverPreviewTask = nil
         isHoveringPreviewBubble = false
         isHoveringCard = false
+        hoverPreviewChanged(session.id, false)
     }
 
     private func relativeTime(_ value: String) -> String {
@@ -1584,33 +1657,56 @@ private struct TaskCardView: View {
 
 private struct SessionReplyHoverBubble: View {
     let text: String
+    var showsArrow = false
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: true) {
-            Text(text)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(CopetsPalette.primaryText)
-                .lineSpacing(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+        VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(text)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(CopetsPalette.primaryText)
+                    .lineSpacing(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            }
+            .frame(width: 248)
+            .frame(maxHeight: 82)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(.regularMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(CopetsPalette.glassVeilFocused.opacity(0.52))
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.24), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.16), radius: 10, y: 5)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            if showsArrow {
+                Triangle()
+                    .fill(.regularMaterial)
+                    .overlay(Triangle().stroke(Color.white.opacity(0.20), lineWidth: 1))
+                    .frame(width: 14, height: 8)
+                    .rotationEffect(.degrees(180))
+                    .offset(x: -86, y: -1)
+            }
         }
-        .frame(width: 248)
-        .frame(maxHeight: 82)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(CopetsPalette.glassVeilFocused.opacity(0.52))
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.24), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.16), radius: 10, y: 5)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+}
+
+private struct Triangle: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -1859,7 +1955,7 @@ private struct DetailView: View {
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 8) {
                     if hiddenCount > 0 {
                         Button {
                             visibleMessageLimit += 100
@@ -2185,6 +2281,7 @@ private struct ActivityStatusText: View {
 
 private struct ThreadItemView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @State private var isActivityExpanded = false
     let item: CodexThreadItem
 
     var body: some View {
@@ -2200,11 +2297,11 @@ private struct ThreadItemView: View {
             }
 
             if !item.text.isEmpty {
-                Text(markdownText)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                if item.type == "agentMessage" {
+                    agentMessageTextView
+                } else {
+                    messageTextView(text: item.text, allowsSelection: true)
+                }
             }
 
             if shouldShowOptions {
@@ -2223,6 +2320,7 @@ private struct ThreadItemView: View {
                                 .font(.system(size: 11, weight: .bold))
                                 .padding(.horizontal, 10)
                                 .frame(maxWidth: item.type == "agentMessage" ? .infinity : nil, minHeight: 28, alignment: .leading)
+                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .background(optionBackground(for: option), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -2265,9 +2363,79 @@ private struct ThreadItemView: View {
         }
     }
 
-    private var markdownText: AttributedString {
-        (try? AttributedString(markdown: item.text, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(item.text)
+    @ViewBuilder
+    private var agentMessageTextView: some View {
+        let parsed = AgentMessageParts.parse(item.text)
+        if !parsed.activity.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        isActivityExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: isActivityExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .bold))
+                        Text(parsed.activitySummary)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                    }
+                    .foregroundStyle(CopetsPalette.mutedText)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                if isActivityExpanded {
+                    Text(parsed.activity)
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(CopetsPalette.mutedText)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(Color.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+        }
+
+        if !parsed.body.isEmpty {
+            messageTextView(text: parsed.body, allowsSelection: true)
+        }
+    }
+
+    private func markdownText(for text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+    }
+
+    @ViewBuilder
+    private func messageTextView(text: String, allowsSelection: Bool) -> some View {
+        if shouldUsePlainTextRendering(text) {
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(CopetsPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            if allowsSelection {
+                Text(markdownText(for: text))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else {
+                Text(markdownText(for: text))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func shouldUsePlainTextRendering(_ text: String) -> Bool {
+        text.count > 4_000 || text.filter(\.isNewline).count > 80
     }
 
     private var approvalOptions: [CodexApprovalOption] {
@@ -2318,6 +2486,90 @@ private struct ThreadItemView: View {
         option.role?.localizedCaseInsensitiveContains("deny") == true
             ? Color.red.opacity(0.24)
             : CopetsPalette.connected.opacity(0.34)
+    }
+}
+
+private struct AgentMessageParts {
+    let activity: String
+    let body: String
+
+    var activitySummary: String {
+        let lines = activity
+            .split(separator: "\n")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let toolLines = lines.filter { line in
+            line.localizedCaseInsensitiveContains("searching")
+                || line.localizedCaseInsensitiveContains("searched")
+                || line.localizedCaseInsensitiveContains("running")
+                || line.localizedCaseInsensitiveContains("using")
+                || line.localizedCaseInsensitiveContains("reading")
+                || line.localizedCaseInsensitiveContains("tool")
+        }
+        if toolLines.isEmpty {
+            return "过程记录 · 展开"
+        }
+        return "过程记录 · \(toolLines.count) 步 · 展开"
+    }
+
+    static func parse(_ rawText: String) -> AgentMessageParts {
+        let cleaned = rawText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !isNoiseLine($0) }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let dividerRange = dividerRange(in: cleaned) else {
+            return AgentMessageParts(activity: "", body: cleaned)
+        }
+
+        let activity = String(cleaned[..<dividerRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = String(cleaned[dividerRange.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else {
+            return AgentMessageParts(activity: "", body: cleaned)
+        }
+        return AgentMessageParts(activity: normalizeActivity(activity), body: body)
+    }
+
+    private static func dividerRange(in text: String) -> Range<String.Index>? {
+        var cursor = text.startIndex
+        while cursor < text.endIndex {
+            let lineEnd = text[cursor...].firstIndex(of: "\n") ?? text.endIndex
+            let line = String(text[cursor..<lineEnd]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if isDividerLine(line) {
+                return cursor..<lineEnd
+            }
+            cursor = lineEnd == text.endIndex ? text.endIndex : text.index(after: lineEnd)
+        }
+        return nil
+    }
+
+    private static func isDividerLine(_ line: String) -> Bool {
+        guard line.count >= 12 else {
+            return false
+        }
+        return line.allSatisfy { character in
+            character == "-" || character == "─" || character == "—" || character == "━"
+        }
+    }
+
+    private static func isNoiseLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("⚠ Skill descriptions were shortened")
+            || trimmed.localizedCaseInsensitiveContains("skills context budget")
+    }
+
+    private static func normalizeActivity(_ text: String) -> String {
+        text
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line in
+                String(line)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: #"^•\s*"#, with: "", options: .regularExpression)
+            }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 }
 
@@ -2603,7 +2855,7 @@ struct ChatInputTextView: NSViewRepresentable {
         textView.placeholder = placeholder
         textView.font = font
         textView.isEditable = isEditable
-        if textView.string != text {
+        if !textView.hasMarkedText(), textView.string != text {
             textView.string = text
         }
         if autoFocus, textView.window?.firstResponder !== textView {
@@ -2645,6 +2897,10 @@ struct ChatInputTextView: NSViewRepresentable {
         override func keyDown(with event: NSEvent) {
             let isReturn = event.keyCode == 36 || event.keyCode == 76
             let wantsNewline = event.modifierFlags.contains(.shift)
+            if isReturn, hasMarkedText() {
+                super.keyDown(with: event)
+                return
+            }
             if isReturn && !wantsNewline {
                 onSubmit?()
                 return
