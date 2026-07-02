@@ -2212,8 +2212,10 @@ private struct DetailView: View {
 
     private func chatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
         let userMessages = items.filter { $0.type == "userMessage" }
-        let processItems = items.filter(isProcessItem)
         let agentMessages = items.filter { $0.type == "agentMessage" }
+        let finalAgentMessage = agentMessages.last
+        let progressAgentMessages = agentMessages.dropLast()
+        let processItems = items.filter(isProcessItem) + progressAgentMessages
         let trailingItems = items.filter { item in
             item.type != "userMessage" && item.type != "agentMessage" && !isProcessItem(item)
         }
@@ -2222,7 +2224,9 @@ private struct DetailView: View {
         if !processItems.isEmpty {
             entries.append(ChatDisplayEntry(kind: .process(processItems)))
         }
-        entries.append(contentsOf: agentMessages.map { ChatDisplayEntry(kind: .message($0)) })
+        if let finalAgentMessage {
+            entries.append(ChatDisplayEntry(kind: .message(finalAgentMessage)))
+        }
         entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
         return entries
     }
@@ -2602,7 +2606,7 @@ private struct ProcessMiniCard: View {
                     .foregroundStyle(CopetsPalette.secondaryText)
                     .lineLimit(1)
                 Spacer(minLength: 6)
-                Text(item.type)
+                Text(processTypeLabel)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(CopetsPalette.mutedText.opacity(0.78))
             }
@@ -2639,6 +2643,10 @@ private struct ProcessMiniCard: View {
         default:
             return CopetsPalette.connected
         }
+    }
+
+    private var processTypeLabel: String {
+        item.type == "agentMessage" ? "commentary" : item.type
     }
 }
 
