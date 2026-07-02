@@ -137,6 +137,10 @@ struct SessionsResponse: Decodable {
     let sessions: [TaskSession]
 }
 
+struct BackendErrorResponse: Decodable {
+    let error: String
+}
+
 struct CodexThreadDetailResponse: Decodable {
     let thread: CodexThreadDetail
 }

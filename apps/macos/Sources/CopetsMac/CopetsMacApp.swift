@@ -104,7 +104,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "\(CopetsAppEnvironment.appName) Settings"
         window.center()
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView())
+        window.contentView = NSHostingView(rootView: SettingsView {
+            window.close()
+        })
         window.makeKeyAndOrderFront(nil)
         settingsWindow = window
     }
@@ -206,6 +208,7 @@ enum CopetsPermissionManager {
 
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
+    var onClose: () -> Void = {}
     @State private var dataDir = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
@@ -414,7 +417,9 @@ struct SettingsView: View {
 
                     Button("Save") {
                         Task {
-                            await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, agentProxy: savedAgentProxy)
+                            if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, agentProxy: savedAgentProxy) {
+                                onClose()
+                            }
                         }
                     }
                     .keyboardShortcut(.defaultAction)

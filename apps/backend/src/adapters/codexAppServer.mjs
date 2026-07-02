@@ -6,6 +6,7 @@ export class CodexAppServerClient {
   constructor(options = {}) {
     this.command = options.command ?? "codex";
     this.args = options.args ?? ["app-server", "--listen", "stdio://"];
+    this.env = options.env ?? process.env;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
     this.process = null;
     this.readline = null;
@@ -22,7 +23,8 @@ export class CodexAppServerClient {
     }
 
     this.process = spawn(this.command, this.args, {
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      env: this.env
     });
 
     this.process.stderr.setEncoding("utf8");
@@ -126,6 +128,70 @@ export class CodexAppServerClient {
       sandboxPolicy: options.sandboxPolicy ?? undefined,
       model: options.model ?? undefined
     });
+  }
+
+  async runChoiceParser(options = {}) {
+    const timeoutMs = options.timeoutMs ?? 30000;
+    const prompt = options.prompt ?? "";
+    const cwd = options.cwd ?? process.cwd();
+    const model = options.model ?? undefined;
+    const notificationStart = this.notifications.length;
+    const liveStart = this.liveItemsByThread.size;
+    const startedAt = Date.now();
+    const started = await this.startThread({
+      cwd,
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      model,
+      ephemeral: true
+    });
+    const threadId = started.thread.id;
+    const turn = await this.startTurn(threadId, prompt, {
+      cwd,
+      approvalPolicy: "never",
+      model
+    });
+    const turnId = turn.turn.id;
+    while (Date.now() - startedAt < timeoutMs) {
+      const text = this.latestAgentMessageText(threadId, turnId);
+      if (text) {
+        return {
+          text,
+          threadId,
+          turnId,
+          durationMs: Date.now() - startedAt
+        };
+      }
+      const completed = this.notifications.slice(notificationStart).some((message) => {
+        return message.method === "turn/completed"
+          && message.params?.threadId === threadId
+          && message.params?.turn?.id === turnId;
+      });
+      if (completed) {
+        return {
+          text: this.latestAgentMessageText(threadId, turnId) ?? "",
+          threadId,
+          turnId,
+          durationMs: Date.now() - startedAt
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    return {
+      text: this.latestAgentMessageText(threadId, turnId) ?? "",
+      threadId,
+      turnId,
+      durationMs: Date.now() - startedAt,
+      timedOut: true,
+      notificationCount: this.notifications.length - notificationStart,
+      liveThreadCount: this.liveItemsByThread.size - liveStart
+    };
+  }
+
+  latestAgentMessageText(threadId, turnId) {
+    const items = Array.from(this.liveItemsByThread.get(threadId)?.values() ?? []);
+    const agentMessages = items.filter((item) => item.turnId === turnId && item.type === "agentMessage" && item.text);
+    return agentMessages.at(-1)?.text ?? "";
   }
 
   async execResumeThread(threadId, text) {
