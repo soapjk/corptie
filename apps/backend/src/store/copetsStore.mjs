@@ -159,6 +159,7 @@ export class CopetsStore {
         pinned INTEGER NOT NULL DEFAULT 0,
         sort_order REAL,
         avatar_path TEXT,
+        active_choice_json TEXT,
         raw_json TEXT NOT NULL DEFAULT '{}'
       );
 
@@ -184,6 +185,7 @@ export class CopetsStore {
     this.ensureColumn("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "sort_order", "REAL");
     this.ensureColumn("sessions", "avatar_path", "TEXT");
+    this.ensureColumn("sessions", "active_choice_json", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.initializeSortOrder();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
@@ -228,8 +230,8 @@ export class CopetsStore {
     const summary = toSessionSummary(session);
     this.db.run(
       `INSERT INTO sessions (
-        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, raw_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
         agent=excluded.agent,
@@ -246,6 +248,7 @@ export class CopetsStore {
         pinned=excluded.pinned,
         sort_order=excluded.sort_order,
         avatar_path=excluded.avatar_path,
+        active_choice_json=excluded.active_choice_json,
         raw_json=excluded.raw_json`,
       [
         session.id,
@@ -265,6 +268,7 @@ export class CopetsStore {
         session.pinned ? 1 : 0,
         Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
         session.avatarPath ?? session.external?.avatarPath ?? null,
+        serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
         JSON.stringify(toRawStatus(session))
       ]
     );
@@ -396,6 +400,29 @@ export class CopetsStore {
     return this.getSession(id);
   }
 
+  setActiveChoicePrompt(sessionId, prompt = "", options = []) {
+    const rawId = String(sessionId);
+    const id = rawId.startsWith("pty:") ? rawId.replace(/^pty:/, "") : rawId;
+    const activeChoice = serializeActiveChoicePrompt(options, prompt);
+    this.db.run(
+      "UPDATE sessions SET active_choice_json = ?, updated_at = ? WHERE id = ?",
+      [activeChoice, new Date().toISOString(), id]
+    );
+    this.scheduleSave();
+    return this.getSession(rawId);
+  }
+
+  clearActiveChoicePrompt(sessionId) {
+    const rawId = String(sessionId);
+    const id = rawId.startsWith("pty:") ? rawId.replace(/^pty:/, "") : rawId;
+    this.db.run(
+      "UPDATE sessions SET active_choice_json = NULL, updated_at = ? WHERE id = ?",
+      [new Date().toISOString(), id]
+    );
+    this.scheduleSave();
+    return this.getSession(rawId);
+  }
+
   deleteSession(id) {
     this.db.run("DELETE FROM session_items WHERE session_id = ?", [id]);
     this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
@@ -467,7 +494,8 @@ export class CopetsStore {
       && (rawStatus.phase === "waiting_approval" || rawStatus.phase === "ready" || rawStatus.phase === "blocked");
     const displayStatus = (isUnsafeLegacyCodexResume || isMissingCodexSessionId) ? "failed" : (isWaitingForUser ? "blocked" : status);
     const latestAssistantSummary = latestCodexAssistantText(row.id, rawStatus, row.provider);
-    const suggestedOptions = this.latestSuggestedOptions(row.id) ?? choiceOptionsFromAgentMessage(latestAssistantSummary);
+    const activeChoicePrompt = parseActiveChoicePrompt(row.active_choice_json);
+    const suggestedOptions = activeChoicePrompt?.options ?? null;
     return {
       id: publicId,
       title: row.title,
@@ -503,22 +531,6 @@ export class CopetsStore {
     };
   }
 
-  latestSuggestedOptions(sessionId) {
-    const rows = this.selectAll(
-      `SELECT type, options_json FROM session_items WHERE session_id = ? ORDER BY created_at DESC LIMIT 40`,
-      [sessionId]
-    );
-    for (const row of rows) {
-      if (row.type === "userMessage") {
-        return null;
-      }
-      const options = parseJson(row.options_json, null);
-      if (row.type === "agentMessage" && Array.isArray(options) && options.length >= 2) {
-        return options;
-      }
-    }
-    return null;
-  }
 }
 
 function normalizeChoiceParserSettings(input = {}) {
@@ -572,6 +584,41 @@ function normalizeProxyValue(value) {
 function normalizeNoProxyValue(value) {
   const fallback = "localhost,127.0.0.1,::1,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function serializeActiveChoicePrompt(options = null, prompt = "", existing = null) {
+  const source = existing && typeof existing === "object"
+    ? existing
+    : { prompt, options };
+  const activeOptions = Array.isArray(source.options) ? source.options : options;
+  if (!Array.isArray(activeOptions) || activeOptions.length < 2) {
+    return null;
+  }
+  const normalizedOptions = activeOptions.map((option, index) => ({
+    id: option.id || `option-${index}`,
+    label: String(option.label ?? "").trim(),
+    role: option.role ?? "message-choice",
+    index: Number.isFinite(option.index) ? option.index : index,
+    selected: option.selected === true
+  })).filter((option) => option.label);
+  if (normalizedOptions.length < 2) {
+    return null;
+  }
+  return JSON.stringify({
+    id: source.id || `choice:${Date.now()}`,
+    prompt: typeof source.prompt === "string" && source.prompt.trim() ? source.prompt.trim() : prompt,
+    options: normalizedOptions,
+    status: "active",
+    createdAt: source.createdAt || new Date().toISOString()
+  });
+}
+
+function parseActiveChoicePrompt(value) {
+  const parsed = parseJson(value, null);
+  if (!parsed || parsed.status !== "active" || !Array.isArray(parsed.options) || parsed.options.length < 2) {
+    return null;
+  }
+  return parsed;
 }
 
 function toSessionSummary(session) {
@@ -656,7 +703,7 @@ function latestSuggestedOptionsFromItems(items) {
     if (item.type === "userMessage") {
       return null;
     }
-    if (item.type === "agentMessage" && Array.isArray(item.options) && item.options.length >= 2) {
+    if ((item.type === "choice" || item.type === "agentMessage") && item.status !== "selected" && Array.isArray(item.options) && item.options.length >= 2) {
       return item.options;
     }
   }

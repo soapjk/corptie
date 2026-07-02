@@ -90,10 +90,6 @@ scripts/package-macos-installer.sh
 
 Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.dmg` includes `Copets.app`, an `Applications` shortcut, and a short installer readme.
 
-## 📚 More
-
-- [Project vision and technical research](docs/project-vision-and-tech-research.md)
-
 ## License
 
 [Apache-2.0](LICENSE)

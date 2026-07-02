@@ -66,6 +66,7 @@ export class PtyAgentManager {
       pendingChoice: null,
       choiceSignature: "",
       choiceParseInputSignature: "",
+      consumedChoiceInputSignature: "",
       choiceParseInputAt: 0,
       items: Array.isArray(input.items) ? input.items.slice(-this.maxItems) : []
     };
@@ -419,6 +420,9 @@ export class PtyAgentManager {
     session.lastInputAt = session.updatedAt;
     session.lastSubmittedText = text.trim();
     session.phase = "input_sent";
+    session.pendingChoice = null;
+    session.choiceSignature = "";
+    session.consumedChoiceInputSignature = currentChoiceInputSignature(session);
 
     if (options.echo !== false) {
       this.appendItem(session, {
@@ -510,6 +514,7 @@ export class PtyAgentManager {
     session.pendingChoice = null;
     session.choiceSignature = "";
     session.choiceParseInputSignature = "";
+    session.consumedChoiceInputSignature = currentChoiceInputSignature(session);
     session.choiceParseInputAt = 0;
     this.markPendingChoiceItemsSelected(session, optionIndex);
     this.persistSession(session);
@@ -719,6 +724,9 @@ export class PtyAgentManager {
     }
     const screenText = choiceContext.text;
     const inputSignature = choiceInputSignature(screenText);
+    if (inputSignature && inputSignature === session.consumedChoiceInputSignature) {
+      return;
+    }
     const nowMs = Date.now();
     if (inputSignature === session.choiceParseInputSignature && nowMs - (session.choiceParseInputAt ?? 0) < 10000) {
       return;
@@ -1734,17 +1742,13 @@ function latestCodexAssistantText(session) {
 }
 
 function latestSuggestedOptions(session) {
-  const canonical = canonicalCodexItems(session, 40);
-  const items = canonical ?? visibleItems(session.items ?? [], session.provider);
-  for (const item of items.slice().reverse()) {
-    if (item.type === "agentMessage" && Array.isArray(item.options) && item.options.length >= 2) {
-      return item.options;
-    }
-    if (item.type === "userMessage") {
-      return null;
-    }
-  }
-  return null;
+  const options = session.pendingChoice?.options;
+  return Array.isArray(options) && options.length >= 2 ? options : null;
+}
+
+function currentChoiceInputSignature(session) {
+  const choiceContext = buildChoiceContext(session.screenText ?? "");
+  return choiceContext ? choiceInputSignature(choiceContext.text) : "";
 }
 
 function codexRolloutActivityStatus(session) {

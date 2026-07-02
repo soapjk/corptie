@@ -441,8 +441,9 @@ export function mapCodexThreadToSession(thread) {
 
 export function mapCodexThreadToDetail(thread, liveItems = []) {
   const items = threadItems(thread);
+  const turnOrder = threadTurnOrder(thread);
 
-  const mergedItems = mergeItems(items, liveItems.filter((item) => item.type !== "taskComplete"));
+  const mergedItems = mergeItems(items, liveItems.filter((item) => item.type !== "taskComplete"), turnOrder);
 
   return {
     id: thread.id,
@@ -477,6 +478,16 @@ function threadItems(thread) {
   return items;
 }
 
+function threadTurnOrder(thread) {
+  const order = new Map();
+  for (const [index, turn] of (thread.turns ?? []).entries()) {
+    if (turn.id) {
+      order.set(turn.id, index);
+    }
+  }
+  return order;
+}
+
 function latestAgentMessageTextFromItems(items = []) {
   for (const item of items.slice().reverse()) {
     const text = typeof item.text === "string" ? item.text.trim() : "";
@@ -497,7 +508,7 @@ function codexAppServerCapabilities() {
   };
 }
 
-function mergeItems(historyItems, liveItems) {
+function mergeItems(historyItems, liveItems, turnOrder = new Map()) {
   const merged = new Map();
   const signatures = new Set();
   for (const item of historyItems) {
@@ -512,11 +523,38 @@ function mergeItems(historyItems, liveItems) {
     merged.set(item.id, item);
     signatures.add(signature);
   }
-  return Array.from(merged.values());
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftTurn = turnOrder.has(left.turnId) ? turnOrder.get(left.turnId) : Number.MAX_SAFE_INTEGER;
+    const rightTurn = turnOrder.has(right.turnId) ? turnOrder.get(right.turnId) : Number.MAX_SAFE_INTEGER;
+    if (leftTurn !== rightTurn) {
+      return leftTurn - rightTurn;
+    }
+    return itemDisplayRank(left) - itemDisplayRank(right);
+  });
 }
 
 function itemSignature(item) {
   return `${item.turnId}|${item.type}|${item.text}`;
+}
+
+function itemDisplayRank(item) {
+  switch (item.type) {
+    case "userMessage":
+      return 0;
+    case "reasoning":
+    case "plan":
+    case "commandExecution":
+    case "fileChange":
+    case "mcpToolCall":
+    case "dynamicToolCall":
+    case "webSearch":
+    case "warning":
+      return 1;
+    case "agentMessage":
+      return 2;
+    default:
+      return 3;
+  }
 }
 
 export async function readCodexRolloutDetail(thread, readError) {
