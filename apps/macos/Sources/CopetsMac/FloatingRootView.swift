@@ -6,7 +6,6 @@ struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
-    @AppStorage("floatingPanelTransparency", store: CopetsAppEnvironment.userDefaults) private var panelTransparency = 0.45
     @Namespace private var taskNavigationNamespace
     @StateObject private var newSessionPanel = NewSessionPanelController()
     @State private var isShowingActionMenu = false
@@ -23,14 +22,16 @@ struct FloatingRootView: View {
             VStack(alignment: .leading, spacing: 14) {
                 if let selectedSession = backendClient.selectedSession {
                     DetailView(namespace: taskNavigationNamespace, sessionId: selectedSession.id)
-                        .transition(.asymmetric(
-                            insertion: .scale(scale: 0.94, anchor: .center).combined(with: .opacity),
-                            removal: .scale(scale: 0.98, anchor: .center).combined(with: .opacity)
-                        ))
+                        .transition(.opacity)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         if backendClient.isOnline {
-                            sessionListView
+                            if backendClient.sessions.isEmpty {
+                                ReadyEmptyView()
+                                    .measureListHeight(.cards)
+                            } else {
+                                sessionListView
+                            }
                         } else {
                             OfflineView(error: backendClient.lastError)
                                 .measureListHeight(.cards)
@@ -70,7 +71,7 @@ struct FloatingRootView: View {
                 .zIndex(3)
         }
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: backendClient.selectedSession?.id)
+        .animation(.easeOut(duration: 0.16), value: backendClient.selectedSession?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: newSessionPanel.isPresented)
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -92,7 +93,7 @@ struct FloatingRootView: View {
     }
 
     private var glassStrength: Double {
-        max(0.2, 1.0 - panelTransparency)
+        0.55
     }
 
     private var sessionListView: some View {
@@ -362,7 +363,7 @@ private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.contentView.postsBoundsChangedNotifications = true
 
-        let hostingView = NSHostingView(rootView: content)
+        let hostingView = FirstMouseListHostingView(rootView: content)
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -393,6 +394,10 @@ private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
     }
 
     final class SessionListNSScrollView: NSScrollView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
         override func layout() {
             super.layout()
             updateVerticalScrollerVisibility()
@@ -407,6 +412,12 @@ private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
                 hasVerticalScroller = shouldShowScroller
             }
             verticalScroller?.isHidden = !shouldShowScroller
+        }
+    }
+
+    final class FirstMouseListHostingView<HostedContent: View>: NSHostingView<HostedContent> {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
         }
     }
 }
@@ -485,7 +496,7 @@ private final class NewSessionPanelController: NSObject, ObservableObject, NSWin
             x: parentFrame.midX - size.width / 2,
             y: max(80, parentFrame.midY - size.height / 2)
         )
-        let nextPanel = NSPanel(
+        let nextPanel = FloatingPanel(
             contentRect: NSRect(origin: origin, size: size),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
@@ -498,7 +509,7 @@ private final class NewSessionPanelController: NSObject, ObservableObject, NSWin
         nextPanel.backgroundColor = .clear
         nextPanel.hasShadow = true
         nextPanel.hidesOnDeactivate = false
-        nextPanel.isMovableByWindowBackground = true
+        nextPanel.isMovableByWindowBackground = false
         nextPanel.delegate = self
 
         let rootView = NewPtyAgentTaskSheet { [weak self] in
@@ -1167,11 +1178,13 @@ private struct SheetPanelBackground: View {
 private struct TaskCardView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
-    @AppStorage("floatingPanelTransparency", store: CopetsAppEnvironment.userDefaults) private var panelTransparency = 0.45
     @State private var quickReply = ""
     @State private var lastQuickReplyInteractionAt = Date.distantPast
     @State private var isRenaming = false
     @State private var isShowingUnboundHint = false
+    @State private var isHoveringCard = false
+    @State private var isHoveringPreviewBubble = false
+    @State private var hoverPreviewTask: Task<Void, Never>?
     @FocusState private var isQuickReplyFocused: Bool
 
     let session: TaskSession
@@ -1217,6 +1230,18 @@ private struct TaskCardView: View {
                 .foregroundStyle(CopetsPalette.cardPreviewText)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .popover(isPresented: hoverPreviewBinding, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+                    if let replyPreviewText {
+                        SessionReplyHoverBubble(text: replyPreviewText)
+                            .padding(4)
+                            .onHover { hovering in
+                                isHoveringPreviewBubble = hovering
+                                if !hovering {
+                                    hideHoverPreviewImmediately()
+                                }
+                            }
+                    }
+                }
 
             HStack(spacing: 10) {
                 Text(session.agent)
@@ -1306,6 +1331,9 @@ private struct TaskCardView: View {
                 .strokeBorder(Color.white.opacity(cardStrokeOpacity), lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onHover { hovering in
+            handleCardHover(hovering)
+        }
         .onTapGesture {
             if Date().timeIntervalSince(lastQuickReplyInteractionAt) > 0.25 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
@@ -1388,7 +1416,7 @@ private struct TaskCardView: View {
     }
 
     private var glassStrength: Double {
-        max(0.2, 1.0 - panelTransparency)
+        0.55
     }
 
     private var cardFillOpacity: Double {
@@ -1413,6 +1441,23 @@ private struct TaskCardView: View {
                 ? NSColor(calibratedWhite: 0.12, alpha: 0.92)
                 : NSColor(calibratedWhite: 1.0, alpha: 0.88)
         })
+    }
+
+    private var replyPreviewText: String? {
+        let trimmed = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var hoverPreviewBinding: Binding<Bool> {
+        Binding(
+            get: { isHoveringCard && replyPreviewText != nil },
+            set: { visible in
+                if !visible {
+                    isHoveringCard = false
+                    isHoveringPreviewBubble = false
+                }
+            }
+        )
     }
 
     private var connectionIndicatorHelp: String {
@@ -1478,6 +1523,47 @@ private struct TaskCardView: View {
         }
     }
 
+    private func handleCardHover(_ hovering: Bool) {
+        hoverPreviewTask?.cancel()
+        hoverPreviewTask = nil
+
+        if hovering {
+            hoverPreviewTask = Task {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else {
+                    return
+                }
+                await MainActor.run {
+                    isHoveringCard = true
+                }
+            }
+        } else {
+            scheduleHoverPreviewClose()
+        }
+    }
+
+    private func scheduleHoverPreviewClose() {
+        hoverPreviewTask?.cancel()
+        hoverPreviewTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+            await MainActor.run {
+                if !isHoveringPreviewBubble {
+                    isHoveringCard = false
+                }
+            }
+        }
+    }
+
+    private func hideHoverPreviewImmediately() {
+        hoverPreviewTask?.cancel()
+        hoverPreviewTask = nil
+        isHoveringPreviewBubble = false
+        isHoveringCard = false
+    }
+
     private func relativeTime(_ value: String) -> String {
         let formatter = ISO8601DateFormatter()
         guard let date = formatter.date(from: value) else {
@@ -1493,6 +1579,38 @@ private struct TaskCardView: View {
             return "\(minutes)m ago"
         }
         return "\(minutes / 60)h ago"
+    }
+}
+
+private struct SessionReplyHoverBubble: View {
+    let text: String
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CopetsPalette.primaryText)
+                .lineSpacing(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+        }
+        .frame(width: 248)
+        .frame(maxHeight: 82)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.regularMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(CopetsPalette.glassVeilFocused.opacity(0.52))
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.24), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.16), radius: 10, y: 5)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 
@@ -1645,6 +1763,9 @@ private struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @State private var message = ""
+    @State private var shouldRenderMessages = false
+    @State private var didInitialScroll = false
+    @State private var visibleMessageLimit = 100
     let namespace: Namespace.ID
     let sessionId: String
 
@@ -1664,35 +1785,27 @@ private struct DetailView: View {
             } else if let detail = backendClient.selectedDetail {
                 ThreadMetaView(detail: detail)
 
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(detail.items) { item in
-                                ThreadItemView(item: item)
-                                    .id(item.id)
-                                    .measureLastMessageHeight(isLast: item.id == detail.items.last?.id)
-                            }
-                        }
-                        .padding(.bottom, 4)
-                    }
-                    .onAppear {
-                        scrollToLatest(detail: detail, proxy: proxy)
-                        if detail.items.isEmpty {
-                            panelLayoutState.updateDetailLastMessageHeight(nil)
-                        }
-                    }
-                    .onChange(of: detail.items.last?.id) { _, _ in
-                        scrollToLatest(detail: detail, proxy: proxy)
-                        if detail.items.isEmpty {
-                            panelLayoutState.updateDetailLastMessageHeight(nil)
-                        }
-                    }
-                    .onPreferenceChange(LastMessageHeightPreferenceKey.self) { height in
-                        panelLayoutState.updateDetailLastMessageHeight(height > 0 ? height : nil)
+                Group {
+                    if shouldRenderMessages {
+                        detailMessages(detail)
+                    } else {
+                        DetailMessagesPlaceholder()
                     }
                 }
-            } else {
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
+            } else if backendClient.selectedDetail == nil,
+                      backendClient.isLoadingDetail == false,
+                      backendClient.lastError != nil {
                 OfflineView(error: backendClient.lastError ?? "No detail is available for this task.")
+            } else {
+                VStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    DetailMessagesPlaceholder()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
             if let sendStatusMessage = backendClient.sendStatusMessage,
@@ -1713,23 +1826,116 @@ private struct DetailView: View {
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.white.opacity(0.001))
-                .matchedGeometryEffect(id: "task-card-\(sessionId)", in: namespace)
         )
         .onDisappear {
             panelLayoutState.updateDetailLastMessageHeight(nil)
         }
+        .onAppear {
+            scheduleMessageRender()
+        }
+        .onChange(of: sessionId) { _, _ in
+            shouldRenderMessages = false
+            didInitialScroll = false
+            visibleMessageLimit = 100
+            scheduleMessageRender()
+        }
     }
 
-    private func scrollToLatest(detail: CodexThreadDetail, proxy: ScrollViewProxy) {
-        guard let lastItem = detail.items.last else {
+    private func scheduleMessageRender() {
+        shouldRenderMessages = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
+            guard backendClient.selectedSession?.id == sessionId else {
+                return
+            }
+            didInitialScroll = false
+            shouldRenderMessages = true
+        }
+    }
+
+    @ViewBuilder
+    private func detailMessages(_ detail: CodexThreadDetail) -> some View {
+        let visibleItems = visibleItems(for: detail)
+        let hiddenCount = max(0, detail.items.count - visibleItems.count)
+
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if hiddenCount > 0 {
+                        Button {
+                            visibleMessageLimit += 100
+                        } label: {
+                            Label("Load \(min(100, hiddenCount)) earlier messages", systemImage: "arrow.up.circle")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(CopetsPalette.secondaryText)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+
+                    ForEach(visibleItems) { item in
+                        ThreadItemView(item: item)
+                            .id(item.id)
+                            .measureLastMessageHeight(isLast: item.id == visibleItems.last?.id)
+                    }
+
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomScrollAnchorId)
+                }
+                .padding(.bottom, 4)
+            }
+            .defaultScrollAnchor(.bottom)
+            .onAppear {
+                scrollToLatestAfterLayout(detail: detail, proxy: proxy)
+                if detail.items.isEmpty {
+                    panelLayoutState.updateDetailLastMessageHeight(nil)
+                }
+            }
+            .onChange(of: detail.items.last?.id) { _, _ in
+                scrollToLatestAfterLayout(detail: detail, proxy: proxy)
+                if detail.items.isEmpty {
+                    panelLayoutState.updateDetailLastMessageHeight(nil)
+                }
+            }
+            .onPreferenceChange(LastMessageHeightPreferenceKey.self) { height in
+                panelLayoutState.updateDetailLastMessageHeight(height > 0 ? height : nil)
+            }
+        }
+    }
+
+    private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy) {
+        guard !visibleItems(for: detail).isEmpty else {
             return
         }
 
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(lastItem.id, anchor: .bottom)
+        let delays: [TimeInterval] = didInitialScroll ? [0.0, 0.08] : [0.0, 0.08, 0.22]
+        didInitialScroll = true
+
+        for delay in delays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard backendClient.selectedSession?.id == sessionId else {
+                    return
+                }
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) {
+                    proxy.scrollTo(bottomScrollAnchorId, anchor: .bottom)
+                }
             }
         }
+    }
+
+    private var bottomScrollAnchorId: String {
+        "\(sessionId)-bottom-anchor"
+    }
+
+    private func visibleItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
+        guard detail.items.count > visibleMessageLimit else {
+            return detail.items
+        }
+        return Array(detail.items.suffix(visibleMessageLimit))
     }
 }
 
@@ -1739,7 +1945,7 @@ private struct DetailHeaderView: View {
     var body: some View {
         HStack(spacing: 10) {
             Button {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                withAnimation(.easeOut(duration: 0.16)) {
                     backendClient.closeDetail()
                 }
             } label: {
@@ -1799,6 +2005,23 @@ private struct DetailHeaderView: View {
             .buttonStyle(IconButtonStyle())
             .help("Refresh thread")
         }
+    }
+}
+
+private struct DetailMessagesPlaceholder: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(0..<2, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(CopetsPalette.primaryText.opacity(index == 1 ? 0.08 : 0.12))
+                    .frame(height: index == 1 ? 42 : 26)
+                    .frame(maxWidth: index == 1 ? 260 : .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+        .redacted(reason: .placeholder)
+        .allowsHitTesting(false)
     }
 }
 
@@ -1977,7 +2200,7 @@ private struct ThreadItemView: View {
             }
 
             if !item.text.isEmpty {
-                Text(item.text)
+                Text(markdownText)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(CopetsPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2042,6 +2265,11 @@ private struct ThreadItemView: View {
         }
     }
 
+    private var markdownText: AttributedString {
+        (try? AttributedString(markdown: item.text, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(item.text)
+    }
+
     private var approvalOptions: [CodexApprovalOption] {
         if let options = item.options, !options.isEmpty {
             return options
@@ -2100,13 +2328,17 @@ private struct MessageComposer: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            TextField("Send a instruction", text: $message, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .lineLimit(1...3)
-                .focused($isFocused)
+            ChatInputTextView(
+                text: $message,
+                placeholder: "Send a instruction",
+                font: .systemFont(ofSize: 12, weight: .medium),
+                isEditable: backendClient.selectedDetail?.canSend != false,
+                onFocusChange: { isFocused = $0 },
+                onSubmit: send
+            )
+                .frame(height: 36)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.vertical, 4)
                 .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -2115,9 +2347,6 @@ private struct MessageComposer: View {
                 .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
                 .onTapGesture {
                     isFocused = true
-                }
-                .onSubmit {
-                    send()
                 }
                 .disabled(backendClient.selectedDetail?.canSend == false)
 
@@ -2321,6 +2550,139 @@ private struct CodexModelMenu: View {
     }
 }
 
+struct ChatInputTextView: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let font: NSFont
+    var isEditable = true
+    var autoFocus = false
+    var onFocusChange: (Bool) -> Void = { _ in }
+    let onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+
+        let textView = SubmitTextView()
+        textView.delegate = context.coordinator
+        textView.onSubmit = onSubmit
+        textView.onFocusChange = onFocusChange
+        textView.placeholder = placeholder
+        textView.font = font
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.isEditable = isEditable
+        textView.isSelectable = true
+        textView.textContainerInset = NSSize(width: 0, height: 5)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.autoresizingMask = [.width]
+        textView.string = text
+
+        scrollView.documentView = textView
+        context.coordinator.textView = textView
+
+        if autoFocus {
+            DispatchQueue.main.async {
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
+
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? SubmitTextView else {
+            return
+        }
+        textView.onSubmit = onSubmit
+        textView.onFocusChange = onFocusChange
+        textView.placeholder = placeholder
+        textView.font = font
+        textView.isEditable = isEditable
+        if textView.string != text {
+            textView.string = text
+        }
+        if autoFocus, textView.window?.firstResponder !== textView {
+            DispatchQueue.main.async {
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        @Binding var text: String
+        weak var textView: SubmitTextView?
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else {
+                return
+            }
+            text = textView.string
+        }
+    }
+
+    final class SubmitTextView: NSTextView {
+        var onSubmit: (() -> Void)?
+        var onFocusChange: ((Bool) -> Void)?
+        var placeholder = "" {
+            didSet {
+                needsDisplay = true
+            }
+        }
+
+        override func keyDown(with event: NSEvent) {
+            let isReturn = event.keyCode == 36 || event.keyCode == 76
+            let wantsNewline = event.modifierFlags.contains(.shift)
+            if isReturn && !wantsNewline {
+                onSubmit?()
+                return
+            }
+            super.keyDown(with: event)
+        }
+
+        override func becomeFirstResponder() -> Bool {
+            let result = super.becomeFirstResponder()
+            if result {
+                onFocusChange?(true)
+            }
+            return result
+        }
+
+        override func resignFirstResponder() -> Bool {
+            let result = super.resignFirstResponder()
+            if result {
+                onFocusChange?(false)
+            }
+            return result
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            guard string.isEmpty, !placeholder.isEmpty else {
+                return
+            }
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+            let origin = NSPoint(x: textContainerInset.width, y: textContainerInset.height)
+            placeholder.draw(at: origin, withAttributes: attributes)
+        }
+    }
+}
+
 private struct QuickReplyField: View {
     @Binding var text: String
     var isFocused: FocusState<Bool>.Binding
@@ -2331,15 +2693,21 @@ private struct QuickReplyField: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, weight: .medium))
-                .focused(isFocused)
+            ChatInputTextView(
+                text: $text,
+                placeholder: placeholder,
+                font: .systemFont(ofSize: 11, weight: .medium),
+                onFocusChange: { focused in
+                    isFocused.wrappedValue = focused
+                    if focused {
+                        onInteract()
+                    }
+                },
+                onSubmit: sendIfPossible
+            )
+                .frame(height: 28)
                 .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .onSubmit {
-                    sendIfPossible()
-                }
+                .padding(.vertical, 3)
 
             Button {
                 sendIfPossible()
@@ -2413,6 +2781,23 @@ private struct OfflineView: View {
             Text("Backend offline")
                 .font(.system(size: 15, weight: .semibold))
             Text(error ?? "Start the Node.js runtime to see agent tasks.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CopetsPalette.secondaryText)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ReadyEmptyView: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(CopetsPalette.connected)
+            Text("Backend ready")
+                .font(.system(size: 15, weight: .semibold))
+            Text("Click the + button in the lower-left corner to create a session.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(CopetsPalette.secondaryText)
                 .multilineTextAlignment(.center)

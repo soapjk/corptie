@@ -81,7 +81,8 @@ export class CopetsStore {
       dataDir: this.dataDir,
       dbPath: this.dbPath,
       legacyDbPath,
-      choiceParser: this.choiceParserSettings()
+      choiceParser: this.choiceParserSettings(),
+      agentProxy: this.agentProxySettings()
     };
   }
 
@@ -90,12 +91,21 @@ export class CopetsStore {
     return normalizeChoiceParserSettings(configured);
   }
 
+  agentProxySettings() {
+    const configured = this.config.agentProxy ?? {};
+    return normalizeAgentProxySettings(configured);
+  }
+
   async updateSettings(input = {}) {
     if (typeof input.dataDir === "string" && input.dataDir.trim()) {
       await this.setDataDirectory(input.dataDir);
     }
     if (input.choiceParser && typeof input.choiceParser === "object") {
       this.config.choiceParser = normalizeChoiceParserSettings(input.choiceParser);
+      await this.writeConfig();
+    }
+    if (input.agentProxy && typeof input.agentProxy === "object") {
+      this.config.agentProxy = normalizeAgentProxySettings(input.agentProxy);
       await this.writeConfig();
     }
     return this.settings();
@@ -495,9 +505,10 @@ export class CopetsStore {
 }
 
 function normalizeChoiceParserSettings(input = {}) {
-  const provider = ["disabled", "openai", "local-agent"].includes(input.provider) ? input.provider : "disabled";
+  const provider = ["disabled", "openai", "local-agent"].includes(input.provider) ? input.provider : "local-agent";
   return {
     provider,
+    openaiBaseURL: normalizeOpenAiCompatibleBaseURL(input.openaiBaseURL),
     openaiApiKey: typeof input.openaiApiKey === "string" ? input.openaiApiKey : "",
     openaiModel: typeof input.openaiModel === "string" && input.openaiModel.trim() ? input.openaiModel.trim() : "gpt-4o-mini",
     localCommand: typeof input.localCommand === "string" && input.localCommand.trim() ? input.localCommand.trim() : "codex",
@@ -505,6 +516,40 @@ function normalizeChoiceParserSettings(input = {}) {
     localModel: typeof input.localModel === "string" ? input.localModel : "",
     timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Math.max(1000, Math.min(60000, Number(input.timeoutMs))) : 12000
   };
+}
+
+function normalizeOpenAiCompatibleBaseURL(value) {
+  const raw = typeof value === "string" && value.trim()
+    ? value.trim()
+    : "https://api.openai.com/v1";
+  return raw.replace(/\/+$/, "");
+}
+
+function normalizeAgentProxySettings(input = {}) {
+  return {
+    codex: normalizeProxyProfile(input.codex),
+    choiceParser: normalizeProxyProfile(input.choiceParser),
+    pty: normalizeProxyProfile(input.pty)
+  };
+}
+
+function normalizeProxyProfile(input = {}) {
+  return {
+    enabled: input.enabled === true,
+    httpProxy: normalizeProxyValue(input.httpProxy),
+    httpsProxy: normalizeProxyValue(input.httpsProxy),
+    allProxy: normalizeProxyValue(input.allProxy),
+    noProxy: normalizeNoProxyValue(input.noProxy)
+  };
+}
+
+function normalizeProxyValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeNoProxyValue(value) {
+  const fallback = "localhost,127.0.0.1,::1,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16";
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
 function toSessionSummary(session) {
@@ -772,10 +817,12 @@ function canonicalCodexItems(sessionId, session) {
     }
     const role = eventType === "user_message" ? "user" : "assistant";
     const key = `${role}:${text}`;
-    if (seen.has(key)) {
-      continue;
+    if (role === "assistant") {
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
     }
-    seen.add(key);
     items.push({
       id: `${sessionId}:rollout:${index}`,
       turnId: payload.turn_id ?? sessionId,

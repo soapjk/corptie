@@ -210,6 +210,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable {
     let text: String
     let options: [CodexApprovalOption]?
     let status: String?
+    let createdAt: String?
 }
 
 struct CodexApprovalOption: Identifiable, Codable, Equatable {
@@ -246,10 +247,12 @@ struct BackendSettings: Codable, Equatable {
     let dbPath: String
     let legacyDbPath: String?
     let choiceParser: ChoiceParserSettings?
+    let agentProxy: AgentProxySettings?
 }
 
 struct ChoiceParserSettings: Codable, Equatable {
     var provider: String
+    var openaiBaseURL: String
     var openaiApiKey: String
     var openaiModel: String
     var localCommand: String
@@ -258,12 +261,109 @@ struct ChoiceParserSettings: Codable, Equatable {
     var timeoutMs: Int
 
     static let defaults = ChoiceParserSettings(
-        provider: "disabled",
+        provider: "local-agent",
+        openaiBaseURL: "https://api.openai.com/v1",
         openaiApiKey: "",
         openaiModel: "gpt-4o-mini",
         localCommand: "codex",
         localArgs: "",
         localModel: "",
         timeoutMs: 12000
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case openaiBaseURL
+        case openaiApiKey
+        case openaiModel
+        case localCommand
+        case localArgs
+        case localModel
+        case timeoutMs
+    }
+
+    init(
+        provider: String,
+        openaiBaseURL: String,
+        openaiApiKey: String,
+        openaiModel: String,
+        localCommand: String,
+        localArgs: String,
+        localModel: String,
+        timeoutMs: Int
+    ) {
+        self.provider = provider
+        self.openaiBaseURL = openaiBaseURL
+        self.openaiApiKey = openaiApiKey
+        self.openaiModel = openaiModel
+        self.localCommand = localCommand
+        self.localArgs = localArgs
+        self.localModel = localModel
+        self.timeoutMs = timeoutMs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? Self.defaults.provider
+        openaiBaseURL = try container.decodeIfPresent(String.self, forKey: .openaiBaseURL) ?? Self.defaults.openaiBaseURL
+        openaiApiKey = try container.decodeIfPresent(String.self, forKey: .openaiApiKey) ?? Self.defaults.openaiApiKey
+        openaiModel = try container.decodeIfPresent(String.self, forKey: .openaiModel) ?? Self.defaults.openaiModel
+        localCommand = try container.decodeIfPresent(String.self, forKey: .localCommand) ?? Self.defaults.localCommand
+        localArgs = try container.decodeIfPresent(String.self, forKey: .localArgs) ?? Self.defaults.localArgs
+        localModel = try container.decodeIfPresent(String.self, forKey: .localModel) ?? Self.defaults.localModel
+        timeoutMs = try container.decodeIfPresent(Int.self, forKey: .timeoutMs) ?? Self.defaults.timeoutMs
+    }
+}
+
+struct ChoiceParserTestResponse: Decodable {
+    let ok: Bool
+    let error: String?
+    let durationMs: Int?
+}
+
+struct AgentProxySettings: Codable, Equatable {
+    var codex: AgentProxyProfile
+    var choiceParser: AgentProxyProfile
+    var pty: AgentProxyProfile
+
+    static let defaults = AgentProxySettings(
+        codex: .defaults,
+        choiceParser: .defaults,
+        pty: .defaults
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case codex
+        case choiceParser
+        case pty
+    }
+
+    init(codex: AgentProxyProfile, choiceParser: AgentProxyProfile, pty: AgentProxyProfile) {
+        self.codex = codex
+        self.choiceParser = choiceParser
+        self.pty = pty
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        codex = try container.decodeIfPresent(AgentProxyProfile.self, forKey: .codex) ?? .defaults
+        choiceParser = try container.decodeIfPresent(AgentProxyProfile.self, forKey: .choiceParser) ?? .defaults
+        pty = try container.decodeIfPresent(AgentProxyProfile.self, forKey: .pty) ?? .defaults
+    }
+}
+
+struct AgentProxyProfile: Codable, Equatable {
+    var enabled: Bool
+    var httpProxy: String
+    var httpsProxy: String
+    var allProxy: String
+    var noProxy: String
+
+    static let defaults = AgentProxyProfile(
+        enabled: false,
+        httpProxy: "",
+        httpsProxy: "",
+        allProxy: "",
+        noProxy: "localhost,127.0.0.1,::1,.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
     )
 }

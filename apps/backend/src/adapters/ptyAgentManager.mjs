@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
 import os from "node:os";
 import { promisify } from "node:util";
 import * as pty from "node-pty";
 
 const ansiPattern = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const execFileAsync = promisify(execFile);
+const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
 
 export class PtyAgentManager {
   constructor(options = {}) {
@@ -17,6 +18,8 @@ export class PtyAgentManager {
     this.maxItems = options.maxItems ?? 240;
     this.cols = options.cols ?? 100;
     this.rows = options.rows ?? 28;
+    this.detailSubscribers = new Map();
+    this.detailEmitTimers = new Map();
   }
 
   start(input = {}) {
@@ -63,6 +66,8 @@ export class PtyAgentManager {
       screenText: "",
       pendingChoice: null,
       choiceSignature: "",
+      choiceParseInputSignature: "",
+      choiceParseInputAt: 0,
       items: Array.isArray(input.items) ? input.items.slice(-this.maxItems) : []
     };
 
@@ -73,6 +78,7 @@ export class PtyAgentManager {
       cwd,
       env: {
         ...sanitizeEnv(process.env, provider),
+        ...proxyEnvForAgent(this.settingsProvider?.()?.agentProxy, provider === "codex-pty" ? "codex" : "pty"),
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
         COPETS_PTY: "1"
@@ -133,18 +139,27 @@ export class PtyAgentManager {
     return this.sessions.get(id) ?? null;
   }
 
-  detail(id) {
+  detail(id, options = {}) {
     const session = this.get(id);
     if (!session) {
       const reconnected = this.reconnect(id);
       if (reconnected) {
-        return this.detail(id);
+        return this.detail(id, options);
       }
       return this.store?.getDetail(id) ?? null;
     }
-    this.flushBufferedOutput(session, { force: true });
+    if (options.flush !== false) {
+      this.flushBufferedOutput(session, { force: true });
+    }
+    return this.toDetail(session);
+  }
 
+  toDetail(session) {
     const canonicalItems = canonicalCodexItems(session, this.maxItems);
+    const items = withLiveOutputItem(
+      canonicalItems ?? visibleItems(session.items, session.provider).slice(-this.maxItems),
+      session
+    ).slice(-this.maxItems);
 
     return {
       id: session.id,
@@ -179,8 +194,36 @@ export class PtyAgentManager {
       canSend: session.status === "running",
       sendUnavailableReason: session.status === "running" ? null : "This terminal process has exited.",
       turnCount: 1,
-      items: canonicalItems ?? visibleItems(session.items, session.provider).slice(-this.maxItems)
+      items
     };
+  }
+
+  subscribeDetail(id, response) {
+    const session = this.get(id) ?? this.ensureReconnected(id);
+    if (!session) {
+      return false;
+    }
+    response.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no"
+    });
+    response.write("retry: 1000\n\n");
+    let subscribers = this.detailSubscribers.get(id);
+    if (!subscribers) {
+      subscribers = new Set();
+      this.detailSubscribers.set(id, subscribers);
+    }
+    subscribers.add(response);
+    this.writeDetailEvent(response, session);
+    response.on("close", () => {
+      subscribers.delete(response);
+      if (subscribers.size === 0) {
+        this.detailSubscribers.delete(id);
+      }
+    });
+    return true;
   }
 
   reconnect(id) {
@@ -204,7 +247,7 @@ export class PtyAgentManager {
     if (!agentSessionId) {
       return null;
     }
-    const command = resume.command || raw.command || process.env.COPETS_CODEX_REAL_PATH || "codex";
+    const command = resume.command || raw.command || defaultCodexCommand();
     const args = Array.isArray(resume.args) && resume.args.length > 0
       ? resume.args
       : defaultCodexResumeArgs(stored.external?.cwd);
@@ -460,6 +503,8 @@ export class PtyAgentManager {
     session.phase = "input_sent";
     session.pendingChoice = null;
     session.choiceSignature = "";
+    session.choiceParseInputSignature = "";
+    session.choiceParseInputAt = 0;
     this.markPendingChoiceItemsSelected(session, optionIndex);
     this.persistSession(session);
     return this.toSessionSummary(session);
@@ -634,8 +679,17 @@ export class PtyAgentManager {
   }
 
   scheduleChoiceParse(session) {
+    if (shouldSuppressChoiceParser(session)) {
+      if (process.env.COPETS_CHOICE_PARSER_DEBUG === "1") {
+        logChoiceParser("skip", session, { reason: "codex-approval-active" });
+      }
+      return;
+    }
     const choiceContext = buildChoiceContext(session.screenText ?? "");
     if (!choiceContext || !possibleChoiceStage(choiceContext.text)) {
+      if (process.env.COPETS_CHOICE_PARSER_DEBUG === "1") {
+        logChoiceParser("skip", session, { reason: choiceContext ? "not-choice-stage" : "no-choice-context" });
+      }
       return;
     }
     const existing = this.choiceParseTimers.get(session.id);
@@ -650,7 +704,7 @@ export class PtyAgentManager {
   }
 
   async parseChoiceStage(session) {
-    if (session.status !== "running") {
+    if (session.status !== "running" || shouldSuppressChoiceParser(session)) {
       return;
     }
     const choiceContext = buildChoiceContext(session.screenText ?? "");
@@ -658,10 +712,29 @@ export class PtyAgentManager {
       return;
     }
     const screenText = choiceContext.text;
+    const inputSignature = choiceInputSignature(screenText);
+    const nowMs = Date.now();
+    if (inputSignature === session.choiceParseInputSignature && nowMs - (session.choiceParseInputAt ?? 0) < 10000) {
+      return;
+    }
+    session.choiceParseInputSignature = inputSignature;
+    session.choiceParseInputAt = nowMs;
     const settings = this.settingsProvider?.() ?? {};
-    const parsed = await parseChoiceStageWithConfiguredParser(screenText, settings.choiceParser).catch(() => null)
-      ?? parseChoiceStageWithRules(screenText);
+    const configuredParserSettings = {
+      ...(settings.choiceParser ?? {}),
+      agentProxy: settings.agentProxy
+    };
+    const configured = await parseChoiceStageWithConfiguredParser(screenText, configuredParserSettings, session).catch((error) => {
+      logChoiceParser("configured-error", session, { error: error.message });
+      return null;
+    });
+    const parsed = configured ?? parseChoiceStageWithRules(screenText);
     if (!parsed || parsed.options.length < 2 || parsed.confidence < 0.45) {
+      logChoiceParser("rejected", session, {
+        source: parsed?.source ?? "none",
+        options: parsed?.options?.length ?? 0,
+        confidence: parsed?.confidence ?? 0
+      });
       return;
     }
     const options = parsed.options.slice(0, 6).map((option, index) => ({
@@ -683,6 +756,12 @@ export class PtyAgentManager {
       source: parsed.source,
       updatedAt: new Date().toISOString()
     };
+    logChoiceParser("accepted", session, {
+      source: parsed.source,
+      options: options.length,
+      confidence: parsed.confidence,
+      prompt: previewText(session.pendingChoice.prompt)
+    });
     this.upsertPendingChoiceItem(session);
     this.persistSession(session);
   }
@@ -792,6 +871,35 @@ export class PtyAgentManager {
 
   persistSession(session) {
     this.store?.upsertSession(session);
+    this.scheduleDetailEmit(session);
+  }
+
+  scheduleDetailEmit(session) {
+    if (!this.detailSubscribers.has(session.id) || this.detailEmitTimers.has(session.id)) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.detailEmitTimers.delete(session.id);
+      this.emitDetail(session);
+    }, 80);
+    timer.unref?.();
+    this.detailEmitTimers.set(session.id, timer);
+  }
+
+  emitDetail(session) {
+    const subscribers = this.detailSubscribers.get(session.id);
+    if (!subscribers?.size) {
+      return;
+    }
+    for (const response of subscribers) {
+      this.writeDetailEvent(response, session);
+    }
+  }
+
+  writeDetailEvent(response, session) {
+    const detail = this.toDetail(session);
+    response.write(`event: detail\n`);
+    response.write(`data: ${JSON.stringify({ thread: detail })}\n\n`);
   }
 
   trim(session) {
@@ -930,6 +1038,9 @@ function displayStatusForSession(session) {
   if (hasPendingCodexInput(session)) {
     return "running";
   }
+  if (hasLiveStreamingOutput(session)) {
+    return "running";
+  }
   if (hasFinalCodexAnswer(session)) {
     return "blocked";
   }
@@ -977,6 +1088,9 @@ function activityStatusForSession(session) {
   if (hasPendingCodexInput(session)) {
     return "Waiting for Codex";
   }
+  if (hasLiveStreamingOutput(session)) {
+    return "Receiving reply";
+  }
   if (hasFinalCodexAnswer(session) || isWaitingForUser(session.phase)) {
     return "Ready";
   }
@@ -1014,6 +1128,28 @@ function sanitizeEnv(env, provider) {
     next.COPETS_MANAGED_CODEX = "1";
   }
   return next;
+}
+
+function proxyEnvForAgent(agentProxy = {}, agentKey = "") {
+  const profile = agentProxy?.[agentKey];
+  if (!profile?.enabled) {
+    return {};
+  }
+
+  const env = {};
+  setProxyEnvPair(env, "HTTP_PROXY", profile.httpProxy);
+  setProxyEnvPair(env, "HTTPS_PROXY", profile.httpsProxy);
+  setProxyEnvPair(env, "ALL_PROXY", profile.allProxy);
+  setProxyEnvPair(env, "NO_PROXY", profile.noProxy);
+  return env;
+}
+
+function setProxyEnvPair(env, key, value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return;
+  }
+  env[key] = value.trim();
+  env[key.toLowerCase()] = value.trim();
 }
 
 function stripAnsi(text) {
@@ -1158,7 +1294,117 @@ function visibleItems(items, provider = "") {
     .filter((item) => !isCodexNoise(item.text ?? ""))
     .filter((item) => !(provider === "codex-pty" && item.type === "userMessage" && item.status !== "sent"))
     .map((item) => normalizeVisibleItem(item, provider));
-  return cleanReplayItems(dedupeAdjacentUserEchoes(visible), provider);
+  const cleaned = cleanReplayItems(dedupeAdjacentUserEchoes(visible), provider);
+  return provider === "codex-pty" ? mergeReadableCodexItems(cleaned) : cleaned;
+}
+
+function withLiveOutputItem(items, session) {
+  const liveText = liveOutputText(session);
+  if (!liveText) {
+    return items;
+  }
+  const liveItem = {
+    id: `${session.id}:live-output`,
+    turnId: session.id,
+    turnStatus: "running",
+    type: "agentMessage",
+    title: session.provider === "codex-pty" ? "Codex" : "Agent",
+    text: liveText,
+    options: null,
+    status: "streaming",
+    createdAt: session.bufferUpdatedAt ?? session.updatedAt
+  };
+  const withoutPreviousLive = items.filter((item) => item.id !== liveItem.id);
+  return [...withoutPreviousLive, liveItem];
+}
+
+function mergeReadableCodexItems(items = []) {
+  const merged = [];
+  for (const item of items) {
+    const previous = merged.at(-1);
+    if (canMergeCodexDisplayItems(previous, item)) {
+      previous.title = "Codex";
+      previous.type = "agentMessage";
+      previous.text = mergeCodexText(previous.text, item.text);
+      previous.createdAt = item.createdAt ?? previous.createdAt;
+      previous.turnStatus = item.turnStatus ?? previous.turnStatus;
+      previous.status = item.status ?? previous.status;
+      continue;
+    }
+    merged.push({ ...item });
+  }
+  return merged;
+}
+
+function canMergeCodexDisplayItems(previous, item) {
+  if (!previous || !item) {
+    return false;
+  }
+  if (previous.turnId !== item.turnId) {
+    return false;
+  }
+  if (previous.options?.length || item.options?.length) {
+    return false;
+  }
+  if (!isMergeableCodexDisplayType(previous.type) || !isMergeableCodexDisplayType(item.type)) {
+    return false;
+  }
+  if (isToolStatusText(previous.text) && !isToolStatusText(item.text)) {
+    previous.title = "Codex";
+    previous.type = "agentMessage";
+  }
+  return true;
+}
+
+function isMergeableCodexDisplayType(type = "") {
+  return type === "agentMessage" || type === "terminalOutput" || type === "commandExecution";
+}
+
+function mergeCodexText(previous = "", next = "") {
+  const left = String(previous ?? "").trimEnd();
+  const right = String(next ?? "").trim();
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  if (left.endsWith(right)) {
+    return left;
+  }
+  return `${left}\n\n${right}`;
+}
+
+function isToolStatusText(text = "") {
+  return /^(running|exec|command|shell|bash|zsh|reading|searching|using)\b/i.test(String(text).trim());
+}
+
+function liveOutputText(session) {
+  if (session.status !== "running") {
+    return "";
+  }
+  const text = normalizeOutputText((session.buffer ?? "").trimEnd(), session.provider);
+  if (!text || isCodexNoise(text)) {
+    return "";
+  }
+  if (classifyOutput(text, session.provider) === "userMessage") {
+    return "";
+  }
+  if (isSubmittedEcho(session, text, text) || isKnownUserEcho(session, text)) {
+    return "";
+  }
+  return text;
+}
+
+function hasLiveStreamingOutput(session) {
+  if (session.status !== "running") {
+    return false;
+  }
+  if (liveOutputText(session)) {
+    return true;
+  }
+  const ageMs = session.lastOutputAt ? Date.now() - Date.parse(session.lastOutputAt) : Number.POSITIVE_INFINITY;
+  return session.provider === "codex-pty" && ageMs < 900 && session.phase !== "waiting_approval";
 }
 
 function canonicalCodexItems(session, maxItems) {
@@ -1176,11 +1422,13 @@ function canonicalCodexItems(session, maxItems) {
 
   const sentItems = session.items
     .filter((item) => item.type === "userMessage" && item.status === "sent")
-    .map((item) => ({
+    .map((item, sentIndex) => ({
       ...item,
+      sentIndex,
       normalizedText: normalizeUserText(item.text),
       createdAtMs: Date.parse(item.createdAt ?? "")
     }));
+  const matchedSentIndexes = new Set();
   const completedCallIds = new Set();
   const completedTurnIds = new Set();
   let latestTaskStartedTurnId = null;
@@ -1240,13 +1488,18 @@ function canonicalCodexItems(session, maxItems) {
     }
     const role = eventType === "user_message" ? "user" : "assistant";
     const key = `${role}:${text}`;
-    if (seen.has(key)) {
-      continue;
+    if (role === "assistant") {
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
     }
-    seen.add(key);
     const matchingSent = role === "user"
-      ? sentItems.find((item) => item.normalizedText === normalizeUserText(text) || normalizeUserText(text).includes(item.normalizedText))
+      ? matchingSentItemForText(sentItems, matchedSentIndexes, text)
       : null;
+    if (matchingSent) {
+      matchedSentIndexes.add(matchingSent.sentIndex);
+    }
     const contentOptions = role === "assistant" ? choiceOptionsFromAgentMessage(text) : null;
     items.push({
       id: `${session.id}:rollout:${index}`,
@@ -1266,10 +1519,6 @@ function canonicalCodexItems(session, maxItems) {
     return null;
   }
 
-  const canonicalUserTexts = items
-    .filter((item) => item.type === "userMessage")
-    .map((item) => normalizeUserText(item.text))
-    .filter(Boolean);
   const latestCanonicalSentMs = Math.max(
     0,
     ...items
@@ -1281,17 +1530,34 @@ function canonicalCodexItems(session, maxItems) {
     if (!item.normalizedText) {
       continue;
     }
-    const isAlreadyCovered = canonicalUserTexts.some((text) => text === item.normalizedText || text.includes(item.normalizedText) || item.normalizedText.includes(text));
+    const isAlreadyCovered = matchedSentIndexes.has(item.sentIndex);
     const isRecentPending = Number.isFinite(item.createdAtMs) && Date.now() - item.createdAtMs < 120_000;
     const isNewerThanCanonical = latestCanonicalSentMs > 0
       ? Number.isFinite(item.createdAtMs) && item.createdAtMs >= latestCanonicalSentMs
-      : isRecentPending;
-    if (!isAlreadyCovered && isNewerThanCanonical && isRecentPending) {
+      : true;
+    if (!isAlreadyCovered && (isNewerThanCanonical || isRecentPending)) {
       items.push(item);
     }
   }
 
-  return items.slice(-maxItems);
+  return mergeReadableCodexItems(items).slice(-maxItems);
+}
+
+function matchingSentItemForText(sentItems, matchedSentIndexes, text) {
+  const normalizedText = normalizeUserText(text);
+  if (!normalizedText) {
+    return null;
+  }
+  const exact = sentItems.find((item) => !matchedSentIndexes.has(item.sentIndex) && item.normalizedText === normalizedText);
+  if (exact) {
+    return exact;
+  }
+  return sentItems.find((item) => {
+    if (matchedSentIndexes.has(item.sentIndex) || !item.normalizedText) {
+      return false;
+    }
+    return normalizedText.includes(item.normalizedText) || item.normalizedText.includes(normalizedText);
+  }) ?? null;
 }
 
 function latestCodexAssistantText(session) {
@@ -1455,20 +1721,11 @@ function approvalItemFromFunctionCall(session, payload, index, completedCallIds,
   };
 }
 
+function shouldSuppressChoiceParser(session) {
+  return session.provider === "codex-pty" && hasPendingCodexApproval(session);
+}
+
 function codexApprovalOptions(session) {
-  if (Array.isArray(session.pendingChoice?.options) && session.pendingChoice.options.length >= 2) {
-    return session.pendingChoice.options;
-  }
-  const parsed = parseTerminalOptions(session.screenText ?? "");
-  if (parsed.options.length >= 2) {
-    return parsed.options.map((option) => ({
-      id: option.id,
-      label: option.label,
-      role: option.role,
-      index: option.index,
-      selected: option.index === parsed.selectedIndex
-    }));
-  }
   return [
     { id: "approve", label: "Approve", role: "approve", index: 0, selected: true },
     { id: "deny", label: "Deny", role: "deny", index: 1, selected: false }
@@ -1480,12 +1737,32 @@ function possibleChoiceStage(screenText = "") {
   if (!text) {
     return false;
   }
-  const parsed = parseTerminalOptions(text);
+  const parsed = parseTerminalOptions(choiceOptionBlockText(text));
   if (parsed.options.length >= 2) {
     return true;
   }
   return /(\?|是否|选择|请选择|approve|allow|deny|cancel|continue|proceed|run command|permission|approval|\[[yn]\/[yn]\])/i.test(text)
     && /(approve|allow|deny|cancel|yes|no|continue|proceed|run|拒绝|允许|继续|取消)/i.test(text);
+}
+
+function choiceParserShouldUseModel(screenText = "") {
+  const text = trimChoiceScreen(screenText);
+  if (!text || containsPendingUserInputRegion(text)) {
+    return false;
+  }
+  const lines = text
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const block = lastChoiceOptionBlock(lines);
+  if (block?.count >= 2) {
+    return true;
+  }
+  return lines.slice(-8).some((line) => isExplicitChoiceRequestLine(line));
+}
+
+function isExplicitChoiceRequestLine(line = "") {
+  return /你现在可以|现在可以|可以选择|请选择|选择一个|选择操作|回复选项|which option|choose (?:one|an option)|select (?:one|an option)|pick (?:one|an option)|approve|approval|permission|allow|deny/i.test(line);
 }
 
 function trimChoiceScreen(screenText = "") {
@@ -1515,14 +1792,10 @@ function buildChoiceContext(screenText = "") {
     return null;
   }
 
-  const optionLineIndexes = lines
-    .map((line, index) => looksLikeChoiceLine(line) ? index : -1)
-    .filter((index) => index >= 0);
-  if (optionLineIndexes.length >= 2) {
-    const first = optionLineIndexes[0];
-    const last = optionLineIndexes.at(-1);
+  const optionBlock = lastChoiceOptionBlock(lines);
+  if (optionBlock && optionBlock.count >= 2) {
     return {
-      text: lines.slice(Math.max(0, first - 4), Math.min(lines.length, last + 3)).join("\n"),
+      text: lines.slice(Math.max(0, optionBlock.start - 4), Math.min(lines.length, optionBlock.end + 3)).join("\n"),
       source: "option-lines"
     };
   }
@@ -1619,7 +1892,7 @@ function isChoiceAnchorLine(line = "") {
 }
 
 function parseChoiceStageWithRules(screenText = "") {
-  const parsed = parseTerminalOptions(screenText);
+  const parsed = parseTerminalOptions(choiceOptionBlockText(screenText));
   if (parsed.options.length < 2) {
     return null;
   }
@@ -1632,23 +1905,31 @@ function parseChoiceStageWithRules(screenText = "") {
   };
 }
 
-async function parseChoiceStageWithConfiguredParser(screenText = "", settings = {}) {
+export async function parseChoiceStageWithConfiguredParser(screenText = "", settings = {}, session = null) {
   if (!settings || settings.provider === "disabled" || process.env.COPETS_DISABLE_LLM_CHOICE_PARSER === "1") {
     return null;
   }
-  if (settings.provider === "local-agent") {
-    return parseChoiceStageWithLocalAgent(screenText, settings);
+  if (!choiceParserShouldUseModel(screenText)) {
+    logChoiceParser("configured-skip", session, { provider: settings.provider, reason: "weak-choice-context" });
+    return null;
   }
-  return parseChoiceStageWithOpenAi(screenText, settings);
+  if (settings.provider === "local-agent") {
+    return parseChoiceStageWithLocalAgent(screenText, settings, session);
+  }
+  return parseChoiceStageWithOpenAi(screenText, settings, session);
 }
 
-async function parseChoiceStageWithOpenAi(screenText = "", settings = {}) {
+async function parseChoiceStageWithOpenAi(screenText = "", settings = {}, session = null) {
   const apiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || process.env.COPETS_OPENAI_API_KEY;
   if (!apiKey) {
+    logChoiceParser("openai-skip", session, { reason: "missing-api-key" });
     return null;
   }
   const model = settings.openaiModel || process.env.COPETS_CHOICE_PARSER_MODEL || "gpt-4o-mini";
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const endpoint = openAiCompatibleChatCompletionsURL(settings.openaiBaseURL || process.env.COPETS_CHOICE_PARSER_BASE_URL);
+  const startedAt = Date.now();
+  logChoiceParser("openai-request", session, { model, endpoint: redactURL(endpoint), chars: screenText.length });
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -1678,18 +1959,63 @@ async function parseChoiceStageWithOpenAi(screenText = "", settings = {}) {
     })
   });
   if (!response.ok) {
-    return null;
+    const errorText = await response.text().catch(() => "");
+    const errorMessage = choiceParserHttpErrorMessage(response.status, errorText);
+    logChoiceParser("openai-response", session, {
+      ok: false,
+      status: response.status,
+      durationMs: Date.now() - startedAt,
+      error: errorMessage
+    });
+    throw new Error(errorMessage);
   }
   const data = await response.json();
   const raw = data?.choices?.[0]?.message?.content;
   if (!raw) {
+    logChoiceParser("openai-response", session, { ok: true, durationMs: Date.now() - startedAt, reason: "empty-content" });
     return null;
   }
-  return normalizeChoiceParserJson(JSON.parse(raw), screenText, "openai");
+  const normalized = normalizeChoiceParserJson(JSON.parse(raw), screenText, "openai");
+  logChoiceParser("openai-response", session, {
+    ok: true,
+    durationMs: Date.now() - startedAt,
+    accepted: Boolean(normalized),
+    options: normalized?.options?.length ?? 0,
+    confidence: normalized?.confidence ?? 0
+  });
+  return normalized;
 }
 
-async function parseChoiceStageWithLocalAgent(screenText = "", settings = {}) {
-  const command = settings.localCommand || process.env.COPETS_CODEX_REAL_PATH || "codex";
+function openAiCompatibleChatCompletionsURL(baseURL) {
+  const raw = typeof baseURL === "string" && baseURL.trim()
+    ? baseURL.trim()
+    : "https://api.openai.com/v1";
+  const withoutTrailingSlash = raw.replace(/\/+$/, "");
+  if (/\/chat\/completions$/i.test(withoutTrailingSlash)) {
+    return withoutTrailingSlash;
+  }
+  return `${withoutTrailingSlash}/chat/completions`;
+}
+
+function choiceParserHttpErrorMessage(status, body = "") {
+  const fallback = `OpenAI-compatible parser request failed with HTTP ${status}.`;
+  if (!body) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(body);
+    const message = parsed?.error?.message || parsed?.message || parsed?.error;
+    if (message) {
+      return `${fallback} ${String(message)}`;
+    }
+  } catch {
+    // Fall back to a short body preview below.
+  }
+  return `${fallback} ${body.replace(/\s+/g, " ").trim().slice(0, 500)}`;
+}
+
+async function parseChoiceStageWithLocalAgent(screenText = "", settings = {}, session = null) {
+  const command = settings.localCommand || defaultCodexCommand();
   const configuredArgs = splitShellArgs(settings.localArgs || "");
   const modelArgs = settings.localModel ? ["-m", settings.localModel] : [];
   const prompt = [
@@ -1704,16 +2030,31 @@ async function parseChoiceStageWithLocalAgent(screenText = "", settings = {}) {
     screenText
   ].join("\n");
   const args = [...configuredArgs, ...modelArgs, prompt].filter(Boolean);
+  const startedAt = Date.now();
+  logChoiceParser("local-request", session, { command, model: settings.localModel || "", chars: screenText.length });
   const { stdout } = await execFileAsync(command, args, {
     timeout: settings.timeoutMs ?? 12000,
     maxBuffer: 256 * 1024,
-    env: { ...process.env, COPETS_CHOICE_PARSER: "1" }
+    env: {
+      ...process.env,
+      ...proxyEnvForAgent(settings.agentProxy, "choiceParser"),
+      COPETS_CHOICE_PARSER: "1"
+    }
   });
   const json = extractFirstJsonObject(stdout);
   if (!json) {
+    logChoiceParser("local-response", session, { ok: false, durationMs: Date.now() - startedAt, reason: "missing-json" });
     return null;
   }
-  return normalizeChoiceParserJson(JSON.parse(json), screenText, "local-agent");
+  const normalized = normalizeChoiceParserJson(JSON.parse(json), screenText, "local-agent");
+  logChoiceParser("local-response", session, {
+    ok: true,
+    durationMs: Date.now() - startedAt,
+    accepted: Boolean(normalized),
+    options: normalized?.options?.length ?? 0,
+    confidence: normalized?.confidence ?? 0
+  });
+  return normalized;
 }
 
 function normalizeChoiceParserJson(parsed, screenText, source) {
@@ -1721,11 +2062,7 @@ function normalizeChoiceParserJson(parsed, screenText, source) {
     return null;
   }
   const options = parsed.options
-    .map((option, index) => ({
-      id: String(option.id || `${option.role || "option"}-${index}`),
-      label: String(option.label || "").trim(),
-      role: String(option.role || "other")
-    }))
+    .map((option, index) => normalizeParsedChoiceOption(option, index))
     .filter((option) => option.label);
   if (!choiceOptionsAreGrounded(options, screenText)) {
     return null;
@@ -1736,6 +2073,30 @@ function normalizeChoiceParserJson(parsed, screenText, source) {
     selectedIndex: Number.isInteger(parsed.selectedIndex) ? parsed.selectedIndex : 0,
     confidence: Number.isFinite(Number(parsed.confidence)) ? Number(parsed.confidence) : 0,
     source
+  };
+}
+
+function normalizeParsedChoiceOption(option, index) {
+  if (typeof option === "string" || typeof option === "number") {
+    return {
+      id: `option-${index}`,
+      label: String(option).trim(),
+      role: "other"
+    };
+  }
+  if (!option || typeof option !== "object") {
+    return {
+      id: `option-${index}`,
+      label: "",
+      role: "other"
+    };
+  }
+  const role = typeof option.role === "string" && option.role.trim() ? option.role.trim() : "other";
+  const label = option.label ?? option.text ?? option.title ?? option.name ?? option.value ?? "";
+  return {
+    id: String(option.id || `${role}-${index}`),
+    label: String(label).trim(),
+    role
   };
 }
 
@@ -1849,6 +2210,57 @@ function parseTerminalOptions(screenText = "") {
     selectedIndex = -1;
   }
   return { options: deduped.slice(-6), selectedIndex };
+}
+
+function choiceOptionBlockText(screenText = "") {
+  const lines = screenText
+    .split("\n")
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(-80);
+  const block = lastChoiceOptionBlock(lines);
+  if (block) {
+    return lines.slice(Math.max(0, block.start - 2), block.end + 1).join("\n");
+  }
+  return lines.some((line) => looksLikeChoiceLine(line)) ? "" : screenText;
+}
+
+function lastChoiceOptionBlock(lines = []) {
+  const blocks = [];
+  let current = null;
+  for (const [index, line] of lines.entries()) {
+    if (looksLikeChoiceLine(line)) {
+      if (!current) {
+        current = { start: index, end: index, count: 0 };
+      }
+      current.end = index;
+      current.count += 1;
+      continue;
+    }
+    if (current) {
+      blocks.push(current);
+      current = null;
+    }
+  }
+  if (current) {
+    blocks.push(current);
+  }
+
+  return blocks
+    .filter((block) => block.count >= 2)
+    .filter((block) => !isInventoryOnlyOptionBlock(lines, block))
+    .at(-1) ?? null;
+}
+
+function isInventoryOnlyOptionBlock(lines = [], block) {
+  const before = lines.slice(Math.max(0, block.start - 3), block.start).join(" ");
+  const hasChoiceAnchor = lines
+    .slice(Math.max(0, block.start - 4), block.start)
+    .some((line) => isChoiceAnchorLine(line));
+  if (hasChoiceAnchor) {
+    return false;
+  }
+  return /里面有|物资|背包|清单|包括|inventory|contains/i.test(before);
 }
 
 function choiceOptionsFromAgentMessage(text = "") {
@@ -1974,6 +2386,32 @@ function shorten(value = "", limit = 60) {
 
 function previewText(text) {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function logChoiceParser(event, session, details = {}) {
+  const noisySkip = event === "skip" || event === "configured-skip";
+  if (noisySkip && process.env.COPETS_CHOICE_PARSER_DEBUG !== "1") {
+    return;
+  }
+  const sessionId = session?.id ?? "unknown";
+  const safeDetails = Object.fromEntries(
+    Object.entries(details)
+      .filter(([, value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, value]) => [key, typeof value === "string" ? value.slice(0, 220) : value])
+  );
+  console.log(`[choice-parser] event=${event} session=${sessionId} ${JSON.stringify(safeDetails)}`);
+}
+
+function redactURL(value = "") {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    return url.toString();
+  } catch {
+    return String(value).replace(/\?.*$/, "");
+  }
 }
 
 function hasPendingCodexInput(session) {
@@ -2119,6 +2557,10 @@ function normalizeUserText(text = "") {
   return text.replace(/^›\s*/, "").replace(/\s+/g, " ").trim();
 }
 
+function choiceInputSignature(text = "") {
+  return text.replace(/\s+/g, " ").trim().slice(0, 2000);
+}
+
 function lastItemType(items) {
   return items.at(-1)?.type ?? "";
 }
@@ -2138,4 +2580,27 @@ function isApprovalPrompt(text) {
 
 function isCodexNoise(text) {
   return /^现$|^your config\.toml:?$|^Started codex resume |You have \d+ usage limit resets available|10;\?11;\?.*>_ OpenAI Codex|^(?:10;\?11;\?|\[[0-9;?]*[a-zA-Z])$|^>_ OpenAI Codex|^model:\s|^directory:\s|features?.*web[_\s-]?search[_\s-]?request.*deprecated|web[_\s-]?search[_\s-]?request.*deprecated|set [`'"]?web[_\s-]?search[`'"]?.*(live|true|enabled)|falling back from web ?sockets? to https|websocket.*fallback|under a profile\) in config\.toml|Tip: Try the Codex App|HooksLifecycle hooks|EventInstalledActiveReviewDescription|MCP startup incomplete|MCP client .* timed out|Starting MCP servers|startup_timeout_sec|\[mcp_servers\.|0;[⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸]/i.test(text);
+}
+
+function isExecutable(path) {
+  if (typeof path !== "string" || !path.trim()) {
+    return false;
+  }
+  try {
+    accessSync(path.trim(), constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function defaultCodexCommand() {
+  const configured = [
+    process.env.COPETS_CODEX_PATH,
+    process.env.COPETS_CODEX_REAL_PATH
+  ].find(isExecutable);
+  if (configured) {
+    return configured.trim();
+  }
+  return isExecutable(codexAppBundleBinary) ? codexAppBundleBinary : "codex";
 }

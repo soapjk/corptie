@@ -77,9 +77,13 @@ final class FloatingPanelController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var isProgrammaticResize = false
     private var isBouncingResize = false
+    private var isListTransitionLocked = false
+    private var isDetailTransitionLocked = false
     private var didUserResize = false
     private var lastSessionCount = 0
     private var pendingResizeBounce: DispatchWorkItem?
+    private var pendingListTransitionUnlock: DispatchWorkItem?
+    private var pendingDetailTransitionUnlock: DispatchWorkItem?
 
     init(client: BackendClient, detachedSessionManager: DetachedSessionManager) {
         self.client = client
@@ -116,7 +120,7 @@ final class FloatingPanelController: NSObject {
             .environmentObject(layoutState)
             .environmentObject(detachedSessionManager)
 
-        let hostingView = NSHostingView(rootView: rootView)
+        let hostingView = FirstMouseHostingView(rootView: rootView)
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -138,10 +142,13 @@ final class FloatingPanelController: NSObject {
             .sink { [weak self] selectedSession in
                 guard let self else { return }
                 if selectedSession == nil {
-                    self.applyListSizing()
-                    self.shrinkToUsefulListHeightIfNeeded(animated: true)
+                    self.pendingDetailTransitionUnlock?.cancel()
+                    self.isDetailTransitionLocked = false
+                    self.beginListTransition()
                 } else {
-                    self.applyDetailSizing(animated: true, restoreSavedSize: true)
+                    self.pendingListTransitionUnlock?.cancel()
+                    self.isListTransitionLocked = false
+                    self.beginDetailTransition()
                 }
             }
             .store(in: &cancellables)
@@ -149,7 +156,7 @@ final class FloatingPanelController: NSObject {
         layoutState.$detailLastMessageHeight
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                guard let self, self.client.selectedSession != nil else {
+                guard let self, self.client.selectedSession != nil, !self.isDetailTransitionLocked else {
                     return
                 }
                 self.applyDetailSizing(animated: false, restoreSavedSize: false)
@@ -198,8 +205,49 @@ final class FloatingPanelController: NSObject {
         panel.orderOut(nil)
     }
 
+    private func beginListTransition() {
+        pendingListTransitionUnlock?.cancel()
+        isListTransitionLocked = true
+
+        applyListSizing()
+        shrinkToUsefulListHeightIfNeeded(animated: true)
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isListTransitionLocked = false
+            guard self.client.selectedSession == nil else {
+                return
+            }
+            self.adjustListHeightForCurrentMeasurements(animated: true)
+        }
+        pendingListTransitionUnlock = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32, execute: workItem)
+    }
+
+    private func beginDetailTransition() {
+        pendingDetailTransitionUnlock?.cancel()
+        isDetailTransitionLocked = true
+
+        applyDetailSizing(animated: true, restoreSavedSize: true)
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isDetailTransitionLocked = false
+            guard self.client.selectedSession != nil else {
+                return
+            }
+            self.applyDetailSizing(animated: true, restoreSavedSize: false)
+        }
+        pendingDetailTransitionUnlock = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
+    }
+
     private func resizeForSessionCount(_ count: Int) {
-        guard client.selectedSession == nil else {
+        guard client.selectedSession == nil, !isListTransitionLocked else {
             return
         }
 
@@ -217,7 +265,7 @@ final class FloatingPanelController: NSObject {
     }
 
     private func resizeForMeasuredListHeight(_ measuredHeight: CGFloat) {
-        guard client.selectedSession == nil, !didUserResize else {
+        guard client.selectedSession == nil, !didUserResize, !isListTransitionLocked else {
             return
         }
         let targetHeight = min(panel.maxSize.height, max(currentListMinimumHeight(), measuredHeight))
@@ -228,7 +276,7 @@ final class FloatingPanelController: NSObject {
     }
 
     private func adjustListHeightForCurrentMeasurements(animated: Bool) {
-        guard client.selectedSession == nil else {
+        guard client.selectedSession == nil, !isListTransitionLocked else {
             return
         }
 
@@ -323,7 +371,7 @@ final class FloatingPanelController: NSObject {
         let minimumHeight = currentListMinimumHeight()
         panel.minSize = NSSize(width: listMinimumSize.width, height: minimumHeight)
         if panel.frame.height < minimumHeight - 1 {
-            setPanelHeight(minimumHeight, duration: 0.12, timing: .easeOut)
+            setPanelHeight(minimumHeight, duration: isListTransitionLocked ? 0.16 : 0.12, timing: .easeOut)
         }
     }
 
@@ -551,6 +599,12 @@ final class FloatingPanel: NSPanel {
     }
 
     override var canBecomeMain: Bool {
+        true
+    }
+}
+
+private final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
 }

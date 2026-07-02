@@ -48,13 +48,219 @@ final class DetachedSessionManager: ObservableObject {
 }
 
 @MainActor
+private final class DetachedReplyPreviewState: ObservableObject {
+    @Published var text = ""
+    @Published var isVisible = false
+    @Published var placement = DetachedReplyPlacement.right
+    @Published var isQuickReplyVisible = false
+    @Published var quickReplyDraft = ""
+}
+
+private enum DetachedReplyPlacement {
+    case left
+    case right
+    case top
+    case bottom
+}
+
+private final class DetachedSessionPanel: NSPanel {
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        true
+    }
+}
+
+@MainActor
+private final class DetachedAccessoryWindowController {
+    private let panel: NSPanel
+    private let state: DetachedReplyPreviewState
+    private let client: BackendClient
+    private let sessionId: String
+    private let dismissPreview: () -> Void
+    private let dismissQuickReply: () -> Void
+
+    private let orbSize: CGFloat = 72
+    private let orbHaloPadding: CGFloat = 8
+    private let spacing: CGFloat = 5
+    private let previewTotalWidth: CGFloat = 324
+    private let replyBubbleTotalHeight: CGFloat = 150
+    private let quickReplyTotalHeight: CGFloat = 58
+    private let accessoryStackSpacing: CGFloat = 8
+    private let optionWidth: CGFloat = 246
+
+    init(
+        state: DetachedReplyPreviewState,
+        client: BackendClient,
+        sessionId: String,
+        dismissPreview: @escaping () -> Void,
+        dismissQuickReply: @escaping () -> Void
+    ) {
+        self.state = state
+        self.client = client
+        self.sessionId = sessionId
+        self.dismissPreview = dismissPreview
+        self.dismissQuickReply = dismissQuickReply
+
+        self.panel = DetachedSessionPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            styleMask: [.borderless, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.contentView = NSHostingView(
+            rootView: DetachedSessionAccessoryView(
+                client: client,
+                sessionId: sessionId,
+                previewState: state,
+                dismissPreview: dismissPreview,
+                dismissQuickReply: dismissQuickReply
+            )
+        )
+    }
+
+    func close() {
+        panel.close()
+    }
+
+    func orderFront() {
+        panel.orderFrontRegardless()
+    }
+
+    func update(for session: TaskSession?, orbCenter: NSPoint, screenFrame: NSRect?) {
+        let size = accessorySize(for: session)
+        guard size.width > 0, size.height > 0 else {
+            panel.orderOut(nil)
+            return
+        }
+
+        let placement = bestPlacement(for: size, orbCenter: orbCenter, screenFrame: screenFrame)
+        state.placement = placement
+        let frame = accessoryFrame(size: size, placement: placement, orbCenter: orbCenter)
+        panel.contentView?.frame = NSRect(origin: .zero, size: size)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0
+            context.allowsImplicitAnimation = false
+            panel.setFrame(frame, display: true)
+        }
+        panel.orderFrontRegardless()
+    }
+
+    func makeKeyIfNeeded() {
+        guard state.isQuickReplyVisible else {
+            return
+        }
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    private func accessorySize(for session: TaskSession?) -> NSSize {
+        let hasPreview = state.isVisible && !state.text.isEmpty
+        let hasQuickReply = state.isQuickReplyVisible
+        let optionCount = min(session?.suggestedOptions?.count ?? 0, 5)
+        let hasOptions = optionCount > 0
+
+        let stackHeight = floatingAccessoryHeight(hasPreview: hasPreview, hasQuickReply: hasQuickReply)
+        let optionsHeight = hasOptions ? min(138, CGFloat(optionCount) * 34 + 8) : 0
+        let width = max(hasPreview || hasQuickReply ? previewTotalWidth : 0, hasOptions ? optionWidth : 0)
+        var height = stackHeight
+        if hasOptions {
+            if height > 0 {
+                height += spacing
+            }
+            height += optionsHeight
+        }
+        return NSSize(width: width, height: height)
+    }
+
+    private func floatingAccessoryHeight(hasPreview: Bool, hasQuickReply: Bool) -> CGFloat {
+        var height: CGFloat = 0
+        var visibleCount = 0
+        if hasPreview {
+            height += replyBubbleTotalHeight
+            visibleCount += 1
+        }
+        if hasQuickReply {
+            height += quickReplyTotalHeight
+            visibleCount += 1
+        }
+        if visibleCount > 1 {
+            height += accessoryStackSpacing
+        }
+        return height
+    }
+
+    private func bestPlacement(for size: NSSize, orbCenter: NSPoint, screenFrame: NSRect?) -> DetachedReplyPlacement {
+        guard let screenFrame else {
+            return .right
+        }
+        let candidates: [DetachedReplyPlacement] = [.right, .left, .top, .bottom]
+        let scored = candidates.map { placement in
+            let frame = accessoryFrame(size: size, placement: placement, orbCenter: orbCenter)
+            let visible = frame.intersection(screenFrame.insetBy(dx: 8, dy: 8))
+            let visibleArea = visible.isNull ? 0 : visible.width * visible.height
+            let ratio = visibleArea / max(1, frame.width * frame.height)
+            return (placement, ratio)
+        }
+        if let exact = scored.first(where: { $0.1 >= 0.999 }) {
+            return exact.0
+        }
+        return scored.max(by: { $0.1 < $1.1 })?.0 ?? .right
+    }
+
+    private func accessoryFrame(size: NSSize, placement: DetachedReplyPlacement, orbCenter: NSPoint) -> NSRect {
+        let orbRenderSize = orbSize + orbHaloPadding * 2
+        switch placement {
+        case .right:
+            return NSRect(x: orbCenter.x + orbRenderSize / 2 + spacing, y: orbCenter.y + orbRenderSize / 2 - size.height, width: size.width, height: size.height)
+        case .left:
+            return NSRect(x: orbCenter.x - orbRenderSize / 2 - spacing - size.width, y: orbCenter.y + orbRenderSize / 2 - size.height, width: size.width, height: size.height)
+        case .top:
+            return NSRect(x: orbCenter.x - size.width / 2, y: orbCenter.y + orbRenderSize / 2 + spacing, width: size.width, height: size.height)
+        case .bottom:
+            return NSRect(x: orbCenter.x - size.width / 2, y: orbCenter.y - orbRenderSize / 2 - spacing - size.height, width: size.width, height: size.height)
+        }
+    }
+}
+
+@MainActor
 private final class DetachedSessionWindowController: NSObject, NSWindowDelegate {
     private let sessionId: String
     private let client: BackendClient
     private let openSession: (TaskSession) -> Void
     private let closeHandler: (String) -> Void
     private let panel: NSPanel
+    private let previewState = DetachedReplyPreviewState()
+    private lazy var accessoryController = DetachedAccessoryWindowController(
+        state: previewState,
+        client: client,
+        sessionId: sessionId,
+        dismissPreview: { [weak self] in
+            self?.hideReplyPreview()
+            self?.updateAccessory(for: self?.currentSession)
+        },
+        dismissQuickReply: { [weak self] in
+            self?.hideQuickReply()
+            self?.updateAccessory(for: self?.currentSession)
+        }
+    )
     private var cancellables = Set<AnyCancellable>()
+    private var outsideClickMonitor: Any?
+    private var lastSummary: String?
+    private var lastStatus: TaskStatus?
+    private var lastPreviewText: String?
+
+    private let orbSize: CGFloat = 72
+    private let orbHaloPadding: CGFloat = 8
 
     init(
         sessionId: String,
@@ -67,10 +273,10 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         self.openSession = openSession
         self.closeHandler = close
 
-        let size = NSSize(width: 72, height: 72)
-        self.panel = NSPanel(
+        let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
+        self.panel = DetachedSessionPanel(
             contentRect: NSRect(x: 1220, y: 620, width: size.width, height: size.height),
-            styleMask: [.borderless, .nonactivatingPanel, .fullSizeContentView],
+            styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -90,8 +296,26 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             rootView: DetachedSessionOrbView(
                 client: client,
                 sessionId: sessionId,
-                open: { [weak self] session in
+                previewState: previewState,
+                primaryAction: { [weak self] in
+                    self?.showQuickReply()
+                },
+                openSession: { [weak self] session in
+                    self?.hideReplyPreview()
+                    self?.hideQuickReply()
+                    self?.updateAccessory(for: session)
                     self?.openSession(session)
+                },
+                dismissPreview: { [weak self] in
+                    self?.hideReplyPreview()
+                    self?.updateAccessory(for: self?.currentSession)
+                },
+                dismissQuickReply: { [weak self] in
+                    self?.hideQuickReply()
+                    self?.updateAccessory(for: self?.currentSession)
+                },
+                moved: { [weak self] in
+                    self?.updateAccessory(for: self?.currentSession)
                 },
                 close: { [weak self] in
                     self?.close()
@@ -104,104 +328,322 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             .sink { [weak self] sessions in
                 guard let self else { return }
                 let session = sessions.first { $0.id == self.sessionId }
-                self.updatePanelSize(for: session)
+                self.updateReplyPreview(for: session)
+                self.updateAccessory(for: session)
             }
             .store(in: &cancellables)
     }
 
     func show() {
         panel.orderFrontRegardless()
+        updateAccessory(for: currentSession)
     }
 
     func close() {
+        accessoryController.close()
         panel.close()
     }
 
     func windowWillClose(_ notification: Notification) {
+        removeOutsideClickMonitor()
         closeHandler(sessionId)
     }
 
-    private func updatePanelSize(for session: TaskSession?) {
-        let optionCount = min(session?.suggestedOptions?.count ?? 0, 5)
-        let nextSize = optionCount > 0
-            ? NSSize(width: 500, height: 84 + CGFloat(optionCount) * 34)
-            : NSSize(width: 72, height: 72)
-        guard abs(panel.frame.width - nextSize.width) > 1 || abs(panel.frame.height - nextSize.height) > 1 else {
+    func windowDidResignKey(_ notification: Notification) {
+        updateAccessory(for: currentSession)
+    }
+
+    func windowDidMove(_ notification: Notification) {
+        updateAccessory(for: currentSession)
+    }
+
+    private func showQuickReply() {
+        previewState.isQuickReplyVisible = true
+        panel.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+        updateAccessory(for: currentSession)
+        accessoryController.makeKeyIfNeeded()
+        installOutsideClickMonitor()
+    }
+
+    private func hideQuickReply() {
+        previewState.isQuickReplyVisible = false
+        removeOutsideClickMonitor()
+    }
+
+    private func updateAccessory(for session: TaskSession?) {
+        accessoryController.update(for: session, orbCenter: currentOrbCenter, screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+    }
+
+    private func updateReplyPreview(for session: TaskSession?) {
+        guard let session else {
+            hideReplyPreview()
+            lastSummary = nil
+            lastStatus = nil
+            lastPreviewText = nil
             return
         }
-        var frame = panel.frame
-        let midX = frame.midX
-        let maxY = frame.maxY
-        frame.size = nextSize
-        frame.origin.x = midX - nextSize.width / 2
-        frame.origin.y = maxY - nextSize.height
-        panel.setFrame(frame, display: true, animate: true)
+        guard !isSessionOpenInMainView(session) else {
+            hideReplyPreview()
+            lastSummary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            lastStatus = session.status
+            return
+        }
+
+        let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousStatus = lastStatus
+        defer {
+            if !summary.isEmpty {
+                lastSummary = summary
+            }
+            lastStatus = session.status
+        }
+
+        guard let previousSummary = lastSummary else {
+            if session.status == .blocked {
+                fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary)
+            }
+            return
+        }
+        guard session.status != .running else {
+            return
+        }
+
+        if summary != previousSummary, !summary.isEmpty {
+            showReplyPreview(summary, for: session)
+        } else if previousStatus == .running && session.status == .blocked {
+            fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary)
+        }
+    }
+
+    private func hideReplyPreview() {
+        previewState.isVisible = false
+    }
+
+    private func fetchDetailPreviewIfNeeded(for session: TaskSession, fallbackSummary: String) {
+        Task { [weak self] in
+            guard let self else { return }
+            let detail = await client.fetchDetail(for: session)
+            let text = Self.latestAgentPreviewText(from: detail) ?? fallbackSummary
+            await MainActor.run {
+                guard let current = self.currentSession,
+                      current.id == session.id,
+                      current.status != .running,
+                      !self.isSessionOpenInMainView(current) else {
+                    return
+                }
+                self.showReplyPreview(text, for: current)
+            }
+        }
+    }
+
+    private func showReplyPreview(_ text: String, for session: TaskSession) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != lastPreviewText else {
+            return
+        }
+        lastPreviewText = trimmed
+        previewState.text = trimmed
+        previewState.isVisible = true
+        updateAccessory(for: session)
+    }
+
+    private func isSessionOpenInMainView(_ session: TaskSession) -> Bool {
+        client.selectedSession?.id == session.id
+    }
+
+    private static func latestAgentPreviewText(from detail: CodexThreadDetail?) -> String? {
+        detail?.items.reversed().first { item in
+            item.type != "userMessage"
+                && item.type != "system"
+                && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var currentSession: TaskSession? {
+        client.sessions.first { $0.id == sessionId }
+    }
+
+    private func installOutsideClickMonitor() {
+        removeOutsideClickMonitor()
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            Task { @MainActor in
+                self?.hideQuickReply()
+                self?.updateAccessory(for: self?.currentSession)
+            }
+        }
+    }
+
+    private func removeOutsideClickMonitor() {
+        if let outsideClickMonitor {
+            NSEvent.removeMonitor(outsideClickMonitor)
+            self.outsideClickMonitor = nil
+        }
+    }
+
+    private var currentOrbCenter: NSPoint {
+        NSPoint(x: panel.frame.minX + orbHaloPadding + orbSize / 2, y: panel.frame.maxY - orbHaloPadding - orbSize / 2)
     }
 }
 
 private struct DetachedSessionOrbView: View {
     @ObservedObject var client: BackendClient
     let sessionId: String
-    let open: (TaskSession) -> Void
+    @ObservedObject var previewState: DetachedReplyPreviewState
+    let primaryAction: () -> Void
+    let openSession: (TaskSession) -> Void
+    let dismissPreview: () -> Void
+    let dismissQuickReply: () -> Void
+    let moved: () -> Void
     let close: () -> Void
 
     var body: some View {
         Group {
             if let session {
-                VStack(spacing: 8) {
-                    ZStack {
-                        StatusHalo(status: session.status)
-                            .frame(width: 72, height: 72)
-
-                        AgentAvatarView(session: session, size: 52, showsChrome: false)
-                            .frame(width: 52, height: 52)
-
-                        ConnectionIndicatorLight(
-                            color: session.connectionColor,
-                            size: 8,
-                            glowSize: 17,
-                            isBreathing: session.isConnecting
-                        )
-                        .offset(x: 21, y: -21)
-                    }
-                    .frame(width: 72, height: 72)
-                    .contentShape(Circle())
-                    .overlay(
-                        DetachedOrbEventLayer(
-                            open: {
-                                open(session)
-                            },
-                            close: close
-                        )
-                    )
-
-                    if !visibleOptions.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(visibleOptions) { option in
-                                DetachedOptionButton(
-                                    option: option,
-                                    background: optionBackground,
-                                    send: {
-                                        client.sendMessage(option.label, to: session)
-                                    }
-                                )
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.bottom, 8)
-                    }
-                }
-                .frame(width: visibleOptions.isEmpty ? 72 : 246, height: visibleOptions.isEmpty ? 72 : nil, alignment: .top)
-                .help(session.status.label)
+                orb(session: session)
+                    .help(session.status.label)
             } else {
                 EmptyView()
                     .onAppear {
                         close()
-                    }
+                }
             }
         }
-        .frame(width: sessionHasOptions ? 500 : 72, alignment: .leading)
+        .frame(width: orbRenderSize, height: orbRenderSize, alignment: .topLeading)
         .background(Color.clear)
+    }
+
+    @ViewBuilder
+    private func orb(session: TaskSession) -> some View {
+        ZStack {
+            StatusHalo(status: session.status)
+                .frame(width: orbRenderSize, height: orbRenderSize)
+
+            AgentAvatarView(session: session, size: 52, showsChrome: false)
+                .frame(width: 52, height: 52)
+
+            ConnectionIndicatorLight(
+                color: session.connectionColor,
+                size: 8,
+                glowSize: 17,
+                isBreathing: session.isConnecting
+            )
+            .offset(x: 21, y: -21)
+        }
+        .frame(width: 72, height: 72)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+        .contentShape(Circle())
+        .overlay(
+            DetachedOrbEventLayer(
+                open: {
+                    primaryAction()
+                },
+                openSession: {
+                    openSession(session)
+                },
+                moved: moved,
+                close: close
+            )
+            .frame(width: 72, height: 72)
+        )
+        .padding(orbHaloPadding)
+    }
+
+    private var orbRenderSize: CGFloat {
+        88
+    }
+
+    private var orbHaloPadding: CGFloat {
+        8
+    }
+
+    private var session: TaskSession? {
+        client.sessions.first { $0.id == sessionId }
+    }
+}
+
+private struct DetachedSessionAccessoryView: View {
+    @ObservedObject var client: BackendClient
+    let sessionId: String
+    @ObservedObject var previewState: DetachedReplyPreviewState
+    let dismissPreview: () -> Void
+    let dismissQuickReply: () -> Void
+
+    var body: some View {
+        if let session {
+            VStack(alignment: .leading, spacing: spacing) {
+                floatingAccessory(session: session)
+
+                if !visibleOptions.isEmpty {
+                    optionList(session: session)
+                }
+            }
+            .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
+            .background(Color.clear)
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func floatingAccessory(session: TaskSession) -> some View {
+        VStack(alignment: .leading, spacing: accessoryStackSpacing) {
+            if shouldShowReplyPreview {
+                DetachedReplyPreviewBubble(text: previewState.text, dismiss: dismissPreview)
+                    .padding(12)
+                    .frame(width: previewTotalWidth, height: replyBubbleTotalHeight, alignment: .topLeading)
+            }
+
+            if previewState.isQuickReplyVisible {
+                DetachedQuickReplyInput(
+                    text: $previewState.quickReplyDraft,
+                    send: {
+                        sendQuickReply(to: session)
+                    },
+                    dismiss: dismissQuickReply
+                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 8)
+                .frame(width: previewTotalWidth, height: quickReplyTotalHeight, alignment: .topLeading)
+            }
+        }
+        .frame(width: previewTotalWidth, height: accessoryHeight, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func optionList(session: TaskSession) -> some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(visibleOptions) { option in
+                    DetachedOptionButton(
+                        option: option,
+                        background: optionBackground,
+                        send: {
+                            dismissPreview()
+                            dismissQuickReply()
+                            client.sendMessage(option.label, to: session)
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+        }
+        .frame(width: optionWidth, height: optionListHeight, alignment: .topLeading)
+    }
+
+    private func sendQuickReply(to session: TaskSession) {
+        let trimmed = previewState.quickReplyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            previewState.isQuickReplyVisible = false
+            return
+        }
+        previewState.quickReplyDraft = ""
+        dismissQuickReply()
+        dismissPreview()
+        client.sendMessage(trimmed, to: session)
     }
 
     private var session: TaskSession? {
@@ -216,11 +658,179 @@ private struct DetachedSessionOrbView: View {
         !visibleOptions.isEmpty
     }
 
+    private var shouldShowReplyPreview: Bool {
+        previewState.isVisible && !previewState.text.isEmpty
+    }
+
+    private var contentWidth: CGFloat {
+        max(accessoryHeight > 0 ? previewTotalWidth : 0, sessionHasOptions ? optionWidth : 0)
+    }
+
+    private var contentHeight: CGFloat {
+        accessoryHeight + (accessoryHeight > 0 && sessionHasOptions ? spacing : 0) + (sessionHasOptions ? optionListHeight : 0)
+    }
+
+    private var accessoryHeight: CGFloat {
+        var height: CGFloat = 0
+        var visibleCount = 0
+        if shouldShowReplyPreview {
+            height += replyBubbleTotalHeight
+            visibleCount += 1
+        }
+        if previewState.isQuickReplyVisible {
+            height += quickReplyTotalHeight
+            visibleCount += 1
+        }
+        if visibleCount > 1 {
+            height += accessoryStackSpacing
+        }
+        return height
+    }
+
+    private var previewTotalWidth: CGFloat {
+        324
+    }
+
+    private var replyBubbleTotalHeight: CGFloat {
+        150
+    }
+
+    private var quickReplyTotalHeight: CGFloat {
+        58
+    }
+
+    private var accessoryStackSpacing: CGFloat {
+        8
+    }
+
+    private var spacing: CGFloat {
+        10
+    }
+
+    private var optionWidth: CGFloat {
+        246
+    }
+
+    private var optionListHeight: CGFloat {
+        min(138, CGFloat(visibleOptions.count) * 34 + 8)
+    }
+
     private var optionBackground: Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
                 ? NSColor(calibratedWhite: 0.12, alpha: 0.92)
                 : NSColor(calibratedWhite: 1.0, alpha: 0.88)
+        })
+    }
+}
+
+private struct DetachedReplyPreviewBubble: View {
+    let text: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ScrollView(.vertical, showsIndicators: true) {
+                Text(text)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CopetsPalette.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 14)
+                    .padding(.trailing, 12)
+                    .padding(.top, 24)
+                    .padding(.bottom, 11)
+            }
+            .frame(width: 300, height: 126, alignment: .leading)
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 16, height: 16)
+                    .foregroundStyle(CopetsPalette.secondaryText)
+            }
+            .buttonStyle(.plain)
+            .background(Color.black.opacity(0.06), in: Circle())
+            .padding(7)
+            .help("Dismiss")
+        }
+        .background(replyBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.38), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.12), radius: 7, y: 3)
+    }
+
+    private var replyBackground: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedWhite: 0.10, alpha: 0.94)
+                : NSColor(calibratedWhite: 1.0, alpha: 0.92)
+        })
+    }
+}
+
+private struct DetachedQuickReplyInput: View {
+    @Binding var text: String
+    let send: () -> Void
+    let dismiss: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ChatInputTextView(
+                text: $text,
+                placeholder: "Reply...",
+                font: .systemFont(ofSize: 12, weight: .semibold),
+                autoFocus: true,
+                onFocusChange: { focused in
+                    isFocused = focused
+                    if !focused {
+                        dismiss()
+                    }
+                },
+                onSubmit: send
+            )
+                .frame(height: 30)
+                .padding(.leading, 11)
+                .padding(.trailing, 2)
+                .padding(.vertical, 4)
+
+            Button {
+                send()
+            } label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CopetsPalette.softBlue)
+            .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.leading, 2)
+        .padding(.trailing, 8)
+        .padding(.vertical, 6)
+        .frame(width: 300, height: 42)
+        .background(inputBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(CopetsPalette.softBlue.opacity(isFocused ? 0.46 : 0.22), lineWidth: 1)
+        )
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                isFocused = true
+            }
+        }
+    }
+
+    private var inputBackground: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedWhite: 0.10, alpha: 0.95)
+                : NSColor(calibratedWhite: 1.0, alpha: 0.94)
         })
     }
 }
@@ -288,22 +898,30 @@ private struct DetachedOptionTooltip: View {
 
 private struct DetachedOrbEventLayer: NSViewRepresentable {
     let open: () -> Void
+    let openSession: () -> Void
+    let moved: () -> Void
     let close: () -> Void
 
     func makeNSView(context: Context) -> EventView {
         let view = EventView()
         view.open = open
+        view.openSessionAction = openSession
+        view.moved = moved
         view.close = close
         return view
     }
 
     func updateNSView(_ nsView: EventView, context: Context) {
         nsView.open = open
+        nsView.openSessionAction = openSession
+        nsView.moved = moved
         nsView.close = close
     }
 
     final class EventView: NSView {
         var open: (() -> Void)?
+        var openSessionAction: (() -> Void)?
+        var moved: (() -> Void)?
         var close: (() -> Void)?
         private var initialMouseScreenPoint: NSPoint?
         private var initialWindowOrigin: NSPoint?
@@ -349,6 +967,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
             var frame = window.frame
             frame.origin = NSPoint(x: initialWindowOrigin.x + dx, y: initialWindowOrigin.y + dy)
             window.setFrame(frame, display: true)
+            moved?()
         }
 
         override func mouseUp(with event: NSEvent) {
@@ -369,7 +988,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         }
 
         @objc private func openSession() {
-            open?()
+            openSessionAction?()
         }
 
         @objc private func closeOrb() {
@@ -380,10 +999,24 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
 private struct StatusHalo: View {
     let status: TaskStatus
-    @State private var isBreathing = false
-    @State private var rotation = Angle.zero
 
     var body: some View {
+        Group {
+            if status == .running || status == .blocked {
+                TimelineView(.periodic(from: .now, by: status == .running ? 1.0 / 60.0 : 0.125)) { timeline in
+                    halo(phase: timeline.date.timeIntervalSinceReferenceDate)
+                }
+            } else {
+                halo(phase: 0)
+            }
+        }
+        .transaction { transaction in
+            transaction.animation = nil
+        }
+    }
+
+    @ViewBuilder
+    private func halo(phase: TimeInterval) -> some View {
         ZStack {
             Circle()
                 .fill(
@@ -398,7 +1031,8 @@ private struct StatusHalo: View {
                         endRadius: 38
                     )
                 )
-                .opacity(status == .blocked && isBreathing ? 0.42 : 1.0)
+                .opacity(blockedOpacity(phase: phase))
+                .scaleEffect(blockedScale(phase: phase))
 
             if status == .running {
                 Circle()
@@ -416,28 +1050,7 @@ private struct StatusHalo: View {
                     )
                     .blur(radius: 0.6)
                     .padding(8)
-                    .rotationEffect(rotation)
-            }
-        }
-        .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: isBreathing)
-        .onAppear {
-            isBreathing = true
-            if status == .running {
-                withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
-                    rotation = .degrees(360)
-                }
-            }
-        }
-        .onChange(of: status) { _, nextStatus in
-            rotation = .zero
-            isBreathing = false
-            DispatchQueue.main.async {
-                isBreathing = true
-                if nextStatus == .running {
-                    withAnimation(.linear(duration: 1.05).repeatForever(autoreverses: false)) {
-                        rotation = .degrees(360)
-                    }
-                }
+                    .rotationEffect(.degrees((phase.truncatingRemainder(dividingBy: 1.2) / 1.2) * 360))
             }
         }
     }
@@ -485,5 +1098,24 @@ private struct StatusHalo: View {
         case .cancelled:
             0.14
         }
+    }
+
+    private func blockedOpacity(phase: TimeInterval) -> Double {
+        guard status == .blocked else {
+            return 1.0
+        }
+        return blockedWave(phase: phase)
+    }
+
+    private func blockedScale(phase: TimeInterval) -> CGFloat {
+        guard status == .blocked else {
+            return 1.0
+        }
+        let wave = blockedWave(phase: phase)
+        return 0.62 + CGFloat(wave) * 0.46
+    }
+
+    private func blockedWave(phase: TimeInterval) -> Double {
+        (sin(phase * .pi / 1.2) + 1) / 2
     }
 }

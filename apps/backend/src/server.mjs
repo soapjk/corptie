@@ -1,6 +1,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import { readdir, readFile, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
@@ -11,18 +12,19 @@ import {
   mapCodexThreadToSession,
   readCodexRolloutDetail
 } from "./adapters/codexAppServer.mjs";
-import { PtyAgentManager } from "./adapters/ptyAgentManager.mjs";
+import { PtyAgentManager, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { CopetsStore } from "./store/copetsStore.mjs";
 
 const environmentName = normalizeEnvironment(process.env.COPETS_ENV);
 const port = Number(process.env.COPETS_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const execFileAsync = promisify(execFile);
+const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
 
 const sessions = new Map();
 const managedCodexSessions = new Map();
 const eventLog = [];
 const sseClients = new Set();
-const codexClient = new CodexAppServerClient();
+const codexClient = new CodexAppServerClient({ command: resolveCodexCommand() });
 const store = new CopetsStore();
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 let codexModelsCache = null;
@@ -31,6 +33,39 @@ const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled
 
 function now() {
   return new Date().toISOString();
+}
+
+function isExecutable(path) {
+  if (typeof path !== "string" || !path.trim()) {
+    return false;
+  }
+  try {
+    accessSync(path.trim(), constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveCodexCommand(requestedCommand = "") {
+  const requested = typeof requestedCommand === "string" ? requestedCommand.trim() : "";
+  if (requested && requested !== "codex") {
+    return requested;
+  }
+
+  const configured = [
+    process.env.COPETS_CODEX_PATH,
+    process.env.COPETS_CODEX_REAL_PATH
+  ].find(isExecutable);
+  if (configured) {
+    return configured.trim();
+  }
+
+  if (isExecutable(codexAppBundleBinary)) {
+    return codexAppBundleBinary;
+  }
+
+  return requested || "codex";
 }
 
 function createSession(input = {}) {
@@ -225,7 +260,7 @@ async function readSessionMeta(path) {
 
 function bindCodexPtySession(options) {
   const resume = {
-    command: options.command || "codex",
+    command: options.command || resolveCodexCommand(),
     args: ["resume", ...(options.resumeOptions ?? []), options.agentSessionId],
     strategy: options.strategy,
     agentSessionId: options.agentSessionId,
@@ -265,7 +300,7 @@ async function loadCodexModels() {
     return codexModelsCache.payload;
   }
 
-  const { stdout } = await execFileAsync("codex", ["debug", "models"], {
+  const { stdout } = await execFileAsync(resolveCodexCommand(), ["debug", "models"], {
     timeout: 15_000,
     maxBuffer: 8 * 1024 * 1024
   });
@@ -472,6 +507,53 @@ function route(request, response) {
       })
       .catch((error) => {
         sendJson(response, 400, { error: error.message });
+      });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/settings/choice-parser/test") {
+    readJson(request)
+      .then(async (input) => {
+        const choiceParser = {
+          ...(input?.choiceParser ?? {}),
+          agentProxy: input?.agentProxy ?? store.settings().agentProxy
+        };
+        const sample = [
+          "The agent is waiting for your choice:",
+          "",
+          "1. Open the README and summarize it",
+          "2. Run the test suite",
+          "3. Cancel and wait for more instructions",
+          "",
+          "Please choose one option."
+        ].join("\n");
+        const startedAt = Date.now();
+        const parsed = await parseChoiceStageWithConfiguredParser(sample, choiceParser, {
+          id: "settings-test",
+          provider: "settings"
+        });
+        const durationMs = Date.now() - startedAt;
+        if (!parsed || !Array.isArray(parsed.options) || parsed.options.length < 2) {
+          return {
+            ok: false,
+            error: "Parser did not return enough options for the sample choice prompt.",
+            options: parsed?.options ?? [],
+            durationMs
+          };
+        }
+        return {
+          ok: true,
+          options: parsed.options,
+          confidence: parsed.confidence ?? 0,
+          source: parsed.source ?? choiceParser?.provider ?? "",
+          durationMs
+        };
+      })
+      .then((result) => {
+        sendJson(response, result.ok ? 200 : 422, result);
+      })
+      .catch((error) => {
+        sendJson(response, 400, { ok: false, error: error.message });
       });
     return;
   }
@@ -694,6 +776,8 @@ function route(request, response) {
       })
       .then(async ({ input, prompt, cwd }) => {
         const existingSessionId = typeof input.existingSessionId === "string" ? input.existingSessionId.trim() : "";
+        const launchPrompt = prompt || "Reply exactly: Ready";
+        const codexCommand = resolveCodexCommand(input.command);
         const sandbox = normalizeCodexSandbox(input.sandbox);
         const approval = normalizeCodexApprovalPolicy(input.approvalPolicy);
         const safetyArgs = [
@@ -732,12 +816,12 @@ function route(request, response) {
             agentName: "Codex CLI",
             provider: "codex-pty",
             accent: "cyan",
-            command: input.command || "codex",
+            command: codexCommand,
             args: resumeArgs,
             cwd,
             initialPrompt: "",
             resume: {
-              command: input.command || "codex",
+              command: codexCommand,
               args: resumeArgs,
               strategy: "codex-resume-session-id",
               agentSessionId: existingSessionId,
@@ -756,8 +840,8 @@ function route(request, response) {
           sendJson(response, 201, { session });
           return;
         }
-        if (prompt) {
-          args.push(prompt);
+        if (launchPrompt) {
+          args.push(launchPrompt);
         }
 
         const launchWindowStartedAt = new Date(Date.now() - 5000).toISOString();
@@ -766,12 +850,12 @@ function route(request, response) {
           agentName: "Codex CLI",
           provider: "codex-pty",
           accent: "cyan",
-          command: input.command || "codex",
+          command: codexCommand,
           args,
           cwd,
           initialPrompt: prompt,
           resume: {
-            command: input.command || "codex",
+            command: codexCommand,
             args: [],
             strategy: "pending-codex-session-id",
             cwd,
@@ -779,25 +863,17 @@ function route(request, response) {
             resumeOptions
           },
           currentReasoningLevel: reasoningLevel || null,
-          phase: prompt ? "starting" : "awaiting_first_input",
+          phase: "starting",
           canResume: false
         });
 
-        if (prompt) {
-          bindCodexPtySessionWhenAvailable({
-            copetsSessionId: session.external.sessionId,
-            command: input.command || "codex",
-            cwd,
-            resumeOptions,
-            startedAfter: launchWindowStartedAt
-          });
-        } else {
-          ptyAgents.updateSession(session.external.sessionId, {
-            phase: "awaiting_first_input",
-            canResume: false,
-            summary: "Codex CLI is ready; send your first instruction to bind a session id."
-          });
-        }
+        bindCodexPtySessionWhenAvailable({
+          copetsSessionId: session.external.sessionId,
+          command: codexCommand,
+          cwd,
+          resumeOptions,
+          startedAfter: launchWindowStartedAt
+        });
 
         const boundSession = ptyAgents.get(session.external.sessionId);
         const responseSession = boundSession ? ptyAgents.toSessionSummary(boundSession) : session;
@@ -807,6 +883,15 @@ function route(request, response) {
       .catch((error) => {
         sendJson(response, 400, { error: error.message, adapter: "codex-pty" });
       });
+    return;
+  }
+
+  const ptyEventsMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/events$/);
+  if (request.method === "GET" && ptyEventsMatch) {
+    const sessionId = decodeURIComponent(ptyEventsMatch[1]);
+    if (!ptyAgents.subscribeDetail(sessionId, response)) {
+      sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
+    }
     return;
   }
 
