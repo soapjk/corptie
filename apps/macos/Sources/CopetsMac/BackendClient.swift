@@ -30,15 +30,18 @@ final class BackendClient: ObservableObject {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("copets", isDirectory: true).path
     }
     private var pollingTask: Task<Void, Never>?
+    private var eventStreamTask: Task<Void, Never>?
     private var detailStreamTask: Task<Void, Never>?
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
 
     func start() {
         pollingTask?.cancel()
+        eventStreamTask?.cancel()
         Task {
             await loadSettings()
             await loadCodexModels()
         }
+        startEventStream()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
@@ -51,8 +54,77 @@ final class BackendClient: ObservableObject {
     func stop() {
         pollingTask?.cancel()
         pollingTask = nil
+        eventStreamTask?.cancel()
+        eventStreamTask = nil
         detailStreamTask?.cancel()
         detailStreamTask = nil
+    }
+
+    private func startEventStream() {
+        eventStreamTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            while !Task.isCancelled {
+                var request = URLRequest(url: self.baseURL.appending(path: "events"))
+                request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                        throw URLError(.badServerResponse)
+                    }
+
+                    var eventName = ""
+                    for try await line in bytes.lines {
+                        if Task.isCancelled {
+                            return
+                        }
+                        if line.isEmpty {
+                            await self.handleGlobalEvent(eventName)
+                            eventName = ""
+                        } else if line.hasPrefix("event:") {
+                            eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                        }
+                    }
+                } catch {
+                    if Task.isCancelled {
+                        return
+                    }
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+        }
+    }
+
+    private func handleGlobalEvent(_ eventName: String) async {
+        let refreshEvents: Set<String> = [
+            "CodexThreadCreated",
+            "CodexTurnStarted",
+            "CodexThreadProgressChanged",
+            "CodexThreadCompleted",
+            "CodexThreadFailed",
+            "CodexThreadError",
+            "CodexThreadChoiceOptionsUpdated",
+            "SessionArchived",
+            "SessionUnarchived",
+            "SessionDeleted",
+            "SessionRenamed",
+            "SessionAvatarUpdated",
+            "PtySessionStarted",
+            "PtySessionInputSent",
+            "PtySessionTerminated",
+            "PtySessionInterrupted",
+            "TaskCompleted",
+            "TaskBlocked",
+            "TaskProgressChanged"
+        ]
+        guard refreshEvents.contains(eventName) else {
+            return
+        }
+        await refresh()
+        if eventName == "CodexThreadChoiceOptionsUpdated" {
+            await refreshSelectedDetailFromPolling()
+        }
     }
 
     func loadSettings() async {
@@ -68,11 +140,11 @@ final class BackendClient: ObservableObject {
     }
 
     func updateDataDirectory(_ dataDir: String) async {
-        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser, agentProxy: settings?.agentProxy)
+        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser, codexBackend: settings?.codexBackend, agentProxy: settings?.agentProxy)
     }
 
     @discardableResult
-    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, agentProxy: AgentProxySettings? = nil) async -> Bool {
+    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, agentProxy: AgentProxySettings? = nil) async -> Bool {
         let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = "Data directory is required."
@@ -97,6 +169,11 @@ final class BackendClient: ObservableObject {
                     "localArgs": choiceParser.localArgs,
                     "localModel": choiceParser.localModel,
                     "timeoutMs": choiceParser.timeoutMs
+                ]
+            }
+            if let codexBackend {
+                body["codexBackend"] = [
+                    "mode": codexBackend.mode
                 ]
             }
             if let agentProxy {
@@ -293,17 +370,22 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "codex/pty-sessions"))
+                let usesAppServer = settings?.codexBackend?.mode != "pty" && trimmedExistingSessionId.isEmpty
+                var request = URLRequest(url: baseURL.appending(path: usesAppServer ? "codex/threads" : "codex/pty-sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
-                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                var body: [String: Any] = [
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
-                    "prompt": trimmedPrompt,
-                    "existingSessionId": trimmedExistingSessionId,
+                    "prompt": trimmedPrompt.isEmpty ? "Reply exactly: Ready" : trimmedPrompt,
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
                     "sandbox": sandbox,
                     "approvalPolicy": approvalPolicy
-                ])
+                ]
+                if !usesAppServer {
+                    body["prompt"] = trimmedPrompt
+                    body["existingSessionId"] = trimmedExistingSessionId
+                }
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -316,7 +398,7 @@ final class BackendClient: ObservableObject {
                 }
 
                 onSuccess()
-                sendStatusMessage = "Started Codex CLI"
+                sendStatusMessage = usesAppServer ? "Started Codex App Server session" : "Started Codex CLI"
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
@@ -515,6 +597,7 @@ final class BackendClient: ObservableObject {
         guard !trimmed.isEmpty else {
             return
         }
+        clearSuggestedOptions(for: session)
         if reloadDetail {
             appendOptimisticUserMessage(trimmed, to: session)
         }
@@ -565,6 +648,32 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    private func clearSuggestedOptions(for session: TaskSession) {
+        sessions = sessions.map { existing in
+            guard existing.id == session.id else {
+                return existing
+            }
+            return TaskSession(
+                id: existing.id,
+                title: existing.title,
+                agent: existing.agent,
+                status: existing.status == .complete || existing.status == .blocked ? .running : existing.status,
+                progress: existing.status == .complete || existing.status == .blocked ? 0.5 : existing.progress,
+                summary: existing.summary,
+                suggestedOptions: nil,
+                activityStatus: existing.activityStatus,
+                updatedAt: existing.updatedAt,
+                accent: existing.accent,
+                archived: existing.archived,
+                pinned: existing.pinned,
+                sortOrder: existing.sortOrder,
+                avatarPath: existing.avatarPath,
+                capabilities: existing.capabilities,
+                external: existing.external
+            )
+        }
+    }
+
     private func appendOptimisticUserMessage(_ text: String, to session: TaskSession) {
         let threadId = session.external?.threadId ?? session.id
         guard selectedSession?.id == session.id || selectedDetail?.id == threadId else {
@@ -602,6 +711,7 @@ final class BackendClient: ObservableObject {
             updatedAt: now,
             canSend: detail.canSend,
             sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: detail.capabilities,
             turnCount: detail.turnCount,
             items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesByThread[threadId] ?? [])
         )
@@ -622,6 +732,7 @@ final class BackendClient: ObservableObject {
             updatedAt: now,
             canSend: true,
             sendUnavailableReason: nil,
+            capabilities: session.capabilities,
             turnCount: 0,
             items: pendingUserMessagesByThread[threadId] ?? []
         )
@@ -706,7 +817,7 @@ final class BackendClient: ObservableObject {
     func setArchived(_ archived: Bool, session: TaskSession) {
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)/archive"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/archive"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["archived": archived])
@@ -785,7 +896,7 @@ final class BackendClient: ObservableObject {
 
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)"))
                 request.httpMethod = "PATCH"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["title": trimmedTitle])
@@ -807,7 +918,7 @@ final class BackendClient: ObservableObject {
     func updateAvatar(session: TaskSession, avatarPath: String?) {
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)"))
                 request.httpMethod = "PATCH"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 let payload: [String: Any] = ["avatarPath": avatarPath ?? NSNull()]
@@ -829,7 +940,7 @@ final class BackendClient: ObservableObject {
     func delete(session: TaskSession) {
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)"))
                 request.httpMethod = "DELETE"
                 _ = try await URLSession.shared.data(for: request)
                 if selectedSession?.id == session.id {
@@ -843,7 +954,12 @@ final class BackendClient: ObservableObject {
     }
 
     func interruptSelectedSession() {
-        guard let selectedSession, let threadId = selectedSession.external?.threadId, isPtyProvider(selectedSession.external?.provider) else {
+        guard let selectedSession else {
+            return
+        }
+
+        guard let threadId = selectedSession.external?.threadId, isPtyProvider(selectedSession.external?.provider) else {
+            cancel(session: selectedSession)
             return
         }
 
@@ -864,9 +980,8 @@ final class BackendClient: ObservableObject {
 
     func switchSelectedCodexModel(to model: CodexModel) {
         guard let selectedSession,
-              selectedSession.external?.provider == "codex-pty",
-              let threadId = selectedSession.external?.threadId else {
-            sendStatusMessage = "Model switching is only available for Codex CLI sessions."
+              selectedSession.capabilities?.canSwitchModel == true else {
+            sendStatusMessage = "Model switching is not available for this session."
             return
         }
 
@@ -875,7 +990,7 @@ final class BackendClient: ObservableObject {
             defer { isSwitchingModel = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/model"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(selectedSession.id)/model"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["model": model.id])
@@ -1112,6 +1227,7 @@ final class BackendClient: ObservableObject {
             updatedAt: detail.updatedAt,
             canSend: detail.canSend,
             sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: detail.capabilities,
             turnCount: detail.turnCount,
             items: merged
         )

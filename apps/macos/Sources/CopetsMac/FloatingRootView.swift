@@ -11,8 +11,18 @@ struct FloatingRootView: View {
     @State private var isShowingActionMenu = false
     @State private var draggedSessionId: String?
     @State private var sessionCardFrames: [String: CGRect] = [:]
-    @State private var reorderStartFrames: [String: CGRect] = [:]
+    @State private var sessionSummaryFrames: [String: CGRect] = [:]
+    @State private var reorderDragOriginY: CGFloat?
+    @State private var reorderDragOffsetY: CGFloat = 0
+    @State private var reorderTargetSessionId: String?
     @State private var hoverPreviewSessionId: String?
+    @State private var isHoveringReplyPreviewBubble = false
+    @State private var hoverPreviewCloseTask: Task<Void, Never>?
+    private let panelContentPadding: CGFloat = 14
+    private let sessionListHorizontalInset: CGFloat = 4
+    private let panelControlLeadingInset: CGFloat = 6
+    private let topBarControlTopInset: CGFloat = 6
+    private let closeButtonLeadingInset: CGFloat = 12
 
     var body: some View {
         ZStack {
@@ -47,7 +57,7 @@ struct FloatingRootView: View {
                     ))
                 }
             }
-            .padding(18)
+            .padding(panelContentPadding)
 
             if backendClient.selectedSession == nil && !newSessionPanel.isPresented {
                 FloatingActionMenu(
@@ -60,16 +70,17 @@ struct FloatingRootView: View {
                         newSessionPanel.show(backendClient: backendClient)
                     }
                 )
-                .padding(14)
+                .padding(.leading, panelControlLeadingInset)
+                .padding(.bottom, panelContentPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .zIndex(1)
             }
 
-            MainPanelCloseButton()
-                .padding(.top, 13)
-                .padding(.leading, 13)
+            HoverRevealCloseButton()
+                .padding(.top, topBarControlTopInset)
+                .padding(.leading, closeButtonLeadingInset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .zIndex(3)
+                .zIndex(0)
         }
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .animation(.easeOut(duration: 0.16), value: backendClient.selectedSession?.id)
@@ -104,8 +115,8 @@ struct FloatingRootView: View {
                     sessionCard(for: session)
                 }
             }
-            .animation(.spring(response: 0.30, dampingFraction: 0.84), value: backendClient.sessions.map(\.id))
-            .padding(.horizontal, 6)
+            .animation(draggedSessionId == nil ? .spring(response: 0.30, dampingFraction: 0.84) : nil, value: backendClient.sessions.map(\.id))
+            .padding(.horizontal, sessionListHorizontalInset)
             .padding(.bottom, 4)
             .measureListHeight(.cards)
         }
@@ -116,6 +127,9 @@ struct FloatingRootView: View {
         .onPreferenceChange(SessionCardFramePreferenceKey.self) { frames in
             sessionCardFrames = frames
             updateMeasuredListHeights(cardFrames: frames)
+        }
+        .onPreferenceChange(SessionSummaryFramePreferenceKey.self) { frames in
+            sessionSummaryFrames = frames
         }
         .onChange(of: backendClient.sessions) { _, _ in
             updateMeasuredListHeights(cardFrames: sessionCardFrames)
@@ -139,8 +153,9 @@ struct FloatingRootView: View {
                     y: draggedSessionId == session.id ? 8 : 0
                 )
                 .measureSessionCardFrame(session.id)
+                .offset(y: draggedSessionId == session.id ? reorderDragOffsetY : 0)
                 .gesture(reorderGesture(for: session))
-                .animation(.spring(response: 0.28, dampingFraction: 0.82), value: backendClient.sessions.map(\.id))
+                .animation(draggedSessionId == nil ? .spring(response: 0.28, dampingFraction: 0.82) : nil, value: backendClient.sessions.map(\.id))
                 .animation(.spring(response: 0.20, dampingFraction: 0.78), value: draggedSessionId)
         }
     }
@@ -148,14 +163,16 @@ struct FloatingRootView: View {
     @ViewBuilder
     private var sessionHoverPreviewOverlay: some View {
         if let session = backendClient.sessions.first(where: { $0.id == hoverPreviewSessionId }),
-           let frame = sessionCardFrames[session.id] {
+           let frame = sessionSummaryFrames[session.id] {
             SessionReplyHoverBubble(text: session.summary, showsArrow: true)
                 .frame(width: 248, alignment: .topLeading)
                 .frame(maxHeight: 92, alignment: .topLeading)
-                .offset(x: max(8, frame.minX + 54), y: max(0, frame.minY - 24))
+                .offset(x: clampedHoverBubbleX(for: frame), y: max(0, frame.minY - 96))
                 .zIndex(30)
                 .onHover { hovering in
+                    isHoveringReplyPreviewBubble = hovering
                     if !hovering {
+                        hoverPreviewCloseTask?.cancel()
                         hoverPreviewSessionId = nil
                     }
                 }
@@ -163,7 +180,38 @@ struct FloatingRootView: View {
     }
 
     private func updateHoverPreview(sessionId: String, isVisible: Bool) {
-        hoverPreviewSessionId = isVisible ? sessionId : (hoverPreviewSessionId == sessionId ? nil : hoverPreviewSessionId)
+        hoverPreviewCloseTask?.cancel()
+        hoverPreviewCloseTask = nil
+
+        if isVisible {
+            hoverPreviewSessionId = sessionId
+            return
+        }
+
+        guard hoverPreviewSessionId == sessionId else {
+            return
+        }
+
+        hoverPreviewCloseTask = Task {
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+            await MainActor.run {
+                if !isHoveringReplyPreviewBubble {
+                    hoverPreviewSessionId = nil
+                }
+            }
+        }
+    }
+
+    private func clampedHoverBubbleX(for anchorFrame: CGRect) -> CGFloat {
+        let bubbleWidth: CGFloat = 248
+        let horizontalInset: CGFloat = 8
+        let proposed = anchorFrame.midX - bubbleWidth / 2
+        let measuredRightEdge = sessionCardFrames.values.map(\.maxX).max() ?? (anchorFrame.maxX + horizontalInset)
+        let maxX = max(horizontalInset, measuredRightEdge - bubbleWidth - horizontalInset)
+        return min(max(horizontalInset, proposed), maxX)
     }
 
     private func updatePreferredListHeight(_ values: [ListHeightMetric: CGFloat]) {
@@ -172,7 +220,7 @@ struct FloatingRootView: View {
             return
         }
 
-        let outerPadding: CGFloat = 36
+        let outerPadding = panelContentPadding * 2
         let bottomBreathingRoom: CGFloat = 8
         let usefulHeight = outerPadding + cardsHeight + bottomBreathingRoom
 
@@ -190,7 +238,7 @@ struct FloatingRootView: View {
             return
         }
 
-        let outerPadding: CGFloat = 36
+        let outerPadding = panelContentPadding * 2
         let bottomBreathingRoom: CGFloat = 8
         let minimumHeight = outerPadding + (visibleHeights.first ?? PanelLayoutState.cardHeight) + bottomBreathingRoom
         let visibleSpacing = CGFloat(max(0, visibleHeights.count - 1)) * PanelLayoutState.cardSpacing
@@ -205,29 +253,50 @@ struct FloatingRootView: View {
         DragGesture(minimumDistance: 7, coordinateSpace: .named("session-list"))
             .onChanged { value in
                 if draggedSessionId != session.id {
-                    reorderStartFrames = sessionCardFrames
+                    draggedSessionId = session.id
+                    reorderTargetSessionId = nil
+                    reorderDragOriginY = sessionCardFrames[session.id]?.midY
+                    reorderDragOffsetY = 0
                 }
-                draggedSessionId = session.id
-                guard let startFrame = reorderStartFrames[session.id] ?? sessionCardFrames[session.id] else {
+
+                guard let startY = reorderDragOriginY else {
+                    reorderDragOriginY = sessionCardFrames[session.id]?.midY
                     return
                 }
-                let projectedCenterY = startFrame.midY + value.translation.height
 
-                withAnimation(.spring(response: 0.30, dampingFraction: 0.84)) {
-                    backendClient.moveSession(draggedSessionId: session.id, before: targetSessionId(forProjectedCenterY: projectedCenterY, excluding: session.id))
+                reorderDragOffsetY = value.translation.height
+                guard !sessionCardFrames.isEmpty else {
+                    return
+                }
+
+                let projectedCenterY = startY + value.translation.height
+                let targetSessionId = targetSessionId(
+                    forProjectedCenterY: projectedCenterY,
+                    excluding: session.id,
+                    using: sessionCardFrames
+                )
+                guard targetSessionId != reorderTargetSessionId else {
+                    return
+                }
+
+                reorderTargetSessionId = targetSessionId
+                withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.88, blendDuration: 0.08)) {
+                    backendClient.moveSession(draggedSessionId: session.id, before: targetSessionId)
                 }
             }
             .onEnded { _ in
+                reorderDragOffsetY = 0
                 backendClient.persistSessionOrder()
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     draggedSessionId = nil
-                    reorderStartFrames = [:]
+                    reorderTargetSessionId = nil
+                    reorderDragOriginY = nil
                 }
             }
     }
 
-    private func targetSessionId(forProjectedCenterY centerY: CGFloat, excluding draggedId: String) -> String? {
-        let candidates = reorderStartFrames
+    private func targetSessionId(forProjectedCenterY centerY: CGFloat, excluding draggedId: String, using frames: [String: CGRect]) -> String? {
+        let candidates = frames
             .filter { $0.key != draggedId }
             .sorted { $0.value.midY < $1.value.midY }
 
@@ -239,6 +308,23 @@ struct FloatingRootView: View {
         return nil
     }
 
+}
+
+private struct HoverRevealCloseButton: View {
+    @State private var isHovering = false
+    private let hoverProbeSize = CGSize(width: 18, height: 18)
+
+    var body: some View {
+        MainPanelCloseButton()
+            .opacity(isHovering ? 1 : 0)
+            .scaleEffect(isHovering ? 1 : 0.86)
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .frame(width: hoverProbeSize.width, height: hoverProbeSize.height, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovering = hovering
+            }
+    }
 }
 
 private struct MainPanelCloseButton: View {
@@ -329,6 +415,14 @@ private struct SessionCardFramePreferenceKey: PreferenceKey {
     }
 }
 
+private struct SessionSummaryFramePreferenceKey: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
+    }
+}
+
 private struct LastMessageHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
@@ -351,6 +445,17 @@ private extension View {
             GeometryReader { proxy in
                 Color.clear.preference(
                     key: SessionCardFramePreferenceKey.self,
+                    value: [id: proxy.frame(in: .named("session-list"))]
+                )
+            }
+        )
+    }
+
+    func measureSessionSummaryFrame(_ id: String) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: SessionSummaryFramePreferenceKey.self,
                     value: [id: proxy.frame(in: .named("session-list"))]
                 )
             }
@@ -1262,8 +1367,7 @@ private struct TaskCardView: View {
     @State private var lastQuickReplyInteractionAt = Date.distantPast
     @State private var isRenaming = false
     @State private var isShowingUnboundHint = false
-    @State private var isHoveringCard = false
-    @State private var isHoveringPreviewBubble = false
+    @State private var isHoveringSummary = false
     @State private var hoverPreviewTask: Task<Void, Never>?
     @FocusState private var isQuickReplyFocused: Bool
 
@@ -1311,6 +1415,11 @@ private struct TaskCardView: View {
                 .foregroundStyle(CopetsPalette.cardPreviewText)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .measureSessionSummaryFrame(session.id)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    handleSummaryHover(hovering)
+                }
 
             HStack(spacing: 10) {
                 Text(session.agent)
@@ -1333,16 +1442,18 @@ private struct TaskCardView: View {
                 if session.status == .running {
                     Spacer()
 
-                    Button {
-                        backendClient.interrupt(session: session)
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .frame(width: 24, height: 24)
+                    if session.capabilities?.canInterrupt != false {
+                        Button {
+                            backendClient.interrupt(session: session)
+                        } label: {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(IconButtonStyle())
+                        .help("Stop current run")
                     }
-                    .buttonStyle(IconButtonStyle())
-                    .help("Stop current run")
-                } else if session.status == .blocked {
+                } else if canQuickReply {
                     Spacer(minLength: 6)
 
                     QuickReplyField(
@@ -1400,9 +1511,6 @@ private struct TaskCardView: View {
                 .strokeBorder(Color.white.opacity(cardStrokeOpacity), lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onHover { hovering in
-            handleCardHover(hovering)
-        }
         .onTapGesture {
             if Date().timeIntervalSince(lastQuickReplyInteractionAt) > 0.25 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
@@ -1500,6 +1608,10 @@ private struct TaskCardView: View {
         !(session.suggestedOptions ?? []).isEmpty
     }
 
+    private var canQuickReply: Bool {
+        session.capabilities?.canSend == true
+    }
+
     private var visibleSuggestedOptions: [CodexApprovalOption] {
         Array((session.suggestedOptions ?? []).prefix(5))
     }
@@ -1517,21 +1629,12 @@ private struct TaskCardView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private var hoverPreviewBinding: Binding<Bool> {
-        Binding(
-            get: { isHoveringCard && replyPreviewText != nil },
-            set: { visible in
-                if !visible {
-                    isHoveringCard = false
-                    isHoveringPreviewBubble = false
-                }
-            }
-        )
-    }
-
     private var connectionIndicatorHelp: String {
         if session.isUnboundCodexSession {
             return "Session is not bound yet"
+        }
+        if session.external?.provider != "codex-pty" {
+            return "Session is available"
         }
         if session.isConnecting || backendClient.connectionTransitionSessionIds.contains(session.id) {
             return "Switching PTY connection"
@@ -1539,13 +1642,28 @@ private struct TaskCardView: View {
         return session.isConnected ? "Disconnect PTY" : "Reconnect PTY"
     }
 
+    private var connectionIndicatorPopoverText: String {
+        if session.isUnboundCodexSession {
+            return "尚未发送消息的会话，无法切换状态。"
+        }
+        if session.external?.provider != "codex-pty" {
+            return "这个会话无需手动连接，当前可用。"
+        }
+        return "正在切换连接状态。"
+    }
+
     private var connectionIndicatorButton: some View {
         Button {
             lastQuickReplyInteractionAt = Date()
+            guard !backendClient.connectionTransitionSessionIds.contains(session.id) else {
+                return
+            }
             if session.isUnboundCodexSession {
                 isShowingUnboundHint = true
-            } else {
+            } else if session.external?.provider == "codex-pty" {
                 backendClient.togglePtyConnection(for: session)
+            } else {
+                isShowingUnboundHint = true
             }
         } label: {
             let isTransitioning = session.isConnecting || backendClient.connectionTransitionSessionIds.contains(session.id)
@@ -1562,9 +1680,8 @@ private struct TaskCardView: View {
         .buttonStyle(.plain)
         .contentShape(Circle())
         .help(connectionIndicatorHelp)
-        .disabled(session.external?.provider != "codex-pty" || backendClient.connectionTransitionSessionIds.contains(session.id))
         .popover(isPresented: $isShowingUnboundHint, arrowEdge: .top) {
-            Text("尚未发送消息的会话，无法切换状态。")
+            Text(connectionIndicatorPopoverText)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color.black)
                 .padding(.horizontal, 12)
@@ -1592,7 +1709,7 @@ private struct TaskCardView: View {
         }
     }
 
-    private func handleCardHover(_ hovering: Bool) {
+    private func handleSummaryHover(_ hovering: Bool) {
         hoverPreviewTask?.cancel()
         hoverPreviewTask = nil
 
@@ -1603,7 +1720,7 @@ private struct TaskCardView: View {
                     return
                 }
                 await MainActor.run {
-                    isHoveringCard = true
+                    isHoveringSummary = true
                     if replyPreviewText != nil {
                         hoverPreviewChanged(session.id, true)
                     }
@@ -1614,26 +1731,10 @@ private struct TaskCardView: View {
         }
     }
 
-    private func scheduleHoverPreviewClose() {
-        hoverPreviewTask?.cancel()
-        hoverPreviewTask = Task {
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-            await MainActor.run {
-                if !isHoveringPreviewBubble {
-                    isHoveringCard = false
-                }
-            }
-        }
-    }
-
     private func hideHoverPreviewImmediately() {
         hoverPreviewTask?.cancel()
         hoverPreviewTask = nil
-        isHoveringPreviewBubble = false
-        isHoveringCard = false
+        isHoveringSummary = false
         hoverPreviewChanged(session.id, false)
     }
 
@@ -1950,8 +2051,10 @@ private struct DetailView: View {
 
     @ViewBuilder
     private func detailMessages(_ detail: CodexThreadDetail) -> some View {
-        let visibleItems = visibleItems(for: detail)
-        let hiddenCount = max(0, detail.items.count - visibleItems.count)
+        let displayItems = displayItems(for: detail)
+        let visibleItems = visibleItems(from: displayItems)
+        let displayEntries = chatDisplayEntries(from: visibleItems)
+        let hiddenCount = max(0, displayItems.count - visibleItems.count)
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
@@ -1970,10 +2073,17 @@ private struct DetailView: View {
                         .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
 
-                    ForEach(visibleItems) { item in
-                        ThreadItemView(item: item)
-                            .id(item.id)
-                            .measureLastMessageHeight(isLast: item.id == visibleItems.last?.id)
+                    ForEach(displayEntries) { entry in
+                        switch entry.kind {
+                        case .message(let item):
+                            ThreadItemView(item: item)
+                                .id(entry.id)
+                                .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
+                        case .process(let items):
+                            ThreadProcessGroupView(items: items)
+                                .id(entry.id)
+                                .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
+                        }
                     }
 
                     Color.clear
@@ -2028,10 +2138,90 @@ private struct DetailView: View {
     }
 
     private func visibleItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
-        guard detail.items.count > visibleMessageLimit else {
-            return detail.items
+        visibleItems(from: displayItems(for: detail))
+    }
+
+    private func visibleItems(from displayItems: [CodexThreadItem]) -> [CodexThreadItem] {
+        guard displayItems.count > visibleMessageLimit else {
+            return displayItems
         }
-        return Array(detail.items.suffix(visibleMessageLimit))
+        return Array(displayItems.suffix(visibleMessageLimit))
+    }
+
+    private func displayItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
+        detail.items.filter { !isLowSignalProcessItem($0) }
+    }
+
+    private func isLowSignalProcessItem(_ item: CodexThreadItem) -> Bool {
+        if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
+            return true
+        }
+        return false
+    }
+
+    private func chatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+        var entries: [ChatDisplayEntry] = []
+        var turnIds: [String] = []
+        var itemsByTurnId: [String: [CodexThreadItem]] = [:]
+
+        for item in items {
+            if itemsByTurnId[item.turnId] == nil {
+                turnIds.append(item.turnId)
+                itemsByTurnId[item.turnId] = []
+            }
+            itemsByTurnId[item.turnId]?.append(item)
+        }
+
+        for turnId in turnIds {
+            if let turnItems = itemsByTurnId[turnId] {
+                entries.append(contentsOf: chatDisplayEntriesForTurn(turnItems))
+            }
+        }
+        return entries
+    }
+
+    private func chatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+        let userMessages = items.filter { $0.type == "userMessage" }
+        let processItems = items.filter(isProcessItem)
+        let agentMessages = items.filter { $0.type == "agentMessage" }
+        let trailingItems = items.filter { item in
+            item.type != "userMessage" && item.type != "agentMessage" && !isProcessItem(item)
+        }
+
+        var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
+        if !processItems.isEmpty {
+            entries.append(ChatDisplayEntry(kind: .process(processItems)))
+        }
+        entries.append(contentsOf: agentMessages.map { ChatDisplayEntry(kind: .message($0)) })
+        entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
+        return entries
+    }
+
+    private func isProcessItem(_ item: CodexThreadItem) -> Bool {
+        switch item.type {
+        case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+private struct ChatDisplayEntry: Identifiable {
+    enum Kind {
+        case message(CodexThreadItem)
+        case process([CodexThreadItem])
+    }
+
+    let kind: Kind
+
+    var id: String {
+        switch kind {
+        case .message(let item):
+            return "message:\(item.id)"
+        case .process(let items):
+            return "process:\(items.first?.id ?? UUID().uuidString)"
+        }
     }
 }
 
@@ -2276,6 +2466,153 @@ private struct ActivityStatusText: View {
 
     private var idleColor: Color {
         .secondary
+    }
+}
+
+private struct ThreadProcessGroupView: View {
+    @State private var isExpanded = false
+    let items: [CodexThreadItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.easeOut(duration: 0.14)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 12, height: 12)
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(CopetsPalette.mutedText.opacity(0.72))
+                    Text("已处理")
+                        .font(.system(size: 10.5, weight: .semibold))
+                    if let durationText {
+                        Text(durationText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(CopetsPalette.mutedText)
+                    }
+                    Text("\(items.count)")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(CopetsPalette.mutedText)
+                        .padding(.horizontal, 5)
+                        .frame(height: 16)
+                        .background(Color.black.opacity(0.04), in: Capsule())
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(CopetsPalette.secondaryText)
+                .padding(.horizontal, 9)
+                .frame(height: 26)
+                .background(Color.white.opacity(0.42), in: Capsule())
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.black.opacity(0.045), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(items) { item in
+                        ProcessMiniCard(item: item)
+                    }
+                }
+                .padding(.leading, 22)
+                .padding(.top, 2)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.vertical, 1)
+    }
+
+    private var durationText: String? {
+        let timestamps = items.compactMap { item -> Date? in
+            guard let createdAt = item.createdAt else {
+                return nil
+            }
+            return ISO8601DateFormatter.copetsThreadItemDate(from: createdAt)
+        }
+        guard let start = timestamps.min(), let end = timestamps.max() else {
+            return nil
+        }
+        let duration = max(0, end.timeIntervalSince(start))
+        if duration < 0.95 {
+            return "· <1s"
+        }
+        if duration < 10 {
+            return String(format: "· %.1fs", duration)
+        }
+        return "· \(Int(duration.rounded()))s"
+    }
+}
+
+private struct ProcessMiniCard: View {
+    let item: CodexThreadItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(dotColor)
+                    .frame(width: 6, height: 6)
+                Text(item.title)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(item.type)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(CopetsPalette.mutedText.opacity(0.78))
+            }
+
+            if !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(item.text)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(CopetsPalette.mutedText)
+                    .lineSpacing(2)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.34), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.045), lineWidth: 1)
+        )
+    }
+
+    private var dotColor: Color {
+        switch item.type {
+        case "commandExecution":
+            return CopetsPalette.amber
+        case "fileChange":
+            return CopetsPalette.periwinkle
+        case "webSearch":
+            return CopetsPalette.softBlue
+        case "reasoning", "plan":
+            return CopetsPalette.mutedText
+        default:
+            return CopetsPalette.connected
+        }
+    }
+}
+
+private extension ISO8601DateFormatter {
+    static func copetsThreadItemDate(from value: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFraction.date(from: value) {
+            return date
+        }
+        let withoutFraction = ISO8601DateFormatter()
+        withoutFraction.formatOptions = [.withInternetDateTime]
+        return withoutFraction.date(from: value)
     }
 }
 
@@ -2602,7 +2939,7 @@ private struct MessageComposer: View {
                 }
                 .disabled(backendClient.selectedDetail?.canSend == false)
 
-            if backendClient.selectedSession?.external?.provider == "codex-pty" {
+            if canSwitchModel {
                 CodexModelMenu()
             }
 
@@ -2636,6 +2973,12 @@ private struct MessageComposer: View {
         backendClient.sendMessage(text) {
             message = ""
         }
+    }
+
+    private var canSwitchModel: Bool {
+        backendClient.selectedDetail?.capabilities?.canSwitchModel
+            ?? backendClient.selectedSession?.capabilities?.canSwitchModel
+            ?? (backendClient.selectedSession?.agent == "Codex" ? true : false)
     }
 }
 
@@ -2768,7 +3111,12 @@ private struct CodexModelMenu: View {
     }
 
     private var currentReasoningLevels: [String] {
-        currentModel?.reasoningLevels ?? []
+        guard backendClient.selectedDetail?.capabilities?.canSwitchReasoning
+            ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
+            ?? false else {
+            return []
+        }
+        return currentModel?.reasoningLevels ?? []
     }
 
     private func reasoningLabel(_ value: String) -> String {

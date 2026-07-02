@@ -8,6 +8,7 @@ export class CodexAppServerClient {
     this.args = options.args ?? ["app-server", "--listen", "stdio://"];
     this.env = options.env ?? process.env;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
+    this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
     this.process = null;
     this.readline = null;
     this.nextRequestId = 1;
@@ -22,9 +23,10 @@ export class CodexAppServerClient {
       return;
     }
 
+    const env = typeof this.env === "function" ? this.env() : this.env;
     this.process = spawn(this.command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: this.env
+      env
     });
 
     this.process.stderr.setEncoding("utf8");
@@ -127,6 +129,14 @@ export class CodexAppServerClient {
       approvalPolicy: options.approvalPolicy ?? undefined,
       sandboxPolicy: options.sandboxPolicy ?? undefined,
       model: options.model ?? undefined
+    });
+  }
+
+  async interruptTurn(threadId, turnId) {
+    await this.initialize();
+    return this.request("turn/interrupt", {
+      threadId,
+      turnId
     });
   }
 
@@ -329,6 +339,7 @@ export class CodexAppServerClient {
 
     this.notifications.push(message);
     this.captureLiveItem(message);
+    this.onNotification?.(message);
   }
 
   handleServerRequest(message) {
@@ -381,6 +392,9 @@ export class CodexAppServerClient {
 
     if (method === "turn/completed") {
       const turn = params.turn ?? {};
+      if (!turn.error) {
+        return;
+      }
       const index = items.size + 1;
       items.set(`${threadId}:turn-completed:${turn.id ?? index}`, {
         id: `${threadId}:turn-completed:${turn.id ?? index}`,
@@ -399,6 +413,8 @@ export function mapCodexThreadToSession(thread) {
   const status = mapCodexStatus(thread.status);
   const preview = thread.preview || thread.name || "Untitled Codex thread";
   const cwd = thread.cwd ? ` in ${thread.cwd}` : "";
+  const items = threadItems(thread);
+  const latestAgentText = latestAgentMessageTextFromItems(items);
 
   return {
     id: `codex:${thread.id}`,
@@ -406,7 +422,8 @@ export function mapCodexThreadToSession(thread) {
     agent: "Codex",
     status,
     progress: status === "running" ? 0.5 : 1,
-    summary: `${thread.source || "codex"} thread${cwd}`,
+    summary: latestAgentText || `${thread.source || "codex"} thread${cwd}`,
+    capabilities: codexAppServerCapabilities(),
     updatedAt: new Date((thread.updatedAt ?? thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
     accent: "cyan",
     external: {
@@ -415,20 +432,17 @@ export function mapCodexThreadToSession(thread) {
       sessionId: thread.sessionId,
       rawStatus: thread.status,
       cwd: thread.cwd,
-      source: thread.source
+      source: thread.source,
+      currentModel: thread.currentModel ?? thread.model ?? null,
+      currentReasoningLevel: thread.currentReasoningLevel ?? thread.reasoningEffort ?? null
     }
   };
 }
 
 export function mapCodexThreadToDetail(thread, liveItems = []) {
-  const items = [];
-  for (const turn of thread.turns ?? []) {
-    for (const item of turn.items ?? []) {
-      items.push(mapThreadItem(turn, item));
-    }
-  }
+  const items = threadItems(thread);
 
-  const mergedItems = mergeItems(items, liveItems);
+  const mergedItems = mergeItems(items, liveItems.filter((item) => item.type !== "taskComplete"));
 
   return {
     id: thread.id,
@@ -440,10 +454,46 @@ export function mapCodexThreadToDetail(thread, liveItems = []) {
     createdAt: new Date((thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
     updatedAt: new Date((thread.updatedAt ?? thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
     rawStatus: thread.status,
+    currentModel: thread.currentModel ?? thread.model ?? null,
+    currentReasoningLevel: thread.currentReasoningLevel ?? thread.reasoningEffort ?? null,
+    capabilities: codexAppServerCapabilities(),
     canSend: true,
     sendUnavailableReason: null,
     turnCount: thread.turns?.length ?? 0,
     items: mergedItems.slice(-60)
+  };
+}
+
+function threadItems(thread) {
+  const items = [];
+  for (const turn of thread.turns ?? []) {
+    for (const item of turn.items ?? []) {
+      const mapped = mapThreadItem(turn, item);
+      if (mapped.type !== "taskComplete") {
+        items.push(mapped);
+      }
+    }
+  }
+  return items;
+}
+
+function latestAgentMessageTextFromItems(items = []) {
+  for (const item of items.slice().reverse()) {
+    const text = typeof item.text === "string" ? item.text.trim() : "";
+    if (item.type === "agentMessage" && text) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function codexAppServerCapabilities() {
+  return {
+    canSend: true,
+    canSwitchModel: true,
+    canSwitchReasoning: false,
+    canInterrupt: true,
+    canReconnect: false
   };
 }
 
@@ -639,8 +689,19 @@ function mapThreadItem(turn, item) {
     type: item.type,
     title: itemTitle(item),
     text: itemText(item),
-    status: item.status ?? null
+    status: item.status ?? null,
+    createdAt: isoFromEpochSeconds(item.createdAt ?? item.created_at ?? item.startedAt ?? item.started_at ?? turn.createdAt ?? turn.created_at ?? null)
   };
+}
+
+function isoFromEpochSeconds(value) {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value * 1000).toISOString();
+  }
+  return null;
 }
 
 function itemTitle(item) {
@@ -717,6 +778,7 @@ function mapCodexStatus(status) {
       case "failed":
       case "systemError":
         return "failed";
+      case "interrupted":
       case "cancelled":
         return "cancelled";
       case "complete":

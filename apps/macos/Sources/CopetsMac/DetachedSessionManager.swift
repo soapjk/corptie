@@ -54,6 +54,8 @@ private final class DetachedReplyPreviewState: ObservableObject {
     @Published var placement = DetachedReplyPlacement.right
     @Published var isQuickReplyVisible = false
     @Published var quickReplyDraft = ""
+    @Published var dismissedOptionsFingerprint: String?
+    @Published var hoveredOptionId: String?
 }
 
 private enum DetachedReplyPlacement {
@@ -61,6 +63,14 @@ private enum DetachedReplyPlacement {
     case right
     case top
     case bottom
+}
+
+private func detachedOptionsFingerprint(for session: TaskSession) -> String {
+    let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+    let labels = (session.suggestedOptions ?? [])
+        .map { $0.label.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .joined(separator: "\u{1f}")
+    return "\(summary)\u{1e}\(labels)"
 }
 
 private final class DetachedSessionPanel: NSPanel {
@@ -166,11 +176,11 @@ private final class DetachedAccessoryWindowController {
     private func accessorySize(for session: TaskSession?) -> NSSize {
         let hasPreview = state.isVisible && !state.text.isEmpty
         let hasQuickReply = state.isQuickReplyVisible
-        let optionCount = min(session?.suggestedOptions?.count ?? 0, 5)
+        let optionCount = min(visibleOptionCount(for: session), 5)
         let hasOptions = optionCount > 0
 
         let stackHeight = floatingAccessoryHeight(hasPreview: hasPreview, hasQuickReply: hasQuickReply)
-        let optionsHeight = hasOptions ? min(138, CGFloat(optionCount) * 34 + 8) : 0
+        let optionsHeight = hasOptions ? optionAreaHeight(for: session, optionCount: optionCount) : 0
         let width = max(hasPreview || hasQuickReply ? previewTotalWidth : 0, hasOptions ? optionWidth : 0)
         var height = stackHeight
         if hasOptions {
@@ -180,6 +190,29 @@ private final class DetachedAccessoryWindowController {
             height += optionsHeight
         }
         return NSSize(width: width, height: height)
+    }
+
+    private func optionAreaHeight(for session: TaskSession?, optionCount: Int) -> CGFloat {
+        var height = min(138, CGFloat(optionCount) * 34 + 8)
+        if session != nil, state.hoveredOptionId != nil {
+            height += 52
+        }
+        return height
+    }
+
+    private func visibleOptionCount(for session: TaskSession?) -> Int {
+        guard let session else {
+            return 0
+        }
+        let options = session.suggestedOptions ?? []
+        guard !options.isEmpty else {
+            return 0
+        }
+        if state.dismissedOptionsFingerprint == detachedOptionsFingerprint(for: session) {
+            state.hoveredOptionId = nil
+            return 0
+        }
+        return options.count
     }
 
     private func floatingAccessoryHeight(hasPreview: Bool, hasQuickReply: Bool) -> CGFloat {
@@ -573,11 +606,19 @@ private struct DetachedSessionAccessoryView: View {
 
     var body: some View {
         if let session {
-            VStack(alignment: .leading, spacing: spacing) {
+            ZStack(alignment: .topLeading) {
                 floatingAccessory(session: session)
 
                 if !visibleOptions.isEmpty {
                     optionList(session: session)
+                }
+
+                if let hoveredOption {
+                    DetachedOptionTooltip(text: hoveredOption.label)
+                        .offset(x: 8, y: optionTooltipY(for: hoveredOption))
+                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+                        .zIndex(8)
+                        .allowsHitTesting(false)
                 }
             }
             .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
@@ -620,7 +661,12 @@ private struct DetachedSessionAccessoryView: View {
                     DetachedOptionButton(
                         option: option,
                         background: optionBackground,
+                        hoverChanged: { hovering in
+                            previewState.hoveredOptionId = hovering ? option.id : (previewState.hoveredOptionId == option.id ? nil : previewState.hoveredOptionId)
+                        },
                         send: {
+                            previewState.dismissedOptionsFingerprint = detachedOptionsFingerprint(for: session)
+                            previewState.hoveredOptionId = nil
                             dismissPreview()
                             dismissQuickReply()
                             client.sendMessage(option.label, to: session)
@@ -651,7 +697,20 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var visibleOptions: [CodexApprovalOption] {
-        Array((session?.suggestedOptions ?? []).prefix(5))
+        guard let session else {
+            return []
+        }
+        if previewState.dismissedOptionsFingerprint == detachedOptionsFingerprint(for: session) {
+            return []
+        }
+        return Array((session.suggestedOptions ?? []).prefix(5))
+    }
+
+    private var hoveredOption: CodexApprovalOption? {
+        guard let hoveredOptionId = previewState.hoveredOptionId else {
+            return nil
+        }
+        return visibleOptions.first { $0.id == hoveredOptionId }
     }
 
     private var sessionHasOptions: Bool {
@@ -711,8 +770,33 @@ private struct DetachedSessionAccessoryView: View {
         246
     }
 
+    private func optionTooltipY(for option: CodexApprovalOption) -> CGFloat {
+        guard let index = visibleOptions.firstIndex(of: option) else {
+            return 0
+        }
+        let optionListOriginY = contentOffsetBeforeOptionList
+        let optionTop = optionListOriginY + CGFloat(index) * 34 + 8
+        let tooltipHeight: CGFloat = 44
+        let tooltipReserveY = tooltipHeight + 8
+        let aboveY = optionTop - tooltipHeight - 3
+        let maxTopY = max(0, optionListHeight - tooltipHeight - 4)
+        if optionTop > tooltipReserveY {
+            return max(0, min(aboveY, maxTopY))
+        }
+        return min(optionTop + 34, maxTopY)
+    }
+
+    private var contentOffsetBeforeOptionList: CGFloat {
+        let topPad = accessoryHeight > 0 ? accessoryHeight + spacing : 0
+        return topPad
+    }
+
     private var optionListHeight: CGFloat {
-        min(138, CGFloat(visibleOptions.count) * 34 + 8)
+        var listHeight = min(138, CGFloat(visibleOptions.count) * 34 + 8)
+        if previewState.hoveredOptionId != nil {
+            listHeight += 52
+        }
+        return listHeight
     }
 
     private var optionBackground: Color {
@@ -838,6 +922,7 @@ private struct DetachedQuickReplyInput: View {
 private struct DetachedOptionButton: View {
     let option: CodexApprovalOption
     let background: Color
+    let hoverChanged: (Bool) -> Void
     let send: () -> Void
     @State private var isHovering = false
 
@@ -860,16 +945,9 @@ private struct DetachedOptionButton: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(CopetsPalette.amber.opacity(0.26), lineWidth: 1)
         )
-        .overlay(alignment: .trailing) {
-            if isHovering {
-                DetachedOptionTooltip(text: option.label)
-                    .offset(x: 248, y: 0)
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .leading)))
-                    .zIndex(3)
-            }
-        }
         .onHover { hovering in
             isHovering = hovering
+            hoverChanged(hovering)
         }
         .help(option.label)
     }
@@ -1002,7 +1080,7 @@ private struct StatusHalo: View {
 
     var body: some View {
         Group {
-            if status == .running || status == .blocked {
+            if status == .running || shouldPulse {
                 TimelineView(.periodic(from: .now, by: status == .running ? 1.0 / 60.0 : 0.125)) { timeline in
                     halo(phase: timeline.date.timeIntervalSinceReferenceDate)
                 }
@@ -1031,8 +1109,8 @@ private struct StatusHalo: View {
                         endRadius: 38
                     )
                 )
-                .opacity(blockedOpacity(phase: phase))
-                .scaleEffect(blockedScale(phase: phase))
+                .opacity(pulseOpacity(phase: phase))
+                .scaleEffect(pulseScale(phase: phase))
 
             if status == .running {
                 Circle()
@@ -1062,7 +1140,7 @@ private struct StatusHalo: View {
         case .blocked:
             Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.58, blue: 0.02, alpha: 1.0))
         case .complete:
-            .green
+            Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.58, blue: 0.02, alpha: 1.0))
         case .failed:
             .red
         case .cancelled:
@@ -1077,7 +1155,7 @@ private struct StatusHalo: View {
         case .blocked:
             0.82
         case .complete:
-            0.42
+            0.82
         case .failed:
             0.54
         case .cancelled:
@@ -1092,7 +1170,7 @@ private struct StatusHalo: View {
         case .blocked:
             0.44
         case .complete:
-            0.20
+            0.44
         case .failed:
             0.28
         case .cancelled:
@@ -1100,22 +1178,26 @@ private struct StatusHalo: View {
         }
     }
 
-    private func blockedOpacity(phase: TimeInterval) -> Double {
-        guard status == .blocked else {
-            return 1.0
-        }
-        return blockedWave(phase: phase)
+    private var shouldPulse: Bool {
+        status == .blocked || status == .complete
     }
 
-    private func blockedScale(phase: TimeInterval) -> CGFloat {
-        guard status == .blocked else {
+    private func pulseOpacity(phase: TimeInterval) -> Double {
+        guard shouldPulse else {
             return 1.0
         }
-        let wave = blockedWave(phase: phase)
+        return pulseWave(phase: phase)
+    }
+
+    private func pulseScale(phase: TimeInterval) -> CGFloat {
+        guard shouldPulse else {
+            return 1.0
+        }
+        let wave = pulseWave(phase: phase)
         return 0.62 + CGFloat(wave) * 0.46
     }
 
-    private func blockedWave(phase: TimeInterval) -> Double {
+    private func pulseWave(phase: TimeInterval) -> Double {
         (sin(phase * .pi / 1.2) + 1) / 2
     }
 }

@@ -82,6 +82,7 @@ export class CopetsStore {
       dbPath: this.dbPath,
       legacyDbPath,
       choiceParser: this.choiceParserSettings(),
+      codexBackend: this.codexBackendSettings(),
       agentProxy: this.agentProxySettings()
     };
   }
@@ -89,6 +90,10 @@ export class CopetsStore {
   choiceParserSettings() {
     const configured = this.config.choiceParser ?? {};
     return normalizeChoiceParserSettings(configured);
+  }
+
+  codexBackendSettings() {
+    return normalizeCodexBackendSettings(this.config.codexBackend ?? {});
   }
 
   agentProxySettings() {
@@ -102,6 +107,10 @@ export class CopetsStore {
     }
     if (input.choiceParser && typeof input.choiceParser === "object") {
       this.config.choiceParser = normalizeChoiceParserSettings(input.choiceParser);
+      await this.writeConfig();
+    }
+    if (input.codexBackend && typeof input.codexBackend === "object") {
+      this.config.codexBackend = normalizeCodexBackendSettings(input.codexBackend);
       await this.writeConfig();
     }
     if (input.agentProxy && typeof input.agentProxy === "object") {
@@ -234,6 +243,9 @@ export class CopetsStore {
         accent=excluded.accent,
         updated_at=excluded.updated_at,
         archived=excluded.archived,
+        pinned=excluded.pinned,
+        sort_order=excluded.sort_order,
+        avatar_path=excluded.avatar_path,
         raw_json=excluded.raw_json`,
       [
         session.id,
@@ -437,6 +449,9 @@ export class CopetsStore {
     const rawStatus = parseJson(row.raw_json, {});
     const args = parseJson(row.args_json, []);
     const status = row.status;
+    const isCodexAppServer = row.provider === "codex-app-server";
+    const publicId = isCodexAppServer || String(row.id).startsWith("codex:") ? row.id : `pty:${row.id}`;
+    const threadId = isCodexAppServer ? String(row.id).replace(/^codex:/, "") : row.id;
     const isUnsafeLegacyCodexResume = row.provider === "codex-pty"
       && rawStatus.resume?.strategy === "codex-resume-last"
       && !rawStatus.resume?.agentSessionId
@@ -454,7 +469,7 @@ export class CopetsStore {
     const latestAssistantSummary = latestCodexAssistantText(row.id, rawStatus, row.provider);
     const suggestedOptions = this.latestSuggestedOptions(row.id) ?? choiceOptionsFromAgentMessage(latestAssistantSummary);
     return {
-      id: `pty:${row.id}`,
+      id: publicId,
       title: row.title,
       agent: row.agent,
       status: displayStatus,
@@ -470,17 +485,19 @@ export class CopetsStore {
       pinned: Boolean(row.pinned),
       sortOrder: Number(row.sort_order ?? 0),
       avatarPath: row.avatar_path || null,
+      capabilities: rawStatus.capabilities ?? capabilitiesForStoredProvider(row.provider, displayStatus),
       rawStatus,
       external: {
         provider: row.provider,
-        threadId: row.id,
-        sessionId: row.id,
+        threadId,
+        sessionId: rawStatus.sessionId ?? threadId,
+        activeTurnId: rawStatus.activeTurnId ?? null,
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
-        connectionStatus: "pty disconnected",
+        connectionStatus: isCodexAppServer ? null : "pty disconnected",
         currentModel: rawStatus.currentModel ?? rawStatus.resume?.currentModel ?? modelFromArgs(args),
         currentReasoningLevel: rawStatus.currentReasoningLevel ?? rawStatus.resume?.currentReasoningLevel ?? reasoningFromArgs(args),
         cwd: row.cwd,
-        source: row.command,
+        source: rawStatus.source ?? row.command,
         args
       }
     };
@@ -516,6 +533,11 @@ function normalizeChoiceParserSettings(input = {}) {
     localModel: typeof input.localModel === "string" ? input.localModel : "",
     timeoutMs: Number.isFinite(Number(input.timeoutMs)) ? Math.max(1000, Math.min(60000, Number(input.timeoutMs))) : 12000
   };
+}
+
+function normalizeCodexBackendSettings(input = {}) {
+  const mode = input.mode === "pty" ? "pty" : "app-server";
+  return { mode };
 }
 
 function normalizeOpenAiCompatibleBaseURL(value) {
@@ -565,8 +587,8 @@ function toSessionSummary(session) {
   return {
     status,
     progress: status === "running" || status === "blocked" ? 0.5 : 1,
-    summary: latest || `${session.command ?? ""} ${(session.args ?? []).join(" ")}`.trim(),
-    suggestedOptions: latestSuggestedOptionsFromItems(session.items ?? []),
+    summary: latest || session.summary || `${session.command ?? ""} ${(session.args ?? []).join(" ")}`.trim(),
+    suggestedOptions: session.suggestedOptions ?? latestSuggestedOptionsFromItems(session.items ?? []),
     accent: session.accent || "cyan"
   };
 }
@@ -576,21 +598,48 @@ function toRawStatus(session) {
   return {
     command: session.command ?? null,
     args: session.args ?? [],
-    provider: session.provider ?? null,
+    provider: session.provider ?? session.external?.provider ?? null,
     resume: session.resume ?? null,
     agentSessionId,
     initialPrompt: session.initialPrompt ?? "",
     phase: session.phase ?? null,
     connectionReady: session.connectionReady === true,
-    currentModel: session.currentModel ?? session.resume?.currentModel ?? modelFromArgs(session.args ?? []),
-    currentReasoningLevel: session.currentReasoningLevel ?? session.resume?.currentReasoningLevel ?? reasoningFromArgs(session.args ?? []),
+    currentModel: session.currentModel ?? session.external?.currentModel ?? session.resume?.currentModel ?? modelFromArgs(session.args ?? []),
+    currentReasoningLevel: session.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? session.resume?.currentReasoningLevel ?? reasoningFromArgs(session.args ?? []),
     lastInputAt: session.lastInputAt ?? null,
     lastOutputAt: session.lastOutputAt ?? null,
     nextItemSeq: session.nextItemSeq ?? null,
     canResume: session.provider === "codex-pty" && session.canResume === true && Boolean(agentSessionId),
+    threadId: session.external?.threadId ?? null,
+    sessionId: session.external?.sessionId ?? null,
+    activeTurnId: session.external?.activeTurnId ?? null,
+    source: session.external?.source ?? null,
+    capabilities: session.capabilities ?? null,
     exitCode: session.exitCode ?? null,
     signal: session.signal ?? null
   };
+}
+
+function capabilitiesForStoredProvider(provider = "", status = "") {
+  if (provider === "codex-app-server") {
+    return {
+      canSend: status !== "failed" && status !== "cancelled",
+      canSwitchModel: true,
+      canSwitchReasoning: false,
+      canInterrupt: status === "running",
+      canReconnect: false
+    };
+  }
+  if (provider === "codex-pty") {
+    return {
+      canSend: status === "running" || status === "blocked" || status === "complete",
+      canSwitchModel: true,
+      canSwitchReasoning: true,
+      canInterrupt: status === "running",
+      canReconnect: true
+    };
+  }
+  return null;
 }
 
 function lastMeaningfulText(items) {

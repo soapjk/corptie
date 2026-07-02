@@ -1,6 +1,6 @@
 # Copets
 
-[English README](README.md)
+[English README]$1
 
 **一个为异步 AI Agent 工作流设计的桌面悬浮终端。**
 
