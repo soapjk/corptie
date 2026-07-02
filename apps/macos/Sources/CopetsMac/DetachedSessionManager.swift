@@ -421,17 +421,21 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             lastStatus = session.status
         }
 
+        guard session.status != .running else {
+            return
+        }
+
         guard let previousSummary = lastSummary else {
-            if session.status == .blocked || session.status == .running {
-                fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary)
+            if session.status == .blocked || session.status == .complete || session.status == .failed || session.status == .cancelled {
+                fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary, allowFallback: true)
             }
             return
         }
 
         if summary != previousSummary, !summary.isEmpty {
-            showReplyPreview(summary, for: session)
-        } else if previousStatus == .running && (session.status == .blocked || session.status == .running) {
-            fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary)
+            fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary, allowFallback: true)
+        } else if previousStatus == .running {
+            fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary, allowFallback: true)
         }
     }
 
@@ -446,14 +450,15 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         previewState.isQuickReplyVisible = false
     }
 
-    private func fetchDetailPreviewIfNeeded(for session: TaskSession, fallbackSummary: String) {
+    private func fetchDetailPreviewIfNeeded(for session: TaskSession, fallbackSummary: String, allowFallback: Bool) {
         Task { [weak self] in
             guard let self else { return }
             let detail = await client.fetchDetail(for: session)
-            let text = Self.latestAgentPreviewText(from: detail) ?? fallbackSummary
+            let text = Self.latestFinalAgentPreviewText(from: detail, includeActiveTurn: false) ?? (allowFallback ? fallbackSummary : "")
             await MainActor.run {
                 guard let current = self.currentSession,
                       current.id == session.id,
+                      current.status != .running,
                       !self.isSessionOpenInMainView(current) else {
                     return
                 }
@@ -476,17 +481,29 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
 
         let fallbackSummary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !fallbackSummary.isEmpty {
+        if session.status != .running, !fallbackSummary.isEmpty {
             showReplyPreview(fallbackSummary, for: session, force: true)
         }
-        fetchLatestReplyPreview(for: session, fallbackSummary: fallbackSummary, force: true)
+        fetchLatestReplyPreview(
+            for: session,
+            fallbackSummary: fallbackSummary,
+            allowFallback: session.status != .running,
+            includeActiveTurn: session.status != .running,
+            force: true
+        )
     }
 
-    private func fetchLatestReplyPreview(for session: TaskSession, fallbackSummary: String, force: Bool = false) {
+    private func fetchLatestReplyPreview(
+        for session: TaskSession,
+        fallbackSummary: String,
+        allowFallback: Bool,
+        includeActiveTurn: Bool,
+        force: Bool = false
+    ) {
         Task { [weak self] in
             guard let self else { return }
             let detail = await client.fetchDetail(for: session)
-            let text = Self.latestAgentPreviewText(from: detail) ?? fallbackSummary
+            let text = Self.latestFinalAgentPreviewText(from: detail, includeActiveTurn: includeActiveTurn) ?? (allowFallback ? fallbackSummary : "")
             await MainActor.run {
                 guard let current = self.currentSession,
                       current.id == session.id,
@@ -520,12 +537,36 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         client.selectedSession?.id == session.id
     }
 
-    private static func latestAgentPreviewText(from detail: CodexThreadDetail?) -> String? {
-        detail?.items.reversed().first { item in
-            item.type != "userMessage"
-                && item.type != "system"
-                && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func latestFinalAgentPreviewText(from detail: CodexThreadDetail?, includeActiveTurn: Bool) -> String? {
+        guard let detail else {
+            return nil
+        }
+
+        var turnIds: [String] = []
+        var itemsByTurnId: [String: [CodexThreadItem]] = [:]
+        for item in detail.items {
+            if itemsByTurnId[item.turnId] == nil {
+                turnIds.append(item.turnId)
+                itemsByTurnId[item.turnId] = []
+            }
+            itemsByTurnId[item.turnId]?.append(item)
+        }
+
+        if detail.status == .running && !includeActiveTurn && !turnIds.isEmpty {
+            turnIds.removeLast()
+        }
+
+        for turnId in turnIds.reversed() {
+            guard let turnItems = itemsByTurnId[turnId] else {
+                continue
+            }
+            if let text = turnItems.reversed().first(where: { item in
+                item.type == "agentMessage" && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            })?.text.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
+                return text
+            }
+        }
+        return nil
     }
 
     private var currentSession: TaskSession? {
