@@ -92,10 +92,6 @@ scripts/package-macos-installer.sh
 
 产物会写入 `dist/`，包含带时间戳的 `.pkg` 和 `.dmg`。`.dmg` 内含 `Copets.app`、`Applications` 快捷入口和简短安装说明。
 
-## 📚 更多资料
-
-- [项目愿景与技术调研](docs/project-vision-and-tech-research.md)
-
 ## License
 
 [Apache-2.0](LICENSE)

@@ -579,14 +579,14 @@ final class BackendClient: ObservableObject {
             return
         }
 
-        sendText(text, to: selectedSession, reloadDetail: true, onSuccess: onSuccess)
+        sendText(text, to: selectedSession, reloadDetail: true, isChoiceSelection: false, onSuccess: onSuccess)
     }
 
-    func sendMessage(_ text: String, to session: TaskSession, onSuccess: @escaping () -> Void = {}) {
-        sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, onSuccess: onSuccess)
+    func sendMessage(_ text: String, to session: TaskSession, isChoiceSelection: Bool = false, onSuccess: @escaping () -> Void = {}) {
+        sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, isChoiceSelection: isChoiceSelection, onSuccess: onSuccess)
     }
 
-    private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, onSuccess: @escaping () -> Void) {
+    private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, isChoiceSelection: Bool, onSuccess: @escaping () -> Void) {
         guard let threadId = session.external?.threadId else {
             lastError = "This task does not expose a Codex thread id."
             sendStatusMessage = lastError
@@ -615,7 +615,8 @@ final class BackendClient: ObservableObject {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
-                    "text": trimmed
+                    "text": trimmed,
+                    "isChoiceSelection": isChoiceSelection
                 ])
 
                 let (data, response) = try await URLSession.shared.data(for: request)

@@ -26,6 +26,7 @@ const eventLog = [];
 const sseClients = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
+const choiceGenerations = new Map();
 const store = new CopetsStore();
 const codexClient = new CodexAppServerClient({
   command: resolveCodexCommand(),
@@ -44,6 +45,16 @@ const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled
 
 function now() {
   return new Date().toISOString();
+}
+
+function currentChoiceGeneration(sessionId) {
+  return choiceGenerations.get(sessionId) ?? 0;
+}
+
+function bumpChoiceGeneration(sessionId) {
+  const next = currentChoiceGeneration(sessionId) + 1;
+  choiceGenerations.set(sessionId, next);
+  return next;
 }
 
 function isExecutable(path) {
@@ -190,6 +201,9 @@ async function bindCodexPtySessionWhenAvailable(options) {
 
 function enrichCodexDetailChoiceOptions(detail) {
   const items = Array.isArray(detail?.items) ? detail.items : [];
+  if (detail?.status === "running") {
+    return detail;
+  }
   const settings = store.settings();
   const choiceParser = {
     ...(settings.choiceParser ?? {}),
@@ -210,12 +224,12 @@ function enrichCodexDetailChoiceOptions(detail) {
       item.options = cached.map((option) => ({ ...option }));
       continue;
     }
-    scheduleCodexChoiceParse(detail.id, item.text, choiceParser, cacheKey);
+    scheduleCodexChoiceParse(detail.id, item.text, choiceParser, cacheKey, currentChoiceGeneration(`codex:${detail.id}`));
   }
   return detail;
 }
 
-function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey) {
+function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, generation = currentChoiceGeneration(`codex:${threadId}`)) {
   if (pendingCodexChoiceParses.has(cacheKey)) {
     return;
   }
@@ -241,7 +255,7 @@ function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey) {
       if (codexChoiceOptionsCache.size > 200) {
         codexChoiceOptionsCache.delete(codexChoiceOptionsCache.keys().next().value);
       }
-      applyCodexChoiceOptionsToManagedSession(threadId, text, options);
+      applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation);
       console.log(`[choice-parser] event=codex-app-server-detail-accepted session=codex:${threadId} ${JSON.stringify({ at: new Date().toISOString(), queuedMs: Date.now() - scheduledAt, options: options.length, confidence: parsed.confidence, source: parsed.source, async: true })}`);
       emitEvent("CodexThreadChoiceOptionsUpdated", { threadId, optionsCount: options.length });
     })
@@ -276,11 +290,12 @@ function scheduleCodexChoiceParseForText(threadId, text) {
     return;
   }
   const cacheKey = choiceOptionsCacheKey(cleanText, choiceParser);
+  const generation = currentChoiceGeneration(`codex:${threadId}`);
   if (codexChoiceOptionsCache.has(cacheKey)) {
-    applyCodexChoiceOptionsToManagedSession(threadId, cleanText, codexChoiceOptionsCache.get(cacheKey));
+    applyCodexChoiceOptionsToManagedSession(threadId, cleanText, codexChoiceOptionsCache.get(cacheKey), generation);
     return;
   }
-  scheduleCodexChoiceParse(threadId, cleanText, choiceParser, cacheKey);
+  scheduleCodexChoiceParse(threadId, cleanText, choiceParser, cacheKey, generation);
 }
 
 function syncManagedCodexSessionFromDetail(threadId, detail) {
@@ -292,19 +307,12 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
   const latestAgentMessage = Array.isArray(detail.items)
     ? detail.items.slice().reverse().find((item) => item.type === "agentMessage" && item.text)
     : null;
-  const latestAgentOptions = Array.isArray(latestAgentMessage?.options) && latestAgentMessage.options.length >= 2
-    ? latestAgentMessage.options
-    : null;
-  const previousOptionsStillMatch = latestAgentMessage?.text
-    && session.summary === latestAgentMessage.text
-    && Array.isArray(session.suggestedOptions)
-    && session.suggestedOptions.length >= 2;
   const nextSession = {
     ...session,
     status: detail.status ?? session.status,
     progress: detail.status === "running" || detail.status === "blocked" ? 0.5 : 1,
     summary: latestAgentMessage?.text ?? session.summary,
-    suggestedOptions: latestAgentOptions ?? (previousOptionsStillMatch ? session.suggestedOptions : null),
+    suggestedOptions: session.suggestedOptions ?? null,
     activityStatus: detail.activityStatus ?? null,
     updatedAt: detail.updatedAt ?? session.updatedAt,
     capabilities: detail.capabilities ?? session.capabilities,
@@ -319,10 +327,14 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
   return nextSession;
 }
 
-function applyCodexChoiceOptionsToManagedSession(threadId, text, options) {
+function applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation = currentChoiceGeneration(`codex:${threadId}`)) {
   const sessionId = `codex:${threadId}`;
   const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
   if (!session) {
+    return null;
+  }
+  if (generation !== currentChoiceGeneration(sessionId) || session.status === "running") {
+    console.log(`[choice-parser] event=codex-app-server-options-stale-generation session=${sessionId} ${JSON.stringify({ at: new Date().toISOString(), generation, currentGeneration: currentChoiceGeneration(sessionId), status: session.status })}`);
     return null;
   }
   const normalizedSessionSummary = String(session.summary ?? "").replace(/\s+/g, " ").trim();
@@ -342,6 +354,7 @@ function applyCodexChoiceOptionsToManagedSession(threadId, text, options) {
     updatedAt: now()
   };
   upsertManagedCodexSession(nextSession);
+  store.setActiveChoicePrompt(sessionId, text, nextSession.suggestedOptions);
   emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method: "choice-options-updated" });
   return nextSession;
 }
@@ -992,7 +1005,10 @@ function route(request, response) {
       const listedIds = new Set(ptySessions.map((session) => session.id));
       const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
       const codexSessions = [
-        ...storedCodexSessions.map((session) => managedById.get(session.id) ?? session),
+        ...storedCodexSessions.map((stored) => {
+          const managed = managedById.get(stored.id);
+          return managed ? { ...managed, suggestedOptions: stored.suggestedOptions ?? null } : stored;
+        }),
         ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
       ].filter((session) => !listedIds.has(session.id));
       sendJson(response, 200, {
@@ -1427,6 +1443,7 @@ function route(request, response) {
           return;
         }
         const session = ptyAgents.get(sessionId);
+        store.clearActiveChoicePrompt(sessionId);
         const shouldBindCodexSession = session?.provider === "codex-pty" && !session.agentSessionId;
         const bindStartedAt = session?.createdAt ?? new Date(Date.now() - 5000).toISOString();
         ptyAgents.write(sessionId, text, {
@@ -1806,6 +1823,17 @@ function route(request, response) {
         }
 
         console.log(`[codex] send requested thread=${threadId} chars=${text.length}`);
+        const sessionId = `codex:${threadId}`;
+        const managedSessionBeforeSend = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+        bumpChoiceGeneration(sessionId);
+        store.clearActiveChoicePrompt(sessionId);
+        if (managedSessionBeforeSend) {
+          upsertManagedCodexSession({
+            ...managedSessionBeforeSend,
+            suggestedOptions: null,
+            updatedAt: new Date().toISOString()
+          });
+        }
 
         try {
           await codexClient.resumeThread(threadId);

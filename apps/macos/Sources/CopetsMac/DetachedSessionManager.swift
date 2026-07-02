@@ -96,9 +96,7 @@ private final class DetachedAccessoryWindowController {
     private let orbHaloPadding: CGFloat = 8
     private let spacing: CGFloat = 5
     private let previewTotalWidth: CGFloat = 324
-    private let replyBubbleTotalHeight: CGFloat = 150
-    private let quickReplyTotalHeight: CGFloat = 58
-    private let accessoryStackSpacing: CGFloat = 8
+    private let replyComposerTotalHeight: CGFloat = 194
     private let optionWidth: CGFloat = 246
 
     init(
@@ -216,20 +214,10 @@ private final class DetachedAccessoryWindowController {
     }
 
     private func floatingAccessoryHeight(hasPreview: Bool, hasQuickReply: Bool) -> CGFloat {
-        var height: CGFloat = 0
-        var visibleCount = 0
-        if hasPreview {
-            height += replyBubbleTotalHeight
-            visibleCount += 1
+        if hasPreview && hasQuickReply {
+            return replyComposerTotalHeight
         }
-        if hasQuickReply {
-            height += quickReplyTotalHeight
-            visibleCount += 1
-        }
-        if visibleCount > 1 {
-            height += accessoryStackSpacing
-        }
-        return height
+        return 0
     }
 
     private func bestPlacement(for size: NSSize, orbCenter: NSPoint, screenFrame: NSRect?) -> DetachedReplyPlacement {
@@ -392,16 +380,15 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func showQuickReply() {
         previewState.isQuickReplyVisible = true
+        showLatestReplyPreviewIfNeeded()
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         updateAccessory(for: currentSession)
         accessoryController.makeKeyIfNeeded()
-        installOutsideClickMonitor()
     }
 
     private func hideQuickReply() {
         previewState.isQuickReplyVisible = false
-        removeOutsideClickMonitor()
     }
 
     private func updateAccessory(for session: TaskSession?) {
@@ -451,6 +438,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func hideReplyPreview() {
         previewState.isVisible = false
+        previewState.isQuickReplyVisible = false
     }
 
     private func fetchDetailPreviewIfNeeded(for session: TaskSession, fallbackSummary: String) {
@@ -470,14 +458,51 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
     }
 
-    private func showReplyPreview(_ text: String, for session: TaskSession) {
+    private func showLatestReplyPreviewIfNeeded() {
+        guard !previewState.isVisible else {
+            return
+        }
+        if !previewState.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            previewState.isVisible = true
+            return
+        }
+        guard let session = currentSession, !isSessionOpenInMainView(session) else {
+            return
+        }
+
+        let fallbackSummary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallbackSummary.isEmpty {
+            showReplyPreview(fallbackSummary, for: session, force: true)
+        }
+        fetchLatestReplyPreview(for: session, fallbackSummary: fallbackSummary, force: true)
+    }
+
+    private func fetchLatestReplyPreview(for session: TaskSession, fallbackSummary: String, force: Bool = false) {
+        Task { [weak self] in
+            guard let self else { return }
+            let detail = await client.fetchDetail(for: session)
+            let text = Self.latestAgentPreviewText(from: detail) ?? fallbackSummary
+            await MainActor.run {
+                guard let current = self.currentSession,
+                      current.id == session.id,
+                      current.status != .running,
+                      !self.isSessionOpenInMainView(current) else {
+                    return
+                }
+                self.showReplyPreview(text, for: current, force: force)
+            }
+        }
+    }
+
+    private func showReplyPreview(_ text: String, for session: TaskSession, force: Bool = false) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != lastPreviewText else {
+        guard !trimmed.isEmpty, force || trimmed != lastPreviewText || !previewState.isVisible else {
             return
         }
         lastPreviewText = trimmed
         previewState.text = trimmed
         previewState.isVisible = true
+        previewState.isQuickReplyVisible = true
         updateAccessory(for: session)
     }
 
@@ -611,6 +636,7 @@ private struct DetachedSessionAccessoryView: View {
 
                 if !visibleOptions.isEmpty {
                     optionList(session: session)
+                        .offset(y: contentOffsetBeforeOptionList)
                 }
 
                 if let hoveredOption {
@@ -630,24 +656,21 @@ private struct DetachedSessionAccessoryView: View {
 
     @ViewBuilder
     private func floatingAccessory(session: TaskSession) -> some View {
-        VStack(alignment: .leading, spacing: accessoryStackSpacing) {
-            if shouldShowReplyPreview {
-                DetachedReplyPreviewBubble(text: previewState.text, dismiss: dismissPreview)
-                    .padding(12)
-                    .frame(width: previewTotalWidth, height: replyBubbleTotalHeight, alignment: .topLeading)
-            }
-
-            if previewState.isQuickReplyVisible {
-                DetachedQuickReplyInput(
-                    text: $previewState.quickReplyDraft,
+        VStack(alignment: .leading, spacing: 0) {
+            if shouldShowReplyPreview && previewState.isQuickReplyVisible {
+                DetachedReplyComposerCard(
+                    text: previewState.text,
+                    draft: $previewState.quickReplyDraft,
                     send: {
                         sendQuickReply(to: session)
                     },
-                    dismiss: dismissQuickReply
+                    dismiss: {
+                        dismissPreview()
+                        dismissQuickReply()
+                    }
                 )
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
-                .frame(width: previewTotalWidth, height: quickReplyTotalHeight, alignment: .topLeading)
+                .padding(10)
+                .frame(width: previewTotalWidth, height: replyComposerTotalHeight, alignment: .topLeading)
             }
         }
         .frame(width: previewTotalWidth, height: accessoryHeight, alignment: .topLeading)
@@ -669,7 +692,7 @@ private struct DetachedSessionAccessoryView: View {
                             previewState.hoveredOptionId = nil
                             dismissPreview()
                             dismissQuickReply()
-                            client.sendMessage(option.label, to: session)
+                            client.sendMessage(option.label, to: session, isChoiceSelection: true)
                         }
                     )
                 }
@@ -683,7 +706,6 @@ private struct DetachedSessionAccessoryView: View {
     private func sendQuickReply(to session: TaskSession) {
         let trimmed = previewState.quickReplyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            previewState.isQuickReplyVisible = false
             return
         }
         previewState.quickReplyDraft = ""
@@ -730,36 +752,18 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var accessoryHeight: CGFloat {
-        var height: CGFloat = 0
-        var visibleCount = 0
-        if shouldShowReplyPreview {
-            height += replyBubbleTotalHeight
-            visibleCount += 1
+        if shouldShowReplyPreview && previewState.isQuickReplyVisible {
+            return replyComposerTotalHeight
         }
-        if previewState.isQuickReplyVisible {
-            height += quickReplyTotalHeight
-            visibleCount += 1
-        }
-        if visibleCount > 1 {
-            height += accessoryStackSpacing
-        }
-        return height
+        return 0
     }
 
     private var previewTotalWidth: CGFloat {
         324
     }
 
-    private var replyBubbleTotalHeight: CGFloat {
-        150
-    }
-
-    private var quickReplyTotalHeight: CGFloat {
-        58
-    }
-
-    private var accessoryStackSpacing: CGFloat {
-        8
+    private var replyComposerTotalHeight: CGFloat {
+        194
     }
 
     private var spacing: CGFloat {
@@ -857,6 +861,110 @@ private struct DetachedReplyPreviewBubble: View {
     }
 }
 
+private struct DetachedReplyComposerCard: View {
+    let text: String
+    @Binding var draft: String
+    let send: () -> Void
+    let dismiss: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topLeading) {
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(text)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CopetsPalette.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, 24)
+                        .padding(.trailing, 6)
+                        .padding(.vertical, 4)
+                }
+                .frame(height: 118, alignment: .leading)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .frame(width: 16, height: 16)
+                        .foregroundStyle(CopetsPalette.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .background(Color.black.opacity(0.06), in: Circle())
+                .help("Dismiss")
+            }
+
+            HStack(spacing: 6) {
+                ChatInputTextView(
+                    text: $draft,
+                    placeholder: "Reply...",
+                    font: .systemFont(ofSize: 12, weight: .semibold),
+                    autoFocus: true,
+                    onFocusChange: { focused in
+                        isFocused = focused
+                    },
+                    onSubmit: send
+                )
+                    .frame(height: 28)
+                    .padding(.leading, 10)
+                    .padding(.trailing, 2)
+                    .padding(.vertical, 3)
+
+                Button {
+                    send()
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CopetsPalette.softBlue)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(.leading, 2)
+            .padding(.trailing, 7)
+            .padding(.vertical, 5)
+            .frame(height: 38)
+            .background(inputBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(CopetsPalette.softBlue.opacity(isFocused ? 0.46 : 0.20), lineWidth: 1)
+            )
+        }
+        .padding(10)
+        .frame(width: 304, height: 174, alignment: .topLeading)
+        .background(cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.38), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.10), radius: 5, y: 2)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                isFocused = true
+            }
+        }
+    }
+
+    private var cardBackground: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedWhite: 0.10, alpha: 0.94)
+                : NSColor(calibratedWhite: 1.0, alpha: 0.92)
+        })
+    }
+
+    private var inputBackground: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedWhite: 0.13, alpha: 0.92)
+                : NSColor(calibratedWhite: 0.98, alpha: 0.86)
+        })
+    }
+}
+
 private struct DetachedQuickReplyInput: View {
     @Binding var text: String
     let send: () -> Void
@@ -872,9 +980,6 @@ private struct DetachedQuickReplyInput: View {
                 autoFocus: true,
                 onFocusChange: { focused in
                     isFocused = focused
-                    if !focused {
-                        dismiss()
-                    }
                 },
                 onSubmit: send
             )

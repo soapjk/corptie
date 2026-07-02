@@ -6,7 +6,6 @@ struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
-    @Namespace private var taskNavigationNamespace
     @StateObject private var newSessionPanel = NewSessionPanelController()
     @State private var isShowingActionMenu = false
     @State private var draggedSessionId: String?
@@ -32,7 +31,7 @@ struct FloatingRootView: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 if let selectedSession = backendClient.selectedSession {
-                    DetailView(namespace: taskNavigationNamespace, sessionId: selectedSession.id)
+                    DetailView(sessionId: selectedSession.id)
                         .transition(.opacity)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
@@ -142,9 +141,9 @@ struct FloatingRootView: View {
     @ViewBuilder
     private func sessionCard(for session: TaskSession) -> some View {
         if backendClient.isShowingArchivedSessions {
-            TaskCardView(session: session, namespace: taskNavigationNamespace, hoverPreviewChanged: updateHoverPreview)
+            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview)
         } else {
-            TaskCardView(session: session, namespace: taskNavigationNamespace, hoverPreviewChanged: updateHoverPreview)
+            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview)
                 .opacity(draggedSessionId == session.id ? 0.82 : 1)
                 .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
                 .shadow(
@@ -240,7 +239,18 @@ struct FloatingRootView: View {
 
         let outerPadding = panelContentPadding * 2
         let bottomBreathingRoom: CGFloat = 8
-        let minimumHeight = outerPadding + (visibleHeights.first ?? PanelLayoutState.cardHeight) + bottomBreathingRoom
+        let leadingSessions = Array(backendClient.sessions.prefix(2))
+        let leadingHeights = leadingSessions.compactMap { session in
+            cardFrames[session.id]?.height
+        }
+        let shouldFitLeadingCards = leadingSessions.contains { session in
+            !(session.suggestedOptions ?? []).isEmpty
+        }
+        let minimumCardHeights = shouldFitLeadingCards && leadingHeights.count == leadingSessions.count
+            ? leadingHeights
+            : [visibleHeights.first ?? PanelLayoutState.cardHeight]
+        let minimumSpacing = CGFloat(max(0, minimumCardHeights.count - 1)) * PanelLayoutState.cardSpacing
+        let minimumHeight = outerPadding + minimumCardHeights.reduce(0, +) + minimumSpacing + bottomBreathingRoom
         let visibleSpacing = CGFloat(max(0, visibleHeights.count - 1)) * PanelLayoutState.cardSpacing
         let preferredHeight = outerPadding + visibleHeights.reduce(0, +) + visibleSpacing + bottomBreathingRoom
 
@@ -1372,7 +1382,6 @@ private struct TaskCardView: View {
     @FocusState private var isQuickReplyFocused: Bool
 
     let session: TaskSession
-    let namespace: Namespace.ID
     var hoverPreviewChanged: (String, Bool) -> Void = { _, _ in }
 
     var body: some View {
@@ -1477,7 +1486,7 @@ private struct TaskCardView: View {
                     ForEach(visibleSuggestedOptions) { option in
                         Button {
                             lastQuickReplyInteractionAt = Date()
-                            backendClient.sendMessage(option.label, to: session)
+                            backendClient.sendMessage(option.label, to: session, isChoiceSelection: true)
                         } label: {
                             Label(option.label, systemImage: "arrow.turn.down.right")
                                 .font(.system(size: 10.5, weight: .semibold))
@@ -1504,7 +1513,6 @@ private struct TaskCardView: View {
         .frame(minHeight: PanelLayoutState.cardHeight)
         .background(
             LiquidGlassCardBackground(cornerRadius: 18, fillOpacity: cardFillOpacity)
-                .matchedGeometryEffect(id: "task-card-\(session.id)", in: namespace)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
@@ -1959,11 +1967,14 @@ private struct AnimatedAvatarImage: NSViewRepresentable {
 private struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
+    private static let initialVisibleMessageLimit = 15
     @State private var message = ""
-    @State private var shouldRenderMessages = false
     @State private var didInitialScroll = false
-    @State private var visibleMessageLimit = 100
-    let namespace: Namespace.ID
+    @State private var visibleMessageLimit = initialVisibleMessageLimit
+    @State private var cachedDisplayItems: [CodexThreadItem] = []
+    @State private var cachedDisplayEntries: [ChatDisplayEntry] = []
+    @State private var cachedTotalDisplayEntryCount = 0
+    @State private var cachedItemsSignature = ""
     let sessionId: String
 
     var body: some View {
@@ -1983,7 +1994,7 @@ private struct DetailView: View {
                 ThreadMetaView(detail: detail)
 
                 Group {
-                    if shouldRenderMessages {
+                    if panelLayoutState.canRenderDetailMessages && isDisplayCachePrepared(for: detail) {
                         detailMessages(detail)
                     } else {
                         DetailMessagesPlaceholder()
@@ -1991,6 +2002,15 @@ private struct DetailView: View {
                 }
                 .transaction { transaction in
                     transaction.animation = nil
+                }
+                .onAppear {
+                    updateCachedDisplayEntries(for: detail)
+                }
+                .onChange(of: detail.items.count) { _, _ in
+                    updateCachedDisplayEntries(for: detail)
+                }
+                .onChange(of: detail.items.last?.id) { _, _ in
+                    updateCachedDisplayEntries(for: detail)
                 }
             } else if backendClient.selectedDetail == nil,
                       backendClient.isLoadingDetail == false,
@@ -2027,34 +2047,20 @@ private struct DetailView: View {
         .onDisappear {
             panelLayoutState.updateDetailLastMessageHeight(nil)
         }
-        .onAppear {
-            scheduleMessageRender()
-        }
         .onChange(of: sessionId) { _, _ in
-            shouldRenderMessages = false
             didInitialScroll = false
-            visibleMessageLimit = 100
-            scheduleMessageRender()
-        }
-    }
-
-    private func scheduleMessageRender() {
-        shouldRenderMessages = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
-            guard backendClient.selectedSession?.id == sessionId else {
-                return
-            }
-            didInitialScroll = false
-            shouldRenderMessages = true
+            visibleMessageLimit = Self.initialVisibleMessageLimit
+            cachedDisplayItems = []
+            cachedDisplayEntries = []
+            cachedTotalDisplayEntryCount = 0
+            cachedItemsSignature = ""
         }
     }
 
     @ViewBuilder
     private func detailMessages(_ detail: CodexThreadDetail) -> some View {
-        let displayItems = displayItems(for: detail)
-        let visibleItems = visibleItems(from: displayItems)
-        let displayEntries = chatDisplayEntries(from: visibleItems)
-        let hiddenCount = max(0, displayItems.count - visibleItems.count)
+        let displayEntries = cachedDisplayEntries
+        let hiddenCount = max(0, cachedTotalDisplayEntryCount - displayEntries.count)
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
@@ -2062,6 +2068,7 @@ private struct DetailView: View {
                     if hiddenCount > 0 {
                         Button {
                             visibleMessageLimit += 100
+                            updateCachedDisplayEntries(for: detail)
                         } label: {
                             Label("Load \(min(100, hiddenCount)) earlier messages", systemImage: "arrow.up.circle")
                                 .font(.system(size: 11, weight: .semibold))
@@ -2094,12 +2101,14 @@ private struct DetailView: View {
             }
             .defaultScrollAnchor(.bottom)
             .onAppear {
+                updateCachedDisplayEntries(for: detail)
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy)
                 if detail.items.isEmpty {
                     panelLayoutState.updateDetailLastMessageHeight(nil)
                 }
             }
             .onChange(of: detail.items.last?.id) { _, _ in
+                updateCachedDisplayEntries(for: detail)
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy)
                 if detail.items.isEmpty {
                     panelLayoutState.updateDetailLastMessageHeight(nil)
@@ -2111,24 +2120,45 @@ private struct DetailView: View {
         }
     }
 
+    private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
+        let displayItems = displayItems(for: detail)
+        let displayEntries = chatDisplayEntries(from: displayItems)
+        let visibleEntries = visibleEntries(from: displayEntries)
+        let signature = displaySignature(for: visibleEntries)
+        guard signature != cachedItemsSignature else {
+            return
+        }
+        cachedItemsSignature = signature
+        cachedDisplayItems = displayItems
+        cachedTotalDisplayEntryCount = displayEntries.count
+        cachedDisplayEntries = visibleEntries
+    }
+
+    private func isDisplayCachePrepared(for detail: CodexThreadDetail) -> Bool {
+        let visibleEntries = visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail)))
+        return cachedItemsSignature == displaySignature(for: visibleEntries)
+    }
+
+    private func displaySignature(for visibleEntries: [ChatDisplayEntry]) -> String {
+        "\(visibleMessageLimit)|\(visibleEntries.count)|\(visibleEntries.first?.id ?? "")|\(visibleEntries.last?.id ?? "")"
+    }
+
     private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy) {
-        guard !visibleItems(for: detail).isEmpty else {
+        guard !cachedDisplayEntries.isEmpty || !displayItems(for: detail).isEmpty else {
             return
         }
 
-        let delays: [TimeInterval] = didInitialScroll ? [0.0, 0.08] : [0.0, 0.08, 0.22]
+        let delay: TimeInterval = didInitialScroll ? 0.0 : 0.02
         didInitialScroll = true
 
-        for delay in delays {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard backendClient.selectedSession?.id == sessionId else {
-                    return
-                }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    proxy.scrollTo(bottomScrollAnchorId, anchor: .bottom)
-                }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard backendClient.selectedSession?.id == sessionId else {
+                return
+            }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                proxy.scrollTo(bottomScrollAnchorId, anchor: .bottom)
             }
         }
     }
@@ -2137,15 +2167,15 @@ private struct DetailView: View {
         "\(sessionId)-bottom-anchor"
     }
 
-    private func visibleItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
-        visibleItems(from: displayItems(for: detail))
-    }
-
-    private func visibleItems(from displayItems: [CodexThreadItem]) -> [CodexThreadItem] {
-        guard displayItems.count > visibleMessageLimit else {
-            return displayItems
+    private func visibleEntries(from displayEntries: [ChatDisplayEntry]) -> [ChatDisplayEntry] {
+        guard displayEntries.count > visibleMessageLimit else {
+            return displayEntries
         }
-        return Array(displayItems.suffix(visibleMessageLimit))
+        var entries = Array(displayEntries.suffix(visibleMessageLimit))
+        while entries.first?.isProcessGroup == true && entries.count > 1 {
+            entries.removeFirst()
+        }
+        return entries
     }
 
     private func displayItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
@@ -2221,6 +2251,15 @@ private struct ChatDisplayEntry: Identifiable {
             return "message:\(item.id)"
         case .process(let items):
             return "process:\(items.first?.id ?? UUID().uuidString)"
+        }
+    }
+
+    var isProcessGroup: Bool {
+        switch kind {
+        case .message:
+            return false
+        case .process:
+            return true
         }
     }
 }
@@ -2917,48 +2956,53 @@ private struct MessageComposer: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ChatInputTextView(
-                text: $message,
-                placeholder: "Send a instruction",
-                font: .systemFont(ofSize: 12, weight: .medium),
-                isEditable: backendClient.selectedDetail?.canSend != false,
-                onFocusChange: { isFocused = $0 },
-                onSubmit: send
-            )
-                .frame(height: 36)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.black.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
+            HStack(spacing: 6) {
+                ChatInputTextView(
+                    text: $message,
+                    placeholder: "Send a instruction",
+                    font: .systemFont(ofSize: 12, weight: .medium),
+                    isEditable: backendClient.selectedDetail?.canSend != false,
+                    onFocusChange: { isFocused = $0 },
+                    onSubmit: send
                 )
-                .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
-                .onTapGesture {
-                    isFocused = true
+                    .frame(height: 32)
+                    .padding(.leading, 10)
+                    .padding(.trailing, 2)
+                    .padding(.vertical, 4)
+                    .onTapGesture {
+                        isFocused = true
+                    }
+                    .disabled(backendClient.selectedDetail?.canSend == false)
+
+                Button {
+                    send()
+                } label: {
+                    if backendClient.isSendingMessage {
+                        ProgressView()
+                            .controlSize(.small)
+                            .frame(width: 28, height: 28)
+                    } else {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 11, weight: .bold))
+                            .frame(width: 28, height: 28)
+                    }
                 }
-                .disabled(backendClient.selectedDetail?.canSend == false)
+                .buttonStyle(.plain)
+                .foregroundStyle(CopetsPalette.softBlue)
+                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || backendClient.isSendingMessage || backendClient.selectedDetail?.canSend == false)
+                .help("Send instruction")
+                .padding(.trailing, 6)
+            }
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(Color.black.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
 
             if canSwitchModel {
                 CodexModelMenu()
             }
-
-            Button {
-                send()
-            } label: {
-                if backendClient.isSendingMessage {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 30, height: 30)
-                } else {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .frame(width: 30, height: 30)
-                }
-            }
-            .buttonStyle(IconButtonStyle())
-            .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || backendClient.isSendingMessage || backendClient.selectedDetail?.canSend == false)
-            .help("Send instruction")
         }
         .opacity(backendClient.selectedDetail?.canSend == false ? 0.55 : 1)
         .task {
@@ -3053,9 +3097,6 @@ private struct CodexModelMenu: View {
                     ProgressView()
                         .controlSize(.small)
                         .frame(width: 16, height: 16)
-                } else {
-                    Image(systemName: "cpu")
-                        .font(.system(size: 10, weight: .bold))
                 }
                 Text(currentModelLabel)
                     .font(.system(size: 10, weight: .semibold, design: .rounded))

@@ -13,6 +13,7 @@ final class PanelLayoutState: ObservableObject {
     @Published var preferredListHeight: CGFloat?
     @Published var usefulListHeight: CGFloat?
     @Published var detailLastMessageHeight: CGFloat?
+    @Published var canRenderDetailMessages = false
 
     static let horizontalPadding: CGFloat = 18
     static let verticalPadding: CGFloat = 18
@@ -81,6 +82,8 @@ final class FloatingPanelController: NSObject {
     private var isDetailTransitionLocked = false
     private var didUserResize = false
     private var lastSessionCount = 0
+    private var listWidthBeforeDetail: CGFloat?
+    private var currentDisplayedSessionId: String?
     private var pendingResizeBounce: DispatchWorkItem?
     private var pendingListTransitionUnlock: DispatchWorkItem?
     private var pendingDetailTransitionUnlock: DispatchWorkItem?
@@ -141,11 +144,20 @@ final class FloatingPanelController: NSObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] selectedSession in
                 guard let self else { return }
+                let previousSessionId = self.currentDisplayedSessionId
+                let nextSessionId = selectedSession?.id
+                guard previousSessionId != nextSessionId else {
+                    return
+                }
+                self.currentDisplayedSessionId = nextSessionId
                 if selectedSession == nil {
                     self.pendingDetailTransitionUnlock?.cancel()
                     self.isDetailTransitionLocked = false
                     self.beginListTransition()
                 } else {
+                    if previousSessionId == nil {
+                        self.listWidthBeforeDetail = self.panel.frame.width
+                    }
                     self.pendingListTransitionUnlock?.cancel()
                     self.isListTransitionLocked = false
                     self.beginDetailTransition()
@@ -208,9 +220,9 @@ final class FloatingPanelController: NSObject {
     private func beginListTransition() {
         pendingListTransitionUnlock?.cancel()
         isListTransitionLocked = true
+        layoutState.canRenderDetailMessages = false
 
-        applyListSizing()
-        shrinkToUsefulListHeightIfNeeded(animated: true)
+        restoreListFrameForTransition(animated: true)
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else {
@@ -228,22 +240,21 @@ final class FloatingPanelController: NSObject {
 
     private func beginDetailTransition() {
         pendingDetailTransitionUnlock?.cancel()
+        pendingDetailTransitionUnlock = nil
         isDetailTransitionLocked = true
+        layoutState.canRenderDetailMessages = false
 
-        applyDetailSizing(animated: true, restoreSavedSize: true)
-
-        let workItem = DispatchWorkItem { [weak self] in
+        let targetSessionId = client.selectedSession?.id
+        applyDetailSizing(animated: true, restoreSavedSize: true) { [weak self] in
             guard let self else {
                 return
             }
             self.isDetailTransitionLocked = false
-            guard self.client.selectedSession != nil else {
+            guard self.client.selectedSession?.id == targetSessionId else {
                 return
             }
-            self.applyDetailSizing(animated: true, restoreSavedSize: false)
+            self.layoutState.canRenderDetailMessages = true
         }
-        pendingDetailTransitionUnlock = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
     }
 
     private func resizeForSessionCount(_ count: Int) {
@@ -375,6 +386,34 @@ final class FloatingPanelController: NSObject {
         }
     }
 
+    private func restoreListFrameForTransition(animated: Bool) {
+        let minimumHeight = currentListMinimumHeight()
+        panel.minSize = NSSize(width: listMinimumSize.width, height: minimumHeight)
+
+        let savedWidth = listWidthBeforeDetail?.isFinite == true ? listWidthBeforeDetail : nil
+        let targetWidth = min(panel.maxSize.width, max(listMinimumSize.width, savedWidth ?? panel.frame.width))
+        let targetHeight = listTransitionTargetHeight(minimumHeight: minimumHeight)
+        guard abs(panel.frame.width - targetWidth) > 1 || abs(panel.frame.height - targetHeight) > 1 else {
+            return
+        }
+        setPanelSize(
+            NSSize(width: targetWidth, height: targetHeight),
+            duration: animated ? 0.16 : 0.0,
+            timing: animated ? .easeOut : .linear
+        )
+    }
+
+    private func listTransitionTargetHeight(minimumHeight: CGFloat) -> CGFloat {
+        let usefulHeight = usefulMaximumListHeight(for: client.sessions.count)
+        if panel.frame.height > usefulHeight + 8 {
+            return usefulHeight
+        }
+        if panel.frame.height < minimumHeight - 1 {
+            return minimumHeight
+        }
+        return panel.frame.height
+    }
+
     private func currentListMinimumHeight() -> CGFloat {
         guard let measuredHeight = layoutState.minimumListHeight, measuredHeight > 0 else {
             return listMinimumSize.height
@@ -382,7 +421,7 @@ final class FloatingPanelController: NSObject {
         return min(panel.maxSize.height, max(listMinimumSize.height, measuredHeight))
     }
 
-    private func applyDetailSizing(animated: Bool, restoreSavedSize: Bool) {
+    private func applyDetailSizing(animated: Bool, restoreSavedSize: Bool, completion: (@MainActor @Sendable () -> Void)? = nil) {
         let minimumHeight = detailMinimumHeight()
         panel.minSize = NSSize(width: listMinimumSize.width, height: minimumHeight)
 
@@ -396,13 +435,15 @@ final class FloatingPanelController: NSObject {
             : currentSize.height < targetHeight - 1
 
         guard shouldResize else {
+            completion?()
             return
         }
 
         setPanelSize(
             NSSize(width: targetWidth, height: targetHeight),
             duration: animated ? 0.16 : 0.0,
-            timing: animated ? .easeOut : .linear
+            timing: animated ? .easeOut : .linear,
+            completion: completion
         )
     }
 
@@ -418,7 +459,7 @@ final class FloatingPanelController: NSObject {
         setPanelSize(size, duration: 0.16, timing: .easeOut)
     }
 
-    private func setPanelSize(_ size: NSSize, duration: TimeInterval, timing: CAMediaTimingFunctionName) {
+    private func setPanelSize(_ size: NSSize, duration: TimeInterval, timing: CAMediaTimingFunctionName, completion: (@MainActor @Sendable () -> Void)? = nil) {
         var frame = panel.frame
         let oldMaxY = frame.maxY
         frame.size = size
@@ -431,7 +472,11 @@ final class FloatingPanelController: NSObject {
             panel.animator().setFrame(frame, display: true)
         } completionHandler: { [weak self] in
             Task { @MainActor in
-                self?.isProgrammaticResize = false
+                guard let self else {
+                    return
+                }
+                self.isProgrammaticResize = false
+                completion?()
             }
         }
     }
