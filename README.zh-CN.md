@@ -99,4 +99,4 @@ scripts/package-macos-installer.sh
 
 ## 📄 许可证
 
-本项目的开源协议尚未确定。在正式声明许可证之前，请不要默认将本仓库代码用于复制、分发、修改或商业用途。
+Copets 基于 [Apache License 2.0](LICENSE) 开源。
