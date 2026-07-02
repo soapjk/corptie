@@ -59,8 +59,7 @@ The two environments do not share backend config, SQLite data, frontend `UserDef
 ## 🛠️ Develop
 
 ```sh
-scripts/start-backend-development.sh
-scripts/run-macos-development.sh
+scripts/run-development.sh
 ```
 
 Useful checks:
@@ -95,6 +94,6 @@ Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.d
 
 - [Project vision and technical research](docs/project-vision-and-tech-research.md)
 
-## 📄 License
+## License
 
-Copets is licensed under the [Apache License 2.0](LICENSE).
+[Apache-2.0](LICENSE)
