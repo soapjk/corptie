@@ -266,7 +266,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         client: client,
         sessionId: sessionId,
         dismissPreview: { [weak self] in
-            self?.hideReplyPreview()
+            self?.hideReplyPreview(markDismissed: true)
             self?.updateAccessory(for: self?.currentSession)
         },
         dismissQuickReply: { [weak self] in
@@ -279,6 +279,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastSummary: String?
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
+    private var dismissedPreviewText: String?
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
@@ -328,7 +329,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                     self?.openSession(session)
                 },
                 dismissPreview: { [weak self] in
-                    self?.hideReplyPreview()
+                    self?.hideReplyPreview(markDismissed: true)
                     self?.updateAccessory(for: self?.currentSession)
                 },
                 dismissQuickReply: { [weak self] in
@@ -401,6 +402,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             lastSummary = nil
             lastStatus = nil
             lastPreviewText = nil
+            dismissedPreviewText = nil
             return
         }
         guard !isSessionOpenInMainView(session) else {
@@ -420,23 +422,26 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
 
         guard let previousSummary = lastSummary else {
-            if session.status == .blocked {
+            if session.status == .blocked || session.status == .running {
                 fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary)
             }
-            return
-        }
-        guard session.status != .running else {
             return
         }
 
         if summary != previousSummary, !summary.isEmpty {
             showReplyPreview(summary, for: session)
-        } else if previousStatus == .running && session.status == .blocked {
+        } else if previousStatus == .running && (session.status == .blocked || session.status == .running) {
             fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary)
         }
     }
 
-    private func hideReplyPreview() {
+    private func hideReplyPreview(markDismissed: Bool = false) {
+        if markDismissed {
+            let text = previewState.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                dismissedPreviewText = text
+            }
+        }
         previewState.isVisible = false
         previewState.isQuickReplyVisible = false
     }
@@ -449,7 +454,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             await MainActor.run {
                 guard let current = self.currentSession,
                       current.id == session.id,
-                      current.status != .running,
                       !self.isSessionOpenInMainView(current) else {
                     return
                 }
@@ -462,6 +466,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         guard !previewState.isVisible else {
             return
         }
+        dismissedPreviewText = nil
         if !previewState.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             previewState.isVisible = true
             return
@@ -485,7 +490,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             await MainActor.run {
                 guard let current = self.currentSession,
                       current.id == session.id,
-                      current.status != .running,
                       !self.isSessionOpenInMainView(current) else {
                     return
                 }
@@ -496,8 +500,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func showReplyPreview(_ text: String, for session: TaskSession, force: Bool = false) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !force, trimmed == dismissedPreviewText {
+            return
+        }
         guard !trimmed.isEmpty, force || trimmed != lastPreviewText || !previewState.isVisible else {
             return
+        }
+        if trimmed != dismissedPreviewText {
+            dismissedPreviewText = nil
         }
         lastPreviewText = trimmed
         previewState.text = trimmed

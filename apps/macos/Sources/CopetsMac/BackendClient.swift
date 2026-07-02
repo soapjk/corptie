@@ -1165,7 +1165,9 @@ final class BackendClient: ObservableObject {
         }
         do {
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
-            selectedDetail = detailByMergingPendingMessages(decoded.thread)
+            let mergedDetail = detailByMergingPendingMessages(decoded.thread)
+            selectedDetail = mergedDetail
+            syncSessionSummary(from: mergedDetail)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -1198,10 +1200,60 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
-            selectedDetail = detailByMergingPendingMessages(decoded.thread)
+            let mergedDetail = detailByMergingPendingMessages(decoded.thread)
+            selectedDetail = mergedDetail
+            syncSessionSummary(from: mergedDetail)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    private func syncSessionSummary(from detail: CodexThreadDetail) {
+        let latestSummary = detail.items.reversed().first { item in
+            item.type != "userMessage"
+                && item.type != "system"
+                && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        sessions = sessions.map { session in
+            guard session.external?.threadId == detail.id else {
+                return session
+            }
+
+            return TaskSession(
+                id: session.id,
+                title: session.title,
+                agent: session.agent,
+                status: detail.status,
+                progress: session.progress,
+                summary: latestSummary?.isEmpty == false ? latestSummary! : session.summary,
+                suggestedOptions: detail.items.reversed().first { item in
+                    guard let options = item.options else {
+                        return false
+                    }
+                    return !options.isEmpty
+                }?.options ?? session.suggestedOptions,
+                activityStatus: detail.activityStatus ?? session.activityStatus,
+                updatedAt: detail.updatedAt,
+                accent: session.accent,
+                archived: session.archived,
+                pinned: session.pinned,
+                sortOrder: session.sortOrder,
+                avatarPath: session.avatarPath,
+                capabilities: detail.capabilities ?? session.capabilities,
+                external: ExternalSession(
+                    provider: session.external?.provider ?? detail.source ?? "",
+                    threadId: session.external?.threadId,
+                    sessionId: session.external?.sessionId,
+                    agentSessionId: session.external?.agentSessionId,
+                    connectionStatus: detail.connectionStatus ?? session.external?.connectionStatus,
+                    currentModel: detail.currentModel ?? session.external?.currentModel,
+                    currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel,
+                    cwd: detail.cwd ?? session.external?.cwd,
+                    source: session.external?.source ?? detail.source
+                )
+            )
         }
     }
 
