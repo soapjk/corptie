@@ -17,6 +17,7 @@ struct TaskSession: Identifiable, Codable, Equatable {
     let pinned: Bool?
     let sortOrder: Double?
     let avatarPath: String?
+    let capabilities: SessionCapabilities?
     let external: ExternalSession?
 
     var isConnected: Bool {
@@ -37,6 +38,9 @@ struct TaskSession: Identifiable, Codable, Equatable {
         if isUnboundCodexSession {
             return CopetsPalette.unboundDot
         }
+        if let provider = external?.provider, provider != "codex-pty" {
+            return CopetsPalette.connectedDot
+        }
         return isConnected ? CopetsPalette.connectedDot : CopetsPalette.disconnected
     }
 }
@@ -53,6 +57,14 @@ struct ExternalSession: Codable, Equatable {
     let source: String?
 }
 
+struct SessionCapabilities: Codable, Equatable {
+    let canSend: Bool?
+    let canSwitchModel: Bool?
+    let canSwitchReasoning: Bool?
+    let canInterrupt: Bool?
+    let canReconnect: Bool?
+}
+
 enum TaskStatus: String, Codable {
     case running
     case blocked
@@ -63,7 +75,7 @@ enum TaskStatus: String, Codable {
     var label: String {
         switch self {
         case .running: "Running"
-        case .blocked: "Needs input"
+        case .blocked: "Blocked"
         case .complete: "Complete"
         case .failed: "Failed"
         case .cancelled: "Cancelled"
@@ -74,7 +86,7 @@ enum TaskStatus: String, Codable {
         switch self {
         case .running: CopetsPalette.running
         case .blocked: .orange
-        case .complete: .green
+        case .complete: .orange
         case .failed: .red
         case .cancelled: .secondary
         }
@@ -159,6 +171,7 @@ struct CodexThreadDetail: Decodable, Equatable {
     let updatedAt: String
     let canSend: Bool?
     let sendUnavailableReason: String?
+    let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
 
@@ -251,7 +264,14 @@ struct BackendSettings: Codable, Equatable {
     let dbPath: String
     let legacyDbPath: String?
     let choiceParser: ChoiceParserSettings?
+    let codexBackend: CodexBackendSettings?
     let agentProxy: AgentProxySettings?
+}
+
+struct CodexBackendSettings: Codable, Equatable {
+    var mode: String
+
+    static let defaults = CodexBackendSettings(mode: "app-server")
 }
 
 struct ChoiceParserSettings: Codable, Equatable {

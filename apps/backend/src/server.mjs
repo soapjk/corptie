@@ -24,8 +24,19 @@ const sessions = new Map();
 const managedCodexSessions = new Map();
 const eventLog = [];
 const sseClients = new Set();
-const codexClient = new CodexAppServerClient({ command: resolveCodexCommand() });
+const codexChoiceOptionsCache = new Map();
+const pendingCodexChoiceParses = new Set();
 const store = new CopetsStore();
+const codexClient = new CodexAppServerClient({
+  command: resolveCodexCommand(),
+  env: () => ({
+    ...process.env,
+    ...proxyEnvForProfile(store.settings().agentProxy?.codex)
+  }),
+  onNotification: (message) => {
+    handleCodexAppServerNotification(message);
+  }
+});
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 let codexModelsCache = null;
 
@@ -175,6 +186,307 @@ async function bindCodexPtySessionWhenAvailable(options) {
     console.log(`[codex-pty] session id binding pending/failed for ${options.copetsSessionId}: ${error.message}`);
     return null;
   }
+}
+
+function enrichCodexDetailChoiceOptions(detail) {
+  const items = Array.isArray(detail?.items) ? detail.items : [];
+  const settings = store.settings();
+  const choiceParser = {
+    ...(settings.choiceParser ?? {}),
+    agentProxy: settings.agentProxy
+  };
+  const parserEnabled = choiceParser.provider && choiceParser.provider !== "disabled";
+  if (!parserEnabled) {
+    return detail;
+  }
+
+  const candidates = items
+    .filter((item) => item.type === "agentMessage" && item.text && !(Array.isArray(item.options) && item.options.length >= 2))
+    .slice(-2);
+  for (const item of candidates) {
+    const cacheKey = choiceOptionsCacheKey(item.text, choiceParser);
+    const cached = codexChoiceOptionsCache.get(cacheKey);
+    if (cached) {
+      item.options = cached.map((option) => ({ ...option }));
+      continue;
+    }
+    scheduleCodexChoiceParse(detail.id, item.text, choiceParser, cacheKey);
+  }
+  return detail;
+}
+
+function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey) {
+  if (pendingCodexChoiceParses.has(cacheKey)) {
+    return;
+  }
+  pendingCodexChoiceParses.add(cacheKey);
+  const scheduledAt = Date.now();
+  console.log(`[choice-parser] event=codex-app-server-scheduled session=codex:${threadId} ${JSON.stringify({ at: new Date(scheduledAt).toISOString(), chars: String(text).length })}`);
+  parseChoiceStageWithConfiguredParser(text, choiceParser, {
+    id: `codex:${threadId}`,
+    provider: "codex-app-server"
+  })
+    .then((parsed) => {
+      if (!parsed || !Array.isArray(parsed.options) || parsed.options.length < 2 || parsed.confidence < 0.45) {
+        return;
+      }
+      const options = parsed.options.slice(0, 6).map((option, index) => ({
+        id: option.id || `${option.role ?? "option"}-${index}`,
+        label: option.label,
+        role: option.role ?? "message-choice",
+        index,
+        selected: index === parsed.selectedIndex
+      }));
+      codexChoiceOptionsCache.set(cacheKey, options.map((option) => ({ ...option })));
+      if (codexChoiceOptionsCache.size > 200) {
+        codexChoiceOptionsCache.delete(codexChoiceOptionsCache.keys().next().value);
+      }
+      applyCodexChoiceOptionsToManagedSession(threadId, text, options);
+      console.log(`[choice-parser] event=codex-app-server-detail-accepted session=codex:${threadId} ${JSON.stringify({ at: new Date().toISOString(), queuedMs: Date.now() - scheduledAt, options: options.length, confidence: parsed.confidence, source: parsed.source, async: true })}`);
+      emitEvent("CodexThreadChoiceOptionsUpdated", { threadId, optionsCount: options.length });
+    })
+    .catch((error) => {
+      console.log(`[choice-parser] event=codex-app-server-detail-error session=codex:${threadId} ${JSON.stringify({ error: error.message, async: true })}`);
+    })
+    .finally(() => {
+      pendingCodexChoiceParses.delete(cacheKey);
+    });
+}
+
+function choiceOptionsCacheKey(text = "", choiceParser = {}) {
+  const normalized = String(text).replace(/\s+/g, " ").trim();
+  return JSON.stringify({
+    provider: choiceParser.provider ?? "",
+    model: choiceParser.provider === "openai" ? choiceParser.openaiModel : choiceParser.localModel,
+    text: normalized.slice(-4000)
+  });
+}
+
+function scheduleCodexChoiceParseForText(threadId, text) {
+  const cleanText = typeof text === "string" ? text.trim() : "";
+  if (!cleanText) {
+    return;
+  }
+  const settings = store.settings();
+  const choiceParser = {
+    ...(settings.choiceParser ?? {}),
+    agentProxy: settings.agentProxy
+  };
+  if (!choiceParser.provider || choiceParser.provider === "disabled") {
+    return;
+  }
+  const cacheKey = choiceOptionsCacheKey(cleanText, choiceParser);
+  if (codexChoiceOptionsCache.has(cacheKey)) {
+    applyCodexChoiceOptionsToManagedSession(threadId, cleanText, codexChoiceOptionsCache.get(cacheKey));
+    return;
+  }
+  scheduleCodexChoiceParse(threadId, cleanText, choiceParser, cacheKey);
+}
+
+function syncManagedCodexSessionFromDetail(threadId, detail) {
+  const sessionId = `codex:${threadId}`;
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!session || !detail) {
+    return null;
+  }
+  const latestAgentMessage = Array.isArray(detail.items)
+    ? detail.items.slice().reverse().find((item) => item.type === "agentMessage" && item.text)
+    : null;
+  const latestAgentOptions = Array.isArray(latestAgentMessage?.options) && latestAgentMessage.options.length >= 2
+    ? latestAgentMessage.options
+    : null;
+  const previousOptionsStillMatch = latestAgentMessage?.text
+    && session.summary === latestAgentMessage.text
+    && Array.isArray(session.suggestedOptions)
+    && session.suggestedOptions.length >= 2;
+  const nextSession = {
+    ...session,
+    status: detail.status ?? session.status,
+    progress: detail.status === "running" || detail.status === "blocked" ? 0.5 : 1,
+    summary: latestAgentMessage?.text ?? session.summary,
+    suggestedOptions: latestAgentOptions ?? (previousOptionsStillMatch ? session.suggestedOptions : null),
+    activityStatus: detail.activityStatus ?? null,
+    updatedAt: detail.updatedAt ?? session.updatedAt,
+    capabilities: detail.capabilities ?? session.capabilities,
+    external: {
+      ...session.external,
+      currentModel: detail.currentModel ?? session.external?.currentModel ?? null,
+      currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null,
+      rawStatus: detail.rawStatus ?? session.external?.rawStatus
+    }
+  };
+  upsertManagedCodexSession(nextSession);
+  return nextSession;
+}
+
+function applyCodexChoiceOptionsToManagedSession(threadId, text, options) {
+  const sessionId = `codex:${threadId}`;
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!session) {
+    return null;
+  }
+  const normalizedSessionSummary = String(session.summary ?? "").replace(/\s+/g, " ").trim();
+  const normalizedText = String(text ?? "").replace(/\s+/g, " ").trim();
+  const summaryMatches = !normalizedSessionSummary
+    || normalizedSessionSummary === normalizedText
+    || normalizedSessionSummary.includes(normalizedText.slice(0, 120))
+    || normalizedText.includes(normalizedSessionSummary.slice(0, 120));
+  if (!summaryMatches) {
+    console.log(`[choice-parser] event=codex-app-server-options-stale session=codex:${threadId} ${JSON.stringify({ at: new Date().toISOString(), sessionSummaryChars: normalizedSessionSummary.length, textChars: normalizedText.length })}`);
+    return null;
+  }
+  const nextSession = {
+    ...session,
+    summary: text || session.summary,
+    suggestedOptions: options.map((option) => ({ ...option })),
+    updatedAt: now()
+  };
+  upsertManagedCodexSession(nextSession);
+  emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method: "choice-options-updated" });
+  return nextSession;
+}
+
+function upsertManagedCodexSession(session) {
+  managedCodexSessions.set(session.id, session);
+  store.upsertSession({
+    ...session,
+    provider: session.external?.provider ?? "codex-app-server",
+    cwd: session.external?.cwd,
+    command: session.external?.source ?? "codex-app-server"
+  });
+}
+
+function handleCodexAppServerNotification(message) {
+  const method = message?.method;
+  const params = message?.params ?? {};
+  const threadId = params.threadId;
+  if (!threadId) {
+    return;
+  }
+  const sessionId = `codex:${threadId}`;
+  const session = managedCodexSessions.get(sessionId);
+  if (!session) {
+    return;
+  }
+
+  const liveItems = codexClient.liveItemsForThread(threadId);
+  const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
+  const nowIso = now();
+
+  if (method === "turn/started") {
+    const turn = params.turn ?? {};
+    const nextSession = {
+      ...session,
+      status: "running",
+      progress: 0.5,
+      activityStatus: "Running",
+      updatedAt: nowIso,
+      capabilities: {
+        ...(session.capabilities ?? {}),
+        canInterrupt: true
+      },
+      external: {
+        ...session.external,
+        activeTurnId: turn.id ?? session.external?.activeTurnId ?? null,
+        rawStatus: turn.status ?? "running"
+      }
+    };
+    upsertManagedCodexSession(nextSession);
+    emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method });
+    return;
+  }
+
+  if (method === "item/started" || method === "item/completed") {
+    const nextSession = {
+      ...session,
+      status: "running",
+      progress: 0.5,
+      summary: latestAgentMessage?.text ?? session.summary,
+      activityStatus: readableCodexActivity(params.item?.type ?? params.item?.title ?? method),
+      updatedAt: nowIso,
+      capabilities: {
+        ...(session.capabilities ?? {}),
+        canInterrupt: true
+      },
+      external: {
+        ...session.external,
+        activeTurnId: params.turnId ?? session.external?.activeTurnId ?? null
+      }
+    };
+    upsertManagedCodexSession(nextSession);
+    emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method });
+    return;
+  }
+
+  if (method === "turn/completed") {
+    const turn = params.turn ?? {};
+      const failed = Boolean(turn.error) || turn.status === "failed";
+      const cancelled = turn.status === "interrupted" || turn.status === "cancelled";
+      const nextSession = {
+        ...session,
+        status: failed ? "failed" : (cancelled ? "cancelled" : "complete"),
+        progress: 1,
+        summary: latestAgentMessage?.text ?? session.summary,
+        activityStatus: null,
+        updatedAt: nowIso,
+        capabilities: {
+          ...(session.capabilities ?? {}),
+          canInterrupt: false
+        },
+        external: {
+          ...session.external,
+          activeTurnId: null,
+          rawStatus: turn.status ?? (failed ? "failed" : (cancelled ? "cancelled" : "complete"))
+        }
+      };
+      upsertManagedCodexSession(nextSession);
+      if (!failed && !cancelled && latestAgentMessage?.text) {
+        scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
+      }
+      emitEvent(failed ? "CodexThreadFailed" : (cancelled ? "CodexThreadCancelled" : "CodexThreadCompleted"), { session: nextSession, threadId, turn });
+      return;
+    }
+
+  if (method === "error") {
+    const nextSession = {
+      ...session,
+      status: params.willRetry ? "running" : "failed",
+      progress: params.willRetry ? 0.5 : 1,
+      summary: params.error?.message ?? session.summary,
+      activityStatus: params.willRetry ? "Reconnecting" : null,
+      updatedAt: nowIso
+    };
+    upsertManagedCodexSession(nextSession);
+    emitEvent("CodexThreadError", { session: nextSession, threadId, error: params.error });
+  }
+}
+
+function readableCodexActivity(value = "") {
+  const text = String(value || "");
+  switch (text) {
+    case "reasoning":
+      return "Reasoning";
+    case "commandExecution":
+      return "Running command";
+    case "webSearch":
+      return "Searching";
+    case "mcpToolCall":
+    case "dynamicToolCall":
+      return "Using tool";
+    default:
+      return "Running";
+  }
+}
+
+function codexAppServerSessionCapabilities(overrides = {}) {
+  return {
+    canSend: true,
+    canSwitchModel: true,
+    canSwitchReasoning: false,
+    canInterrupt: true,
+    canReconnect: false,
+    ...overrides
+  };
 }
 
 async function waitForCodexRolloutSession(options) {
@@ -386,7 +698,10 @@ function createManagedCodexDetail(session, items, readError) {
     rawStatus: session.external.rawStatus,
     canSend: true,
     sendUnavailableReason: null,
+    capabilities: session.capabilities ?? codexAppServerSessionCapabilities({ canInterrupt: session.status === "running" }),
     turnCount: Math.max(1, new Set(items.map((item) => item.turnId)).size),
+    currentModel: session.external.currentModel ?? null,
+    currentReasoningLevel: session.external.currentReasoningLevel ?? null,
     items: [...warning, ...items].slice(-60)
   };
 }
@@ -415,6 +730,26 @@ function normalizeCodexApprovalPolicy(value) {
 
 function codexApprovalPolicyForCli(approvalPolicy) {
   return approvalPolicy === "ask-risky" ? "on-request" : approvalPolicy;
+}
+
+function proxyEnvForProfile(profile = {}) {
+  if (!profile?.enabled) {
+    return {};
+  }
+  const env = {};
+  setProxyEnvValue(env, "HTTP_PROXY", profile.httpProxy);
+  setProxyEnvValue(env, "HTTPS_PROXY", profile.httpsProxy);
+  setProxyEnvValue(env, "ALL_PROXY", profile.allProxy);
+  setProxyEnvValue(env, "NO_PROXY", profile.noProxy);
+  return env;
+}
+
+function setProxyEnvValue(env, key, value) {
+  if (typeof value !== "string" || !value.trim()) {
+    return;
+  }
+  env[key] = value.trim();
+  env[key.toLowerCase()] = value.trim();
 }
 
 function sendJson(response, statusCode, body) {
@@ -503,8 +838,15 @@ function route(request, response) {
 
   if (request.method === "PATCH" && url.pathname === "/settings") {
     readJson(request)
-      .then((input) => {
-        return store.updateSettings(input);
+      .then(async (input) => {
+        const before = store.settings();
+        const settings = await store.updateSettings(input);
+        const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
+        const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
+        if (codexBackendChanged || codexProxyChanged) {
+          await codexClient.close();
+        }
+        return settings;
       })
       .then((settings) => {
         configureChoiceParserRuntime({
@@ -519,10 +861,80 @@ function route(request, response) {
     return;
   }
 
+  const sessionModelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/model$/);
+  if (request.method === "POST" && sessionModelMatch) {
+    const sessionId = decodeURIComponent(sessionModelMatch[1]);
+    readJson(request)
+      .then((input) => {
+        const model = typeof input.model === "string" ? input.model.trim() : "";
+        if (!model) {
+          sendJson(response, 400, { error: "Model is required" });
+          return;
+        }
+
+        if (sessionId.startsWith("pty:")) {
+          const session = ptyAgents.switchModel(normalizeSessionId(sessionId), model);
+          emitEvent("PtySessionModelChanged", { sessionId, model });
+          sendJson(response, 202, { session, model });
+          return;
+        }
+
+        if (sessionId.startsWith("codex:")) {
+          const threadId = sessionId.slice("codex:".length);
+          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+          const now = new Date().toISOString();
+          const session = previous ?? {
+            id: sessionId,
+            title: `Codex ${threadId.slice(0, 8)}`,
+            agent: "Codex",
+            status: "complete",
+            progress: 1,
+            summary: "Copets-managed Codex task",
+            capabilities: {
+              ...codexAppServerSessionCapabilities({ canInterrupt: false })
+            },
+            updatedAt: now,
+            accent: "cyan",
+            external: {
+              provider: "codex-app-server",
+              threadId,
+              source: "copets"
+            }
+          };
+          const nextSession = {
+            ...session,
+            updatedAt: now,
+            capabilities: {
+              ...(session.capabilities ?? {}),
+              canSwitchModel: true,
+              canSwitchReasoning: false
+            },
+            external: {
+              ...session.external,
+              provider: "codex-app-server",
+              threadId,
+              currentModel: model
+            }
+          };
+          upsertManagedCodexSession(nextSession);
+          emitEvent("CodexThreadModelChanged", { threadId, model });
+          sendJson(response, 202, { session: nextSession, model });
+          return;
+        }
+
+        sendJson(response, 404, { error: "Session does not support model switching" });
+      })
+      .catch((error) => {
+        sendJson(response, 502, { error: error.message });
+      });
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/settings/choice-parser/test") {
     readJson(request)
       .then(async (input) => {
         const choiceParser = {
+          ...(store.settings().choiceParser ?? {}),
           ...(input?.choiceParser ?? {}),
           agentProxy: input?.agentProxy ?? store.settings().agentProxy
         };
@@ -574,9 +986,17 @@ function route(request, response) {
 
     if (!includeCodexHistory) {
       const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-      const ptySessions = ptyAgents.list({ archived });
+      const storedSessions = ptyAgents.list({ archived });
+      const ptySessions = storedSessions.filter((session) => session.external?.provider !== "codex-app-server");
+      const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
+      const listedIds = new Set(ptySessions.map((session) => session.id));
+      const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
+      const codexSessions = [
+        ...storedCodexSessions.map((session) => managedById.get(session.id) ?? session),
+        ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
+      ].filter((session) => !listedIds.has(session.id));
       sendJson(response, 200, {
-        sessions: [...ptySessions, ...(archived ? [] : managedCodexSessions.values()), ...(archived ? [] : mockSessions)],
+        sessions: [...ptySessions, ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)],
         sources: {
           pty: {
             ok: true,
@@ -584,7 +1004,7 @@ function route(request, response) {
           },
           codex: {
             ok: true,
-            count: managedCodexSessions.size,
+            count: codexSessions.length,
             historyIncluded: false
           },
           mock: {
@@ -605,12 +1025,33 @@ function route(request, response) {
         sortDirection: "desc"
       })
       .then((result) => {
-        const codexSessions = result.data.map(mapCodexThreadToSession);
+        const codexSessions = result.data.map((thread) => {
+          const session = mapCodexThreadToSession(thread);
+          const managedSession = managedCodexSessions.get(session.id);
+          if (!managedSession) {
+            return session;
+          }
+          return {
+            ...session,
+            status: managedSession.status ?? session.status,
+            progress: managedSession.progress ?? session.progress,
+            summary: managedSession.summary || session.summary,
+            suggestedOptions: managedSession.suggestedOptions ?? session.suggestedOptions ?? null,
+            capabilities: managedSession.capabilities ?? session.capabilities,
+            external: {
+              ...session.external,
+              currentModel: managedSession.external?.currentModel ?? session.external?.currentModel ?? null,
+              currentReasoningLevel: managedSession.external?.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null
+            }
+          };
+        });
         const knownIds = new Set(codexSessions.map((session) => session.id));
         const managedSessions = Array.from(managedCodexSessions.values())
           .filter((session) => !knownIds.has(session.id));
         const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-        const ptySessions = ptyAgents.list({ archived });
+        const ptySessions = ptyAgents.list({ archived })
+          .filter((session) => session.external?.provider !== "codex-app-server")
+          .filter((session) => !knownIds.has(session.id));
 
         sendJson(response, 200, {
           sessions: [...ptySessions, ...(archived ? [] : managedSessions), ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)],
@@ -664,8 +1105,31 @@ function route(request, response) {
     readJson(request)
       .catch(() => ({}))
       .then((input) => {
-        const id = normalizeSessionId(decodeURIComponent(sessionArchiveMatch[1]));
+        const rawId = decodeURIComponent(sessionArchiveMatch[1]);
         const archived = input.archived !== false;
+        if (rawId.startsWith("codex:")) {
+          const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
+          if (!session) {
+            sendJson(response, 404, { error: "Session not found" });
+            return;
+          }
+          const nextSession = {
+            ...session,
+            archived,
+            updatedAt: new Date().toISOString()
+          };
+          if (archived) {
+            managedCodexSessions.delete(rawId);
+            store.archiveSession(rawId, true);
+          } else {
+            upsertManagedCodexSession(nextSession);
+          }
+          emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session: nextSession });
+          sendJson(response, 200, { session: nextSession });
+          return;
+        }
+
+        const id = normalizeSessionId(rawId);
         const session = ptyAgents.archive(id, archived);
         if (!session) {
           sendJson(response, 404, { error: "Session not found" });
@@ -713,7 +1177,33 @@ function route(request, response) {
   if (request.method === "PATCH" && sessionDeleteMatch) {
     readJson(request)
       .then((input) => {
-        const id = normalizeSessionId(decodeURIComponent(sessionDeleteMatch[1]));
+        const rawId = decodeURIComponent(sessionDeleteMatch[1]);
+        if (rawId.startsWith("codex:")) {
+          const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
+          if (!session) {
+            sendJson(response, 404, { error: "Session not found" });
+            return;
+          }
+          if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
+            const nextSession = { ...session, avatarPath: input.avatarPath ?? null };
+            upsertManagedCodexSession(nextSession);
+            emitEvent("SessionAvatarUpdated", { session: nextSession });
+            sendJson(response, 200, { session: nextSession });
+            return;
+          }
+          const title = typeof input.title === "string" ? input.title.trim() : "";
+          if (!title) {
+            sendJson(response, 400, { error: "Title is required" });
+            return;
+          }
+          const nextSession = { ...session, title, updatedAt: new Date().toISOString() };
+          upsertManagedCodexSession(nextSession);
+          emitEvent("SessionRenamed", { session: nextSession });
+          sendJson(response, 200, { session: nextSession });
+          return;
+        }
+
+        const id = normalizeSessionId(rawId);
         if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
           const session = ptyAgents.updateAvatar(id, input.avatarPath);
           if (!session) {
@@ -744,7 +1234,16 @@ function route(request, response) {
   }
 
   if (request.method === "DELETE" && sessionDeleteMatch) {
-    const id = normalizeSessionId(decodeURIComponent(sessionDeleteMatch[1]));
+    const rawId = decodeURIComponent(sessionDeleteMatch[1]);
+    if (rawId.startsWith("codex:")) {
+      const existed = managedCodexSessions.delete(rawId);
+      store.deleteSession(rawId);
+      emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
+      sendJson(response, 200, { ok: true, deleted: existed });
+      return;
+    }
+
+    const id = normalizeSessionId(rawId);
     ptyAgents.delete(id);
     emitEvent("SessionDeleted", { sessionId: id });
     sendJson(response, 200, { ok: true });
@@ -1198,12 +1697,19 @@ function route(request, response) {
             cwd,
             updatedAt: Date.now() / 1000,
             status: "running",
-            source: "copets"
-          }),
-          title,
-          summary: `Copets-managed Codex task in ${cwd}`
-        };
-        managedCodexSessions.set(session.id, session);
+            source: "copets",
+          currentModel: input.model ?? started.model ?? null,
+          currentReasoningLevel: started.reasoningEffort ?? null,
+          activeTurnId: turn.turn?.id ?? null
+        }),
+        title,
+        summary: `Copets-managed Codex task in ${cwd}`,
+        capabilities: {
+          ...codexAppServerSessionCapabilities(),
+          canInterrupt: true
+        }
+      };
+        upsertManagedCodexSession(session);
 
         emitEvent("CodexThreadCreated", { threadId, session, turn: turn.turn });
         console.log(`[codex] created thread=${threadId} turn=${turn.turn?.id ?? "unknown"}`);
@@ -1231,20 +1737,30 @@ function route(request, response) {
     const threadId = decodeURIComponent(codexThreadMatch[1]);
     codexClient
       .readThread(threadId, { includeTurns: true })
-      .then((result) => {
+      .then(async (result) => {
+        const managedSession = managedCodexSessions.get(`codex:${threadId}`);
+        const detail = mapCodexThreadToDetail(result.thread, codexClient.liveItemsForThread(threadId));
+        const enrichedDetail = enrichCodexDetailChoiceOptions({
+          ...detail,
+          currentModel: managedSession?.external?.currentModel ?? detail.currentModel ?? null,
+          currentReasoningLevel: managedSession?.external?.currentReasoningLevel ?? detail.currentReasoningLevel ?? null
+        });
+        syncManagedCodexSessionFromDetail(threadId, enrichedDetail);
         sendJson(response, 200, {
-          thread: mapCodexThreadToDetail(result.thread, codexClient.liveItemsForThread(threadId))
+          thread: enrichedDetail
         });
       })
       .catch(async (error) => {
         const managedSession = managedCodexSessions.get(`codex:${threadId}`);
         if (managedSession) {
+          const detail = enrichCodexDetailChoiceOptions(createManagedCodexDetail(
+            managedSession,
+            codexClient.liveItemsForThread(threadId),
+            error
+          ));
+          syncManagedCodexSessionFromDetail(threadId, detail);
           sendJson(response, 200, {
-            thread: createManagedCodexDetail(
-              managedSession,
-              codexClient.liveItemsForThread(threadId),
-              error
-            ),
+            thread: detail,
             liveFallback: true
           });
           return;
@@ -1293,7 +1809,28 @@ function route(request, response) {
 
         try {
           await codexClient.resumeThread(threadId);
-          const result = await codexClient.startTurn(threadId, text);
+          const managedSession = managedCodexSessions.get(`codex:${threadId}`);
+          const result = await codexClient.startTurn(threadId, text, {
+            model: managedSession?.external?.currentModel ?? input.model ?? undefined
+          });
+          if (managedSession) {
+            upsertManagedCodexSession({
+              ...managedSession,
+              status: "running",
+              progress: 0.5,
+              suggestedOptions: null,
+              activityStatus: "Running",
+              updatedAt: new Date().toISOString(),
+              capabilities: {
+                ...(managedSession.capabilities ?? {}),
+                canInterrupt: true
+              },
+              external: {
+                ...managedSession.external,
+                activeTurnId: result.turn?.id ?? managedSession.external?.activeTurnId ?? null
+              }
+            });
+          }
           emitEvent("CodexTurnStarted", { threadId, turn: result.turn, mode: "app-server" });
           console.log(`[codex] send accepted by app-server thread=${threadId} turn=${result.turn?.id ?? "unknown"}`);
           sendJson(response, 202, {
@@ -1324,6 +1861,58 @@ function route(request, response) {
             appServerError: appServerError.message
           });
         }
+      })
+      .catch((error) => {
+        sendJson(response, 502, {
+          error: error.message,
+          adapter: "codex-app-server"
+        });
+      });
+    return;
+  }
+
+  const codexModelMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/model$/);
+  if (request.method === "POST" && codexModelMatch) {
+    const threadId = decodeURIComponent(codexModelMatch[1]);
+    readJson(request)
+      .then((input) => {
+        const model = typeof input.model === "string" ? input.model.trim() : "";
+        if (!model) {
+          sendJson(response, 400, { error: "Model is required" });
+          return;
+        }
+
+        const sessionId = `codex:${threadId}`;
+        const previous = managedCodexSessions.get(sessionId);
+        const now = new Date().toISOString();
+        const session = previous ?? {
+          id: sessionId,
+          title: `Codex ${threadId.slice(0, 8)}`,
+          agent: "Codex",
+          status: "complete",
+          progress: 1,
+          summary: "Copets-managed Codex task",
+          updatedAt: now,
+          accent: "cyan",
+          external: {
+            provider: "codex-app-server",
+            threadId,
+            source: "copets"
+          }
+        };
+        const nextSession = {
+          ...session,
+          updatedAt: now,
+          external: {
+            ...session.external,
+            provider: "codex-app-server",
+            threadId,
+            currentModel: model
+          }
+        };
+        upsertManagedCodexSession(nextSession);
+        emitEvent("CodexThreadModelChanged", { threadId, model });
+        sendJson(response, 202, { session: nextSession, model });
       })
       .catch((error) => {
         sendJson(response, 502, {
@@ -1367,8 +1956,9 @@ function route(request, response) {
 
   const cancelMatch = url.pathname.match(/^\/tasks\/([^/]+)\/cancel$/);
   if (request.method === "POST" && cancelMatch) {
-    if (cancelMatch[1].startsWith("pty:")) {
-      const session = ptyAgents.terminate(cancelMatch[1].slice(4));
+    const taskId = decodeURIComponent(cancelMatch[1]);
+    if (taskId.startsWith("pty:")) {
+      const session = ptyAgents.terminate(taskId.slice(4));
       if (!session) {
         sendJson(response, 404, { error: "PTY session not found" });
         return;
@@ -1377,7 +1967,50 @@ function route(request, response) {
       return;
     }
 
-    const session = sessions.get(cancelMatch[1]);
+    if (taskId.startsWith("codex:")) {
+      const threadId = taskId.slice("codex:".length);
+      const previous = managedCodexSessions.get(taskId) ?? store.getSession(taskId);
+      if (!previous) {
+        sendJson(response, 404, { error: "Codex session not found" });
+        return;
+      }
+      const activeTurnId = previous.external?.activeTurnId ?? previous.rawStatus?.activeTurnId ?? null;
+      if (!activeTurnId) {
+        sendJson(response, 409, { error: "Codex session does not have an active turn to interrupt" });
+        return;
+      }
+      codexClient
+        .interruptTurn(threadId, activeTurnId)
+        .then(() => {
+          const session = {
+            ...previous,
+            status: "cancelled",
+            progress: 1,
+            activityStatus: null,
+            summary: previous.summary || "Interrupted by user.",
+            updatedAt: now(),
+            capabilities: {
+              ...(previous.capabilities ?? {}),
+              canInterrupt: false
+            },
+            external: {
+              ...previous.external,
+              activeTurnId: null,
+              rawStatus: "cancelled"
+            }
+          };
+          upsertManagedCodexSession(session);
+          emitEvent("CodexThreadCancelled", { session, threadId, turnId: activeTurnId });
+          sendJson(response, 200, { session });
+        })
+        .catch((error) => {
+          console.log(`[codex] interrupt failed thread=${threadId} turn=${activeTurnId} error=${JSON.stringify(error.message)}`);
+          sendJson(response, 502, { error: error.message, adapter: "codex-app-server" });
+        });
+      return;
+    }
+
+    const session = sessions.get(taskId);
     if (!session) {
       sendJson(response, 404, { error: "Task not found" });
       return;

@@ -212,6 +212,8 @@ struct SettingsView: View {
     @State private var dataDir = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
+    @State private var codexBackend = CodexBackendSettings.defaults
+    @State private var savedCodexBackend = CodexBackendSettings.defaults
     @State private var agentProxy = AgentProxySettings.defaults
     @State private var savedAgentProxy = AgentProxySettings.defaults
     @State private var choiceParserStatus: ChoiceParserStatus = .idle
@@ -238,6 +240,8 @@ struct SettingsView: View {
             }
             choiceParser = backendClient.settings?.choiceParser ?? .defaults
             savedChoiceParser = choiceParser
+            codexBackend = backendClient.settings?.codexBackend ?? .defaults
+            savedCodexBackend = codexBackend
             agentProxy = backendClient.settings?.agentProxy ?? .defaults
             savedAgentProxy = agentProxy
         }
@@ -246,6 +250,8 @@ struct SettingsView: View {
                 dataDir = settings.dataDir
                 choiceParser = settings.choiceParser ?? .defaults
                 savedChoiceParser = choiceParser
+                codexBackend = settings.codexBackend ?? .defaults
+                savedCodexBackend = codexBackend
                 agentProxy = settings.agentProxy ?? .defaults
                 savedAgentProxy = agentProxy
                 choiceParserStatus = .idle
@@ -311,6 +317,21 @@ struct SettingsView: View {
                             .lineLimit(2)
                     }
                 }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Codex Backend")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(CopetsPalette.secondaryText)
+                Picker("", selection: $codexBackend.mode) {
+                    Text("App Server").tag("app-server")
+                    Text("PTY Legacy").tag("pty")
+                }
+                .pickerStyle(.segmented)
+                .help("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI.")
+                Text(codexBackend.mode == "app-server" ? "New Codex sessions use the official Codex app-server protocol." : "New Codex sessions use the legacy terminal adapter.")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CopetsPalette.secondaryText)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -417,7 +438,8 @@ struct SettingsView: View {
 
                     Button("Save") {
                         Task {
-                            if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, agentProxy: savedAgentProxy) {
+                            if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, codexBackend: codexBackend, agentProxy: savedAgentProxy) {
+                                savedCodexBackend = codexBackend
                                 onClose()
                             }
                         }
@@ -486,7 +508,7 @@ struct SettingsView: View {
 
                 Button("Save Proxy") {
                     Task {
-                        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, agentProxy: agentProxy) {
+                        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, codexBackend: savedCodexBackend, agentProxy: agentProxy) {
                             savedAgentProxy = agentProxy
                         }
                     }
@@ -517,8 +539,9 @@ struct SettingsView: View {
 
     private func confirmChoiceParser() async {
         choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, agentProxy: agentProxy) {
+        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, codexBackend: codexBackend, agentProxy: agentProxy) {
             savedChoiceParser = choiceParser
+            savedCodexBackend = codexBackend
             savedAgentProxy = agentProxy
             choiceParserStatus = .saved
         } else {

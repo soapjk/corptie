@@ -192,6 +192,7 @@ export class PtyAgentManager {
       },
       canSend: session.status === "running",
       sendUnavailableReason: session.status === "running" ? null : "This terminal process has exited.",
+      capabilities: capabilitiesForSession(session),
       turnCount: 1,
       items
     };
@@ -945,6 +946,7 @@ export class PtyAgentManager {
       summary,
       suggestedOptions,
       activityStatus: activityStatusForSession(session),
+      capabilities: capabilitiesForSession(session),
       updatedAt: session.updatedAt,
       accent: session.accent,
       archived: session.archived === true,
@@ -964,6 +966,18 @@ export class PtyAgentManager {
       }
     };
   }
+}
+
+function capabilitiesForSession(session) {
+  const isCodex = session.provider === "codex-pty";
+  const isRunning = session.status === "running";
+  return {
+    canSend: isRunning,
+    canSwitchModel: isCodex,
+    canSwitchReasoning: isCodex,
+    canInterrupt: isRunning,
+    canReconnect: session.provider === "pty" || session.provider === "codex-pty"
+  };
 }
 
 class LocalChoiceParserRuntime {
