@@ -15,6 +15,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isCreatingTask = false
     @Published private(set) var settings: BackendSettings?
     @Published private(set) var isUpdatingSettings = false
+    @Published private(set) var isTestingChoiceParser = false
     @Published private(set) var codexModels: [CodexModel] = []
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
@@ -29,6 +30,8 @@ final class BackendClient: ObservableObject {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("copets", isDirectory: true).path
     }
     private var pollingTask: Task<Void, Never>?
+    private var detailStreamTask: Task<Void, Never>?
+    private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
 
     func start() {
         pollingTask?.cancel()
@@ -48,6 +51,8 @@ final class BackendClient: ObservableObject {
     func stop() {
         pollingTask?.cancel()
         pollingTask = nil
+        detailStreamTask?.cancel()
+        detailStreamTask = nil
     }
 
     func loadSettings() async {
@@ -63,14 +68,15 @@ final class BackendClient: ObservableObject {
     }
 
     func updateDataDirectory(_ dataDir: String) async {
-        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser)
+        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser, agentProxy: settings?.agentProxy)
     }
 
-    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?) async {
+    @discardableResult
+    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, agentProxy: AgentProxySettings? = nil) async -> Bool {
         let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = "Data directory is required."
-            return
+            return false
         }
 
         isUpdatingSettings = true
@@ -84,6 +90,7 @@ final class BackendClient: ObservableObject {
             if let choiceParser {
                 body["choiceParser"] = [
                     "provider": choiceParser.provider,
+                    "openaiBaseURL": choiceParser.openaiBaseURL,
                     "openaiApiKey": choiceParser.openaiApiKey,
                     "openaiModel": choiceParser.openaiModel,
                     "localCommand": choiceParser.localCommand,
@@ -91,6 +98,9 @@ final class BackendClient: ObservableObject {
                     "localModel": choiceParser.localModel,
                     "timeoutMs": choiceParser.timeoutMs
                 ]
+            }
+            if let agentProxy {
+                body["agentProxy"] = agentProxyBody(agentProxy)
             }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -105,8 +115,51 @@ final class BackendClient: ObservableObject {
             settings = try JSONDecoder().decode(BackendSettings.self, from: data)
             lastError = nil
             await refresh()
+            return true
         } catch {
             lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func testChoiceParser(_ choiceParser: ChoiceParserSettings, agentProxy: AgentProxySettings? = nil) async -> Result<String, Error> {
+        isTestingChoiceParser = true
+        defer { isTestingChoiceParser = false }
+
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "settings/choice-parser/test"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            var body: [String: Any] = [
+                "choiceParser": [
+                    "provider": choiceParser.provider,
+                    "openaiBaseURL": choiceParser.openaiBaseURL,
+                    "openaiApiKey": choiceParser.openaiApiKey,
+                    "openaiModel": choiceParser.openaiModel,
+                    "localCommand": choiceParser.localCommand,
+                    "localArgs": choiceParser.localArgs,
+                    "localModel": choiceParser.localModel,
+                    "timeoutMs": choiceParser.timeoutMs
+                ]
+            ]
+            if let agentProxy {
+                body["agentProxy"] = agentProxyBody(agentProxy)
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            let decoded = try JSONDecoder().decode(ChoiceParserTestResponse.self, from: data)
+            if !(200..<300).contains(httpResponse.statusCode) || !decoded.ok {
+                throw BackendError.message(decoded.error ?? "Choice parser test failed.")
+            }
+            lastError = nil
+            return .success(choiceParserTestMessage(durationMs: decoded.durationMs))
+        } catch {
+            lastError = error.localizedDescription
+            return .failure(error)
         }
     }
 
@@ -404,12 +457,15 @@ final class BackendClient: ObservableObject {
     func select(session: TaskSession) {
         selectedSession = session
         selectedDetail = nil
+        startDetailStream(for: session)
         Task {
             await loadDetail(for: session)
         }
     }
 
     func closeDetail() {
+        detailStreamTask?.cancel()
+        detailStreamTask = nil
         selectedSession = nil
         selectedDetail = nil
         isLoadingDetail = false
@@ -506,9 +562,11 @@ final class BackendClient: ObservableObject {
     }
 
     private func appendOptimisticUserMessage(_ text: String, to session: TaskSession) {
-        guard let detail = selectedDetail, detail.id == (session.external?.threadId ?? session.id) || selectedSession?.id == session.id else {
+        let threadId = session.external?.threadId ?? session.id
+        guard selectedSession?.id == session.id || selectedDetail?.id == threadId else {
             return
         }
+        let now = ISO8601DateFormatter().string(from: Date())
         let item = CodexThreadItem(
             id: "optimistic:\(session.id):\(UUID().uuidString)",
             turnId: session.id,
@@ -517,8 +575,15 @@ final class BackendClient: ObservableObject {
             title: "User",
             text: text,
             options: nil,
-            status: "sent"
+            status: "sent",
+            createdAt: now
         )
+        pendingUserMessagesByThread[threadId, default: []].append(item)
+
+        guard let detail = selectedDetail, detail.id == threadId else {
+            selectedDetail = optimisticDetail(for: session, threadId: threadId, now: now)
+            return
+        }
         selectedDetail = CodexThreadDetail(
             id: detail.id,
             title: detail.title,
@@ -530,11 +595,31 @@ final class BackendClient: ObservableObject {
             activityStatus: detail.activityStatus,
             cwd: detail.cwd,
             createdAt: detail.createdAt,
-            updatedAt: ISO8601DateFormatter().string(from: Date()),
+            updatedAt: now,
             canSend: detail.canSend,
             sendUnavailableReason: detail.sendUnavailableReason,
             turnCount: detail.turnCount,
-            items: detail.items + [item]
+            items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesByThread[threadId] ?? [])
+        )
+    }
+
+    private func optimisticDetail(for session: TaskSession, threadId: String, now: String) -> CodexThreadDetail {
+        CodexThreadDetail(
+            id: threadId,
+            title: session.title,
+            status: session.status,
+            source: session.external?.source,
+            connectionStatus: session.external?.connectionStatus,
+            currentModel: session.external?.currentModel,
+            currentReasoningLevel: session.external?.currentReasoningLevel,
+            activityStatus: session.activityStatus,
+            cwd: session.external?.cwd,
+            createdAt: session.updatedAt,
+            updatedAt: now,
+            canSend: true,
+            sendUnavailableReason: nil,
+            turnCount: 0,
+            items: pendingUserMessagesByThread[threadId] ?? []
         )
     }
 
@@ -878,6 +963,95 @@ final class BackendClient: ObservableObject {
         await loadDetail(for: selectedSession, showLoading: false)
     }
 
+    func fetchDetail(for session: TaskSession) async -> CodexThreadDetail? {
+        guard let threadId = session.external?.threadId else {
+            return nil
+        }
+
+        do {
+            let path = isPtyProvider(session.external?.provider)
+                ? "pty/sessions/\(threadId)"
+                : "codex/threads/\(threadId)"
+            let url = baseURL.appending(path: path)
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+
+            let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
+            lastError = nil
+            return decoded.thread
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func startDetailStream(for session: TaskSession) {
+        detailStreamTask?.cancel()
+        guard let threadId = session.external?.threadId,
+              isPtyProvider(session.external?.provider) else {
+            detailStreamTask = nil
+            return
+        }
+
+        detailStreamTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            var request = URLRequest(url: self.baseURL.appending(path: "pty/sessions/\(threadId)/events"))
+            request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+
+            do {
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                    throw URLError(.badServerResponse)
+                }
+
+                var eventName = ""
+                var dataLines: [String] = []
+                for try await line in bytes.lines {
+                    if Task.isCancelled {
+                        return
+                    }
+                    if line.isEmpty {
+                        await self.handleDetailStreamEvent(
+                            eventName: eventName,
+                            data: dataLines.joined(separator: "\n"),
+                            expectedThreadId: threadId
+                        )
+                        eventName = ""
+                        dataLines.removeAll(keepingCapacity: true)
+                    } else if line.hasPrefix("event:") {
+                        eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                    } else if line.hasPrefix("data:") {
+                        dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                    }
+                }
+            } catch {
+                if !Task.isCancelled {
+                    lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func handleDetailStreamEvent(eventName: String, data: String, expectedThreadId: String) async {
+        guard eventName.isEmpty || eventName == "detail",
+              !data.isEmpty,
+              selectedSession?.external?.threadId == expectedThreadId,
+              let payload = data.data(using: .utf8) else {
+            return
+        }
+        do {
+            let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
+            selectedDetail = detailByMergingPendingMessages(decoded.thread)
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
         guard let threadId = session.external?.threadId else {
             lastError = "No Codex detail is available for this task."
@@ -904,16 +1078,116 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
-            selectedDetail = decoded.thread
+            selectedDetail = detailByMergingPendingMessages(decoded.thread)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {
+        let pending = pendingUserMessagesByThread[detail.id] ?? []
+        let merged = mergedItems(serverItems: detail.items, pendingItems: pending)
+        pendingUserMessagesByThread[detail.id] = remainingPendingItems(afterMerging: detail.items, pendingItems: pending)
+
+        guard merged != detail.items else {
+            return detail
+        }
+
+        return CodexThreadDetail(
+            id: detail.id,
+            title: detail.title,
+            status: detail.status,
+            source: detail.source,
+            connectionStatus: detail.connectionStatus,
+            currentModel: detail.currentModel,
+            currentReasoningLevel: detail.currentReasoningLevel,
+            activityStatus: detail.activityStatus,
+            cwd: detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt,
+            canSend: detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            turnCount: detail.turnCount,
+            items: merged
+        )
+    }
+
+    private func mergedItems(serverItems: [CodexThreadItem], pendingItems: [CodexThreadItem]) -> [CodexThreadItem] {
+        var items = serverItems
+        var matchedServerIndexes = Set<Int>()
+        for pendingItem in pendingItems {
+            if let index = firstMatchingServerUserIndex(for: pendingItem, in: items, excluding: matchedServerIndexes) {
+                matchedServerIndexes.insert(index)
+            } else {
+                items.append(pendingItem)
+            }
+        }
+        return items
+    }
+
+    private func remainingPendingItems(afterMerging serverItems: [CodexThreadItem], pendingItems: [CodexThreadItem]) -> [CodexThreadItem] {
+        var matchedServerIndexes = Set<Int>()
+        return pendingItems.filter { pendingItem in
+            if let index = firstMatchingServerUserIndex(for: pendingItem, in: serverItems, excluding: matchedServerIndexes) {
+                matchedServerIndexes.insert(index)
+                return false
+            }
+            return true
+        }
+    }
+
+    private func firstMatchingServerUserIndex(for pendingItem: CodexThreadItem, in serverItems: [CodexThreadItem], excluding matchedIndexes: Set<Int>) -> Int? {
+        let pendingText = normalizedMessageText(pendingItem.text)
+        guard !pendingText.isEmpty else {
+            return nil
+        }
+        return serverItems.indices.first { index in
+            !matchedIndexes.contains(index)
+                && serverItems[index].type == "userMessage"
+                && normalizedMessageText(serverItems[index].text) == pendingText
         }
     }
 }
 
 private func isPtyProvider(_ provider: String?) -> Bool {
     provider == "pty" || provider == "codex-pty"
+}
+
+private func normalizedMessageText(_ text: String) -> String {
+    text.trimmingCharacters(in: .whitespacesAndNewlines)
+        .components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+}
+
+private func agentProxyBody(_ settings: AgentProxySettings) -> [String: Any] {
+    [
+        "codex": agentProxyProfileBody(settings.codex),
+        "choiceParser": agentProxyProfileBody(settings.choiceParser),
+        "pty": agentProxyProfileBody(settings.pty)
+    ]
+}
+
+private func agentProxyProfileBody(_ profile: AgentProxyProfile) -> [String: Any] {
+    [
+        "enabled": profile.enabled,
+        "httpProxy": profile.httpProxy,
+        "httpsProxy": profile.httpsProxy,
+        "allProxy": profile.allProxy,
+        "noProxy": profile.noProxy
+    ]
+}
+
+private func choiceParserTestMessage(durationMs: Int?) -> String {
+    guard let durationMs else {
+        return "Test passed"
+    }
+    if durationMs < 1000 {
+        return "Test passed in \(durationMs) ms"
+    }
+    let seconds = Double(durationMs) / 1000
+    return String(format: "Test passed in %.1f s", seconds)
 }
 
 private func reasoningLabel(_ value: String) -> String {

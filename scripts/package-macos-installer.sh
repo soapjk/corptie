@@ -74,13 +74,29 @@ BACKEND_DIR="${SCRIPT_DIR}/backend"
 export COPETS_ENV="production"
 export COPETS_BACKEND_PORT="${COPETS_BACKEND_PORT:-47321}"
 
-if ! command -v node >/dev/null 2>&1; then
+NODE_BIN="${NODE_BIN:-}"
+if [ -z "${NODE_BIN}" ]; then
+  for candidate in \
+    "${HOME}/.volta/tools/image/node/20.20.0/bin/node" \
+    "/opt/homebrew/bin/node" \
+    "/usr/local/bin/node" \
+    "/Applications/Codex.app/Contents/Resources/cua_node/bin/node" \
+    "$(command -v node 2>/dev/null || true)" \
+    "${HOME}/.volta/bin/node"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+      NODE_BIN="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [ -z "${NODE_BIN}" ]; then
   echo "Node.js not found in PATH. Please install Node.js and retry." >&2
   exit 1
 fi
 
 cd "${BACKEND_DIR}"
-exec node src/server.mjs
+exec "${NODE_BIN}" src/server.mjs
 LAUNCHER
 chmod +x "${APP_DIR}/Contents/Resources/copets-backend-launch.sh"
 
