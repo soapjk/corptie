@@ -94,3 +94,7 @@ Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.d
 ## 📚 More
 
 - [Project vision and technical research](docs/project-vision-and-tech-research.md)
+
+## 📄 License
+
+Copets is licensed under the [Apache License 2.0](LICENSE).
