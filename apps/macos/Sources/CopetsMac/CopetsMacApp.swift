@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        configureApplicationIcon()
 
         showWelcomePromptIfNeeded()
         CorptieBackendSupervisor.ensureProductionBackendStarted()
@@ -42,6 +43,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         detachedSessionManager?.closeAll()
         backendClient.stop()
+    }
+
+    private func configureApplicationIcon() {
+        guard let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
+              let icon = NSImage(contentsOf: iconURL) else {
+            return
+        }
+        NSApp.applicationIconImage = icon
     }
 
     private func showWelcomePromptIfNeeded() {

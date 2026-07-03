@@ -1178,7 +1178,7 @@ final class BackendClient: ObservableObject {
         }
         do {
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
-            let mergedDetail = detailByMergingPendingMessages(decoded.thread)
+            let mergedDetail = stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread))
             selectedDetail = mergedDetail
             syncSessionSummary(from: mergedDetail)
             lastError = nil
@@ -1213,7 +1213,7 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
-            let mergedDetail = detailByMergingPendingMessages(decoded.thread)
+            let mergedDetail = stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread))
             selectedDetail = mergedDetail
             syncSessionSummary(from: mergedDetail)
             lastError = nil
@@ -1330,6 +1330,34 @@ final class BackendClient: ObservableObject {
             capabilities: detail.capabilities,
             turnCount: detail.turnCount,
             items: merged
+        )
+    }
+
+    private func stableDetailReplacingEmptyItems(_ detail: CodexThreadDetail) -> CodexThreadDetail {
+        guard detail.items.isEmpty,
+              let previous = selectedDetail,
+              previous.id == detail.id,
+              !previous.items.isEmpty else {
+            return detail
+        }
+
+        return CodexThreadDetail(
+            id: detail.id,
+            title: detail.title,
+            status: detail.status,
+            source: detail.source,
+            connectionStatus: detail.connectionStatus,
+            currentModel: detail.currentModel,
+            currentReasoningLevel: detail.currentReasoningLevel,
+            activityStatus: detail.activityStatus,
+            cwd: detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt,
+            canSend: detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: detail.capabilities,
+            turnCount: max(detail.turnCount, previous.turnCount),
+            items: previous.items
         )
     }
 

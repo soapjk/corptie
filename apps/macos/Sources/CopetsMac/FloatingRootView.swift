@@ -2028,6 +2028,9 @@ private struct DetailView: View {
                 .onChange(of: detail.items.last?.id) { _, _ in
                     updateCachedDisplayEntries(for: detail)
                 }
+                .onChange(of: detailDisplaySignature(for: detail)) { _, _ in
+                    updateCachedDisplayEntries(for: detail)
+                }
             } else if backendClient.selectedDetail == nil,
                       backendClient.isLoadingDetail == false,
                       backendClient.lastError != nil {
@@ -2130,6 +2133,10 @@ private struct DetailView: View {
                     panelLayoutState.updateDetailLastMessageHeight(nil)
                 }
             }
+            .onChange(of: detailDisplaySignature(for: detail)) { _, _ in
+                updateCachedDisplayEntries(for: detail)
+                scrollToLatestAfterLayout(detail: detail, proxy: proxy)
+            }
             .onPreferenceChange(LastMessageHeightPreferenceKey.self) { height in
                 panelLayoutState.updateDetailLastMessageHeight(height > 0 ? height : nil)
             }
@@ -2155,8 +2162,32 @@ private struct DetailView: View {
         return cachedItemsSignature == displaySignature(for: visibleEntries)
     }
 
+    private func detailDisplaySignature(for detail: CodexThreadDetail) -> String {
+        displaySignature(for: visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail))))
+    }
+
     private func displaySignature(for visibleEntries: [ChatDisplayEntry]) -> String {
-        "\(visibleMessageLimit)|\(visibleEntries.count)|\(visibleEntries.first?.id ?? "")|\(visibleEntries.last?.id ?? "")"
+        let entrySignatures = visibleEntries.map { entry in
+            switch entry.kind {
+            case .message(let item):
+                return itemSignature(item)
+            case .process(let items):
+                return items.map(itemSignature).joined(separator: ",")
+            }
+        }.joined(separator: "|")
+        return "\(visibleMessageLimit)|\(entrySignatures)"
+    }
+
+    private func itemSignature(_ item: CodexThreadItem) -> String {
+        let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            item.id,
+            item.type,
+            item.status ?? "",
+            item.turnStatus,
+            "\(text.count)",
+            String(text.suffix(96))
+        ].joined(separator: ":")
     }
 
     private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy) {
