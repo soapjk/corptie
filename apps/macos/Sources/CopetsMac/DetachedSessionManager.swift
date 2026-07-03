@@ -895,7 +895,7 @@ private struct DetachedReplyPreviewBubble: View {
             ScrollView(.vertical, showsIndicators: true) {
                 Text(text)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(CopetsPalette.primaryText)
+                    .foregroundStyle(CorptiePalette.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 14)
@@ -911,7 +911,7 @@ private struct DetachedReplyPreviewBubble: View {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
                     .frame(width: 16, height: 16)
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
             }
             .buttonStyle(.plain)
             .background(Color.black.opacity(0.06), in: Circle())
@@ -957,7 +957,7 @@ private struct DetachedReplyComposerCard: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     Text(text)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(CopetsPalette.primaryText)
+                        .foregroundStyle(CorptiePalette.primaryText)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.leading, 24)
@@ -972,7 +972,7 @@ private struct DetachedReplyComposerCard: View {
                     Image(systemName: "xmark")
                         .font(.system(size: 8, weight: .bold))
                         .frame(width: 16, height: 16)
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .background(Color.black.opacity(0.06), in: Circle())
@@ -1011,7 +1011,7 @@ private struct DetachedReplyComposerCard: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(CopetsPalette.softBlue)
+                .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .padding(.leading, 2)
@@ -1021,7 +1021,7 @@ private struct DetachedReplyComposerCard: View {
             .background(inputBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(CopetsPalette.softBlue.opacity(isFocused ? 0.46 : 0.20), lineWidth: 1)
+                    .strokeBorder(CorptiePalette.softBlue.opacity(isFocused ? 0.46 : 0.20), lineWidth: 1)
             )
         }
         .padding(10)
@@ -1087,7 +1087,7 @@ private struct DetachedQuickReplyInput: View {
                     .frame(width: 26, height: 26)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(CopetsPalette.softBlue)
+            .foregroundStyle(CorptiePalette.softBlue)
             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.leading, 2)
@@ -1097,7 +1097,7 @@ private struct DetachedQuickReplyInput: View {
         .background(inputBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(CopetsPalette.softBlue.opacity(isFocused ? 0.46 : 0.22), lineWidth: 1)
+                .strokeBorder(CorptiePalette.softBlue.opacity(isFocused ? 0.46 : 0.22), lineWidth: 1)
         )
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -1128,7 +1128,7 @@ private struct DetachedOptionButton: View {
         } label: {
             Text(option.label)
                 .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(CopetsPalette.primaryText)
+                .foregroundStyle(CorptiePalette.primaryText)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1139,7 +1139,7 @@ private struct DetachedOptionButton: View {
         .background(background, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .strokeBorder(CopetsPalette.amber.opacity(0.26), lineWidth: 1)
+                .strokeBorder(CorptiePalette.amber.opacity(0.26), lineWidth: 1)
         )
         .onHover { hovering in
             isHovering = hovering
@@ -1155,7 +1155,7 @@ private struct DetachedOptionTooltip: View {
     var body: some View {
         Text(text)
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(CopetsPalette.primaryText)
+            .foregroundStyle(CorptiePalette.primaryText)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
@@ -1314,9 +1314,9 @@ private struct StatusHalo: View {
                     .stroke(
                         AngularGradient(
                             colors: [
-                                CopetsPalette.connected.opacity(0.0),
-                                CopetsPalette.connected.opacity(0.86),
-                                CopetsPalette.connected.opacity(0.0)
+                                CorptiePalette.connected.opacity(0.0),
+                                CorptiePalette.connected.opacity(0.86),
+                                CorptiePalette.connected.opacity(0.0)
                             ],
                             center: .center
                         ),
@@ -1332,7 +1332,7 @@ private struct StatusHalo: View {
     private var baseColor: Color {
         switch status {
         case .running:
-            CopetsPalette.connected
+            CorptiePalette.connected
         case .blocked:
             Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.58, blue: 0.02, alpha: 1.0))
         case .complete:
@@ -1340,7 +1340,7 @@ private struct StatusHalo: View {
         case .failed:
             .red
         case .cancelled:
-            CopetsPalette.mutedText
+            CorptiePalette.mutedText
         }
     }
 

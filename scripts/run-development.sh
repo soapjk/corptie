@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-BACKEND_URL="http://127.0.0.1:${COPETS_BACKEND_PORT:-47322}/health"
-BACKEND_LOG="${COPETS_BACKEND_LOG:-/tmp/copets-backend-development.log}"
+BACKEND_URL="http://127.0.0.1:${CORPTIE_BACKEND_PORT:-47322}/health"
+BACKEND_LOG="${CORPTIE_BACKEND_LOG:-/tmp/corptie-backend-development.log}"
 
 backend_pid=""
 
@@ -20,9 +20,9 @@ backend_is_ready() {
 }
 
 if backend_is_ready; then
-  echo "Copets development backend is already running at ${BACKEND_URL}."
+  echo "Corptie development backend is already running at ${BACKEND_URL}."
 else
-  echo "Starting Copets development backend..."
+  echo "Starting Corptie development backend..."
   (
     cd "${ROOT_DIR}"
     exec scripts/start-backend-development.sh
@@ -47,10 +47,10 @@ else
     exit 1
   fi
 
-  echo "Copets development backend is ready at ${BACKEND_URL}."
+  echo "Corptie development backend is ready at ${BACKEND_URL}."
   echo "Backend log: ${BACKEND_LOG}"
 fi
 
-echo "Starting Copets macOS development app..."
+echo "Starting Corptie macOS development app..."
 cd "${ROOT_DIR}"
 exec scripts/run-macos-development.sh

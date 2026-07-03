@@ -58,8 +58,8 @@ export class CodexAppServerClient {
 
     await this.request("initialize", {
       clientInfo: {
-        name: "copets",
-        title: "Copets",
+        name: "corptie",
+        title: "Corptie",
         version: "0.1.0"
       },
       capabilities: {
@@ -214,7 +214,7 @@ export class CodexAppServerClient {
 
     const startedAt = new Date().toISOString();
     const notification = {
-      method: "copets/codexExecResumeStarted",
+      method: "corptie/codexExecResumeStarted",
       params: {
         threadId,
         pid: child.pid,
@@ -228,19 +228,19 @@ export class CodexAppServerClient {
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
       this.notifications.push({
-        method: "copets/codexExecResumeOutput",
+        method: "corptie/codexExecResumeOutput",
         params: { threadId, stream: "stdout", chunk, createdAt: new Date().toISOString() }
       });
     });
     child.stderr.on("data", (chunk) => {
       this.notifications.push({
-        method: "copets/codexExecResumeOutput",
+        method: "corptie/codexExecResumeOutput",
         params: { threadId, stream: "stderr", chunk, createdAt: new Date().toISOString() }
       });
     });
     child.on("exit", (code, signal) => {
       this.notifications.push({
-        method: "copets/codexExecResumeExited",
+        method: "corptie/codexExecResumeExited",
         params: { threadId, code, signal, createdAt: new Date().toISOString() }
       });
     });
@@ -565,7 +565,7 @@ export async function readCodexRolloutDetail(thread, readError) {
     turnStatus: "completed",
     type: "warning",
     title: "Codex detail fallback",
-    text: `This thread is currently read-only in Copets.\n${reason}`,
+    text: `This thread is currently read-only in Corptie.\n${reason}`,
     status: null
   };
 
@@ -624,7 +624,7 @@ function mapCodexThreadListDetail(thread, items) {
     updatedAt: new Date((thread.updatedAt ?? thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
     rawStatus: thread.status,
     canSend: false,
-    sendUnavailableReason: "Codex app-server cannot resume this thread. It can be displayed from local history, but Copets cannot safely send a follow-up yet.",
+    sendUnavailableReason: "Codex app-server cannot resume this thread. It can be displayed from local history, but Corptie cannot safely send a follow-up yet.",
     turnCount: countTurnMarkers(items),
     items
   };

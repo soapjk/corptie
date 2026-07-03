@@ -25,9 +25,9 @@ final class BackendClient: ObservableObject {
     @Published private(set) var connectionTransitionSessionIds = Set<String>()
     @Published var isShowingArchivedSessions = false
 
-    private let baseURL = CopetsAppEnvironment.backendBaseURL
+    private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("copets", isDirectory: true).path
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("corptie", isDirectory: true).path
     }
     private var pollingTask: Task<Void, Never>?
     private var eventStreamTask: Task<Void, Never>?
@@ -571,7 +571,7 @@ final class BackendClient: ObservableObject {
 
     func sendMessage(_ text: String, onSuccess: @escaping () -> Void = {}) {
         if selectedDetail?.canSend == false {
-            sendStatusMessage = selectedDetail?.sendUnavailableReason ?? "This thread is read-only in Copets."
+            sendStatusMessage = selectedDetail?.sendUnavailableReason ?? "This thread is read-only in Corptie."
             return
         }
 

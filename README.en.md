@@ -1,10 +1,10 @@
-# Copets
+# Corptie
 
 [中文说明](README.zh-CN.md)
 
 **A floating desktop cockpit for asynchronous AI agents.**
 
-Copets keeps Codex, Claude Code, and other CLI or SDK-based agents visible while you work elsewhere. Instead of hiding long-running agent sessions inside terminals or chat tabs, Copets turns them into native macOS floating panels, detachable orbs, live reply previews, approval controls, and quick-reply surfaces.
+Corptie keeps Codex, Claude Code, and other CLI or SDK-based agents visible while you work elsewhere. Instead of hiding long-running agent sessions inside terminals or chat tabs, Corptie turns them into native macOS floating panels, detachable orbs, live reply previews, approval controls, and quick-reply surfaces.
 
 > The goal is simple: let agents work in parallel without making you babysit every window.
 
@@ -20,7 +20,7 @@ Copets keeps Codex, Claude Code, and other CLI or SDK-based agents visible while
 
 ## 🖥️ Experience
 
-Copets is designed for work that does not finish instantly:
+Corptie is designed for work that does not finish instantly:
 
 - Start several agent tasks and keep them visible without switching contexts.
 - Watch real states such as `running`, `needs input`, `approval required`, `complete`, and `failed`.
@@ -28,7 +28,7 @@ Copets is designed for work that does not finish instantly:
 - Read model replies in temporary bubbles before choosing the next option.
 - Keep production work and local development safely isolated.
 
-Copets intentionally avoids fake percentage progress. It shows the real state of the agent, the latest activity, and the places where human input is actually needed.
+Corptie intentionally avoids fake percentage progress. It shows the real state of the agent, the latest activity, and the places where human input is actually needed.
 
 ## 🧩 Architecture
 
@@ -51,8 +51,8 @@ Codex CLI sessions use an explicit PTY adapter with resume support, interrupt su
 
 | Environment | Backend | Data |
 | --- | ---: | --- |
-| Production | `127.0.0.1:47321` | `~/Library/Application Support/Copets/` |
-| Development | `127.0.0.1:47322` | `~/Library/Application Support/Copets Development/` |
+| Production | `127.0.0.1:47321` | `~/Library/Application Support/Corptie/` |
+| Development | `127.0.0.1:47322` | `~/Library/Application Support/Corptie Development/` |
 
 The two environments do not share backend config, SQLite data, frontend `UserDefaults`, transparency settings, or remembered window sizes.
 
@@ -75,10 +75,10 @@ Create a Codex-backed PTY session:
 ```sh
 curl -X POST "http://127.0.0.1:47322/codex/pty-sessions" \
   -H "content-type: application/json" \
-  --data '{"title":"Codex smoke test","prompt":"Summarize this repo without editing files.","cwd":"/path/to/copets"}'
+  --data '{"title":"Codex smoke test","prompt":"Summarize this repo without editing files.","cwd":"/path/to/corptie"}'
 ```
 
-If `prompt` is empty, Copets sends a tiny initialization prompt asking Codex to reply `Ready`, so new sessions bind and become usable immediately.
+If `prompt` is empty, Corptie sends a tiny initialization prompt asking Codex to reply `Ready`, so new sessions bind and become usable immediately.
 
 ## 📦 Package
 
@@ -88,7 +88,7 @@ Build the production installer:
 scripts/package-macos-installer.sh
 ```
 
-Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.dmg` includes `Copets.app`, an `Applications` shortcut, and a short installer readme.
+Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.dmg` includes `Corptie.app`, an `Applications` shortcut, and a short installer readme.
 
 ## License
 

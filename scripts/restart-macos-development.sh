@@ -2,22 +2,22 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-APP_BIN="${ROOT_DIR}/apps/macos/.build/arm64-apple-macosx/debug/CopetsMac"
-APP_LOG="${COPETS_APP_LOG:-/private/tmp/copets-dev/app.log}"
-BACKEND_LOG="${COPETS_BACKEND_LOG:-/private/tmp/copets-dev/backend.log}"
-BACKEND_PORT="${COPETS_BACKEND_PORT:-47322}"
+APP_BIN="${ROOT_DIR}/apps/macos/.build/arm64-apple-macosx/debug/CorptieMac"
+APP_LOG="${CORPTIE_APP_LOG:-/private/tmp/corptie-dev/app.log}"
+BACKEND_LOG="${CORPTIE_BACKEND_LOG:-/private/tmp/corptie-dev/backend.log}"
+BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47322}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}/health"
 
 mkdir -p "$(dirname "${APP_LOG}")"
 
-echo "Building Copets macOS development app..."
+echo "Building Corptie macOS development app..."
 swift build --package-path "${ROOT_DIR}/apps/macos"
 
-echo "Stopping existing CopetsMac processes..."
+echo "Stopping existing CorptieMac processes..."
 pkill -f "${APP_BIN}" 2>/dev/null || true
-pkill -x "CopetsMac" 2>/dev/null || true
+pkill -x "CorptieMac" 2>/dev/null || true
 
-echo "Stopping existing Copets development backend processes..."
+echo "Stopping existing Corptie development backend processes..."
 if command -v lsof >/dev/null 2>&1; then
   while read -r pid; do
     if [[ -n "${pid}" ]]; then
@@ -30,11 +30,11 @@ pkill -f "node src/server.mjs" 2>/dev/null || true
 
 sleep 0.4
 
-echo "Starting Copets development backend..."
+echo "Starting Corptie development backend..."
 (
   cd "${ROOT_DIR}"
-  COPETS_ENV=development \
-  COPETS_BACKEND_PORT="${BACKEND_PORT}" \
+  CORPTIE_ENV=development \
+  CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
   exec scripts/start-backend-development.sh
 ) >"${BACKEND_LOG}" 2>&1 &
 BACKEND_PID="$!"
@@ -57,12 +57,12 @@ if ! curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Starting CopetsMac..."
-COPETS_ENV=development \
-COPETS_BACKEND_PORT="${BACKEND_PORT}" \
+echo "Starting CorptieMac..."
+CORPTIE_ENV=development \
+CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
 "${APP_BIN}" >"${APP_LOG}" 2>&1 &
 
-echo "Copets backend started with pid ${BACKEND_PID}"
+echo "Corptie backend started with pid ${BACKEND_PID}"
 echo "Backend log: ${BACKEND_LOG}"
-echo "CopetsMac started with pid $!"
+echo "CorptieMac started with pid $!"
 echo "Log: ${APP_LOG}"

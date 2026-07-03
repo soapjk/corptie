@@ -13,10 +13,10 @@ import {
   readCodexRolloutDetail
 } from "./adapters/codexAppServer.mjs";
 import { PtyAgentManager, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
-import { CopetsStore } from "./store/copetsStore.mjs";
+import { CorptieStore } from "./store/corptieStore.mjs";
 
-const environmentName = normalizeEnvironment(process.env.COPETS_ENV);
-const port = Number(process.env.COPETS_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
+const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
+const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const execFileAsync = promisify(execFile);
 const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
 
@@ -27,7 +27,7 @@ const sseClients = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
 const choiceGenerations = new Map();
-const store = new CopetsStore();
+const store = new CorptieStore();
 const codexClient = new CodexAppServerClient({
   command: resolveCodexCommand(),
   env: () => ({
@@ -76,8 +76,8 @@ function resolveCodexCommand(requestedCommand = "") {
   }
 
   const configured = [
-    process.env.COPETS_CODEX_PATH,
-    process.env.COPETS_CODEX_REAL_PATH
+    process.env.CORPTIE_CODEX_PATH,
+    process.env.CORPTIE_CODEX_REAL_PATH
   ].find(isExecutable);
   if (configured) {
     return configured.trim();
@@ -191,10 +191,10 @@ async function resolveCodexPtySessionId(options) {
 async function bindCodexPtySessionWhenAvailable(options) {
   try {
     const match = await resolveCodexPtySessionId(options);
-    console.log(`[codex-pty] bound ${options.copetsSessionId} to ${match.id}`);
+    console.log(`[codex-pty] bound ${options.corptieSessionId} to ${match.id}`);
     return match;
   } catch (error) {
-    console.log(`[codex-pty] session id binding pending/failed for ${options.copetsSessionId}: ${error.message}`);
+    console.log(`[codex-pty] session id binding pending/failed for ${options.corptieSessionId}: ${error.message}`);
     return null;
   }
 }
@@ -622,7 +622,7 @@ function bindCodexPtySession(options) {
     rolloutPath: options.rolloutPath
   };
 
-  const session = ptyAgents.updateSession(options.copetsSessionId, {
+  const session = ptyAgents.updateSession(options.corptieSessionId, {
     agentSessionId: options.agentSessionId,
     resume,
     phase: "bound",
@@ -833,7 +833,7 @@ function route(request, response) {
   if (request.method === "GET" && url.pathname === "/health") {
     sendJson(response, 200, {
       ok: true,
-      service: "copets-backend",
+      service: "corptie-backend",
       version: "0.1.0",
       time: now()
     });
@@ -931,7 +931,7 @@ function route(request, response) {
             agent: "Codex",
             status: "complete",
             progress: 1,
-            summary: "Copets-managed Codex task",
+            summary: "Corptie-managed Codex task",
             capabilities: {
               ...codexAppServerSessionCapabilities({ canInterrupt: false })
             },
@@ -940,7 +940,7 @@ function route(request, response) {
             external: {
               provider: "codex-app-server",
               threadId,
-              source: "copets"
+              source: "corptie"
             }
           };
           const nextSession = {
@@ -1440,7 +1440,7 @@ function route(request, response) {
         });
 
         bindCodexPtySessionWhenAvailable({
-          copetsSessionId: session.external.sessionId,
+          corptieSessionId: session.external.sessionId,
           command: codexCommand,
           cwd,
           resumeOptions,
@@ -1498,7 +1498,7 @@ function route(request, response) {
         });
         if (shouldBindCodexSession) {
           bindCodexPtySessionWhenAvailable({
-            copetsSessionId: sessionId,
+            corptieSessionId: sessionId,
             command: session.command || "codex",
             cwd: session.cwd,
             resumeOptions: session.resume?.resumeOptions ?? [],
@@ -1761,13 +1761,13 @@ function route(request, response) {
             cwd,
             updatedAt: Date.now() / 1000,
             status: "running",
-            source: "copets",
+            source: "corptie",
           currentModel: input.model ?? started.model ?? null,
           currentReasoningLevel: started.reasoningEffort ?? null,
           activeTurnId: turn.turn?.id ?? null
         }),
         title,
-        summary: `Copets-managed Codex task in ${cwd}`,
+        summary: `Corptie-managed Codex task in ${cwd}`,
         capabilities: {
           ...codexAppServerSessionCapabilities(),
           canInterrupt: true
@@ -1784,7 +1784,7 @@ function route(request, response) {
           session,
           mode: "app-server-stdio",
           visibleInCodexDesktop: false,
-          warning: "Started through Copets' app-server connection. Codex Desktop may not show this thread immediately."
+          warning: "Started through Corptie' app-server connection. Codex Desktop may not show this thread immediately."
         });
       })
       .catch((error) => {
@@ -1913,7 +1913,7 @@ function route(request, response) {
             turn: result.turn,
             mode: "app-server-stdio",
             visibleInCodexDesktop: false,
-            warning: "Sent through Copets' stdio app-server connection. Codex Desktop may not refresh this thread."
+            warning: "Sent through Corptie' stdio app-server connection. Codex Desktop may not refresh this thread."
           });
         } catch (appServerError) {
           console.log(`[codex] app-server send failed thread=${threadId} error=${appServerError.message}`);
@@ -1923,7 +1923,7 @@ function route(request, response) {
               rawError: appServerError.message,
               adapter: "codex-app-server",
               visibleInCodexDesktop: false,
-              hint: "This thread is read-only in Copets until we connect to the Codex Desktop control socket or find a supported resume path."
+              hint: "This thread is read-only in Corptie until we connect to the Codex Desktop control socket or find a supported resume path."
             });
             return;
           }
@@ -1967,13 +1967,13 @@ function route(request, response) {
           agent: "Codex",
           status: "complete",
           progress: 1,
-          summary: "Copets-managed Codex task",
+          summary: "Corptie-managed Codex task",
           updatedAt: now,
           accent: "cyan",
           external: {
             provider: "codex-app-server",
             threadId,
-            source: "copets"
+            source: "corptie"
           }
         };
         const nextSession = {
@@ -2116,7 +2116,7 @@ seedSessions();
 setInterval(updateMockProgress, 2500).unref();
 
 server.listen(port, "127.0.0.1", () => {
-  console.log(`Copets backend (${environmentName}) listening on http://127.0.0.1:${port}`);
+  console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
 });
 
 process.on("SIGINT", async () => {
