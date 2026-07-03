@@ -10,6 +10,7 @@ struct TaskSession: Identifiable, Codable, Equatable {
     let progress: Double
     let summary: String
     let suggestedOptions: [CodexApprovalOption]?
+    let suggestedPrompt: String?
     let activityStatus: String?
     let updatedAt: String
     let accent: Accent
