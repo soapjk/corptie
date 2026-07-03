@@ -34,6 +34,10 @@ Corptie is designed for work that does not finish instantly:
 
 Corptie intentionally avoids fake percentage progress. It shows the real state of the agent, the latest activity, and the places where human input is actually needed.
 
+## 🎬 Demo Video
+
+[Watch the YouTube demo](https://youtu.be/OqqVC_ITiYc)
+
 ## 🧩 Architecture
 
 ```text
