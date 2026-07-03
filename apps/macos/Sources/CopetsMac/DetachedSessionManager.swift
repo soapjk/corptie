@@ -86,6 +86,8 @@ private final class DetachedSessionPanel: NSPanel {
 @MainActor
 private final class DetachedAccessoryWindowController {
     private let panel: NSPanel
+    private let contentContainer: NSView
+    private let hostingView: NSHostingView<DetachedSessionAccessoryView>
     private let state: DetachedReplyPreviewState
     private let client: BackendClient
     private let sessionId: String
@@ -111,6 +113,16 @@ private final class DetachedAccessoryWindowController {
         self.sessionId = sessionId
         self.dismissPreview = dismissPreview
         self.dismissQuickReply = dismissQuickReply
+        self.contentContainer = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
+        self.hostingView = NSHostingView(
+            rootView: DetachedSessionAccessoryView(
+                client: client,
+                sessionId: sessionId,
+                previewState: state,
+                dismissPreview: dismissPreview,
+                dismissQuickReply: dismissQuickReply
+            )
+        )
 
         self.panel = DetachedSessionPanel(
             contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
@@ -126,15 +138,15 @@ private final class DetachedAccessoryWindowController {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.contentView = NSHostingView(
-            rootView: DetachedSessionAccessoryView(
-                client: client,
-                sessionId: sessionId,
-                previewState: state,
-                dismissPreview: dismissPreview,
-                dismissQuickReply: dismissQuickReply
-            )
-        )
+
+        contentContainer.wantsLayer = true
+        contentContainer.layer?.backgroundColor = NSColor.clear.cgColor
+        contentContainer.translatesAutoresizingMaskIntoConstraints = true
+        hostingView.translatesAutoresizingMaskIntoConstraints = true
+        hostingView.autoresizingMask = [.width, .height]
+        hostingView.frame = contentContainer.bounds
+        contentContainer.addSubview(hostingView)
+        panel.contentView = contentContainer
     }
 
     func close() {
@@ -155,13 +167,23 @@ private final class DetachedAccessoryWindowController {
         let placement = bestPlacement(for: size, orbCenter: orbCenter, screenFrame: screenFrame)
         state.placement = placement
         let frame = accessoryFrame(size: size, placement: placement, orbCenter: orbCenter)
-        panel.contentView?.frame = NSRect(origin: .zero, size: size)
+        updateContentSize(size)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0
             context.allowsImplicitAnimation = false
             panel.setFrame(frame, display: true)
         }
         panel.orderFrontRegardless()
+    }
+
+    private func updateContentSize(_ size: NSSize) {
+        let bounds = NSRect(origin: .zero, size: size)
+        if contentContainer.frame != bounds {
+            contentContainer.frame = bounds
+        }
+        if hostingView.frame != bounds {
+            hostingView.frame = bounds
+        }
     }
 
     func makeKeyIfNeeded() {
@@ -866,6 +888,7 @@ private struct DetachedSessionAccessoryView: View {
 private struct DetachedReplyPreviewBubble: View {
     let text: String
     let dismiss: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -894,6 +917,11 @@ private struct DetachedReplyPreviewBubble: View {
             .background(Color.black.opacity(0.06), in: Circle())
             .padding(7)
             .help("Dismiss")
+
+            CopyTextButton(text: text, isVisible: isHovering && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .frame(width: 300, height: 126, alignment: .bottomTrailing)
+                .padding(.trailing, 7)
+                .padding(.bottom, 7)
         }
         .background(replyBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(
@@ -901,6 +929,9 @@ private struct DetachedReplyPreviewBubble: View {
                 .strokeBorder(Color.white.opacity(0.38), lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.12), radius: 7, y: 3)
+        .onHover { hovering in
+            isHovering = hovering
+        }
     }
 
     private var replyBackground: Color {
@@ -918,6 +949,7 @@ private struct DetachedReplyComposerCard: View {
     let send: () -> Void
     let dismiss: () -> Void
     @FocusState private var isFocused: Bool
+    @State private var isHoveringPreview = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -945,6 +977,14 @@ private struct DetachedReplyComposerCard: View {
                 .buttonStyle(.plain)
                 .background(Color.black.opacity(0.06), in: Circle())
                 .help("Dismiss")
+
+                CopyTextButton(text: text, isVisible: isHoveringPreview && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(.trailing, 3)
+                    .padding(.bottom, 3)
+            }
+            .onHover { hovering in
+                isHoveringPreview = hovering
             }
 
             HStack(spacing: 6) {

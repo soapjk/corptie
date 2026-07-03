@@ -313,7 +313,7 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
     progress: detail.status === "running" || detail.status === "blocked" ? 0.5 : 1,
     summary: latestAgentMessage?.text ?? session.summary,
     suggestedOptions: session.suggestedOptions ?? null,
-    activityStatus: detail.activityStatus ?? null,
+    activityStatus: detail.activityStatus ?? (detail.status === "running" ? session.activityStatus ?? null : null),
     updatedAt: detail.updatedAt ?? session.updatedAt,
     capabilities: detail.capabilities ?? session.capabilities,
     external: {
@@ -369,6 +369,34 @@ function upsertManagedCodexSession(session) {
   });
 }
 
+function mergeStoredSessionPresentation(session, stored) {
+  if (!stored) {
+    return session;
+  }
+  return {
+    ...session,
+    archived: stored.archived,
+    pinned: stored.pinned,
+    sortOrder: stored.sortOrder,
+    avatarPath: stored.avatarPath ?? session.avatarPath ?? null,
+    suggestedOptions: stored.suggestedOptions ?? session.suggestedOptions ?? null
+  };
+}
+
+function sortSessionsForList(sessions = []) {
+  return sessions.slice().sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) {
+      return a.pinned ? -1 : 1;
+    }
+    const aOrder = Number.isFinite(Number(a.sortOrder)) ? Number(a.sortOrder) : Number.POSITIVE_INFINITY;
+    const bOrder = Number.isFinite(Number(b.sortOrder)) ? Number(b.sortOrder) : Number.POSITIVE_INFINITY;
+    if (aOrder !== bOrder) {
+      return aOrder - bOrder;
+    }
+    return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
+  });
+}
+
 function handleCodexAppServerNotification(message) {
   const method = message?.method;
   const params = message?.params ?? {};
@@ -392,7 +420,7 @@ function handleCodexAppServerNotification(message) {
       ...session,
       status: "running",
       progress: 0.5,
-      activityStatus: "Running",
+      activityStatus: "Working",
       updatedAt: nowIso,
       capabilities: {
         ...(session.capabilities ?? {}),
@@ -487,7 +515,7 @@ function readableCodexActivity(value = "") {
     case "dynamicToolCall":
       return "Using tool";
     default:
-      return "Running";
+      return "Working";
   }
 }
 
@@ -709,6 +737,7 @@ function createManagedCodexDetail(session, items, readError) {
     createdAt: session.updatedAt,
     updatedAt: session.updatedAt,
     rawStatus: session.external.rawStatus,
+    activityStatus: session.activityStatus ?? null,
     canSend: true,
     sendUnavailableReason: null,
     capabilities: session.capabilities ?? codexAppServerSessionCapabilities({ canInterrupt: session.status === "running" }),
@@ -1007,12 +1036,12 @@ function route(request, response) {
       const codexSessions = [
         ...storedCodexSessions.map((stored) => {
           const managed = managedById.get(stored.id);
-          return managed ? { ...managed, suggestedOptions: stored.suggestedOptions ?? null } : stored;
+          return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
         }),
         ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
       ].filter((session) => !listedIds.has(session.id));
       sendJson(response, 200, {
-        sessions: [...ptySessions, ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)],
+        sessions: sortSessionsForList([...ptySessions, ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
         sources: {
           pty: {
             ok: true,
@@ -1047,7 +1076,8 @@ function route(request, response) {
           if (!managedSession) {
             return session;
           }
-          return {
+          const stored = store.getSession(session.id);
+          return mergeStoredSessionPresentation({
             ...session,
             status: managedSession.status ?? session.status,
             progress: managedSession.progress ?? session.progress,
@@ -1059,7 +1089,7 @@ function route(request, response) {
               currentModel: managedSession.external?.currentModel ?? session.external?.currentModel ?? null,
               currentReasoningLevel: managedSession.external?.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null
             }
-          };
+          }, stored);
         });
         const knownIds = new Set(codexSessions.map((session) => session.id));
         const managedSessions = Array.from(managedCodexSessions.values())
@@ -1070,7 +1100,7 @@ function route(request, response) {
           .filter((session) => !knownIds.has(session.id));
 
         sendJson(response, 200, {
-          sessions: [...ptySessions, ...(archived ? [] : managedSessions), ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)],
+          sessions: sortSessionsForList([...ptySessions, ...(archived ? [] : managedSessions), ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
           sources: {
             pty: {
               ok: true,
@@ -1169,6 +1199,15 @@ function route(request, response) {
           sendJson(response, 404, { error: "Session not found" });
           return;
         }
+        if (managedCodexSessions.has(id)) {
+          const managed = managedCodexSessions.get(id);
+          managedCodexSessions.set(id, {
+            ...managed,
+            pinned,
+            sortOrder: session.sortOrder ?? managed.sortOrder,
+            avatarPath: session.avatarPath ?? managed.avatarPath ?? null
+          });
+        }
         emitEvent(pinned ? "SessionPinned" : "SessionUnpinned", { session });
         sendJson(response, 200, { session });
       });
@@ -1178,8 +1217,16 @@ function route(request, response) {
   if (request.method === "POST" && url.pathname === "/sessions/reorder") {
     readJson(request)
       .then((input) => {
-        const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds : [];
+        const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => normalizeSessionId(String(id))) : [];
         const sessions = ptyAgents.reorder(sessionIds);
+        sessionIds.forEach((id, index) => {
+          if (managedCodexSessions.has(id)) {
+            managedCodexSessions.set(id, {
+              ...managedCodexSessions.get(id),
+              sortOrder: index
+            });
+          }
+        });
         emitEvent("SessionsReordered", { sessionIds });
         sendJson(response, 200, { sessions });
       })
@@ -1759,6 +1806,7 @@ function route(request, response) {
         const detail = mapCodexThreadToDetail(result.thread, codexClient.liveItemsForThread(threadId));
         const enrichedDetail = enrichCodexDetailChoiceOptions({
           ...detail,
+          activityStatus: managedSession?.activityStatus ?? detail.activityStatus ?? null,
           currentModel: managedSession?.external?.currentModel ?? detail.currentModel ?? null,
           currentReasoningLevel: managedSession?.external?.currentReasoningLevel ?? detail.currentReasoningLevel ?? null
         });
@@ -1847,7 +1895,7 @@ function route(request, response) {
               status: "running",
               progress: 0.5,
               suggestedOptions: null,
-              activityStatus: "Running",
+              activityStatus: "Working",
               updatedAt: new Date().toISOString(),
               capabilities: {
                 ...(managedSession.capabilities ?? {}),

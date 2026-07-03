@@ -300,6 +300,8 @@ final class BackendClient: ObservableObject {
 
             let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
             sessions = decoded.sessions
+            syncSelectedSessionFromSessions()
+            syncSelectedDetailMetadataFromSessions()
             isOnline = true
             lastError = nil
         } catch {
@@ -756,6 +758,11 @@ final class BackendClient: ObservableObject {
     }
 
     func interrupt(session: TaskSession) {
+        if session.external?.provider == "codex-app-server" {
+            cancel(session: session)
+            return
+        }
+
         guard let threadId = session.external?.threadId, isPtyProvider(session.external?.provider) else {
             cancel(session: session)
             return
@@ -836,11 +843,14 @@ final class BackendClient: ObservableObject {
     func setPinned(_ pinned: Bool, session: TaskSession) {
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.external?.sessionId ?? session.id)/pin"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/pin"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["pinned": pinned])
-                _ = try await URLSession.shared.data(for: request)
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
@@ -873,14 +883,17 @@ final class BackendClient: ObservableObject {
     }
 
     func persistSessionOrder() {
-        let orderedIds = sessions.map { $0.external?.sessionId ?? $0.id }
+        let orderedIds = sessions.map(\.id)
         Task {
             do {
                 var request = URLRequest(url: baseURL.appending(path: "sessions/reorder"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["sessionIds": orderedIds])
-                _ = try await URLSession.shared.data(for: request)
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
@@ -1255,6 +1268,40 @@ final class BackendClient: ObservableObject {
                 )
             )
         }
+    }
+
+    private func syncSelectedSessionFromSessions() {
+        guard let current = selectedSession,
+              let refreshed = sessions.first(where: { $0.id == current.id }) else {
+            return
+        }
+        selectedSession = refreshed
+    }
+
+    private func syncSelectedDetailMetadataFromSessions() {
+        guard let detail = selectedDetail,
+              let session = sessions.first(where: { $0.external?.threadId == detail.id }) else {
+            return
+        }
+
+        selectedDetail = CodexThreadDetail(
+            id: detail.id,
+            title: detail.title,
+            status: session.status,
+            source: session.external?.source ?? detail.source,
+            connectionStatus: session.external?.connectionStatus ?? detail.connectionStatus,
+            currentModel: session.external?.currentModel ?? detail.currentModel,
+            currentReasoningLevel: session.external?.currentReasoningLevel ?? detail.currentReasoningLevel,
+            activityStatus: session.activityStatus,
+            cwd: session.external?.cwd ?? detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: session.updatedAt,
+            canSend: detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: session.capabilities ?? detail.capabilities,
+            turnCount: detail.turnCount,
+            items: detail.items
+        )
     }
 
     private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {

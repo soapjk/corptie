@@ -11,9 +11,9 @@ struct FloatingRootView: View {
     @State private var draggedSessionId: String?
     @State private var sessionCardFrames: [String: CGRect] = [:]
     @State private var sessionSummaryFrames: [String: CGRect] = [:]
-    @State private var reorderDragOriginY: CGFloat?
     @State private var reorderDragOffsetY: CGFloat = 0
     @State private var reorderTargetSessionId: String?
+    @State private var hasResolvedReorderTarget = false
     @State private var hoverPreviewSessionId: String?
     @State private var isHoveringReplyPreviewBubble = false
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
@@ -265,31 +265,27 @@ struct FloatingRootView: View {
                 if draggedSessionId != session.id {
                     draggedSessionId = session.id
                     reorderTargetSessionId = nil
-                    reorderDragOriginY = sessionCardFrames[session.id]?.midY
+                    hasResolvedReorderTarget = false
                     reorderDragOffsetY = 0
                 }
 
-                guard let startY = reorderDragOriginY else {
-                    reorderDragOriginY = sessionCardFrames[session.id]?.midY
-                    return
-                }
-
-                reorderDragOffsetY = value.translation.height
+                reorderDragOffsetY = sessionCardFrames[session.id].map { value.location.y - $0.midY }
+                    ?? value.translation.height
                 guard !sessionCardFrames.isEmpty else {
                     return
                 }
 
-                let projectedCenterY = startY + value.translation.height
-                let targetSessionId = targetSessionId(
-                    forProjectedCenterY: projectedCenterY,
+                let targetSessionId = insertionTargetSessionId(
+                    forDragLocationY: value.location.y,
                     excluding: session.id,
                     using: sessionCardFrames
                 )
-                guard targetSessionId != reorderTargetSessionId else {
+                guard targetSessionId != reorderTargetSessionId || !hasResolvedReorderTarget else {
                     return
                 }
 
                 reorderTargetSessionId = targetSessionId
+                hasResolvedReorderTarget = true
                 withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.88, blendDuration: 0.08)) {
                     backendClient.moveSession(draggedSessionId: session.id, before: targetSessionId)
                 }
@@ -300,21 +296,38 @@ struct FloatingRootView: View {
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     draggedSessionId = nil
                     reorderTargetSessionId = nil
-                    reorderDragOriginY = nil
+                    hasResolvedReorderTarget = false
                 }
             }
     }
 
-    private func targetSessionId(forProjectedCenterY centerY: CGFloat, excluding draggedId: String, using frames: [String: CGRect]) -> String? {
-        let candidates = frames
-            .filter { $0.key != draggedId }
-            .sorted { $0.value.midY < $1.value.midY }
+    private func insertionTargetSessionId(forDragLocationY locationY: CGFloat, excluding draggedId: String, using frames: [String: CGRect]) -> String? {
+        let orderedIds = backendClient.sessions
+            .map(\.id)
+            .filter { $0 != draggedId }
 
-        for candidate in candidates {
-            if centerY < candidate.value.midY {
-                return candidate.key
+        guard let firstId = orderedIds.first,
+              let firstFrame = frames[firstId] else {
+            return nil
+        }
+
+        if locationY < firstFrame.minY {
+            return firstId
+        }
+
+        for (index, id) in orderedIds.enumerated() {
+            guard let frame = frames[id] else {
+                continue
+            }
+            if locationY <= frame.maxY {
+                if locationY < frame.midY {
+                    return id
+                }
+                let nextIndex = index + 1
+                return nextIndex < orderedIds.count ? orderedIds[nextIndex] : nil
             }
         }
+
         return nil
     }
 
@@ -521,7 +534,10 @@ private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         if let hostingView = scrollView.documentView as? NSHostingView<Content> {
-            hostingView.rootView = content
+            let nextContent = content
+            DispatchQueue.main.async {
+                hostingView.rootView = nextContent
+            }
         }
         scrollView.hasVerticalScroller = true
         scrollView.scrollerStyle = .legacy
@@ -2186,6 +2202,9 @@ private struct DetailView: View {
         if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
             return true
         }
+        if item.type == "agentMessage" && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
         return false
     }
 
@@ -2212,7 +2231,9 @@ private struct DetailView: View {
 
     private func chatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
         let userMessages = items.filter { $0.type == "userMessage" }
-        let agentMessages = items.filter { $0.type == "agentMessage" }
+        let agentMessages = items.filter {
+            $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
         let finalAgentMessage = agentMessages.last
         let progressAgentMessages = agentMessages.dropLast()
         let processItems = items.filter(isProcessItem) + progressAgentMessages
@@ -2369,8 +2390,6 @@ private struct ThreadMetaView: View {
                 .foregroundStyle(detail.status.color)
             if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
                 ActivityStatusText(text: activityStatus, isActive: detail.status == .running)
-            } else if let source = detail.source {
-                Text(source)
             }
         }
         .font(.system(size: 11, weight: .semibold))
@@ -2509,6 +2528,44 @@ private struct ActivityStatusText: View {
 
     private var idleColor: Color {
         .secondary
+    }
+}
+
+struct CopyTextButton: View {
+    let text: String
+    let isVisible: Bool
+
+    var body: some View {
+        Button {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        } label: {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 22, height: 22)
+                .foregroundStyle(CopetsPalette.secondaryText)
+        }
+        .buttonStyle(.plain)
+        .background(copyButtonBackground, in: Circle())
+        .overlay(
+            Circle()
+                .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.10), radius: 4, y: 2)
+        .opacity(isVisible ? 1 : 0)
+        .scaleEffect(isVisible ? 1 : 0.88)
+        .animation(.easeOut(duration: 0.12), value: isVisible)
+        .help("Copy")
+        .accessibilityLabel("Copy message")
+        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var copyButtonBackground: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(calibratedWhite: 0.16, alpha: 0.92)
+                : NSColor(calibratedWhite: 1.0, alpha: 0.92)
+        })
     }
 }
 
@@ -2666,58 +2723,64 @@ private extension ISO8601DateFormatter {
 private struct ThreadItemView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isActivityExpanded = false
+    @State private var isHovering = false
     let item: CodexThreadItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(item.title)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(itemColor)
-                Spacer()
-                Text(item.type)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(CopetsPalette.mutedText)
-            }
-
-            if !item.text.isEmpty {
-                if item.type == "agentMessage" {
-                    agentMessageTextView
-                } else {
-                    messageTextView(text: item.text, allowsSelection: true)
+        ZStack(alignment: .bottomTrailing) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(item.title)
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(itemColor)
+                    Spacer()
+                    Text(item.type)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(CopetsPalette.mutedText)
                 }
-            }
 
-            if shouldShowOptions {
-                optionButtonStack {
-                    ForEach(approvalOptions) { option in
-                        Button {
-                            if item.type == "approval" {
-                                backendClient.respondToCodexApproval(option: option)
-                            } else if item.type == "choice" {
-                                backendClient.respondToPtyChoice(option: option)
-                            } else {
-                                backendClient.sendMessage(option.label)
-                            }
-                        } label: {
-                            Label(option.label, systemImage: iconName(for: option))
-                                .font(.system(size: 11, weight: .bold))
-                                .padding(.horizontal, 10)
-                                .frame(maxWidth: item.type == "agentMessage" ? .infinity : nil, minHeight: 28, alignment: .leading)
-                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .background(optionBackground(for: option), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(optionBorder(for: option), lineWidth: 1)
-                        )
-                        .help(option.label)
+                if !item.text.isEmpty {
+                    if item.type == "agentMessage" {
+                        agentMessageTextView
+                    } else {
+                        messageTextView(text: item.text, allowsSelection: true)
                     }
                 }
-                .padding(.top, 2)
-                .disabled(backendClient.isSendingMessage)
+
+                if shouldShowOptions {
+                    optionButtonStack {
+                        ForEach(approvalOptions) { option in
+                            Button {
+                                if item.type == "approval" {
+                                    backendClient.respondToCodexApproval(option: option)
+                                } else if item.type == "choice" {
+                                    backendClient.respondToPtyChoice(option: option)
+                                } else {
+                                    backendClient.sendMessage(option.label)
+                                }
+                            } label: {
+                                Label(option.label, systemImage: iconName(for: option))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .padding(.horizontal, 10)
+                                    .frame(maxWidth: item.type == "agentMessage" ? .infinity : nil, minHeight: 28, alignment: .leading)
+                                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .background(optionBackground(for: option), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .strokeBorder(optionBorder(for: option), lineWidth: 1)
+                            )
+                            .help(option.label)
+                        }
+                    }
+                    .padding(.top, 2)
+                    .disabled(backendClient.isSendingMessage)
+                }
             }
+
+            CopyTextButton(text: item.text, isVisible: isHovering && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(4)
         }
         .padding(10)
         .background(itemBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -2726,6 +2789,9 @@ private struct ThreadItemView: View {
                 .strokeBorder(itemBorder, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
+        .onHover { hovering in
+            isHovering = hovering
+        }
     }
 
     private var itemBackground: Color {
