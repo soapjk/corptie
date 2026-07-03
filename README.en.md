@@ -48,6 +48,9 @@ Corptie intentionally avoids fake percentage progress. It shows the real state o
 
 <img src="resources/imgs/screenshot-20260702-110500.png" alt="Corptie main floating panel showing multiple agent sessions and quick reply entry points" width="100%">
 
+<details>
+  <summary>Expand to see more UI screenshots</summary>
+
 ### Detached Floating Orb (running state)
 
 <img src="resources/imgs/screenshot-20260702-110255.png" alt="Corptie detached floating orb showing the agent avatar, running state, and persistent desktop entry point" width="520">
@@ -55,6 +58,8 @@ Corptie intentionally avoids fake percentage progress. It shows the real state o
 ### Quick Option Interaction
 
 <img src="resources/imgs/screenshot-20260702-110149.png" alt="Corptie turns agent text options into clickable quick reply buttons" width="720">
+
+</details>
 
 ## 🧩 Architecture
 
