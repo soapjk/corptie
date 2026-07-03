@@ -4,7 +4,9 @@
 
 **一个为异步 AI Agent 工作流设计的桌面悬浮终端。**
 
-<img src="resources/imgs/corptie-app-icon.png" alt="Corptie 应用图标" width="180">
+<p align="center">
+  <img src="apps/macos/Sources/CopetsMac/Resources/AppIcon.png" alt="Corptie 应用图标" width="180">
+</p>
 
 Corptie 提倡更少占用注意力的 Agent 交互方式，让所有 Agent 成为全局副驾驶。它通过尽量简洁的悬浮窗和悬浮球，让用户与 Agent 的交互聚焦在对话本身，最大程度减少界面侵占，让用户在部署 Agent 任务的过程中，更少打断自己的其他工作流。
 
