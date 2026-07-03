@@ -9,6 +9,7 @@ ARCHIVE_DIR="${ROOT}/dist"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 APP_VERSION="0.1.0"
 APP_BUNDLE_PATH="/Applications/Corptie.app"
+ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
 
 mkdir -p "${ARCHIVE_DIR}"
 
@@ -30,6 +31,16 @@ APP_DIR="${STAGING_ROOT}/Applications/${APP_NAME}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${BUILD_BIN}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}"
 
+ICONSET_DIR="$(mktemp -d /tmp/corptie-iconset-XXXXXX).iconset"
+mkdir -p "${ICONSET_DIR}"
+for size in 16 32 128 256 512; do
+  sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}.png" >/dev/null
+  doubled=$((size * 2))
+  sips -z "${doubled}" "${doubled}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "${ICONSET_DIR}" -o "${APP_DIR}/Contents/Resources/AppIcon.icns"
+rm -rf "${ICONSET_DIR}"
+
 cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -43,6 +54,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
     <string>Corptie</string>
     <key>CFBundleDisplayName</key>
     <string>Corptie</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

@@ -19,11 +19,12 @@ pkill -x "CorptieMac" 2>/dev/null || true
 
 echo "Stopping existing Corptie development backend processes..."
 if command -v lsof >/dev/null 2>&1; then
-  while read -r pid; do
+  backend_pids="$(lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+  for pid in ${backend_pids}; do
     if [[ -n "${pid}" ]]; then
       kill "${pid}" 2>/dev/null || true
     fi
-  done < <(lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true)
+  done
 fi
 pkill -f "${ROOT_DIR}/apps/backend/src/server.mjs" 2>/dev/null || true
 pkill -f "node src/server.mjs" 2>/dev/null || true

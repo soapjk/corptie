@@ -13,7 +13,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "CorptieMac",
-            path: "Sources/CopetsMac"
+            path: "Sources/CopetsMac",
+            resources: [
+                .copy("Resources/AppIcon.png")
+            ]
         )
     ]
 )
