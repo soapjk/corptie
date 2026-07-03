@@ -36,12 +36,12 @@ struct TaskSession: Identifiable, Codable, Equatable {
 
     var connectionColor: Color {
         if isUnboundCodexSession {
-            return CopetsPalette.unboundDot
+            return CorptiePalette.unboundDot
         }
         if let provider = external?.provider, provider != "codex-pty" {
-            return CopetsPalette.connectedDot
+            return CorptiePalette.connectedDot
         }
-        return isConnected ? CopetsPalette.connectedDot : CopetsPalette.disconnected
+        return isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
     }
 }
 
@@ -84,7 +84,7 @@ enum TaskStatus: String, Codable {
 
     var color: Color {
         switch self {
-        case .running: CopetsPalette.running
+        case .running: CorptiePalette.running
         case .blocked: .orange
         case .complete: .orange
         case .failed: .red
@@ -101,15 +101,15 @@ enum Accent: String, Codable {
 
     var color: Color {
         switch self {
-        case .cyan: CopetsPalette.softBlue
-        case .mint: CopetsPalette.connected
-        case .violet: CopetsPalette.periwinkle
-        case .amber: CopetsPalette.amber
+        case .cyan: CorptiePalette.softBlue
+        case .mint: CorptiePalette.connected
+        case .violet: CorptiePalette.periwinkle
+        case .amber: CorptiePalette.amber
         }
     }
 }
 
-enum CopetsPalette {
+enum CorptiePalette {
     static let running = adaptiveColor(light: (0.24, 0.43, 0.70), dark: (0.55, 0.68, 0.86))
     static let softBlue = adaptiveColor(light: (0.28, 0.45, 0.70), dark: (0.50, 0.64, 0.82))
     static let connected = adaptiveColor(light: (0.08, 0.70, 0.34), dark: (0.62, 0.82, 0.66))
@@ -186,7 +186,7 @@ struct CodexThreadDetail: Decodable, Equatable {
     }
 
     var connectionColor: Color {
-        isConnected ? CopetsPalette.connectedDot : CopetsPalette.disconnected
+        isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
     }
 }
 

@@ -4,19 +4,22 @@ import { dirname, join } from "node:path";
 import os from "node:os";
 import initSqlJs from "sql.js";
 
-const environmentName = normalizeEnvironment(process.env.COPETS_ENV);
-const appSupportName = environmentName === "development" ? "Copets Development" : "Copets";
+const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
+const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
+const legacyAppSupportName = environmentName === "development" ? "Copets Development" : "Copets";
 const appSupportDir = join(os.homedir(), "Library", "Application Support", appSupportName);
-const legacyDbPath = join(appSupportDir, "copets.sqlite");
+const legacyAppSupportDir = join(os.homedir(), "Library", "Application Support", legacyAppSupportName);
+const legacyDbPath = join(legacyAppSupportDir, "copets.sqlite");
 const configPath = join(appSupportDir, "config.json");
+const legacyConfigPath = join(legacyAppSupportDir, "config.json");
 const fallbackDataDir = appSupportDir;
-const dbFileName = "copets.sqlite";
+const dbFileName = "corptie.sqlite";
 
-export class CopetsStore {
+export class CorptieStore {
   constructor(options = {}) {
-    this.configPath = options.configPath || process.env.COPETS_CONFIG_PATH || configPath;
+    this.configPath = options.configPath || process.env.CORPTIE_CONFIG_PATH || configPath;
     this.dataDir = null;
-    this.dbPath = options.dbPath || process.env.COPETS_DB_PATH || null;
+    this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
     this.SQL = null;
     this.db = null;
     this.saveTimer = null;
@@ -48,6 +51,16 @@ export class CopetsStore {
     const configured = await this.readConfiguredDataDir();
     this.dataDir = configured || await defaultDataDir();
     this.dbPath = join(this.dataDir, dbFileName);
+    const legacyDataDbPath = join(this.dataDir, "copets.sqlite");
+
+    if (this.dbPath !== legacyDataDbPath && await exists(legacyDataDbPath) && !await exists(this.dbPath)) {
+      await mkdir(this.dataDir, { recursive: true });
+      await copyFile(legacyDataDbPath, this.dbPath);
+      if (!configured) {
+        await this.writeConfig();
+      }
+      return;
+    }
 
     if (!configured && this.dbPath !== legacyDbPath && await exists(legacyDbPath) && !await exists(this.dbPath)) {
       await mkdir(this.dataDir, { recursive: true });
@@ -61,8 +74,13 @@ export class CopetsStore {
       this.config = JSON.parse(await readFile(this.configPath, "utf8"));
       return typeof this.config.dataDir === "string" && this.config.dataDir.trim() ? this.config.dataDir.trim() : null;
     } catch {
-      this.config = {};
-      return null;
+      try {
+        this.config = JSON.parse(await readFile(legacyConfigPath, "utf8"));
+        return typeof this.config.dataDir === "string" && this.config.dataDir.trim() ? this.config.dataDir.trim() : null;
+      } catch {
+        this.config = {};
+        return null;
+      }
     }
   }
 
@@ -1031,7 +1049,7 @@ function isApprovalPrompt(text = "") {
 }
 
 async function defaultDataDir() {
-  return process.env.COPETS_DEFAULT_DATA_DIR || fallbackDataDir;
+  return process.env.CORPTIE_DEFAULT_DATA_DIR || fallbackDataDir;
 }
 
 function normalizeEnvironment(value = "") {

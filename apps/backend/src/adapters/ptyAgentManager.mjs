@@ -81,7 +81,7 @@ export class PtyAgentManager {
         ...proxyEnvForAgent(this.settingsProvider?.()?.agentProxy, provider === "codex-pty" ? "codex" : "pty"),
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
-        COPETS_PTY: "1"
+        CORPTIE_PTY: "1"
       }
     });
 
@@ -620,7 +620,7 @@ export class PtyAgentManager {
       session.terminal.kill();
       session.status = "cancelled";
       session.updatedAt = new Date().toISOString();
-      this.appendSystemItem(session, "Process terminated by Copets.");
+      this.appendSystemItem(session, "Process terminated by Corptie.");
       this.persistSession(session);
     }
     return this.toSessionSummary(session);
@@ -642,7 +642,7 @@ export class PtyAgentManager {
     this.scheduleChoiceParse(session);
     const cleaned = stripAnsi(chunk)
       .replace(/\r/g, "")
-      .replace(/(?:\d+;[^\s]*copets)+/g, "")
+      .replace(/(?:\d+;[^\s]*corptie)+/g, "")
       .replace(/[\b\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
     session.buffer += cleaned;
     session.updatedAt = new Date().toISOString();
@@ -691,14 +691,14 @@ export class PtyAgentManager {
 
   scheduleChoiceParse(session) {
     if (shouldSuppressChoiceParser(session)) {
-      if (process.env.COPETS_CHOICE_PARSER_DEBUG === "1") {
+      if (process.env.CORPTIE_CHOICE_PARSER_DEBUG === "1") {
         logChoiceParser("skip", session, { reason: "codex-approval-active" });
       }
       return;
     }
     const choiceContext = buildChoiceContext(session.screenText ?? "");
     if (!choiceContext || !possibleChoiceStage(choiceContext.text)) {
-      if (process.env.COPETS_CHOICE_PARSER_DEBUG === "1") {
+      if (process.env.CORPTIE_CHOICE_PARSER_DEBUG === "1") {
         logChoiceParser("skip", session, { reason: choiceContext ? "not-choice-stage" : "no-choice-context" });
       }
       return;
@@ -879,7 +879,7 @@ export class PtyAgentManager {
       turnId: session.id,
       turnStatus: session.status,
       type: "system",
-      title: "Copets",
+      title: "Corptie",
       text,
       status: session.status
     });
@@ -1047,7 +1047,7 @@ class LocalChoiceParserRuntime {
       env: {
         ...sanitizeEnv(process.env, "codex-pty"),
         ...proxyEnvForAgent(settings.agentProxy, "choiceParser"),
-        COPETS_CHOICE_PARSER: "1"
+        CORPTIE_CHOICE_PARSER: "1"
       }
     });
     await this.client.initialize();
@@ -1292,7 +1292,7 @@ function sanitizeEnv(env, provider) {
     delete next.npm_config_prefix;
     delete next.npm_config_global;
     delete next.npm_config_user_agent;
-    next.COPETS_MANAGED_CODEX = "1";
+    next.CORPTIE_MANAGED_CODEX = "1";
   }
   return next;
 }
@@ -2076,7 +2076,7 @@ function parseChoiceStageWithRules(screenText = "") {
 }
 
 export async function parseChoiceStageWithConfiguredParser(screenText = "", settings = {}, session = null) {
-  if (!settings || settings.provider === "disabled" || process.env.COPETS_DISABLE_LLM_CHOICE_PARSER === "1") {
+  if (!settings || settings.provider === "disabled" || process.env.CORPTIE_DISABLE_LLM_CHOICE_PARSER === "1") {
     return null;
   }
   if (!choiceParserShouldUseModel(screenText)) {
@@ -2094,13 +2094,13 @@ export function configureChoiceParserRuntime(settings = {}) {
 }
 
 async function parseChoiceStageWithOpenAi(screenText = "", settings = {}, session = null) {
-  const apiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || process.env.COPETS_OPENAI_API_KEY;
+  const apiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || process.env.CORPTIE_OPENAI_API_KEY;
   if (!apiKey) {
     logChoiceParser("openai-skip", session, { reason: "missing-api-key" });
     return null;
   }
-  const model = settings.openaiModel || process.env.COPETS_CHOICE_PARSER_MODEL || "gpt-4o-mini";
-  const endpoint = openAiCompatibleChatCompletionsURL(settings.openaiBaseURL || process.env.COPETS_CHOICE_PARSER_BASE_URL);
+  const model = settings.openaiModel || process.env.CORPTIE_CHOICE_PARSER_MODEL || "gpt-4o-mini";
+  const endpoint = openAiCompatibleChatCompletionsURL(settings.openaiBaseURL || process.env.CORPTIE_CHOICE_PARSER_BASE_URL);
   const startedAt = Date.now();
   logChoiceParser("openai-request-start", session, { model, endpoint: redactURL(endpoint), chars: screenText.length });
   const response = await fetch(endpoint, {
@@ -2246,7 +2246,7 @@ function localChoiceParserAppServerArgs(settings = {}) {
 }
 
 function localChoiceParserWorkspace() {
-  return path.join(os.tmpdir(), "copets-choice-parser-workspace");
+  return path.join(os.tmpdir(), "corptie-choice-parser-workspace");
 }
 
 function localChoiceParserSettingsSignature(settings = {}) {
@@ -2664,7 +2664,7 @@ function previewText(text) {
 
 function logChoiceParser(event, session, details = {}) {
   const noisySkip = event === "skip" || event === "configured-skip";
-  if (noisySkip && process.env.COPETS_CHOICE_PARSER_DEBUG !== "1") {
+  if (noisySkip && process.env.CORPTIE_CHOICE_PARSER_DEBUG !== "1") {
     return;
   }
   const sessionId = session?.id ?? "unknown";
@@ -2905,8 +2905,8 @@ function isExecutable(path) {
 
 function defaultCodexCommand() {
   const configured = [
-    process.env.COPETS_CODEX_PATH,
-    process.env.COPETS_CODEX_REAL_PATH
+    process.env.CORPTIE_CODEX_PATH,
+    process.env.CORPTIE_CODEX_REAL_PATH
   ].find(isExecutable);
   if (configured) {
     return configured.trim();

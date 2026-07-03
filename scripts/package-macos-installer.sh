@@ -2,28 +2,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PRODUCT_NAME="Copets"
+PRODUCT_NAME="Corptie"
 APP_NAME="${PRODUCT_NAME}.app"
 BUILD_CFG="release"
 ARCHIVE_DIR="${ROOT}/dist"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 APP_VERSION="0.1.0"
-APP_BUNDLE_PATH="/Applications/Copets.app"
+APP_BUNDLE_PATH="/Applications/Corptie.app"
 
 mkdir -p "${ARCHIVE_DIR}"
 
 echo "Building for production..."
 swift build --package-path "${ROOT}/apps/macos" -c "${BUILD_CFG}"
 
-BUILD_BIN="${ROOT}/apps/macos/.build/arm64-apple-macosx/${BUILD_CFG}/CopetsMac"
+BUILD_BIN="${ROOT}/apps/macos/.build/arm64-apple-macosx/${BUILD_CFG}/CorptieMac"
 if [ ! -f "${BUILD_BIN}" ]; then
   echo "Build binary not found: ${BUILD_BIN}" >&2
   exit 1
 fi
 
-STAGING_ROOT="$(mktemp -d /tmp/copets-pkg-staging-XXXXXX)"
-Dmg_STAGING="$(mktemp -d /tmp/copets-dmg-staging-XXXXXX)"
-SCRIPTS_DIR="$(mktemp -d /tmp/copets-pkg-scripts-XXXXXX)"
+STAGING_ROOT="$(mktemp -d /tmp/corptie-pkg-staging-XXXXXX)"
+Dmg_STAGING="$(mktemp -d /tmp/corptie-dmg-staging-XXXXXX)"
+SCRIPTS_DIR="$(mktemp -d /tmp/corptie-pkg-scripts-XXXXXX)"
 trap 'rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"' EXIT
 
 APP_DIR="${STAGING_ROOT}/Applications/${APP_NAME}"
@@ -36,13 +36,13 @@ cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
   <dict>
     <key>CFBundleExecutable</key>
-    <string>Copets</string>
+    <string>Corptie</string>
     <key>CFBundleIdentifier</key>
-    <string>com.copets.mac</string>
+    <string>com.corptie.mac</string>
     <key>CFBundleName</key>
-    <string>Copets</string>
+    <string>Corptie</string>
     <key>CFBundleDisplayName</key>
-    <string>Copets</string>
+    <string>Corptie</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -65,14 +65,14 @@ if [ -d "${BACKEND_SOURCE}/node_modules" ]; then
   cp -R "${BACKEND_SOURCE}/node_modules" "${BACKEND_DEST}/"
 fi
 
-cat > "${APP_DIR}/Contents/Resources/copets-backend-launch.sh" <<'LAUNCHER'
+cat > "${APP_DIR}/Contents/Resources/corptie-backend-launch.sh" <<'LAUNCHER'
 #!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="${SCRIPT_DIR}/backend"
-export COPETS_ENV="production"
-export COPETS_BACKEND_PORT="${COPETS_BACKEND_PORT:-47321}"
+export CORPTIE_ENV="production"
+export CORPTIE_BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47321}"
 
 NODE_BIN="${NODE_BIN:-}"
 if [ -z "${NODE_BIN}" ]; then
@@ -98,18 +98,18 @@ fi
 cd "${BACKEND_DIR}"
 exec "${NODE_BIN}" src/server.mjs
 LAUNCHER
-chmod +x "${APP_DIR}/Contents/Resources/copets-backend-launch.sh"
+chmod +x "${APP_DIR}/Contents/Resources/corptie-backend-launch.sh"
 
-cat > "${APP_DIR}/Contents/Resources/com.copets.backend.plist" <<PLIST
+cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.copets.backend</string>
+    <string>com.corptie.backend</string>
     <key>ProgramArguments</key>
     <array>
-      <string>${APP_BUNDLE_PATH}/Contents/Resources/copets-backend-launch.sh</string>
+      <string>${APP_BUNDLE_PATH}/Contents/Resources/corptie-backend-launch.sh</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -117,31 +117,31 @@ cat > "${APP_DIR}/Contents/Resources/com.copets.backend.plist" <<PLIST
     <true/>
     <key>EnvironmentVariables</key>
     <dict>
-      <key>COPETS_ENV</key>
+      <key>CORPTIE_ENV</key>
       <string>production</string>
-      <key>COPETS_BACKEND_PORT</key>
+      <key>CORPTIE_BACKEND_PORT</key>
       <string>47321</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/Copets/backend.out.log</string>
+    <string>/tmp/Corptie/backend.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/Copets/backend.err.log</string>
+    <string>/tmp/Corptie/backend.err.log</string>
   </dict>
 </plist>
 PLIST
 
 xattr -cr "${STAGING_ROOT}" 2>/dev/null || true
 
-PKG_FILE="${ARCHIVE_DIR}/Copets-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
+PKG_FILE="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
 pkgbuild \
   --root "${STAGING_ROOT}" \
-  --identifier "com.copets.pkg" \
+  --identifier "com.corptie.pkg" \
   --version "${APP_VERSION}" \
   --install-location / \
   --scripts "${SCRIPTS_DIR}" \
   "${PKG_FILE}"
 
-DMG_NAME="${ARCHIVE_DIR}/Copets-Production-${APP_VERSION}-${TIMESTAMP}.dmg"
+DMG_NAME="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.dmg"
 
 mkdir -p "${Dmg_STAGING}"
 cp -R "${APP_DIR}" "${Dmg_STAGING}/"
@@ -149,28 +149,28 @@ ln -s /Applications "${Dmg_STAGING}/Applications"
 
 mkdir -p "${Dmg_STAGING}/.background"
 cat > "${Dmg_STAGING}/.background/README.txt" <<'DMGINFO'
-Copets 安装说明
+Corptie 安装说明
 
-1) 将 Copets.app 拖拽到右侧的 Applications
-2) 在 Copets.app 首次启动时，软件会显示后端初始化提示（如未配置启动）
+1) 将 Corptie.app 拖拽到右侧的 Applications
+2) 在 Corptie.app 首次启动时，软件会显示后端初始化提示（如未配置启动）
 3) 按提示完成后即可使用
 DMGINFO
 
 mkdir -p "${Dmg_STAGING}/.install" 
-cat > "${Dmg_STAGING}/.install/Copets-Readme.md" <<'INSTALL_README'
-# Copets 安装说明
+cat > "${Dmg_STAGING}/.install/Corptie-Readme.md" <<'INSTALL_README'
+# Corptie 安装说明
 
 此安装包为标准拖拽式安装：
 
-- 将 `Copets.app` 拖到 `Applications`
-- 启动 Copets
+- 将 `Corptie.app` 拖到 `Applications`
+- 启动 Corptie
 - 如果提示后端未启动，先在首次设置页点击“启动后端服务”按钮
 
-后端文件已随应用一起打包在 `Copets.app/Contents/Resources/backend`。
+后端文件已随应用一起打包在 `Corptie.app/Contents/Resources/backend`。
 INSTALL_README
 
 hdiutil create "${DMG_NAME}" \
-  -volname "Copets Installer" \
+  -volname "Corptie Installer" \
   -fs HFS+ \
   -srcfolder "${Dmg_STAGING}" \
   -ov -format UDZO

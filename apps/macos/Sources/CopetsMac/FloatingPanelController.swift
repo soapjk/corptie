@@ -74,7 +74,7 @@ final class FloatingPanelController: NSObject {
     private let focusState = PanelFocusState()
     private let layoutState = PanelLayoutState()
     private let listMinimumSize = NSSize(width: 360, height: 158)
-    private let detailSizeStorageKey = "copets.detailWindowSizesBySession"
+    private let detailSizeStorageKey = "corptie.detailWindowSizesBySession"
     private var cancellables = Set<AnyCancellable>()
     private var isProgrammaticResize = false
     private var isBouncingResize = false
@@ -580,7 +580,7 @@ final class FloatingPanelController: NSObject {
     }
 
     private func detailWindowSizes() -> [String: StoredPanelSize] {
-        guard let data = CopetsAppEnvironment.userDefaults.data(forKey: detailSizeStorageKey) else {
+        guard let data = CorptieAppEnvironment.userDefaults.data(forKey: detailSizeStorageKey) else {
             return [:]
         }
         return (try? JSONDecoder().decode([String: StoredPanelSize].self, from: data)) ?? [:]
@@ -590,7 +590,7 @@ final class FloatingPanelController: NSObject {
         guard let data = try? JSONEncoder().encode(sizes) else {
             return
         }
-        CopetsAppEnvironment.userDefaults.set(data, forKey: detailSizeStorageKey)
+        CorptieAppEnvironment.userDefaults.set(data, forKey: detailSizeStorageKey)
     }
 }
 

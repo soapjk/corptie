@@ -89,7 +89,7 @@ struct FloatingRootView: View {
                 .strokeBorder(Color.white.opacity(0.12 + 0.1 * glassStrength), lineWidth: 1)
         )
         .overlay(alignment: .topTrailing) {
-            if CopetsAppEnvironment.isDevelopment {
+            if CorptieAppEnvironment.isDevelopment {
                 EnvironmentModeBadge()
                     .padding(.top, 10)
                     .padding(.trailing, 10)
@@ -384,15 +384,15 @@ private struct MainPanelCloseButton: View {
 
 private struct EnvironmentModeBadge: View {
     private var modeLabel: String {
-        CopetsAppEnvironment.displayName
+        CorptieAppEnvironment.displayName
     }
 
     private var modeIcon: String {
-        CopetsAppEnvironment.isDevelopment ? "hammer.fill" : "sparkles"
+        CorptieAppEnvironment.isDevelopment ? "hammer.fill" : "sparkles"
     }
 
     private var modeColor: Color {
-        CopetsAppEnvironment.isDevelopment ? CopetsPalette.amber : CopetsPalette.softBlue
+        CorptieAppEnvironment.isDevelopment ? CorptiePalette.amber : CorptiePalette.softBlue
     }
 
     var body: some View {
@@ -413,7 +413,7 @@ private struct EnvironmentModeBadge: View {
                         .stroke(modeColor.opacity(0.42), lineWidth: 0.9)
                 }
         )
-        .help("Environment: \(modeLabel) (\(CopetsAppEnvironment.backendPort))")
+        .help("Environment: \(modeLabel) (\(CorptieAppEnvironment.backendPort))")
     }
 }
 
@@ -594,7 +594,7 @@ private struct LiquidGlassPanelBackground: View {
                     .opacity(isFocused ? 0.34 : 0.14)
 
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(isFocused ? CopetsPalette.glassVeilFocused : CopetsPalette.glassVeilIdle)
+                    .fill(isFocused ? CorptiePalette.glassVeilFocused : CorptiePalette.glassVeilIdle)
                     .opacity(isFocused ? 0.38 : 1)
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -755,7 +755,7 @@ private struct FloatingActionMenu: View {
             }
         }
         .frame(width: 32, height: 32)
-        .foregroundStyle(CopetsPalette.primaryText)
+        .foregroundStyle(CorptiePalette.primaryText)
         .contentShape(Circle())
     }
 
@@ -779,7 +779,7 @@ private struct FloatingActionMenu: View {
                 Text(title)
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
             }
-            .foregroundStyle(CopetsPalette.primaryText)
+            .foregroundStyle(CorptiePalette.primaryText)
             .padding(.horizontal, 11)
             .frame(height: 34)
             .background(FloatingActionSurface(cornerRadius: 14))
@@ -825,8 +825,8 @@ private struct FloatingActionOrb: View {
 
 private struct NewPtyAgentTaskSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @AppStorage("newTask.defaultSandboxMode", store: CopetsAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
-    @AppStorage("newTask.defaultApprovalPolicy", store: CopetsAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
+    @AppStorage("newTask.defaultSandboxMode", store: CorptieAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
+    @AppStorage("newTask.defaultApprovalPolicy", store: CorptieAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
     @State private var title = ""
     @State private var command = "codex"
     @State private var arguments = ""
@@ -875,7 +875,7 @@ private struct NewPtyAgentTaskSheet: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .strokeBorder(Color.white.opacity(isBindingExistingSession ? 0.08 : 0.14), lineWidth: 1)
                         )
-                        .foregroundStyle(isBindingExistingSession ? CopetsPalette.mutedText : CopetsPalette.primaryText)
+                        .foregroundStyle(isBindingExistingSession ? CorptiePalette.mutedText : CorptiePalette.primaryText)
 
                     Button {
                         chooseWorkspace()
@@ -897,7 +897,7 @@ private struct NewPtyAgentTaskSheet: View {
                         }
                         Text(sessionLookupMessage ?? "Workspace is locked to the bound Codex session.")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(sessionLookupMessage?.hasPrefix("Session not found") == true ? .red : CopetsPalette.secondaryText)
+                            .foregroundStyle(sessionLookupMessage?.hasPrefix("Session not found") == true ? .red : CorptiePalette.secondaryText)
                             .lineLimit(2)
                     }
                 }
@@ -929,7 +929,7 @@ private struct NewPtyAgentTaskSheet: View {
                     .font(.system(size: 12, weight: .semibold))
             }
             .buttonStyle(.plain)
-            .foregroundStyle(CopetsPalette.secondaryText)
+            .foregroundStyle(CorptiePalette.secondaryText)
             .help(isShowingAdvanced ? "Hide advanced settings" : "Show advanced settings")
 
             if isShowingAdvanced {
@@ -999,7 +999,7 @@ private struct NewPtyAgentTaskSheet: View {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                             )
-                            .help("Enter an existing Codex session id to resume it in Copets")
+                            .help("Enter an existing Codex session id to resume it in Corptie")
                             .onChange(of: existingSessionId) { _, value in
                                 scheduleSessionLookup(value)
                             }
@@ -1040,7 +1040,7 @@ private struct NewPtyAgentTaskSheet: View {
                     if sandboxMode == "danger-full-access" {
                         Label("Full Access lets Codex operate outside the workspace. Use it only for trusted tasks.", systemImage: "exclamationmark.triangle")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(CopetsPalette.amber)
+                            .foregroundStyle(CorptiePalette.amber)
                     }
                     HStack(spacing: 8) {
                         Button {
@@ -1050,13 +1050,13 @@ private struct NewPtyAgentTaskSheet: View {
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(CopetsPalette.softBlue)
+                        .foregroundStyle(CorptiePalette.softBlue)
                         .help("Use the selected permission and approval mode for future new sessions")
 
                         if let defaultSaveMessage {
                             Text(defaultSaveMessage)
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(CopetsPalette.secondaryText)
+                                .foregroundStyle(CorptiePalette.secondaryText)
                                 .transition(.opacity)
                         }
                     }
@@ -1278,8 +1278,8 @@ private struct PresetButton: View {
                 .padding(.horizontal, 10)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.black : CopetsPalette.primaryText)
-        .background(isSelected ? CopetsPalette.softBlue.opacity(0.72) : Color.white.opacity(isDisabled ? 0.07 : 0.13), in: Capsule())
+        .foregroundStyle(isSelected ? Color.black : CorptiePalette.primaryText)
+        .background(isSelected ? CorptiePalette.softBlue.opacity(0.72) : Color.white.opacity(isDisabled ? 0.07 : 0.13), in: Capsule())
         .overlay(Capsule().strokeBorder(Color.white.opacity(isSelected ? 0.28 : 0.16), lineWidth: 1))
         .disabled(isDisabled)
     }
@@ -1371,7 +1371,7 @@ private struct SheetPanelBackground: View {
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(CopetsPalette.glassVeilFocused)
+                        .fill(CorptiePalette.glassVeilFocused)
                         .opacity(0.46)
                 )
                 .overlay(
@@ -1423,7 +1423,7 @@ private struct TaskCardView: View {
                 if session.pinned == true {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(CopetsPalette.amber)
+                        .foregroundStyle(CorptiePalette.amber)
                         .help("Pinned")
                 }
 
@@ -1437,7 +1437,7 @@ private struct TaskCardView: View {
 
             Text(session.summary)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(CopetsPalette.cardPreviewText)
+                .foregroundStyle(CorptiePalette.cardPreviewText)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .measureSessionSummaryFrame(session.id)
@@ -1449,7 +1449,7 @@ private struct TaskCardView: View {
             HStack(spacing: 10) {
                 Text(session.agent)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
 
                 if let activityStatus = session.activityStatus,
@@ -1461,7 +1461,7 @@ private struct TaskCardView: View {
 
                 Text(relativeTime(session.updatedAt))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.mutedText)
+                    .foregroundStyle(CorptiePalette.mutedText)
                     .lineLimit(1)
 
                 if session.status == .running {
@@ -1506,7 +1506,7 @@ private struct TaskCardView: View {
                         } label: {
                             Label(option.label, systemImage: "arrow.turn.down.right")
                                 .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(CopetsPalette.primaryText)
+                                .foregroundStyle(CorptiePalette.primaryText)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.leading)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1517,7 +1517,7 @@ private struct TaskCardView: View {
                         .background(optionChipBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(CopetsPalette.amber.opacity(0.24), lineWidth: 1)
+                                .strokeBorder(CorptiePalette.amber.opacity(0.24), lineWidth: 1)
                         )
                         .help(option.label)
                     }
@@ -1692,7 +1692,7 @@ private struct TaskCardView: View {
         } label: {
             let isTransitioning = session.isConnecting || backendClient.connectionTransitionSessionIds.contains(session.id)
             let lightColor = (session.isConnecting || (!session.isConnected && isTransitioning))
-                ? CopetsPalette.disconnected
+                ? CorptiePalette.disconnected
                 : session.connectionColor
             ConnectionIndicatorLight(
                 color: lightColor,
@@ -1789,7 +1789,7 @@ private struct SessionReplyHoverBubble: View {
             ScrollView(.vertical, showsIndicators: true) {
                 Text(text)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(CopetsPalette.primaryText)
+                    .foregroundStyle(CorptiePalette.primaryText)
                     .lineSpacing(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 12)
@@ -1802,7 +1802,7 @@ private struct SessionReplyHoverBubble: View {
                     .fill(.regularMaterial)
                     .overlay(
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(CopetsPalette.glassVeilFocused.opacity(0.52))
+                            .fill(CorptiePalette.glassVeilFocused.opacity(0.52))
                     )
             )
             .overlay(
@@ -1892,7 +1892,7 @@ struct AgentAvatarView: View {
                     Circle()
                         .fill(
                             LinearGradient(
-                                colors: [session.accent.color.opacity(0.92), CopetsPalette.softBlue.opacity(0.72)],
+                                colors: [session.accent.color.opacity(0.92), CorptiePalette.softBlue.opacity(0.72)],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
@@ -2003,7 +2003,7 @@ private struct DetailView: View {
                         .controlSize(.small)
                     Text("Loading Codex thread")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let detail = backendClient.selectedDetail {
@@ -2088,7 +2088,7 @@ private struct DetailView: View {
                         } label: {
                             Label("Load \(min(100, hiddenCount)) earlier messages", systemImage: "arrow.up.circle")
                                 .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(CopetsPalette.secondaryText)
+                                .foregroundStyle(CorptiePalette.secondaryText)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
                         }
@@ -2316,7 +2316,7 @@ private struct DetailHeaderView: View {
                     .lineLimit(1)
                 Text(backendClient.selectedDetail?.cwd ?? backendClient.selectedSession?.summary ?? "")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
             }
 
@@ -2363,7 +2363,7 @@ private struct DetailMessagesPlaceholder: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(0..<2, id: \.self) { index in
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(CopetsPalette.primaryText.opacity(index == 1 ? 0.08 : 0.12))
+                    .fill(CorptiePalette.primaryText.opacity(index == 1 ? 0.08 : 0.12))
                     .frame(height: index == 1 ? 42 : 26)
                     .frame(maxWidth: index == 1 ? 260 : .infinity, alignment: .leading)
             }
@@ -2381,7 +2381,7 @@ private struct ThreadMetaView: View {
     var body: some View {
         HStack(spacing: 8) {
             ConnectionIndicatorLight(
-                color: detail.isConnecting ? CopetsPalette.disconnected : detail.connectionColor,
+                color: detail.isConnecting ? CorptiePalette.disconnected : detail.connectionColor,
                 size: 8,
                 glowSize: 20,
                 isBreathing: detail.isConnecting
@@ -2393,7 +2393,7 @@ private struct ThreadMetaView: View {
             }
         }
         .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(CopetsPalette.secondaryText)
+        .foregroundStyle(CorptiePalette.secondaryText)
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .background(Color.white.opacity(0.1), in: Capsule())
@@ -2517,9 +2517,9 @@ private struct ActivityStatusText: View {
     private var activeGradient: LinearGradient {
         LinearGradient(
             colors: [
-                CopetsPalette.connected,
-                CopetsPalette.softBlue,
-                CopetsPalette.periwinkle
+                CorptiePalette.connected,
+                CorptiePalette.softBlue,
+                CorptiePalette.periwinkle
             ],
             startPoint: .leading,
             endPoint: .trailing
@@ -2543,7 +2543,7 @@ struct CopyTextButton: View {
             Image(systemName: "doc.on.doc")
                 .font(.system(size: 10, weight: .semibold))
                 .frame(width: 22, height: 22)
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
         }
         .buttonStyle(.plain)
         .background(copyButtonBackground, in: Circle())
@@ -2586,23 +2586,23 @@ private struct ThreadProcessGroupView: View {
                         .frame(width: 12, height: 12)
                     Image(systemName: "arrow.turn.down.right")
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(CopetsPalette.mutedText.opacity(0.72))
+                        .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
                     Text("已处理")
                         .font(.system(size: 10.5, weight: .semibold))
                     if let durationText {
                         Text(durationText)
                             .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(CopetsPalette.mutedText)
+                            .foregroundStyle(CorptiePalette.mutedText)
                     }
                     Text("\(items.count)")
                         .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundStyle(CopetsPalette.mutedText)
+                        .foregroundStyle(CorptiePalette.mutedText)
                         .padding(.horizontal, 5)
                         .frame(height: 16)
                         .background(Color.black.opacity(0.04), in: Capsule())
                     Spacer(minLength: 0)
                 }
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
                 .padding(.horizontal, 9)
                 .frame(height: 26)
                 .background(Color.white.opacity(0.42), in: Capsule())
@@ -2633,7 +2633,7 @@ private struct ThreadProcessGroupView: View {
             guard let createdAt = item.createdAt else {
                 return nil
             }
-            return ISO8601DateFormatter.copetsThreadItemDate(from: createdAt)
+            return ISO8601DateFormatter.corptieThreadItemDate(from: createdAt)
         }
         guard let start = timestamps.min(), let end = timestamps.max() else {
             return nil
@@ -2660,18 +2660,18 @@ private struct ProcessMiniCard: View {
                     .frame(width: 6, height: 6)
                 Text(item.title)
                     .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
                 Spacer(minLength: 6)
                 Text(processTypeLabel)
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(CopetsPalette.mutedText.opacity(0.78))
+                    .foregroundStyle(CorptiePalette.mutedText.opacity(0.78))
             }
 
             if !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(item.text)
                     .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(CopetsPalette.mutedText)
+                    .foregroundStyle(CorptiePalette.mutedText)
                     .lineSpacing(2)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2690,15 +2690,15 @@ private struct ProcessMiniCard: View {
     private var dotColor: Color {
         switch item.type {
         case "commandExecution":
-            return CopetsPalette.amber
+            return CorptiePalette.amber
         case "fileChange":
-            return CopetsPalette.periwinkle
+            return CorptiePalette.periwinkle
         case "webSearch":
-            return CopetsPalette.softBlue
+            return CorptiePalette.softBlue
         case "reasoning", "plan":
-            return CopetsPalette.mutedText
+            return CorptiePalette.mutedText
         default:
-            return CopetsPalette.connected
+            return CorptiePalette.connected
         }
     }
 
@@ -2708,7 +2708,7 @@ private struct ProcessMiniCard: View {
 }
 
 private extension ISO8601DateFormatter {
-    static func copetsThreadItemDate(from value: String) -> Date? {
+    static func corptieThreadItemDate(from value: String) -> Date? {
         let withFraction = ISO8601DateFormatter()
         withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = withFraction.date(from: value) {
@@ -2736,7 +2736,7 @@ private struct ThreadItemView: View {
                     Spacer()
                     Text(item.type)
                         .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(CopetsPalette.mutedText)
+                        .foregroundStyle(CorptiePalette.mutedText)
                 }
 
                 if !item.text.isEmpty {
@@ -2799,16 +2799,16 @@ private struct ThreadItemView: View {
     }
 
     private var itemBorder: Color {
-        item.type == "approval" || item.type == "choice" ? CopetsPalette.amber.opacity(0.32) : Color.black.opacity(0.08)
+        item.type == "approval" || item.type == "choice" ? CorptiePalette.amber.opacity(0.32) : Color.black.opacity(0.08)
     }
 
     private var itemColor: Color {
         switch item.type {
-        case "userMessage": CopetsPalette.userText
-        case "approval", "choice": CopetsPalette.amber
-        case "agentMessage": CopetsPalette.agentText
-        case "commandExecution": CopetsPalette.amber
-        case "fileChange": CopetsPalette.periwinkle
+        case "userMessage": CorptiePalette.userText
+        case "approval", "choice": CorptiePalette.amber
+        case "agentMessage": CorptiePalette.agentText
+        case "commandExecution": CorptiePalette.amber
+        case "fileChange": CorptiePalette.periwinkle
         default: .secondary
         }
     }
@@ -2831,7 +2831,7 @@ private struct ThreadItemView: View {
                             .lineLimit(1)
                         Spacer(minLength: 6)
                     }
-                    .foregroundStyle(CopetsPalette.mutedText)
+                    .foregroundStyle(CorptiePalette.mutedText)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(Color.black.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -2841,7 +2841,7 @@ private struct ThreadItemView: View {
                 if isActivityExpanded {
                     Text(parsed.activity)
                         .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(CopetsPalette.mutedText)
+                        .foregroundStyle(CorptiePalette.mutedText)
                         .lineSpacing(2)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 9)
@@ -2866,19 +2866,19 @@ private struct ThreadItemView: View {
         if shouldUsePlainTextRendering(text) {
             Text(text)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
             if allowsSelection {
                 Text(markdownText(for: text))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             } else {
                 Text(markdownText(for: text))
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -2929,13 +2929,13 @@ private struct ThreadItemView: View {
     private func optionBackground(for option: CodexApprovalOption) -> Color {
         option.role?.localizedCaseInsensitiveContains("deny") == true
             ? Color.red.opacity(0.08)
-            : CopetsPalette.connected.opacity(0.14)
+            : CorptiePalette.connected.opacity(0.14)
     }
 
     private func optionBorder(for option: CodexApprovalOption) -> Color {
         option.role?.localizedCaseInsensitiveContains("deny") == true
             ? Color.red.opacity(0.24)
-            : CopetsPalette.connected.opacity(0.34)
+            : CorptiePalette.connected.opacity(0.34)
     }
 }
 
@@ -3062,7 +3062,7 @@ private struct MessageComposer: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(CopetsPalette.softBlue)
+                .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || backendClient.isSendingMessage || backendClient.selectedDetail?.canSend == false)
                 .help("Send instruction")
                 .padding(.trailing, 6)
@@ -3178,12 +3178,12 @@ private struct CodexModelMenu: View {
                     .truncationMode(.middle)
                 Text(reasoningShortLabel(currentReasoningLevel))
                     .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .bold))
             }
-            .foregroundStyle(CopetsPalette.primaryText)
+            .foregroundStyle(CorptiePalette.primaryText)
             .frame(maxWidth: 148)
             .padding(.horizontal, 8)
             .frame(height: 30)
@@ -3442,15 +3442,15 @@ private struct QuickReplyField: View {
                 }
             }
             .buttonStyle(.plain)
-            .foregroundStyle(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? CopetsPalette.disabledText : CopetsPalette.softBlue)
+            .foregroundStyle(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? CorptiePalette.disabledText : CorptiePalette.softBlue)
             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             .help("Send reply")
         }
         .simultaneousGesture(TapGesture().onEnded(onInteract))
-        .background(isFocused.wrappedValue ? CopetsPalette.inputFillFocused : CopetsPalette.inputFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(isFocused.wrappedValue ? CorptiePalette.inputFillFocused : CorptiePalette.inputFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(isFocused.wrappedValue ? CopetsPalette.inputBorderFocused : CopetsPalette.inputBorder, lineWidth: isFocused.wrappedValue ? 1.25 : 1)
+                .strokeBorder(isFocused.wrappedValue ? CorptiePalette.inputBorderFocused : CorptiePalette.inputBorder, lineWidth: isFocused.wrappedValue ? 1.25 : 1)
         )
     }
 
@@ -3470,11 +3470,11 @@ private struct ReadOnlyComposer: View {
             Image(systemName: "lock.fill")
                 .font(.system(size: 11, weight: .bold))
                 .frame(width: 28, height: 28)
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
 
-            Text(reason ?? "This session is read-only in Copets.")
+            Text(reason ?? "This session is read-only in Corptie.")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
                 .lineLimit(2)
 
             Spacer(minLength: 0)
@@ -3501,7 +3501,7 @@ private struct OfflineView: View {
                 .font(.system(size: 15, weight: .semibold))
             Text(error ?? "Start the Node.js runtime to see agent tasks.")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3513,12 +3513,12 @@ private struct ReadyEmptyView: View {
         VStack(spacing: 10) {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 34, weight: .light))
-                .foregroundStyle(CopetsPalette.connected)
+                .foregroundStyle(CorptiePalette.connected)
             Text("Backend ready")
                 .font(.system(size: 15, weight: .semibold))
             Text("Click the + button in the lower-left corner to create a session.")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

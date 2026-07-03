@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct CopetsMacApp: App {
+struct CorptieMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
 
         showWelcomePromptIfNeeded()
-        CopetsBackendSupervisor.ensureProductionBackendStarted()
+        CorptieBackendSupervisor.ensureProductionBackendStarted()
 
         let detachedManager = DetachedSessionManager(client: backendClient) { [weak self] session in
             self?.panelController?.show()
@@ -45,38 +45,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showWelcomePromptIfNeeded() {
-        let key = "copets.hasAcknowledgedWelcomeSetup"
+        let key = "corptie.hasAcknowledgedWelcomeSetup"
 
-        guard !CopetsAppEnvironment.userDefaults.bool(forKey: key) else {
+        guard !CorptieAppEnvironment.userDefaults.bool(forKey: key) else {
             return
         }
 
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Welcome to Copets"
+        alert.messageText = "Welcome to Corptie"
         alert.informativeText = """
-        Copets keeps your agent tasks visible in a floating panel while you work on other things.
+        Corptie keeps your agent tasks visible in a floating panel while you work on other things.
 
-        Your session data is stored in ~/Library/Application Support/Copets/ and stays on this machine.
+        Your session data is stored in ~/Library/Application Support/Corptie/ and stays on this machine.
 
-        If you ever need to run tasks in a workspace on an external drive, you may need to grant Copets Full Disk Access in System Settings.
+        If you ever need to run tasks in a workspace on an external drive, you may need to grant Corptie Full Disk Access in System Settings.
         """
         alert.addButton(withTitle: "Get Started")
-        CopetsAppEnvironment.userDefaults.set(true, forKey: key)
-        CopetsAppEnvironment.userDefaults.synchronize()
+        CorptieAppEnvironment.userDefaults.set(true, forKey: key)
+        CorptieAppEnvironment.userDefaults.synchronize()
         alert.runModal()
     }
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        item.button?.image = NSImage(systemSymbolName: CopetsAppEnvironment.isDevelopment ? "hammer" : "sparkles", accessibilityDescription: CopetsAppEnvironment.appName)
+        item.button?.image = NSImage(systemSymbolName: CorptieAppEnvironment.isDevelopment ? "hammer" : "sparkles", accessibilityDescription: CorptieAppEnvironment.appName)
         item.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Show \(CopetsAppEnvironment.appName)", action: #selector(showPanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Show \(CorptieAppEnvironment.appName)", action: #selector(showPanel), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit \(CopetsAppEnvironment.appName)", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: "Quit \(CorptieAppEnvironment.appName)", action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
         item.menu = menu
         statusItem = item
@@ -101,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "\(CopetsAppEnvironment.appName) Settings"
+        window.title = "\(CorptieAppEnvironment.appName) Settings"
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView {
@@ -117,11 +117,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @MainActor
-enum CopetsBackendSupervisor {
-    private static let label = "com.copets.backend"
+enum CorptieBackendSupervisor {
+    private static let label = "com.corptie.backend"
 
     static func ensureProductionBackendStarted() {
-        guard !CopetsAppEnvironment.isDevelopment else {
+        guard !CorptieAppEnvironment.isDevelopment else {
             return
         }
         guard let bundledPlist = Bundle.main.url(forResource: label, withExtension: "plist") else {
@@ -149,7 +149,7 @@ enum CopetsBackendSupervisor {
             }
             _ = try? runLaunchctl(["kickstart", "-k", "gui/\(getuid())/\(label)"])
         } catch {
-            NSLog("Copets backend startup failed: \(error.localizedDescription)")
+            NSLog("Corptie backend startup failed: \(error.localizedDescription)")
         }
     }
 
@@ -189,7 +189,7 @@ enum CopetsBackendSupervisor {
     }
 }
 
-enum CopetsPermissionManager {
+enum CorptiePermissionManager {
     @MainActor
     static func openFullDiskAccessSettings() {
         let candidateURLs: [URL] = [
@@ -265,9 +265,9 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Storage")
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text("\(CopetsAppEnvironment.displayName) environment on port \(CopetsAppEnvironment.backendPort).")
+                    Text("\(CorptieAppEnvironment.displayName) environment on port \(CorptieAppEnvironment.backendPort).")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
                 if backendClient.isUpdatingSettings {
@@ -279,7 +279,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Data Directory")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                 HStack(spacing: 8) {
                     TextField("Choose a data directory", text: $dataDir)
                         .textFieldStyle(.roundedBorder)
@@ -298,10 +298,10 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Database")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                     Text(settings.dbPath)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                         .textSelection(.enabled)
                         .lineLimit(2)
                 }
@@ -309,10 +309,10 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Config")
                             .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(CopetsPalette.secondaryText)
+                            .foregroundStyle(CorptiePalette.secondaryText)
                         Text(configPath)
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(CopetsPalette.secondaryText)
+                            .foregroundStyle(CorptiePalette.secondaryText)
                             .textSelection(.enabled)
                             .lineLimit(2)
                     }
@@ -322,7 +322,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Codex Backend")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
                 Picker("", selection: $codexBackend.mode) {
                     Text("App Server").tag("app-server")
                     Text("PTY Legacy").tag("pty")
@@ -331,14 +331,14 @@ struct SettingsView: View {
                 .help("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI.")
                 Text(codexBackend.mode == "app-server" ? "New Codex sessions use the official Codex app-server protocol." : "New Codex sessions use the legacy terminal adapter.")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CopetsPalette.secondaryText)
+                    .foregroundStyle(CorptiePalette.secondaryText)
             }
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Toggle("Use LLM-enhanced interactions", isOn: llmInteractionEnabled)
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                     Spacer()
                 }
                 .help("Enable model-assisted parsing for terminal choice prompts")
@@ -349,7 +349,7 @@ struct SettingsView: View {
                         Text("OpenAI-compatible").tag("openai")
                     }
                     .pickerStyle(.segmented)
-                    .help("Choose how Copets parses terminal choice prompts")
+                    .help("Choose how Corptie parses terminal choice prompts")
 
                     if choiceParser.provider == "openai" {
                         VStack(alignment: .leading, spacing: 8) {
@@ -383,7 +383,7 @@ struct SettingsView: View {
                     HStack {
                         Text("Timeout")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(CopetsPalette.secondaryText)
+                            .foregroundStyle(CorptiePalette.secondaryText)
                         Stepper("\(choiceParser.timeoutMs / 1000)s", value: $choiceParser.timeoutMs, in: 1000...60000, step: 1000)
                             .font(.system(size: 11, weight: .medium))
                     }
@@ -456,9 +456,9 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Agent Proxy")
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text("Proxy settings are applied per agent when Copets launches agent processes.")
+                    Text("Proxy settings are applied per agent when Corptie launches agent processes.")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
                 if backendClient.isUpdatingSettings {
@@ -577,7 +577,7 @@ struct SettingsView: View {
 
     private var defaultDataDirectory: String {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        return support?.appendingPathComponent(CopetsAppEnvironment.appSupportFolderName, isDirectory: true).path ?? NSHomeDirectory()
+        return support?.appendingPathComponent(CorptieAppEnvironment.appSupportFolderName, isDirectory: true).path ?? NSHomeDirectory()
     }
 }
 
@@ -592,10 +592,10 @@ private struct ProxyProfileEditor: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(CopetsPalette.primaryText)
+                        .foregroundStyle(CorptiePalette.primaryText)
                     Text(subtitle)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(CopetsPalette.secondaryText)
+                        .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
                 Toggle("", isOn: $profile.enabled)
@@ -626,7 +626,7 @@ private struct ProxyProfileEditor: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
             TextField(placeholder, text: text)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -656,9 +656,9 @@ private enum ChoiceParserStatus: Equatable {
     var color: Color {
         switch self {
         case .idle:
-            CopetsPalette.secondaryText
+            CorptiePalette.secondaryText
         case .passed, .saved:
-            CopetsPalette.connected
+            CorptiePalette.connected
         case .failed:
             .red
         }
@@ -676,7 +676,7 @@ private struct ParserModelPicker: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(CopetsPalette.secondaryText)
+                .foregroundStyle(CorptiePalette.secondaryText)
 
             if backendClient.codexModels.isEmpty {
                 TextField(defaultModel.isEmpty ? "Automatic" : defaultModel, text: $selection)

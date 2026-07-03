@@ -1,19 +1,19 @@
 import Foundation
 
 @MainActor
-enum CopetsAppEnvironment {
+enum CorptieAppEnvironment {
     static let rawName: String = {
-        let value = ProcessInfo.processInfo.environment["COPETS_ENV"]?.lowercased() ?? "production"
+        let value = ProcessInfo.processInfo.environment["CORPTIE_ENV"]?.lowercased() ?? "production"
         return ["dev", "development"].contains(value) ? "development" : "production"
     }()
 
     static let isDevelopment = rawName == "development"
     static let displayName = isDevelopment ? "Development" : "Production"
-    static let appName = isDevelopment ? "Copets Dev" : "Copets"
-    static let appSupportFolderName = isDevelopment ? "Copets Development" : "Copets"
+    static let appName = isDevelopment ? "Corptie Dev" : "Corptie"
+    static let appSupportFolderName = isDevelopment ? "Corptie Development" : "Corptie"
 
     static let backendPort: Int = {
-        if let value = ProcessInfo.processInfo.environment["COPETS_BACKEND_PORT"],
+        if let value = ProcessInfo.processInfo.environment["CORPTIE_BACKEND_PORT"],
            let port = Int(value) {
             return port
         }
@@ -23,6 +23,6 @@ enum CopetsAppEnvironment {
     static let backendBaseURL = URL(string: "http://127.0.0.1:\(backendPort)")!
 
     static let userDefaults: UserDefaults = {
-        UserDefaults(suiteName: isDevelopment ? "com.copets.mac.development" : "com.copets.mac.production") ?? .standard
+        UserDefaults(suiteName: isDevelopment ? "com.corptie.mac.development" : "com.corptie.mac.production") ?? .standard
     }()
 }

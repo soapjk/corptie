@@ -3,16 +3,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "CopetsMac",
+    name: "CorptieMac",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "CopetsMac", targets: ["CopetsMac"])
+        .executable(name: "CorptieMac", targets: ["CorptieMac"])
     ],
     targets: [
         .executableTarget(
-            name: "CopetsMac"
+            name: "CorptieMac",
+            path: "Sources/CopetsMac"
         )
     ]
 )
