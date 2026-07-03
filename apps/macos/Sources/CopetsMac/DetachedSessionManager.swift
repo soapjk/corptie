@@ -6,10 +6,12 @@ import SwiftUI
 final class DetachedSessionManager: ObservableObject {
     private let client: BackendClient
     private let openSession: (TaskSession) -> Void
+    private let showMain: () -> Void
     private var controllers: [String: DetachedSessionWindowController] = [:]
 
-    init(client: BackendClient, openSession: @escaping (TaskSession) -> Void) {
+    init(client: BackendClient, showMain: @escaping () -> Void, openSession: @escaping (TaskSession) -> Void) {
         self.client = client
+        self.showMain = showMain
         self.openSession = openSession
     }
 
@@ -23,6 +25,9 @@ final class DetachedSessionManager: ObservableObject {
         let controller = DetachedSessionWindowController(
             sessionId: id,
             client: client,
+            showMain: { [weak self] in
+                self?.showMain()
+            },
             openSession: { [weak self] session in
                 self?.openSession(session)
             },
@@ -67,10 +72,11 @@ private enum DetachedReplyPlacement {
 
 private func detachedOptionsFingerprint(for session: TaskSession) -> String {
     let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+    let prompt = (session.suggestedPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     let labels = (session.suggestedOptions ?? [])
         .map { $0.label.trimmingCharacters(in: .whitespacesAndNewlines) }
         .joined(separator: "\u{1f}")
-    return "\(summary)\u{1e}\(labels)"
+    return "\(summary)\u{1e}\(prompt)\u{1e}\(labels)"
 }
 
 private final class DetachedSessionPanel: NSPanel {
@@ -99,6 +105,7 @@ private final class DetachedAccessoryWindowController {
     private let spacing: CGFloat = 5
     private let previewTotalWidth: CGFloat = 324
     private let replyComposerTotalHeight: CGFloat = 194
+    private let suggestedPromptTotalHeight: CGFloat = 146
     private let optionWidth: CGFloat = 246
 
     init(
@@ -198,10 +205,11 @@ private final class DetachedAccessoryWindowController {
         let hasQuickReply = state.isQuickReplyVisible
         let optionCount = min(visibleOptionCount(for: session), 5)
         let hasOptions = optionCount > 0
+        let hasSuggestedPrompt = hasOptions && !(session?.suggestedPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        let stackHeight = floatingAccessoryHeight(hasPreview: hasPreview, hasQuickReply: hasQuickReply)
+        let stackHeight = floatingAccessoryHeight(hasPreview: hasPreview, hasQuickReply: hasQuickReply, hasSuggestedPrompt: hasSuggestedPrompt)
         let optionsHeight = hasOptions ? optionAreaHeight(for: session, optionCount: optionCount) : 0
-        let width = max(hasPreview || hasQuickReply ? previewTotalWidth : 0, hasOptions ? optionWidth : 0)
+        let width = max(hasPreview || hasQuickReply || hasSuggestedPrompt ? previewTotalWidth : 0, hasOptions ? optionWidth : 0)
         var height = stackHeight
         if hasOptions {
             if height > 0 {
@@ -213,11 +221,7 @@ private final class DetachedAccessoryWindowController {
     }
 
     private func optionAreaHeight(for session: TaskSession?, optionCount: Int) -> CGFloat {
-        var height = min(138, CGFloat(optionCount) * 34 + 8)
-        if session != nil, state.hoveredOptionId != nil {
-            height += 52
-        }
-        return height
+        min(138, CGFloat(optionCount) * 34 + 8)
     }
 
     private func visibleOptionCount(for session: TaskSession?) -> Int {
@@ -235,7 +239,10 @@ private final class DetachedAccessoryWindowController {
         return options.count
     }
 
-    private func floatingAccessoryHeight(hasPreview: Bool, hasQuickReply: Bool) -> CGFloat {
+    private func floatingAccessoryHeight(hasPreview: Bool, hasQuickReply: Bool, hasSuggestedPrompt: Bool) -> CGFloat {
+        if hasSuggestedPrompt {
+            return suggestedPromptTotalHeight
+        }
         if hasPreview && hasQuickReply {
             return replyComposerTotalHeight
         }
@@ -279,6 +286,7 @@ private final class DetachedAccessoryWindowController {
 private final class DetachedSessionWindowController: NSObject, NSWindowDelegate {
     private let sessionId: String
     private let client: BackendClient
+    private let showMain: () -> Void
     private let openSession: (TaskSession) -> Void
     private let closeHandler: (String) -> Void
     private let panel: NSPanel
@@ -309,11 +317,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     init(
         sessionId: String,
         client: BackendClient,
+        showMain: @escaping () -> Void,
         openSession: @escaping (TaskSession) -> Void,
         close: @escaping (String) -> Void
     ) {
         self.sessionId = sessionId
         self.client = client
+        self.showMain = showMain
         self.openSession = openSession
         self.closeHandler = close
 
@@ -343,6 +353,9 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 previewState: previewState,
                 primaryAction: { [weak self] in
                     self?.showQuickReply()
+                },
+                showMain: { [weak self] in
+                    self?.showMain()
                 },
                 openSession: { [weak self] session in
                     self?.hideReplyPreview()
@@ -622,6 +635,7 @@ private struct DetachedSessionOrbView: View {
     let sessionId: String
     @ObservedObject var previewState: DetachedReplyPreviewState
     let primaryAction: () -> Void
+    let showMain: () -> Void
     let openSession: (TaskSession) -> Void
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
@@ -674,6 +688,7 @@ private struct DetachedSessionOrbView: View {
                 openSession: {
                     openSession(session)
                 },
+                showMain: showMain,
                 moved: moved,
                 close: close
             )
@@ -730,7 +745,17 @@ private struct DetachedSessionAccessoryView: View {
     @ViewBuilder
     private func floatingAccessory(session: TaskSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if shouldShowReplyPreview && previewState.isQuickReplyVisible {
+            if let suggestedPromptText {
+                DetachedReplyPreviewBubble(
+                    text: suggestedPromptText,
+                    dismiss: {
+                        previewState.dismissedOptionsFingerprint = detachedOptionsFingerprint(for: session)
+                        previewState.hoveredOptionId = nil
+                    }
+                )
+                .padding(10)
+                .frame(width: previewTotalWidth, height: suggestedPromptTotalHeight, alignment: .topLeading)
+            } else if shouldShowReplyPreview && previewState.isQuickReplyVisible {
                 DetachedReplyComposerCard(
                     text: previewState.text,
                     draft: $previewState.quickReplyDraft,
@@ -758,14 +783,20 @@ private struct DetachedSessionAccessoryView: View {
                         option: option,
                         background: optionBackground,
                         hoverChanged: { hovering in
-                            previewState.hoveredOptionId = hovering ? option.id : (previewState.hoveredOptionId == option.id ? nil : previewState.hoveredOptionId)
+                            let shouldShowTooltip = hovering && isOptionLabelTruncated(option)
+                            previewState.hoveredOptionId = shouldShowTooltip ? option.id : (previewState.hoveredOptionId == option.id ? nil : previewState.hoveredOptionId)
                         },
                         send: {
                             previewState.dismissedOptionsFingerprint = detachedOptionsFingerprint(for: session)
                             previewState.hoveredOptionId = nil
                             dismissPreview()
                             dismissQuickReply()
-                            client.sendMessage(option.label, to: session, isChoiceSelection: true)
+                            if option.role?.localizedCaseInsensitiveContains("approve") == true
+                                || option.role?.localizedCaseInsensitiveContains("deny") == true {
+                                client.respondToCodexApproval(option: option, to: session)
+                            } else {
+                                client.sendMessage(option.label, to: session, isChoiceSelection: true)
+                            }
                         }
                     )
                 }
@@ -816,6 +847,14 @@ private struct DetachedSessionAccessoryView: View {
         previewState.isVisible && !previewState.text.isEmpty
     }
 
+    private var suggestedPromptText: String? {
+        guard sessionHasOptions, let session else {
+            return nil
+        }
+        let text = (session.suggestedPrompt ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
     private var contentWidth: CGFloat {
         max(accessoryHeight > 0 ? previewTotalWidth : 0, sessionHasOptions ? optionWidth : 0)
     }
@@ -825,6 +864,9 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var accessoryHeight: CGFloat {
+        if suggestedPromptText != nil {
+            return suggestedPromptTotalHeight
+        }
         if shouldShowReplyPreview && previewState.isQuickReplyVisible {
             return replyComposerTotalHeight
         }
@@ -837,6 +879,10 @@ private struct DetachedSessionAccessoryView: View {
 
     private var replyComposerTotalHeight: CGFloat {
         194
+    }
+
+    private var suggestedPromptTotalHeight: CGFloat {
+        146
     }
 
     private var spacing: CGFloat {
@@ -856,11 +902,22 @@ private struct DetachedSessionAccessoryView: View {
         let tooltipHeight: CGFloat = 44
         let tooltipReserveY = tooltipHeight + 8
         let aboveY = optionTop - tooltipHeight - 3
-        let maxTopY = max(0, optionListHeight - tooltipHeight - 4)
+        let maxTopY = max(0, contentHeight - tooltipHeight - 4)
         if optionTop > tooltipReserveY {
             return max(0, min(aboveY, maxTopY))
         }
         return min(optionTop + 34, maxTopY)
+    }
+
+    private func isOptionLabelTruncated(_ option: CodexApprovalOption) -> Bool {
+        let font = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
+        let attributes: [NSAttributedString.Key: Any] = [.font: font]
+        let measuredWidth = (option.label as NSString).size(withAttributes: attributes).width
+        let scrollPadding: CGFloat = 16
+        let textPadding: CGFloat = 18
+        let safetyMargin: CGFloat = 6
+        let availableWidth = optionWidth - scrollPadding - textPadding - safetyMargin
+        return measuredWidth > availableWidth
     }
 
     private var contentOffsetBeforeOptionList: CGFloat {
@@ -869,11 +926,7 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var optionListHeight: CGFloat {
-        var listHeight = min(138, CGFloat(visibleOptions.count) * 34 + 8)
-        if previewState.hoveredOptionId != nil {
-            listHeight += 52
-        }
-        return listHeight
+        min(138, CGFloat(visibleOptions.count) * 34 + 8)
     }
 
     private var optionBackground: Color {
@@ -964,7 +1017,7 @@ private struct DetachedReplyComposerCard: View {
                         .padding(.trailing, 6)
                         .padding(.vertical, 4)
                 }
-                .frame(height: 118, alignment: .leading)
+                .frame(height: 112, alignment: .leading)
 
                 Button {
                     dismiss()
@@ -1173,6 +1226,7 @@ private struct DetachedOptionTooltip: View {
 private struct DetachedOrbEventLayer: NSViewRepresentable {
     let open: () -> Void
     let openSession: () -> Void
+    let showMain: () -> Void
     let moved: () -> Void
     let close: () -> Void
 
@@ -1180,6 +1234,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         let view = EventView()
         view.open = open
         view.openSessionAction = openSession
+        view.showMainAction = showMain
         view.moved = moved
         view.close = close
         return view
@@ -1188,6 +1243,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     func updateNSView(_ nsView: EventView, context: Context) {
         nsView.open = open
         nsView.openSessionAction = openSession
+        nsView.showMainAction = showMain
         nsView.moved = moved
         nsView.close = close
     }
@@ -1195,6 +1251,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     final class EventView: NSView {
         var open: (() -> Void)?
         var openSessionAction: (() -> Void)?
+        var showMainAction: (() -> Void)?
         var moved: (() -> Void)?
         var close: (() -> Void)?
         private var initialMouseScreenPoint: NSPoint?
@@ -1255,10 +1312,16 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
         override func rightMouseDown(with event: NSEvent) {
             let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Show Main Window", action: #selector(showMain), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "Open Session", action: #selector(openSession), keyEquivalent: ""))
+            menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "Close Floating Orb", action: #selector(closeOrb), keyEquivalent: ""))
             menu.items.forEach { $0.target = self }
             menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+        }
+
+        @objc private func showMain() {
+            showMainAction?()
         }
 
         @objc private func openSession() {

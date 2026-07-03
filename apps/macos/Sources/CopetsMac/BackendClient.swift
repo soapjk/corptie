@@ -105,6 +105,8 @@ final class BackendClient: ObservableObject {
             "CodexThreadFailed",
             "CodexThreadError",
             "CodexThreadChoiceOptionsUpdated",
+            "CodexThreadApprovalRequested",
+            "CodexThreadApprovalResponded",
             "SessionArchived",
             "SessionUnarchived",
             "SessionDeleted",
@@ -122,7 +124,9 @@ final class BackendClient: ObservableObject {
             return
         }
         await refresh()
-        if eventName == "CodexThreadChoiceOptionsUpdated" {
+        if eventName == "CodexThreadChoiceOptionsUpdated"
+            || eventName == "CodexThreadApprovalRequested"
+            || eventName == "CodexThreadApprovalResponded" {
             await refreshSelectedDetailFromPolling()
         }
     }
@@ -410,20 +414,31 @@ final class BackendClient: ObservableObject {
     }
 
     func respondToCodexApproval(option: CodexApprovalOption) {
-        guard let session = selectedSession,
-              isPtyProvider(session.external?.provider),
+        guard let session = selectedSession else {
+            sendStatusMessage = "No Codex approval is active."
+            return
+        }
+        respondToCodexApproval(option: option, to: session)
+    }
+
+    func respondToCodexApproval(option: CodexApprovalOption, to session: TaskSession) {
+        guard let provider = session.external?.provider,
               let threadId = session.external?.threadId else {
             sendStatusMessage = "No Codex approval is active."
             return
         }
 
+        clearSuggestedOptions(for: session)
         Task {
             isSendingMessage = true
             sendStatusMessage = "Selecting Codex option..."
             defer { isSendingMessage = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/codex-approval"))
+                let path = isPtyProvider(provider)
+                    ? "pty/sessions/\(threadId)/codex-approval"
+                    : "codex/threads/\(threadId)/approval"
+                var request = URLRequest(url: baseURL.appending(path: path))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -441,7 +456,9 @@ final class BackendClient: ObservableObject {
                 }
 
                 sendStatusMessage = "Selected \(option.label)"
-                await loadDetail(for: session)
+                if selectedSession?.id == session.id {
+                    await loadDetail(for: session)
+                }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
@@ -664,6 +681,7 @@ final class BackendClient: ObservableObject {
                 progress: existing.status == .complete || existing.status == .blocked ? 0.5 : existing.progress,
                 summary: existing.summary,
                 suggestedOptions: nil,
+                suggestedPrompt: nil,
                 activityStatus: existing.activityStatus,
                 updatedAt: existing.updatedAt,
                 accent: existing.accent,
@@ -1247,6 +1265,12 @@ final class BackendClient: ObservableObject {
                     }
                     return !options.isEmpty
                 }?.options ?? session.suggestedOptions,
+                suggestedPrompt: detail.items.reversed().first { item in
+                    guard let options = item.options else {
+                        return false
+                    }
+                    return !options.isEmpty && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                }?.text ?? session.suggestedPrompt,
                 activityStatus: detail.activityStatus ?? session.activityStatus,
                 updatedAt: detail.updatedAt,
                 accent: session.accent,

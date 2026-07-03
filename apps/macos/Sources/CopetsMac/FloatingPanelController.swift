@@ -423,16 +423,39 @@ final class FloatingPanelController: NSObject {
 
     private func applyDetailSizing(animated: Bool, restoreSavedSize: Bool, completion: (@MainActor @Sendable () -> Void)? = nil) {
         let minimumHeight = detailMinimumHeight()
+        let currentSize = panel.frame.size
+
+        if let savedSize = savedDetailWindowSize(for: client.selectedSession?.id) {
+            let fixedHeight = min(panel.maxSize.height, max(listMinimumSize.height, savedSize.height))
+            panel.minSize = NSSize(width: listMinimumSize.width, height: min(minimumHeight, fixedHeight))
+
+            guard restoreSavedSize else {
+                completion?()
+                return
+            }
+
+            let targetWidth = min(panel.maxSize.width, max(listMinimumSize.width, savedSize.width))
+            let targetHeight = fixedHeight
+            guard abs(currentSize.width - targetWidth) > 1 || abs(currentSize.height - targetHeight) > 1 else {
+                completion?()
+                return
+            }
+
+            setPanelSize(
+                NSSize(width: targetWidth, height: targetHeight),
+                duration: animated ? 0.16 : 0.0,
+                timing: animated ? .easeOut : .linear,
+                completion: completion
+            )
+            return
+        }
+
         panel.minSize = NSSize(width: listMinimumSize.width, height: minimumHeight)
 
-        let currentSize = panel.frame.size
         let defaultHeight = max(detailDefaultHeight(), minimumHeight)
-        let savedSize = restoreSavedSize ? savedDetailWindowSize(for: client.selectedSession?.id) : nil
-        let targetWidth = min(panel.maxSize.width, max(listMinimumSize.width, savedSize?.width ?? currentSize.width))
-        let targetHeight = min(panel.maxSize.height, max(minimumHeight, savedSize?.height ?? defaultHeight))
-        let shouldResize = savedSize != nil
-            ? abs(currentSize.width - targetWidth) > 1 || abs(currentSize.height - targetHeight) > 1
-            : currentSize.height < targetHeight - 1
+        let targetWidth = min(panel.maxSize.width, max(listMinimumSize.width, currentSize.width))
+        let targetHeight = min(panel.maxSize.height, max(minimumHeight, defaultHeight))
+        let shouldResize = currentSize.height < targetHeight - 1
 
         guard shouldResize else {
             completion?()

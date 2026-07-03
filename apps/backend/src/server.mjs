@@ -414,6 +414,30 @@ function handleCodexAppServerNotification(message) {
   const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
   const nowIso = now();
 
+  if (method === "corptie/codexApprovalRequested") {
+    const approvalItem = liveItems.slice().reverse().find((item) => item.type === "approval" && Array.isArray(item.options) && item.options.length > 0);
+    const nextSession = {
+      ...session,
+      status: "blocked",
+      progress: 0.5,
+      suggestedOptions: approvalItem?.options ?? session.suggestedOptions,
+      suggestedPrompt: approvalItem?.text ?? session.suggestedPrompt,
+      activityStatus: "Waiting for approval",
+      updatedAt: nowIso,
+      capabilities: {
+        ...(session.capabilities ?? {}),
+        canInterrupt: true
+      }
+    };
+    upsertManagedCodexSession(nextSession);
+    emitEvent("CodexThreadApprovalRequested", {
+      session: nextSession,
+      threadId,
+      requestId: params.requestId ?? null
+    });
+    return;
+  }
+
   if (method === "turn/started") {
     const turn = params.turn ?? {};
     const nextSession = {
@@ -1854,6 +1878,32 @@ function route(request, response) {
             adapter: "codex-app-server"
           });
         }
+      });
+    return;
+  }
+
+  const codexApprovalMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/approval$/);
+  if (request.method === "POST" && codexApprovalMatch) {
+    const threadId = decodeURIComponent(codexApprovalMatch[1]);
+    readJson(request)
+      .then((input) => {
+        const approved = input.approved === true;
+        return codexClient.respondToApproval(threadId, {
+          approved,
+          optionId: input.optionId
+        }).then(() => {
+          const sessionId = `codex:${threadId}`;
+          const previousSession = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId) ?? null;
+          const session = previousSession ? { ...previousSession, suggestedOptions: null, suggestedPrompt: null } : null;
+          if (session) {
+            upsertManagedCodexSession(session);
+          }
+          emitEvent("CodexThreadApprovalResponded", { threadId, approved, session });
+          sendJson(response, 202, { mode: "codex-app-server-approval", approved, session });
+        });
+      })
+      .catch((error) => {
+        sendJson(response, 502, { error: error.message, adapter: "codex-app-server" });
       });
     return;
   }

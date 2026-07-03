@@ -27,7 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showWelcomePromptIfNeeded()
         CorptieBackendSupervisor.ensureProductionBackendStarted()
 
-        let detachedManager = DetachedSessionManager(client: backendClient) { [weak self] session in
+        let detachedManager = DetachedSessionManager(client: backendClient, showMain: { [weak self] in
+            self?.panelController?.show()
+        }) { [weak self] session in
             self?.panelController?.show()
             self?.backendClient.select(session: session)
         }
