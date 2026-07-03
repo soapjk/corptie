@@ -89,16 +89,24 @@ private final class DetachedSessionPanel: NSPanel {
     }
 }
 
+private final class DetachedFirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
 @MainActor
 private final class DetachedAccessoryWindowController {
     private let panel: NSPanel
     private let contentContainer: NSView
-    private let hostingView: NSHostingView<DetachedSessionAccessoryView>
+    private let hostingView: DetachedFirstMouseHostingView<DetachedSessionAccessoryView>
     private let state: DetachedReplyPreviewState
     private let client: BackendClient
     private let sessionId: String
     private let dismissPreview: () -> Void
     private let dismissQuickReply: () -> Void
+    private let didResignKey: () -> Void
+    private var resignKeyObserver: NSObjectProtocol?
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
@@ -113,15 +121,17 @@ private final class DetachedAccessoryWindowController {
         client: BackendClient,
         sessionId: String,
         dismissPreview: @escaping () -> Void,
-        dismissQuickReply: @escaping () -> Void
+        dismissQuickReply: @escaping () -> Void,
+        didResignKey: @escaping () -> Void
     ) {
         self.state = state
         self.client = client
         self.sessionId = sessionId
         self.dismissPreview = dismissPreview
         self.dismissQuickReply = dismissQuickReply
+        self.didResignKey = didResignKey
         self.contentContainer = NSView(frame: NSRect(x: 0, y: 0, width: 1, height: 1))
-        self.hostingView = NSHostingView(
+        self.hostingView = DetachedFirstMouseHostingView(
             rootView: DetachedSessionAccessoryView(
                 client: client,
                 sessionId: sessionId,
@@ -154,9 +164,22 @@ private final class DetachedAccessoryWindowController {
         hostingView.frame = contentContainer.bounds
         contentContainer.addSubview(hostingView)
         panel.contentView = contentContainer
+        resignKeyObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification,
+            object: panel,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.didResignKey()
+            }
+        }
     }
 
     func close() {
+        if let resignKeyObserver {
+            NotificationCenter.default.removeObserver(resignKeyObserver)
+            self.resignKeyObserver = nil
+        }
         panel.close()
     }
 
@@ -198,6 +221,14 @@ private final class DetachedAccessoryWindowController {
             return
         }
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    var isKeyWindow: Bool {
+        panel.isKeyWindow
+    }
+
+    func contains(window: NSWindow?) -> Bool {
+        window === panel
     }
 
     private func accessorySize(for session: TaskSession?) -> NSSize {
@@ -302,10 +333,19 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         dismissQuickReply: { [weak self] in
             self?.hideQuickReply()
             self?.updateAccessory(for: self?.currentSession)
+        },
+        didResignKey: { [weak self] in
+            guard let self else {
+                return
+            }
+            self.hideReplyPreview(markDismissed: true)
+            self.hideQuickReply()
+            self.updateAccessory(for: self.currentSession)
         }
     )
     private var cancellables = Set<AnyCancellable>()
     private var outsideClickMonitor: Any?
+    private var localOutsideClickMonitor: Any?
     private var lastSummary: String?
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
@@ -346,7 +386,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
         panel.delegate = self
-        panel.contentView = NSHostingView(
+        panel.contentView = DetachedFirstMouseHostingView(
             rootView: DetachedSessionOrbView(
                 client: client,
                 sessionId: sessionId,
@@ -407,6 +447,12 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     func windowDidResignKey(_ notification: Notification) {
+        guard !accessoryController.isKeyWindow else {
+            updateAccessory(for: currentSession)
+            return
+        }
+        hideReplyPreview(markDismissed: true)
+        hideQuickReply()
         updateAccessory(for: currentSession)
     }
 
@@ -417,6 +463,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private func showQuickReply() {
         previewState.isQuickReplyVisible = true
         showLatestReplyPreviewIfNeeded()
+        installOutsideClickMonitor()
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         updateAccessory(for: currentSession)
@@ -483,6 +530,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
         previewState.isVisible = false
         previewState.isQuickReplyVisible = false
+        removeOutsideClickMonitor()
     }
 
     private func fetchDetailPreviewIfNeeded(for session: TaskSession, fallbackSummary: String, allowFallback: Bool) {
@@ -503,27 +551,25 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func showLatestReplyPreviewIfNeeded() {
-        guard !previewState.isVisible else {
-            return
-        }
         dismissedPreviewText = nil
-        if !previewState.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !previewState.isVisible && !previewState.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             previewState.isVisible = true
-            return
         }
         guard let session = currentSession, !isSessionOpenInMainView(session) else {
             return
         }
 
         let fallbackSummary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        if session.status != .running, !fallbackSummary.isEmpty {
+        if previewState.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           session.status != .running,
+           !fallbackSummary.isEmpty {
             showReplyPreview(fallbackSummary, for: session, force: true)
         }
         fetchLatestReplyPreview(
             for: session,
             fallbackSummary: fallbackSummary,
             allowFallback: session.status != .running,
-            includeActiveTurn: session.status != .running,
+            includeActiveTurn: true,
             force: true
         )
     }
@@ -565,6 +611,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         previewState.text = trimmed
         previewState.isVisible = true
         previewState.isQuickReplyVisible = true
+        installOutsideClickMonitor()
         updateAccessory(for: session)
     }
 
@@ -612,9 +659,25 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         removeOutsideClickMonitor()
         outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                self?.hideQuickReply()
-                self?.updateAccessory(for: self?.currentSession)
+                guard let self else {
+                    return
+                }
+                self.hideReplyPreview(markDismissed: true)
+                self.hideQuickReply()
+                self.updateAccessory(for: self.currentSession)
             }
+        }
+        localOutsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+            guard let self else {
+                return event
+            }
+            guard event.window !== self.panel, !self.accessoryController.contains(window: event.window) else {
+                return event
+            }
+            self.hideReplyPreview(markDismissed: true)
+            self.hideQuickReply()
+            self.updateAccessory(for: self.currentSession)
+            return event
         }
     }
 
@@ -622,6 +685,10 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         if let outsideClickMonitor {
             NSEvent.removeMonitor(outsideClickMonitor)
             self.outsideClickMonitor = nil
+        }
+        if let localOutsideClickMonitor {
+            NSEvent.removeMonitor(localOutsideClickMonitor)
+            self.localOutsideClickMonitor = nil
         }
     }
 
@@ -1257,6 +1324,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         private var initialMouseScreenPoint: NSPoint?
         private var initialWindowOrigin: NSPoint?
         private var didDrag = false
+        private var openedOnMouseDown = false
 
         override var acceptsFirstResponder: Bool {
             true
@@ -1276,9 +1344,16 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
+            let shouldOpenImmediately = !NSApp.isActive || !window.isKeyWindow
             initialMouseScreenPoint = window.convertPoint(toScreen: event.locationInWindow)
             initialWindowOrigin = window.frame.origin
             didDrag = false
+            openedOnMouseDown = false
+            window.makeKey()
+            if shouldOpenImmediately {
+                openedOnMouseDown = true
+                open?()
+            }
         }
 
         override func mouseDragged(with event: NSEvent) {
@@ -1302,12 +1377,13 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
-            if !didDrag {
+            if !didDrag && !openedOnMouseDown {
                 open?()
             }
             initialMouseScreenPoint = nil
             initialWindowOrigin = nil
             didDrag = false
+            openedOnMouseDown = false
         }
 
         override func rightMouseDown(with event: NSEvent) {

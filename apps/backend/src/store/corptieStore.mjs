@@ -362,17 +362,22 @@ export class CorptieStore {
     return {
       id,
       title: session.title,
-      status: session.status,
+      status: session.external?.provider === "claude-sdk" && session.status === "running" ? "failed" : session.status,
       source: session.external?.provider,
-      connectionStatus: "pty disconnected",
+      connectionStatus: session.external?.provider === "claude-sdk" ? "disconnected" : "pty disconnected",
       currentModel: session.external?.currentModel ?? session.rawStatus?.currentModel ?? session.rawStatus?.resume?.currentModel ?? null,
       cwd: session.external?.cwd,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       rawStatus: session.rawStatus,
+      capabilities: session.external?.provider === "claude-sdk"
+        ? capabilitiesForStoredProvider(session.external?.provider, session.status)
+        : session.rawStatus?.capabilities ?? capabilitiesForStoredProvider(session.external?.provider, session.status),
       canSend: false,
-      sendUnavailableReason: session.rawStatus?.canResume === false
+      sendUnavailableReason: session.external?.provider === "codex-pty" && session.rawStatus?.canResume === false
         ? "This Codex PTY session was not bound to a Codex session id and cannot be reconnected."
+        : session.external?.provider === "claude-sdk"
+          ? "This Claude Code session is no longer connected. Start a new Claude session to continue."
         : "This session is not currently attached to a running terminal process.",
       turnCount: 1,
       items: canonicalCodexItems(id, session) ?? this.getItems(id, 240, session.external?.provider)
@@ -531,7 +536,9 @@ export class CorptieStore {
       pinned: Boolean(row.pinned),
       sortOrder: Number(row.sort_order ?? 0),
       avatarPath: row.avatar_path || null,
-      capabilities: rawStatus.capabilities ?? capabilitiesForStoredProvider(row.provider, displayStatus),
+      capabilities: row.provider === "claude-sdk"
+        ? capabilitiesForStoredProvider(row.provider, displayStatus)
+        : rawStatus.capabilities ?? capabilitiesForStoredProvider(row.provider, displayStatus),
       rawStatus,
       external: {
         provider: row.provider,
@@ -701,6 +708,15 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
       canSwitchModel: true,
       canSwitchReasoning: true,
       canInterrupt: status === "running",
+      canReconnect: true
+    };
+  }
+  if (provider === "claude-sdk") {
+    return {
+      canSend: status !== "failed" && status !== "cancelled",
+      canSwitchModel: false,
+      canSwitchReasoning: false,
+      canInterrupt: false,
       canReconnect: true
     };
   }

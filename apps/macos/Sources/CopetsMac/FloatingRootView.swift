@@ -1148,7 +1148,8 @@ private struct NewPtyAgentTaskSheet: View {
     private func startSelectedAgent() {
         let finalTitle = title.isEmpty ? "" : title
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
-        if command.trimmingCharacters(in: .whitespacesAndNewlines) == "codex" {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedCommand == "codex" {
             backendClient.createCodexPtyTask(
                 title: finalTitle,
                 prompt: "",
@@ -1156,6 +1157,14 @@ private struct NewPtyAgentTaskSheet: View {
                 existingSessionId: existingSessionId,
                 sandbox: sandboxMode,
                 approvalPolicy: approvalPolicy
+            ) {
+                close()
+            }
+        } else if trimmedCommand == "claude" {
+            backendClient.createClaudeTask(
+                title: finalTitle,
+                prompt: "",
+                cwd: workspace
             ) {
                 close()
             }
@@ -1657,6 +1666,9 @@ private struct TaskCardView: View {
         if session.isUnboundCodexSession {
             return "Session is not bound yet"
         }
+        if session.capabilities?.canReconnect == true && !session.isConnected {
+            return "Reconnect session"
+        }
         if session.external?.provider != "codex-pty" {
             return "Session is available"
         }
@@ -1669,6 +1681,9 @@ private struct TaskCardView: View {
     private var connectionIndicatorPopoverText: String {
         if session.isUnboundCodexSession {
             return "尚未发送消息的会话，无法切换状态。"
+        }
+        if session.capabilities?.canReconnect == true && !session.isConnected {
+            return "点击重新连接这个会话。"
         }
         if session.external?.provider != "codex-pty" {
             return "这个会话无需手动连接，当前可用。"
@@ -1684,6 +1699,8 @@ private struct TaskCardView: View {
             }
             if session.isUnboundCodexSession {
                 isShowingUnboundHint = true
+            } else if session.capabilities?.canReconnect == true && !session.isConnected {
+                backendClient.reconnect(session: session)
             } else if session.external?.provider == "codex-pty" {
                 backendClient.togglePtyConnection(for: session)
             } else {
@@ -2052,7 +2069,8 @@ private struct DetailView: View {
                     .lineLimit(2)
             }
 
-            if backendClient.selectedDetail?.canSend == false {
+            if backendClient.selectedDetail?.canSend == false
+                && backendClient.selectedDetail?.capabilities?.canInterrupt != true {
                 ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
             } else {
                 MessageComposer(message: $message)
@@ -2345,15 +2363,29 @@ private struct DetailHeaderView: View {
                 Text(backendClient.selectedSession?.title ?? "Codex thread")
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
-                Text(backendClient.selectedDetail?.cwd ?? backendClient.selectedSession?.summary ?? "")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .lineLimit(1)
+                if let cwd = backendClient.selectedDetail?.cwd, !cwd.isEmpty {
+                    Button {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: cwd, isDirectory: true))
+                    } label: {
+                        Text(cwd)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open folder in Finder")
+                } else {
+                    Text(backendClient.selectedSession?.summary ?? "")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .lineLimit(1)
+                }
             }
 
             Spacer()
 
-            if backendClient.selectedDetail?.connectionStatus == "pty disconnected" {
+            if backendClient.selectedSession?.capabilities?.canReconnect == true
+                && backendClient.selectedSession?.isConnected == false {
                 Button {
                     backendClient.reconnectSelectedSession()
                 } label: {
@@ -2362,7 +2394,7 @@ private struct DetailHeaderView: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(IconButtonStyle())
-                .help("Reconnect PTY")
+                .help("Reconnect session")
             } else if (backendClient.selectedSession?.external?.provider == "pty" || backendClient.selectedSession?.external?.provider == "codex-pty")
                 && backendClient.selectedDetail?.canSend != false {
                 Button {
@@ -2758,6 +2790,14 @@ private struct ThreadItemView: View {
     let item: CodexThreadItem
 
     var body: some View {
+        if isHandledPermissionItem {
+            handledPermissionView
+        } else {
+            fullItemView
+        }
+    }
+
+    private var fullItemView: some View {
         ZStack(alignment: .bottomTrailing) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -2785,7 +2825,7 @@ private struct ThreadItemView: View {
                                 if item.type == "approval" {
                                     backendClient.respondToCodexApproval(option: option)
                                 } else if item.type == "choice" {
-                                    backendClient.respondToPtyChoice(option: option)
+                                    backendClient.respondToPtyChoice(option: option, choiceId: item.id)
                                 } else {
                                     backendClient.sendMessage(option.label)
                                 }
@@ -2807,6 +2847,7 @@ private struct ThreadItemView: View {
                     }
                     .padding(.top, 2)
                     .disabled(backendClient.isSendingMessage)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
                 }
             }
 
@@ -2823,6 +2864,59 @@ private struct ThreadItemView: View {
         .onHover { hovering in
             isHovering = hovering
         }
+        .animation(.easeInOut(duration: 0.18), value: shouldShowOptions)
+    }
+
+    private var handledPermissionView: some View {
+        DisclosureGroup(isExpanded: $isActivityExpanded) {
+            VStack(alignment: .leading, spacing: 8) {
+                if !item.text.isEmpty {
+                    messageTextView(text: item.text, allowsSelection: true)
+                }
+                if let selected = item.options?.first(where: { $0.selected == true }) {
+                    Label("Selected: \(selected.label)", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CorptiePalette.connected)
+                }
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(CorptiePalette.connected)
+                Text("已处理的权限请求")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                if let selected = item.options?.first(where: { $0.selected == true }) {
+                    Text(selected.label)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(CorptiePalette.connected)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
+                }
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.025), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.06), lineWidth: 1)
+        )
+        .animation(.easeInOut(duration: 0.18), value: isActivityExpanded)
+    }
+
+    private var isHandledPermissionItem: Bool {
+        item.type == "choice"
+            && item.status == "selected"
+            && item.title == "Claude tool approval"
+            && approvalOptions.contains { option in
+                option.role?.localizedCaseInsensitiveContains("approve") == true
+                    || option.role?.localizedCaseInsensitiveContains("deny") == true
+            }
     }
 
     private var itemBackground: Color {
@@ -2930,6 +3024,9 @@ private struct ThreadItemView: View {
     }
 
     private var shouldShowOptions: Bool {
+        guard item.status != "selected" else {
+            return false
+        }
         guard let options = item.options, !options.isEmpty else {
             return item.type == "approval" || item.type == "choice"
         }
@@ -3066,7 +3163,7 @@ private struct MessageComposer: View {
                     text: $message,
                     placeholder: "Send a instruction",
                     font: .systemFont(ofSize: 12, weight: .medium),
-                    isEditable: backendClient.selectedDetail?.canSend != false,
+                    isEditable: true,
                     onFocusChange: { isFocused = $0 },
                     onSubmit: send
                 )
@@ -3077,14 +3174,22 @@ private struct MessageComposer: View {
                     .onTapGesture {
                         isFocused = true
                     }
-                    .disabled(backendClient.selectedDetail?.canSend == false)
+                    .disabled(false)
 
                 Button {
-                    send()
+                    if isRunningTurn {
+                        backendClient.interruptSelectedSession()
+                    } else {
+                        send()
+                    }
                 } label: {
                     if backendClient.isSendingMessage {
                         ProgressView()
                             .controlSize(.small)
+                            .frame(width: 28, height: 28)
+                    } else if isRunningTurn {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 10, weight: .bold))
                             .frame(width: 28, height: 28)
                     } else {
                         Image(systemName: "paperplane.fill")
@@ -3094,8 +3199,8 @@ private struct MessageComposer: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(CorptiePalette.softBlue)
-                .disabled(message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || backendClient.isSendingMessage || backendClient.selectedDetail?.canSend == false)
-                .help("Send instruction")
+                .disabled(isSendDisabled)
+                .help(isRunningTurn ? "Stop current run" : "Send instruction")
                 .padding(.trailing, 6)
             }
             .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
@@ -3109,19 +3214,37 @@ private struct MessageComposer: View {
                 CodexModelMenu()
             }
         }
-        .opacity(backendClient.selectedDetail?.canSend == false ? 0.55 : 1)
+        .opacity(backendClient.selectedDetail?.canSend == false && !isRunningTurn ? 0.55 : 1)
         .task {
-            if backendClient.codexModels.isEmpty {
-                await backendClient.loadCodexModels()
+            let provider = backendClient.selectedSession?.external?.provider ?? "codex-pty"
+            if backendClient.codexModels.isEmpty || backendClient.loadedModelProvider != provider {
+                await backendClient.loadModelsForSelectedSession()
             }
         }
     }
 
     private func send() {
+        guard backendClient.selectedDetail?.canSend != false else {
+            return
+        }
         let text = message
         backendClient.sendMessage(text) {
             message = ""
         }
+    }
+
+    private var isRunningTurn: Bool {
+        backendClient.selectedDetail?.canSend == false
+            && backendClient.selectedDetail?.capabilities?.canInterrupt == true
+    }
+
+    private var isSendDisabled: Bool {
+        if isRunningTurn {
+            return backendClient.isSendingMessage
+        }
+        return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || backendClient.isSendingMessage
+            || backendClient.selectedDetail?.canSend == false
     }
 
     private var canSwitchModel: Bool {
@@ -3141,7 +3264,7 @@ private struct CodexModelMenu: View {
             } else if backendClient.codexModels.isEmpty {
                 Button {
                     Task {
-                        await backendClient.loadCodexModels()
+                        await backendClient.loadModelsForSelectedSession()
                     }
                 } label: {
                     Label("Reload models", systemImage: "arrow.clockwise")
@@ -3163,34 +3286,36 @@ private struct CodexModelMenu: View {
 
                 Divider()
 
-                Menu {
-                    if currentReasoningLevels.isEmpty {
-                        Text("No reasoning options")
-                    } else {
-                        ForEach(currentReasoningLevels, id: \.self) { reasoningLevel in
-                            Button {
-                                backendClient.switchSelectedCodexReasoning(to: reasoningLevel)
-                            } label: {
-                                HStack {
-                                    Text(reasoningLabel(reasoningLevel))
-                                    if reasoningLevel == currentReasoningLevel {
-                                        Image(systemName: "checkmark")
+                if supportsReasoningSwitch {
+                    Divider()
+
+                    Menu {
+                        if currentReasoningLevels.isEmpty {
+                            Text("No reasoning options")
+                        } else {
+                            ForEach(currentReasoningLevels, id: \.self) { reasoningLevel in
+                                Button {
+                                    backendClient.switchSelectedCodexReasoning(to: reasoningLevel)
+                                } label: {
+                                    HStack {
+                                        Text(reasoningLabel(reasoningLevel))
+                                        if reasoningLevel == currentReasoningLevel {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
+                                .help(reasoningDescription(reasoningLevel))
                             }
-                            .help(reasoningDescription(reasoningLevel))
                         }
+                    } label: {
+                        Label("Reasoning: \(reasoningLabel(currentReasoningLevel))", systemImage: "brain")
                     }
-                } label: {
-                    Label("Reasoning: \(reasoningLabel(currentReasoningLevel))", systemImage: "brain")
+                    .disabled(currentReasoningLevels.isEmpty || backendClient.isSwitchingReasoning)
                 }
-                .disabled(currentReasoningLevels.isEmpty || backendClient.isSwitchingReasoning)
-
-                Divider()
 
                 Button {
                     Task {
-                        await backendClient.loadCodexModels()
+                        await backendClient.loadModelsForSelectedSession()
                     }
                 } label: {
                     Label("Reload models", systemImage: "arrow.clockwise")
@@ -3211,8 +3336,6 @@ private struct CodexModelMenu: View {
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
             }
             .foregroundStyle(CorptiePalette.primaryText)
             .frame(maxWidth: 148)
@@ -3227,7 +3350,7 @@ private struct CodexModelMenu: View {
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal: true, vertical: false)
         .disabled(backendClient.selectedDetail?.canSend == false || backendClient.isSwitchingModel || backendClient.isSwitchingReasoning)
-        .help("Switch Codex model or reasoning")
+        .help(supportsReasoningSwitch ? "Switch model or reasoning" : "Switch model")
     }
 
     private var currentModelId: String {
@@ -3257,12 +3380,20 @@ private struct CodexModelMenu: View {
     }
 
     private var currentReasoningLevels: [String] {
-        guard backendClient.selectedDetail?.capabilities?.canSwitchReasoning
-            ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
-            ?? false else {
+        guard supportsReasoningSwitch else {
             return []
         }
         return currentModel?.reasoningLevels ?? []
+    }
+
+    private var supportsReasoningSwitch: Bool {
+        backendClient.selectedDetail?.capabilities?.canSwitchReasoning
+            ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
+            ?? false
+    }
+
+    private var currentProvider: String {
+        backendClient.selectedSession?.external?.provider ?? "codex-pty"
     }
 
     private func reasoningLabel(_ value: String) -> String {

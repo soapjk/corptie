@@ -19,6 +19,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var codexModels: [CodexModel] = []
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
+    @Published private(set) var loadedModelProvider: String?
     @Published private(set) var isLoadingCodexModels = false
     @Published private(set) var isSwitchingModel = false
     @Published private(set) var isSwitchingReasoning = false
@@ -33,13 +34,14 @@ final class BackendClient: ObservableObject {
     private var eventStreamTask: Task<Void, Never>?
     private var detailStreamTask: Task<Void, Never>?
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
+    private var handledChoiceIds = Set<String>()
 
     func start() {
         pollingTask?.cancel()
         eventStreamTask?.cancel()
         Task {
             await loadSettings()
-            await loadCodexModels()
+            await loadModels(for: "codex-pty")
         }
         startEventStream()
         pollingTask = Task { [weak self] in
@@ -244,7 +246,12 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func loadCodexModels() async {
+    func loadModelsForSelectedSession() async {
+        let provider = selectedSession?.external?.provider ?? "codex-pty"
+        await loadModels(for: provider)
+    }
+
+    func loadModels(for provider: String) async {
         if isLoadingCodexModels {
             return
         }
@@ -252,11 +259,13 @@ final class BackendClient: ObservableObject {
         defer { isLoadingCodexModels = false }
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "codex/models"))
+            let path = provider == "claude-sdk" ? "claude/models" : "codex/models"
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: path))
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
             let decoded = try JSONDecoder().decode(CodexModelsResponse.self, from: data)
+            loadedModelProvider = provider
             codexDefaultModel = decoded.currentModel
             codexDefaultReasoningLevel = decoded.currentReasoningLevel
             codexModels = decoded.models
@@ -413,6 +422,48 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func createClaudeTask(
+        title: String,
+        prompt: String,
+        cwd: String,
+        onSuccess: @escaping () -> Void = {}
+    ) {
+        let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        Task {
+            isCreatingTask = true
+            defer { isCreatingTask = false }
+
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "claude/sessions"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Reply exactly: Ready" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
+                ])
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(message)
+                }
+
+                onSuccess()
+                sendStatusMessage = "Started Claude Code"
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func respondToCodexApproval(option: CodexApprovalOption) {
         guard let session = selectedSession else {
             sendStatusMessage = "No Codex approval is active."
@@ -478,7 +529,7 @@ final class BackendClient: ObservableObject {
         respondToCodexApproval(option: fallback)
     }
 
-    func respondToPtyChoice(option: CodexApprovalOption) {
+    func respondToPtyChoice(option: CodexApprovalOption, choiceId: String? = nil) {
         guard let session = selectedSession,
               isPtyProvider(session.external?.provider),
               let threadId = session.external?.threadId else {
@@ -495,10 +546,14 @@ final class BackendClient: ObservableObject {
                 var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/choice"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
-                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                var body: [String: Any] = [
                     "optionId": option.id,
                     "optionIndex": option.index ?? 0
-                ])
+                ]
+                if let choiceId, !choiceId.isEmpty {
+                    body["choiceId"] = choiceId
+                }
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -508,6 +563,9 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
                 }
 
+                if let choiceId, !choiceId.isEmpty {
+                    markChoiceHandled(choiceId: choiceId, selectedOptionId: option.id)
+                }
                 sendStatusMessage = "Selected \(option.label)"
                 await loadDetail(for: session)
                 await refresh()
@@ -701,9 +759,10 @@ final class BackendClient: ObservableObject {
             return
         }
         let now = ISO8601DateFormatter().string(from: Date())
+        let optimisticTurnId = "optimistic-turn:\(session.id):\(UUID().uuidString)"
         let item = CodexThreadItem(
             id: "optimistic:\(session.id):\(UUID().uuidString)",
-            turnId: session.id,
+            turnId: optimisticTurnId,
             turnStatus: "running",
             type: "userMessage",
             title: "User",
@@ -836,6 +895,40 @@ final class BackendClient: ObservableObject {
                 sendStatusMessage = session.isConnected
                     ? "Disconnect failed: \(error.localizedDescription)"
                     : "Reconnect failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func reconnect(session: TaskSession) {
+        guard let threadId = session.external?.threadId else {
+            return
+        }
+
+        Task {
+            connectionTransitionSessionIds.insert(session.id)
+            defer {
+                connectionTransitionSessionIds.remove(session.id)
+            }
+            do {
+                sendStatusMessage = "Reconnecting..."
+                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reconnect"))
+                request.httpMethod = "POST"
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                if !(200..<300).contains(httpResponse.statusCode) {
+                    let text = String(data: data, encoding: .utf8) ?? "Bad server response"
+                    throw BackendError.message(text)
+                }
+                sendStatusMessage = "Reconnected"
+                await refresh()
+                if selectedSession?.id == session.id {
+                    await loadDetail(for: session, showLoading: false)
+                }
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Reconnect failed: \(error.localizedDescription)"
             }
         }
     }
@@ -1034,7 +1127,8 @@ final class BackendClient: ObservableObject {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
                 }
-                sendStatusMessage = "Switching Codex model to \(model.name)"
+                let provider = selectedSession.external?.provider == "claude-sdk" ? "Claude" : "Codex"
+                sendStatusMessage = "Switching \(provider) model to \(model.name)"
                 await loadDetail(for: selectedSession)
                 await refresh()
             } catch {
@@ -1084,27 +1178,10 @@ final class BackendClient: ObservableObject {
     }
 
     func reconnectSelectedSession() {
-        guard let selectedSession, let threadId = selectedSession.external?.threadId, isPtyProvider(selectedSession.external?.provider) else {
+        guard let selectedSession else {
             return
         }
-
-        Task {
-            do {
-                sendStatusMessage = "Reconnecting PTY..."
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reconnect"))
-                request.httpMethod = "POST"
-                let (_, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
-                    throw URLError(.badServerResponse)
-                }
-                sendStatusMessage = "PTY reconnected"
-                await loadDetail(for: selectedSession)
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-                sendStatusMessage = "Reconnect failed: \(error.localizedDescription)"
-            }
-        }
+        reconnect(session: selectedSession)
     }
 
     private func refreshSelectedDetailFromPolling() async {
@@ -1196,7 +1273,7 @@ final class BackendClient: ObservableObject {
         }
         do {
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
-            let mergedDetail = stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread))
+            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
             selectedDetail = mergedDetail
             syncSessionSummary(from: mergedDetail)
             lastError = nil
@@ -1231,7 +1308,7 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
-            let mergedDetail = stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread))
+            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
             selectedDetail = mergedDetail
             syncSessionSummary(from: mergedDetail)
             lastError = nil
@@ -1260,12 +1337,18 @@ final class BackendClient: ObservableObject {
                 progress: session.progress,
                 summary: latestSummary?.isEmpty == false ? latestSummary! : session.summary,
                 suggestedOptions: detail.items.reversed().first { item in
+                    guard item.status != "selected" else {
+                        return false
+                    }
                     guard let options = item.options else {
                         return false
                     }
                     return !options.isEmpty
                 }?.options ?? session.suggestedOptions,
                 suggestedPrompt: detail.items.reversed().first { item in
+                    guard item.status != "selected" else {
+                        return false
+                    }
                     guard let options = item.options else {
                         return false
                     }
@@ -1300,6 +1383,83 @@ final class BackendClient: ObservableObject {
             return
         }
         selectedSession = refreshed
+    }
+
+    private func markChoiceHandled(choiceId: String, selectedOptionId: String) {
+        handledChoiceIds.insert(choiceId)
+        guard let detail = selectedDetail else {
+            return
+        }
+        selectedDetail = detailReplacingItems(detail) { item in
+            guard item.id == choiceId, item.type == "choice" else {
+                return item
+            }
+            return CodexThreadItem(
+                id: item.id,
+                turnId: item.turnId,
+                turnStatus: item.turnStatus,
+                type: item.type,
+                title: item.title,
+                text: item.text,
+                options: item.options?.map { option in
+                    CodexApprovalOption(
+                        id: option.id,
+                        label: option.label,
+                        role: option.role,
+                        index: option.index,
+                        selected: option.id == selectedOptionId
+                    )
+                },
+                status: "selected",
+                createdAt: item.createdAt
+            )
+        }
+        if let selectedDetail {
+            syncSessionSummary(from: selectedDetail)
+        }
+    }
+
+    private func applyingHandledChoices(to detail: CodexThreadDetail) -> CodexThreadDetail {
+        guard detail.items.contains(where: { handledChoiceIds.contains($0.id) && $0.status != "selected" }) else {
+            return detail
+        }
+        return detailReplacingItems(detail) { item in
+            guard handledChoiceIds.contains(item.id), item.type == "choice", item.status != "selected" else {
+                return item
+            }
+            return CodexThreadItem(
+                id: item.id,
+                turnId: item.turnId,
+                turnStatus: item.turnStatus,
+                type: item.type,
+                title: item.title,
+                text: item.text,
+                options: item.options,
+                status: "selected",
+                createdAt: item.createdAt
+            )
+        }
+    }
+
+    private func detailReplacingItems(_ detail: CodexThreadDetail, transform: (CodexThreadItem) -> CodexThreadItem) -> CodexThreadDetail {
+        CodexThreadDetail(
+            id: detail.id,
+            title: detail.title,
+            status: detail.status,
+            source: detail.source,
+            connectionStatus: detail.connectionStatus,
+            currentModel: detail.currentModel,
+            currentReasoningLevel: detail.currentReasoningLevel,
+            activityStatus: detail.activityStatus,
+            cwd: detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: detail.updatedAt,
+            canSend: detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: detail.capabilities,
+            turnCount: detail.turnCount,
+            items: detail.items.map(transform)
+        )
     }
 
     private func syncSelectedDetailMetadataFromSessions() {
@@ -1430,7 +1590,7 @@ final class BackendClient: ObservableObject {
 }
 
 private func isPtyProvider(_ provider: String?) -> Bool {
-    provider == "pty" || provider == "codex-pty"
+    provider == "pty" || provider == "codex-pty" || provider == "claude-sdk"
 }
 
 private func normalizedMessageText(_ text: String) -> String {

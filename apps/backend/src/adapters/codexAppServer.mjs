@@ -543,6 +543,7 @@ export function mapCodexThreadToSession(thread) {
       provider: "codex-app-server",
       threadId: thread.id,
       sessionId: thread.sessionId,
+      connectionStatus: "app-server connected",
       rawStatus: thread.status,
       cwd: thread.cwd,
       source: thread.source,
