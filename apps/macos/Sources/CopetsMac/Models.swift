@@ -22,13 +22,11 @@ struct TaskSession: Identifiable, Codable, Equatable {
     let external: ExternalSession?
 
     var isConnected: Bool {
-        external?.connectionStatus?.localizedCaseInsensitiveContains("connected") == true
-            && external?.connectionStatus?.localizedCaseInsensitiveContains("disconnected") != true
-            && external?.connectionStatus?.localizedCaseInsensitiveContains("connecting") != true
+        isConnectedStatus(external?.connectionStatus, provider: external?.provider)
     }
 
     var isConnecting: Bool {
-        external?.connectionStatus?.localizedCaseInsensitiveContains("connecting") == true
+        isConnectingStatus(external?.connectionStatus, provider: external?.provider)
     }
 
     var isUnboundCodexSession: Bool {
@@ -38,9 +36,6 @@ struct TaskSession: Identifiable, Codable, Equatable {
     var connectionColor: Color {
         if isUnboundCodexSession {
             return CorptiePalette.unboundDot
-        }
-        if let provider = external?.provider, provider != "codex-pty" {
-            return CorptiePalette.connectedDot
         }
         return isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
     }
@@ -177,13 +172,11 @@ struct CodexThreadDetail: Decodable, Equatable {
     let items: [CodexThreadItem]
 
     var isConnected: Bool {
-        connectionStatus?.localizedCaseInsensitiveContains("connected") == true
-            && connectionStatus?.localizedCaseInsensitiveContains("disconnected") != true
-            && connectionStatus?.localizedCaseInsensitiveContains("connecting") != true
+        isConnectedStatus(connectionStatus, provider: source)
     }
 
     var isConnecting: Bool {
-        connectionStatus?.localizedCaseInsensitiveContains("connecting") == true
+        isConnectingStatus(connectionStatus, provider: source)
     }
 
     var connectionColor: Color {
@@ -195,6 +188,26 @@ struct CodexModelsResponse: Decodable {
     let currentModel: String?
     let currentReasoningLevel: String?
     let models: [CodexModel]
+}
+
+private func isConnectedStatus(_ status: String?, provider: String?) -> Bool {
+    if provider == "codex-app-server" {
+        return true
+    }
+    guard let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+          !normalized.isEmpty else {
+        return false
+    }
+    return normalized.contains("connected")
+        && !normalized.contains("disconnected")
+        && !normalized.contains("connecting")
+}
+
+private func isConnectingStatus(_ status: String?, provider: String?) -> Bool {
+    if provider == "codex-app-server" {
+        return false
+    }
+    return status?.localizedCaseInsensitiveContains("connecting") == true
 }
 
 struct CodexSessionLookupResponse: Decodable, Equatable {

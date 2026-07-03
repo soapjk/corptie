@@ -245,7 +245,7 @@ struct SettingsView: View {
         .frame(width: 560, height: 580)
         .task {
             await backendClient.loadSettings()
-            await backendClient.loadCodexModels()
+            await backendClient.loadModels(for: "codex-pty")
             if dataDir.isEmpty {
                 dataDir = backendClient.settings?.dataDir ?? defaultDataDirectory
             }

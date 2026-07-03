@@ -6,12 +6,14 @@ import { readdir, readFile, stat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
+import { startup } from "@anthropic-ai/claude-agent-sdk";
 import {
   CodexAppServerClient,
   mapCodexThreadToDetail,
   mapCodexThreadToSession,
   readCodexRolloutDetail
 } from "./adapters/codexAppServer.mjs";
+import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 
@@ -39,7 +41,9 @@ const codexClient = new CodexAppServerClient({
   }
 });
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
+const claudeAgents = new ClaudeAgentManager({ store });
 let codexModelsCache = null;
+let claudeModelsCache = null;
 
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
 
@@ -716,6 +720,43 @@ async function loadCodexModels() {
   return payload;
 }
 
+async function loadClaudeModels() {
+  const nowMs = Date.now();
+  if (claudeModelsCache && nowMs - claudeModelsCache.loadedAt < 5 * 60 * 1000) {
+    return claudeModelsCache.payload;
+  }
+
+  const warm = await startup({
+    options: {
+      cwd: process.cwd()
+    },
+    initializeTimeoutMs: 15_000
+  });
+
+  try {
+    const models = await warm.query((async function* () {})()).supportedModels();
+    const activeSession = Array.from(claudeAgents.sessions?.values?.() ?? []).find((session) => session.currentModel);
+    const payload = {
+      currentModel: activeSession?.currentModel ?? null,
+      currentReasoningLevel: null,
+      models: (Array.isArray(models) ? models : [])
+        .map((model) => ({
+          id: model.id,
+          name: model.display_name || model.id,
+          description: model.description || "",
+          defaultReasoningLevel: null,
+          reasoningLevels: [],
+          serviceTiers: []
+        }))
+        .filter((model) => model.id)
+    };
+    claudeModelsCache = { loadedAt: nowMs, payload };
+    return payload;
+  } finally {
+    warm.close();
+  }
+}
+
 async function readCodexDefaultConfig() {
   const config = await readFile(join(os.homedir(), ".codex", "config.toml"), "utf8").catch(() => "");
   const modelMatch = config.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
@@ -880,6 +921,17 @@ function route(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/claude/models") {
+    loadClaudeModels()
+      .then((models) => {
+        sendJson(response, 200, models);
+      })
+      .catch((error) => {
+        sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
+      });
+    return;
+  }
+
   const codexSessionMatch = url.pathname.match(/^\/codex\/sessions\/([^/]+)$/);
   if (request.method === "GET" && codexSessionMatch) {
     const sessionId = decodeURIComponent(codexSessionMatch[1]).trim();
@@ -939,7 +991,19 @@ function route(request, response) {
         }
 
         if (sessionId.startsWith("pty:")) {
-          const session = ptyAgents.switchModel(normalizeSessionId(sessionId), model);
+          const normalizedId = normalizeSessionId(sessionId);
+          if (claudeAgents.has(normalizedId)) {
+            claudeAgents.switchModel(normalizedId, model)
+              .then((session) => {
+                emitEvent("ClaudeSessionModelChanged", { sessionId, model });
+                sendJson(response, 202, { session, model });
+              })
+              .catch((error) => {
+                sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
+              });
+            return;
+          }
+          const session = ptyAgents.switchModel(normalizedId, model);
           emitEvent("PtySessionModelChanged", { sessionId, model });
           sendJson(response, 202, { session, model });
           return;
@@ -1053,9 +1117,16 @@ function route(request, response) {
     if (!includeCodexHistory) {
       const mockSessions = includeMock ? Array.from(sessions.values()) : [];
       const storedSessions = ptyAgents.list({ archived });
-      const ptySessions = storedSessions.filter((session) => session.external?.provider !== "codex-app-server");
+      const ptySessions = storedSessions
+        .filter((session) => session.external?.provider !== "codex-app-server")
+        .filter((session) => session.external?.provider !== "claude-sdk");
       const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
+      const claudeSessions = claudeAgents.list({ archived });
+      if (claudeSessions.length > 0) {
+        console.log(`[claude-sdk] sessions list count=${claudeSessions.length} ids=${claudeSessions.map((session) => session.id).join(",")}`);
+      }
       const listedIds = new Set(ptySessions.map((session) => session.id));
+      claudeSessions.forEach((session) => listedIds.add(session.id));
       const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
       const codexSessions = [
         ...storedCodexSessions.map((stored) => {
@@ -1065,11 +1136,15 @@ function route(request, response) {
         ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
       ].filter((session) => !listedIds.has(session.id));
       sendJson(response, 200, {
-        sessions: sortSessionsForList([...ptySessions, ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
+        sessions: sortSessionsForList([...ptySessions, ...claudeSessions, ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
         sources: {
           pty: {
             ok: true,
             count: ptySessions.length
+          },
+          claude: {
+            ok: true,
+            count: claudeSessions.length
           },
           codex: {
             ok: true,
@@ -1094,6 +1169,7 @@ function route(request, response) {
         sortDirection: "desc"
       })
       .then((result) => {
+        const claudeSessions = claudeAgents.list({ archived });
         const codexSessions = result.data.map((thread) => {
           const session = mapCodexThreadToSession(thread);
           const managedSession = managedCodexSessions.get(session.id);
@@ -1121,14 +1197,19 @@ function route(request, response) {
         const mockSessions = includeMock ? Array.from(sessions.values()) : [];
         const ptySessions = ptyAgents.list({ archived })
           .filter((session) => session.external?.provider !== "codex-app-server")
+          .filter((session) => session.external?.provider !== "claude-sdk")
           .filter((session) => !knownIds.has(session.id));
 
         sendJson(response, 200, {
-          sessions: sortSessionsForList([...ptySessions, ...(archived ? [] : managedSessions), ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
+          sessions: sortSessionsForList([...ptySessions, ...claudeSessions, ...(archived ? [] : managedSessions), ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
           sources: {
             pty: {
               ok: true,
               count: ptySessions.length
+            },
+            claude: {
+              ok: true,
+              count: claudeSessions.length
             },
             codex: {
               ok: true,
@@ -1331,6 +1412,12 @@ function route(request, response) {
     }
 
     const id = normalizeSessionId(rawId);
+    if (claudeAgents.has(id)) {
+      claudeAgents.delete(id);
+      emitEvent("SessionDeleted", { sessionId: id, provider: "claude-sdk" });
+      sendJson(response, 200, { ok: true });
+      return;
+    }
     ptyAgents.delete(id);
     emitEvent("SessionDeleted", { sessionId: id });
     sendJson(response, 200, { ok: true });
@@ -1358,6 +1445,28 @@ function route(request, response) {
       })
       .catch((error) => {
         sendJson(response, 400, { error: error.message, adapter: "pty" });
+      });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/claude/sessions") {
+    readJson(request)
+      .then((input) => {
+        const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd.trim() : process.cwd();
+        return assertDirectory(cwd).then(() => ({ input, cwd }));
+      })
+      .then(({ input, cwd }) => {
+        const session = claudeAgents.start({
+          title: input.title,
+          prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
+          cwd,
+          model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null
+        });
+        emitEvent("ClaudeSessionStarted", { session });
+        sendJson(response, 201, { session });
+      })
+      .catch((error) => {
+        sendJson(response, 400, { error: error.message, adapter: "claude-sdk" });
       });
     return;
   }
@@ -1485,6 +1594,12 @@ function route(request, response) {
   const ptyEventsMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && ptyEventsMatch) {
     const sessionId = decodeURIComponent(ptyEventsMatch[1]);
+    if (claudeAgents.has(sessionId)) {
+      if (!claudeAgents.subscribeDetail(sessionId, response)) {
+        sendJson(response, 404, { error: "Claude session not found", adapter: "claude-sdk" });
+      }
+      return;
+    }
     if (!ptyAgents.subscribeDetail(sessionId, response)) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
     }
@@ -1494,7 +1609,9 @@ function route(request, response) {
   const ptySessionMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)$/);
   if (request.method === "GET" && ptySessionMatch) {
     const sessionId = decodeURIComponent(ptySessionMatch[1]);
-    const detail = ptyAgents.detail(sessionId);
+    const detail = claudeAgents.has(sessionId)
+      ? claudeAgents.detail(sessionId)
+      : ptyAgents.detail(sessionId);
     if (!detail) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
       return;
@@ -1512,6 +1629,17 @@ function route(request, response) {
         if (!text.trim()) {
           sendJson(response, 400, { error: "Input text is required", adapter: "pty" });
           return;
+        }
+        if (claudeAgents.has(sessionId)) {
+          store.clearActiveChoicePrompt(sessionId);
+          return claudeAgents.send(sessionId, text).then((session) => {
+            emitEvent("ClaudeSessionInputSent", { sessionId });
+            sendJson(response, 202, {
+              mode: "claude-sdk",
+              visibleInCodexDesktop: false,
+              session
+            });
+          });
         }
         const session = ptyAgents.get(sessionId);
         store.clearActiveChoicePrompt(sessionId);
@@ -1609,7 +1737,7 @@ function route(request, response) {
   const ptyTerminateMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/terminate$/);
   if (request.method === "POST" && ptyTerminateMatch) {
     const sessionId = decodeURIComponent(ptyTerminateMatch[1]);
-    const session = ptyAgents.terminate(sessionId);
+    const session = ptyAgents.terminate(sessionId) ?? (claudeAgents.has(sessionId) ? claudeAgents.terminate(sessionId) : null);
     if (!session) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
       return;
@@ -1622,6 +1750,17 @@ function route(request, response) {
   const ptyInterruptMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/interrupt$/);
   if (request.method === "POST" && ptyInterruptMatch) {
     const sessionId = decodeURIComponent(ptyInterruptMatch[1]);
+    if (claudeAgents.has(sessionId) && !ptyAgents.get(sessionId)) {
+      claudeAgents.interrupt(sessionId)
+        .then((session) => {
+          emitEvent("ClaudeSessionInterrupted", { session });
+          sendJson(response, 200, { session });
+        })
+        .catch((error) => {
+          sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
+        });
+      return;
+    }
     try {
       const session = ptyAgents.interrupt(sessionId);
       emitEvent("PtySessionInterrupted", { session });
@@ -1635,6 +1774,22 @@ function route(request, response) {
   const ptyReconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/reconnect$/);
   if (request.method === "POST" && ptyReconnectMatch) {
     const sessionId = decodeURIComponent(ptyReconnectMatch[1]);
+    const storedSession = store.getSession(sessionId);
+    if (claudeAgents.has(sessionId) || storedSession?.external?.provider === "claude-sdk") {
+      claudeAgents.reconnect(sessionId)
+        .then((session) => {
+        if (!session) {
+          sendJson(response, 404, { error: "Claude session cannot be reconnected", adapter: "claude-sdk" });
+          return;
+        }
+        emitEvent("ClaudeSessionReconnected", { session });
+        sendJson(response, 200, { session });
+        })
+        .catch((error) => {
+          sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
+        });
+      return;
+    }
     const session = ptyAgents.reconnect(sessionId);
     if (!session) {
       sendJson(response, 404, { error: "PTY session cannot be reconnected", adapter: "pty" });
@@ -1701,11 +1856,17 @@ function route(request, response) {
     const sessionId = decodeURIComponent(ptyChoiceMatch[1]);
     readJson(request)
       .then((input) => {
-        const session = ptyAgents.respondToPtyChoice(sessionId, {
+        const session = claudeAgents.has(sessionId)
+          ? claudeAgents.respondToChoice(sessionId, {
+            choiceId: input.choiceId,
+            optionId: input.optionId,
+            optionIndex: input.optionIndex
+          })
+          : ptyAgents.respondToPtyChoice(sessionId, {
           optionId: input.optionId,
           optionIndex: input.optionIndex
         });
-        emitEvent("PtySessionChoiceSelected", { sessionId, optionId: input.optionId, optionIndex: input.optionIndex });
+        emitEvent("PtySessionChoiceSelected", { sessionId, choiceId: input.choiceId, optionId: input.optionId, optionIndex: input.optionIndex });
         sendJson(response, 202, { mode: "pty-choice", session });
       })
       .catch((error) => {
