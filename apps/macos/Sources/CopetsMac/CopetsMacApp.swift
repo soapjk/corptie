@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backendClient = BackendClient.shared
     private var panelController: FloatingPanelController?
     private var detachedSessionManager: DetachedSessionManager?
+    private var completionSoundManager: SessionCompletionSoundManager?
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
 
@@ -34,9 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.backendClient.select(session: session)
         }
         let controller = FloatingPanelController(client: backendClient, detachedSessionManager: detachedManager)
+        let soundManager = SessionCompletionSoundManager(client: backendClient)
         controller.show()
         panelController = controller
         detachedSessionManager = detachedManager
+        completionSoundManager = soundManager
+        soundManager.start()
         installStatusItem()
 
         backendClient.start()
@@ -44,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         detachedSessionManager?.closeAll()
+        completionSoundManager?.stop()
         backendClient.stop()
     }
 

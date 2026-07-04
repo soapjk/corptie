@@ -1568,6 +1568,7 @@ private struct TaskCardView: View {
     @State private var isShowingUnboundHint = false
     @State private var isHoveringSummary = false
     @State private var hoverPreviewTask: Task<Void, Never>?
+    @State private var completionSoundId = SessionCompletionSoundManager.defaultSoundId
     @FocusState private var isQuickReplyFocused: Bool
 
     let session: TaskSession
@@ -1724,6 +1725,26 @@ private struct TaskCardView: View {
 
             Divider()
 
+            Menu {
+                ForEach(SessionCompletionSoundManager.options) { option in
+                    Button {
+                        completionSoundId = option.id
+                        SessionCompletionSoundManager.setSelectedSoundId(option.id, for: session.id)
+                    } label: {
+                        HStack {
+                            if completionSoundId == option.id {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(option.label)
+                        }
+                    }
+                }
+            } label: {
+                Label("Completion Sound", systemImage: "speaker.wave.2")
+            }
+
+            Divider()
+
             if !backendClient.isShowingArchivedSessions {
                 Button {
                     detachedSessionManager.float(session: session)
@@ -1770,6 +1791,12 @@ private struct TaskCardView: View {
             }
             .environmentObject(backendClient)
             .presentationBackground(.clear)
+        }
+        .onAppear {
+            completionSoundId = SessionCompletionSoundManager.selectedSoundId(for: session.id)
+        }
+        .onChange(of: session.id) { _, sessionId in
+            completionSoundId = SessionCompletionSoundManager.selectedSoundId(for: sessionId)
         }
     }
 
