@@ -17,6 +17,8 @@ struct FloatingRootView: View {
     @State private var hoverPreviewSessionId: String?
     @State private var isHoveringReplyPreviewBubble = false
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
+    @State private var detailPreheatTasks: [String: Task<Void, Never>] = [:]
+    @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
     private let panelContentPadding: CGFloat = 14
     private let sessionListHorizontalInset: CGFloat = 4
     private let panelControlLeadingInset: CGFloat = 6
@@ -31,7 +33,10 @@ struct FloatingRootView: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 if let selectedSession = backendClient.selectedSession {
-                    DetailView(sessionId: selectedSession.id)
+                    DetailView(
+                        sessionId: selectedSession.id,
+                        preheatedDisplayCache: detailDisplayCacheBySessionId[selectedSession.id]
+                    )
                         .transition(.opacity)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
@@ -50,10 +55,7 @@ struct FloatingRootView: View {
                     .onPreferenceChange(ListHeightPreferenceKey.self) { values in
                         updatePreferredListHeight(values)
                     }
-                    .transition(.asymmetric(
-                        insertion: .scale(scale: 0.98, anchor: .center).combined(with: .opacity),
-                        removal: .scale(scale: 0.94, anchor: .center).combined(with: .opacity)
-                    ))
+                    .transition(.opacity)
                 }
             }
             .padding(panelContentPadding)
@@ -82,7 +84,7 @@ struct FloatingRootView: View {
                 .zIndex(0)
         }
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .animation(.easeOut(duration: 0.16), value: backendClient.selectedSession?.id)
+        .animation(.easeOut(duration: 0.18), value: backendClient.selectedSession?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: newSessionPanel.isPresented)
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -141,9 +143,9 @@ struct FloatingRootView: View {
     @ViewBuilder
     private func sessionCard(for session: TaskSession) -> some View {
         if backendClient.isShowingArchivedSessions {
-            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview)
+            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
         } else {
-            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview)
+            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
                 .opacity(draggedSessionId == session.id ? 0.82 : 1)
                 .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
                 .shadow(
@@ -200,6 +202,40 @@ struct FloatingRootView: View {
                 if !isHoveringReplyPreviewBubble {
                     hoverPreviewSessionId = nil
                 }
+            }
+        }
+    }
+
+    private func preheatDetail(for session: TaskSession) {
+        guard detailPreheatTasks[session.id] == nil else {
+            return
+        }
+
+        if let cachedDetail = backendClient.cachedDetail(for: session.id) {
+            detailDisplayCacheBySessionId[session.id] = makeDetailDisplayCache(
+                for: cachedDetail,
+                sessionId: session.id,
+                visibleMessageLimit: DetailView.initialVisibleMessageLimit
+            )
+            return
+        }
+
+        detailPreheatTasks[session.id] = Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else {
+                return
+            }
+            let detail = await backendClient.fetchDetail(for: session)
+            await MainActor.run {
+                detailPreheatTasks[session.id] = nil
+                guard let detail else {
+                    return
+                }
+                detailDisplayCacheBySessionId[session.id] = makeDetailDisplayCache(
+                    for: detail,
+                    sessionId: session.id,
+                    visibleMessageLimit: DetailView.initialVisibleMessageLimit
+                )
             }
         }
     }
@@ -1408,6 +1444,7 @@ private struct TaskCardView: View {
 
     let session: TaskSession
     var hoverPreviewChanged: (String, Bool) -> Void = { _, _ in }
+    var preheatRequested: (TaskSession) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1544,6 +1581,11 @@ private struct TaskCardView: View {
                 .strokeBorder(Color.white.opacity(cardStrokeOpacity), lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onHover { hovering in
+            if hovering {
+                preheatRequested(session)
+            }
+        }
         .onTapGesture {
             if Date().timeIntervalSince(lastQuickReplyInteractionAt) > 0.25 {
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
@@ -2000,7 +2042,7 @@ private struct AnimatedAvatarImage: NSViewRepresentable {
 private struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
-    private static let initialVisibleMessageLimit = 15
+    static let initialVisibleMessageLimit = 15
     @State private var message = ""
     @State private var didInitialScroll = false
     @State private var visibleMessageLimit = initialVisibleMessageLimit
@@ -2008,7 +2050,10 @@ private struct DetailView: View {
     @State private var cachedDisplayEntries: [ChatDisplayEntry] = []
     @State private var cachedTotalDisplayEntryCount = 0
     @State private var cachedItemsSignature = ""
+    @State private var cachedSessionId = ""
+    @State private var displayCacheBySessionId: [String: DetailDisplayCache] = [:]
     let sessionId: String
+    let preheatedDisplayCache: DetailDisplayCache?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2027,7 +2072,7 @@ private struct DetailView: View {
                 ThreadMetaView(detail: detail)
 
                 Group {
-                    if panelLayoutState.canRenderDetailMessages && isDisplayCachePrepared(for: detail) {
+                    if shouldRenderDetailMessages(for: detail) {
                         detailMessages(detail)
                     } else {
                         DetailMessagesPlaceholder()
@@ -2084,20 +2129,24 @@ private struct DetailView: View {
         .onDisappear {
             panelLayoutState.updateDetailLastMessageHeight(nil)
         }
+        .onAppear {
+            restorePreheatedDisplayCacheIfNeeded()
+        }
+        .onChange(of: preheatedDisplayCache?.signature) { _, _ in
+            restorePreheatedDisplayCacheIfNeeded()
+        }
         .onChange(of: sessionId) { _, _ in
             didInitialScroll = false
             visibleMessageLimit = Self.initialVisibleMessageLimit
-            cachedDisplayItems = []
-            cachedDisplayEntries = []
-            cachedTotalDisplayEntryCount = 0
-            cachedItemsSignature = ""
+            restoreDisplayCacheForCurrentSession()
         }
     }
 
     @ViewBuilder
     private func detailMessages(_ detail: CodexThreadDetail) -> some View {
-        let displayEntries = cachedDisplayEntries
-        let hiddenCount = max(0, cachedTotalDisplayEntryCount - displayEntries.count)
+        let preparedDisplay = preparedDisplayEntries(for: detail)
+        let displayEntries = preparedDisplay.visibleEntries
+        let hiddenCount = max(0, preparedDisplay.totalCount - displayEntries.count)
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
@@ -2166,18 +2215,82 @@ private struct DetailView: View {
         let displayEntries = chatDisplayEntries(from: displayItems)
         let visibleEntries = visibleEntries(from: displayEntries)
         let signature = displaySignature(for: visibleEntries)
-        guard signature != cachedItemsSignature else {
+        guard cachedSessionId != sessionId || signature != cachedItemsSignature else {
             return
         }
         cachedItemsSignature = signature
+        cachedSessionId = sessionId
         cachedDisplayItems = displayItems
         cachedTotalDisplayEntryCount = displayEntries.count
         cachedDisplayEntries = visibleEntries
+        displayCacheBySessionId[sessionId] = DetailDisplayCache(
+            sessionId: sessionId,
+            displayItems: displayItems,
+            displayEntries: visibleEntries,
+            totalDisplayEntryCount: displayEntries.count,
+            signature: signature
+        )
+    }
+
+    private func shouldRenderDetailMessages(for detail: CodexThreadDetail) -> Bool {
+        if hasPreparedDisplayCacheForCurrentSession || hasPreheatedDisplayCacheForCurrentSession {
+            return true
+        }
+        return panelLayoutState.canRenderDetailMessages || !visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail))).isEmpty
+    }
+
+    private func preparedDisplayEntries(for detail: CodexThreadDetail) -> (visibleEntries: [ChatDisplayEntry], totalCount: Int) {
+        if isDisplayCachePrepared(for: detail) || hasPreparedDisplayCacheForCurrentSession {
+            return (cachedDisplayEntries, cachedTotalDisplayEntryCount)
+        }
+        if let preheatedDisplayCache, preheatedDisplayCache.sessionId == sessionId {
+            return (preheatedDisplayCache.displayEntries, preheatedDisplayCache.totalDisplayEntryCount)
+        }
+        let displayEntries = chatDisplayEntries(from: displayItems(for: detail))
+        return (visibleEntries(from: displayEntries), displayEntries.count)
+    }
+
+    private var hasPreparedDisplayCacheForCurrentSession: Bool {
+        cachedSessionId == sessionId && !cachedDisplayEntries.isEmpty
+    }
+
+    private var hasPreheatedDisplayCacheForCurrentSession: Bool {
+        preheatedDisplayCache?.sessionId == sessionId && preheatedDisplayCache?.displayEntries.isEmpty == false
+    }
+
+    private func restorePreheatedDisplayCacheIfNeeded() {
+        guard let preheatedDisplayCache,
+              preheatedDisplayCache.sessionId == sessionId,
+              !hasPreparedDisplayCacheForCurrentSession else {
+            return
+        }
+        cachedSessionId = sessionId
+        cachedDisplayItems = preheatedDisplayCache.displayItems
+        cachedDisplayEntries = preheatedDisplayCache.displayEntries
+        cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
+        cachedItemsSignature = preheatedDisplayCache.signature
+        displayCacheBySessionId[sessionId] = preheatedDisplayCache
+    }
+
+    private func restoreDisplayCacheForCurrentSession() {
+        if let cache = displayCacheBySessionId[sessionId] {
+            cachedSessionId = sessionId
+            cachedDisplayItems = cache.displayItems
+            cachedDisplayEntries = cache.displayEntries
+            cachedTotalDisplayEntryCount = cache.totalDisplayEntryCount
+            cachedItemsSignature = cache.signature
+            return
+        }
+        cachedSessionId = ""
+        cachedDisplayItems = []
+        cachedDisplayEntries = []
+        cachedTotalDisplayEntryCount = 0
+        cachedItemsSignature = ""
     }
 
     private func isDisplayCachePrepared(for detail: CodexThreadDetail) -> Bool {
         let visibleEntries = visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail)))
-        return cachedItemsSignature == displaySignature(for: visibleEntries)
+        return cachedSessionId == sessionId && cachedItemsSignature == displaySignature(for: visibleEntries)
     }
 
     private func detailDisplaySignature(for detail: CodexThreadDetail) -> String {
@@ -2338,6 +2451,129 @@ private struct ChatDisplayEntry: Identifiable {
     }
 }
 
+private struct DetailDisplayCache {
+    let sessionId: String
+    let displayItems: [CodexThreadItem]
+    let displayEntries: [ChatDisplayEntry]
+    let totalDisplayEntryCount: Int
+    let signature: String
+}
+
+private func makeDetailDisplayCache(
+    for detail: CodexThreadDetail,
+    sessionId: String,
+    visibleMessageLimit: Int
+) -> DetailDisplayCache {
+    let displayItems = detail.items.filter { !isLowSignalDetailProcessItem($0) }
+    let displayEntries = makeChatDisplayEntries(from: displayItems)
+    let visibleEntries = visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
+    return DetailDisplayCache(
+        sessionId: sessionId,
+        displayItems: displayItems,
+        displayEntries: visibleEntries,
+        totalDisplayEntryCount: displayEntries.count,
+        signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit)
+    )
+}
+
+private func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -> [ChatDisplayEntry] {
+    guard displayEntries.count > limit else {
+        return displayEntries
+    }
+    var entries = Array(displayEntries.suffix(limit))
+    while entries.first?.isProcessGroup == true && entries.count > 1 {
+        entries.removeFirst()
+    }
+    return entries
+}
+
+private func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+    var entries: [ChatDisplayEntry] = []
+    var turnIds: [String] = []
+    var itemsByTurnId: [String: [CodexThreadItem]] = [:]
+
+    for item in items {
+        if itemsByTurnId[item.turnId] == nil {
+            turnIds.append(item.turnId)
+            itemsByTurnId[item.turnId] = []
+        }
+        itemsByTurnId[item.turnId]?.append(item)
+    }
+
+    for turnId in turnIds {
+        if let turnItems = itemsByTurnId[turnId] {
+            entries.append(contentsOf: makeChatDisplayEntriesForTurn(turnItems))
+        }
+    }
+    return entries
+}
+
+private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+    let userMessages = items.filter { $0.type == "userMessage" }
+    let agentMessages = items.filter {
+        $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    let finalAgentMessage = agentMessages.last
+    let progressAgentMessages = agentMessages.dropLast()
+    let processItems = items.filter(isDetailProcessItem) + progressAgentMessages
+    let trailingItems = items.filter { item in
+        item.type != "userMessage" && item.type != "agentMessage" && !isDetailProcessItem(item)
+    }
+
+    var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
+    if !processItems.isEmpty {
+        entries.append(ChatDisplayEntry(kind: .process(processItems)))
+    }
+    if let finalAgentMessage {
+        entries.append(ChatDisplayEntry(kind: .message(finalAgentMessage)))
+    }
+    entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
+    return entries
+}
+
+private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
+    if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
+        return true
+    }
+    if item.type == "agentMessage" && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return true
+    }
+    return false
+}
+
+private func isDetailProcessItem(_ item: CodexThreadItem) -> Bool {
+    switch item.type {
+    case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning":
+        return true
+    default:
+        return false
+    }
+}
+
+private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visibleMessageLimit: Int) -> String {
+    let entrySignatures = visibleEntries.map { entry in
+        switch entry.kind {
+        case .message(let item):
+            return detailItemSignature(item)
+        case .process(let items):
+            return items.map(detailItemSignature).joined(separator: ",")
+        }
+    }.joined(separator: "|")
+    return "\(visibleMessageLimit)|\(entrySignatures)"
+}
+
+private func detailItemSignature(_ item: CodexThreadItem) -> String {
+    let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    return [
+        item.id,
+        item.type,
+        item.status ?? "",
+        item.turnStatus,
+        "\(text.count)",
+        String(text.suffix(96))
+    ].joined(separator: ":")
+}
+
 private struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
 
@@ -2395,7 +2631,7 @@ private struct DetailHeaderView: View {
                 }
                 .buttonStyle(IconButtonStyle())
                 .help("Reconnect session")
-            } else if backendClient.selectedDetail?.capabilities?.canInterrupt == true {
+            } else if canInterruptCurrentRun {
                 Button {
                     backendClient.interruptSelectedSession()
                 } label: {
@@ -2407,6 +2643,11 @@ private struct DetailHeaderView: View {
                 .help("Stop current run")
             }
         }
+    }
+
+    private var canInterruptCurrentRun: Bool {
+        backendClient.selectedDetail?.status == .running
+            && backendClient.selectedDetail?.capabilities?.canInterrupt == true
     }
 }
 
@@ -2794,7 +3035,7 @@ private struct ThreadItemView: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(itemColor)
                     Spacer()
-                    Text(item.type)
+                    Text(itemMetadataLabel)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText)
                 }
@@ -2855,6 +3096,40 @@ private struct ThreadItemView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: shouldShowOptions)
     }
+
+    private var itemMetadataLabel: String {
+        [itemRoleLabel, itemTimeLabel].compactMap { value in
+            guard let value, !value.isEmpty else {
+                return nil
+            }
+            return value
+        }.joined(separator: " ")
+    }
+
+    private var itemRoleLabel: String {
+        switch item.type {
+        case "userMessage":
+            return "User"
+        case "agentMessage":
+            return "Agent"
+        default:
+            return "System"
+        }
+    }
+
+    private var itemTimeLabel: String? {
+        guard let createdAt = item.createdAt,
+              let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else {
+            return nil
+        }
+        return Self.metadataDateFormatter.string(from: date)
+    }
+
+    private static let metadataDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM/dd HH:mm"
+        return formatter
+    }()
 
     private var handledPermissionView: some View {
         DisclosureGroup(isExpanded: $isActivityExpanded) {

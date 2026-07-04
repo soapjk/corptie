@@ -3,6 +3,7 @@ import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import os from "node:os";
 import initSqlJs from "sql.js";
+import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -280,8 +281,8 @@ export class CorptieStore {
         summary.progress,
         summary.summary,
         session.accent || summary.accent || "cyan",
-        session.createdAt || session.updatedAt || new Date().toISOString(),
-        session.updatedAt || new Date().toISOString(),
+        createdAtFromOrNow(session.createdAt, session.updatedAt),
+        createdAtFromOrNow(session.updatedAt),
         session.archived ? 1 : 0,
         session.pinned ? 1 : 0,
         Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
@@ -294,7 +295,7 @@ export class CorptieStore {
   }
 
   appendItem(sessionId, item) {
-    const createdAt = item.createdAt || new Date().toISOString();
+    const createdAt = createdAtFromOrNow(item);
     this.db.run(
       `INSERT OR REPLACE INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, status, created_at
@@ -343,7 +344,8 @@ export class CorptieStore {
         title: row.title,
         text: normalizeStoredText(row.text, provider),
         options: parseJson(row.options_json, null),
-        status: row.status
+        status: row.status,
+        createdAt: row.created_at
       }))
       .filter((item) => item.text)
       .filter((item) => !isAgentNoise(item.text))
@@ -634,7 +636,7 @@ function serializeActiveChoicePrompt(options = null, prompt = "", existing = nul
     prompt: typeof source.prompt === "string" && source.prompt.trim() ? source.prompt.trim() : prompt,
     options: normalizedOptions,
     status: "active",
-    createdAt: source.createdAt || new Date().toISOString()
+    createdAt: createdAtFromOrNow(source)
   });
 }
 
@@ -960,7 +962,8 @@ function canonicalCodexItems(sessionId, session) {
       type: role === "user" ? "userMessage" : "agentMessage",
       title: role === "user" ? "User" : "Codex",
       text,
-      status: role === "user" ? "sent" : payload.phase ?? null
+      status: role === "user" ? "sent" : payload.phase ?? null,
+      createdAt: createdAtFrom(entry, payload)
     });
   }
 
@@ -996,7 +999,8 @@ function approvalItemFromFunctionCall(sessionId, session, payload, index, comple
       { id: "approve", label: "Approve", role: "approve", index: 0, selected: true },
       { id: "deny", label: "Deny", role: "deny", index: 1, selected: false }
     ],
-    status: "pending"
+    status: "pending",
+    createdAt: createdAtFrom(payload)
   };
 }
 
