@@ -335,17 +335,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             self?.updateAccessory(for: self?.currentSession)
         },
         didResignKey: { [weak self] in
-            guard let self else {
-                return
-            }
-            self.hideReplyPreview(markDismissed: true)
-            self.hideQuickReply()
-            self.updateAccessory(for: self.currentSession)
+            self?.handleAccessoryResignKey()
         }
     )
     private var cancellables = Set<AnyCancellable>()
     private var outsideClickMonitor: Any?
     private var localOutsideClickMonitor: Any?
+    private var ignoreOutsideClickUntil = Date.distantPast
     private var lastSummary: String?
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
@@ -447,23 +443,46 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        guard !accessoryController.isKeyWindow else {
-            updateAccessory(for: currentSession)
-            return
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            guard !self.panel.isKeyWindow, !self.accessoryController.isKeyWindow else {
+                self.updateAccessory(for: self.currentSession)
+                return
+            }
+            self.hideReplyPreview(markDismissed: true)
+            self.hideQuickReply()
+            self.updateAccessory(for: self.currentSession)
         }
-        hideReplyPreview(markDismissed: true)
-        hideQuickReply()
-        updateAccessory(for: currentSession)
     }
 
     func windowDidMove(_ notification: Notification) {
         updateAccessory(for: currentSession)
     }
 
+    private func handleAccessoryResignKey() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+            guard !self.panel.isKeyWindow, !self.accessoryController.isKeyWindow else {
+                self.updateAccessory(for: self.currentSession)
+                return
+            }
+            self.hideReplyPreview(markDismissed: true)
+            self.hideQuickReply()
+            self.updateAccessory(for: self.currentSession)
+        }
+    }
+
     private func showQuickReply() {
         previewState.isQuickReplyVisible = true
         showLatestReplyPreviewIfNeeded()
-        installOutsideClickMonitor()
+        ignoreOutsideClickUntil = Date().addingTimeInterval(0.35)
+        DispatchQueue.main.async { [weak self] in
+            self?.installOutsideClickMonitor()
+        }
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
         updateAccessory(for: currentSession)
@@ -611,7 +630,10 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         previewState.text = trimmed
         previewState.isVisible = true
         previewState.isQuickReplyVisible = true
-        installOutsideClickMonitor()
+        ignoreOutsideClickUntil = Date().addingTimeInterval(0.35)
+        DispatchQueue.main.async { [weak self] in
+            self?.installOutsideClickMonitor()
+        }
         updateAccessory(for: session)
     }
 
@@ -662,6 +684,9 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 guard let self else {
                     return
                 }
+                guard Date() >= self.ignoreOutsideClickUntil else {
+                    return
+                }
                 self.hideReplyPreview(markDismissed: true)
                 self.hideQuickReply()
                 self.updateAccessory(for: self.currentSession)
@@ -669,6 +694,9 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
         localOutsideClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
             guard let self else {
+                return event
+            }
+            guard Date() >= self.ignoreOutsideClickUntil else {
                 return event
             }
             guard event.window !== self.panel, !self.accessoryController.contains(window: event.window) else {

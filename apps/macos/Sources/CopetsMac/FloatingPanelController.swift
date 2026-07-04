@@ -82,6 +82,7 @@ final class FloatingPanelController: NSObject {
     private var isDetailTransitionLocked = false
     private var didUserResize = false
     private var lastSessionCount = 0
+    private var lastEffectiveListHeight: CGFloat?
     private var listWidthBeforeDetail: CGFloat?
     private var currentDisplayedSessionId: String?
     private var pendingResizeBounce: DispatchWorkItem?
@@ -392,7 +393,7 @@ final class FloatingPanelController: NSObject {
 
         let savedWidth = listWidthBeforeDetail?.isFinite == true ? listWidthBeforeDetail : nil
         let targetWidth = min(panel.maxSize.width, max(listMinimumSize.width, savedWidth ?? panel.frame.width))
-        let targetHeight = listTransitionTargetHeight(minimumHeight: minimumHeight)
+        let targetHeight = restoredListHeight(minimumHeight: minimumHeight)
         guard abs(panel.frame.width - targetWidth) > 1 || abs(panel.frame.height - targetHeight) > 1 else {
             return
         }
@@ -412,6 +413,14 @@ final class FloatingPanelController: NSObject {
             return minimumHeight
         }
         return panel.frame.height
+    }
+
+    private func restoredListHeight(minimumHeight: CGFloat) -> CGFloat {
+        let usefulHeight = usefulMaximumListHeight(for: client.sessions.count)
+        if let lastEffectiveListHeight, lastEffectiveListHeight.isFinite, lastEffectiveListHeight > 0 {
+            return min(usefulHeight, max(minimumHeight, lastEffectiveListHeight))
+        }
+        return listTransitionTargetHeight(minimumHeight: minimumHeight)
     }
 
     private func currentListMinimumHeight() -> CGFloat {
@@ -569,6 +578,15 @@ final class FloatingPanelController: NSObject {
         }
     }
 
+    private func captureEffectiveListHeight() {
+        guard client.selectedSession == nil else {
+            return
+        }
+        let minimumHeight = currentListMinimumHeight()
+        let usefulHeight = usefulMaximumListHeight(for: client.sessions.count)
+        lastEffectiveListHeight = min(usefulHeight, max(minimumHeight, panel.frame.height))
+    }
+
     private func scheduleResizeBounceCheck() {
         pendingResizeBounce?.cancel()
 
@@ -641,6 +659,8 @@ extension FloatingPanelController: NSWindowDelegate {
             didUserResize = true
             if client.selectedSession != nil {
                 saveCurrentDetailWindowSizeIfNeeded()
+            } else {
+                captureEffectiveListHeight()
             }
             scheduleResizeBounceCheck()
         }
@@ -651,7 +671,11 @@ extension FloatingPanelController: NSWindowDelegate {
         if client.selectedSession != nil {
             saveCurrentDetailWindowSizeIfNeeded()
         } else {
+            captureEffectiveListHeight()
             bounceHeightBackIfNeeded()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.41) { [weak self] in
+                self?.captureEffectiveListHeight()
+            }
         }
     }
 }

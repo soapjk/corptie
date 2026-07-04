@@ -2395,8 +2395,7 @@ private struct DetailHeaderView: View {
                 }
                 .buttonStyle(IconButtonStyle())
                 .help("Reconnect session")
-            } else if (backendClient.selectedSession?.external?.provider == "pty" || backendClient.selectedSession?.external?.provider == "codex-pty")
-                && backendClient.selectedDetail?.canSend != false {
+            } else if backendClient.selectedDetail?.capabilities?.canInterrupt == true {
                 Button {
                     backendClient.interruptSelectedSession()
                 } label: {
@@ -2407,16 +2406,6 @@ private struct DetailHeaderView: View {
                 .buttonStyle(IconButtonStyle())
                 .help("Stop current run")
             }
-
-            Button {
-                backendClient.loadSelectedDetail()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 12, weight: .bold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(IconButtonStyle())
-            .help("Refresh thread")
         }
     }
 }
@@ -3170,7 +3159,6 @@ private struct MessageComposer: View {
                     .frame(height: 32)
                     .padding(.leading, 10)
                     .padding(.trailing, 2)
-                    .padding(.vertical, 4)
                     .onTapGesture {
                         isFocused = true
                     }
@@ -3442,6 +3430,8 @@ struct ChatInputTextView: NSViewRepresentable {
         scrollView.hasVerticalScroller = false
         scrollView.hasHorizontalScroller = false
         scrollView.borderType = .noBorder
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
         let textView = SubmitTextView()
         textView.delegate = context.coordinator
@@ -3453,7 +3443,11 @@ struct ChatInputTextView: NSViewRepresentable {
         textView.isRichText = false
         textView.isEditable = isEditable
         textView.isSelectable = true
-        textView.textContainerInset = NSSize(width: 0, height: 5)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainerInset = NSSize(width: 0, height: 6)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.autoresizingMask = [.width]

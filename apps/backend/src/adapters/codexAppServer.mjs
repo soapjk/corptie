@@ -130,7 +130,8 @@ export class CodexAppServerClient {
       cwd: options.cwd ?? undefined,
       approvalPolicy: options.approvalPolicy ?? undefined,
       sandboxPolicy: options.sandboxPolicy ?? undefined,
-      model: options.model ?? undefined
+      model: options.model ?? undefined,
+      effort: options.reasoningEffort ?? undefined
     });
   }
 
@@ -616,7 +617,7 @@ function codexAppServerCapabilities() {
   return {
     canSend: true,
     canSwitchModel: true,
-    canSwitchReasoning: false,
+    canSwitchReasoning: true,
     canInterrupt: true,
     canReconnect: false
   };

@@ -1037,7 +1037,7 @@ function route(request, response) {
             capabilities: {
               ...(session.capabilities ?? {}),
               canSwitchModel: true,
-              canSwitchReasoning: false
+              canSwitchReasoning: true
             },
             external: {
               ...session.external,
@@ -1053,6 +1053,76 @@ function route(request, response) {
         }
 
         sendJson(response, 404, { error: "Session does not support model switching" });
+      })
+      .catch((error) => {
+        sendJson(response, 502, { error: error.message });
+      });
+    return;
+  }
+
+  const sessionReasoningMatch = url.pathname.match(/^\/sessions\/([^/]+)\/reasoning$/);
+  if (request.method === "POST" && sessionReasoningMatch) {
+    const sessionId = decodeURIComponent(sessionReasoningMatch[1]);
+    readJson(request)
+      .then((input) => {
+        const reasoningLevel = typeof input.reasoningLevel === "string" ? input.reasoningLevel.trim() : "";
+        if (!reasoningLevel) {
+          sendJson(response, 400, { error: "Reasoning level is required" });
+          return;
+        }
+
+        if (sessionId.startsWith("pty:")) {
+          const normalizedId = normalizeSessionId(sessionId);
+          const session = ptyAgents.switchReasoning(normalizedId, reasoningLevel);
+          emitEvent("PtySessionReasoningChanged", { sessionId, reasoningLevel });
+          sendJson(response, 202, { session, reasoningLevel });
+          return;
+        }
+
+        if (sessionId.startsWith("codex:")) {
+          const threadId = sessionId.slice("codex:".length);
+          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+          const now = new Date().toISOString();
+          const session = previous ?? {
+            id: sessionId,
+            title: `Codex ${threadId.slice(0, 8)}`,
+            agent: "Codex",
+            status: "complete",
+            progress: 1,
+            summary: "Corptie-managed Codex task",
+            capabilities: {
+              ...codexAppServerSessionCapabilities({ canInterrupt: false })
+            },
+            updatedAt: now,
+            accent: "cyan",
+            external: {
+              provider: "codex-app-server",
+              threadId,
+              source: "corptie"
+            }
+          };
+          const nextSession = {
+            ...session,
+            updatedAt: now,
+            capabilities: {
+              ...(session.capabilities ?? {}),
+              canSwitchModel: true,
+              canSwitchReasoning: true
+            },
+            external: {
+              ...session.external,
+              provider: "codex-app-server",
+              threadId,
+              currentReasoningLevel: reasoningLevel
+            }
+          };
+          upsertManagedCodexSession(nextSession);
+          emitEvent("CodexThreadReasoningChanged", { threadId, reasoningLevel });
+          sendJson(response, 202, { session: nextSession, reasoningLevel });
+          return;
+        }
+
+        sendJson(response, 404, { error: "Session does not support reasoning switching" });
       })
       .catch((error) => {
         sendJson(response, 502, { error: error.message });
@@ -1935,7 +2005,8 @@ function route(request, response) {
         const turn = await codexClient.startTurn(threadId, prompt, {
           cwd,
           approvalPolicy: input.approvalPolicy ?? "on-request",
-          model: input.model
+          model: input.model,
+          reasoningEffort: input.reasoningLevel
         });
 
         const session = {
@@ -1948,7 +2019,7 @@ function route(request, response) {
             status: "running",
             source: "corptie",
           currentModel: input.model ?? started.model ?? null,
-          currentReasoningLevel: started.reasoningEffort ?? null,
+          currentReasoningLevel: input.reasoningLevel ?? started.reasoningEffort ?? null,
           activeTurnId: turn.turn?.id ?? null
         }),
         title,
@@ -2098,7 +2169,8 @@ function route(request, response) {
           await codexClient.resumeThread(threadId);
           const managedSession = managedCodexSessions.get(`codex:${threadId}`);
           const result = await codexClient.startTurn(threadId, text, {
-            model: managedSession?.external?.currentModel ?? input.model ?? undefined
+            model: managedSession?.external?.currentModel ?? input.model ?? undefined,
+            reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined
           });
           if (managedSession) {
             upsertManagedCodexSession({
