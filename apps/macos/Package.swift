@@ -14,6 +14,10 @@ let package = Package(
         .executableTarget(
             name: "CorptieMac",
             path: "Sources/CopetsMac",
+            exclude: [
+                "Resources/AppIcon.icns",
+                "Resources/AppIcon.iconset"
+            ],
             resources: [
                 .copy("Resources/AppIcon.png")
             ]
