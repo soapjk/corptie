@@ -116,6 +116,8 @@ struct FloatingRootView: View {
                     sessionCard(for: session)
                 }
             }
+            .frame(minHeight: sessionCardsContentHeight, alignment: .top)
+            .fixedSize(horizontal: false, vertical: true)
             .animation(draggedSessionId == nil ? .spring(response: 0.30, dampingFraction: 0.84) : nil, value: backendClient.sessions.map(\.id))
             .padding(.horizontal, sessionListHorizontalInset)
             .padding(.bottom, 4)
@@ -140,12 +142,23 @@ struct FloatingRootView: View {
         }
     }
 
+    private var sessionCardsContentHeight: CGFloat {
+        let count = backendClient.sessions.count
+        guard count > 0 else {
+            return 0
+        }
+        return CGFloat(count) * PanelLayoutState.cardHeight
+            + CGFloat(max(0, count - 1)) * PanelLayoutState.cardSpacing
+    }
+
     @ViewBuilder
     private func sessionCard(for session: TaskSession) -> some View {
         if backendClient.isShowingArchivedSessions {
             TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
+                .fixedSessionCardHeight()
         } else {
             TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
+                .fixedSessionCardHeight()
                 .opacity(draggedSessionId == session.id ? 0.82 : 1)
                 .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
                 .shadow(
@@ -530,6 +543,11 @@ private extension View {
                 )
             }
         )
+    }
+
+    func fixedSessionCardHeight() -> some View {
+        frame(height: PanelLayoutState.cardHeight, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -1544,35 +1562,13 @@ private struct TaskCardView: View {
             }
 
             if hasSuggestedOptions {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(visibleSuggestedOptions) { option in
-                        Button {
-                            lastQuickReplyInteractionAt = Date()
-                            backendClient.sendMessage(option.label, to: session, isChoiceSelection: true)
-                        } label: {
-                            Label(option.label, systemImage: "arrow.turn.down.right")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(CorptiePalette.primaryText)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 6)
-                        }
-                        .buttonStyle(.plain)
-                        .background(optionChipBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(CorptiePalette.amber.opacity(0.24), lineWidth: 1)
-                        )
-                        .help(option.label)
-                    }
-                }
-                .padding(.top, 1)
+                suggestedOptionsSummary
             }
         }
         .padding(13)
-        .frame(minHeight: PanelLayoutState.cardHeight)
+        .frame(height: PanelLayoutState.cardHeight, alignment: .topLeading)
+        .fixedSize(horizontal: false, vertical: true)
+        .clipped()
         .background(
             LiquidGlassCardBackground(cornerRadius: 18, fillOpacity: cardFillOpacity)
         )
@@ -1691,12 +1687,22 @@ private struct TaskCardView: View {
         Array((session.suggestedOptions ?? []).prefix(5))
     }
 
-    private var optionChipBackground: Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(calibratedWhite: 0.12, alpha: 0.92)
-                : NSColor(calibratedWhite: 1.0, alpha: 0.88)
-        })
+    private var suggestedOptionsSummary: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.turn.down.right")
+                .font(.system(size: 9, weight: .bold))
+            Text(visibleSuggestedOptions.first?.label ?? "Choice available")
+                .font(.system(size: 10.5, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if visibleSuggestedOptions.count > 1 {
+                Text("+\(visibleSuggestedOptions.count - 1)")
+                    .font(.system(size: 10, weight: .bold))
+            }
+        }
+        .foregroundStyle(CorptiePalette.amber)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(visibleSuggestedOptions.map(\.label).joined(separator: "\n"))
     }
 
     private var replyPreviewText: String? {
@@ -3696,6 +3702,7 @@ struct ChatInputTextView: NSViewRepresentable {
     let font: NSFont
     var isEditable = true
     var autoFocus = false
+    var textInsetHeight: CGFloat = 6
     var onFocusChange: (Bool) -> Void = { _ in }
     let onSubmit: () -> Void
 
@@ -3722,7 +3729,7 @@ struct ChatInputTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainerInset = NSSize(width: 0, height: 6)
+        textView.textContainerInset = NSSize(width: 0, height: textInsetHeight)
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.widthTracksTextView = true
         textView.autoresizingMask = [.width]
@@ -3749,6 +3756,7 @@ struct ChatInputTextView: NSViewRepresentable {
         textView.placeholder = placeholder
         textView.font = font
         textView.isEditable = isEditable
+        textView.textContainerInset = NSSize(width: 0, height: textInsetHeight)
         if !textView.hasMarkedText(), textView.string != text {
             textView.string = text
         }
@@ -3827,7 +3835,9 @@ struct ChatInputTextView: NSViewRepresentable {
                 .font: font ?? NSFont.systemFont(ofSize: 12),
                 .foregroundColor: NSColor.secondaryLabelColor
             ]
-            let origin = NSPoint(x: textContainerInset.width, y: textContainerInset.height)
+            let textSize = placeholder.size(withAttributes: attributes)
+            let centeredY = max(0, (bounds.height - textSize.height) / 2)
+            let origin = NSPoint(x: textContainerInset.width, y: centeredY)
             placeholder.draw(at: origin, withAttributes: attributes)
         }
     }
@@ -3846,7 +3856,8 @@ private struct QuickReplyField: View {
             ChatInputTextView(
                 text: $text,
                 placeholder: placeholder,
-                font: .systemFont(ofSize: 11, weight: .medium),
+                font: .systemFont(ofSize: 10.5, weight: .medium),
+                textInsetHeight: 2,
                 onFocusChange: { focused in
                     isFocused.wrappedValue = focused
                     if focused {
@@ -3855,9 +3866,10 @@ private struct QuickReplyField: View {
                 },
                 onSubmit: sendIfPossible
             )
-                .frame(height: 28)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
+                .frame(height: 20)
+                .padding(.leading, 7)
+                .padding(.trailing, 3)
+                .padding(.vertical, 2)
 
             Button {
                 sendIfPossible()
@@ -3865,11 +3877,11 @@ private struct QuickReplyField: View {
                 if isSending {
                     ProgressView()
                         .controlSize(.small)
-                        .frame(width: 22, height: 22)
+                        .frame(width: 20, height: 20)
                 } else {
                     Image(systemName: "paperplane.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 22, height: 22)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .frame(width: 20, height: 20)
                 }
             }
             .buttonStyle(.plain)
@@ -3877,10 +3889,11 @@ private struct QuickReplyField: View {
             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
             .help("Send reply")
         }
+        .frame(height: 26)
         .simultaneousGesture(TapGesture().onEnded(onInteract))
-        .background(isFocused.wrappedValue ? CorptiePalette.inputFillFocused : CorptiePalette.inputFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(isFocused.wrappedValue ? CorptiePalette.inputFillFocused : CorptiePalette.inputFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .strokeBorder(isFocused.wrappedValue ? CorptiePalette.inputBorderFocused : CorptiePalette.inputBorder, lineWidth: isFocused.wrappedValue ? 1.25 : 1)
         )
     }
