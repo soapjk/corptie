@@ -248,12 +248,12 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func loadModelsForSelectedSession() async {
+    func loadModelsForSelectedSession(forceRefresh: Bool = false) async {
         let provider = selectedSession?.external?.provider ?? "codex-pty"
-        await loadModels(for: provider)
+        await loadModels(for: provider, forceRefresh: forceRefresh)
     }
 
-    func loadModels(for provider: String) async {
+    func loadModels(for provider: String, forceRefresh: Bool = false) async {
         if isLoadingCodexModels {
             return
         }
@@ -262,7 +262,11 @@ final class BackendClient: ObservableObject {
 
         do {
             let path = provider == "claude-sdk" ? "claude/models" : "codex/models"
-            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: path))
+            var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)!
+            if forceRefresh {
+                components.queryItems = [URLQueryItem(name: "refresh", value: "true")]
+            }
+            let (data, response) = try await URLSession.shared.data(from: components.url!)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }

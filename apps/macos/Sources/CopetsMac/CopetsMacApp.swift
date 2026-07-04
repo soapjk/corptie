@@ -30,6 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let detachedManager = DetachedSessionManager(client: backendClient, showMain: { [weak self] in
             self?.panelController?.show()
+        }, isMainVisible: { [weak self] in
+            self?.panelController?.isVisible ?? false
         }) { [weak self] session in
             self?.panelController?.show()
             self?.backendClient.select(session: session)

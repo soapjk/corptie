@@ -1916,7 +1916,7 @@ function possibleChoiceStage(screenText = "") {
     && /(approve|allow|deny|cancel|yes|no|continue|proceed|run|拒绝|允许|继续|取消)/i.test(text);
 }
 
-function choiceParserShouldUseModel(screenText = "") {
+export function choiceParserShouldUseModel(screenText = "") {
   const text = trimChoiceScreen(screenText);
   if (!text || containsPendingUserInputRegion(text)) {
     return false;

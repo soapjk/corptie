@@ -7,11 +7,18 @@ final class DetachedSessionManager: ObservableObject {
     private let client: BackendClient
     private let openSession: (TaskSession) -> Void
     private let showMain: () -> Void
+    private let isMainVisible: () -> Bool
     private var controllers: [String: DetachedSessionWindowController] = [:]
 
-    init(client: BackendClient, showMain: @escaping () -> Void, openSession: @escaping (TaskSession) -> Void) {
+    init(
+        client: BackendClient,
+        showMain: @escaping () -> Void,
+        isMainVisible: @escaping () -> Bool,
+        openSession: @escaping (TaskSession) -> Void
+    ) {
         self.client = client
         self.showMain = showMain
+        self.isMainVisible = isMainVisible
         self.openSession = openSession
     }
 
@@ -27,6 +34,9 @@ final class DetachedSessionManager: ObservableObject {
             client: client,
             showMain: { [weak self] in
                 self?.showMain()
+            },
+            isMainVisible: { [weak self] in
+                self?.isMainVisible() ?? false
             },
             openSession: { [weak self] session in
                 self?.openSession(session)
@@ -318,6 +328,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private let sessionId: String
     private let client: BackendClient
     private let showMain: () -> Void
+    private let isMainVisible: () -> Bool
     private let openSession: (TaskSession) -> Void
     private let closeHandler: (String) -> Void
     private let panel: NSPanel
@@ -354,12 +365,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         sessionId: String,
         client: BackendClient,
         showMain: @escaping () -> Void,
+        isMainVisible: @escaping () -> Bool,
         openSession: @escaping (TaskSession) -> Void,
         close: @escaping (String) -> Void
     ) {
         self.sessionId = sessionId
         self.client = client
         self.showMain = showMain
+        self.isMainVisible = isMainVisible
         self.openSession = openSession
         self.closeHandler = close
 
@@ -638,7 +651,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func isSessionOpenInMainView(_ session: TaskSession) -> Bool {
-        client.selectedSession?.id == session.id
+        isMainVisible() && client.selectedSession?.id == session.id
     }
 
     private static func latestFinalAgentPreviewText(from detail: CodexThreadDetail?, includeActiveTurn: Bool) -> String? {
@@ -1045,6 +1058,7 @@ private struct DetachedReplyPreviewBubble: View {
                 Text(text)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(CorptiePalette.primaryText)
+                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 14)
@@ -1107,6 +1121,7 @@ private struct DetachedReplyComposerCard: View {
                     Text(text)
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(CorptiePalette.primaryText)
+                        .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.leading, 24)
@@ -1305,6 +1320,7 @@ private struct DetachedOptionTooltip: View {
         Text(text)
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(CorptiePalette.primaryText)
+            .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)

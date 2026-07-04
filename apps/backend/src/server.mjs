@@ -14,7 +14,7 @@ import {
   readCodexRolloutDetail
 } from "./adapters/codexAppServer.mjs";
 import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
-import { PtyAgentManager, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
+import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -220,6 +220,7 @@ function enrichCodexDetailChoiceOptions(detail) {
 
   const candidates = items
     .filter((item) => item.type === "agentMessage" && item.text && !(Array.isArray(item.options) && item.options.length >= 2))
+    .filter((item) => choiceParserShouldUseModel(item.text))
     .slice(-2);
   for (const item of candidates) {
     const cacheKey = choiceOptionsCacheKey(item.text, choiceParser);
@@ -283,6 +284,9 @@ function choiceOptionsCacheKey(text = "", choiceParser = {}) {
 function scheduleCodexChoiceParseForText(threadId, text) {
   const cleanText = typeof text === "string" ? text.trim() : "";
   if (!cleanText) {
+    return;
+  }
+  if (!choiceParserShouldUseModel(cleanText)) {
     return;
   }
   const settings = store.settings();
@@ -720,9 +724,10 @@ async function loadCodexModels() {
   return payload;
 }
 
-async function loadClaudeModels() {
+async function loadClaudeModels(options = {}) {
   const nowMs = Date.now();
-  if (claudeModelsCache && nowMs - claudeModelsCache.loadedAt < 5 * 60 * 1000) {
+  const refresh = options.refresh === true;
+  if (!refresh && claudeModelsCache && nowMs - claudeModelsCache.loadedAt < 5 * 60 * 1000) {
     return claudeModelsCache.payload;
   }
 
@@ -741,11 +746,13 @@ async function loadClaudeModels() {
       currentReasoningLevel: null,
       models: (Array.isArray(models) ? models : [])
         .map((model) => ({
-          id: model.id,
-          name: model.display_name || model.id,
+          id: model.value || model.id,
+          name: model.displayName || model.display_name || model.value || model.id,
           description: model.description || "",
           defaultReasoningLevel: null,
-          reasoningLevels: [],
+          reasoningLevels: Array.isArray(model.supportedEffortLevels)
+            ? model.supportedEffortLevels.filter(Boolean)
+            : [],
           serviceTiers: []
         }))
         .filter((model) => model.id)
@@ -922,7 +929,7 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/claude/models") {
-    loadClaudeModels()
+    loadClaudeModels({ refresh: url.searchParams.get("refresh") === "true" })
       .then((models) => {
         sendJson(response, 200, models);
       })

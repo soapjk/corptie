@@ -89,6 +89,10 @@ final class FloatingPanelController: NSObject {
     private var pendingListTransitionUnlock: DispatchWorkItem?
     private var pendingDetailTransitionUnlock: DispatchWorkItem?
 
+    var isVisible: Bool {
+        panel.isVisible
+    }
+
     init(client: BackendClient, detachedSessionManager: DetachedSessionManager) {
         self.client = client
         self.detachedSessionManager = detachedSessionManager
