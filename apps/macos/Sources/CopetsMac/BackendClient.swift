@@ -1143,10 +1143,8 @@ final class BackendClient: ObservableObject {
         guard !trimmedReasoningLevel.isEmpty else {
             return
         }
-        guard let selectedSession,
-              selectedSession.external?.provider == "codex-pty",
-              let threadId = selectedSession.external?.threadId else {
-            sendStatusMessage = "Reasoning switching is only available for Codex CLI sessions."
+        guard let selectedSession else {
+            sendStatusMessage = "Reasoning switching is not available for this session."
             return
         }
 
@@ -1155,7 +1153,7 @@ final class BackendClient: ObservableObject {
             defer { isSwitchingReasoning = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reasoning"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(selectedSession.id)/reasoning"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["reasoningLevel": trimmedReasoningLevel])

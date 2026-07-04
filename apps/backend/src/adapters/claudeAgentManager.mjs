@@ -612,7 +612,7 @@ export class ClaudeAgentManager {
       sendUnavailableReason: canSend ? null : (hasPendingChoices(session) ? "Claude is waiting for your approval choice." : "Claude is still processing the previous request."),
       capabilities: {
         canSend,
-        canSwitchModel: false,
+        canSwitchModel: true,
         canSwitchReasoning: false,
         canInterrupt: Boolean(session.query) && session.turnState === "running",
         canReconnect: false

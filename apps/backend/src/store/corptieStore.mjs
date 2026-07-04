@@ -714,7 +714,7 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
   if (provider === "claude-sdk") {
     return {
       canSend: status !== "failed" && status !== "cancelled",
-      canSwitchModel: false,
+      canSwitchModel: true,
       canSwitchReasoning: false,
       canInterrupt: false,
       canReconnect: true
