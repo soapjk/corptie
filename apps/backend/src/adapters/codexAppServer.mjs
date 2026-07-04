@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
+import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
 
 export class CodexAppServerClient {
   constructor(options = {}) {
@@ -35,7 +36,7 @@ export class CodexAppServerClient {
     this.process.stderr.on("data", (chunk) => {
       this.notifications.push({
         method: "stderr",
-        params: { chunk, createdAt: new Date().toISOString() }
+        params: { chunk, createdAt: nowIso() }
       });
     });
 
@@ -215,7 +216,7 @@ export class CodexAppServerClient {
       stdio: ["ignore", "pipe", "pipe"]
     });
 
-    const startedAt = new Date().toISOString();
+    const startedAt = nowIso();
     const notification = {
       method: "corptie/codexExecResumeStarted",
       params: {
@@ -232,19 +233,19 @@ export class CodexAppServerClient {
     child.stdout.on("data", (chunk) => {
       this.notifications.push({
         method: "corptie/codexExecResumeOutput",
-        params: { threadId, stream: "stdout", chunk, createdAt: new Date().toISOString() }
+        params: { threadId, stream: "stdout", chunk, createdAt: nowIso() }
       });
     });
     child.stderr.on("data", (chunk) => {
       this.notifications.push({
         method: "corptie/codexExecResumeOutput",
-        params: { threadId, stream: "stderr", chunk, createdAt: new Date().toISOString() }
+        params: { threadId, stream: "stderr", chunk, createdAt: nowIso() }
       });
     });
     child.on("exit", (code, signal) => {
       this.notifications.push({
         method: "corptie/codexExecResumeExited",
-        params: { threadId, code, signal, createdAt: new Date().toISOString() }
+        params: { threadId, code, signal, createdAt: nowIso() }
       });
     });
 
@@ -346,7 +347,7 @@ export class CodexAppServerClient {
         params: {
           line,
           error: error.message,
-          createdAt: new Date().toISOString()
+          createdAt: nowIso()
         }
       });
       return;
@@ -383,7 +384,7 @@ export class CodexAppServerClient {
       params: {
         ...(message.params ?? {}),
         requestId: message.id,
-        createdAt: new Date().toISOString()
+        createdAt: nowIso()
       }
     };
     this.notifications.push(request);
@@ -576,7 +577,7 @@ export function mapCodexThreadToDetail(thread, liveItems = []) {
     canSend: true,
     sendUnavailableReason: null,
     turnCount: thread.turns?.length ?? 0,
-    items: mergedItems.slice(-60)
+    items: mergedItems
   };
 }
 
@@ -626,17 +627,26 @@ function codexAppServerCapabilities() {
 function mergeItems(historyItems, liveItems, turnOrder = new Map()) {
   const merged = new Map();
   const signatures = new Set();
+  const itemIdsBySignature = new Map();
   for (const item of historyItems) {
     merged.set(item.id, item);
-    signatures.add(itemSignature(item));
+    const signature = itemSignature(item);
+    signatures.add(signature);
+    itemIdsBySignature.set(signature, item.id);
   }
   for (const item of liveItems) {
     const signature = itemSignature(item);
     if (signatures.has(signature)) {
+      const existingId = itemIdsBySignature.get(signature);
+      const existing = existingId ? merged.get(existingId) : null;
+      if (existing && !existing.createdAt && item.createdAt) {
+        merged.set(existingId, { ...existing, createdAt: item.createdAt });
+      }
       continue;
     }
     merged.set(item.id, item);
     signatures.add(signature);
+    itemIdsBySignature.set(signature, item.id);
   }
   return Array.from(merged.values()).sort((left, right) => {
     const leftTurn = turnOrder.has(left.turnId) ? turnOrder.get(left.turnId) : Number.MAX_SAFE_INTEGER;
@@ -844,7 +854,7 @@ export async function readCodexRolloutDetail(thread, readError) {
       }
     }
 
-    return mapCodexThreadListDetail(thread, [fallbackItem, ...items.slice(-59)]);
+    return mapCodexThreadListDetail(thread, [fallbackItem, ...items]);
   } catch (error) {
     return mapCodexThreadListDetail(thread, [
       fallbackItem,
@@ -977,18 +987,8 @@ function mapThreadItem(turn, item) {
     title: itemTitle(item),
     text: itemText(item),
     status: item.status ?? null,
-    createdAt: isoFromEpochSeconds(item.createdAt ?? item.created_at ?? item.startedAt ?? item.started_at ?? turn.createdAt ?? turn.created_at ?? null)
+    createdAt: createdAtFrom(item, turn)
   };
-}
-
-function isoFromEpochSeconds(value) {
-  if (typeof value === "string" && value.trim()) {
-    return value;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return new Date(value * 1000).toISOString();
-  }
-  return null;
 }
 
 function itemTitle(item) {

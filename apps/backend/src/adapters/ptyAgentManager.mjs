@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import * as pty from "node-pty";
 import { CodexAppServerClient } from "./codexAppServer.mjs";
+import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 const ansiPattern = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
@@ -30,7 +31,7 @@ export class PtyAgentManager {
     const agentName = input.agentName || "PTY Agent";
     const provider = input.provider || "pty";
     const accent = input.accent || "violet";
-    const createdAt = new Date().toISOString();
+    const createdAt = createdAtFromOrNow();
     const initialSeq = Number(input.nextItemSeq ?? 1);
 
     const session = {
@@ -886,7 +887,7 @@ export class PtyAgentManager {
   }
 
   appendItem(session, item) {
-    const createdAt = new Date().toISOString();
+    const createdAt = createdAtFromOrNow(item);
     const nextItem = {
       ...item,
       id: item.id ?? `${session.id}:${item.type ?? "item"}:${session.nextItemSeq++}`,

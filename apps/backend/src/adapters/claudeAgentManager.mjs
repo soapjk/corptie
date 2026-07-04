@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
+import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 export class ClaudeAgentManager {
   constructor(options = {}) {
@@ -12,7 +13,7 @@ export class ClaudeAgentManager {
 
   start(input = {}) {
     const id = input.id || randomUUID();
-    const createdAt = new Date().toISOString();
+    const createdAt = createdAtFromOrNow();
     const session = {
       id,
       title: shortTitle(input.title || input.prompt || "Claude Code"),
@@ -693,7 +694,7 @@ export class ClaudeAgentManager {
   }
 
   appendItem(session, item) {
-    const createdAt = new Date().toISOString();
+    const createdAt = createdAtFromOrNow(item);
     session.items.push({
       id: item.id ?? `${session.id}:${session.nextItemSeq}`,
       turnId: item.turnId ?? session.currentTurnId ?? session.id,
@@ -810,7 +811,7 @@ function transcriptItem(session, seq, turnId, type, title, text, timestamp, stat
     text,
     options: null,
     status,
-    createdAt: timestamp ?? new Date().toISOString()
+    createdAt: createdAtFromOrNow(timestamp)
   };
 }
 

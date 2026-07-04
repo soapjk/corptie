@@ -35,6 +35,8 @@ final class BackendClient: ObservableObject {
     private var detailStreamTask: Task<Void, Never>?
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
+    private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
+    private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
 
     func start() {
         pollingTask?.cancel()
@@ -619,10 +621,10 @@ final class BackendClient: ObservableObject {
 
     func select(session: TaskSession) {
         selectedSession = session
-        selectedDetail = nil
+        selectedDetail = detailCacheBySessionId[session.id]
         startDetailStream(for: session)
         Task {
-            await loadDetail(for: session)
+            await loadDetail(for: session, showLoading: selectedDetail == nil)
         }
     }
 
@@ -632,6 +634,27 @@ final class BackendClient: ObservableObject {
         selectedSession = nil
         selectedDetail = nil
         isLoadingDetail = false
+    }
+
+    func cachedDetail(for sessionId: String) -> CodexThreadDetail? {
+        detailCacheBySessionId[sessionId]
+    }
+
+    func prefetchDetail(for session: TaskSession) {
+        guard detailCacheBySessionId[session.id] == nil,
+              detailPrefetchTasks[session.id] == nil else {
+            return
+        }
+
+        detailPrefetchTasks[session.id] = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            defer {
+                self.detailPrefetchTasks[session.id] = nil
+            }
+            _ = await self.fetchDetail(for: session)
+        }
     }
 
     func loadSelectedDetail() {
@@ -1205,8 +1228,10 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
+            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
+            detailCacheBySessionId[session.id] = mergedDetail
             lastError = nil
-            return decoded.thread
+            return mergedDetail
         } catch {
             lastError = error.localizedDescription
             return nil
@@ -1273,6 +1298,9 @@ final class BackendClient: ObservableObject {
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
             selectedDetail = mergedDetail
+            if let selectedSession {
+                detailCacheBySessionId[selectedSession.id] = mergedDetail
+            }
             syncSessionSummary(from: mergedDetail)
             lastError = nil
         } catch {
@@ -1308,6 +1336,7 @@ final class BackendClient: ObservableObject {
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
             selectedDetail = mergedDetail
+            detailCacheBySessionId[session.id] = mergedDetail
             syncSessionSummary(from: mergedDetail)
             lastError = nil
         } catch {

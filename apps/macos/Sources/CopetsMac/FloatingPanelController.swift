@@ -236,7 +236,7 @@ final class FloatingPanelController: NSObject {
             self.adjustListHeightForCurrentMeasurements(animated: true)
         }
         pendingListTransitionUnlock = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32, execute: workItem)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
     }
 
     private func beginDetailTransition() {
@@ -399,7 +399,7 @@ final class FloatingPanelController: NSObject {
         }
         setPanelSize(
             NSSize(width: targetWidth, height: targetHeight),
-            duration: animated ? 0.16 : 0.0,
+            duration: animated ? 0.18 : 0.0,
             timing: animated ? .easeOut : .linear
         )
     }
@@ -452,7 +452,7 @@ final class FloatingPanelController: NSObject {
 
             setPanelSize(
                 NSSize(width: targetWidth, height: targetHeight),
-                duration: animated ? 0.16 : 0.0,
+                duration: animated ? 0.18 : 0.0,
                 timing: animated ? .easeOut : .linear,
                 completion: completion
             )
@@ -473,7 +473,7 @@ final class FloatingPanelController: NSObject {
 
         setPanelSize(
             NSSize(width: targetWidth, height: targetHeight),
-            duration: animated ? 0.16 : 0.0,
+            duration: animated ? 0.18 : 0.0,
             timing: animated ? .easeOut : .linear,
             completion: completion
         )
