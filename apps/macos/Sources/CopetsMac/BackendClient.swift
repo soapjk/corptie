@@ -376,11 +376,13 @@ final class BackendClient: ObservableObject {
         existingSessionId: String = "",
         sandbox: String = "workspace-write",
         approvalPolicy: String = "on-request",
+        model: String = "",
         onSuccess: @escaping () -> Void = {}
     ) {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedExistingSessionId = existingSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Task {
             isCreatingTask = true
@@ -398,6 +400,9 @@ final class BackendClient: ObservableObject {
                     "sandbox": sandbox,
                     "approvalPolicy": approvalPolicy
                 ]
+                if !trimmedModel.isEmpty {
+                    body["model"] = trimmedModel
+                }
                 if !usesAppServer {
                     body["prompt"] = trimmedPrompt
                     body["existingSessionId"] = trimmedExistingSessionId
@@ -428,9 +433,11 @@ final class BackendClient: ObservableObject {
         title: String,
         prompt: String,
         cwd: String,
+        model: String = "",
         onSuccess: @escaping () -> Void = {}
     ) {
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Task {
             isCreatingTask = true
@@ -440,11 +447,15 @@ final class BackendClient: ObservableObject {
                 var request = URLRequest(url: baseURL.appending(path: "claude/sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
-                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                var body: [String: Any] = [
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Reply exactly: Ready" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
-                ])
+                ]
+                if !trimmedModel.isEmpty {
+                    body["model"] = trimmedModel
+                }
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
