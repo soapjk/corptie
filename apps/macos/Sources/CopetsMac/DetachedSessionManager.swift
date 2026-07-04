@@ -777,6 +777,7 @@ private struct DetachedSessionOrbView: View {
         .contentShape(Circle())
         .overlay(
             DetachedOrbEventLayer(
+                sessionId: session.id,
                 open: {
                     primaryAction()
                 },
@@ -1319,6 +1320,7 @@ private struct DetachedOptionTooltip: View {
 }
 
 private struct DetachedOrbEventLayer: NSViewRepresentable {
+    let sessionId: String
     let open: () -> Void
     let openSession: () -> Void
     let showMain: () -> Void
@@ -1327,6 +1329,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
     func makeNSView(context: Context) -> EventView {
         let view = EventView()
+        view.sessionId = sessionId
         view.open = open
         view.openSessionAction = openSession
         view.showMainAction = showMain
@@ -1336,6 +1339,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: EventView, context: Context) {
+        nsView.sessionId = sessionId
         nsView.open = open
         nsView.openSessionAction = openSession
         nsView.showMainAction = showMain
@@ -1344,6 +1348,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     }
 
     final class EventView: NSView {
+        var sessionId = ""
         var open: (() -> Void)?
         var openSessionAction: (() -> Void)?
         var showMainAction: (() -> Void)?
@@ -1419,9 +1424,26 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
             menu.addItem(NSMenuItem(title: "Show Main Window", action: #selector(showMain), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "Open Session", action: #selector(openSession), keyEquivalent: ""))
             menu.addItem(.separator())
+            menu.addItem(completionSoundMenuItem())
+            menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: "Close Floating Orb", action: #selector(closeOrb), keyEquivalent: ""))
             menu.items.forEach { $0.target = self }
             menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+        }
+
+        private func completionSoundMenuItem() -> NSMenuItem {
+            let parent = NSMenuItem(title: "Completion Sound", action: nil, keyEquivalent: "")
+            let submenu = NSMenu()
+            let selectedSoundId = SessionCompletionSoundManager.selectedSoundId(for: sessionId)
+            for option in SessionCompletionSoundManager.options {
+                let item = NSMenuItem(title: option.label, action: #selector(selectCompletionSound(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = option.id
+                item.state = option.id == selectedSoundId ? .on : .off
+                submenu.addItem(item)
+            }
+            parent.submenu = submenu
+            return parent
         }
 
         @objc private func showMain() {
@@ -1434,6 +1456,13 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
         @objc private func closeOrb() {
             close?()
+        }
+
+        @objc private func selectCompletionSound(_ sender: NSMenuItem) {
+            guard let soundId = sender.representedObject as? String else {
+                return
+            }
+            SessionCompletionSoundManager.setSelectedSoundId(soundId, for: sessionId)
         }
     }
 }

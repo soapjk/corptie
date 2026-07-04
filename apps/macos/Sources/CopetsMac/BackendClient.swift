@@ -314,14 +314,25 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
-            sessions = decoded.sessions
-            syncSelectedSessionFromSessions()
-            syncSelectedDetailMetadataFromSessions()
-            isOnline = true
-            lastError = nil
+            if sessions != decoded.sessions {
+                sessions = decoded.sessions
+                syncSelectedSessionFromSessions()
+                syncSelectedDetailMetadataFromSessions()
+            }
+            if !isOnline {
+                isOnline = true
+            }
+            if lastError != nil {
+                lastError = nil
+            }
         } catch {
-            isOnline = false
-            lastError = error.localizedDescription
+            if isOnline {
+                isOnline = false
+            }
+            let message = error.localizedDescription
+            if lastError != message {
+                lastError = message
+            }
         }
     }
 
