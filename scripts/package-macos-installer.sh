@@ -7,7 +7,7 @@ APP_NAME="${PRODUCT_NAME}.app"
 BUILD_CFG="release"
 ARCHIVE_DIR="${ROOT}/dist"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-APP_VERSION="0.1.0"
+APP_VERSION="0.1.1"
 APP_BUNDLE_PATH="/Applications/Corptie.app"
 ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
 
@@ -59,7 +59,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>0.1.1</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
