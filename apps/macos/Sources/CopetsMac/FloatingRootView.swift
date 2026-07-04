@@ -701,7 +701,7 @@ private final class NewSessionPanelController: NSObject, ObservableObject, NSWin
         }
 
         let parentFrame = NSApp.keyWindow?.frame ?? NSRect(x: 960, y: 560, width: 420, height: 360)
-        let size = NSSize(width: 420, height: 560)
+        let size = NSSize(width: 420, height: 620)
         let origin = NSPoint(
             x: parentFrame.midX - size.width / 2,
             y: max(80, parentFrame.midY - size.height / 2)
@@ -881,13 +881,14 @@ private struct NewPtyAgentTaskSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
     @AppStorage("newTask.defaultSandboxMode", store: CorptieAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
     @AppStorage("newTask.defaultApprovalPolicy", store: CorptieAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
-    @State private var title = ""
+    @State private var title = "Agent"
     @State private var command = "codex"
     @State private var arguments = ""
     @State private var existingSessionId = ""
     @State private var cwd = ""
     @State private var sandboxMode = "workspace-write"
     @State private var approvalPolicy = "on-request"
+    @State private var selectedModelId = ""
     @State private var defaultSaveMessage: String?
     @State private var sessionLookupTask: Task<Void, Never>?
     @State private var isLookingUpSession = false
@@ -910,6 +911,22 @@ private struct NewPtyAgentTaskSheet: View {
                 }
                 .buttonStyle(IconButtonStyle())
                 .help("Close")
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Title")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.black)
+                TextField("Agent", text: $title)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                    )
             }
 
             VStack(alignment: .leading, spacing: 7) {
@@ -988,21 +1005,7 @@ private struct NewPtyAgentTaskSheet: View {
 
             if isShowingAdvanced {
                 VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text("Title")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color.black)
-                        TextField("Background agent task", text: $title)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, weight: .medium))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                            )
-                    }
+                    modelPicker
 
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 7) {
@@ -1157,15 +1160,121 @@ private struct NewPtyAgentTaskSheet: View {
             }
             sandboxMode = validatedSandboxMode(defaultSandboxMode)
             approvalPolicy = validatedApprovalPolicy(defaultApprovalPolicy)
+            loadModelsForCurrentAgent()
         }
         .onDisappear {
             sessionLookupTask?.cancel()
+        }
+        .onChange(of: command) { _, _ in
+            selectedModelId = ""
+            loadModelsForCurrentAgent()
+        }
+        .onChange(of: backendClient.codexDefaultModel) { _, value in
+            applyDefaultModelIfNeeded(value)
+        }
+        .onChange(of: backendClient.codexModels) { _, _ in
+            applyDefaultModelIfNeeded(backendClient.codexDefaultModel)
+        }
+    }
+
+    @ViewBuilder
+    private var modelPicker: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text("Model")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.black)
+
+            if !supportsModelSelection {
+                Text("Default")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+                    )
+            } else if backendClient.isLoadingCodexModels && backendClient.codexModels.isEmpty {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading models")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                Picker("", selection: $selectedModelId) {
+                    Text(defaultModelLabel).tag("")
+                    ForEach(backendClient.codexModels) { model in
+                        Text(model.name).tag(model.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help("Choose the model for this new session")
+            }
         }
     }
 
     private func selectAgent(_ preset: AgentPreset) {
         command = preset.command
         arguments = preset.arguments
+    }
+
+    private var trimmedCommand: String {
+        command.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var supportsModelSelection: Bool {
+        trimmedCommand == "codex" || trimmedCommand == "claude"
+    }
+
+    private var modelProviderForCurrentAgent: String {
+        trimmedCommand == "claude" ? "claude-sdk" : "codex-pty"
+    }
+
+    private var defaultModelLabel: String {
+        if let model = backendClient.codexModels.first(where: { $0.id == backendClient.codexDefaultModel }) {
+            return "Default (\(model.name))"
+        }
+        if let defaultModel = backendClient.codexDefaultModel, !defaultModel.isEmpty {
+            return "Default (\(defaultModel))"
+        }
+        return "Default"
+    }
+
+    private func loadModelsForCurrentAgent() {
+        guard supportsModelSelection else {
+            return
+        }
+        let provider = modelProviderForCurrentAgent
+        guard backendClient.loadedModelProvider != provider || backendClient.codexModels.isEmpty else {
+            applyDefaultModelIfNeeded(backendClient.codexDefaultModel)
+            return
+        }
+        Task {
+            await backendClient.loadModels(for: provider)
+            await MainActor.run {
+                applyDefaultModelIfNeeded(backendClient.codexDefaultModel)
+            }
+        }
+    }
+
+    private func applyDefaultModelIfNeeded(_ defaultModel: String?) {
+        guard supportsModelSelection, selectedModelId.isEmpty else {
+            return
+        }
+        guard let defaultModel, backendClient.codexModels.contains(where: { $0.id == defaultModel }) else {
+            return
+        }
+        selectedModelId = defaultModel
     }
 
     private func savePermissionDefaults() {
@@ -1202,7 +1311,6 @@ private struct NewPtyAgentTaskSheet: View {
     private func startSelectedAgent() {
         let finalTitle = title.isEmpty ? "" : title
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
-        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedCommand == "codex" {
             backendClient.createCodexPtyTask(
                 title: finalTitle,
@@ -1210,7 +1318,8 @@ private struct NewPtyAgentTaskSheet: View {
                 cwd: workspace,
                 existingSessionId: existingSessionId,
                 sandbox: sandboxMode,
-                approvalPolicy: approvalPolicy
+                approvalPolicy: approvalPolicy,
+                model: selectedModelId
             ) {
                 close()
             }
@@ -1218,7 +1327,8 @@ private struct NewPtyAgentTaskSheet: View {
             backendClient.createClaudeTask(
                 title: finalTitle,
                 prompt: "",
-                cwd: workspace
+                cwd: workspace,
+                model: selectedModelId
             ) {
                 close()
             }
