@@ -503,6 +503,22 @@ private struct LastMessageHeightPreferenceKey: PreferenceKey {
     }
 }
 
+private struct DetailScrollViewportHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct DetailScrollBottomMaxYPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private extension View {
     func measureListHeight(_ metric: ListHeightMetric) -> some View {
         background(
@@ -2195,6 +2211,9 @@ private struct DetailView: View {
     @State private var cachedItemsSignature = ""
     @State private var cachedSessionId = ""
     @State private var displayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @State private var detailScrollViewportHeight: CGFloat = 0
+    @State private var detailScrollBottomMaxY: CGFloat = 0
+    @State private var isDetailScrolledNearBottom = true
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
 
@@ -2280,6 +2299,9 @@ private struct DetailView: View {
         }
         .onChange(of: sessionId) { _, _ in
             didInitialScroll = false
+            isDetailScrolledNearBottom = true
+            detailScrollViewportHeight = 0
+            detailScrollBottomMaxY = 0
             visibleMessageLimit = Self.initialVisibleMessageLimit
             restoreDisplayCacheForCurrentSession()
         }
@@ -2325,13 +2347,27 @@ private struct DetailView: View {
                     Color.clear
                         .frame(height: 1)
                         .id(bottomScrollAnchorId)
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: DetailScrollBottomMaxYPreferenceKey.self,
+                                    value: proxy.frame(in: .named(detailScrollCoordinateSpaceName)).maxY
+                                )
+                            }
+                        )
                 }
                 .padding(.bottom, 4)
             }
+            .coordinateSpace(name: detailScrollCoordinateSpaceName)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: DetailScrollViewportHeightPreferenceKey.self, value: proxy.size.height)
+                }
+            )
             .defaultScrollAnchor(.bottom)
             .onAppear {
                 updateCachedDisplayEntries(for: detail)
-                scrollToLatestAfterLayout(detail: detail, proxy: proxy)
+                scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
                 if detail.items.isEmpty {
                     panelLayoutState.updateDetailLastMessageHeight(nil)
                 }
@@ -2349,6 +2385,14 @@ private struct DetailView: View {
             }
             .onPreferenceChange(LastMessageHeightPreferenceKey.self) { height in
                 panelLayoutState.updateDetailLastMessageHeight(height > 0 ? height : nil)
+            }
+            .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
+                detailScrollViewportHeight = height
+                updateDetailScrollBottomProximity()
+            }
+            .onPreferenceChange(DetailScrollBottomMaxYPreferenceKey.self) { maxY in
+                detailScrollBottomMaxY = maxY
+                updateDetailScrollBottomProximity()
             }
         }
     }
@@ -2464,8 +2508,11 @@ private struct DetailView: View {
         ].joined(separator: ":")
     }
 
-    private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy) {
+    private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy, force: Bool = false) {
         guard !cachedDisplayEntries.isEmpty || !displayItems(for: detail).isEmpty else {
+            return
+        }
+        guard force || isDetailScrolledNearBottom else {
             return
         }
 
@@ -2486,6 +2533,18 @@ private struct DetailView: View {
 
     private var bottomScrollAnchorId: String {
         "\(sessionId)-bottom-anchor"
+    }
+
+    private var detailScrollCoordinateSpaceName: String {
+        "\(sessionId)-detail-scroll"
+    }
+
+    private func updateDetailScrollBottomProximity() {
+        guard detailScrollViewportHeight > 0, detailScrollBottomMaxY > 0 else {
+            return
+        }
+        let bottomDistance = detailScrollBottomMaxY - detailScrollViewportHeight
+        isDetailScrolledNearBottom = bottomDistance <= 36
     }
 
     private func visibleEntries(from displayEntries: [ChatDisplayEntry]) -> [ChatDisplayEntry] {
@@ -3562,6 +3621,7 @@ private struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
     @Binding var message: String
     @FocusState private var isFocused: Bool
+    @State private var composerWidth: CGFloat = 0
 
     var body: some View {
         HStack(spacing: 8) {
@@ -3617,8 +3677,16 @@ private struct MessageComposer: View {
             .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
 
             if canSwitchModel {
-                CodexModelMenu()
+                CodexModelMenu(maxWidth: modelMenuMaxWidth)
             }
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)
+            }
+        )
+        .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
+            composerWidth = width
         }
         .opacity(backendClient.selectedDetail?.canSend == false && !isRunningTurn ? 0.55 : 1)
         .task {
@@ -3658,10 +3726,26 @@ private struct MessageComposer: View {
             ?? backendClient.selectedSession?.capabilities?.canSwitchModel
             ?? (backendClient.selectedSession?.agent == "Codex" ? true : false)
     }
+
+    private var modelMenuMaxWidth: CGFloat {
+        guard composerWidth > 0 else {
+            return 74
+        }
+        return max(54, min(74, composerWidth / 6))
+    }
+}
+
+private struct ComposerWidthPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
 }
 
 private struct CodexModelMenu: View {
     @EnvironmentObject private var backendClient: BackendClient
+    let maxWidth: CGFloat
 
     var body: some View {
         Menu {
@@ -3670,7 +3754,7 @@ private struct CodexModelMenu: View {
             } else if backendClient.codexModels.isEmpty {
                 Button {
                     Task {
-                        await backendClient.loadModelsForSelectedSession()
+                        await backendClient.loadModelsForSelectedSession(forceRefresh: true)
                     }
                 } label: {
                     Label("Reload models", systemImage: "arrow.clockwise")
@@ -3721,7 +3805,7 @@ private struct CodexModelMenu: View {
 
                 Button {
                     Task {
-                        await backendClient.loadModelsForSelectedSession()
+                        await backendClient.loadModelsForSelectedSession(forceRefresh: true)
                     }
                 } label: {
                     Label("Reload models", systemImage: "arrow.clockwise")
@@ -3737,14 +3821,14 @@ private struct CodexModelMenu: View {
                 Text(currentModelLabel)
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                 Text(reasoningShortLabel(currentReasoningLevel))
                     .font(.system(size: 9, weight: .bold, design: .rounded))
                     .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
             }
             .foregroundStyle(CorptiePalette.primaryText)
-            .frame(maxWidth: 148)
+            .frame(maxWidth: maxWidth)
             .padding(.horizontal, 8)
             .frame(height: 30)
             .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -3754,9 +3838,8 @@ private struct CodexModelMenu: View {
             )
         }
         .menuStyle(.borderlessButton)
-        .fixedSize(horizontal: true, vertical: false)
         .disabled(backendClient.selectedDetail?.canSend == false || backendClient.isSwitchingModel || backendClient.isSwitchingReasoning)
-        .help(supportsReasoningSwitch ? "Switch model or reasoning" : "Switch model")
+        .help(currentModelHelp)
     }
 
     private var currentModelId: String {
@@ -3771,6 +3854,14 @@ private struct CodexModelMenu: View {
             return "Model"
         }
         return backendClient.codexModels.first(where: { $0.id == currentModelId })?.name ?? currentModelId
+    }
+
+    private var currentModelHelp: String {
+        let action = supportsReasoningSwitch ? "Switch model or reasoning" : "Switch model"
+        guard currentModelLabel != "Model" else {
+            return action
+        }
+        return "\(action): \(currentModelLabel)"
     }
 
     private var currentModel: CodexModel? {
