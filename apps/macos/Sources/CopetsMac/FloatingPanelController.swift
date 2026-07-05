@@ -16,13 +16,13 @@ final class PanelLayoutState: ObservableObject {
     @Published var canRenderDetailMessages = false
 
     static let horizontalPadding: CGFloat = 18
-    static let verticalPadding: CGFloat = 18
+    static let verticalPadding: CGFloat = 14
     static let headerHeight: CGFloat = 0
     static let headerToListSpacing: CGFloat = 0
     static let cardHeight: CGFloat = 116
     static let cardSpacing: CGFloat = 10
     static let listBottomPadding: CGFloat = 4
-    static let bottomBreathingRoom: CGFloat = 2
+    static let bottomBreathingRoom: CGFloat = 0
 
     func updatePreferredListHeight(_ height: CGFloat) {
         guard height.isFinite, height > 0 else {
@@ -73,7 +73,7 @@ final class FloatingPanelController: NSObject {
     private let detachedSessionManager: DetachedSessionManager
     private let focusState = PanelFocusState()
     private let layoutState = PanelLayoutState()
-    private let listMinimumSize = NSSize(width: 360, height: 158)
+    private let listMinimumSize = NSSize(width: 360, height: 148)
     private let detailSizeStorageKey = "corptie.detailWindowSizesBySession"
     private var cancellables = Set<AnyCancellable>()
     private var isProgrammaticResize = false

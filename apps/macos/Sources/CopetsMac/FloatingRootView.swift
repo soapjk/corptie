@@ -11,6 +11,7 @@ struct FloatingRootView: View {
     @State private var draggedSessionId: String?
     @State private var sessionCardFrames: [String: CGRect] = [:]
     @State private var sessionSummaryFrames: [String: CGRect] = [:]
+    @State private var reorderStartFirstCardMinY: CGFloat?
     @State private var reorderDragOffsetY: CGFloat = 0
     @State private var reorderTargetSessionId: String?
     @State private var hasResolvedReorderTarget = false
@@ -98,7 +99,7 @@ struct FloatingRootView: View {
                     .zIndex(4)
             }
         }
-        .frame(minWidth: 360, idealWidth: 420, maxWidth: .infinity, minHeight: 158, idealHeight: 410, maxHeight: .infinity)
+        .frame(minWidth: 360, idealWidth: 420, maxWidth: .infinity, minHeight: 148, idealHeight: 410, maxHeight: .infinity)
         .onChange(of: backendClient.selectedSession?.id) { _, _ in
             isShowingActionMenu = false
             newSessionPanel.close()
@@ -128,13 +129,22 @@ struct FloatingRootView: View {
             sessionHoverPreviewOverlay
         }
         .onPreferenceChange(SessionCardFramePreferenceKey.self) { frames in
+            guard draggedSessionId == nil else {
+                return
+            }
             sessionCardFrames = frames
             updateMeasuredListHeights(cardFrames: frames)
         }
         .onPreferenceChange(SessionSummaryFramePreferenceKey.self) { frames in
+            guard draggedSessionId == nil else {
+                return
+            }
             sessionSummaryFrames = frames
         }
         .onChange(of: backendClient.sessions) { _, _ in
+            guard draggedSessionId == nil else {
+                return
+            }
             updateMeasuredListHeights(cardFrames: sessionCardFrames)
         }
         .onChange(of: backendClient.selectedSession?.id) { _, _ in
@@ -157,15 +167,24 @@ struct FloatingRootView: View {
             TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
                 .fixedSessionCardHeight()
         } else {
-            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
+            TaskCardView(
+                session: session,
+                hoverPreviewChanged: { sessionId, isVisible in
+                    guard draggedSessionId == nil else {
+                        return
+                    }
+                    updateHoverPreview(sessionId: sessionId, isVisible: isVisible)
+                },
+                preheatRequested: { session in
+                    guard draggedSessionId == nil else {
+                        return
+                    }
+                    preheatDetail(for: session)
+                }
+            )
                 .fixedSessionCardHeight()
                 .opacity(draggedSessionId == session.id ? 0.82 : 1)
                 .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
-                .shadow(
-                    color: Color.black.opacity(draggedSessionId == session.id ? 0.18 : 0),
-                    radius: draggedSessionId == session.id ? 14 : 0,
-                    y: draggedSessionId == session.id ? 8 : 0
-                )
                 .measureSessionCardFrame(session.id)
                 .offset(y: draggedSessionId == session.id ? reorderDragOffsetY : 0)
                 .gesture(reorderGesture(for: session))
@@ -269,8 +288,9 @@ struct FloatingRootView: View {
         }
 
         let outerPadding = panelContentPadding * 2
-        let bottomBreathingRoom: CGFloat = 8
-        let usefulHeight = outerPadding + cardsHeight + bottomBreathingRoom
+        let usefulHeight = outerPadding + cardsHeight
+            + PanelLayoutState.listBottomPadding
+            + PanelLayoutState.bottomBreathingRoom
 
         DispatchQueue.main.async {
             panelLayoutState.updateMeasuredListHeights(preferred: nil, useful: usefulHeight)
@@ -287,7 +307,6 @@ struct FloatingRootView: View {
         }
 
         let outerPadding = panelContentPadding * 2
-        let bottomBreathingRoom: CGFloat = 8
         let leadingSessions = Array(backendClient.sessions.prefix(2))
         let leadingHeights = leadingSessions.compactMap { session in
             cardFrames[session.id]?.height
@@ -299,9 +318,10 @@ struct FloatingRootView: View {
             ? leadingHeights
             : [visibleHeights.first ?? PanelLayoutState.cardHeight]
         let minimumSpacing = CGFloat(max(0, minimumCardHeights.count - 1)) * PanelLayoutState.cardSpacing
-        let minimumHeight = outerPadding + minimumCardHeights.reduce(0, +) + minimumSpacing + bottomBreathingRoom
+        let listBottomPadding = PanelLayoutState.listBottomPadding + PanelLayoutState.bottomBreathingRoom
+        let minimumHeight = outerPadding + minimumCardHeights.reduce(0, +) + minimumSpacing + listBottomPadding
         let visibleSpacing = CGFloat(max(0, visibleHeights.count - 1)) * PanelLayoutState.cardSpacing
-        let preferredHeight = outerPadding + visibleHeights.reduce(0, +) + visibleSpacing + bottomBreathingRoom
+        let preferredHeight = outerPadding + visibleHeights.reduce(0, +) + visibleSpacing + listBottomPadding
 
         DispatchQueue.main.async {
             panelLayoutState.updateMeasuredListHeights(minimum: minimumHeight, preferred: preferredHeight, useful: nil)
@@ -314,12 +334,16 @@ struct FloatingRootView: View {
                 if draggedSessionId != session.id {
                     draggedSessionId = session.id
                     reorderTargetSessionId = nil
+                    reorderStartFirstCardMinY = firstVisibleCardMinY(excluding: session.id)
+                    hoverPreviewSessionId = nil
                     hasResolvedReorderTarget = false
                     reorderDragOffsetY = 0
                 }
 
-                reorderDragOffsetY = sessionCardFrames[session.id].map { value.location.y - $0.midY }
-                    ?? value.translation.height
+                withTransaction(Transaction(animation: nil)) {
+                    reorderDragOffsetY = sessionCardFrames[session.id].map { value.location.y - $0.midY }
+                        ?? value.translation.height
+                }
                 guard !sessionCardFrames.isEmpty else {
                     return
                 }
@@ -345,6 +369,7 @@ struct FloatingRootView: View {
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     draggedSessionId = nil
                     reorderTargetSessionId = nil
+                    reorderStartFirstCardMinY = nil
                     hasResolvedReorderTarget = false
                 }
             }
@@ -358,6 +383,19 @@ struct FloatingRootView: View {
         guard let firstId = orderedIds.first,
               let firstFrame = frames[firstId] else {
             return nil
+        }
+
+        let firstMinY = reorderStartFirstCardMinY ?? firstFrame.minY
+        let rowStride = PanelLayoutState.cardHeight + PanelLayoutState.cardSpacing
+        if rowStride > 0 {
+            let proposedIndex = Int(((locationY - firstMinY) / rowStride).rounded(.down))
+            if proposedIndex <= 0 {
+                return firstId
+            }
+            if proposedIndex >= orderedIds.count {
+                return nil
+            }
+            return orderedIds[proposedIndex]
         }
 
         if locationY < firstFrame.minY {
@@ -378,6 +416,14 @@ struct FloatingRootView: View {
         }
 
         return nil
+    }
+
+    private func firstVisibleCardMinY(excluding draggedId: String) -> CGFloat? {
+        backendClient.sessions
+            .map(\.id)
+            .filter { $0 != draggedId }
+            .compactMap { sessionCardFrames[$0]?.minY }
+            .min()
     }
 
 }
@@ -1344,6 +1390,8 @@ private struct NewPtyAgentTaskSheet: View {
                 title: finalTitle,
                 prompt: "",
                 cwd: workspace,
+                sandbox: sandboxMode,
+                approvalPolicy: approvalPolicy,
                 model: selectedModelId
             ) {
                 close()
@@ -1711,9 +1759,7 @@ private struct TaskCardView: View {
         }
         .onTapGesture {
             if Date().timeIntervalSince(lastQuickReplyInteractionAt) > 0.25 {
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-                    backendClient.select(session: session)
-                }
+                backendClient.select(session: session)
             }
         }
         .contextMenu {
@@ -2201,7 +2247,7 @@ private struct AnimatedAvatarImage: NSViewRepresentable {
 private struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
-    static let initialVisibleMessageLimit = 15
+    static let initialVisibleMessageLimit = 7
     @State private var message = ""
     @State private var didInitialScroll = false
     @State private var visibleMessageLimit = initialVisibleMessageLimit
@@ -2209,6 +2255,7 @@ private struct DetailView: View {
     @State private var cachedDisplayEntries: [ChatDisplayEntry] = []
     @State private var cachedTotalDisplayEntryCount = 0
     @State private var cachedItemsSignature = ""
+    @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
     @State private var displayCacheBySessionId: [String: DetailDisplayCache] = [:]
     @State private var detailScrollViewportHeight: CGFloat = 0
@@ -2252,7 +2299,7 @@ private struct DetailView: View {
                 .onChange(of: detail.items.last?.id) { _, _ in
                     updateCachedDisplayEntries(for: detail)
                 }
-                .onChange(of: detailDisplaySignature(for: detail)) { _, _ in
+                .onChange(of: detailSourceSignature(for: detail)) { _, _ in
                     updateCachedDisplayEntries(for: detail)
                 }
             } else if backendClient.selectedDetail == nil,
@@ -2379,7 +2426,7 @@ private struct DetailView: View {
                     panelLayoutState.updateDetailLastMessageHeight(nil)
                 }
             }
-            .onChange(of: detailDisplaySignature(for: detail)) { _, _ in
+            .onChange(of: detailSourceSignature(for: detail)) { _, _ in
                 updateCachedDisplayEntries(for: detail)
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy)
             }
@@ -2398,24 +2445,24 @@ private struct DetailView: View {
     }
 
     private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
-        let displayItems = displayItems(for: detail)
-        let displayEntries = chatDisplayEntries(from: displayItems)
-        let visibleEntries = visibleEntries(from: displayEntries)
-        let signature = displaySignature(for: visibleEntries)
-        guard cachedSessionId != sessionId || signature != cachedItemsSignature else {
+        let sourceSignature = detailSourceSignature(for: detail)
+        guard cachedSessionId != sessionId || sourceSignature != cachedDetailSourceSignature else {
             return
         }
-        cachedItemsSignature = signature
+        let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+        cachedDetailSourceSignature = sourceSignature
+        cachedItemsSignature = preparedDisplay.signature
         cachedSessionId = sessionId
-        cachedDisplayItems = displayItems
-        cachedTotalDisplayEntryCount = displayEntries.count
-        cachedDisplayEntries = visibleEntries
+        cachedDisplayItems = preparedDisplay.displayItems
+        cachedTotalDisplayEntryCount = preparedDisplay.totalCount
+        cachedDisplayEntries = preparedDisplay.visibleEntries
         displayCacheBySessionId[sessionId] = DetailDisplayCache(
             sessionId: sessionId,
-            displayItems: displayItems,
-            displayEntries: visibleEntries,
-            totalDisplayEntryCount: displayEntries.count,
-            signature: signature
+            displayItems: preparedDisplay.displayItems,
+            displayEntries: preparedDisplay.visibleEntries,
+            totalDisplayEntryCount: preparedDisplay.totalCount,
+            signature: preparedDisplay.signature,
+            sourceSignature: sourceSignature
         )
     }
 
@@ -2423,18 +2470,18 @@ private struct DetailView: View {
         if hasPreparedDisplayCacheForCurrentSession || hasPreheatedDisplayCacheForCurrentSession {
             return true
         }
-        return panelLayoutState.canRenderDetailMessages || !visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail))).isEmpty
+        return panelLayoutState.canRenderDetailMessages
     }
 
     private func preparedDisplayEntries(for detail: CodexThreadDetail) -> (visibleEntries: [ChatDisplayEntry], totalCount: Int) {
-        if isDisplayCachePrepared(for: detail) || hasPreparedDisplayCacheForCurrentSession {
+        if hasPreparedDisplayCacheForCurrentSession && cachedDetailSourceSignature == detailSourceSignature(for: detail) {
             return (cachedDisplayEntries, cachedTotalDisplayEntryCount)
         }
         if let preheatedDisplayCache, preheatedDisplayCache.sessionId == sessionId {
             return (preheatedDisplayCache.displayEntries, preheatedDisplayCache.totalDisplayEntryCount)
         }
-        let displayEntries = chatDisplayEntries(from: displayItems(for: detail))
-        return (visibleEntries(from: displayEntries), displayEntries.count)
+        let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+        return (preparedDisplay.visibleEntries, preparedDisplay.totalCount)
     }
 
     private var hasPreparedDisplayCacheForCurrentSession: Bool {
@@ -2456,6 +2503,7 @@ private struct DetailView: View {
         cachedDisplayEntries = preheatedDisplayCache.displayEntries
         cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
         cachedItemsSignature = preheatedDisplayCache.signature
+        cachedDetailSourceSignature = preheatedDisplayCache.sourceSignature
         displayCacheBySessionId[sessionId] = preheatedDisplayCache
     }
 
@@ -2466,6 +2514,7 @@ private struct DetailView: View {
             cachedDisplayEntries = cache.displayEntries
             cachedTotalDisplayEntryCount = cache.totalDisplayEntryCount
             cachedItemsSignature = cache.signature
+            cachedDetailSourceSignature = cache.sourceSignature
             return
         }
         cachedSessionId = ""
@@ -2473,15 +2522,11 @@ private struct DetailView: View {
         cachedDisplayEntries = []
         cachedTotalDisplayEntryCount = 0
         cachedItemsSignature = ""
+        cachedDetailSourceSignature = ""
     }
 
-    private func isDisplayCachePrepared(for detail: CodexThreadDetail) -> Bool {
-        let visibleEntries = visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail)))
-        return cachedSessionId == sessionId && cachedItemsSignature == displaySignature(for: visibleEntries)
-    }
-
-    private func detailDisplaySignature(for detail: CodexThreadDetail) -> String {
-        displaySignature(for: visibleEntries(from: chatDisplayEntries(from: displayItems(for: detail))))
+    private func detailSourceSignature(for detail: CodexThreadDetail) -> String {
+        makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
     }
 
     private func displaySignature(for visibleEntries: [ChatDisplayEntry]) -> String {
@@ -2509,7 +2554,7 @@ private struct DetailView: View {
     }
 
     private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy, force: Bool = false) {
-        guard !cachedDisplayEntries.isEmpty || !displayItems(for: detail).isEmpty else {
+        guard !cachedDisplayEntries.isEmpty || !detail.items.isEmpty else {
             return
         }
         guard force || isDetailScrolledNearBottom else {
@@ -2659,6 +2704,7 @@ private struct DetailDisplayCache {
     let displayEntries: [ChatDisplayEntry]
     let totalDisplayEntryCount: Int
     let signature: String
+    let sourceSignature: String
 }
 
 private func makeDetailDisplayCache(
@@ -2666,16 +2712,48 @@ private func makeDetailDisplayCache(
     sessionId: String,
     visibleMessageLimit: Int
 ) -> DetailDisplayCache {
-    let displayItems = detail.items.filter { !isLowSignalDetailProcessItem($0) }
-    let displayEntries = makeChatDisplayEntries(from: displayItems)
-    let visibleEntries = visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
+    let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
     return DetailDisplayCache(
         sessionId: sessionId,
-        displayItems: displayItems,
-        displayEntries: visibleEntries,
-        totalDisplayEntryCount: displayEntries.count,
-        signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit)
+        displayItems: preparedDisplay.displayItems,
+        displayEntries: preparedDisplay.visibleEntries,
+        totalDisplayEntryCount: preparedDisplay.totalCount,
+        signature: preparedDisplay.signature,
+        sourceSignature: preparedDisplay.sourceSignature
     )
+}
+
+private func makeVisibleDetailDisplay(
+    for detail: CodexThreadDetail,
+    visibleMessageLimit: Int
+) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String) {
+    let windowSize = min(detail.items.count, max(visibleMessageLimit * 5, visibleMessageLimit + 24))
+    let displayItems = detail.items
+        .suffix(windowSize)
+        .filter { !isLowSignalDetailProcessItem($0) }
+    let displayEntries = makeChatDisplayEntries(from: displayItems)
+    let visibleEntries = visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
+    return (
+        displayItems: displayItems,
+        visibleEntries: visibleEntries,
+        totalCount: max(detail.items.count, visibleEntries.count),
+        signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
+        sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
+    )
+}
+
+private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMessageLimit: Int) -> String {
+    let items = detail.items.suffix(max(visibleMessageLimit * 4, visibleMessageLimit + 8))
+    let itemSignatures = items.map { item in
+        [
+            item.id,
+            item.type,
+            item.status ?? "",
+            item.turnStatus,
+            "\(item.text.count)"
+        ].joined(separator: ":")
+    }.joined(separator: "|")
+    return "\(visibleMessageLimit)|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
 }
 
 private func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -> [ChatDisplayEntry] {

@@ -721,7 +721,7 @@ function approvalOptionsForRequest(request) {
   const approveDecision = approvalOptionIdForDecision(preferredApprovalDecision(decisions));
   const denyDecision = decisions.includes("cancel") ? "cancel" : (decisions.includes("denied") ? "denied" : "deny");
   const options = [
-    { id: approveDecision, label: approveDecision === "approved_for_session" ? "Approve for session" : "Approve", role: "approve", index: 0, selected: true },
+    { id: approveDecision, label: approveDecision === "approved_for_session" ? "Approve for session" : "Approve", role: "approve", index: 0, selected: false },
     { id: denyDecision, label: "Deny", role: "deny", index: 1, selected: false }
   ];
   return options;
