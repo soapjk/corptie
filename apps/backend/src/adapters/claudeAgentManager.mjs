@@ -23,6 +23,9 @@ export class ClaudeAgentManager {
       command: "claude-sdk",
       args: [],
       cwd: input.cwd || process.cwd(),
+      sandbox: input.sandbox ?? "workspace-write",
+      approvalPolicy: input.approvalPolicy ?? "on-request",
+      permissionMode: claudePermissionMode(input.sandbox, input.approvalPolicy),
       createdAt,
       updatedAt: createdAt,
       status: "running",
@@ -48,6 +51,7 @@ export class ClaudeAgentManager {
       query: null,
       queryTask: null,
       queryClosed: false,
+      interruptRequested: false,
       turnState: "idle",
       inputQueue: [],
       inputResolvers: []
@@ -78,6 +82,30 @@ export class ClaudeAgentManager {
 
   has(id) {
     return Boolean(this.get(id));
+  }
+
+  rename(id, title) {
+    const nextTitle = shortTitle(title);
+    const session = this.get(id);
+    if (session) {
+      session.title = nextTitle;
+      session.updatedAt = new Date().toISOString();
+      this.persistSession(session);
+      return this.toSessionSummary(session);
+    }
+    return this.store?.renameSession(id, nextTitle) ?? null;
+  }
+
+  updateAvatar(id, avatarPath = null) {
+    const nextAvatarPath = typeof avatarPath === "string" && avatarPath.trim() ? avatarPath.trim() : null;
+    const session = this.get(id);
+    if (session) {
+      session.avatarPath = nextAvatarPath;
+      this.persistSession(session);
+      this.store?.updateSessionAvatar(id, nextAvatarPath);
+      return this.toSessionSummary(session);
+    }
+    return this.store?.updateSessionAvatar(id, nextAvatarPath) ?? null;
   }
 
   detail(id) {
@@ -130,6 +158,7 @@ export class ClaudeAgentManager {
     }
 
     await this.ensureQueryStarted(session);
+    session.interruptRequested = false;
     session.status = "running";
     session.phase = "input_sent";
     session.turnState = "running";
@@ -180,8 +209,14 @@ export class ClaudeAgentManager {
       throw new Error("Claude session is not active");
     }
     await session.query.interrupt();
+    this.resolveAllPendingChoices(session, "Claude Code turn interrupted in Corptie.");
+    session.pendingChoice = null;
+    session.pendingDecision = null;
+    session.pendingChoices?.clear();
+    session.interruptRequested = true;
     session.turnState = "idle";
     session.phase = "ready";
+    session.status = "complete";
     session.updatedAt = new Date().toISOString();
     this.appendItem(session, {
       type: "system",
@@ -248,6 +283,9 @@ export class ClaudeAgentManager {
       command: "claude-sdk",
       args: [],
       cwd: stored.external?.cwd || raw.cwd || process.cwd(),
+      sandbox: raw.sandbox ?? "workspace-write",
+      approvalPolicy: raw.approvalPolicy ?? "on-request",
+      permissionMode: raw.permissionMode ?? claudePermissionMode(raw.sandbox, raw.approvalPolicy),
       createdAt: stored.createdAt,
       updatedAt: new Date().toISOString(),
       status: stored.status === "failed" || stored.status === "cancelled" ? "complete" : stored.status,
@@ -273,6 +311,7 @@ export class ClaudeAgentManager {
       query: null,
       queryTask: null,
       queryClosed: false,
+      interruptRequested: false,
       turnState: "idle",
       inputQueue: [],
       inputResolvers: []
@@ -369,6 +408,7 @@ export class ClaudeAgentManager {
     }
     console.log(`[claude-sdk] query starting id=${session.id} resume=${session.agentSessionId ?? ""}`);
     session.queryClosed = false;
+    const permissionOptions = claudePermissionOptions(session);
     session.query = query({
       prompt: this.inputStream(session),
       options: {
@@ -376,7 +416,10 @@ export class ClaudeAgentManager {
         resume: session.agentSessionId || undefined,
         persistSession: true,
         model: session.currentModel || undefined,
-        canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
+        ...permissionOptions,
+        ...(permissionOptions.permissionMode === "bypassPermissions"
+          ? {}
+          : { canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options) })
       }
     });
     session.queryTask = this.consumeQuery(session);
@@ -400,21 +443,27 @@ export class ClaudeAgentManager {
       }
     } catch (error) {
       console.error(`[claude-sdk] query failed id=${session.id}: ${error?.message || String(error)}`);
+      const wasInterrupted = session.interruptRequested === true;
       session.query = null;
       session.queryTask = null;
-      this.resolveAllPendingChoices(session, "Claude Code query failed before the permission request was answered.");
+      this.resolveAllPendingChoices(session, wasInterrupted
+        ? "Claude Code turn interrupted in Corptie."
+        : "Claude Code query failed before the permission request was answered.");
       session.pendingChoice = null;
       session.pendingDecision = null;
       session.turnState = "idle";
-      session.status = session.status === "cancelled" ? "cancelled" : "failed";
-      session.phase = "failed";
+      session.interruptRequested = false;
+      session.status = wasInterrupted ? "complete" : (session.status === "cancelled" ? "cancelled" : "failed");
+      session.phase = wasInterrupted ? "ready" : "failed";
       session.updatedAt = new Date().toISOString();
-      this.appendItem(session, {
-        type: "system",
-        title: "Claude Code",
-        text: error?.message || String(error),
-        status: "failed"
-      });
+      if (!wasInterrupted) {
+        this.appendItem(session, {
+          type: "system",
+          title: "Claude Code",
+          text: error?.message || String(error),
+          status: "failed"
+        });
+      }
       this.persistSession(session);
     }
   }
@@ -484,9 +533,11 @@ export class ClaudeAgentManager {
       session.pendingChoice = null;
       session.pendingDecision = null;
       session.pendingChoices?.clear();
-      session.phase = message.subtype === "success" ? "ready" : "failed";
-      session.status = message.subtype === "success" ? "complete" : "failed";
-      if (text && message.subtype !== "success") {
+      const wasInterrupted = session.interruptRequested === true;
+      session.interruptRequested = false;
+      session.phase = message.subtype === "success" || wasInterrupted ? "ready" : "failed";
+      session.status = message.subtype === "success" || wasInterrupted ? "complete" : "failed";
+      if (text && message.subtype !== "success" && !wasInterrupted) {
         session.lastOutputAt = session.updatedAt;
         this.appendItem(session, {
           type: "system",
@@ -581,7 +632,7 @@ export class ClaudeAgentManager {
   }
 
   toDetail(session) {
-    const canSend = session.turnState !== "running" && !hasPendingChoices(session) && session.status !== "cancelled" && session.status !== "failed";
+    const canSend = session.turnState !== "running" && !hasPendingChoices(session) && session.status !== "cancelled";
     return {
       id: session.id,
       title: session.title,
@@ -602,6 +653,9 @@ export class ClaudeAgentManager {
         agentSessionId: session.agentSessionId,
         phase: session.phase,
         cwd: session.cwd,
+        sandbox: session.sandbox,
+        approvalPolicy: session.approvalPolicy,
+        permissionMode: session.permissionMode,
         nextItemSeq: session.nextItemSeq,
         nextTurnSeq: session.nextTurnSeq,
         lastInputAt: session.lastInputAt,
@@ -610,7 +664,7 @@ export class ClaudeAgentManager {
         accent: session.accent
       },
       canSend,
-      sendUnavailableReason: canSend ? null : (hasPendingChoices(session) ? "Claude is waiting for your approval choice." : "Claude is still processing the previous request."),
+      sendUnavailableReason: canSend ? null : (hasPendingChoices(session) ? "Claude is waiting for your approval choice." : unavailableReasonForSession(session)),
       capabilities: {
         canSend,
         canSwitchModel: true,
@@ -652,6 +706,9 @@ export class ClaudeAgentManager {
         currentModel: session.currentModel ?? null,
         currentReasoningLevel: null,
         cwd: session.cwd,
+        sandbox: session.sandbox,
+        approvalPolicy: session.approvalPolicy,
+        permissionMode: session.permissionMode,
         source: "claude-sdk"
       }
     };
@@ -977,6 +1034,34 @@ function activityStatusForSession(session) {
     return "Claude session closed";
   }
   return "Ready";
+}
+
+function unavailableReasonForSession(session) {
+  if (session.status === "cancelled") {
+    return "Claude session is closed.";
+  }
+  return "Claude is still processing the previous request.";
+}
+
+function claudePermissionMode(sandbox = "workspace-write", approvalPolicy = "on-request") {
+  if (approvalPolicy === "never" && sandbox === "danger-full-access") {
+    return "bypassPermissions";
+  }
+  if (approvalPolicy === "never") {
+    return "dontAsk";
+  }
+  return "default";
+}
+
+function claudePermissionOptions(session) {
+  const permissionMode = session.permissionMode ?? claudePermissionMode(session.sandbox, session.approvalPolicy);
+  if (permissionMode === "bypassPermissions") {
+    return {
+      permissionMode,
+      allowDangerouslySkipPermissions: true
+    };
+  }
+  return { permissionMode };
 }
 
 function lastMeaningfulText(items = []) {

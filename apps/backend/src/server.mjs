@@ -1449,8 +1449,12 @@ function route(request, response) {
         }
 
         const id = normalizeSessionId(rawId);
+        const storedSession = store.getSession(id);
+        const isClaudeSession = claudeAgents.has(id) || storedSession?.external?.provider === "claude-sdk";
         if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-          const session = ptyAgents.updateAvatar(id, input.avatarPath);
+          const session = isClaudeSession
+            ? claudeAgents.updateAvatar(id, input.avatarPath)
+            : ptyAgents.updateAvatar(id, input.avatarPath);
           if (!session) {
             sendJson(response, 404, { error: "Session not found" });
             return;
@@ -1464,7 +1468,7 @@ function route(request, response) {
           sendJson(response, 400, { error: "Title is required" });
           return;
         }
-        const session = ptyAgents.rename(id, title);
+        const session = isClaudeSession ? claudeAgents.rename(id, title) : ptyAgents.rename(id, title);
         if (!session) {
           sendJson(response, 404, { error: "Session not found" });
           return;
@@ -1537,7 +1541,9 @@ function route(request, response) {
           title: input.title,
           prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
           cwd,
-          model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null
+          model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null,
+          sandbox: normalizeCodexSandbox(input.sandbox),
+          approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
         });
         emitEvent("ClaudeSessionStarted", { session });
         sendJson(response, 201, { session });
@@ -2133,7 +2139,15 @@ function route(request, response) {
         }).then(() => {
           const sessionId = `codex:${threadId}`;
           const previousSession = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId) ?? null;
-          const session = previousSession ? { ...previousSession, suggestedOptions: null, suggestedPrompt: null } : null;
+          store.clearActiveChoicePrompt(sessionId);
+          const session = previousSession ? {
+            ...previousSession,
+            status: previousSession.status === "blocked" ? "running" : previousSession.status,
+            suggestedOptions: null,
+            suggestedPrompt: null,
+            activityStatus: approved ? "Approval sent" : "Approval denied",
+            updatedAt: now()
+          } : null;
           if (session) {
             upsertManagedCodexSession(session);
           }

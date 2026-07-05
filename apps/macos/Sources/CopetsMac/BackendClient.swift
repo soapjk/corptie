@@ -448,6 +448,8 @@ final class BackendClient: ObservableObject {
         title: String,
         prompt: String,
         cwd: String,
+        sandbox: String = "workspace-write",
+        approvalPolicy: String = "on-request",
         model: String = "",
         onSuccess: @escaping () -> Void = {}
     ) {
@@ -465,7 +467,9 @@ final class BackendClient: ObservableObject {
                 var body: [String: Any] = [
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Reply exactly: Ready" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
+                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
+                    "sandbox": sandbox,
+                    "approvalPolicy": approvalPolicy
                 ]
                 if !trimmedModel.isEmpty {
                     body["model"] = trimmedModel
@@ -647,9 +651,13 @@ final class BackendClient: ObservableObject {
 
     func select(session: TaskSession) {
         selectedSession = session
-        selectedDetail = detailCacheBySessionId[session.id]
-        startDetailStream(for: session)
         Task {
+            await Task.yield()
+            guard selectedSession?.id == session.id else {
+                return
+            }
+            selectedDetail = detailCacheBySessionId[session.id]
+            startDetailStream(for: session)
             await loadDetail(for: session, showLoading: selectedDetail == nil)
         }
     }
