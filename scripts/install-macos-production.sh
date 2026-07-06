@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Corptie.app"
 APP_DIR="/Applications/${APP_NAME}"
 EXECUTABLE="${ROOT}/apps/macos/.build/arm64-apple-macosx/debug/CorptieMac"
+ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"
 ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
 
 swift build --package-path "${ROOT}/apps/macos"
@@ -13,15 +14,19 @@ rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${EXECUTABLE}" "${APP_DIR}/Contents/MacOS/Corptie"
 
-ICONSET_DIR="$(mktemp -d /tmp/corptie-iconset-XXXXXX).iconset"
-mkdir -p "${ICONSET_DIR}"
-for size in 16 32 128 256 512; do
-  sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}.png" >/dev/null
-  doubled=$((size * 2))
-  sips -z "${doubled}" "${doubled}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}@2x.png" >/dev/null
-done
-iconutil -c icns "${ICONSET_DIR}" -o "${APP_DIR}/Contents/Resources/AppIcon.icns"
-rm -rf "${ICONSET_DIR}"
+if [ -f "${ICON_ICNS_SOURCE}" ]; then
+  cp "${ICON_ICNS_SOURCE}" "${APP_DIR}/Contents/Resources/AppIcon.icns"
+else
+  ICONSET_DIR="$(mktemp -d /tmp/corptie-iconset-XXXXXX).iconset"
+  mkdir -p "${ICONSET_DIR}"
+  for size in 16 32 128 256 512; do
+    sips -z "${size}" "${size}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}.png" >/dev/null
+    doubled=$((size * 2))
+    sips -z "${doubled}" "${doubled}" "${ICON_SOURCE}" --out "${ICONSET_DIR}/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  iconutil -c icns "${ICONSET_DIR}" -o "${APP_DIR}/Contents/Resources/AppIcon.icns"
+  rm -rf "${ICONSET_DIR}"
+fi
 
 cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
