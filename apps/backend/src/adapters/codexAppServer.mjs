@@ -16,6 +16,7 @@ export class CodexAppServerClient {
     this.pending = new Map();
     this.notifications = [];
     this.liveItemsByThread = new Map();
+    this.turnDiffsByThread = new Map();
     this.serverRequestsByThread = new Map();
     this.recentApprovedCommands = new Map();
     this.initialized = false;
@@ -277,6 +278,10 @@ export class CodexAppServerClient {
     ];
   }
 
+  turnDiffsForThread(threadId) {
+    return new Map(this.turnDiffsByThread.get(threadId) ?? []);
+  }
+
   respondToApproval(threadId, input = {}) {
     const requests = this.serverRequestsByThread.get(threadId);
     const request = Array.from(requests?.values() ?? []).reverse().find((candidate) => {
@@ -477,6 +482,14 @@ export class CodexAppServerClient {
       return;
     }
 
+    if (method === "turn/diff/updated" && turnId && typeof params.diff === "string") {
+      if (!this.turnDiffsByThread.has(threadId)) {
+        this.turnDiffsByThread.set(threadId, new Map());
+      }
+      this.turnDiffsByThread.get(threadId).set(turnId, params.diff);
+      return;
+    }
+
     if (!this.liveItemsByThread.has(threadId)) {
       this.liveItemsByThread.set(threadId, new Map());
     }
@@ -555,11 +568,12 @@ export function mapCodexThreadToSession(thread) {
   };
 }
 
-export function mapCodexThreadToDetail(thread, liveItems = []) {
+export function mapCodexThreadToDetail(thread, liveItems = [], turnDiffs = new Map()) {
   const items = threadItems(thread);
   const turnOrder = threadTurnOrder(thread);
 
   const mergedItems = mergeItems(items, liveItems.filter((item) => item.type !== "taskComplete"), turnOrder);
+  attachTurnFileChanges(mergedItems, turnDiffs);
 
   return {
     id: thread.id,
@@ -979,7 +993,7 @@ function countTurnMarkers(items) {
 }
 
 function mapThreadItem(turn, item) {
-  return {
+  const mapped = {
     id: item.id,
     turnId: turn.id,
     turnStatus: turn.status,
@@ -989,6 +1003,53 @@ function mapThreadItem(turn, item) {
     status: item.status ?? null,
     createdAt: createdAtFrom(item, turn)
   };
+  if (item.type === "fileChange") {
+    mapped.fileChanges = (item.changes ?? []).map((change) => ({
+      path: change.path,
+      kind: fileChangeKind(change.kind),
+      diff: change.diff ?? ""
+    }));
+  }
+  return mapped;
+}
+
+function attachTurnFileChanges(items, turnDiffs) {
+  const byTurn = new Map();
+  for (const item of items) {
+    if (!byTurn.has(item.turnId)) {
+      byTurn.set(item.turnId, []);
+    }
+    byTurn.get(item.turnId).push(item);
+  }
+
+  for (const [turnId, turnItems] of byTurn) {
+    const changes = turnItems
+      .filter((item) => item.type === "fileChange")
+      .flatMap((item) => item.fileChanges ?? []);
+    if (changes.length === 0) {
+      continue;
+    }
+    const finalAgentMessage = turnItems.slice().reverse().find((item) => item.type === "agentMessage");
+    if (!finalAgentMessage) {
+      continue;
+    }
+    const latestByPath = new Map();
+    for (const change of changes) {
+      latestByPath.set(change.path, change);
+    }
+    finalAgentMessage.fileChanges = Array.from(latestByPath.values()).map(({ path, kind }) => ({ path, kind }));
+    finalAgentMessage.turnDiff = turnDiffs.get(turnId) || changes.map((change) => change.diff).filter(Boolean).join("\n");
+  }
+}
+
+function fileChangeKind(kind) {
+  if (typeof kind === "string") {
+    return kind;
+  }
+  if (kind && typeof kind.type === "string") {
+    return kind.type;
+  }
+  return "update";
 }
 
 function itemTitle(item) {

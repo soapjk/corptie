@@ -1,9 +1,9 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { readdir, readFile, stat, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdtemp, readdir, readFile, stat, mkdir, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
@@ -76,6 +76,15 @@ function isExecutable(path) {
   }
 }
 
+function pathExists(path) {
+  try {
+    accessSync(path, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveCodexCommand(requestedCommand = "") {
   const requested = typeof requestedCommand === "string" ? requestedCommand.trim() : "";
   if (requested && requested !== "codex") {
@@ -96,6 +105,202 @@ function resolveCodexCommand(requestedCommand = "") {
   }
 
   return requested || "codex";
+}
+
+function safeTurnFileChanges(thread, turnId, cwd) {
+  const turn = (thread.turns ?? []).find((candidate) => candidate.id === turnId);
+  if (!turn) {
+    throw new Error("Codex turn not found.");
+  }
+  const changes = (turn.items ?? [])
+    .filter((item) => item.type === "fileChange")
+    .flatMap((item) => item.changes ?? [])
+    .map((change) => ({
+      path: normalizeRelativeDiffPath(change.path, cwd),
+      kind: typeof change.kind === "string" ? change.kind : (change.kind?.type ?? "update"),
+      diff: typeof change.diff === "string" ? change.diff : ""
+    }));
+  if (changes.length === 0) {
+    throw new Error("This turn has no recorded file changes.");
+  }
+  return changes;
+}
+
+function normalizeRelativeDiffPath(value, cwd) {
+  const rawPath = normalize(String(value ?? "").replaceAll("\\", "/"));
+  const cwdRoot = resolve(cwd);
+  if (isAbsolute(rawPath) && !rawPath.startsWith(`${cwdRoot}${sep}`)) {
+    throw new Error(`Unsafe changed file path: ${value}`);
+  }
+  const path = isAbsolute(rawPath) ? normalize(rawPath.slice(cwdRoot.length + 1)) : rawPath;
+  const absolutePath = resolve(cwdRoot, path);
+  if (!path || path === "." || absolutePath === cwdRoot || !absolutePath.startsWith(`${cwdRoot}${sep}`)) {
+    throw new Error(`Unsafe changed file path: ${value}`);
+  }
+  return path;
+}
+
+function turnDiffFor(threadId, turnId, changes) {
+  const liveDiff = codexClient.turnDiffsForThread(threadId).get(turnId);
+  return liveDiff || changes.map(unifiedDiffForChange).filter(Boolean).join("\n");
+}
+
+function unifiedDiffForChange(change) {
+  const diff = change.diff ?? "";
+  if (!diff) {
+    return "";
+  }
+  if (diff.startsWith("diff --git ") || diff.startsWith("--- ")) {
+    return diff;
+  }
+  const quotedPath = change.path;
+  if (change.kind === "add" && !diff.startsWith("@@")) {
+    const lines = diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff.split("\n");
+    const body = lines.map((line) => `+${line}`).join("\n");
+    return [
+      `diff --git a/${quotedPath} b/${quotedPath}`,
+      "new file mode 100644",
+      "--- /dev/null",
+      `+++ b/${quotedPath}`,
+      `@@ -0,0 +1,${lines.length} @@`,
+      body,
+      ""
+    ].join("\n");
+  }
+  if (change.kind === "delete" && !diff.startsWith("@@")) {
+    const lines = diff.endsWith("\n") ? diff.slice(0, -1).split("\n") : diff.split("\n");
+    const body = lines.map((line) => `-${line}`).join("\n");
+    return [
+      `diff --git a/${quotedPath} b/${quotedPath}`,
+      "deleted file mode 100644",
+      `--- a/${quotedPath}`,
+      "+++ /dev/null",
+      `@@ -1,${lines.length} +0,0 @@`,
+      body,
+      ""
+    ].join("\n");
+  }
+  return [
+    `diff --git a/${quotedPath} b/${quotedPath}`,
+    `--- a/${quotedPath}`,
+    `+++ b/${quotedPath}`,
+    diff,
+    ""
+  ].join("\n");
+}
+
+async function writeTurnPatch(threadId, turnId, diff) {
+  if (!diff.trim()) {
+    throw new Error("The recorded file changes do not include a usable diff.");
+  }
+  const root = await mkdtemp(join(os.tmpdir(), "corptie-diff-"));
+  const patchPath = join(root, `${threadId}-${turnId}.diff`.replaceAll("/", "_"));
+  await writeFile(patchPath, diff, "utf8");
+  return { root, patchPath };
+}
+
+async function prepareExternalDiff(cwd, threadId, turnId, changes, diff) {
+  const { root, patchPath } = await writeTurnPatch(threadId, turnId, diff);
+  const beforeDir = join(root, "Before");
+  const afterDir = join(root, "After");
+  await Promise.all([mkdir(beforeDir), mkdir(afterDir)]);
+
+  for (const change of changes) {
+    const source = resolve(cwd, change.path);
+    if (!source.startsWith(`${resolve(cwd)}${sep}`)) {
+      throw new Error(`Changed file is outside the task directory: ${change.path}`);
+    }
+    try {
+      if (!(await stat(source)).isFile()) {
+        continue;
+      }
+      for (const targetRoot of [beforeDir, afterDir]) {
+        const target = join(targetRoot, change.path);
+        await mkdir(dirname(target), { recursive: true });
+        await copyFile(source, target);
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  try {
+    await execFileAsync("git", ["apply", "--reverse", "--check", "--directory=Before", patchPath], { cwd: root });
+    await execFileAsync("git", ["apply", "--reverse", "--directory=Before", patchPath], { cwd: root });
+  } catch (reverseError) {
+    try {
+      await execFileAsync("git", ["apply", "--check", "--directory=After", patchPath], { cwd: root });
+      await execFileAsync("git", ["apply", "--directory=After", patchPath], { cwd: root });
+    } catch {
+      throw new Error(`Could not reconstruct this turn for review: ${reverseError.stderr || reverseError.message}`);
+    }
+  }
+  return { root, patchPath, beforeDir, afterDir };
+}
+
+async function launchDiffTool(configuredTool, review, changes) {
+  let tool = configuredTool || "automatic";
+  if (tool === "automatic") {
+    tool = isExecutable("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code") ? "vscode" : "filemerge";
+  }
+
+  if (tool === "vscode") {
+    const executable = "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code";
+    if (!isExecutable(executable)) {
+      throw new Error("Visual Studio Code is not installed in /Applications.");
+    }
+    for (const change of changes) {
+      const before = join(review.beforeDir, change.path);
+      const after = join(review.afterDir, change.path);
+      await ensureDiffPlaceholder(before);
+      await ensureDiffPlaceholder(after);
+      launchDetached(executable, ["--reuse-window", "--diff", before, after]);
+    }
+    return tool;
+  }
+
+  if (tool === "git-difftool") {
+    launchDetached("git", ["difftool", "--no-index", "--dir-diff", "--no-prompt", review.beforeDir, review.afterDir]);
+    return tool;
+  }
+
+  const appTools = {
+    filemerge: { command: "/usr/bin/opendiff", args: [review.beforeDir, review.afterDir] },
+    kaleidoscope: { appPath: "/Applications/Kaleidoscope.app", command: "/usr/bin/open", args: ["-a", "Kaleidoscope", "--args", review.beforeDir, review.afterDir] },
+    "beyond-compare": { appPath: "/Applications/Beyond Compare.app", command: "/usr/bin/open", args: ["-a", "Beyond Compare", "--args", review.beforeDir, review.afterDir] },
+    "sublime-merge": { appPath: "/Applications/Sublime Merge.app", command: "/usr/bin/open", args: ["-a", "Sublime Merge", "--args", "mergetool", review.beforeDir, review.afterDir] }
+  };
+  const selected = appTools[tool];
+  if (!selected) {
+    throw new Error(`Unsupported code diff tool: ${tool}`);
+  }
+  if (selected.appPath && !pathExists(selected.appPath)) {
+    throw new Error(`${selected.appPath.split("/").at(-1)} is not installed in /Applications.`);
+  }
+  launchDetached(selected.command, selected.args);
+  return tool;
+}
+
+async function ensureDiffPlaceholder(path) {
+  try {
+    await stat(path);
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "", "utf8");
+  }
+}
+
+function launchDetached(command, args) {
+  const child = spawn(command, args, { detached: true, stdio: "ignore" });
+  child.on("error", (error) => {
+    console.error("[code-diff] failed to launch", command, error);
+  });
+  child.unref();
 }
 
 function createSession(input = {}) {
@@ -2070,6 +2275,40 @@ function route(request, response) {
     return;
   }
 
+  const codexTurnDiffMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/turns\/([^/]+)\/diff\/(review|undo)$/);
+  if (request.method === "POST" && codexTurnDiffMatch) {
+    const threadId = decodeURIComponent(codexTurnDiffMatch[1]);
+    const turnId = decodeURIComponent(codexTurnDiffMatch[2]);
+    const action = codexTurnDiffMatch[3];
+    codexClient.readThread(threadId, { includeTurns: true })
+      .then(async (result) => {
+        const cwd = result.thread.cwd || managedCodexSessions.get(`codex:${threadId}`)?.external?.cwd;
+        if (!cwd) {
+          throw new Error("The task working directory is unavailable.");
+        }
+        const changes = safeTurnFileChanges(result.thread, turnId, cwd);
+        const diff = turnDiffFor(threadId, turnId, changes);
+
+        if (action === "review") {
+          const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
+          const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
+          emitEvent("CodexTurnDiffReviewOpened", { threadId, turnId, tool });
+          return { ok: true, tool };
+        }
+
+        const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
+        await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
+        await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
+        emitEvent("CodexTurnChangesUndone", { threadId, turnId, files: changes.map((change) => change.path) });
+        return { ok: true, files: changes.map((change) => change.path) };
+      })
+      .then((payload) => sendJson(response, 200, payload))
+      .catch((error) => {
+        sendJson(response, 409, { error: error.stderr || error.message, adapter: "codex-app-server" });
+      });
+    return;
+  }
+
   const codexThreadMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)$/);
   if (request.method === "GET" && codexThreadMatch) {
     const threadId = decodeURIComponent(codexThreadMatch[1]);
@@ -2077,7 +2316,11 @@ function route(request, response) {
       .readThread(threadId, { includeTurns: true })
       .then(async (result) => {
         const managedSession = managedCodexSessions.get(`codex:${threadId}`);
-        const detail = mapCodexThreadToDetail(result.thread, codexClient.liveItemsForThread(threadId));
+        const detail = mapCodexThreadToDetail(
+          result.thread,
+          codexClient.liveItemsForThread(threadId),
+          codexClient.turnDiffsForThread(threadId)
+        );
         const enrichedDetail = enrichCodexDetailChoiceOptions({
           ...detail,
           activityStatus: managedSession?.activityStatus ?? detail.activityStatus ?? null,

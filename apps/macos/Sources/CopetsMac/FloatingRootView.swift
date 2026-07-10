@@ -2549,7 +2549,8 @@ private struct DetailView: View {
             item.status ?? "",
             item.turnStatus,
             "\(text.count)",
-            String(text.suffix(96))
+            String(text.suffix(96)),
+            fileChangesSignature(item)
         ].joined(separator: ":")
     }
 
@@ -2750,7 +2751,8 @@ private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMes
             item.type,
             item.status ?? "",
             item.turnStatus,
-            "\(item.text.count)"
+            "\(item.text.count)",
+            fileChangesSignature(item)
         ].joined(separator: ":")
     }.joined(separator: "|")
     return "\(visibleMessageLimit)|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
@@ -2850,8 +2852,13 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.status ?? "",
         item.turnStatus,
         "\(text.count)",
-        String(text.suffix(96))
+        String(text.suffix(96)),
+        fileChangesSignature(item)
     ].joined(separator: ":")
+}
+
+private func fileChangesSignature(_ item: CodexThreadItem) -> String {
+    (item.fileChanges ?? []).map { "\($0.kind):\($0.path)" }.joined(separator: ",")
 }
 
 private struct DetailHeaderView: View {
@@ -3297,6 +3304,9 @@ private struct ThreadItemView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isActivityExpanded = false
     @State private var isHovering = false
+    @State private var isConfirmingUndo = false
+    @State private var isDiffActionRunning = false
+    @State private var diffActionError: String?
     let item: CodexThreadItem
 
     var body: some View {
@@ -3359,6 +3369,11 @@ private struct ThreadItemView: View {
                     .disabled(backendClient.isSendingMessage)
                     .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
                 }
+
+                if hasFileChanges {
+                    codeChangeSummary
+                        .padding(.top, 4)
+                }
             }
 
             CopyTextButton(text: item.text, isVisible: isHovering && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -3375,6 +3390,128 @@ private struct ThreadItemView: View {
             isHovering = hovering
         }
         .animation(.easeInOut(duration: 0.18), value: shouldShowOptions)
+        .confirmationDialog(
+            "Undo changes from this reply?",
+            isPresented: $isConfirmingUndo,
+            titleVisibility: .visible
+        ) {
+            Button("Undo Changes", role: .destructive) {
+                undoChanges()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This reverses only the recorded patch. It will stop if newer edits conflict.")
+        }
+        .alert("Code Diff", isPresented: Binding(
+            get: { diffActionError != nil },
+            set: { if !$0 { diffActionError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(diffActionError ?? "Unknown error")
+        }
+    }
+
+    private var hasFileChanges: Bool {
+        item.type == "agentMessage" && !(item.fileChanges ?? []).isEmpty
+    }
+
+    private var codeChangeSummary: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Divider()
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                Text("Changed Files")
+                Text("\(item.fileChanges?.count ?? 0)")
+                    .foregroundStyle(CorptiePalette.mutedText)
+                Spacer()
+            }
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(CorptiePalette.secondaryText)
+
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(item.fileChanges ?? [], id: \.path) { change in
+                    HStack(spacing: 7) {
+                        Image(systemName: fileChangeIcon(change.kind))
+                            .frame(width: 12)
+                            .foregroundStyle(fileChangeColor(change.kind))
+                        Text(change.path)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    reviewChanges()
+                } label: {
+                    Label("Review", systemImage: "arrow.up.forward.app")
+                }
+                .help("Open this turn's diff in the selected external tool")
+
+                Button(role: .destructive) {
+                    isConfirmingUndo = true
+                } label: {
+                    Label(isTurnUndone ? "Undone" : "Undo", systemImage: "arrow.uturn.backward")
+                }
+                .help("Reverse only the changes recorded for this reply")
+                .disabled(isTurnUndone)
+
+                if isDiffActionRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Spacer()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(isDiffActionRunning)
+        }
+    }
+
+    private var isTurnUndone: Bool {
+        backendClient.undoneCodexTurnIds.contains(item.turnId)
+    }
+
+    private func reviewChanges() {
+        guard let threadId = backendClient.selectedDetail?.id else { return }
+        isDiffActionRunning = true
+        Task {
+            defer { isDiffActionRunning = false }
+            if case .failure(let error) = await backendClient.reviewCodexChanges(threadId: threadId, turnId: item.turnId) {
+                diffActionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func undoChanges() {
+        guard let threadId = backendClient.selectedDetail?.id else { return }
+        isDiffActionRunning = true
+        Task {
+            defer { isDiffActionRunning = false }
+            if case .failure(let error) = await backendClient.undoCodexChanges(threadId: threadId, turnId: item.turnId) {
+                diffActionError = error.localizedDescription
+            }
+        }
+    }
+
+    private func fileChangeIcon(_ kind: String) -> String {
+        switch kind {
+        case "add": "plus.circle.fill"
+        case "delete": "minus.circle.fill"
+        default: "pencil.circle.fill"
+        }
+    }
+
+    private func fileChangeColor(_ kind: String) -> Color {
+        switch kind {
+        case "add": CorptiePalette.connected
+        case "delete": .red
+        default: itemColor
+        }
     }
 
     private var itemMetadataLabel: String {

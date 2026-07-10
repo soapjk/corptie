@@ -24,6 +24,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isSwitchingModel = false
     @Published private(set) var isSwitchingReasoning = false
     @Published private(set) var connectionTransitionSessionIds = Set<String>()
+    @Published private(set) var undoneCodexTurnIds = Set<String>()
     @Published var isShowingArchivedSessions = false
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
@@ -152,7 +153,7 @@ final class BackendClient: ObservableObject {
     }
 
     @discardableResult
-    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, agentProxy: AgentProxySettings? = nil) async -> Bool {
+    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil) async -> Bool {
         let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = "Data directory is required."
@@ -183,6 +184,9 @@ final class BackendClient: ObservableObject {
                 body["codexBackend"] = [
                     "mode": codexBackend.mode
                 ]
+            }
+            if let codeDiff {
+                body["codeDiff"] = ["tool": codeDiff.tool]
             }
             if let agentProxy {
                 body["agentProxy"] = agentProxyBody(agentProxy)
@@ -718,6 +722,38 @@ final class BackendClient: ObservableObject {
 
     func sendMessage(_ text: String, to session: TaskSession, isChoiceSelection: Bool = false, onSuccess: @escaping () -> Void = {}) {
         sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, isChoiceSelection: isChoiceSelection, onSuccess: onSuccess)
+    }
+
+    func reviewCodexChanges(threadId: String, turnId: String) async -> Result<String, Error> {
+        await performCodexDiffAction("review", threadId: threadId, turnId: turnId)
+    }
+
+    func undoCodexChanges(threadId: String, turnId: String) async -> Result<String, Error> {
+        let result = await performCodexDiffAction("undo", threadId: threadId, turnId: turnId)
+        if case .success = result {
+            undoneCodexTurnIds.insert(turnId)
+            await refreshSelectedDetailFromPolling()
+        }
+        return result
+    }
+
+    private func performCodexDiffAction(_ action: String, threadId: String, turnId: String) async -> Result<String, Error> {
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "codex/threads/\(threadId)/turns/\(turnId)/diff/\(action)"))
+            request.httpMethod = "POST"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                throw BackendError.message(payload?["error"] as? String ?? "The code diff action failed.")
+            }
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return .success(payload?["tool"] as? String ?? action)
+        } catch {
+            return .failure(error)
+        }
     }
 
     private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, isChoiceSelection: Bool, onSuccess: @escaping () -> Void) {
@@ -1472,7 +1508,9 @@ final class BackendClient: ObservableObject {
                     )
                 },
                 status: "selected",
-                createdAt: item.createdAt
+                createdAt: item.createdAt,
+                fileChanges: item.fileChanges,
+                turnDiff: item.turnDiff
             )
         }
         if let selectedDetail {
@@ -1497,7 +1535,9 @@ final class BackendClient: ObservableObject {
                 text: item.text,
                 options: item.options,
                 status: "selected",
-                createdAt: item.createdAt
+                createdAt: item.createdAt,
+                fileChanges: item.fileChanges,
+                turnDiff: item.turnDiff
             )
         }
     }

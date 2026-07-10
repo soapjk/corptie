@@ -102,6 +102,7 @@ export class CorptieStore {
       legacyDbPath,
       choiceParser: this.choiceParserSettings(),
       codexBackend: this.codexBackendSettings(),
+      codeDiff: this.codeDiffSettings(),
       agentProxy: this.agentProxySettings()
     };
   }
@@ -113,6 +114,10 @@ export class CorptieStore {
 
   codexBackendSettings() {
     return normalizeCodexBackendSettings(this.config.codexBackend ?? {});
+  }
+
+  codeDiffSettings() {
+    return normalizeCodeDiffSettings(this.config.codeDiff ?? {});
   }
 
   agentProxySettings() {
@@ -130,6 +135,10 @@ export class CorptieStore {
     }
     if (input.codexBackend && typeof input.codexBackend === "object") {
       this.config.codexBackend = normalizeCodexBackendSettings(input.codexBackend);
+      await this.writeConfig();
+    }
+    if (input.codeDiff && typeof input.codeDiff === "object") {
+      this.config.codeDiff = normalizeCodeDiffSettings(input.codeDiff);
       await this.writeConfig();
     }
     if (input.agentProxy && typeof input.agentProxy === "object") {
@@ -577,6 +586,13 @@ function normalizeChoiceParserSettings(input = {}) {
 function normalizeCodexBackendSettings(input = {}) {
   const mode = input.mode === "pty" ? "pty" : "app-server";
   return { mode };
+}
+
+function normalizeCodeDiffSettings(input = {}) {
+  const tools = new Set(["automatic", "git-difftool", "filemerge", "vscode", "kaleidoscope", "beyond-compare", "sublime-merge"]);
+  return {
+    tool: tools.has(input.tool) ? input.tool : "automatic"
+  };
 }
 
 function normalizeOpenAiCompatibleBaseURL(value) {

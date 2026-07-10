@@ -232,21 +232,39 @@ struct SettingsView: View {
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
     @State private var codexBackend = CodexBackendSettings.defaults
     @State private var savedCodexBackend = CodexBackendSettings.defaults
+    @State private var codeDiff = CodeDiffSettings.defaults
+    @State private var savedCodeDiff = CodeDiffSettings.defaults
     @State private var agentProxy = AgentProxySettings.defaults
     @State private var savedAgentProxy = AgentProxySettings.defaults
     @State private var choiceParserStatus: ChoiceParserStatus = .idle
 
     var body: some View {
-        TabView {
-            generalSettingsTab
-                .tabItem {
-                    Label("General", systemImage: "gearshape")
-                }
+        VStack(spacing: 12) {
+            TabView {
+                generalSettingsTab
+                    .tabItem {
+                        Label("General", systemImage: "gearshape")
+                    }
 
-            proxySettingsTab
-                .tabItem {
-                    Label("Proxy", systemImage: "network")
+                proxySettingsTab
+                    .tabItem {
+                        Label("Proxy", systemImage: "network")
+                    }
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Save") {
+                    Task {
+                        await saveAllSettings()
+                    }
                 }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(backendClient.isUpdatingSettings || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
         }
         .padding(20)
         .frame(width: 560, height: 580)
@@ -260,6 +278,8 @@ struct SettingsView: View {
             savedChoiceParser = choiceParser
             codexBackend = backendClient.settings?.codexBackend ?? .defaults
             savedCodexBackend = codexBackend
+            codeDiff = backendClient.settings?.codeDiff ?? .defaults
+            savedCodeDiff = codeDiff
             agentProxy = backendClient.settings?.agentProxy ?? .defaults
             savedAgentProxy = agentProxy
         }
@@ -270,6 +290,8 @@ struct SettingsView: View {
                 savedChoiceParser = choiceParser
                 codexBackend = settings.codexBackend ?? .defaults
                 savedCodexBackend = codexBackend
+                codeDiff = settings.codeDiff ?? .defaults
+                savedCodeDiff = codeDiff
                 agentProxy = settings.agentProxy ?? .defaults
                 savedAgentProxy = agentProxy
                 choiceParserStatus = .idle
@@ -278,7 +300,9 @@ struct SettingsView: View {
     }
 
     private var generalSettingsTab: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 12) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Storage")
@@ -350,6 +374,29 @@ struct SettingsView: View {
                 Text(codexBackend.mode == "app-server" ? "New Codex sessions use the official Codex app-server protocol." : "New Codex sessions use the legacy terminal adapter.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
+            }
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Code Diff Tool")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    Text("Used when you review files changed by a Codex reply.")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+                Spacer()
+                Picker("", selection: $codeDiff.tool) {
+                    Text("Automatic").tag("automatic")
+                    Text("Git Difftool").tag("git-difftool")
+                    Text("FileMerge").tag("filemerge")
+                    Text("Visual Studio Code").tag("vscode")
+                    Text("Kaleidoscope").tag("kaleidoscope")
+                    Text("Beyond Compare").tag("beyond-compare")
+                    Text("Sublime Merge").tag("sublime-merge")
+                }
+                .labelsHidden()
+                .frame(width: 180)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -450,21 +497,10 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
                     .lineLimit(2)
             }
-
-            HStack {
-                Spacer()
-
-                    Button("Save") {
-                        Task {
-                            if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, codexBackend: codexBackend, agentProxy: savedAgentProxy) {
-                                savedCodexBackend = codexBackend
-                                onClose()
-                            }
-                        }
-                    }
-                    .keyboardShortcut(.defaultAction)
-                .disabled(backendClient.isUpdatingSettings || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.trailing, 8)
             }
+
         }
     }
 
@@ -515,25 +551,6 @@ struct SettingsView: View {
                     .lineLimit(2)
             }
 
-            HStack(spacing: 8) {
-                Spacer()
-
-                if isAgentProxyDirty {
-                    Button("Cancel") {
-                        agentProxy = savedAgentProxy
-                    }
-                }
-
-                Button("Save Proxy") {
-                    Task {
-                        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: savedChoiceParser, codexBackend: savedCodexBackend, agentProxy: agentProxy) {
-                            savedAgentProxy = agentProxy
-                        }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!isAgentProxyDirty || backendClient.isUpdatingSettings)
-            }
         }
     }
 
@@ -551,15 +568,29 @@ struct SettingsView: View {
         choiceParser != savedChoiceParser
     }
 
-    private var isAgentProxyDirty: Bool {
-        agentProxy != savedAgentProxy
+    private func saveAllSettings() async {
+        if await backendClient.updateSettings(
+            dataDir: dataDir,
+            choiceParser: choiceParser,
+            codexBackend: codexBackend,
+            codeDiff: codeDiff,
+            agentProxy: agentProxy
+        ) {
+            savedChoiceParser = choiceParser
+            savedCodexBackend = codexBackend
+            savedCodeDiff = codeDiff
+            savedAgentProxy = agentProxy
+            choiceParserStatus = .saved
+            onClose()
+        }
     }
 
     private func confirmChoiceParser() async {
         choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, codexBackend: codexBackend, agentProxy: agentProxy) {
+        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
+            savedCodeDiff = codeDiff
             savedAgentProxy = agentProxy
             choiceParserStatus = .saved
         } else {
