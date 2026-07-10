@@ -7,7 +7,10 @@ import { CodexAppServerClient } from "./codexAppServer.mjs";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 const ansiPattern = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
-const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
+const codexAppBundleBinaries = [
+  "/Applications/Codex.app/Contents/Resources/codex",
+  "/Applications/ChatGPT.app/Contents/Resources/codex"
+];
 
 export class PtyAgentManager {
   constructor(options = {}) {
@@ -2912,5 +2915,5 @@ function defaultCodexCommand() {
   if (configured) {
     return configured.trim();
   }
-  return isExecutable(codexAppBundleBinary) ? codexAppBundleBinary : "codex";
+  return codexAppBundleBinaries.find(isExecutable) ?? "codex";
 }

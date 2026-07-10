@@ -20,7 +20,10 @@ import { CorptieStore } from "./store/corptieStore.mjs";
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const execFileAsync = promisify(execFile);
-const codexAppBundleBinary = "/Applications/Codex.app/Contents/Resources/codex";
+const codexAppBundleBinaries = [
+  "/Applications/Codex.app/Contents/Resources/codex",
+  "/Applications/ChatGPT.app/Contents/Resources/codex"
+];
 
 const sessions = new Map();
 const managedCodexSessions = new Map();
@@ -87,8 +90,9 @@ function resolveCodexCommand(requestedCommand = "") {
     return configured.trim();
   }
 
-  if (isExecutable(codexAppBundleBinary)) {
-    return codexAppBundleBinary;
+  const bundled = codexAppBundleBinaries.find(isExecutable);
+  if (bundled) {
+    return bundled;
   }
 
   return requested || "codex";
@@ -679,9 +683,10 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function loadCodexModels() {
+async function loadCodexModels(options = {}) {
   const nowMs = Date.now();
-  if (codexModelsCache && nowMs - codexModelsCache.loadedAt < 5 * 60 * 1000) {
+  const refresh = options.refresh === true;
+  if (!refresh && codexModelsCache && nowMs - codexModelsCache.loadedAt < 5 * 60 * 1000) {
     return codexModelsCache.payload;
   }
 
@@ -918,7 +923,7 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/codex/models") {
-    loadCodexModels()
+    loadCodexModels({ refresh: url.searchParams.get("refresh") === "true" })
       .then((models) => {
         sendJson(response, 200, models);
       })
