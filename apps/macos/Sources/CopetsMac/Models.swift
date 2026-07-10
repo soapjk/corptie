@@ -242,6 +242,13 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable {
     let options: [CodexApprovalOption]?
     let status: String?
     let createdAt: String?
+    var fileChanges: [CodexFileChange]? = nil
+    var turnDiff: String? = nil
+}
+
+struct CodexFileChange: Decodable, Equatable {
+    let path: String
+    let kind: String
 }
 
 struct CodexApprovalOption: Identifiable, Codable, Equatable {
@@ -279,6 +286,7 @@ struct BackendSettings: Codable, Equatable {
     let legacyDbPath: String?
     let choiceParser: ChoiceParserSettings?
     let codexBackend: CodexBackendSettings?
+    let codeDiff: CodeDiffSettings?
     let agentProxy: AgentProxySettings?
 }
 
@@ -286,6 +294,12 @@ struct CodexBackendSettings: Codable, Equatable {
     var mode: String
 
     static let defaults = CodexBackendSettings(mode: "app-server")
+}
+
+struct CodeDiffSettings: Codable, Equatable {
+    var tool: String
+
+    static let defaults = CodeDiffSettings(tool: "automatic")
 }
 
 struct ChoiceParserSettings: Codable, Equatable {
