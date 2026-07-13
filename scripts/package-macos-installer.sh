@@ -31,6 +31,10 @@ trap 'rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"' EXIT
 APP_DIR="${STAGING_ROOT}/Applications/${APP_NAME}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${BUILD_BIN}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}"
+RESOURCE_BUNDLE="${ROOT}/apps/macos/.build/arm64-apple-macosx/${BUILD_CFG}/CorptieMac_CorptieMac.bundle"
+if [ -d "${RESOURCE_BUNDLE}" ]; then
+  cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
+fi
 
 if [ -f "${ICON_ICNS_SOURCE}" ]; then
   cp "${ICON_ICNS_SOURCE}" "${APP_DIR}/Contents/Resources/AppIcon.icns"
@@ -94,13 +98,17 @@ export CORPTIE_BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47321}"
 
 NODE_BIN="${NODE_BIN:-}"
 if [ -z "${NODE_BIN}" ]; then
+  LOGIN_NODE="$(/bin/zsh -lic 'command -v node' 2>/dev/null || true)"
   for candidate in \
-    "${HOME}/.volta/tools/image/node/20.20.0/bin/node" \
+    "${LOGIN_NODE}" \
+    "${HOME}"/.nvm/versions/node/*/bin/node \
+    "${HOME}"/.fnm/node-versions/*/installation/bin/node \
+    "${HOME}/.asdf/shims/node" \
+    "${HOME}/.local/share/mise/shims/node" \
     "/opt/homebrew/bin/node" \
     "/usr/local/bin/node" \
     "/Applications/Codex.app/Contents/Resources/cua_node/bin/node" \
-    "$(command -v node 2>/dev/null || true)" \
-    "${HOME}/.volta/bin/node"; do
+    "$(command -v node 2>/dev/null || true)"; do
     if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
       NODE_BIN="${candidate}"
       break
@@ -112,6 +120,11 @@ if [ -z "${NODE_BIN}" ]; then
   echo "Node.js not found in PATH. Please install Node.js and retry." >&2
   exit 1
 fi
+
+# launchd starts GUI apps with a minimal PATH.  Keep both node and npm-installed
+# CLIs (including lark-cli) discoverable in that environment.
+NODE_DIR="$(dirname "${NODE_BIN}")"
+export PATH="${NODE_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
 
 cd "${BACKEND_DIR}"
 exec "${NODE_BIN}" src/server.mjs

@@ -3,7 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_DIR="${ROOT}/apps/backend"
-NODE_BIN=$(volta which node 2>/dev/null || readlink -f "$(command -v node)" 2>/dev/null || command -v node)
+NODE_BIN=""
+LOGIN_NODE="$(/bin/zsh -lic 'command -v node' 2>/dev/null || true)"
+for candidate in "${LOGIN_NODE}" "${HOME}"/.nvm/versions/node/*/bin/node "${HOME}"/.fnm/node-versions/*/installation/bin/node "${HOME}/.asdf/shims/node" "${HOME}/.local/share/mise/shims/node" /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
+  if [ -x "${candidate}" ]; then NODE_BIN="${candidate}"; break; fi
+done
+if [ -z "${NODE_BIN}" ]; then
+  echo "Node.js not found in NVM/Homebrew/system paths." >&2
+  exit 1
+fi
 PLIST="${HOME}/Library/LaunchAgents/com.corptie.backend.plist"
 LOG_DIR="${HOME}/Library/Logs/Corptie"
 

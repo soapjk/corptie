@@ -149,6 +149,72 @@ struct BackendErrorResponse: Decodable {
     let error: String
 }
 
+struct FeishuBotsResponse: Decodable {
+    let bots: [FeishuBot]
+}
+
+struct FeishuProfilesResponse: Decodable {
+    let profiles: [FeishuProfile]
+}
+
+struct FeishuProfile: Codable, Identifiable, Equatable {
+    var id: String { name }
+    let name: String
+    let appId: String?
+    let brand: String?
+    let active: Bool
+}
+
+struct FeishuBotResponse: Decodable {
+    let bot: FeishuBot
+}
+
+struct FeishuPairingCodeResponse: Decodable {
+    let code: String
+    let expiresAt: String
+}
+
+struct FeishuBot: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let profile: String
+    let appId: String?
+    let brand: String?
+    let managedProfile: Bool?
+    let remoteName: String?
+    let remoteAvatarURL: String?
+    let remoteOpenId: String?
+    let remoteActivateStatus: Int?
+    let transportType: String
+    let enabled: Bool
+    let connectionStatus: String
+    let lastError: String?
+    let createdAt: String
+    let updatedAt: String
+    let bindings: [FeishuBinding]
+    let assignment: FeishuSessionAssignment?
+    let runtime: String
+}
+
+struct FeishuBinding: Codable, Identifiable, Equatable {
+    let id: String
+    let botId: String
+    let openId: String
+    let chatId: String?
+    let tenantKey: String?
+    let verifiedAt: String
+    let revokedAt: String?
+}
+
+struct FeishuSessionAssignment: Codable, Identifiable, Equatable {
+    let id: String
+    let botId: String
+    let bindingId: String
+    let sessionId: String
+    let assignedAt: String
+    let lastEventSequence: Int
+}
+
 struct CodexThreadDetailResponse: Decodable {
     let thread: CodexThreadDetail
 }
@@ -288,6 +354,13 @@ struct BackendSettings: Codable, Equatable {
     let codexBackend: CodexBackendSettings?
     let codeDiff: CodeDiffSettings?
     let agentProxy: AgentProxySettings?
+    let gateway: GatewaySettings?
+}
+
+struct GatewaySettings: Codable, Equatable {
+    var trustedWorkspaces: [String]
+
+    static let defaults = GatewaySettings(trustedWorkspaces: [])
 }
 
 struct CodexBackendSettings: Codable, Equatable {

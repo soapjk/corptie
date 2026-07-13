@@ -1,17 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as pty from "node-pty";
 import { CodexAppServerClient } from "./codexAppServer.mjs";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
+import { resolveCodexCommand } from "../utils/codexCommand.mjs";
+import { environmentForCommand } from "../utils/externalCommand.mjs";
 
 const ansiPattern = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
-const codexAppBundleBinaries = [
-  "/Applications/Codex.app/Contents/Resources/codex",
-  "/Applications/ChatGPT.app/Contents/Resources/codex"
-];
-
 export class PtyAgentManager {
   constructor(options = {}) {
     this.sessions = new Map();
@@ -81,7 +78,7 @@ export class PtyAgentManager {
       rows: Number(input.rows ?? this.rows),
       cwd,
       env: {
-        ...sanitizeEnv(process.env, provider),
+        ...environmentForCommand(command, sanitizeEnv(process.env, provider)),
         ...proxyEnvForAgent(this.settingsProvider?.()?.agentProxy, provider === "codex-pty" ? "codex" : "pty"),
         TERM: "xterm-256color",
         COLORTERM: "truecolor",
@@ -2895,25 +2892,6 @@ function isCodexNoise(text) {
   return /^现$|^your config\.toml:?$|^Started codex resume |You have \d+ usage limit resets available|10;\?11;\?.*>_ OpenAI Codex|^(?:10;\?11;\?|\[[0-9;?]*[a-zA-Z])$|^>_ OpenAI Codex|^model:\s|^directory:\s|features?.*web[_\s-]?search[_\s-]?request.*deprecated|web[_\s-]?search[_\s-]?request.*deprecated|set [`'"]?web[_\s-]?search[`'"]?.*(live|true|enabled)|falling back from web ?sockets? to https|websocket.*fallback|under a profile\) in config\.toml|Tip: Try the Codex App|HooksLifecycle hooks|EventInstalledActiveReviewDescription|MCP startup incomplete|MCP client .* timed out|Starting MCP servers|startup_timeout_sec|\[mcp_servers\.|0;[⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸]/i.test(text);
 }
 
-function isExecutable(path) {
-  if (typeof path !== "string" || !path.trim()) {
-    return false;
-  }
-  try {
-    accessSync(path.trim(), constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function defaultCodexCommand() {
-  const configured = [
-    process.env.CORPTIE_CODEX_PATH,
-    process.env.CORPTIE_CODEX_REAL_PATH
-  ].find(isExecutable);
-  if (configured) {
-    return configured.trim();
-  }
-  return codexAppBundleBinaries.find(isExecutable) ?? "codex";
+  return resolveCodexCommand();
 }

@@ -7,11 +7,17 @@ final class PanelFocusState: ObservableObject {
     @Published var isFocused = false
 }
 
+struct ListLayoutMetrics: Equatable {
+    let layoutKey: String
+    let minimumHeight: CGFloat
+    let preferredHeight: CGFloat
+    let usefulHeight: CGFloat
+    let itemHeights: [CGFloat]
+}
+
 @MainActor
 final class PanelLayoutState: ObservableObject {
-    @Published var minimumListHeight: CGFloat?
-    @Published var preferredListHeight: CGFloat?
-    @Published var usefulListHeight: CGFloat?
+    @Published private(set) var listMetrics: ListLayoutMetrics?
     @Published var detailLastMessageHeight: CGFloat?
     @Published var canRenderDetailMessages = false
 
@@ -19,36 +25,31 @@ final class PanelLayoutState: ObservableObject {
     static let verticalPadding: CGFloat = 14
     static let headerHeight: CGFloat = 0
     static let headerToListSpacing: CGFloat = 0
-    static let cardHeight: CGFloat = 116
+    static let estimatedCardHeight: CGFloat = 116
     static let cardSpacing: CGFloat = 10
-    static let listBottomPadding: CGFloat = 4
+    static let listBottomPadding: CGFloat = 0
     static let bottomBreathingRoom: CGFloat = 0
+    static let externalControlsGutter: CGFloat = 42
 
-    func updatePreferredListHeight(_ height: CGFloat) {
-        guard height.isFinite, height > 0 else {
-            return
-        }
-        if let preferredListHeight, abs(preferredListHeight - height) < 1 {
-            return
-        }
-        preferredListHeight = height
-    }
+    var minimumListHeight: CGFloat? { listMetrics?.minimumHeight }
+    var preferredListHeight: CGFloat? { listMetrics?.preferredHeight }
+    var usefulListHeight: CGFloat? { listMetrics?.usefulHeight }
 
-    func updateMeasuredListHeights(minimum: CGFloat? = nil, preferred: CGFloat?, useful: CGFloat?) {
-        if let minimum, minimum.isFinite, minimum > 0 {
-            if minimumListHeight == nil || abs((minimumListHeight ?? 0) - minimum) >= 1 {
-                minimumListHeight = minimum
-            }
-        }
-        if let preferred {
-            updatePreferredListHeight(preferred)
-        }
-        if let useful, useful.isFinite, useful > 0 {
-            if let usefulListHeight, abs(usefulListHeight - useful) < 1 {
-                return
-            }
-            usefulListHeight = useful
-        }
+    func updateMeasuredListHeights(layoutKey: String, minimum: CGFloat, preferred: CGFloat, useful: CGFloat, itemHeights: [CGFloat]) {
+        guard !layoutKey.isEmpty,
+              minimum.isFinite, preferred.isFinite, useful.isFinite,
+              minimum > 0, preferred > 0, useful > 0,
+              !itemHeights.isEmpty,
+              itemHeights.allSatisfy({ $0.isFinite && $0 > 0 }) else { return }
+        let metrics = ListLayoutMetrics(
+            layoutKey: layoutKey,
+            minimumHeight: minimum,
+            preferredHeight: preferred,
+            usefulHeight: useful,
+            itemHeights: itemHeights
+        )
+        guard listMetrics != metrics else { return }
+        listMetrics = metrics
     }
 
     func updateDetailLastMessageHeight(_ height: CGFloat?) {
@@ -73,11 +74,13 @@ final class FloatingPanelController: NSObject {
     private let detachedSessionManager: DetachedSessionManager
     private let focusState = PanelFocusState()
     private let layoutState = PanelLayoutState()
-    private let listMinimumSize = NSSize(width: 360, height: 148)
+    private let listMinimumSize = NSSize(width: 402, height: 92)
     private let detailSizeStorageKey = "corptie.detailWindowSizesBySession"
+    private let listHeightStorageKey = "corptie.userListWindowHeightsByLayout.v4"
     private var cancellables = Set<AnyCancellable>()
     private var isProgrammaticResize = false
     private var isBouncingResize = false
+    private var isNativeUserLiveResize = false
     private var isListTransitionLocked = false
     private var isDetailTransitionLocked = false
     private var didUserResize = false
@@ -85,6 +88,7 @@ final class FloatingPanelController: NSObject {
     private var lastEffectiveListHeight: CGFloat?
     private var listWidthBeforeDetail: CGFloat?
     private var currentDisplayedSessionId: String?
+    private var currentListLayoutKey: String?
     private var pendingResizeBounce: DispatchWorkItem?
     private var pendingListTransitionUnlock: DispatchWorkItem?
     private var pendingDetailTransitionUnlock: DispatchWorkItem?
@@ -121,6 +125,9 @@ final class FloatingPanelController: NSObject {
         panel.minSize = listMinimumSize
         panel.maxSize = NSSize(width: 720, height: 820)
         panel.delegate = self
+        panel.customResizeDidEnd = { [weak self] in
+            self?.finishListResizeIfNeeded()
+        }
 
         let rootView = FloatingRootView()
             .environmentObject(client)
@@ -129,12 +136,20 @@ final class FloatingPanelController: NSObject {
             .environmentObject(detachedSessionManager)
 
         let hostingView = FirstMouseHostingView(rootView: rootView)
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        // The SwiftUI root (including the liquid-glass panel background) must
+        // always have exactly the same bounds as the NSWindow content view.
+        // Without autoresizing or constraints, a layout-mode transition can
+        // leave the hosting view at its previous height while the window has
+        // already shrunk, which clips the rounded top and bottom edges.
+        hostingView.translatesAutoresizingMaskIntoConstraints = true
+        hostingView.autoresizingMask = [.width, .height]
+        hostingView.frame = NSRect(
+            origin: .zero,
+            size: panel.contentRect(forFrameRect: panel.frame).size
+        )
         hostingView.wantsLayer = true
         hostingView.layer?.backgroundColor = NSColor.clear.cgColor
-        hostingView.layer?.cornerRadius = 26
-        hostingView.layer?.cornerCurve = .continuous
-        hostingView.layer?.masksToBounds = true
+        hostingView.layer?.masksToBounds = false
         panel.contentView = hostingView
 
         client.$sessions
@@ -180,32 +195,11 @@ final class FloatingPanelController: NSObject {
             }
             .store(in: &cancellables)
 
-        layoutState.$preferredListHeight
+        layoutState.$listMetrics
             .compactMap { $0 }
             .receive(on: RunLoop.main)
-            .sink { [weak self] measuredHeight in
-                self?.resizeForMeasuredListHeight(measuredHeight)
-                self?.adjustListHeightForCurrentMeasurements(animated: true)
-            }
-            .store(in: &cancellables)
-
-        layoutState.$minimumListHeight
-            .compactMap { $0 }
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, self.client.selectedSession == nil else {
-                    return
-                }
-                self.applyListSizing()
-                self.adjustListHeightForCurrentMeasurements(animated: true)
-            }
-            .store(in: &cancellables)
-
-        layoutState.$usefulListHeight
-            .compactMap { $0 }
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.adjustListHeightForCurrentMeasurements(animated: true)
+            .sink { [weak self] metrics in
+                self?.applyListMetrics(metrics)
             }
             .store(in: &cancellables)
 
@@ -280,6 +274,34 @@ final class FloatingPanelController: NSObject {
         setPanelSize(NSSize(width: 420, height: preferredListHeight(for: count)))
     }
 
+    private func applyListMetrics(_ metrics: ListLayoutMetrics) {
+        guard client.selectedSession == nil, !isListTransitionLocked else { return }
+
+        logWindowGeometry("apply-metrics key=\(metrics.layoutKey) min=\(format(metrics.minimumHeight)) preferred=\(format(metrics.preferredHeight)) useful=\(format(metrics.usefulHeight))")
+
+        let isLayoutChange = currentListLayoutKey != metrics.layoutKey
+        currentListLayoutKey = metrics.layoutKey
+        applyListSizing()
+
+        if isLayoutChange {
+            pendingResizeBounce?.cancel()
+            let savedHeight = savedListHeight(for: metrics.layoutKey)
+            didUserResize = savedHeight != nil
+            let requestedHeight = savedHeight.map { snappedListHeight($0, metrics: metrics) } ?? metrics.preferredHeight
+            let targetHeight = min(
+                panel.maxSize.height,
+                max(currentListMinimumHeight(), min(metrics.usefulHeight, requestedHeight))
+            )
+            lastEffectiveListHeight = targetHeight
+            guard abs(panel.frame.height - targetHeight) > 1 else { return }
+            setPanelHeight(targetHeight, duration: 0.20, timing: .easeOut)
+            return
+        }
+
+        resizeForMeasuredListHeight(metrics.preferredHeight)
+        adjustListHeightForCurrentMeasurements(animated: true)
+    }
+
     private func resizeForMeasuredListHeight(_ measuredHeight: CGFloat) {
         guard client.selectedSession == nil, !didUserResize, !isListTransitionLocked else {
             return
@@ -292,7 +314,8 @@ final class FloatingPanelController: NSObject {
     }
 
     private func adjustListHeightForCurrentMeasurements(animated: Bool) {
-        guard client.selectedSession == nil, !isListTransitionLocked else {
+        guard client.selectedSession == nil, !isListTransitionLocked,
+              !panel.inLiveResize, !panel.isPerformingCustomLiveResize, !isBouncingResize else {
             return
         }
 
@@ -351,7 +374,7 @@ final class FloatingPanelController: NSObject {
         PanelLayoutState.verticalPadding * 2
             + PanelLayoutState.headerHeight
             + PanelLayoutState.headerToListSpacing
-            + CGFloat(visibleCards) * PanelLayoutState.cardHeight
+            + CGFloat(visibleCards) * PanelLayoutState.estimatedCardHeight
             + CGFloat(max(0, visibleCards - 1)) * PanelLayoutState.cardSpacing
             + PanelLayoutState.listBottomPadding
             + PanelLayoutState.bottomBreathingRoom
@@ -362,7 +385,7 @@ final class FloatingPanelController: NSObject {
     }
 
     private func detailMinimumHeight() -> CGFloat {
-        let measuredLastMessageHeight = layoutState.detailLastMessageHeight ?? PanelLayoutState.cardHeight
+        let measuredLastMessageHeight = layoutState.detailLastMessageHeight ?? PanelLayoutState.estimatedCardHeight
         let lastMessageHeight = min(max(measuredLastMessageHeight, 72), 620)
         let outerPadding = PanelLayoutState.verticalPadding * 2
         let headerHeight: CGFloat = 32
@@ -422,9 +445,18 @@ final class FloatingPanelController: NSObject {
     private func restoredListHeight(minimumHeight: CGFloat) -> CGFloat {
         let usefulHeight = usefulMaximumListHeight(for: client.sessions.count)
         if let lastEffectiveListHeight, lastEffectiveListHeight.isFinite, lastEffectiveListHeight > 0 {
-            return min(usefulHeight, max(minimumHeight, lastEffectiveListHeight))
+            let restored = layoutState.listMetrics.map {
+                snappedListHeight(lastEffectiveListHeight, metrics: $0)
+            } ?? lastEffectiveListHeight
+            return min(usefulHeight, max(minimumHeight, restored))
         }
         return listTransitionTargetHeight(minimumHeight: minimumHeight)
+    }
+
+    private func snappedListHeight(_ requestedHeight: CGFloat, metrics: ListLayoutMetrics) -> CGFloat {
+        metrics.itemHeights.min(by: {
+            abs($0 - requestedHeight) < abs($1 - requestedHeight)
+        }) ?? metrics.preferredHeight
     }
 
     private func currentListMinimumHeight() -> CGFloat {
@@ -501,6 +533,8 @@ final class FloatingPanelController: NSObject {
         frame.size = size
         frame.origin.y = oldMaxY - size.height
 
+        logWindowGeometry("set-size target=\(format(size.width))x\(format(size.height)) duration=\(String(format: "%.2f", duration))")
+
         isProgrammaticResize = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
@@ -512,6 +546,7 @@ final class FloatingPanelController: NSObject {
                     return
                 }
                 self.isProgrammaticResize = false
+                self.logWindowGeometry("set-size-complete")
                 completion?()
             }
         }
@@ -523,6 +558,8 @@ final class FloatingPanelController: NSObject {
         frame.size.height = height
         frame.origin.y = oldMaxY - height
 
+        logWindowGeometry("set-height target=\(format(height)) duration=\(String(format: "%.2f", duration))")
+
         isProgrammaticResize = true
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
@@ -531,12 +568,31 @@ final class FloatingPanelController: NSObject {
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 self?.isProgrammaticResize = false
+                self?.logWindowGeometry("set-height-complete")
             }
         }
     }
 
+    private func logWindowGeometry(_ trigger: String) {
+        guard CorptieAppEnvironment.isDevelopment else { return }
+        let frame = panel.frame
+        let contentRect = panel.contentRect(forFrameRect: frame)
+        let viewFrame = panel.contentView?.frame ?? .zero
+        let viewBounds = panel.contentView?.bounds ?? .zero
+        print("[layout-debug] window trigger=\(trigger) frame=\(debugRect(frame)) contentRect=\(debugRect(contentRect)) hostingFrame=\(debugRect(viewFrame)) hostingBounds=\(debugRect(viewBounds))")
+    }
+
+    private func format(_ value: CGFloat) -> String {
+        String(format: "%.1f", value)
+    }
+
+    private func debugRect(_ rect: NSRect) -> String {
+        "x\(format(rect.minX)) y\(format(rect.minY)) w\(format(rect.width)) h\(format(rect.height))"
+    }
+
     private func bounceHeightBackIfNeeded() {
-        guard client.selectedSession == nil else {
+        guard client.selectedSession == nil, !panel.inLiveResize,
+              !panel.isPerformingCustomLiveResize, !isBouncingResize else {
             return
         }
 
@@ -547,6 +603,8 @@ final class FloatingPanelController: NSObject {
         }
 
         isBouncingResize = true
+        pendingResizeBounce?.cancel()
+        pendingResizeBounce = nil
         let undershoot = max(listMinimumSize.height, targetHeight - 10)
         let rebound = min(panel.maxSize.height, targetHeight + 5)
 
@@ -589,6 +647,24 @@ final class FloatingPanelController: NSObject {
         let minimumHeight = currentListMinimumHeight()
         let usefulHeight = usefulMaximumListHeight(for: client.sessions.count)
         lastEffectiveListHeight = min(usefulHeight, max(minimumHeight, panel.frame.height))
+        if let currentListLayoutKey, let lastEffectiveListHeight {
+            saveListHeight(lastEffectiveListHeight, for: currentListLayoutKey)
+        }
+    }
+
+    private func savedListHeight(for layoutKey: String) -> CGFloat? {
+        guard let value = CorptieAppEnvironment.userDefaults.dictionary(forKey: listHeightStorageKey)?[layoutKey] as? NSNumber else {
+            return nil
+        }
+        let height = CGFloat(value.doubleValue)
+        return height.isFinite && height > 0 ? height : nil
+    }
+
+    private func saveListHeight(_ height: CGFloat, for layoutKey: String) {
+        guard height.isFinite, height > 0 else { return }
+        var heights = CorptieAppEnvironment.userDefaults.dictionary(forKey: listHeightStorageKey) ?? [:]
+        heights[layoutKey] = Double(height)
+        CorptieAppEnvironment.userDefaults.set(heights, forKey: listHeightStorageKey)
     }
 
     private func scheduleResizeBounceCheck() {
@@ -659,7 +735,9 @@ extension FloatingPanelController: NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
-        if !isProgrammaticResize && !isBouncingResize {
+        logWindowGeometry("window-did-resize")
+        let isUserDrivenResize = isNativeUserLiveResize || panel.isPerformingCustomLiveResize
+        if isUserDrivenResize && !isProgrammaticResize && !isBouncingResize {
             didUserResize = true
             if client.selectedSession != nil {
                 saveCurrentDetailWindowSizeIfNeeded()
@@ -670,7 +748,17 @@ extension FloatingPanelController: NSWindowDelegate {
         }
     }
 
+    func windowWillStartLiveResize(_ notification: Notification) {
+        isNativeUserLiveResize = NSEvent.pressedMouseButtons != 0
+    }
+
     func windowDidEndLiveResize(_ notification: Notification) {
+        guard isNativeUserLiveResize else { return }
+        isNativeUserLiveResize = false
+        finishListResizeIfNeeded()
+    }
+
+    private func finishListResizeIfNeeded() {
         pendingResizeBounce?.cancel()
         if client.selectedSession != nil {
             saveCurrentDetailWindowSizeIfNeeded()
@@ -685,6 +773,9 @@ extension FloatingPanelController: NSWindowDelegate {
 }
 
 final class FloatingPanel: NSPanel {
+    var isPerformingCustomLiveResize = false
+    var customResizeDidEnd: (() -> Void)?
+
     override func mouseDown(with event: NSEvent) {
         NSApp.activate(ignoringOtherApps: true)
         super.mouseDown(with: event)

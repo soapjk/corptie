@@ -5,13 +5,20 @@ import UniformTypeIdentifiers
 struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
+    @EnvironmentObject private var panelFocusState: PanelFocusState
     @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
     @StateObject private var newSessionPanel = NewSessionPanelController()
+    @StateObject private var externalMenuPanel = ExternalMenuPanelController()
     @State private var isShowingActionMenu = false
+    @State private var isShowingLayoutMenu = false
+    @State private var isHoveringExternalControls = false
+    @State private var actionMenuAnchor = CGRect.zero
+    @State private var layoutMenuAnchor = CGRect.zero
+    @State private var externalControlsWindow: NSWindow?
     @State private var draggedSessionId: String?
     @State private var sessionCardFrames: [String: CGRect] = [:]
+    @State private var sessionCardFramesLayoutKey: String?
     @State private var sessionSummaryFrames: [String: CGRect] = [:]
-    @State private var reorderStartFirstCardMinY: CGFloat?
     @State private var reorderDragOffsetY: CGFloat = 0
     @State private var reorderTargetSessionId: String?
     @State private var hasResolvedReorderTarget = false
@@ -20,9 +27,15 @@ struct FloatingRootView: View {
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
     @State private var detailPreheatTasks: [String: Task<Void, Never>] = [:]
     @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @State private var listHeightMeasurements: [ListHeightMetric: CGFloat] = [:]
+    @State private var panelSurfaceSize = CGSize.zero
+    @State private var isSearching = false
+    @State private var searchText = ""
+    @FocusState private var isSearchFieldFocused: Bool
+    @AppStorage("sessionDisplayMode") private var sessionDisplayModeRawValue = SessionDisplayMode.cards.rawValue
+    @AppStorage("groupsSessionsByProject") private var groupsSessionsByProject = false
     private let panelContentPadding: CGFloat = 14
-    private let sessionListHorizontalInset: CGFloat = 4
-    private let panelControlLeadingInset: CGFloat = 6
+    private let listContentFrameKey = "__corptie_list_content__"
     private let topBarControlTopInset: CGFloat = 6
     private let closeButtonLeadingInset: CGFloat = 12
 
@@ -61,28 +74,20 @@ struct FloatingRootView: View {
             }
             .padding(panelContentPadding)
 
-            if backendClient.selectedSession == nil && !newSessionPanel.isPresented {
-                FloatingActionMenu(
-                    isExpanded: $isShowingActionMenu,
-                    isBusy: backendClient.isCreatingTask,
-                    createTask: {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                            isShowingActionMenu = false
-                        }
-                        newSessionPanel.show(backendClient: backendClient)
-                    }
-                )
-                .padding(.leading, panelControlLeadingInset)
-                .padding(.bottom, panelContentPadding)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-                .zIndex(1)
-            }
-
             HoverRevealCloseButton()
                 .padding(.top, topBarControlTopInset)
                 .padding(.leading, closeButtonLeadingInset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .zIndex(0)
+        }
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: PanelSurfaceSizePreferenceKey.self, value: proxy.size)
+            }
+        )
+        .onPreferenceChange(PanelSurfaceSizePreferenceKey.self) { size in
+            panelSurfaceSize = size
+            logListGeometry(trigger: "surface")
         }
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .animation(.easeOut(duration: 0.18), value: backendClient.selectedSession?.id)
@@ -91,18 +96,55 @@ struct FloatingRootView: View {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12 + 0.1 * glassStrength), lineWidth: 1)
         )
-        .overlay(alignment: .topTrailing) {
+        .overlay(alignment: .bottomTrailing) {
             if CorptieAppEnvironment.isDevelopment {
                 EnvironmentModeBadge()
-                    .padding(.top, 10)
+                    .allowsHitTesting(false)
+                    .padding(.bottom, 10)
                     .padding(.trailing, 10)
                     .zIndex(4)
             }
         }
-        .frame(minWidth: 360, idealWidth: 420, maxWidth: .infinity, minHeight: 148, idealHeight: 410, maxHeight: .infinity)
+        .padding(.leading, PanelLayoutState.externalControlsGutter)
+        .overlay {
+            if isShowingActionMenu || isShowingLayoutMenu {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { dismissExternalMenus() }
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            GeometryReader { proxy in
+                if backendClient.selectedSession == nil && !newSessionPanel.isPresented {
+                    externalSessionControls
+                    .padding(.leading, 4)
+                    .padding(.bottom, panelContentPadding)
+                    .opacity(showsExternalSessionControls ? 1 : 0)
+                    .scaleEffect(showsExternalSessionControls ? 1 : 0.94, anchor: .bottomLeading)
+                    .allowsHitTesting(showsExternalSessionControls)
+                    .onHover { isHoveringExternalControls = $0 }
+                    .animation(.easeOut(duration: 0.16), value: showsExternalSessionControls)
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: .bottomLeading
+                    )
+                }
+            }
+        }
+        .overlay(alignment: .bottom) {
+            BottomEdgeResizeHandle()
+                .frame(maxWidth: .infinity)
+                .frame(height: 5)
+                .zIndex(20)
+        }
+        .frame(minWidth: 360, idealWidth: 420, maxWidth: .infinity, minHeight: 92, idealHeight: 410, maxHeight: .infinity)
         .onChange(of: backendClient.selectedSession?.id) { _, _ in
-            isShowingActionMenu = false
+            dismissExternalMenus()
             newSessionPanel.close()
+        }
+        .onChange(of: panelFocusState.isFocused) { _, isFocused in
+            if !isFocused { dismissExternalMenus() }
         }
     }
 
@@ -110,30 +152,151 @@ struct FloatingRootView: View {
         0.55
     }
 
+    private func dismissExternalMenus() {
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.88)) {
+            isShowingActionMenu = false
+            isShowingLayoutMenu = false
+        }
+        externalMenuPanel.close()
+    }
+
+    private var showsExternalSessionControls: Bool {
+        panelFocusState.isFocused || isHoveringExternalControls || isShowingActionMenu || isShowingLayoutMenu
+    }
+
+    private var externalSessionControls: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            FloatingActionMenu(
+                isExpanded: $isShowingActionMenu,
+                anchorChanged: updateActionMenuAnchor,
+                openMenu: showActionMenu,
+                closeMenu: dismissExternalMenus
+            )
+
+            FloatingLayoutMenu(
+                isExpanded: $isShowingLayoutMenu,
+                displayModeRawValue: $sessionDisplayModeRawValue,
+                groupsByProject: $groupsSessionsByProject,
+                anchorChanged: updateLayoutMenuAnchor,
+                openMenu: showLayoutMenu,
+                closeMenu: dismissExternalMenus
+            )
+        }
+    }
+
+    private func updateActionMenuAnchor(_ rect: CGRect, window: NSWindow?) {
+        actionMenuAnchor = rect
+        externalControlsWindow = window
+        if isShowingActionMenu {
+            externalMenuPanel.reposition(anchor: rect)
+        }
+    }
+
+    private func updateLayoutMenuAnchor(_ rect: CGRect, window: NSWindow?) {
+        layoutMenuAnchor = rect
+        externalControlsWindow = window
+        if isShowingLayoutMenu {
+            externalMenuPanel.reposition(anchor: rect)
+        }
+    }
+
+    private func showActionMenu() {
+        guard let externalControlsWindow, actionMenuAnchor != .zero else { return }
+        isShowingLayoutMenu = false
+        isShowingActionMenu = true
+        externalMenuPanel.show(
+            parent: externalControlsWindow,
+            anchor: actionMenuAnchor,
+            contentSize: NSSize(width: 170, height: 120)
+        ) {
+            ExternalActionPanelContent(
+                isBusy: backendClient.isCreatingTask,
+                createTask: {
+                    dismissExternalMenus()
+                    newSessionPanel.show(backendClient: backendClient)
+                },
+                search: {
+                    dismissExternalMenus()
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.86)) {
+                        isSearching = true
+                    }
+                    DispatchQueue.main.async { isSearchFieldFocused = true }
+                }
+            )
+        }
+    }
+
+    private func showLayoutMenu() {
+        guard let externalControlsWindow, layoutMenuAnchor != .zero else { return }
+        isShowingActionMenu = false
+        isShowingLayoutMenu = true
+        externalMenuPanel.show(
+            parent: externalControlsWindow,
+            anchor: layoutMenuAnchor,
+            contentSize: NSSize(width: 196, height: 142)
+        ) {
+            ExternalLayoutPanelContent(
+                displayMode: displayMode,
+                groupsByProject: groupsSessionsByProject,
+                selectDisplayMode: { mode in
+                    sessionDisplayModeRawValue = mode.rawValue
+                    dismissExternalMenus()
+                },
+                toggleGrouping: {
+                    groupsSessionsByProject.toggle()
+                    dismissExternalMenus()
+                }
+            )
+        }
+    }
+
     private var sessionListView: some View {
-        NativeSessionScrollView {
-            LazyVStack(spacing: PanelLayoutState.cardSpacing) {
-                ForEach(backendClient.sessions) { session in
-                    sessionCard(for: session)
+        VStack(alignment: .leading, spacing: 10) {
+            if isSearching {
+                sessionSearchBar
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
+            if filteredSessions.isEmpty {
+                ContentUnavailableView.search(text: searchText)
+                    .frame(maxWidth: .infinity, minHeight: 150)
+                    .measureListHeight(.cards)
+            } else {
+                NativeSessionScrollView {
+                    LazyVStack(alignment: .leading, spacing: displayMode == .cards ? PanelLayoutState.cardSpacing : 4) {
+                        ForEach(sessionGroups) { group in
+                            if groupsSessionsByProject {
+                                ProjectGroupHeader(path: group.path, count: group.sessions.count)
+                                    .padding(.top, group.id == sessionGroups.first?.id ? 0 : 8)
+                            }
+                            ForEach(group.sessions) { session in
+                                sessionItem(for: session)
+                            }
+                        }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .animation(.spring(response: 0.30, dampingFraction: 0.84), value: filteredSessions.map(\.id))
+                    .measureSessionCardFrame(listContentFrameKey)
+                    .measureListHeight(.cards)
+                }
+                .id(listLayoutKey)
+                .measureListGlobalMinY(.scrollTop)
+                .coordinateSpace(name: "session-list")
+                .overlay(alignment: .topLeading) {
+                    if displayMode == .cards { sessionHoverPreviewOverlay }
                 }
             }
-            .frame(minHeight: sessionCardsContentHeight, alignment: .top)
-            .fixedSize(horizontal: false, vertical: true)
-            .animation(draggedSessionId == nil ? .spring(response: 0.30, dampingFraction: 0.84) : nil, value: backendClient.sessions.map(\.id))
-            .padding(.horizontal, sessionListHorizontalInset)
-            .padding(.bottom, 4)
-            .measureListHeight(.cards)
         }
-        .coordinateSpace(name: "session-list")
-        .overlay(alignment: .topLeading) {
-            sessionHoverPreviewOverlay
-        }
+        .animation(.spring(response: 0.30, dampingFraction: 0.86), value: isSearching)
+        .measureListGlobalMinY(.browserTop)
         .onPreferenceChange(SessionCardFramePreferenceKey.self) { frames in
             guard draggedSessionId == nil else {
                 return
             }
             sessionCardFrames = frames
-            updateMeasuredListHeights(cardFrames: frames)
+            sessionCardFramesLayoutKey = listLayoutKey
+            logListGeometry(trigger: "card-frames", frames: frames)
+            updatePreferredListHeight(listHeightMeasurements)
         }
         .onPreferenceChange(SessionSummaryFramePreferenceKey.self) { frames in
             guard draggedSessionId == nil else {
@@ -141,31 +304,79 @@ struct FloatingRootView: View {
             }
             sessionSummaryFrames = frames
         }
-        .onChange(of: backendClient.sessions) { _, _ in
-            guard draggedSessionId == nil else {
-                return
-            }
-            updateMeasuredListHeights(cardFrames: sessionCardFrames)
+        .onChange(of: sessionDisplayModeRawValue) { _, _ in
+            sessionCardFrames = [:]
+            sessionCardFramesLayoutKey = nil
+            logListGeometry(trigger: "display-mode")
         }
-        .onChange(of: backendClient.selectedSession?.id) { _, _ in
-            updateMeasuredListHeights(cardFrames: sessionCardFrames)
+        .onChange(of: groupsSessionsByProject) { _, _ in
+            sessionCardFrames = [:]
+            sessionCardFramesLayoutKey = nil
         }
     }
 
-    private var sessionCardsContentHeight: CGFloat {
-        let count = backendClient.sessions.count
-        guard count > 0 else {
-            return 0
+    private var displayMode: SessionDisplayMode {
+        get { SessionDisplayMode(rawValue: sessionDisplayModeRawValue) ?? .cards }
+        nonmutating set { sessionDisplayModeRawValue = newValue.rawValue }
+    }
+
+    private var filteredSessions: [TaskSession] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return backendClient.sessions }
+        return backendClient.sessions.filter { session in
+            [session.title, session.summary, session.agent, session.external?.cwd ?? ""]
+                .contains { $0.localizedCaseInsensitiveContains(query) }
         }
-        return CGFloat(count) * PanelLayoutState.cardHeight
-            + CGFloat(max(0, count - 1)) * PanelLayoutState.cardSpacing
+    }
+
+    private var sessionGroups: [SessionProjectGroup] {
+        guard groupsSessionsByProject else {
+            return [SessionProjectGroup(path: "", sessions: filteredSessions)]
+        }
+        var order: [String] = []
+        var grouped: [String: [TaskSession]] = [:]
+        for session in filteredSessions {
+            let path = session.external?.cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = (path?.isEmpty == false ? path! : "No Project")
+            if grouped[key] == nil { order.append(key) }
+            grouped[key, default: []].append(session)
+        }
+        return order.map { SessionProjectGroup(path: $0, sessions: grouped[$0] ?? []) }
+    }
+
+    private var sessionSearchBar: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(CorptiePalette.secondaryText)
+            TextField("Search sessions", text: $searchText)
+                .textFieldStyle(.plain)
+                .focused($isSearchFieldFocused)
+            Button {
+                searchText = ""
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+                    isSearching = false
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CorptiePalette.mutedText)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background { LiquidGlassControlBackground(cornerRadius: 15) }
     }
 
     @ViewBuilder
-    private func sessionCard(for session: TaskSession) -> some View {
-        if backendClient.isShowingArchivedSessions {
+    private func sessionItem(for session: TaskSession) -> some View {
+        if displayMode == .compact {
+            CompactSessionRow(session: session, preheatRequested: preheatDetail)
+                .environmentObject(backendClient)
+                .environmentObject(detachedSessionManager)
+                .measureSessionCardFrame(session.id)
+        } else if backendClient.isShowingArchivedSessions {
             TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
-                .fixedSessionCardHeight()
+                .measureSessionCardFrame(session.id)
         } else {
             TaskCardView(
                 session: session,
@@ -182,7 +393,6 @@ struct FloatingRootView: View {
                     preheatDetail(for: session)
                 }
             )
-                .fixedSessionCardHeight()
                 .opacity(draggedSessionId == session.id ? 0.82 : 1)
                 .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
                 .measureSessionCardFrame(session.id)
@@ -282,50 +492,78 @@ struct FloatingRootView: View {
     }
 
     private func updatePreferredListHeight(_ values: [ListHeightMetric: CGFloat]) {
+        listHeightMeasurements = values
         let cardsHeight = values[.cards] ?? 0
         guard cardsHeight > 0 else {
             return
         }
 
+        let browserTop = values[.browserTop] ?? 0
+        let scrollTop = values[.scrollTop] ?? browserTop
+        let listTopOffset = max(0, scrollTop - browserTop)
         let outerPadding = panelContentPadding * 2
-        let usefulHeight = outerPadding + cardsHeight
-            + PanelLayoutState.listBottomPadding
-            + PanelLayoutState.bottomBreathingRoom
-
-        DispatchQueue.main.async {
-            panelLayoutState.updateMeasuredListHeights(preferred: nil, useful: usefulHeight)
-        }
-    }
-
-    private func updateMeasuredListHeights(cardFrames: [String: CGRect]) {
-        let visibleSessions = Array(backendClient.sessions.prefix(3))
-        let visibleHeights = visibleSessions.compactMap { session in
-            cardFrames[session.id]?.height
-        }
-        guard !visibleHeights.isEmpty else {
+        let listBottomPadding = PanelLayoutState.listBottomPadding + PanelLayoutState.bottomBreathingRoom
+        guard sessionCardFramesLayoutKey == listLayoutKey else { return }
+        guard let contentFrame = sessionCardFrames[listContentFrameKey] else { return }
+        let orderedFrames = filteredSessions.compactMap { sessionCardFrames[$0.id] }
+        guard !orderedFrames.isEmpty else {
             return
         }
 
-        let outerPadding = panelContentPadding * 2
-        let leadingSessions = Array(backendClient.sessions.prefix(2))
-        let leadingHeights = leadingSessions.compactMap { session in
-            cardFrames[session.id]?.height
+        let minimumItemCount: Int = {
+            guard displayMode == .cards else { return 1 }
+            let leading = Array(filteredSessions.prefix(2))
+            return leading.contains { !($0.suggestedOptions ?? []).isEmpty } ? min(2, leading.count) : 1
+        }()
+        let itemHeights = orderedFrames.map { frame in
+            outerPadding
+                + listTopOffset
+                + max(0, frame.maxY - contentFrame.minY)
+                + listBottomPadding
         }
-        let shouldFitLeadingCards = leadingSessions.contains { session in
-            !(session.suggestedOptions ?? []).isEmpty
+        let minimumHeight = itemHeights[min(max(1, minimumItemCount), itemHeights.count) - 1]
+        let preferredHeight = itemHeights[min(3, itemHeights.count) - 1]
+        let usefulHeight = itemHeights.last ?? (outerPadding + listTopOffset + cardsHeight)
+
+        if CorptieAppEnvironment.isDevelopment {
+            print("[layout-debug] metrics key=\(listLayoutKey) surface=\(debugSize(panelSurfaceSize)) content=\(debugRect(contentFrame)) cardsHeight=\(debugNumber(cardsHeight)) listTop=\(debugNumber(listTopOffset)) itemHeights=\(itemHeights.map(debugNumber).joined(separator: ",")) min=\(debugNumber(minimumHeight)) preferred=\(debugNumber(preferredHeight)) useful=\(debugNumber(usefulHeight))")
         }
-        let minimumCardHeights = shouldFitLeadingCards && leadingHeights.count == leadingSessions.count
-            ? leadingHeights
-            : [visibleHeights.first ?? PanelLayoutState.cardHeight]
-        let minimumSpacing = CGFloat(max(0, minimumCardHeights.count - 1)) * PanelLayoutState.cardSpacing
-        let listBottomPadding = PanelLayoutState.listBottomPadding + PanelLayoutState.bottomBreathingRoom
-        let minimumHeight = outerPadding + minimumCardHeights.reduce(0, +) + minimumSpacing + listBottomPadding
-        let visibleSpacing = CGFloat(max(0, visibleHeights.count - 1)) * PanelLayoutState.cardSpacing
-        let preferredHeight = outerPadding + visibleHeights.reduce(0, +) + visibleSpacing + listBottomPadding
 
         DispatchQueue.main.async {
-            panelLayoutState.updateMeasuredListHeights(minimum: minimumHeight, preferred: preferredHeight, useful: nil)
+            panelLayoutState.updateMeasuredListHeights(
+                layoutKey: listLayoutKey,
+                minimum: minimumHeight,
+                preferred: preferredHeight,
+                useful: usefulHeight,
+                itemHeights: itemHeights
+            )
         }
+    }
+
+    private var listLayoutKey: String {
+        "\(displayMode.rawValue).\(groupsSessionsByProject ? "grouped" : "flat")"
+    }
+
+    private func logListGeometry(trigger: String, frames: [String: CGRect]? = nil) {
+        guard CorptieAppEnvironment.isDevelopment else { return }
+        let values = frames ?? sessionCardFrames
+        let content = values[listContentFrameKey].map(debugRect) ?? "nil"
+        let cards = filteredSessions.compactMap { session in
+            values[session.id].map { "\(session.id.prefix(6)):\(debugRect($0))" }
+        }.joined(separator: " ")
+        print("[layout-debug] view trigger=\(trigger) key=\(listLayoutKey) surface=\(debugSize(panelSurfaceSize)) content=\(content) cards=[\(cards)]")
+    }
+
+    private func debugNumber(_ value: CGFloat) -> String {
+        String(format: "%.1f", value)
+    }
+
+    private func debugSize(_ size: CGSize) -> String {
+        "\(debugNumber(size.width))x\(debugNumber(size.height))"
+    }
+
+    private func debugRect(_ rect: CGRect) -> String {
+        "x\(debugNumber(rect.minX)) y\(debugNumber(rect.minY)) w\(debugNumber(rect.width)) h\(debugNumber(rect.height))"
     }
 
     private func reorderGesture(for session: TaskSession) -> some Gesture {
@@ -334,7 +572,6 @@ struct FloatingRootView: View {
                 if draggedSessionId != session.id {
                     draggedSessionId = session.id
                     reorderTargetSessionId = nil
-                    reorderStartFirstCardMinY = firstVisibleCardMinY(excluding: session.id)
                     hoverPreviewSessionId = nil
                     hasResolvedReorderTarget = false
                     reorderDragOffsetY = 0
@@ -369,7 +606,6 @@ struct FloatingRootView: View {
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     draggedSessionId = nil
                     reorderTargetSessionId = nil
-                    reorderStartFirstCardMinY = nil
                     hasResolvedReorderTarget = false
                 }
             }
@@ -383,19 +619,6 @@ struct FloatingRootView: View {
         guard let firstId = orderedIds.first,
               let firstFrame = frames[firstId] else {
             return nil
-        }
-
-        let firstMinY = reorderStartFirstCardMinY ?? firstFrame.minY
-        let rowStride = PanelLayoutState.cardHeight + PanelLayoutState.cardSpacing
-        if rowStride > 0 {
-            let proposedIndex = Int(((locationY - firstMinY) / rowStride).rounded(.down))
-            if proposedIndex <= 0 {
-                return firstId
-            }
-            if proposedIndex >= orderedIds.count {
-                return nil
-            }
-            return orderedIds[proposedIndex]
         }
 
         if locationY < firstFrame.minY {
@@ -418,14 +641,141 @@ struct FloatingRootView: View {
         return nil
     }
 
-    private func firstVisibleCardMinY(excluding draggedId: String) -> CGFloat? {
-        backendClient.sessions
-            .map(\.id)
-            .filter { $0 != draggedId }
-            .compactMap { sessionCardFrames[$0]?.minY }
-            .min()
+}
+
+private enum SessionDisplayMode: String {
+    case cards
+    case compact
+}
+
+private struct SessionProjectGroup: Identifiable {
+    let path: String
+    let sessions: [TaskSession]
+    var id: String { path }
+}
+
+private struct ProjectGroupHeader: View {
+    let path: String
+    let count: Int
+
+    private var name: String {
+        guard path != "No Project" else { return path }
+        return URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
     }
 
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: path == "No Project" ? "folder.badge.questionmark" : "folder.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CorptiePalette.amber)
+            Text(name)
+                .font(.system(size: 11.5, weight: .semibold))
+                .lineLimit(1)
+            Text("\(count)")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(CorptiePalette.mutedText)
+            Spacer()
+        }
+        .foregroundStyle(CorptiePalette.secondaryText)
+        .padding(.horizontal, 9)
+        .help(path)
+    }
+}
+
+private struct CompactSessionRow: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
+    @State private var isRenaming = false
+    let session: TaskSession
+    var preheatRequested: (TaskSession) -> Void = { _ in }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SessionAvatarView(session: session, avatarSize: 28)
+            Text(session.title)
+                .font(.system(size: 13, weight: .medium))
+                .lineLimit(1)
+                .layoutPriority(1)
+            if let projectPath {
+                Text(URL(fileURLWithPath: projectPath).standardizedFileURL.lastPathComponent)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(CorptiePalette.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(projectPath)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 42)
+        .standardSessionCardSurface()
+        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onHover { if $0 { preheatRequested(session) } }
+        .onTapGesture { backendClient.select(session: session) }
+        .contextMenu {
+            Button("Rename", systemImage: "pencil") { isRenaming = true }
+            if !backendClient.isShowingArchivedSessions {
+                Button("Float Session", systemImage: "rectangle.on.rectangle.circle") {
+                    detachedSessionManager.float(session: session)
+                }
+                Button(session.pinned == true ? "Unpin" : "Pin to Top", systemImage: "pin") {
+                    backendClient.setPinned(session.pinned != true, session: session)
+                }
+            }
+            Divider()
+            Button(backendClient.isShowingArchivedSessions ? "Unarchive" : "Archive", systemImage: "archivebox") {
+                backendClient.setArchived(!backendClient.isShowingArchivedSessions, session: session)
+            }
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                backendClient.delete(session: session)
+            }
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameSessionSheet(session: session) { isRenaming = false }
+                .environmentObject(backendClient)
+                .presentationBackground(.clear)
+        }
+    }
+
+    private var projectPath: String? {
+        let path = session.external?.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return path.isEmpty ? nil : path
+    }
+}
+
+private struct LiquidGlassControlBackground: View {
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.clear)
+                .glassEffect(.clear.tint(Color.white.opacity(0.035)), in: .rect(cornerRadius: cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.8)
+                }
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+                }
+        }
+    }
+}
+
+private struct GlassIconButtonStyle: ButtonStyle {
+    let isSelected: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(isSelected ? CorptiePalette.amber : CorptiePalette.primaryText)
+            .background { LiquidGlassControlBackground(cornerRadius: 15) }
+            .opacity(configuration.isPressed ? 0.68 : 1)
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+    }
 }
 
 private struct HoverRevealCloseButton: View {
@@ -515,6 +865,8 @@ private struct EnvironmentModeBadge: View {
 private enum ListHeightMetric: Hashable {
     case header
     case cards
+    case browserTop
+    case scrollTop
 }
 
 private struct ListHeightPreferenceKey: PreferenceKey {
@@ -530,6 +882,15 @@ private struct SessionCardFramePreferenceKey: PreferenceKey {
 
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
+    }
+}
+
+private struct PanelSurfaceSizePreferenceKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        let next = nextValue()
+        value = CGSize(width: max(value.width, next.width), height: max(value.height, next.height))
     }
 }
 
@@ -574,6 +935,17 @@ private extension View {
         )
     }
 
+    func measureListGlobalMinY(_ metric: ListHeightMetric) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: ListHeightPreferenceKey.self,
+                    value: [metric: proxy.frame(in: .global).minY]
+                )
+            }
+        )
+    }
+
     func measureSessionCardFrame(_ id: String) -> some View {
         background(
             GeometryReader { proxy in
@@ -607,10 +979,6 @@ private extension View {
         )
     }
 
-    func fixedSessionCardHeight() -> some View {
-        frame(height: PanelLayoutState.cardHeight, alignment: .topLeading)
-            .fixedSize(horizontal: false, vertical: true)
-    }
 }
 
 private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
@@ -748,6 +1116,68 @@ private struct WindowDragArea: NSViewRepresentable {
     }
 }
 
+private struct BottomEdgeResizeHandle: NSViewRepresentable {
+    func makeNSView(context: Context) -> ResizeView {
+        ResizeView()
+    }
+
+    func updateNSView(_ nsView: ResizeView, context: Context) {}
+
+    final class ResizeView: NSView {
+        private var startingMouseLocation: NSPoint?
+        private var startingFrame: NSRect?
+
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: bounds,
+                options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+                owner: self
+            ))
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            NSCursor.resizeUpDown.push()
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            NSCursor.pop()
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            guard let window else { return }
+            startingMouseLocation = NSEvent.mouseLocation
+            startingFrame = window.frame
+            (window as? FloatingPanel)?.isPerformingCustomLiveResize = true
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let window, let startingMouseLocation, let startingFrame else { return }
+            let deltaY = NSEvent.mouseLocation.y - startingMouseLocation.y
+            let proposedHeight = startingFrame.height - deltaY
+            let height = min(window.maxSize.height, max(window.minSize.height, proposedHeight))
+            var frame = startingFrame
+            frame.size.height = height
+            frame.origin.y = startingFrame.maxY - height
+            window.setFrame(frame, display: true)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            if let panel = window as? FloatingPanel {
+                panel.isPerformingCustomLiveResize = false
+                panel.customResizeDidEnd?()
+            }
+            startingMouseLocation = nil
+            startingFrame = nil
+        }
+    }
+}
+
 @MainActor
 private final class NewSessionPanelController: NSObject, ObservableObject, NSWindowDelegate {
     @Published var isPresented = false
@@ -823,35 +1253,19 @@ private final class NewSessionPanelController: NSObject, ObservableObject, NSWin
 
 private struct FloatingActionMenu: View {
     @Binding var isExpanded: Bool
-    let isBusy: Bool
-    let createTask: () -> Void
+    let anchorChanged: (CGRect, NSWindow?) -> Void
+    let openMenu: () -> Void
+    let closeMenu: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if isExpanded {
-                actionButton(
-                    title: "New Session",
-                    systemImage: "plus.circle.fill",
-                    isDisabled: isBusy,
-                    help: "Create new agent task",
-                    action: createTask
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            toggleButton
-        }
-        .animation(.spring(response: 0.24, dampingFraction: 0.86), value: isExpanded)
+        toggleButton
     }
 
     @ViewBuilder
     private var toggleButton: some View {
         orbLabel
-            .background(FloatingActionOrb())
             .contentShape(Circle())
-            .opacity(isBusy ? 0.55 : 1)
             .onTapGesture {
-                guard !isBusy else { return }
                 toggleMenu()
             }
             .help(isExpanded ? "Close actions" : "Open actions")
@@ -861,48 +1275,284 @@ private struct FloatingActionMenu: View {
     }
 
     private var orbLabel: some View {
-        ZStack {
-            if isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Image(systemName: isExpanded ? "xmark" : "plus")
-                    .font(.system(size: 13, weight: .semibold))
-            }
-        }
-        .frame(width: 32, height: 32)
-        .foregroundStyle(CorptiePalette.primaryText)
-        .contentShape(Circle())
+        ExternalControlOrbLabel(systemImage: isExpanded ? "xmark" : "plus")
+            .background(ExternalControlAnchorReader(anchorChanged: anchorChanged))
     }
 
     private func toggleMenu() {
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
-            isExpanded.toggle()
+        isExpanded ? closeMenu() : openMenu()
+    }
+}
+
+private struct FloatingLayoutMenu: View {
+    @Binding var isExpanded: Bool
+    @Binding var displayModeRawValue: String
+    @Binding var groupsByProject: Bool
+    let anchorChanged: (CGRect, NSWindow?) -> Void
+    let openMenu: () -> Void
+    let closeMenu: () -> Void
+
+    private var displayMode: SessionDisplayMode {
+        SessionDisplayMode(rawValue: displayModeRawValue) ?? .cards
+    }
+
+    var body: some View {
+        ExternalControlOrbLabel(
+            systemImage: isExpanded ? "xmark" : (displayMode == .cards ? "rectangle.grid.1x2" : "list.bullet")
+        )
+            .background(ExternalControlAnchorReader(anchorChanged: anchorChanged))
+            .onTapGesture { toggle() }
+            .help(isExpanded ? "Close layout options" : "Layout and grouping")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(isExpanded ? "Close layout options" : "Layout and grouping")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private func toggle() {
+        isExpanded ? closeMenu() : openMenu()
+    }
+}
+
+private struct ExternalActionPanelContent: View {
+    let isBusy: Bool
+    let createTask: () -> Void
+    let search: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            actionButton("New Session", systemImage: "plus.circle.fill", disabled: isBusy, action: createTask)
+            actionButton("Search", systemImage: "magnifyingglass", disabled: false, action: search)
         }
+        .padding(6)
+        .background(FloatingActionSurface(cornerRadius: 16))
     }
 
     private func actionButton(
-        title: String,
+        _ title: String,
         systemImage: String,
-        isDisabled: Bool,
-        help: String,
+        disabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
                     .font(.system(size: 13, weight: .bold))
+                    .frame(width: 16)
                 Text(title)
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Spacer(minLength: 4)
             }
             .foregroundStyle(CorptiePalette.primaryText)
-            .padding(.horizontal, 11)
-            .frame(height: 34)
-            .background(FloatingActionSurface(cornerRadius: 14))
+            .padding(.horizontal, 8)
+            .frame(width: 130, height: 34)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .help(help)
+        .disabled(disabled)
+    }
+}
+
+private struct ExternalLayoutPanelContent: View {
+    let displayMode: SessionDisplayMode
+    let groupsByProject: Bool
+    let selectDisplayMode: (SessionDisplayMode) -> Void
+    let toggleGrouping: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            optionButton("Cards", systemImage: "rectangle.grid.1x2", selected: displayMode == .cards) {
+                selectDisplayMode(.cards)
+            }
+            optionButton("Compact List", systemImage: "list.bullet", selected: displayMode == .compact) {
+                selectDisplayMode(.compact)
+            }
+            optionButton("Group by Project", systemImage: "folder.fill", selected: groupsByProject) {
+                toggleGrouping()
+            }
+        }
+        .padding(6)
+        .background(FloatingActionSurface(cornerRadius: 16))
+    }
+
+    private func optionButton(
+        _ title: String,
+        systemImage: String,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 15)
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Spacer(minLength: 8)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .opacity(selected ? 1 : 0)
+            }
+            .foregroundStyle(CorptiePalette.primaryText)
+            .padding(.horizontal, 8)
+            .frame(width: 154, height: 29)
+            .background(
+                selected ? Color.white.opacity(0.18) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+@MainActor
+private final class ExternalMenuPanelController: ObservableObject {
+    private var panel: ExternalMenuPanel?
+    private weak var parent: NSWindow?
+    private var anchor = CGRect.zero
+
+    func show<Content: View>(
+        parent: NSWindow,
+        anchor: CGRect,
+        contentSize: NSSize,
+        @ViewBuilder content: () -> Content
+    ) {
+        close()
+        self.parent = parent
+        self.anchor = anchor
+
+        let nextPanel = ExternalMenuPanel(
+            contentRect: NSRect(origin: .zero, size: contentSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        nextPanel.isOpaque = false
+        nextPanel.backgroundColor = .clear
+        nextPanel.hasShadow = true
+        nextPanel.level = parent.level
+        nextPanel.hidesOnDeactivate = true
+        nextPanel.collectionBehavior = [.transient, .fullScreenAuxiliary, .stationary]
+        nextPanel.isMovable = false
+        nextPanel.becomesKeyOnlyIfNeeded = true
+
+        let hostingView = ExternalMenuHostingView(rootView: AnyView(content().padding(12)))
+        hostingView.frame = NSRect(origin: .zero, size: contentSize)
+        hostingView.autoresizingMask = [.width, .height]
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        nextPanel.contentView = hostingView
+        // NSPanel may replace the hosting view's frame when assigning contentView.
+        // Bind it again to the panel's bounds so the complete menu is rendered and
+        // receives clicks across its entire independent window.
+        hostingView.frame = nextPanel.contentView?.bounds ?? NSRect(origin: .zero, size: contentSize)
+        hostingView.autoresizingMask = [.width, .height]
+        panel = nextPanel
+        position(nextPanel, parent: parent, anchor: anchor)
+        parent.addChildWindow(nextPanel, ordered: .above)
+        nextPanel.alphaValue = 0
+        nextPanel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            nextPanel.animator().alphaValue = 1
+        }
+    }
+
+    func reposition(anchor: CGRect) {
+        self.anchor = anchor
+        guard let panel, let parent else { return }
+        position(panel, parent: parent, anchor: anchor)
+    }
+
+    func close() {
+        guard let panel else { return }
+        parent?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        self.panel = nil
+        parent = nil
+    }
+
+    private func position(_ panel: NSPanel, parent: NSWindow, anchor: CGRect) {
+        let visibleFrame = parent.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? parent.frame
+        let gap: CGFloat = 7
+        var origin = NSPoint(
+            x: anchor.maxX + gap,
+            y: anchor.midY - panel.frame.height / 2
+        )
+        if origin.x + panel.frame.width > visibleFrame.maxX - 8 {
+            origin.x = anchor.minX - gap - panel.frame.width
+        }
+        origin.x = min(max(origin.x, visibleFrame.minX + 8), visibleFrame.maxX - panel.frame.width - 8)
+        origin.y = min(max(origin.y, visibleFrame.minY + 8), visibleFrame.maxY - panel.frame.height - 8)
+        panel.setFrameOrigin(origin)
+    }
+}
+
+private final class ExternalMenuPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+private final class ExternalMenuHostingView: NSHostingView<AnyView> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+private struct ExternalControlAnchorReader: NSViewRepresentable {
+    let anchorChanged: (CGRect, NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> AnchorProbeView {
+        AnchorProbeView(anchorChanged: anchorChanged)
+    }
+
+    func updateNSView(_ nsView: AnchorProbeView, context: Context) {
+        nsView.anchorChanged = anchorChanged
+        nsView.reportAnchor()
+    }
+
+    final class AnchorProbeView: NSView {
+        var anchorChanged: (CGRect, NSWindow?) -> Void
+
+        init(anchorChanged: @escaping (CGRect, NSWindow?) -> Void) {
+            self.anchorChanged = anchorChanged
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            reportAnchor()
+        }
+
+        override func layout() {
+            super.layout()
+            reportAnchor()
+        }
+
+        func reportAnchor() {
+            guard let window else { return }
+            let rectInWindow = convert(bounds, to: nil)
+            let rectOnScreen = window.convertToScreen(rectInWindow)
+            DispatchQueue.main.async { [weak self, weak window] in
+                self?.anchorChanged(rectOnScreen, window)
+            }
+        }
+    }
+}
+
+private struct ExternalControlOrbLabel: View {
+    let systemImage: String
+
+    var body: some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .symbolRenderingMode(.monochrome)
+            .foregroundStyle(Color.white)
+            .blendMode(.difference)
+            .frame(width: 32, height: 32)
+            .background(FloatingActionOrb())
+            .contentShape(Circle())
     }
 }
 
@@ -943,7 +1593,7 @@ private struct NewPtyAgentTaskSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
     @AppStorage("newTask.defaultSandboxMode", store: CorptieAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
     @AppStorage("newTask.defaultApprovalPolicy", store: CorptieAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
-    @State private var title = "Agent"
+    @State private var title = ""
     @State private var command = "codex"
     @State private var arguments = ""
     @State private var existingSessionId = ""
@@ -979,7 +1629,7 @@ private struct NewPtyAgentTaskSheet: View {
                 Text("Title")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.black)
-                TextField("Agent", text: $title)
+                TextField(defaultSessionTitle, text: $title)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, weight: .medium))
                     .padding(.horizontal, 10)
@@ -1371,8 +2021,9 @@ private struct NewPtyAgentTaskSheet: View {
     }
 
     private func startSelectedAgent() {
-        let finalTitle = title.isEmpty ? "" : title
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalTitle = trimmedTitle.isEmpty ? workspaceFolderName(workspace) : trimmedTitle
         if trimmedCommand == "codex" {
             backendClient.createCodexPtyTask(
                 title: finalTitle,
@@ -1407,6 +2058,16 @@ private struct NewPtyAgentTaskSheet: View {
                 close()
             }
         }
+    }
+
+    private var defaultSessionTitle: String {
+        let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
+        return workspaceFolderName(workspace)
+    }
+
+    private func workspaceFolderName(_ path: String) -> String {
+        let folderName = URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
+        return folderName.isEmpty ? "Agent" : folderName
     }
 
     private func splitArguments(_ value: String) -> [String] {
@@ -1642,14 +2303,13 @@ private struct TaskCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                ZStack(alignment: .topTrailing) {
-                    AgentAvatarView(session: session, size: 34)
-
-                    connectionIndicatorButton
-                        .offset(x: 6, y: -6)
-                        .zIndex(2)
-                }
-                .frame(width: 42, height: 38, alignment: .topLeading)
+                SessionAvatarView(session: session, avatarSize: 34)
+                    .overlay {
+                        connectionIndicatorButton
+                            .opacity(0.001)
+                            .offset(x: 14, y: -14)
+                    }
+                    .frame(width: 47, height: 47)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(session.title)
@@ -1741,16 +2401,8 @@ private struct TaskCardView: View {
             }
         }
         .padding(13)
-        .frame(height: PanelLayoutState.cardHeight, alignment: .topLeading)
         .fixedSize(horizontal: false, vertical: true)
-        .clipped()
-        .background(
-            LiquidGlassCardBackground(cornerRadius: 18, fillOpacity: cardFillOpacity)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(Color.white.opacity(cardStrokeOpacity), lineWidth: 1)
-        )
+        .standardSessionCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onHover { hovering in
             if hovering {
@@ -1860,18 +2512,6 @@ private struct TaskCardView: View {
         .onChange(of: session.id) { _, sessionId in
             completionSoundId = SessionCompletionSoundManager.selectedSoundId(for: sessionId)
         }
-    }
-
-    private var glassStrength: Double {
-        0.55
-    }
-
-    private var cardFillOpacity: Double {
-        0.12 + glassStrength * 0.12
-    }
-
-    private var cardStrokeOpacity: Double {
-        0.18 + glassStrength * 0.14
     }
 
     private var hasSuggestedOptions: Bool {
@@ -2141,6 +2781,36 @@ private struct LiquidGlassCardBackground: View {
     }
 }
 
+private struct StandardSessionCardSurface: ViewModifier {
+    private let cornerRadius: CGFloat = 18
+    private let glassStrength: Double = 0.55
+
+    private var fillOpacity: Double {
+        0.12 + glassStrength * 0.12
+    }
+
+    private var strokeOpacity: Double {
+        0.18 + glassStrength * 0.14
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                LiquidGlassCardBackground(cornerRadius: cornerRadius, fillOpacity: fillOpacity)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: 1)
+            )
+    }
+}
+
+private extension View {
+    func standardSessionCardSurface() -> some View {
+        modifier(StandardSessionCardSurface())
+    }
+}
+
 struct AgentAvatarView: View {
     let session: TaskSession
     let size: CGFloat
@@ -2178,12 +2848,50 @@ struct AgentAvatarView: View {
     }
 
     private var initials: String {
+        if let titleInitial = session.title.first(where: { $0.isLetter || $0.isNumber }) {
+            return String(titleInitial).uppercased()
+        }
         let words = session.agent
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
             .prefix(2)
             .compactMap { $0.first }
         let value = String(words).uppercased()
         return value.isEmpty ? "A" : value
+    }
+}
+
+struct SessionAvatarView: View {
+    let session: TaskSession
+    let avatarSize: CGFloat
+
+    private var scale: CGFloat {
+        avatarSize / 52
+    }
+
+    private var renderSize: CGFloat {
+        72 * scale
+    }
+
+    var body: some View {
+        ZStack {
+            StatusHalo(status: session.status)
+                .frame(width: 72, height: 72)
+                .scaleEffect(scale)
+
+            AgentAvatarView(session: session, size: avatarSize, showsChrome: false)
+
+            ConnectionIndicatorLight(
+                color: session.connectionColor,
+                size: 8 * scale,
+                glowSize: 17 * scale,
+                isBreathing: session.isConnecting
+            )
+            .offset(x: 21 * scale, y: -21 * scale)
+        }
+        .frame(width: renderSize, height: renderSize)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
     }
 }
 
@@ -2879,7 +3587,7 @@ private struct DetailHeaderView: View {
             .help("Back to task list")
 
             if let selectedSession = backendClient.selectedSession {
-                AgentAvatarView(session: selectedSession, size: 32)
+                SessionAvatarView(session: selectedSession, avatarSize: 32)
             }
 
             VStack(alignment: .leading, spacing: 2) {
@@ -3662,36 +4370,9 @@ private struct ThreadItemView: View {
         }
     }
 
-    private func markdownText(for text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
-    }
-
     @ViewBuilder
     private func messageTextView(text: String, allowsSelection: Bool) -> some View {
-        if shouldUsePlainTextRendering(text) {
-            Text(text)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(CorptiePalette.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            if allowsSelection {
-                Text(markdownText(for: text))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            } else {
-                Text(markdownText(for: text))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private func shouldUsePlainTextRendering(_ text: String) -> Bool {
-        text.count > 4_000 || text.filter(\.isNewline).count > 80
+        MarkdownMessageView(text: text, allowsSelection: allowsSelection)
     }
 
     private var approvalOptions: [CodexApprovalOption] {

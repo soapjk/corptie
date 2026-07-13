@@ -98,6 +98,11 @@ export class CodexAppServerClient {
     });
   }
 
+  async setThreadName(threadId, name) {
+    await this.initialize();
+    return this.request("thread/name/set", { threadId, name });
+  }
+
   async startThread(options = {}) {
     await this.initialize();
     return this.request("thread/start", {
@@ -143,6 +148,11 @@ export class CodexAppServerClient {
       threadId,
       turnId
     });
+  }
+
+  async readAccountRateLimits() {
+    await this.initialize();
+    return this.request("account/rateLimits/read", undefined);
   }
 
   async runChoiceParser(options = {}) {

@@ -13,6 +13,10 @@ swift build --package-path "${ROOT}/apps/macos"
 rm -rf "${APP_DIR}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
 cp "${EXECUTABLE}" "${APP_DIR}/Contents/MacOS/Corptie"
+RESOURCE_BUNDLE="${ROOT}/apps/macos/.build/arm64-apple-macosx/debug/CorptieMac_CorptieMac.bundle"
+if [ -d "${RESOURCE_BUNDLE}" ]; then
+  cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
+fi
 
 if [ -f "${ICON_ICNS_SOURCE}" ]; then
   cp "${ICON_ICNS_SOURCE}" "${APP_DIR}/Contents/Resources/AppIcon.icns"

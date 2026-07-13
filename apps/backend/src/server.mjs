@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { copyFile, mkdtemp, readdir, readFile, stat, mkdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import os from "node:os";
 import { promisify } from "node:util";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
@@ -15,28 +15,29 @@ import {
 } from "./adapters/codexAppServer.mjs";
 import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
+import { FeishuGatewayManager } from "./feishu/feishuGatewayManager.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
+import { resolveCodexCommand } from "./utils/codexCommand.mjs";
+import { environmentForCommand } from "./utils/externalCommand.mjs";
+import { mergeStoredSessionPresentation, preferredSessionTitle } from "./utils/sessionPresentation.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const execFileAsync = promisify(execFile);
-const codexAppBundleBinaries = [
-  "/Applications/Codex.app/Contents/Resources/codex",
-  "/Applications/ChatGPT.app/Contents/Resources/codex"
-];
-
 const sessions = new Map();
 const managedCodexSessions = new Map();
 const eventLog = [];
 const sseClients = new Set();
+const sessionEventListeners = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
+const codexAppServerCommand = resolveCodexCommand();
 const codexClient = new CodexAppServerClient({
-  command: resolveCodexCommand(),
+  command: codexAppServerCommand,
   env: () => ({
-    ...process.env,
+    ...environmentForCommand(codexAppServerCommand),
     ...proxyEnvForProfile(store.settings().agentProxy?.codex)
   }),
   onNotification: (message) => {
@@ -45,6 +46,16 @@ const codexClient = new CodexAppServerClient({
 });
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 const claudeAgents = new ClaudeAgentManager({ store });
+const feishuGateway = new FeishuGatewayManager({
+  store,
+  listSessions: listGatewaySessions,
+  listWorkspaces: listGatewayWorkspaces,
+  createSession: createGatewaySession,
+  getSnapshot: getUnifiedSessionSnapshot,
+  getUsage: getGatewayUsage,
+  sendMessage: sendUnifiedSessionMessage,
+  interruptSession: interruptUnifiedSession
+});
 let codexModelsCache = null;
 let claudeModelsCache = null;
 
@@ -85,26 +96,12 @@ function pathExists(path) {
   }
 }
 
-function resolveCodexCommand(requestedCommand = "") {
-  const requested = typeof requestedCommand === "string" ? requestedCommand.trim() : "";
-  if (requested && requested !== "codex") {
-    return requested;
+function sessionTitleForWorkspace(value, cwd) {
+  const title = typeof value === "string" ? value.trim() : "";
+  if (title) {
+    return title;
   }
-
-  const configured = [
-    process.env.CORPTIE_CODEX_PATH,
-    process.env.CORPTIE_CODEX_REAL_PATH
-  ].find(isExecutable);
-  if (configured) {
-    return configured.trim();
-  }
-
-  const bundled = codexAppBundleBinaries.find(isExecutable);
-  if (bundled) {
-    return bundled;
-  }
-
-  return requested || "codex";
+  return basename(resolve(cwd)) || "Agent";
 }
 
 function safeTurnFileChanges(thread, turnId, cwd) {
@@ -346,7 +343,7 @@ function seedSessions() {
   });
 }
 
-function emitEvent(type, payload) {
+function emitEvent(type, payload, options = {}) {
   const event = {
     id: eventLog.length + 1,
     type,
@@ -359,6 +356,40 @@ function emitEvent(type, payload) {
   for (const response of sseClients) {
     response.write(frame);
   }
+
+  const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
+  if (sessionId && store.db) {
+    const sessionEvent = store.appendSessionEvent({
+      eventId: randomUUID(),
+      sessionId,
+      type,
+      source: options.source || payload?.source || null,
+      payload,
+      createdAt: event.createdAt
+    });
+    if (sessionEvent) {
+      for (const listener of sessionEventListeners) {
+        listener(sessionEvent);
+      }
+    }
+  }
+}
+
+function sessionIdFromEventPayload(payload = {}) {
+  const value = payload.session?.id || payload.sessionId || null;
+  if (value) {
+    if (String(value).startsWith("pty:") || String(value).startsWith("codex:")) {
+      return String(value);
+    }
+    if (payload.session?.external?.provider === "codex-app-server") {
+      return `codex:${value}`;
+    }
+    return `pty:${value}`;
+  }
+  if (payload.threadId) {
+    return `codex:${payload.threadId}`;
+  }
+  return null;
 }
 
 function updateMockProgress() {
@@ -586,20 +617,6 @@ function upsertManagedCodexSession(session) {
   });
 }
 
-function mergeStoredSessionPresentation(session, stored) {
-  if (!stored) {
-    return session;
-  }
-  return {
-    ...session,
-    archived: stored.archived,
-    pinned: stored.pinned,
-    sortOrder: stored.sortOrder,
-    avatarPath: stored.avatarPath ?? session.avatarPath ?? null,
-    suggestedOptions: stored.suggestedOptions ?? session.suggestedOptions ?? null
-  };
-}
-
 function sortSessionsForList(sessions = []) {
   return sessions.slice().sort((a, b) => {
     if (Boolean(a.pinned) !== Boolean(b.pinned)) {
@@ -622,7 +639,19 @@ function handleCodexAppServerNotification(message) {
     return;
   }
   const sessionId = `codex:${threadId}`;
-  const session = managedCodexSessions.get(sessionId);
+  const managedSession = managedCodexSessions.get(sessionId);
+  if (method === "thread/name/updated") {
+    const title = typeof params.threadName === "string" ? params.threadName.trim() : "";
+    const current = managedSession ?? store.getSession(sessionId);
+    if (!title || !current) {
+      return;
+    }
+    const nextSession = { ...current, title, updatedAt: now() };
+    upsertManagedCodexSession(nextSession);
+    emitEvent("SessionRenamed", { session: nextSession, source: { type: "codex-app-server" } });
+    return;
+  }
+  const session = managedSession;
   if (!session) {
     return;
   }
@@ -1109,6 +1138,305 @@ async function assertDirectory(path) {
   }
 }
 
+function listGatewaySessions() {
+  const storedSessions = ptyAgents.list({ archived: false });
+  const ptySessions = storedSessions
+    .filter((session) => session.external?.provider !== "codex-app-server")
+    .filter((session) => session.external?.provider !== "claude-sdk");
+  const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
+  const claudeSessions = claudeAgents.list({ archived: false });
+  const listedIds = new Set([...ptySessions, ...claudeSessions].map((session) => session.id));
+  const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
+  const codexSessions = [
+    ...storedCodexSessions.map((stored) => {
+      const managed = managedById.get(stored.id);
+      return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
+    }),
+    ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
+  ].filter((session) => !listedIds.has(session.id));
+  return sortSessionsForList([...ptySessions, ...claudeSessions, ...codexSessions]);
+}
+
+function listGatewayWorkspaces() {
+  const candidates = [
+    ...listGatewaySessions(),
+    ...store.listSessions({ archived: false }),
+    ...store.listSessions({ archived: true })
+  ];
+  const workspaces = new Map();
+  for (const path of store.settings().gateway?.trustedWorkspaces ?? []) {
+    if (!isAbsolute(path)) continue;
+    const canonicalPath = resolve(path);
+    workspaces.set(canonicalPath, {
+      path: canonicalPath,
+      name: basename(canonicalPath) || canonicalPath,
+      updatedAt: now(),
+      favorite: true
+    });
+  }
+  for (const session of candidates) {
+    const cwd = typeof session.external?.cwd === "string" ? session.external.cwd.trim() : "";
+    if (!cwd || !isAbsolute(cwd)) continue;
+    const canonicalPath = resolve(cwd);
+    const previous = workspaces.get(canonicalPath);
+    if (!previous || (!previous.favorite && Date.parse(session.updatedAt ?? 0) > Date.parse(previous.updatedAt ?? 0))) {
+      workspaces.set(canonicalPath, {
+        path: canonicalPath,
+        name: basename(canonicalPath) || canonicalPath,
+        updatedAt: session.updatedAt ?? session.createdAt ?? now()
+      });
+    }
+  }
+  return Array.from(workspaces.values()).sort((left, right) =>
+    Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+  );
+}
+
+async function createGatewaySession(input = {}) {
+  const cwd = resolve(String(input.cwd || ""));
+  await assertDirectory(cwd);
+  const title = sessionTitleForWorkspace(input.title, cwd);
+  const agent = input.agent === "claude" ? "claude" : "codex";
+
+  if (agent === "claude") {
+    const session = claudeAgents.start({
+      title,
+      prompt: "",
+      cwd,
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request"
+    });
+    emitEvent("ClaudeSessionStarted", { session, source: { type: "feishu" } });
+    return session;
+  }
+
+  const started = await codexClient.startThread({
+    cwd,
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write"
+  });
+  const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
+    cwd,
+    approvalPolicy: "on-request"
+  });
+  const session = {
+    ...mapCodexThreadToSession({
+      ...started.thread,
+      preview: title,
+      name: title,
+      cwd,
+      updatedAt: Date.now() / 1000,
+      status: "running",
+      source: "corptie",
+      currentModel: started.model ?? null,
+      currentReasoningLevel: started.reasoningEffort ?? null,
+      activeTurnId: turn.turn?.id ?? null
+    }),
+    title,
+    status: "running",
+    progress: 0.5,
+    summary: "Initializing Codex session…",
+    activityStatus: "Starting Codex",
+    capabilities: {
+      ...codexAppServerSessionCapabilities(),
+      canInterrupt: true
+    }
+  };
+  upsertManagedCodexSession(session);
+  emitEvent("CodexThreadCreated", {
+    threadId: started.thread.id,
+    turn: turn.turn,
+    session,
+    source: { type: "feishu" }
+  });
+  return session;
+}
+
+async function getUnifiedSessionSnapshot(sessionId) {
+  const summary = listGatewaySessions().find((session) => session.id === sessionId);
+  if (!summary) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+
+  let detail = null;
+  if (sessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(sessionId);
+    detail = claudeAgents.has(id) ? claudeAgents.detail(id) : ptyAgents.detail(id);
+  } else if (sessionId.startsWith("codex:")) {
+    const threadId = sessionId.slice("codex:".length);
+    try {
+      const result = await codexClient.readThread(threadId, { includeTurns: true });
+      detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
+        result.thread,
+        codexClient.liveItemsForThread(threadId),
+        codexClient.turnDiffsForThread(threadId)
+      ));
+      syncManagedCodexSessionFromDetail(threadId, detail);
+    } catch (error) {
+      const managed = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+      detail = managed
+        ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
+        : store.getDetail(sessionId);
+    }
+  }
+
+  return {
+    ...summary,
+    ...(detail ?? {}),
+    id: sessionId,
+    sessionId,
+    title: preferredSessionTitle(summary, detail),
+    status: detail?.status || summary.status,
+    activityStatus: detail?.activityStatus ?? summary.activityStatus ?? null,
+    items: detail?.items ?? [],
+    lastEventSequence: store.lastSessionEventSequence(sessionId)
+  };
+}
+
+async function getGatewayUsage(sessionId = null) {
+  const session = sessionId
+    ? listGatewaySessions().find((item) => item.id === sessionId) ?? null
+    : null;
+  const provider = String(session?.external?.provider ?? "").toLowerCase();
+  const agent = String(session?.agent ?? "").toLowerCase();
+  if (provider === "claude-sdk" || agent.includes("claude")) {
+    return {
+      available: false,
+      provider: "claude",
+      model: session?.external?.currentModel ?? null,
+      message: "当前会话使用 Claude Code，暂时没有可查询的账户额度百分比。"
+    };
+  }
+
+  const usage = await codexClient.readAccountRateLimits();
+  return {
+    available: true,
+    provider: "codex",
+    model: session?.external?.currentModel ?? null,
+    ...usage
+  };
+}
+
+async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desktop" }, options = {}) {
+  const value = typeof text === "string" ? text.trim() : "";
+  if (!value) {
+    const error = new Error("Message text is required.");
+    error.code = "INVALID_MESSAGE";
+    throw error;
+  }
+  const before = listGatewaySessions().find((session) => session.id === sessionId);
+  if (!before) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+
+  let result;
+  if (sessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(sessionId);
+    bumpChoiceGeneration(sessionId);
+    store.clearActiveChoicePrompt(id);
+    if (claudeAgents.has(id)) {
+      result = await claudeAgents.send(id, value);
+    } else {
+      ptyAgents.write(id, value, { submit: options.submit !== false });
+      result = ptyAgents.get(id) ? ptyAgents.detail(id, { flush: false }) : store.getDetail(id);
+    }
+  } else if (sessionId.startsWith("codex:")) {
+    const threadId = sessionId.slice("codex:".length);
+    bumpChoiceGeneration(sessionId);
+    store.clearActiveChoicePrompt(sessionId);
+    await codexClient.resumeThread(threadId);
+    const managed = managedCodexSessions.get(sessionId) ?? before;
+    result = await codexClient.startTurn(threadId, value, {
+      model: managed?.external?.currentModel ?? options.model ?? undefined,
+      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined
+    });
+    upsertManagedCodexSession({
+      ...managed,
+      status: "running",
+      progress: 0.5,
+      suggestedOptions: null,
+      activityStatus: "Working",
+      updatedAt: now(),
+      capabilities: {
+        ...(managed.capabilities ?? {}),
+        canInterrupt: true
+      },
+      external: {
+        ...managed.external,
+        activeTurnId: result.turn?.id ?? managed.external?.activeTurnId ?? null
+      }
+    });
+  } else {
+    const error = new Error("Session provider does not support messages.");
+    error.code = "UNSUPPORTED_SESSION";
+    throw error;
+  }
+
+  emitEvent("SessionUserMessageCreated", {
+    sessionId,
+    message: {
+      id: source.messageId || randomUUID(),
+      type: "userMessage",
+      title: source.type === "feishu" ? "Feishu" : "User",
+      text: value,
+      createdAt: now()
+    },
+    source
+  }, { sessionId, source });
+  emitEvent("SessionRunStarted", { sessionId, source }, { sessionId, source });
+  return { accepted: true, sessionId, result };
+}
+
+async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
+  const summary = listGatewaySessions().find((session) => session.id === sessionId);
+  if (!summary) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  let session;
+  if (sessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(sessionId);
+    session = claudeAgents.has(id) ? await claudeAgents.interrupt(id) : ptyAgents.interrupt(id);
+  } else if (sessionId.startsWith("codex:")) {
+    const threadId = sessionId.slice("codex:".length);
+    const activeTurnId = summary.external?.activeTurnId ?? summary.rawStatus?.activeTurnId ?? null;
+    if (!activeTurnId) {
+      const error = new Error("Session does not have an active turn to interrupt.");
+      error.code = "NO_ACTIVE_RUN";
+      throw error;
+    }
+    await codexClient.interruptTurn(threadId, activeTurnId);
+    session = {
+      ...summary,
+      status: "cancelled",
+      progress: 1,
+      activityStatus: null,
+      updatedAt: now(),
+      capabilities: { ...(summary.capabilities ?? {}), canInterrupt: false },
+      external: { ...summary.external, activeTurnId: null, rawStatus: "cancelled" }
+    };
+    upsertManagedCodexSession(session);
+  } else {
+    const error = new Error("Session provider does not support interruption.");
+    error.code = "UNSUPPORTED_SESSION";
+    throw error;
+  }
+  emitEvent("SessionRunInterrupted", { sessionId, session, source }, { sessionId, source });
+  return session;
+}
+
+function unifiedErrorStatus(error) {
+  if (error.code === "SESSION_NOT_FOUND") return 404;
+  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN"].includes(error.code)) return 409;
+  if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
+  return 502;
+}
+
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
@@ -1193,6 +1521,188 @@ function route(request, response) {
       .catch((error) => {
         sendJson(response, 400, { error: error.message });
       });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/feishu/status") {
+    sendJson(response, 200, feishuGateway.status());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/feishu/profiles") {
+    feishuGateway.listProfiles()
+      .then((profiles) => sendJson(response, 200, { profiles }))
+      .catch((error) => sendJson(response, 502, { error: error.message }));
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/feishu/bots") {
+    sendJson(response, 200, { bots: feishuGateway.listBots() });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/feishu/bots") {
+    readJson(request)
+      .then((input) => feishuGateway.createBot(input))
+      .then((bot) => {
+        emitEvent("FeishuBotCreated", { bot });
+        sendJson(response, 201, { bot });
+      })
+      .catch((error) => sendJson(response, 400, { error: error.message }));
+    return;
+  }
+
+  const feishuBotMatch = url.pathname.match(/^\/feishu\/bots\/([^/]+)$/);
+  if (request.method === "PATCH" && feishuBotMatch) {
+    const botId = decodeURIComponent(feishuBotMatch[1]);
+    readJson(request)
+      .then((input) => feishuGateway.updateBot(botId, input))
+      .then((bot) => {
+        if (!bot) {
+          sendJson(response, 404, { error: "Feishu bot not found." });
+          return;
+        }
+        emitEvent("FeishuBotUpdated", { bot });
+        sendJson(response, 200, { bot });
+      })
+      .catch((error) => sendJson(response, 400, { error: error.message }));
+    return;
+  }
+
+  if (request.method === "DELETE" && feishuBotMatch) {
+    const botId = decodeURIComponent(feishuBotMatch[1]);
+    feishuGateway.deleteBot(botId)
+      .then((deleted) => {
+        if (!deleted) {
+          sendJson(response, 404, { error: "Feishu bot not found." });
+          return;
+        }
+        emitEvent("FeishuBotDeleted", { botId });
+        sendJson(response, 200, { deleted: true });
+      })
+      .catch((error) => sendJson(response, 500, { error: error.message }));
+    return;
+  }
+
+  const feishuPairingMatch = url.pathname.match(/^\/feishu\/bots\/([^/]+)\/pairing-code$/);
+  if (request.method === "POST" && feishuPairingMatch) {
+    const botId = decodeURIComponent(feishuPairingMatch[1]);
+    readJson(request)
+      .catch(() => ({}))
+      .then((input) => feishuGateway.createPairingCode(botId, Number(input.ttlMs) || undefined))
+      .then((pairing) => {
+        if (!pairing) {
+          sendJson(response, 404, { error: "Feishu bot not found." });
+          return;
+        }
+        sendJson(response, 201, pairing);
+      })
+      .catch((error) => sendJson(response, 400, { error: error.message }));
+    return;
+  }
+
+  const feishuAssignmentMatch = url.pathname.match(/^\/feishu\/bots\/([^/]+)\/assignment$/);
+  if (request.method === "POST" && feishuAssignmentMatch) {
+    const botId = decodeURIComponent(feishuAssignmentMatch[1]);
+    readJson(request)
+      .then(async (input) => {
+        const binding = input.bindingId
+          ? feishuGateway.getBot(botId)?.bindings.find((item) => item.id === input.bindingId)
+          : feishuGateway.getBot(botId)?.bindings[0];
+        if (!binding) {
+          const error = new Error("This bot does not have a verified Feishu user.");
+          error.code = "FEISHU_NOT_BOUND";
+          throw error;
+        }
+        return feishuGateway.assignSession(botId, binding.id, String(input.sessionId || ""));
+      })
+      .then((assignment) => {
+        emitEvent("FeishuSessionAssigned", { assignment }, { sessionId: assignment.sessionId });
+        sendJson(response, 200, { assignment });
+      })
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code,
+        assignment: error.assignment
+      }));
+    return;
+  }
+
+  if (request.method === "DELETE" && feishuAssignmentMatch) {
+    const botId = decodeURIComponent(feishuAssignmentMatch[1]);
+    const previous = store.getFeishuAssignmentForBot(botId);
+    feishuGateway.releaseSession(botId);
+    if (previous) {
+      emitEvent("FeishuSessionReleased", { botId, sessionId: previous.sessionId }, { sessionId: previous.sessionId });
+    }
+    sendJson(response, 200, { released: Boolean(previous) });
+    return;
+  }
+
+  const feishuBindingMatch = url.pathname.match(/^\/feishu\/bindings\/([^/]+)$/);
+  if (request.method === "DELETE" && feishuBindingMatch) {
+    const bindingId = decodeURIComponent(feishuBindingMatch[1]);
+    const binding = feishuGateway.listBots()
+      .flatMap((bot) => bot.bindings)
+      .find((item) => item.id === bindingId);
+    if (!binding) {
+      sendJson(response, 404, { error: "Feishu binding not found." });
+      return;
+    }
+    store.revokeFeishuBinding(bindingId);
+    emitEvent("FeishuBindingRevoked", { bindingId, botId: binding.botId });
+    sendJson(response, 200, { revoked: true });
+    return;
+  }
+
+  const sessionSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/snapshot$/);
+  if (request.method === "GET" && sessionSnapshotMatch) {
+    const sessionId = decodeURIComponent(sessionSnapshotMatch[1]);
+    getUnifiedSessionSnapshot(sessionId)
+      .then((snapshot) => sendJson(response, 200, { session: snapshot }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+
+  const sessionEventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
+  if (request.method === "GET" && sessionEventsMatch) {
+    const sessionId = decodeURIComponent(sessionEventsMatch[1]);
+    const after = Number(url.searchParams.get("after") || 0);
+    const limit = Number(url.searchParams.get("limit") || 200);
+    sendJson(response, 200, {
+      sessionId,
+      events: store.listSessionEvents(sessionId, after, limit),
+      lastEventSequence: store.lastSessionEventSequence(sessionId)
+    });
+    return;
+  }
+
+  const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+  if (request.method === "POST" && sessionMessagesMatch) {
+    const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
+    readJson(request)
+      .then((input) => sendUnifiedSessionMessage(
+        sessionId,
+        typeof input.content === "string" ? input.content : input.text,
+        input.source && typeof input.source === "object" ? input.source : { type: "desktop" },
+        input
+      ))
+      .then((result) => sendJson(response, 202, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+
+  const sessionInterruptMatch = url.pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);
+  if (request.method === "POST" && sessionInterruptMatch) {
+    const sessionId = decodeURIComponent(sessionInterruptMatch[1]);
+    readJson(request)
+      .catch(() => ({}))
+      .then((input) => interruptUnifiedSession(
+        sessionId,
+        input.source && typeof input.source === "object" ? input.source : { type: "desktop" }
+      ))
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
   }
 
@@ -1631,7 +2141,7 @@ function route(request, response) {
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
   if (request.method === "PATCH" && sessionDeleteMatch) {
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const rawId = decodeURIComponent(sessionDeleteMatch[1]);
         if (rawId.startsWith("codex:")) {
           const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
@@ -1651,6 +2161,7 @@ function route(request, response) {
             sendJson(response, 400, { error: "Title is required" });
             return;
           }
+          await codexClient.setThreadName(rawId.slice("codex:".length), title);
           const nextSession = { ...session, title, updatedAt: new Date().toISOString() };
           upsertManagedCodexSession(nextSession);
           emitEvent("SessionRenamed", { session: nextSession });
@@ -1723,7 +2234,7 @@ function route(request, response) {
       })
       .then(({ input, cwd }) => {
         const session = ptyAgents.start({
-          title: input.title,
+          title: sessionTitleForWorkspace(input.title, cwd),
           command: input.command,
           args: input.args,
           cwd,
@@ -1748,7 +2259,7 @@ function route(request, response) {
       })
       .then(({ input, cwd }) => {
         const session = claudeAgents.start({
-          title: input.title,
+          title: sessionTitleForWorkspace(input.title, cwd),
           prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
           cwd,
           model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null,
@@ -1810,7 +2321,7 @@ function route(request, response) {
           const rolloutMatch = await findCodexRolloutBySessionId(existingSessionId);
           const resumeArgs = ["resume", ...resumeOptions, existingSessionId];
           const session = ptyAgents.start({
-            title: input.title || `Codex ${existingSessionId.slice(0, 8)}`,
+            title: sessionTitleForWorkspace(input.title, cwd),
             agentName: "Codex CLI",
             provider: "codex-pty",
             accent: "cyan",
@@ -1844,7 +2355,7 @@ function route(request, response) {
 
         const launchWindowStartedAt = new Date(Date.now() - 5000).toISOString();
         const session = ptyAgents.start({
-          title: input.title || prompt || "Codex CLI",
+          title: sessionTitleForWorkspace(input.title, cwd),
           agentName: "Codex CLI",
           provider: "codex-pty",
           accent: "cyan",
@@ -2207,7 +2718,7 @@ function route(request, response) {
       .then(async (input) => {
         const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
         const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd.trim() : process.cwd();
-        const title = typeof input.title === "string" && input.title.trim() ? input.title.trim() : titleFromPrompt(prompt);
+        const title = sessionTitleForWorkspace(input.title, cwd);
 
         if (!prompt) {
           sendJson(response, 400, { error: "Prompt is required" });
@@ -2659,6 +3170,9 @@ const server = http.createServer(route);
 
 await store.initialize();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
+sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
+await feishuGateway.initialize();
+console.log(`[feishu] gateway ready cli=${feishuGateway.status().cliAvailable ? feishuGateway.status().cliPath : "unavailable"}`);
 configureChoiceParserRuntime({
   ...(store.settings().choiceParser ?? {}),
   agentProxy: store.settings().agentProxy
@@ -2672,12 +3186,14 @@ server.listen(port, "127.0.0.1", () => {
 });
 
 process.on("SIGINT", async () => {
+  await feishuGateway.close();
   await codexClient.close();
   await store.save();
   process.exit(0);
 });
 
 process.on("SIGTERM", async () => {
+  await feishuGateway.close();
   await codexClient.close();
   await store.save();
   process.exit(0);
