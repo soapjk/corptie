@@ -103,7 +103,8 @@ export class CorptieStore {
       choiceParser: this.choiceParserSettings(),
       codexBackend: this.codexBackendSettings(),
       codeDiff: this.codeDiffSettings(),
-      agentProxy: this.agentProxySettings()
+      agentProxy: this.agentProxySettings(),
+      gateway: this.gatewaySettings()
     };
   }
 
@@ -125,6 +126,10 @@ export class CorptieStore {
     return normalizeAgentProxySettings(configured);
   }
 
+  gatewaySettings() {
+    return normalizeGatewaySettings(this.config.gateway ?? {});
+  }
+
   async updateSettings(input = {}) {
     if (typeof input.dataDir === "string" && input.dataDir.trim()) {
       await this.setDataDirectory(input.dataDir);
@@ -143,6 +148,10 @@ export class CorptieStore {
     }
     if (input.agentProxy && typeof input.agentProxy === "object") {
       this.config.agentProxy = normalizeAgentProxySettings(input.agentProxy);
+      await this.writeConfig();
+    }
+    if (input.gateway && typeof input.gateway === "object") {
+      this.config.gateway = normalizeGatewaySettings(input.gateway);
       await this.writeConfig();
     }
     return this.settings();
@@ -207,6 +216,82 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_session_items_session_id ON session_items(session_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS session_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        source_json TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE(session_id, sequence)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_events_cursor
+      ON session_events(session_id, sequence);
+
+      CREATE TABLE IF NOT EXISTS feishu_bots (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        profile TEXT NOT NULL UNIQUE,
+        app_id TEXT,
+        brand TEXT NOT NULL DEFAULT 'feishu',
+        managed_profile INTEGER NOT NULL DEFAULT 0,
+        remote_name TEXT,
+        remote_avatar_url TEXT,
+        remote_open_id TEXT,
+        remote_activate_status INTEGER,
+        transport_type TEXT NOT NULL DEFAULT 'lark-cli',
+        enabled INTEGER NOT NULL DEFAULT 0,
+        connection_status TEXT NOT NULL DEFAULT 'disabled',
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS feishu_bindings (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        open_id TEXT NOT NULL,
+        chat_id TEXT,
+        tenant_key TEXT,
+        verified_at TEXT NOT NULL,
+        revoked_at TEXT,
+        UNIQUE(bot_id, open_id),
+        FOREIGN KEY (bot_id) REFERENCES feishu_bots(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS feishu_pairing_codes (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        code_hash TEXT NOT NULL UNIQUE,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (bot_id) REFERENCES feishu_bots(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS feishu_session_assignments (
+        id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL UNIQUE,
+        binding_id TEXT NOT NULL,
+        session_id TEXT NOT NULL UNIQUE,
+        assigned_at TEXT NOT NULL,
+        last_event_sequence INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY (bot_id) REFERENCES feishu_bots(id) ON DELETE CASCADE,
+        FOREIGN KEY (binding_id) REFERENCES feishu_bindings(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_feishu_pairing_bot
+      ON feishu_pairing_codes(bot_id, expires_at);
+
+      CREATE TABLE IF NOT EXISTS feishu_inbound_events (
+        event_id TEXT PRIMARY KEY,
+        bot_id TEXT NOT NULL,
+        received_at TEXT NOT NULL
+      );
     `);
 
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -215,6 +300,14 @@ export class CorptieStore {
     this.ensureColumn("sessions", "avatar_path", "TEXT");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
+    this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
+    this.ensureColumn("feishu_bots", "app_id", "TEXT");
+    this.ensureColumn("feishu_bots", "brand", "TEXT NOT NULL DEFAULT 'feishu'");
+    this.ensureColumn("feishu_bots", "managed_profile", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("feishu_bots", "remote_name", "TEXT");
+    this.ensureColumn("feishu_bots", "remote_avatar_url", "TEXT");
+    this.ensureColumn("feishu_bots", "remote_open_id", "TEXT");
+    this.ensureColumn("feishu_bots", "remote_activate_status", "INTEGER");
     this.initializeSortOrder();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
 
@@ -463,6 +556,299 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  appendSessionEvent(event) {
+    const sessionId = String(event.sessionId || "").trim();
+    if (!sessionId) {
+      return null;
+    }
+    const row = this.selectOne(
+      "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM session_events WHERE session_id = ?",
+      [sessionId]
+    );
+    const sequence = Number(row?.sequence ?? 0) + 1;
+    this.db.run(
+      `INSERT OR IGNORE INTO session_events (
+        event_id, session_id, sequence, type, source_json, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        event.eventId,
+        sessionId,
+        sequence,
+        event.type,
+        event.source ? JSON.stringify(event.source) : null,
+        JSON.stringify(event.payload ?? {}),
+        event.createdAt || new Date().toISOString()
+      ]
+    );
+    this.scheduleSave();
+    return {
+      ...event,
+      sessionId,
+      sequence
+    };
+  }
+
+  listSessionEvents(sessionId, after = 0, limit = 200) {
+    const rows = this.selectAll(
+      `SELECT * FROM session_events
+       WHERE session_id = ? AND sequence > ?
+       ORDER BY sequence ASC LIMIT ?`,
+      [sessionId, Math.max(0, Number(after) || 0), Math.max(1, Math.min(1000, Number(limit) || 200))]
+    );
+    return rows.map((row) => ({
+      eventId: row.event_id,
+      sessionId: row.session_id,
+      sequence: Number(row.sequence),
+      type: row.type,
+      source: parseJson(row.source_json, null),
+      payload: parseJson(row.payload_json, {}),
+      createdAt: row.created_at
+    }));
+  }
+
+  lastSessionEventSequence(sessionId) {
+    const row = this.selectOne(
+      "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM session_events WHERE session_id = ?",
+      [sessionId]
+    );
+    return Number(row?.sequence ?? 0);
+  }
+
+  listFeishuBots() {
+    return this.selectAll("SELECT * FROM feishu_bots ORDER BY created_at ASC").map(feishuBotFromRow);
+  }
+
+  getFeishuBot(id) {
+    const row = this.selectOne("SELECT * FROM feishu_bots WHERE id = ?", [id]);
+    return row ? feishuBotFromRow(row) : null;
+  }
+
+  createFeishuBot(bot) {
+    const createdAt = bot.createdAt || new Date().toISOString();
+    this.db.run(
+      `INSERT INTO feishu_bots (
+        id, name, profile, app_id, brand, managed_profile, transport_type, enabled, connection_status, last_error, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        bot.id,
+        bot.name,
+        bot.profile,
+        bot.appId || null,
+        bot.brand || "feishu",
+        bot.managedProfile ? 1 : 0,
+        bot.transportType || "lark-cli",
+        bot.enabled ? 1 : 0,
+        bot.enabled ? "connecting" : "disabled",
+        null,
+        createdAt,
+        createdAt
+      ]
+    );
+    this.scheduleSave();
+    return this.getFeishuBot(bot.id);
+  }
+
+  updateFeishuBot(id, patch = {}) {
+    const current = this.getFeishuBot(id);
+    if (!current) {
+      return null;
+    }
+    const next = {
+      ...current,
+      name: typeof patch.name === "string" && patch.name.trim() ? patch.name.trim() : current.name,
+      profile: typeof patch.profile === "string" && patch.profile.trim() ? patch.profile.trim() : current.profile,
+      enabled: typeof patch.enabled === "boolean" ? patch.enabled : current.enabled,
+      transportType: patch.transportType || current.transportType,
+      connectionStatus: patch.connectionStatus || current.connectionStatus,
+      lastError: Object.hasOwn(patch, "lastError") ? patch.lastError : current.lastError,
+      remoteName: Object.hasOwn(patch, "remoteName") ? patch.remoteName : current.remoteName,
+      remoteAvatarURL: Object.hasOwn(patch, "remoteAvatarURL") ? patch.remoteAvatarURL : current.remoteAvatarURL,
+      remoteOpenId: Object.hasOwn(patch, "remoteOpenId") ? patch.remoteOpenId : current.remoteOpenId,
+      remoteActivateStatus: Object.hasOwn(patch, "remoteActivateStatus") ? patch.remoteActivateStatus : current.remoteActivateStatus,
+      updatedAt: new Date().toISOString()
+    };
+    this.db.run(
+      `UPDATE feishu_bots SET
+        name = ?, profile = ?, transport_type = ?, enabled = ?, connection_status = ?, last_error = ?,
+        remote_name = ?, remote_avatar_url = ?, remote_open_id = ?, remote_activate_status = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        next.name,
+        next.profile,
+        next.transportType,
+        next.enabled ? 1 : 0,
+        next.connectionStatus,
+        next.lastError,
+        next.remoteName,
+        next.remoteAvatarURL,
+        next.remoteOpenId,
+        next.remoteActivateStatus != null && Number.isFinite(Number(next.remoteActivateStatus))
+          ? Number(next.remoteActivateStatus)
+          : null,
+        next.updatedAt,
+        id
+      ]
+    );
+    this.scheduleSave();
+    return this.getFeishuBot(id);
+  }
+
+  deleteFeishuBot(id) {
+    this.db.run("DELETE FROM feishu_session_assignments WHERE bot_id = ?", [id]);
+    this.db.run("DELETE FROM feishu_pairing_codes WHERE bot_id = ?", [id]);
+    this.db.run("DELETE FROM feishu_bindings WHERE bot_id = ?", [id]);
+    this.db.run("DELETE FROM feishu_bots WHERE id = ?", [id]);
+    this.scheduleSave();
+  }
+
+  replaceFeishuPairingCode(code) {
+    this.db.run("DELETE FROM feishu_pairing_codes WHERE bot_id = ? AND consumed_at IS NULL", [code.botId]);
+    this.db.run(
+      `INSERT INTO feishu_pairing_codes (
+        id, bot_id, code_hash, expires_at, consumed_at, created_at
+      ) VALUES (?, ?, ?, ?, NULL, ?)`,
+      [code.id, code.botId, code.codeHash, code.expiresAt, code.createdAt]
+    );
+    this.scheduleSave();
+  }
+
+  consumeFeishuPairingCode(codeHash, binding) {
+    const code = this.selectOne(
+      `SELECT * FROM feishu_pairing_codes
+       WHERE code_hash = ? AND consumed_at IS NULL AND expires_at > ?`,
+      [codeHash, new Date().toISOString()]
+    );
+    if (!code || code.bot_id !== binding.botId) {
+      return null;
+    }
+    const verifiedAt = new Date().toISOString();
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      this.db.run(
+        `INSERT INTO feishu_bindings (id, bot_id, open_id, chat_id, tenant_key, verified_at, revoked_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(bot_id, open_id) DO UPDATE SET
+           chat_id = excluded.chat_id,
+           tenant_key = excluded.tenant_key,
+           verified_at = excluded.verified_at,
+           revoked_at = NULL`,
+        [binding.id, binding.botId, binding.openId, binding.chatId || null, binding.tenantKey || null, verifiedAt]
+      );
+      this.db.run("UPDATE feishu_pairing_codes SET consumed_at = ? WHERE id = ?", [verifiedAt, code.id]);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getFeishuBinding(binding.botId, binding.openId);
+  }
+
+  getFeishuBinding(botId, openId) {
+    const row = this.selectOne(
+      "SELECT * FROM feishu_bindings WHERE bot_id = ? AND open_id = ? AND revoked_at IS NULL",
+      [botId, openId]
+    );
+    return row ? feishuBindingFromRow(row) : null;
+  }
+
+  listFeishuBindings(botId) {
+    return this.selectAll(
+      "SELECT * FROM feishu_bindings WHERE bot_id = ? AND revoked_at IS NULL ORDER BY verified_at ASC",
+      [botId]
+    ).map(feishuBindingFromRow);
+  }
+
+  updateFeishuBindingChat(id, chatId) {
+    this.db.run("UPDATE feishu_bindings SET chat_id = ? WHERE id = ?", [chatId, id]);
+    this.scheduleSave();
+  }
+
+  claimFeishuInboundEvent(botId, eventId) {
+    if (!eventId) {
+      return true;
+    }
+    if (this.selectOne("SELECT event_id FROM feishu_inbound_events WHERE event_id = ?", [eventId])) {
+      return false;
+    }
+    this.db.run(
+      "INSERT INTO feishu_inbound_events (event_id, bot_id, received_at) VALUES (?, ?, ?)",
+      [eventId, botId, new Date().toISOString()]
+    );
+    this.db.run(
+      `DELETE FROM feishu_inbound_events
+       WHERE received_at < ?`,
+      [new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()]
+    );
+    this.scheduleSave();
+    return true;
+  }
+
+  revokeFeishuBinding(id) {
+    const revokedAt = new Date().toISOString();
+    this.db.run("DELETE FROM feishu_session_assignments WHERE binding_id = ?", [id]);
+    this.db.run("UPDATE feishu_bindings SET revoked_at = ? WHERE id = ?", [revokedAt, id]);
+    this.scheduleSave();
+  }
+
+  getFeishuAssignmentForBot(botId) {
+    const row = this.selectOne("SELECT * FROM feishu_session_assignments WHERE bot_id = ?", [botId]);
+    return row ? feishuAssignmentFromRow(row) : null;
+  }
+
+  getFeishuAssignmentForSession(sessionId) {
+    const row = this.selectOne("SELECT * FROM feishu_session_assignments WHERE session_id = ?", [sessionId]);
+    return row ? feishuAssignmentFromRow(row) : null;
+  }
+
+  listFeishuAssignments() {
+    return this.selectAll("SELECT * FROM feishu_session_assignments ORDER BY assigned_at ASC").map(feishuAssignmentFromRow);
+  }
+
+  assignFeishuSession(assignment) {
+    const occupied = this.getFeishuAssignmentForSession(assignment.sessionId);
+    if (occupied && occupied.botId !== assignment.botId) {
+      const error = new Error("Session is already assigned to another Feishu bot.");
+      error.code = "FEISHU_SESSION_OCCUPIED";
+      error.assignment = occupied;
+      throw error;
+    }
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      this.db.run("DELETE FROM feishu_session_assignments WHERE bot_id = ?", [assignment.botId]);
+      this.db.run(
+        `INSERT INTO feishu_session_assignments (
+          id, bot_id, binding_id, session_id, assigned_at, last_event_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [assignment.id, assignment.botId, assignment.bindingId, assignment.sessionId, assignment.assignedAt, Number(assignment.lastEventSequence) || 0]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      if (/UNIQUE constraint failed: feishu_session_assignments\.session_id/.test(error.message)) {
+        error.code = "FEISHU_SESSION_OCCUPIED";
+      }
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getFeishuAssignmentForBot(assignment.botId);
+  }
+
+  releaseFeishuSession(botId) {
+    this.db.run("DELETE FROM feishu_session_assignments WHERE bot_id = ?", [botId]);
+    this.scheduleSave();
+  }
+
+  updateFeishuAssignmentCursor(botId, sequence) {
+    this.db.run(
+      `UPDATE feishu_session_assignments
+       SET last_event_sequence = MAX(last_event_sequence, ?)
+       WHERE bot_id = ?`,
+      [Number(sequence) || 0, botId]
+    );
+    this.scheduleSave();
+  }
+
   selectAll(sql, params = []) {
     const stmt = this.db.prepare(sql, params);
     const rows = [];
@@ -569,6 +955,50 @@ export class CorptieStore {
 
 }
 
+function feishuBotFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    profile: row.profile,
+    appId: row.app_id || null,
+    brand: row.brand || "feishu",
+    managedProfile: Boolean(row.managed_profile),
+    remoteName: row.remote_name || null,
+    remoteAvatarURL: row.remote_avatar_url || null,
+    remoteOpenId: row.remote_open_id || null,
+    remoteActivateStatus: row.remote_activate_status == null ? null : Number(row.remote_activate_status),
+    transportType: row.transport_type,
+    enabled: Boolean(row.enabled),
+    connectionStatus: row.connection_status,
+    lastError: row.last_error || null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function feishuBindingFromRow(row) {
+  return {
+    id: row.id,
+    botId: row.bot_id,
+    openId: row.open_id,
+    chatId: row.chat_id || null,
+    tenantKey: row.tenant_key || null,
+    verifiedAt: row.verified_at,
+    revokedAt: row.revoked_at || null
+  };
+}
+
+function feishuAssignmentFromRow(row) {
+  return {
+    id: row.id,
+    botId: row.bot_id,
+    bindingId: row.binding_id,
+    sessionId: row.session_id,
+    assignedAt: row.assigned_at,
+    lastEventSequence: Number(row.last_event_sequence ?? 0)
+  };
+}
+
 function normalizeChoiceParserSettings(input = {}) {
   const provider = ["disabled", "openai", "local-agent"].includes(input.provider) ? input.provider : "local-agent";
   return {
@@ -607,6 +1037,15 @@ function normalizeAgentProxySettings(input = {}) {
     codex: normalizeProxyProfile(input.codex),
     choiceParser: normalizeProxyProfile(input.choiceParser),
     pty: normalizeProxyProfile(input.pty)
+  };
+}
+
+function normalizeGatewaySettings(input = {}) {
+  const paths = Array.isArray(input.trustedWorkspaces) ? input.trustedWorkspaces : [];
+  return {
+    trustedWorkspaces: Array.from(new Set(paths
+      .filter((value) => typeof value === "string" && value.trim())
+      .map((value) => value.trim())))
   };
 }
 

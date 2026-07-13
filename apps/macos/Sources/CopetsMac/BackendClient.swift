@@ -16,6 +16,9 @@ final class BackendClient: ObservableObject {
     @Published private(set) var settings: BackendSettings?
     @Published private(set) var isUpdatingSettings = false
     @Published private(set) var isTestingChoiceParser = false
+    @Published private(set) var feishuBots: [FeishuBot] = []
+    @Published private(set) var feishuProfiles: [FeishuProfile] = []
+    @Published private(set) var isUpdatingFeishu = false
     @Published private(set) var codexModels: [CodexModel] = []
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
@@ -148,12 +151,133 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func updateDataDirectory(_ dataDir: String) async {
-        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser, codexBackend: settings?.codexBackend, agentProxy: settings?.agentProxy)
+    func loadFeishuBots() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "feishu/bots"))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            feishuBots = try JSONDecoder().decode(FeishuBotsResponse.self, from: data).bots
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func loadFeishuProfiles() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "feishu/profiles"))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            feishuProfiles = try JSONDecoder().decode(FeishuProfilesResponse.self, from: data).profiles
+            if lastError?.contains("Feishu") == true {
+                lastError = nil
+            }
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     @discardableResult
-    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil) async -> Bool {
+    func addFeishuBot(appId: String, appSecret: String) async -> Bool {
+        let trimmedAppId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSecret = appSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedAppId.isEmpty, !trimmedSecret.isEmpty else {
+            lastError = "Feishu App ID and App Secret are required."
+            return false
+        }
+        return await performFeishuMutation(method: "POST", path: "feishu/bots", body: [
+            "appId": trimmedAppId,
+            "appSecret": trimmedSecret,
+            "brand": "feishu"
+        ])
+    }
+
+    @discardableResult
+    func addFeishuBot(profile: String) async -> Bool {
+        let trimmedProfile = profile.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProfile.isEmpty else {
+            lastError = "lark-cli Profile is required."
+            return false
+        }
+        return await performFeishuMutation(method: "POST", path: "feishu/bots", body: [
+            "profile": trimmedProfile
+        ])
+    }
+
+    @discardableResult
+    func setFeishuBotEnabled(_ bot: FeishuBot, enabled: Bool) async -> Bool {
+        await performFeishuMutation(method: "PATCH", path: "feishu/bots/\(bot.id)", body: ["enabled": enabled])
+    }
+
+    @discardableResult
+    func deleteFeishuBot(_ bot: FeishuBot) async -> Bool {
+        await performFeishuMutation(method: "DELETE", path: "feishu/bots/\(bot.id)")
+    }
+
+    @discardableResult
+    func releaseFeishuSession(for bot: FeishuBot) async -> Bool {
+        await performFeishuMutation(method: "DELETE", path: "feishu/bots/\(bot.id)/assignment")
+    }
+
+    @discardableResult
+    func revokeFeishuBinding(_ binding: FeishuBinding) async -> Bool {
+        await performFeishuMutation(method: "DELETE", path: "feishu/bindings/\(binding.id)")
+    }
+
+    func createFeishuPairingCode(for bot: FeishuBot) async -> Result<FeishuPairingCodeResponse, Error> {
+        isUpdatingFeishu = true
+        defer { isUpdatingFeishu = false }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "feishu/bots/\(bot.id)/pairing-code"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [:])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not create pairing code.")
+            }
+            let pairing = try JSONDecoder().decode(FeishuPairingCodeResponse.self, from: data)
+            lastError = nil
+            return .success(pairing)
+        } catch {
+            lastError = error.localizedDescription
+            return .failure(error)
+        }
+    }
+
+    private func performFeishuMutation(method: String, path: String, body: [String: Any]? = nil) async -> Bool {
+        isUpdatingFeishu = true
+        defer { isUpdatingFeishu = false }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: path))
+            request.httpMethod = method
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Feishu gateway request failed.")
+            }
+            lastError = nil
+            await loadFeishuBots()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func updateDataDirectory(_ dataDir: String) async {
+        await updateSettings(dataDir: dataDir, choiceParser: settings?.choiceParser, codexBackend: settings?.codexBackend, agentProxy: settings?.agentProxy, gateway: settings?.gateway)
+    }
+
+    @discardableResult
+    func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil) async -> Bool {
         let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = "Data directory is required."
@@ -190,6 +314,9 @@ final class BackendClient: ObservableObject {
             }
             if let agentProxy {
                 body["agentProxy"] = agentProxyBody(agentProxy)
+            }
+            if let gateway {
+                body["gateway"] = ["trustedWorkspaces": gateway.trustedWorkspaces]
             }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -1293,8 +1420,11 @@ final class BackendClient: ObservableObject {
                 : "codex/threads/\(threadId)"
             let url = baseURL.appending(path: path)
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            guard let httpResponse = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
+            }
+            guard httpResponse.statusCode == 200 else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
@@ -1399,8 +1529,11 @@ final class BackendClient: ObservableObject {
                 : "codex/threads/\(threadId)"
             let url = baseURL.appending(path: path)
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            guard let httpResponse = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
+            }
+            guard httpResponse.statusCode == 200 else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)

@@ -14,6 +14,7 @@ export class ClaudeAgentManager {
   start(input = {}) {
     const id = input.id || randomUUID();
     const createdAt = createdAtFromOrNow();
+    const hasInitialPrompt = typeof input.prompt === "string" && input.prompt.trim().length > 0;
     const session = {
       id,
       title: shortTitle(input.title || input.prompt || "Claude Code"),
@@ -28,7 +29,7 @@ export class ClaudeAgentManager {
       permissionMode: claudePermissionMode(input.sandbox, input.approvalPolicy),
       createdAt,
       updatedAt: createdAt,
-      status: "running",
+      status: hasInitialPrompt ? "running" : "complete",
       archived: input.archived === true,
       pinned: input.pinned === true,
       sortOrder: input.sortOrder ?? null,
@@ -59,7 +60,7 @@ export class ClaudeAgentManager {
     this.sessions.set(id, session);
     console.log(`[claude-sdk] session created id=${id} cwd=${session.cwd}`);
     this.persistSession(session);
-    if (typeof input.prompt === "string" && input.prompt.trim()) {
+    if (hasInitialPrompt) {
       void this.send(id, input.prompt.trim());
     }
     return this.toSessionSummary(session);

@@ -48,3 +48,6 @@ tmp/
 *.tmp
 *.swp
 test/
+
+# Local development documents
+development-docs/

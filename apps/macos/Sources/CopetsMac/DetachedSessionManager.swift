@@ -768,21 +768,7 @@ private struct DetachedSessionOrbView: View {
 
     @ViewBuilder
     private func orb(session: TaskSession) -> some View {
-        ZStack {
-            StatusHalo(status: session.status)
-                .frame(width: orbRenderSize, height: orbRenderSize)
-
-            AgentAvatarView(session: session, size: 52, showsChrome: false)
-                .frame(width: 52, height: 52)
-
-            ConnectionIndicatorLight(
-                color: session.connectionColor,
-                size: 8,
-                glowSize: 17,
-                isBreathing: session.isConnecting
-            )
-            .offset(x: 21, y: -21)
-        }
+        SessionAvatarView(session: session, avatarSize: 52)
         .frame(width: 72, height: 72)
         .transaction { transaction in
             transaction.animation = nil
@@ -1055,12 +1041,12 @@ private struct DetachedReplyPreviewBubble: View {
     var body: some View {
         ZStack(alignment: .topLeading) {
             ScrollView(.vertical, showsIndicators: true) {
-                Text(text)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(CorptiePalette.primaryText)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                MarkdownMessageView(
+                    text: text,
+                    fontSize: 11,
+                    fontWeight: .semibold,
+                    foregroundColor: CorptiePalette.primaryText
+                )
                     .padding(.leading, 14)
                     .padding(.trailing, 12)
                     .padding(.top, 24)
@@ -1118,12 +1104,12 @@ private struct DetachedReplyComposerCard: View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
                 ScrollView(.vertical, showsIndicators: true) {
-                    Text(text)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(CorptiePalette.primaryText)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    MarkdownMessageView(
+                        text: text,
+                        fontSize: 11,
+                        fontWeight: .semibold,
+                        foregroundColor: CorptiePalette.primaryText
+                    )
                         .padding(.leading, 24)
                         .padding(.trailing, 6)
                         .padding(.vertical, 4)
@@ -1483,7 +1469,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     }
 }
 
-private struct StatusHalo: View {
+struct StatusHalo: View {
     let status: TaskStatus
 
     var body: some View {

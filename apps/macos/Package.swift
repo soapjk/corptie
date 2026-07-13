@@ -10,9 +10,15 @@ let package = Package(
     products: [
         .executable(name: "CorptieMac", targets: ["CorptieMac"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.1")
+    ],
     targets: [
         .executableTarget(
             name: "CorptieMac",
+            dependencies: [
+                .product(name: "MarkdownUI", package: "swift-markdown-ui")
+            ],
             path: "Sources/CopetsMac",
             exclude: [
                 "Resources/AppIcon.icns",

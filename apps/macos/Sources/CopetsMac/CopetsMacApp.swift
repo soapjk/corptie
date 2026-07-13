@@ -54,8 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendClient.stop()
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showPanel()
+        return true
+    }
+
     private func configureApplicationIcon() {
-        guard let iconURL = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
+        guard let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
               let icon = NSImage(contentsOf: iconURL) else {
             return
         }
@@ -236,7 +241,14 @@ struct SettingsView: View {
     @State private var savedCodeDiff = CodeDiffSettings.defaults
     @State private var agentProxy = AgentProxySettings.defaults
     @State private var savedAgentProxy = AgentProxySettings.defaults
+    @State private var gateway = GatewaySettings.defaults
+    @State private var savedGateway = GatewaySettings.defaults
     @State private var choiceParserStatus: ChoiceParserStatus = .idle
+    @State private var feishuAddMode = "credentials"
+    @State private var newFeishuAppId = ""
+    @State private var newFeishuAppSecret = ""
+    @State private var newFeishuProfile = ""
+    @State private var feishuPairingCodes: [String: FeishuPairingCodeResponse] = [:]
 
     var body: some View {
         VStack(spacing: 12) {
@@ -249,6 +261,11 @@ struct SettingsView: View {
                 proxySettingsTab
                     .tabItem {
                         Label("Proxy", systemImage: "network")
+                    }
+
+                feishuSettingsTab
+                    .tabItem {
+                        Label("Gateway", systemImage: "message.badge.filled.fill")
                     }
             }
 
@@ -270,6 +287,9 @@ struct SettingsView: View {
         .frame(width: 560, height: 580)
         .task {
             await backendClient.loadSettings()
+            await backendClient.loadFeishuBots()
+            await backendClient.loadFeishuProfiles()
+            selectDefaultFeishuProfileIfNeeded()
             await backendClient.loadModels(for: "codex-pty")
             if dataDir.isEmpty {
                 dataDir = backendClient.settings?.dataDir ?? defaultDataDirectory
@@ -282,6 +302,8 @@ struct SettingsView: View {
             savedCodeDiff = codeDiff
             agentProxy = backendClient.settings?.agentProxy ?? .defaults
             savedAgentProxy = agentProxy
+            gateway = backendClient.settings?.gateway ?? .defaults
+            savedGateway = gateway
         }
         .onChange(of: backendClient.settings) { _, settings in
             if let settings {
@@ -294,6 +316,8 @@ struct SettingsView: View {
                 savedCodeDiff = codeDiff
                 agentProxy = settings.agentProxy ?? .defaults
                 savedAgentProxy = agentProxy
+                gateway = settings.gateway ?? .defaults
+                savedGateway = gateway
                 choiceParserStatus = .idle
             }
         }
@@ -554,6 +578,312 @@ struct SettingsView: View {
         }
     }
 
+    private var feishuSettingsTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Feishu Gateway")
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    Text("Connect trusted Feishu users to sessions on this Mac.")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+                Spacer()
+                if backendClient.isUpdatingFeishu {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button {
+                    Task { await backendClient.loadFeishuBots() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh Feishu bots")
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Trusted Workspaces")
+                                    .font(.system(size: 13, weight: .bold))
+                                Text("These folders appear first when a Feishu user creates a session. Paths used by existing sessions are included automatically.")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                            }
+                            Spacer()
+                            Button("Add Folder…") {
+                                addTrustedWorkspace()
+                            }
+                            .controlSize(.small)
+                        }
+
+                        if gateway.trustedWorkspaces.isEmpty {
+                            Text("No pinned workspaces. Existing and recent session folders remain available in Feishu.")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        } else {
+                            ForEach(gateway.trustedWorkspaces, id: \.self) { path in
+                                HStack(spacing: 8) {
+                                    Image(systemName: "folder.fill")
+                                        .foregroundStyle(.blue)
+                                    Text(path)
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .help(path)
+                                    Spacer()
+                                    Button {
+                                        gateway.trustedWorkspaces.removeAll { $0 == path }
+                                    } label: {
+                                        Image(systemName: "minus.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Remove trusted workspace")
+                                }
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    if backendClient.feishuBots.isEmpty {
+                        ContentUnavailableView(
+                            "No Feishu Bots",
+                            systemImage: "message.badge",
+                            description: Text("Add a lark-cli profile below. A bot stays stopped until you explicitly enable it.")
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 150)
+                    } else {
+                        ForEach(backendClient.feishuBots) { bot in
+                            feishuBotCard(bot)
+                        }
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Add Bot")
+                                .font(.system(size: 13, weight: .bold))
+                            Spacer()
+                            Link("Create or configure in Feishu Open Platform", destination: URL(string: "https://open.feishu.cn/app")!)
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        Text("Feishu requires the enterprise app and bot capability to be created and published in its developer console first. Corptie connects that existing app to local sessions.")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                        Picker("", selection: $feishuAddMode) {
+                            Text("App Credentials").tag("credentials")
+                            Text("Existing CLI Profile").tag("profile")
+                        }
+                        .pickerStyle(.segmented)
+                        if feishuAddMode == "credentials" {
+                            TextField("Feishu App ID", text: $newFeishuAppId)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            SecureField("Feishu App Secret", text: $newFeishuAppSecret)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        } else if availableFeishuProfiles.isEmpty {
+                            Text("No unused lark-cli Profiles are available. Add a Profile in lark-cli or remove its existing Gateway bot first.")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        } else {
+                            Picker("lark-cli Profile", selection: $newFeishuProfile) {
+                                ForEach(availableFeishuProfiles) { profile in
+                                    Text(profile.active ? "\(profile.name) (Active)" : profile.name)
+                                        .tag(profile.name)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
+                        HStack {
+                            Text(feishuAddMode == "credentials"
+                                ? "The App Secret is passed directly to lark-cli encrypted storage and is never saved in the Corptie database."
+                                : "The existing Profile and its credentials remain owned by lark-cli and are never removed by Corptie.")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                            Spacer()
+                            Button("Add Bot") {
+                                Task {
+                                    let added = if feishuAddMode == "credentials" {
+                                        await backendClient.addFeishuBot(appId: newFeishuAppId, appSecret: newFeishuAppSecret)
+                                    } else {
+                                        await backendClient.addFeishuBot(profile: newFeishuProfile)
+                                    }
+                                    if added {
+                                        newFeishuAppId = ""
+                                        newFeishuAppSecret = ""
+                                        await backendClient.loadFeishuProfiles()
+                                        selectDefaultFeishuProfileIfNeeded()
+                                    }
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!canAddFeishuBot || backendClient.isUpdatingFeishu)
+                        }
+                    }
+                    .padding(12)
+                    .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .padding(.trailing, 8)
+            }
+
+            if let error = backendClient.lastError {
+                Text(error)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func feishuBotCard(_ bot: FeishuBot) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                if let avatar = bot.remoteAvatarURL.flatMap(URL.init(string:)) {
+                    AsyncImage(url: avatar) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } placeholder: {
+                        Image(systemName: "message.badge")
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(bot.remoteName ?? "Loading Feishu bot identity…")
+                        .font(.system(size: 13, weight: .bold))
+                    if let remoteName = bot.remoteName {
+                        Text("Search in Feishu: \(remoteName)")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.blue)
+                    }
+                    Text("App ID: \(bot.appId ?? "Unknown") · Profile: \(bot.profile)")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                Text(feishuConnectionLabel(bot))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(bot.connectionStatus == "connected" ? .green : CorptiePalette.secondaryText)
+                Toggle("", isOn: Binding(
+                    get: { bot.enabled },
+                    set: { enabled in
+                        Task { await backendClient.setFeishuBotEnabled(bot, enabled: enabled) }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+
+            if let error = bot.lastError, !error.isEmpty {
+                Text(error)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: 14) {
+                Label(bot.bindings.isEmpty ? "Not paired" : "Paired", systemImage: bot.bindings.isEmpty ? "person.crop.circle.badge.questionmark" : "person.crop.circle.badge.checkmark")
+                if let assignment = bot.assignment {
+                    Label(assignment.sessionId, systemImage: "link")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Label("No session selected", systemImage: "link.badge.plus")
+                }
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(CorptiePalette.secondaryText)
+
+            if let pairing = feishuPairingCodes[bot.id] {
+                HStack(spacing: 8) {
+                    Text("Pairing code")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(pairing.code)
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("expires \(pairing.expiresAt)")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+                .padding(.vertical, 4)
+            }
+
+            HStack(spacing: 8) {
+                Button("Generate Pairing Code") {
+                    Task {
+                        if case .success(let pairing) = await backendClient.createFeishuPairingCode(for: bot) {
+                            feishuPairingCodes[bot.id] = pairing
+                        }
+                    }
+                }
+                .disabled(!bot.enabled)
+                if let binding = bot.bindings.first {
+                    Button("Unpair") {
+                        Task { await backendClient.revokeFeishuBinding(binding) }
+                    }
+                }
+                if bot.assignment != nil {
+                    Button("Release Session") {
+                        Task { await backendClient.releaseFeishuSession(for: bot) }
+                    }
+                }
+                Spacer()
+                Button("Delete", role: .destructive) {
+                    Task {
+                        if await backendClient.deleteFeishuBot(bot) {
+                            feishuPairingCodes.removeValue(forKey: bot.id)
+                            selectDefaultFeishuProfileIfNeeded()
+                        }
+                    }
+                }
+            }
+            .controlSize(.small)
+            .disabled(backendClient.isUpdatingFeishu)
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func feishuConnectionLabel(_ bot: FeishuBot) -> String {
+        switch bot.connectionStatus {
+        case "connected": "Connected"
+        case "connecting": "Connecting"
+        case "error": "Error"
+        default: "Stopped"
+        }
+    }
+
+    private var availableFeishuProfiles: [FeishuProfile] {
+        let usedProfiles = Set(backendClient.feishuBots.map(\.profile))
+        return backendClient.feishuProfiles.filter { !usedProfiles.contains($0.name) }
+    }
+
+    private var canAddFeishuBot: Bool {
+        if feishuAddMode == "profile" {
+            return availableFeishuProfiles.contains { $0.name == newFeishuProfile }
+        }
+        return !newFeishuAppId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !newFeishuAppSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func selectDefaultFeishuProfileIfNeeded() {
+        guard !availableFeishuProfiles.contains(where: { $0.name == newFeishuProfile }) else {
+            return
+        }
+        newFeishuProfile = availableFeishuProfiles.first(where: { $0.active })?.name
+            ?? availableFeishuProfiles.first?.name
+            ?? ""
+    }
+
     private var llmInteractionEnabled: Binding<Bool> {
         Binding(
             get: { choiceParser.provider != "disabled" },
@@ -568,18 +898,36 @@ struct SettingsView: View {
         choiceParser != savedChoiceParser
     }
 
+    private func addTrustedWorkspace() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.canCreateDirectories = false
+        panel.prompt = "Add Workspace"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            let path = url.standardizedFileURL.path
+            if !gateway.trustedWorkspaces.contains(path) {
+                gateway.trustedWorkspaces.append(path)
+            }
+        }
+    }
+
     private func saveAllSettings() async {
         if await backendClient.updateSettings(
             dataDir: dataDir,
             choiceParser: choiceParser,
             codexBackend: codexBackend,
             codeDiff: codeDiff,
-            agentProxy: agentProxy
+            agentProxy: agentProxy,
+            gateway: gateway
         ) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
             savedCodeDiff = codeDiff
             savedAgentProxy = agentProxy
+            savedGateway = gateway
             choiceParserStatus = .saved
             onClose()
         }
@@ -587,11 +935,12 @@ struct SettingsView: View {
 
     private func confirmChoiceParser() async {
         choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy) {
+        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
             savedCodeDiff = codeDiff
             savedAgentProxy = agentProxy
+            savedGateway = gateway
             choiceParserStatus = .saved
         } else {
             choiceParserStatus = .failed(backendClient.lastError ?? "Save failed")
