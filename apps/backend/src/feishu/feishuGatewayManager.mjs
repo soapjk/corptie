@@ -1,5 +1,6 @@
 import { createHash, randomInt, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -269,17 +270,12 @@ export class FeishuGatewayManager {
     try {
       const bot = this.store.getFeishuBot(botId);
       if (!bot || !this.identityCliPath) return;
-      const { stdout } = await execFileAsync(this.identityCliPath, [
-        "--profile", bot.profile,
-        "api", "GET", "/open-apis/bot/v3/info",
-        "--as", "bot"
-      ], {
-        maxBuffer: 4 * 1024 * 1024,
+      const remote = await fetchBotIdentity(this.identityCliPath, bot.profile, {
         env: larkCliEnvironment(this.cliPath)
       });
-      const result = JSON.parse(stdout || "{}");
-      const remote = result.bot ?? result.data?.bot;
-      if (!remote) return;
+      if (!remote) {
+        throw new Error("Feishu returned no bot identity.");
+      }
       this.store.updateFeishuBot(botId, {
         name: remote.app_name ?? bot.name,
         remoteName: remote.app_name ?? null,
@@ -925,6 +921,32 @@ export class FeishuGatewayManager {
       throw new Error(result.msg || `Feishu API error ${result.code}`);
     }
     return result;
+  }
+}
+
+export async function fetchBotIdentity(commandPath, profile, options = {}) {
+  const directory = await mkdtemp(join(os.tmpdir(), "corptie-feishu-identity-"));
+  const outputName = "bot-info.json";
+  const outputPath = join(directory, outputName);
+  const execute = options.execFile ?? execFileAsync;
+  try {
+    await execute(commandPath, [
+      "--profile", profile,
+      "api", "GET", "/open-apis/bot/v3/info",
+      "--as", "bot",
+      "--output", `./${outputName}`
+    ], {
+      cwd: directory,
+      maxBuffer: 4 * 1024 * 1024,
+      env: options.env
+    });
+    const result = JSON.parse(await readFile(outputPath, "utf8"));
+    if (result.code && result.code !== 0) {
+      throw new Error(result.msg || `Feishu API error ${result.code}`);
+    }
+    return result.bot ?? result.data?.bot ?? null;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
   }
 }
 
