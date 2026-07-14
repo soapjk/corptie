@@ -1,6 +1,41 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
-import { FeishuGatewayManager, formatUsageText } from "../src/feishu/feishuGatewayManager.mjs";
+import {
+  FeishuGatewayManager,
+  fetchBotIdentity,
+  formatUsageText
+} from "../src/feishu/feishuGatewayManager.mjs";
+
+test("bot identity reads the raw API response instead of lark-cli's normalized output", async () => {
+  const calls = [];
+  const identity = await fetchBotIdentity("/usr/local/bin/lark-cli", "bot-profile", {
+    async execFile(command, args, options) {
+      calls.push({ command, args, cwd: options.cwd });
+      const outputArgument = args[args.indexOf("--output") + 1];
+      await writeFile(join(options.cwd, outputArgument), JSON.stringify({
+        code: 0,
+        msg: "ok",
+        bot: {
+          app_name: "Corptie Bot",
+          avatar_url: "https://example.com/avatar.png",
+          open_id: "ou_bot",
+          activate_status: 2
+        }
+      }));
+      return {
+        stdout: JSON.stringify({ ok: true, identity: "bot", data: {} }),
+        stderr: ""
+      };
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args.slice(-2), ["--output", "./bot-info.json"]);
+  assert.equal(identity.app_name, "Corptie Bot");
+  assert.equal(identity.avatar_url, "https://example.com/avatar.png");
+});
 
 test("usage text shows remaining percentages for every Codex limit bucket", () => {
   const text = formatUsageText({
