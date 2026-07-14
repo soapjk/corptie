@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildAgentPickerCard,
+  buildApprovalCard,
   buildCreateConfirmationCard,
   buildMessageCard,
   buildSessionListCard,
@@ -13,6 +14,45 @@ function cardButtons(card) {
     (element.columns ?? []).flatMap((column) => column.elements ?? [])
   ).filter((element) => element.tag === "button");
 }
+
+test("approval cards send explicit approve and deny callbacks", () => {
+  const card = buildApprovalCard({
+    sessionId: "codex:thread-a",
+    item: {
+      id: "approval-a",
+      type: "approval",
+      text: "Codex wants to run npm test",
+      options: [
+        { id: "approved", label: "Approve", role: "approve", index: 0 },
+        { id: "denied", label: "Deny", role: "deny", index: 1 }
+      ]
+    }
+  });
+
+  const buttons = cardButtons(card);
+  assert.equal(card.header.template, "orange");
+  assert.deepEqual(buttons.map((button) => button.text.content), ["Approve", "Deny"]);
+  assert.deepEqual(buttons.map((button) => button.behaviors[0].value), [
+    {
+      corptie_action: "respond_approval",
+      session_id: "codex:thread-a",
+      choice_id: "approval-a",
+      item_type: "approval",
+      option_id: "approved",
+      option_index: 0,
+      option_role: "approve"
+    },
+    {
+      corptie_action: "respond_approval",
+      session_id: "codex:thread-a",
+      choice_id: "approval-a",
+      item_type: "approval",
+      option_id: "denied",
+      option_index: 1,
+      option_role: "deny"
+    }
+  ]);
+});
 
 test("session list is a Card 2.0 card with direct session callbacks", () => {
   const card = buildSessionListCard({

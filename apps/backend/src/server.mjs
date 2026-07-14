@@ -54,7 +54,8 @@ const feishuGateway = new FeishuGatewayManager({
   getSnapshot: getUnifiedSessionSnapshot,
   getUsage: getGatewayUsage,
   sendMessage: sendUnifiedSessionMessage,
-  interruptSession: interruptUnifiedSession
+  interruptSession: interruptUnifiedSession,
+  respondToApproval: respondUnifiedSessionApproval
 });
 let codexModelsCache = null;
 let claudeModelsCache = null;
@@ -1427,6 +1428,63 @@ async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) 
     throw error;
   }
   emitEvent("SessionRunInterrupted", { sessionId, session, source }, { sessionId, source });
+  return session;
+}
+
+async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
+  const summary = listGatewaySessions().find((session) => session.id === sessionId);
+  if (!summary) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+
+  const approved = input.approved === true;
+  let session;
+  if (sessionId.startsWith("codex:")) {
+    const threadId = sessionId.slice("codex:".length);
+    await codexClient.respondToApproval(threadId, {
+      approved,
+      optionId: input.optionId
+    });
+    store.clearActiveChoicePrompt(sessionId);
+    session = {
+      ...summary,
+      status: summary.status === "blocked" ? "running" : summary.status,
+      suggestedOptions: null,
+      suggestedPrompt: null,
+      activityStatus: approved ? "Approval sent" : "Approval denied",
+      updatedAt: now()
+    };
+    upsertManagedCodexSession(session);
+  } else if (sessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(sessionId);
+    const isClaude = claudeAgents.has(id) || summary.external?.provider === "claude-sdk";
+    if (isClaude) {
+      session = claudeAgents.respondToChoice(id, {
+        choiceId: input.choiceId,
+        optionId: input.optionId,
+        optionIndex: input.optionIndex
+      });
+    } else if (input.itemType === "approval") {
+      session = ptyAgents.respondToCodexApproval(id, {
+        approved,
+        optionId: input.optionId,
+        optionIndex: input.optionIndex
+      });
+    } else {
+      session = ptyAgents.respondToPtyChoice(id, {
+        optionId: input.optionId,
+        optionIndex: input.optionIndex
+      });
+    }
+  } else {
+    const error = new Error("Session provider does not support approvals.");
+    error.code = "UNSUPPORTED_SESSION";
+    throw error;
+  }
+
+  emitEvent("SessionApprovalResponded", { sessionId, approved, session, source }, { sessionId, source });
   return session;
 }
 

@@ -21,6 +21,7 @@ export class FeishuGatewayManager {
     this.getUsage = options.getUsage;
     this.sendMessage = options.sendMessage;
     this.interruptSession = options.interruptSession;
+    this.respondToApproval = options.respondToApproval;
     this.cliPath = options.cliPath || process.env.CORPTIE_LARK_CLI || null;
     this.identityCliPath = null;
     this.processes = new Map();
@@ -548,6 +549,29 @@ export class FeishuGatewayManager {
           notice: { type: "error", text: `创建失败：${error.message}` }
         });
       }
+    } else if (action === "respond_approval") {
+      const sessionId = optionalText(event.actionValue?.session_id);
+      const assignment = this.store.getFeishuAssignmentForBot(botId);
+      if (!assignment || assignment.sessionId !== sessionId) {
+        card = buildApprovalResultCard("这个审批所属的会话已不再连接，未执行操作。", false);
+      } else if (!this.respondToApproval) {
+        card = buildApprovalResultCard("当前版本无法处理审批，请在电脑端操作。", false);
+      } else {
+        const role = optionalText(event.actionValue?.option_role).toLowerCase();
+        const approved = !role.includes("deny") && !role.includes("cancel");
+        try {
+          await this.respondToApproval(sessionId, {
+            approved,
+            optionId: optionalText(event.actionValue?.option_id),
+            optionIndex: nonNegativeInteger(event.actionValue?.option_index),
+            choiceId: optionalText(event.actionValue?.choice_id),
+            itemType: optionalText(event.actionValue?.item_type)
+          }, feishuSource(botId, event));
+          card = buildApprovalResultCard(approved ? "已允许，Codex 将继续执行。" : "已拒绝，Codex 将停止这项操作。", approved);
+        } catch (error) {
+          card = buildApprovalResultCard(`审批失败：${error.message}`, false);
+        }
+      }
     } else if (action === "create_back_workspaces") {
       card = await this.buildWorkspaceCard(0);
     } else if (action === "create_cancel" || action === "create_back_sessions") {
@@ -783,10 +807,12 @@ export class FeishuGatewayManager {
     }
     if (!existingRuntime) {
       runtime.lastStatus = snapshot.status;
-      runtime.seenItems = new Set((snapshot.items ?? []).map((item) => item.id).filter(Boolean));
+      runtime.seenItems = new Set((snapshot.items ?? [])
+        .filter((item) => !isPendingApprovalItem(item))
+        .map((item) => item.id)
+        .filter(Boolean));
       this.botRuntime.set(botId, runtime);
       await this.sendText(botId, chatId, `当前会话：${snapshot.title}\n状态：${displayStatus(snapshot.status)}`);
-      return;
     }
     if (snapshot.status !== runtime.lastStatus) {
       await this.sendText(botId, chatId, `会话状态：${displayStatus(snapshot.status)}`);
@@ -801,6 +827,16 @@ export class FeishuGatewayManager {
     });
     for (const item of newAssistantItems) {
       await this.sendText(botId, chatId, item.text);
+    }
+    const newApprovalItems = (snapshot.items ?? []).filter((item) => {
+      const unseen = item.id && !runtime.seenItems.has(item.id);
+      return unseen && isPendingApprovalItem(item);
+    });
+    for (const item of newApprovalItems) {
+      await this.sendCard(botId, chatId, buildApprovalCard({
+        sessionId: assignment.sessionId,
+        item
+      }));
     }
     const newUserItems = (snapshot.items ?? []).filter((item) => {
       const unseen = item.id && !runtime.seenItems.has(item.id);
@@ -1235,6 +1271,72 @@ function noticeMarkdown(notice) {
   return { tag: "markdown", content: `<font color='${color}'>${escapeCardMarkdown(notice.text)}</font>` };
 }
 
+export function buildApprovalCard({ sessionId, item }) {
+  const options = Array.isArray(item?.options) ? item.options.slice(0, 5) : [];
+  const body = optionalText(item?.text) || "Codex 请求执行一项需要授权的操作。";
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "default",
+      summary: { content: "Codex 正在等待权限审批" }
+    },
+    header: {
+      title: { tag: "plain_text", content: "Corptie · 需要权限审批" },
+      template: "orange"
+    },
+    body: {
+      direction: "vertical",
+      padding: "12px 12px 16px 12px",
+      elements: [
+        { tag: "markdown", content: body },
+        cardButtonRow(options.map((option) => ({
+          tag: "button",
+          text: {
+            tag: "plain_text",
+            content: optionalText(option.label)
+              || (String(option.role ?? "").toLowerCase().includes("deny") ? "拒绝" : "允许")
+          },
+          type: String(option.role ?? "").toLowerCase().includes("deny") ? "default" : "primary_filled",
+          width: "fill",
+          behaviors: [{
+            type: "callback",
+            value: {
+              corptie_action: "respond_approval",
+              session_id: sessionId,
+              choice_id: item.id,
+              item_type: item.type,
+              option_id: option.id,
+              option_index: option.index ?? 0,
+              option_role: option.role ?? ""
+            }
+          }]
+        })))
+      ]
+    }
+  };
+}
+
+function buildApprovalResultCard(message, approved) {
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      width_mode: "default",
+      summary: { content: message }
+    },
+    header: {
+      title: { tag: "plain_text", content: approved ? "Corptie · 已允许" : "Corptie · 审批结果" },
+      template: approved ? "green" : "grey"
+    },
+    body: {
+      direction: "vertical",
+      padding: "12px 12px 16px 12px",
+      elements: [{ tag: "markdown", content: message }]
+    }
+  };
+}
+
 export function formatUsageText(usage = {}) {
   if (usage.available === false) {
     return optionalText(usage.message) || "当前模型暂时没有可查询的用量余额。";
@@ -1456,6 +1558,13 @@ function displayStatus(status) {
 
 function isProcessingStatus(status) {
   return ["running", "queued", "processing"].includes(status);
+}
+
+function isPendingApprovalItem(item) {
+  return ["approval", "choice"].includes(item?.type)
+    && item.status !== "selected"
+    && Array.isArray(item.options)
+    && item.options.length > 0;
 }
 
 function requiredText(value, message) {
