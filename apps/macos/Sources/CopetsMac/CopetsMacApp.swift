@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var detachedSessionManager: DetachedSessionManager?
     private var completionSoundManager: SessionCompletionSoundManager?
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -94,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: CorptieAppEnvironment.isDevelopment ? "hammer" : "sparkles", accessibilityDescription: CorptieAppEnvironment.appName)
         item.button?.imagePosition = .imageOnly
+        item.button?.target = self
+        item.button?.action = #selector(handleStatusItemClick)
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Show \(CorptieAppEnvironment.appName)", action: #selector(showPanel), keyEquivalent: ""))
@@ -101,8 +105,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit \(CorptieAppEnvironment.appName)", action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
-        item.menu = menu
+        statusMenu = menu
         statusItem = item
+    }
+
+    @objc private func handleStatusItemClick() {
+        guard NSApp.currentEvent?.type == .rightMouseUp,
+              let event = NSApp.currentEvent,
+              let button = statusItem?.button,
+              let statusMenu else {
+            showPanel()
+            return
+        }
+
+        NSMenu.popUpContextMenu(statusMenu, with: event, for: button)
     }
 
     @objc private func showPanel() {

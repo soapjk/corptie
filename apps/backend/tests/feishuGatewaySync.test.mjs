@@ -132,7 +132,8 @@ test("pending approvals are delivered exactly once, including on the first sync"
   await manager.syncBot("bot-a");
 
   assert.equal(cards.length, 1);
-  assert.equal(cards[0].header.title.content, "Corptie · 需要权限审批");
+  assert.equal(cards[0].header.title.content, "Session A");
+  assert.equal(cards[0].header.subtitle.content, "Corptie · 需要权限审批");
 });
 
 test("approval card callbacks are forwarded only for the currently assigned session", async () => {
