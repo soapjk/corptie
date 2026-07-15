@@ -28,7 +28,6 @@ struct FloatingRootView: View {
     @State private var detailPreheatTasks: [String: Task<Void, Never>] = [:]
     @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
     @State private var listHeightMeasurements: [ListHeightMetric: CGFloat] = [:]
-    @State private var panelSurfaceSize = CGSize.zero
     @State private var isSearching = false
     @State private var searchText = ""
     @FocusState private var isSearchFieldFocused: Bool
@@ -80,17 +79,7 @@ struct FloatingRootView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .zIndex(0)
         }
-        .background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: PanelSurfaceSizePreferenceKey.self, value: proxy.size)
-            }
-        )
-        .onPreferenceChange(PanelSurfaceSizePreferenceKey.self) { size in
-            panelSurfaceSize = size
-            logListGeometry(trigger: "surface")
-        }
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .animation(.easeOut(duration: 0.18), value: backendClient.selectedSession?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: newSessionPanel.isPresented)
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -526,7 +515,7 @@ struct FloatingRootView: View {
         let usefulHeight = itemHeights.last ?? (outerPadding + listTopOffset + cardsHeight)
 
         if CorptieAppEnvironment.isDevelopment {
-            print("[layout-debug] metrics key=\(listLayoutKey) surface=\(debugSize(panelSurfaceSize)) content=\(debugRect(contentFrame)) cardsHeight=\(debugNumber(cardsHeight)) listTop=\(debugNumber(listTopOffset)) itemHeights=\(itemHeights.map(debugNumber).joined(separator: ",")) min=\(debugNumber(minimumHeight)) preferred=\(debugNumber(preferredHeight)) useful=\(debugNumber(usefulHeight))")
+            print("[layout-debug] metrics key=\(listLayoutKey) content=\(debugRect(contentFrame)) cardsHeight=\(debugNumber(cardsHeight)) listTop=\(debugNumber(listTopOffset)) itemHeights=\(itemHeights.map(debugNumber).joined(separator: ",")) min=\(debugNumber(minimumHeight)) preferred=\(debugNumber(preferredHeight)) useful=\(debugNumber(usefulHeight))")
         }
 
         DispatchQueue.main.async {
@@ -551,15 +540,11 @@ struct FloatingRootView: View {
         let cards = filteredSessions.compactMap { session in
             values[session.id].map { "\(session.id.prefix(6)):\(debugRect($0))" }
         }.joined(separator: " ")
-        print("[layout-debug] view trigger=\(trigger) key=\(listLayoutKey) surface=\(debugSize(panelSurfaceSize)) content=\(content) cards=[\(cards)]")
+        print("[layout-debug] view trigger=\(trigger) key=\(listLayoutKey) content=\(content) cards=[\(cards)]")
     }
 
     private func debugNumber(_ value: CGFloat) -> String {
         String(format: "%.1f", value)
-    }
-
-    private func debugSize(_ size: CGSize) -> String {
-        "\(debugNumber(size.width))x\(debugNumber(size.height))"
     }
 
     private func debugRect(_ rect: CGRect) -> String {
@@ -882,15 +867,6 @@ private struct SessionCardFramePreferenceKey: PreferenceKey {
 
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
-    }
-}
-
-private struct PanelSurfaceSizePreferenceKey: PreferenceKey {
-    static let defaultValue = CGSize.zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        let next = nextValue()
-        value = CGSize(width: max(value.width, next.width), height: max(value.height, next.height))
     }
 }
 
@@ -2969,6 +2945,7 @@ private struct DetailView: View {
     @State private var detailScrollViewportHeight: CGFloat = 0
     @State private var detailScrollBottomMaxY: CGFloat = 0
     @State private var isDetailScrolledNearBottom = true
+    @State private var hasNewMessagesBelow = false
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
 
@@ -3055,6 +3032,7 @@ private struct DetailView: View {
         .onChange(of: sessionId) { _, _ in
             didInitialScroll = false
             isDetailScrolledNearBottom = true
+            hasNewMessagesBelow = false
             detailScrollViewportHeight = 0
             detailScrollBottomMaxY = 0
             visibleMessageLimit = Self.initialVisibleMessageLimit
@@ -3149,6 +3127,23 @@ private struct DetailView: View {
                 detailScrollBottomMaxY = maxY
                 updateDetailScrollBottomProximity()
             }
+            .overlay(alignment: .bottomTrailing) {
+                if hasNewMessagesBelow && !isDetailScrolledNearBottom {
+                    Button {
+                        scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help("Jump to latest message")
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 8)
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+                }
+            }
+            .animation(.easeOut(duration: 0.16), value: hasNewMessagesBelow)
         }
     }
 
@@ -3267,11 +3262,13 @@ private struct DetailView: View {
             return
         }
         guard force || isDetailScrolledNearBottom else {
+            hasNewMessagesBelow = true
             return
         }
 
         let delay: TimeInterval = didInitialScroll ? 0.0 : 0.02
         didInitialScroll = true
+        hasNewMessagesBelow = false
 
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             guard backendClient.selectedSession?.id == sessionId else {
@@ -3298,7 +3295,11 @@ private struct DetailView: View {
             return
         }
         let bottomDistance = detailScrollBottomMaxY - detailScrollViewportHeight
-        isDetailScrolledNearBottom = bottomDistance <= 36
+        let isNearBottom = bottomDistance <= 36
+        isDetailScrolledNearBottom = isNearBottom
+        if isNearBottom {
+            hasNewMessagesBelow = false
+        }
     }
 
     private func visibleEntries(from displayEntries: [ChatDisplayEntry]) -> [ChatDisplayEntry] {
@@ -3503,8 +3504,10 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     let agentMessages = items.filter {
         $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    let finalAgentMessage = agentMessages.last
-    let progressAgentMessages = agentMessages.dropLast()
+    let finalAgentMessage = agentMessages.last.flatMap { item in
+        isTerminalTurnStatus(item.turnStatus) ? item : nil
+    }
+    let progressAgentMessages = finalAgentMessage == nil ? agentMessages[...] : agentMessages.dropLast()
     let processItems = items.filter(isDetailProcessItem) + progressAgentMessages
     let trailingItems = items.filter { item in
         item.type != "userMessage" && item.type != "agentMessage" && !isDetailProcessItem(item)
@@ -3519,6 +3522,15 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     }
     entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
     return entries
+}
+
+private func isTerminalTurnStatus(_ status: String) -> Bool {
+    switch status.lowercased() {
+    case "completed", "complete", "failed", "cancelled", "canceled", "interrupted":
+        return true
+    default:
+        return false
+    }
 }
 
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {

@@ -18,6 +18,7 @@ function cardButtons(card) {
 test("approval cards send explicit approve and deny callbacks", () => {
   const card = buildApprovalCard({
     sessionId: "codex:thread-a",
+    sessionTitle: "修复聊天滚动逻辑",
     item: {
       id: "approval-a",
       type: "approval",
@@ -31,6 +32,8 @@ test("approval cards send explicit approve and deny callbacks", () => {
 
   const buttons = cardButtons(card);
   assert.equal(card.header.template, "orange");
+  assert.equal(card.header.title.content, "修复聊天滚动逻辑");
+  assert.equal(card.header.subtitle.content, "Corptie · 需要权限审批");
   assert.deepEqual(buttons.map((button) => button.text.content), ["Approve", "Deny"]);
   assert.deepEqual(buttons.map((button) => button.behaviors[0].value), [
     {
@@ -105,10 +108,15 @@ test("session card paginates long lists", () => {
   ));
 });
 
-test("ordinary bot output is wrapped in a Card 2.0 markdown message", () => {
-  const card = buildMessageCard("**结果**\n\n任务已完成");
+test("ordinary bot output uses the connected session as its card title", () => {
+  const card = buildMessageCard("**结果**\n\n任务已完成", {
+    sessionTitle: "修复聊天滚动逻辑",
+    sessionStatus: "running"
+  });
   assert.equal(card.schema, "2.0");
-  assert.equal(card.header.template, "green");
+  assert.equal(card.header.template, "blue");
+  assert.equal(card.header.title.content, "修复聊天滚动逻辑");
+  assert.equal(card.header.subtitle.content, "Corptie · 正在处理");
   assert.equal(card.body.elements[0].tag, "markdown");
   assert.equal(card.body.elements[0].content, "**结果**\n\n任务已完成");
   assert.equal(card.config.summary.content, "结果 任务已完成");

@@ -385,7 +385,7 @@ final class FloatingPanelController: NSObject {
     }
 
     private func detailMinimumHeight() -> CGFloat {
-        let measuredLastMessageHeight = layoutState.detailLastMessageHeight ?? PanelLayoutState.estimatedCardHeight
+        let measuredLastMessageHeight = layoutState.detailLastMessageHeight ?? 0
         let lastMessageHeight = min(max(measuredLastMessageHeight, 72), 620)
         let outerPadding = PanelLayoutState.verticalPadding * 2
         let headerHeight: CGFloat = 32

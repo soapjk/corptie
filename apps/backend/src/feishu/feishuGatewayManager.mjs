@@ -808,10 +808,12 @@ export class FeishuGatewayManager {
         .map((item) => item.id)
         .filter(Boolean));
       this.botRuntime.set(botId, runtime);
-      await this.sendText(botId, chatId, `当前会话：${snapshot.title}\n状态：${displayStatus(snapshot.status)}`);
+      await this.sendText(botId, chatId, `当前会话：${snapshot.title}\n状态：${displayStatus(snapshot.status)}`, {
+        sessionTitle: snapshot.title,
+        sessionStatus: snapshot.status
+      });
     }
     if (snapshot.status !== runtime.lastStatus) {
-      await this.sendText(botId, chatId, `会话状态：${displayStatus(snapshot.status)}`);
       runtime.lastStatus = snapshot.status;
       if (!isProcessingStatus(snapshot.status)) {
         await this.clearTyping(botId).catch(() => {});
@@ -822,7 +824,10 @@ export class FeishuGatewayManager {
       return unseen && ["agentMessage", "assistantMessage"].includes(item.type) && item.text;
     });
     for (const item of newAssistantItems) {
-      await this.sendText(botId, chatId, item.text);
+      await this.sendText(botId, chatId, item.text, {
+        sessionTitle: snapshot.title,
+        sessionStatus: snapshot.status
+      });
     }
     const newApprovalItems = (snapshot.items ?? []).filter((item) => {
       const unseen = item.id && !runtime.seenItems.has(item.id);
@@ -831,6 +836,7 @@ export class FeishuGatewayManager {
     for (const item of newApprovalItems) {
       await this.sendCard(botId, chatId, buildApprovalCard({
         sessionId: assignment.sessionId,
+        sessionTitle: snapshot.title,
         item
       }));
     }
@@ -843,7 +849,10 @@ export class FeishuGatewayManager {
       if (pendingIndex >= 0) {
         runtime.pendingFeishuInputs.splice(pendingIndex, 1);
       } else {
-        await this.sendText(botId, chatId, `电脑端：${item.text}`);
+        await this.sendText(botId, chatId, `电脑端：${item.text}`, {
+          sessionTitle: snapshot.title,
+          sessionStatus: snapshot.status
+        });
       }
     }
     for (const item of snapshot.items ?? []) {
@@ -852,10 +861,31 @@ export class FeishuGatewayManager {
     this.botRuntime.set(botId, runtime);
   }
 
-  async sendText(botId, chatId, text) {
+  async sendText(botId, chatId, text, options = {}) {
+    let sessionTitle = optionalText(options.sessionTitle);
+    let sessionStatus = optionalText(options.sessionStatus);
+    if (!sessionTitle || !sessionStatus) {
+      const context = await this.resolveSessionContext(botId);
+      sessionTitle ||= context.title;
+      sessionStatus ||= context.status;
+    }
     const chunks = splitMessage(text, 3500);
     for (const chunk of chunks) {
-      await this.sendCard(botId, chatId, buildMessageCard(chunk));
+      await this.sendCard(botId, chatId, buildMessageCard(chunk, { sessionTitle, sessionStatus }));
+    }
+  }
+
+  async resolveSessionContext(botId) {
+    const assignment = this.store.getFeishuAssignmentForBot(botId);
+    if (!assignment) return { title: "", status: "" };
+    try {
+      const snapshot = await this.getSnapshot(assignment.sessionId);
+      return {
+        title: optionalText(snapshot?.title),
+        status: optionalText(snapshot?.status)
+      };
+    } catch {
+      return { title: "", status: "" };
     }
   }
 
@@ -1293,7 +1323,7 @@ function noticeMarkdown(notice) {
   return { tag: "markdown", content: `<font color='${color}'>${escapeCardMarkdown(notice.text)}</font>` };
 }
 
-export function buildApprovalCard({ sessionId, item }) {
+export function buildApprovalCard({ sessionId, sessionTitle = "", item }) {
   const options = Array.isArray(item?.options) ? item.options.slice(0, 5) : [];
   const body = optionalText(item?.text) || "Codex 请求执行一项需要授权的操作。";
   return {
@@ -1304,7 +1334,13 @@ export function buildApprovalCard({ sessionId, item }) {
       summary: { content: "Codex 正在等待权限审批" }
     },
     header: {
-      title: { tag: "plain_text", content: "Corptie · 需要权限审批" },
+      title: {
+        tag: "plain_text",
+        content: optionalText(sessionTitle) || "Corptie · 需要权限审批"
+      },
+      ...(optionalText(sessionTitle) ? {
+        subtitle: { tag: "plain_text", content: "Corptie · 需要权限审批" }
+      } : {}),
       template: "orange"
     },
     body: {
@@ -1454,9 +1490,12 @@ function formatPercentage(value) {
   return Number(value.toFixed(1)).toString();
 }
 
-export function buildMessageCard(text) {
+export function buildMessageCard(text, { sessionTitle = "", sessionStatus = "" } = {}) {
   const content = String(text ?? "").trim() || " ";
-  const tone = messageTone(content);
+  const tone = optionalText(sessionStatus)
+    ? sessionStatusTone(sessionStatus)
+    : messageTone(content);
+  const title = optionalText(sessionTitle);
   return {
     schema: "2.0",
     config: {
@@ -1465,7 +1504,8 @@ export function buildMessageCard(text) {
       summary: { content: plainTextSummary(content) }
     },
     header: {
-      title: { tag: "plain_text", content: tone.title },
+      title: { tag: "plain_text", content: title || tone.title },
+      ...(title ? { subtitle: { tag: "plain_text", content: tone.title } } : {}),
       template: tone.template
     },
     body: {
@@ -1474,6 +1514,16 @@ export function buildMessageCard(text) {
       elements: [{ tag: "markdown", content }]
     }
   };
+}
+
+function sessionStatusTone(status) {
+  const normalized = optionalText(status).toLowerCase();
+  const title = `Corptie · ${displayStatus(status)}`;
+  if (/failed|error/.test(normalized)) return { title, template: "red" };
+  if (/completed|complete|succeeded|success/.test(normalized)) return { title, template: "green" };
+  if (/waiting|approval|input/.test(normalized)) return { title, template: "orange" };
+  if (/running|processing|working|connecting/.test(normalized)) return { title, template: "blue" };
+  return { title, template: "grey" };
 }
 
 function messageTone(content) {
