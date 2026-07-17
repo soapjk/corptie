@@ -353,7 +353,6 @@ struct FloatingRootView: View {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.12), radius: 8, y: 4)
     }
 
     @ViewBuilder
@@ -3060,6 +3059,8 @@ private struct DetailView: View {
     @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
     @State private var displayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @State private var collaborationExpansionByItemKey: [String: Bool] = [:]
+    @State private var collaborationConfirmationExpansionByItemKey: [String: Bool] = [:]
     @State private var detailScrollViewportHeight: CGFloat = 0
     @State private var detailScrollBottomMaxY: CGFloat = 0
     @State private var isDetailScrolledNearBottom = true
@@ -3089,9 +3090,6 @@ private struct DetailView: View {
                     } else {
                         DetailMessagesPlaceholder()
                     }
-                }
-                .transaction { transaction in
-                    transaction.animation = nil
                 }
                 .onAppear {
                     updateCachedDisplayEntries(for: detail)
@@ -3154,6 +3152,8 @@ private struct DetailView: View {
             detailScrollViewportHeight = 0
             detailScrollBottomMaxY = 0
             visibleMessageLimit = Self.initialVisibleMessageLimit
+            collaborationExpansionByItemKey.removeAll()
+            collaborationConfirmationExpansionByItemKey.removeAll()
             restoreDisplayCacheForCurrentSession()
         }
     }
@@ -3185,7 +3185,11 @@ private struct DetailView: View {
                     ForEach(displayEntries) { entry in
                         switch entry.kind {
                         case .message(let item):
-                            ThreadItemView(item: item)
+                            ThreadItemView(
+                                item: item,
+                                isCollaborationExpanded: collaborationExpansionBinding(for: item),
+                                isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
+                            )
                                 .id(entry.id)
                                 .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
                         case .process(let items):
@@ -3263,6 +3267,27 @@ private struct DetailView: View {
             }
             .animation(.easeOut(duration: 0.16), value: hasNewMessagesBelow)
         }
+    }
+
+    private func collaborationExpansionBinding(for item: CodexThreadItem) -> Binding<Bool> {
+        let key = collaborationExpansionKey(for: item)
+        return Binding(
+            get: { collaborationExpansionByItemKey[key] ?? false },
+            set: { collaborationExpansionByItemKey[key] = $0 }
+        )
+    }
+
+    private func collaborationConfirmationExpansionBinding(for item: CodexThreadItem) -> Binding<Bool> {
+        let key = collaborationExpansionKey(for: item)
+        let status = (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased()
+        return Binding(
+            get: { collaborationConfirmationExpansionByItemKey[key] ?? (status == "pending") },
+            set: { collaborationConfirmationExpansionByItemKey[key] = $0 }
+        )
+    }
+
+    private func collaborationExpansionKey(for item: CodexThreadItem) -> String {
+        "\(sessionId)::\(item.id)"
     }
 
     private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
@@ -3364,13 +3389,19 @@ private struct DetailView: View {
 
     private func itemSignature(_ item: CodexThreadItem) -> String {
         let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let presentationText = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return [
             item.id,
             item.type,
             item.status ?? "",
             item.turnStatus,
+            item.presentationRole ?? "",
+            item.collaborationProcessingStatus ?? "",
+            item.collaborationSenderName ?? "",
             "\(text.count)",
             String(text.suffix(96)),
+            "\(presentationText.count)",
+            String(presentationText.suffix(96)),
             fileChangesSignature(item)
         ].joined(separator: ":")
     }
@@ -3468,6 +3499,13 @@ private struct DetailView: View {
 
     private func chatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
         let userMessages = items.filter { $0.type == "userMessage" }
+        if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
+            return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
+                + [ChatDisplayEntry(kind: .message(confirmation))]
+        }
+        if items.contains(where: { $0.sourceType == "collaboration" && $0.localVisibility == "status_only" }) {
+            return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
+        }
         let agentMessages = items.filter {
             $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -3578,7 +3616,11 @@ private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMes
             item.type,
             item.status ?? "",
             item.turnStatus,
+            item.presentationRole ?? "",
+            item.collaborationProcessingStatus ?? "",
+            item.collaborationSenderName ?? "",
             "\(item.text.count)",
+            "\(item.presentationText?.count ?? 0)",
             fileChangesSignature(item)
         ].joined(separator: ":")
     }.joined(separator: "|")
@@ -3619,6 +3661,13 @@ private func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDispl
 
 private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
     let userMessages = items.filter { $0.type == "userMessage" }
+    if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
+        return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
+            + [ChatDisplayEntry(kind: .message(confirmation))]
+    }
+    if items.contains(where: { $0.sourceType == "collaboration" && $0.localVisibility == "status_only" }) {
+        return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
+    }
     let agentMessages = items.filter {
         $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -3684,13 +3733,19 @@ private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visi
 
 private func detailItemSignature(_ item: CodexThreadItem) -> String {
     let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let presentationText = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     return [
         item.id,
         item.type,
         item.status ?? "",
         item.turnStatus,
+        item.presentationRole ?? "",
+        item.collaborationProcessingStatus ?? "",
+        item.collaborationSenderName ?? "",
         "\(text.count)",
         String(text.suffix(96)),
+        "\(presentationText.count)",
+        String(presentationText.suffix(96)),
         fileChangesSignature(item)
     ].joined(separator: ":")
 }
@@ -4141,18 +4196,429 @@ private extension ISO8601DateFormatter {
 private struct ThreadItemView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isActivityExpanded = false
+    @State private var isCollaborationDetailsExpanded = false
     @State private var isHovering = false
     @State private var isConfirmingUndo = false
     @State private var isDiffActionRunning = false
     @State private var diffActionError: String?
     let item: CodexThreadItem
+    @Binding private var isCollaborationExpanded: Bool
+    @Binding private var isCollaborationConfirmationExpanded: Bool
+
+    init(
+        item: CodexThreadItem,
+        isCollaborationExpanded: Binding<Bool>,
+        isCollaborationConfirmationExpanded: Binding<Bool>
+    ) {
+        self.item = item
+        _isCollaborationExpanded = isCollaborationExpanded
+        _isCollaborationConfirmationExpanded = isCollaborationConfirmationExpanded
+    }
 
     var body: some View {
-        if isHandledPermissionItem {
+        if isCollaborationConfirmationItem {
+            collaborationConfirmationView
+        } else if isCollaborationItem {
+            collaborationItemView
+        } else if isHandledPermissionItem {
             handledPermissionView
         } else {
             fullItemView
         }
+    }
+
+    private var collaborationConfirmationView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    isCollaborationConfirmationExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isCollaborationConfirmationExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .frame(width: 10)
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(CorptiePalette.softBlue)
+                    Text("确认发送协作任务")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(CorptiePalette.primaryText)
+                    Text("· \(collaborationRecipientName)")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Text(collaborationConfirmationStatusLabel)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(collaborationConfirmationStatusColor)
+                }
+                .padding(.horizontal, 9)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .help(isCollaborationConfirmationExpanded ? "收起发送详情" : "展开发送详情")
+
+            if isCollaborationConfirmationExpanded {
+                Divider()
+                    .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        collaborationConfirmationField(
+                            icon: "person.crop.circle.badge.checkmark",
+                            label: "目标 Agent",
+                            value: collaborationRecipientName
+                        )
+                        if let recipientId = nonEmpty(item.collaborationRecipientAgentId) {
+                            collaborationConfirmationField(icon: "number", label: "Agent ID", value: recipientId, monospaced: true)
+                        }
+                        if let title = nonEmpty(item.collaborationTaskTitle) {
+                            collaborationConfirmationField(icon: "checklist", label: "任务", value: title)
+                        }
+                        collaborationConfirmationField(icon: "text.alignleft", label: "指令", value: collaborationPresentationText)
+                    }
+
+                    if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("验收标准")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                            ForEach(criteria, id: \.self) { criterion in
+                                Label(criterion, systemImage: "checkmark.circle")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(CorptiePalette.primaryText)
+                            }
+                        }
+                    }
+
+                    if collaborationConfirmationStatus == "pending",
+                       let confirmationId = item.collaborationConfirmationId {
+                        HStack(spacing: 8) {
+                            Button {
+                                backendClient.respondToCollaborationConfirmation(confirmationId: confirmationId, approve: true)
+                            } label: {
+                                Label("确认发送", systemImage: "paperplane.fill")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(CorptiePalette.softBlue)
+
+                            Button {
+                                backendClient.respondToCollaborationConfirmation(confirmationId: confirmationId, approve: false)
+                            } label: {
+                                Text("取消")
+                                    .frame(minWidth: 52)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .controlSize(.small)
+                        .disabled(backendClient.isSendingMessage)
+
+                        Text("也可以直接回复“确认”或“取消”")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 9)
+                .padding(.bottom, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CorptiePalette.collaborationSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(CorptiePalette.collaborationBorder.opacity(0.62), lineWidth: 1)
+                .allowsHitTesting(false)
+        )
+        .animation(.easeInOut(duration: 0.16), value: isCollaborationConfirmationExpanded)
+        .onChange(of: collaborationConfirmationStatus) { _, status in
+            if status != "pending" {
+                withAnimation(.easeOut(duration: 0.16)) {
+                    isCollaborationConfirmationExpanded = false
+                }
+            }
+        }
+    }
+
+    private func collaborationConfirmationField(icon: String, label: String, value: String, monospaced: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: icon)
+                .frame(width: 13)
+                .foregroundStyle(CorptiePalette.softBlue)
+            Text(label)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .frame(width: 58, alignment: .leading)
+            Text(value)
+                .font(.system(size: 10.5, weight: .semibold, design: monospaced ? .monospaced : .default))
+                .foregroundStyle(CorptiePalette.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var isCollaborationConfirmationItem: Bool {
+        item.presentationRole == "collaboration_confirmation" || item.type == "collaborationConfirmation"
+    }
+
+    private var collaborationConfirmationStatus: String {
+        (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased()
+    }
+
+    private var collaborationConfirmationStatusLabel: String {
+        switch collaborationConfirmationStatus {
+        case "confirmed": "已发送"
+        case "rejected": "已取消"
+        default: "等待确认"
+        }
+    }
+
+    private var collaborationConfirmationStatusColor: Color {
+        switch collaborationConfirmationStatus {
+        case "confirmed": CorptiePalette.connected
+        case "rejected": CorptiePalette.mutedText
+        default: CorptiePalette.amber
+        }
+    }
+
+    private var collaborationItemView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.spring(response: 0.30, dampingFraction: 0.86, blendDuration: 0.08)) {
+                    isCollaborationExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .frame(width: 10)
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .rotationEffect(.degrees(isCollaborationExpanded ? 90 : 0))
+                    Image(systemName: "person.2.wave.2.fill")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(CorptiePalette.softBlue)
+                    Text("Agent 协作")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(CorptiePalette.primaryText)
+                    Text(collaborationKindLabel)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(CorptiePalette.primaryText)
+                        .padding(.horizontal, 5)
+                        .frame(height: 16)
+                        .background(Color.white.opacity(0.24), in: Capsule())
+                    Text("· \(collaborationSenderName)")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Label(collaborationStatusLabel, systemImage: collaborationStatusIcon)
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(collaborationStatusColor)
+                }
+                .padding(.horizontal, 9)
+                .frame(maxWidth: .infinity)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .help(isCollaborationExpanded ? "收起协作消息" : "展开来自 \(collaborationSenderName) 的协作消息")
+
+            if isCollaborationExpanded {
+                Divider()
+                    .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
+
+                ZStack(alignment: .bottomTrailing) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 7) {
+                            collaborationAvatar(name: collaborationSenderName)
+                            VStack(alignment: .leading, spacing: 3) {
+                                collaborationPartyRow(label: "来自", name: collaborationSenderName)
+                                collaborationPartyRow(label: "发送至", name: collaborationRecipientName)
+                            }
+                            Spacer(minLength: 0)
+                            if let itemTimeLabel {
+                                Text(itemTimeLabel)
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                            }
+                        }
+
+                        if let taskTitle = nonEmpty(item.collaborationTaskTitle) {
+                            Label(taskTitle, systemImage: "checklist")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                                .lineLimit(2)
+                        }
+
+                        messageTextView(text: collaborationPresentationText, allowsSelection: true)
+
+                        if hasCollaborationTechnicalDetails {
+                            DisclosureGroup(isExpanded: $isCollaborationDetailsExpanded) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    collaborationDetailRow(label: "Task ID", value: item.collaborationTaskId)
+                                    collaborationDetailRow(label: "Sender ID", value: item.collaborationSenderAgentId)
+                                    collaborationDetailRow(label: "Recipient ID", value: item.collaborationRecipientAgentId)
+                                }
+                                .padding(.top, 5)
+                            } label: {
+                                Text("任务详情")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                            }
+                        }
+                    }
+
+                    CopyTextButton(
+                        text: collaborationPresentationText,
+                        isVisible: isHovering && !collaborationPresentationText.isEmpty
+                    )
+                    .padding(2)
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 9)
+                .padding(.bottom, 10)
+                .transition(.asymmetric(
+                    insertion: .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.985, anchor: .top)),
+                    removal: .opacity
+                        .combined(with: .move(edge: .top))
+                        .combined(with: .scale(scale: 0.99, anchor: .top))
+                ))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(CorptiePalette.collaborationSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(CorptiePalette.collaborationBorder.opacity(0.62), lineWidth: 1)
+                .allowsHitTesting(false)
+        )
+        .onHover { isHovering = $0 }
+        .animation(.spring(response: 0.30, dampingFraction: 0.86, blendDuration: 0.08), value: isCollaborationExpanded)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Agent 协作消息，来自 \(collaborationSenderName)")
+    }
+
+    private func collaborationPartyRow(label: String, name: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Text(label)
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .frame(width: 34, alignment: .leading)
+            Text(name)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(CorptiePalette.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func collaborationAvatar(name: String) -> some View {
+        Text(String(name.prefix(1)).uppercased())
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(CorptiePalette.softBlue)
+            .frame(width: 20, height: 20)
+            .background(Color.white.opacity(0.24), in: Circle())
+    }
+
+    @ViewBuilder
+    private func collaborationDetailRow(label: String, value: String?) -> some View {
+        if let value = nonEmpty(value) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(label)
+                    .frame(width: 68, alignment: .leading)
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                Text(value)
+                    .foregroundStyle(CorptiePalette.primaryText)
+                    .textSelection(.enabled)
+            }
+            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+        }
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private var isCollaborationItem: Bool {
+        item.presentationRole == "collaboration" || item.sourceType == "collaboration"
+    }
+
+    private var collaborationPresentationText: String {
+        nonEmpty(item.presentationText) ?? "协作消息正文不可用"
+    }
+
+    private var collaborationSenderName: String {
+        nonEmpty(item.collaborationSenderName) ?? "其他 Agent"
+    }
+
+    private var collaborationRecipientName: String {
+        nonEmpty(item.collaborationRecipientName)
+            ?? nonEmpty(backendClient.selectedSession?.title)
+            ?? "当前 Agent"
+    }
+
+    private var collaborationKindLabel: String {
+        switch item.collaborationMessageKind?.lowercased() {
+        case "change_request": "修改请求"
+        case "needs_information": "澄清请求"
+        case "update_ready": "结果"
+        case "verification_result": "验收结果"
+        case "question": "请求"
+        default: "协作消息"
+        }
+    }
+
+    private var collaborationProcessingStatus: String {
+        (item.collaborationProcessingStatus ?? item.status ?? "queued").lowercased()
+    }
+
+    private var collaborationStatusLabel: String {
+        switch collaborationProcessingStatus {
+        case "running", "processing": "处理中"
+        case "completed", "complete": "已处理"
+        case "failed": "处理失败"
+        case "cancelled", "canceled": "已取消"
+        default: "等待处理"
+        }
+    }
+
+    private var collaborationStatusIcon: String {
+        switch collaborationProcessingStatus {
+        case "running", "processing": "clock.arrow.circlepath"
+        case "completed", "complete": "checkmark.circle.fill"
+        case "failed": "exclamationmark.circle.fill"
+        case "cancelled", "canceled": "xmark.circle.fill"
+        default: "clock.fill"
+        }
+    }
+
+    private var collaborationStatusColor: Color {
+        switch collaborationProcessingStatus {
+        case "running", "processing": CorptiePalette.running
+        case "completed", "complete": CorptiePalette.connected
+        case "failed", "cancelled", "canceled": .red
+        default: CorptiePalette.amber
+        }
+    }
+
+    private var hasCollaborationTechnicalDetails: Bool {
+        [item.collaborationTaskId, item.collaborationSenderAgentId, item.collaborationRecipientAgentId]
+            .contains { nonEmpty($0) != nil }
     }
 
     private var fullItemView: some View {
@@ -4362,6 +4828,9 @@ private struct ThreadItemView: View {
     }
 
     private var itemRoleLabel: String {
+        if item.sourceType == "collaboration" {
+            return "协作任务"
+        }
         switch item.type {
         case "userMessage":
             return "User"
@@ -4439,16 +4908,25 @@ private struct ThreadItemView: View {
     }
 
     private var itemBackground: Color {
-        item.type == "approval" || item.type == "choice" ? Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1)) : Color.white
+        if item.sourceType == "collaboration" {
+            return CorptiePalette.collaborationSurface
+        }
+        return item.type == "approval" || item.type == "choice" ? Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1)) : Color.white
     }
 
     private var itemBorder: Color {
-        item.type == "approval" || item.type == "choice" ? CorptiePalette.amber.opacity(0.32) : Color.black.opacity(0.08)
+        if item.sourceType == "collaboration" {
+            return CorptiePalette.collaborationBorder.opacity(0.62)
+        }
+        return item.type == "approval" || item.type == "choice" ? CorptiePalette.amber.opacity(0.32) : Color.black.opacity(0.08)
     }
 
     private var itemColor: Color {
         if item.status == "queued" {
             return CorptiePalette.amber
+        }
+        if item.sourceType == "collaboration" {
+            return CorptiePalette.periwinkle
         }
         return switch item.type {
         case "userMessage": CorptiePalette.userText

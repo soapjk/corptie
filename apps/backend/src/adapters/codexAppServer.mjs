@@ -111,16 +111,20 @@ export class CodexAppServerClient {
       sandbox: options.sandbox ?? "workspace-write",
       model: options.model ?? undefined,
       modelProvider: options.modelProvider ?? undefined,
+      config: options.config ?? undefined,
+      developerInstructions: options.developerInstructions ?? undefined,
       threadSource: "user",
       ephemeral: options.ephemeral ?? false
-    });
+    }, options.requestTimeoutMs ?? 30000);
   }
 
-  async resumeThread(threadId) {
+  async resumeThread(threadId, options = {}) {
     await this.initialize();
     return this.request("thread/resume", {
-      threadId
-    });
+      threadId,
+      config: options.config ?? undefined,
+      developerInstructions: options.developerInstructions ?? undefined
+    }, options.requestTimeoutMs ?? 30000);
   }
 
   async startTurn(threadId, text, options = {}) {
@@ -134,6 +138,7 @@ export class CodexAppServerClient {
           text_elements: []
         }
       ],
+      additionalContext: options.additionalContext ?? undefined,
       cwd: options.cwd ?? undefined,
       approvalPolicy: options.approvalPolicy ?? undefined,
       sandboxPolicy: options.sandboxPolicy ?? undefined,
@@ -319,7 +324,7 @@ export class CodexAppServerClient {
     return this.respondToServerRequest(request.requestId, { decision });
   }
 
-  request(method, params) {
+  request(method, params, timeoutMs = this.requestTimeoutMs) {
     if (!this.process || !this.process.stdin.writable) {
       return Promise.reject(new Error("Codex app-server is not running"));
     }
@@ -331,7 +336,7 @@ export class CodexAppServerClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Codex app-server request timed out: ${method}`));
-      }, this.requestTimeoutMs);
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve: (value) => {

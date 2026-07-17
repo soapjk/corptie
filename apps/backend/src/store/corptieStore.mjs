@@ -177,6 +177,7 @@ export class CorptieStore {
   }
 
   migrate() {
+    this.db.run("PRAGMA foreign_keys = ON");
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -292,6 +293,236 @@ export class CorptieStore {
         bot_id TEXT NOT NULL,
         received_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS agents (
+        agent_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'available'
+          CHECK (status IN ('available', 'busy', 'offline', 'inactive')),
+        capabilities_json TEXT NOT NULL DEFAULT '[]',
+        current_session_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        binding_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        bound_at TEXT NOT NULL,
+        unbound_at TEXT,
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_current_agent
+      ON agent_sessions(agent_id) WHERE unbound_at IS NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_current_session
+      ON agent_sessions(session_id) WHERE unbound_at IS NULL;
+
+      CREATE TABLE IF NOT EXISTS services (
+        service_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        owner_agent_id TEXT NOT NULL,
+        current_version TEXT,
+        status TEXT NOT NULL DEFAULT 'unknown'
+          CHECK (status IN ('unknown', 'stopped', 'starting', 'running', 'degraded', 'failed', 'inactive')),
+        endpoint TEXT,
+        repository_root TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (owner_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS service_consumers (
+        service_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (service_id, agent_id),
+        FOREIGN KEY (service_id) REFERENCES services(service_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS collaboration_contexts (
+        context_id TEXT PRIMARY KEY,
+        title TEXT NOT NULL DEFAULT '',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS collaboration_tasks (
+        task_id TEXT PRIMARY KEY,
+        context_id TEXT NOT NULL,
+        parent_task_id TEXT,
+        initiator_agent_id TEXT NOT NULL,
+        recipient_agent_id TEXT NOT NULL,
+        service_id TEXT,
+        type TEXT NOT NULL CHECK (type IN ('question', 'change_request')),
+        status TEXT NOT NULL DEFAULT 'proposed'
+          CHECK (status IN ('proposed', 'needs_information', 'accepted', 'working', 'delivered', 'verifying', 'revision_requested', 'completed', 'rejected', 'canceled', 'escalated')),
+        iteration INTEGER NOT NULL DEFAULT 1 CHECK (iteration >= 1),
+        max_iterations INTEGER NOT NULL DEFAULT 3 CHECK (max_iterations >= 1),
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        acceptance_criteria_json TEXT NOT NULL DEFAULT '[]',
+        idempotency_key TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        FOREIGN KEY (context_id) REFERENCES collaboration_contexts(context_id) ON DELETE RESTRICT,
+        FOREIGN KEY (parent_task_id) REFERENCES collaboration_tasks(task_id) ON DELETE SET NULL,
+        FOREIGN KEY (initiator_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (service_id) REFERENCES services(service_id) ON DELETE RESTRICT,
+        UNIQUE (initiator_agent_id, idempotency_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_inbox
+      ON collaboration_tasks(recipient_agent_id, status, updated_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_outbox
+      ON collaboration_tasks(initiator_agent_id, status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS collaboration_request_confirmations (
+        confirmation_id TEXT PRIMARY KEY,
+        initiator_agent_id TEXT NOT NULL,
+        recipient_agent_id TEXT NOT NULL,
+        source_session_id TEXT,
+        source_turn_id TEXT,
+        request_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'confirmed', 'rejected')),
+        task_id TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        FOREIGN KEY (initiator_agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_request_confirmations_session
+      ON collaboration_request_confirmations(source_session_id, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS collaboration_participants (
+        task_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('initiator', 'recipient')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, agent_id),
+        FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS collaboration_messages (
+        message_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        sender_agent_id TEXT NOT NULL,
+        recipient_agent_id TEXT NOT NULL,
+        message_type TEXT NOT NULL
+          CHECK (message_type IN ('question', 'change_request', 'needs_information', 'update_ready', 'verification_result')),
+        body TEXT NOT NULL,
+        evidence_json TEXT NOT NULL DEFAULT '[]',
+        resource_version TEXT,
+        idempotency_key TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (sender_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        UNIQUE (sender_agent_id, idempotency_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_messages_task
+      ON collaboration_messages(task_id, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS collaboration_artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        producer_agent_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        name TEXT NOT NULL,
+        uri TEXT NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (producer_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_artifacts_task
+      ON collaboration_artifacts(task_id, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS collaboration_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        recipient_agent_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'queued', 'delivering', 'delivered', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        next_attempt_at TEXT,
+        delivered_at TEXT,
+        target_turn_id TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (message_id) REFERENCES collaboration_messages(message_id) ON DELETE CASCADE,
+        FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        UNIQUE (message_id, recipient_agent_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_deliveries_pending
+      ON collaboration_deliveries(status, next_attempt_at, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS agent_work_items (
+        work_item_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('user', 'collaboration')),
+        priority INTEGER NOT NULL,
+        text TEXT NOT NULL,
+        source_json TEXT NOT NULL DEFAULT '{}',
+        local_visibility TEXT NOT NULL DEFAULT 'normal'
+          CHECK (local_visibility IN ('normal', 'status_only')),
+        status TEXT NOT NULL DEFAULT 'queued'
+          CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+        delivery_id TEXT,
+        target_turn_id TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (delivery_id) REFERENCES collaboration_deliveries(delivery_id) ON DELETE CASCADE,
+        UNIQUE (delivery_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_agent_work_items_next
+      ON agent_work_items(agent_id, status, priority DESC, created_at ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_agent_work_items_session_turn
+      ON agent_work_items(session_id, target_turn_id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_items_one_running
+      ON agent_work_items(agent_id) WHERE status = 'running';
+
+      CREATE TABLE IF NOT EXISTS collaboration_events (
+        event_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        actor_agent_id TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (actor_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        UNIQUE (task_id, sequence)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_events_task
+      ON collaboration_events(task_id, sequence ASC);
     `);
 
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -323,6 +554,40 @@ export class CorptieStore {
              ELSE summary
            END
        WHERE status = 'running'`
+    );
+    this.db.run(
+      `UPDATE agent_work_items
+       SET status = 'queued', started_at = NULL, target_turn_id = NULL,
+           last_error = COALESCE(last_error, 'Execution interrupted by process restart.'),
+           updated_at = ?
+       WHERE status = 'running'`,
+      [new Date().toISOString()]
+    );
+    this.db.run(
+      `UPDATE collaboration_tasks
+       SET status = 'completed',
+           completed_at = COALESCE(
+             completed_at,
+             (SELECT MAX(m.created_at) FROM collaboration_messages m
+              WHERE m.task_id = collaboration_tasks.task_id
+                AND m.sender_agent_id = collaboration_tasks.recipient_agent_id
+                AND m.message_type = 'question')
+           ),
+           updated_at = COALESCE(
+             (SELECT MAX(m.created_at) FROM collaboration_messages m
+              WHERE m.task_id = collaboration_tasks.task_id
+                AND m.sender_agent_id = collaboration_tasks.recipient_agent_id
+                AND m.message_type = 'question'),
+             updated_at
+           )
+       WHERE type = 'question'
+         AND status IN ('accepted', 'working')
+         AND EXISTS (
+           SELECT 1 FROM collaboration_messages m
+           WHERE m.task_id = collaboration_tasks.task_id
+             AND m.sender_agent_id = collaboration_tasks.recipient_agent_id
+             AND m.message_type = 'question'
+         )`
     );
   }
 
@@ -439,6 +704,130 @@ export class CorptieStore {
       status: row.status,
       createdAt: row.created_at
     }));
+  }
+
+  enqueueAgentWorkItem(item) {
+    const timestamp = createdAtFromOrNow(item.createdAt);
+    this.db.run(
+      `INSERT OR IGNORE INTO agent_work_items (
+        work_item_id, agent_id, session_id, kind, priority, text, source_json,
+        local_visibility, status, delivery_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+      [
+        item.workItemId,
+        item.agentId,
+        item.sessionId,
+        item.kind,
+        Number(item.priority),
+        item.text,
+        JSON.stringify(item.source ?? {}),
+        item.localVisibility ?? "normal",
+        item.deliveryId ?? null,
+        timestamp,
+        timestamp
+      ]
+    );
+    const inserted = this.db.getRowsModified() > 0;
+    if (inserted) this.scheduleSave();
+    return inserted
+      ? this.getAgentWorkItem(item.workItemId)
+      : (item.deliveryId ? this.getAgentWorkItemForDelivery(item.deliveryId) : this.getAgentWorkItem(item.workItemId));
+  }
+
+  getAgentWorkItem(workItemId) {
+    const row = this.selectOne("SELECT * FROM agent_work_items WHERE work_item_id = ?", [workItemId]);
+    return row ? agentWorkItemFromRow(row) : null;
+  }
+
+  getAgentWorkItemForDelivery(deliveryId) {
+    const row = this.selectOne("SELECT * FROM agent_work_items WHERE delivery_id = ?", [deliveryId]);
+    return row ? agentWorkItemFromRow(row) : null;
+  }
+
+  getAgentWorkItemForTurn(sessionId, turnId) {
+    if (!turnId) return null;
+    const row = this.selectOne(
+      "SELECT * FROM agent_work_items WHERE session_id = ? AND target_turn_id = ? ORDER BY created_at DESC LIMIT 1",
+      [sessionId, turnId]
+    );
+    return row ? agentWorkItemFromRow(row) : null;
+  }
+
+  getRunningAgentWorkItemForSession(sessionId) {
+    const row = this.selectOne(
+      "SELECT * FROM agent_work_items WHERE session_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1",
+      [sessionId]
+    );
+    return row ? agentWorkItemFromRow(row) : null;
+  }
+
+  listAgentWorkItemsForSession(sessionId, options = {}) {
+    const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
+      ? options.statuses
+      : ["queued", "running", "completed", "failed", "cancelled"];
+    const placeholders = statuses.map(() => "?").join(", ");
+    return this.selectAll(
+      `SELECT * FROM agent_work_items WHERE session_id = ? AND status IN (${placeholders})
+       ORDER BY created_at ASC`,
+      [sessionId, ...statuses]
+    ).map(agentWorkItemFromRow);
+  }
+
+  listQueuedAgentWorkItems(agentId, limit = 100) {
+    return this.selectAll(
+      `SELECT * FROM agent_work_items WHERE agent_id = ? AND status = 'queued'
+       ORDER BY priority DESC, created_at ASC, work_item_id ASC LIMIT ?`,
+      [agentId, Math.max(1, Math.min(1000, Number(limit) || 100))]
+    ).map(agentWorkItemFromRow);
+  }
+
+  listAgentIdsWithQueuedWork() {
+    return this.selectAll(
+      "SELECT DISTINCT agent_id FROM agent_work_items WHERE status = 'queued' ORDER BY agent_id ASC"
+    ).map((row) => row.agent_id);
+  }
+
+  claimAgentWorkItem(workItemId) {
+    const item = this.getAgentWorkItem(workItemId);
+    if (!item) return null;
+    const timestamp = new Date().toISOString();
+    this.db.run(
+      `UPDATE agent_work_items SET status = 'running', started_at = ?, updated_at = ?, last_error = NULL
+       WHERE work_item_id = ? AND status = 'queued'
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_work_items running
+           WHERE running.agent_id = ? AND running.status = 'running'
+         )`,
+      [timestamp, timestamp, workItemId, item.agentId]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getAgentWorkItem(workItemId);
+  }
+
+  updateAgentWorkItem(workItemId, patch = {}) {
+    const item = this.getAgentWorkItem(workItemId);
+    if (!item) return null;
+    const status = patch.status ?? item.status;
+    const timestamp = new Date().toISOString();
+    const completedAt = Object.hasOwn(patch, "completedAt")
+      ? patch.completedAt
+      : (["completed", "failed", "cancelled"].includes(status) ? timestamp : item.completedAt);
+    this.db.run(
+      `UPDATE agent_work_items SET status = ?, target_turn_id = ?, last_error = ?,
+       started_at = ?, completed_at = ?, updated_at = ? WHERE work_item_id = ?`,
+      [
+        status,
+        Object.hasOwn(patch, "targetTurnId") ? patch.targetTurnId : item.targetTurnId,
+        Object.hasOwn(patch, "lastError") ? patch.lastError : item.lastError,
+        Object.hasOwn(patch, "startedAt") ? patch.startedAt : item.startedAt,
+        completedAt,
+        timestamp,
+        workItemId
+      ]
+    );
+    this.scheduleSave();
+    return this.getAgentWorkItem(workItemId);
   }
 
   listSessions(options = {}) {
@@ -1019,6 +1408,27 @@ function feishuAssignmentFromRow(row) {
     sessionId: row.session_id,
     assignedAt: row.assigned_at,
     lastEventSequence: Number(row.last_event_sequence ?? 0)
+  };
+}
+
+function agentWorkItemFromRow(row) {
+  return {
+    workItemId: row.work_item_id,
+    agentId: row.agent_id,
+    sessionId: row.session_id,
+    kind: row.kind,
+    priority: Number(row.priority),
+    text: row.text,
+    source: parseJson(row.source_json, {}),
+    localVisibility: row.local_visibility,
+    status: row.status,
+    deliveryId: row.delivery_id || null,
+    targetTurnId: row.target_turn_id || null,
+    lastError: row.last_error || null,
+    createdAt: row.created_at,
+    startedAt: row.started_at || null,
+    completedAt: row.completed_at || null,
+    updatedAt: row.updated_at
   };
 }
 

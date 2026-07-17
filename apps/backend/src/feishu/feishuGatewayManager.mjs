@@ -837,7 +837,8 @@ export class FeishuGatewayManager {
     }
     const newAssistantItems = (snapshot.items ?? []).filter((item) => {
       const unseen = item.id && !runtime.seenItems.has(item.id);
-      return unseen && ["agentMessage", "assistantMessage"].includes(item.type) && item.text;
+      const locallyHiddenCollaboration = item.sourceType === "collaboration" && item.localVisibility === "status_only";
+      return unseen && !locallyHiddenCollaboration && ["agentMessage", "assistantMessage"].includes(item.type) && item.text;
     });
     for (const item of newAssistantItems) {
       const sentCards = await this.sendText(botId, chatId, item.text, {
@@ -884,7 +885,7 @@ export class FeishuGatewayManager {
     }
     const newUserItems = (snapshot.items ?? []).filter((item) => {
       const unseen = item.id && !runtime.seenItems.has(item.id);
-      return unseen && item.type === "userMessage" && item.status !== "queued" && item.text;
+      return unseen && item.sourceType !== "collaboration" && item.type === "userMessage" && item.status !== "queued" && item.text;
     });
     for (const item of newUserItems) {
       const pendingIndex = (runtime.pendingFeishuInputs ?? []).findIndex((text) => text === item.text);

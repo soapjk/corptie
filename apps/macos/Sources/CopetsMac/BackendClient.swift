@@ -847,6 +847,31 @@ final class BackendClient: ObservableObject {
         sendText(text, to: selectedSession, reloadDetail: true, isChoiceSelection: false, onSuccess: onSuccess)
     }
 
+    func respondToCollaborationConfirmation(confirmationId: String, approve: Bool) {
+        guard let selectedSession else { return }
+        Task {
+            isSendingMessage = true
+            defer { isSendingMessage = false }
+            do {
+                let action = approve ? "confirm" : "reject"
+                var request = URLRequest(url: baseURL.appending(path: "collaboration/confirmations/\(confirmationId)/\(action)"))
+                request.httpMethod = "POST"
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                    throw BackendError.message(payload?["error"] as? String ?? "Could not resolve collaboration confirmation.")
+                }
+                sendStatusMessage = approve ? "Collaboration request sent" : "Collaboration request cancelled"
+                await loadDetail(for: selectedSession, showLoading: false)
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = "Confirmation failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     func sendMessage(_ text: String, to session: TaskSession, isChoiceSelection: Bool = false, onSuccess: @escaping () -> Void = {}) {
         sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, isChoiceSelection: isChoiceSelection, onSuccess: onSuccess)
     }
@@ -896,7 +921,10 @@ final class BackendClient: ObservableObject {
         }
         clearSuggestedOptions(for: session)
         let isClearCommand = trimmed.lowercased() == "/clear"
-        if reloadDetail && !isClearCommand {
+        let resolvesCollaborationConfirmation = selectedDetail?.items.contains(where: {
+            $0.type == "collaborationConfirmation" && $0.collaborationConfirmationStatus == "pending"
+        }) == true && Self.isCollaborationConfirmationReply(trimmed)
+        if reloadDetail && !isClearCommand && !resolvesCollaborationConfirmation {
             appendOptimisticUserMessage(trimmed, to: session)
         }
 
@@ -908,7 +936,7 @@ final class BackendClient: ObservableObject {
             do {
                 let path = isPtyProvider(session.external?.provider)
                     ? "pty/sessions/\(threadId)/input"
-                    : "codex/threads/\(threadId)/messages"
+                    : "sessions/\(session.id)/messages"
                 var request = URLRequest(url: baseURL.appending(path: path))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -939,6 +967,8 @@ final class BackendClient: ObservableObject {
                         await loadDetail(for: session)
                     }
                     return
+                } else if decoded?.mode == "collaboration-confirmation" {
+                    sendStatusMessage = "Collaboration confirmation resolved"
                 } else if isPtyProvider(session.external?.provider) {
                     sendStatusMessage = session.external?.provider == "codex-pty" ? "Sent to Codex CLI" : "Sent to PTY agent"
                 } else if decoded?.queued == true {
@@ -958,6 +988,12 @@ final class BackendClient: ObservableObject {
                 sendStatusMessage = "Send failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    private static func isCollaborationConfirmationReply(_ text: String) -> Bool {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return ["确认", "确认发送", "发送", "同意", "yes", "y", "confirm", "approve",
+                "取消", "拒绝", "不发送", "否", "no", "n", "reject", "cancel"].contains(normalized)
     }
 
     private func clearSuggestedOptions(for session: TaskSession) {
@@ -1431,7 +1467,7 @@ final class BackendClient: ObservableObject {
         do {
             let path = isPtyProvider(session.external?.provider)
                 ? "pty/sessions/\(threadId)"
-                : "codex/threads/\(threadId)"
+                : "sessions/\(session.id)/snapshot"
             let url = baseURL.appending(path: path)
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -1441,8 +1477,8 @@ final class BackendClient: ObservableObject {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
-            let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
-            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
+            let detail = try decodeDetail(data, for: session, threadId: threadId)
+            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
             detailCacheBySessionId[session.id] = mergedDetail
             lastError = nil
             return mergedDetail
@@ -1540,7 +1576,7 @@ final class BackendClient: ObservableObject {
         do {
             let path = isPtyProvider(session.external?.provider)
                 ? "pty/sessions/\(threadId)"
-                : "codex/threads/\(threadId)"
+                : "sessions/\(session.id)/snapshot"
             let url = baseURL.appending(path: path)
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -1550,8 +1586,8 @@ final class BackendClient: ObservableObject {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
-            let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data)
-            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
+            let detail = try decodeDetail(data, for: session, threadId: threadId)
+            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
             selectedDetail = mergedDetail
             detailCacheBySessionId[session.id] = mergedDetail
             syncSessionSummary(from: mergedDetail)
@@ -1559,6 +1595,35 @@ final class BackendClient: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) throws -> CodexThreadDetail {
+        if isPtyProvider(session.external?.provider) {
+            return try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data).thread
+        }
+
+        let snapshot = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: data).session
+        // The unified endpoint identifies the envelope by Corptie Session ID.
+        // Internally this client keys optimistic messages and detail merging by
+        // the provider thread ID, so retain that stable identity here.
+        return CodexThreadDetail(
+            id: threadId,
+            title: snapshot.title,
+            status: snapshot.status,
+            source: snapshot.source,
+            connectionStatus: snapshot.connectionStatus,
+            currentModel: snapshot.currentModel,
+            currentReasoningLevel: snapshot.currentReasoningLevel,
+            activityStatus: snapshot.activityStatus,
+            cwd: snapshot.cwd,
+            createdAt: snapshot.createdAt,
+            updatedAt: snapshot.updatedAt,
+            canSend: snapshot.canSend,
+            sendUnavailableReason: snapshot.sendUnavailableReason,
+            capabilities: snapshot.capabilities,
+            turnCount: snapshot.turnCount,
+            items: snapshot.items
+        )
     }
 
     private func syncSessionSummary(from detail: CodexThreadDetail) {
