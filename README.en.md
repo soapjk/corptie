@@ -119,6 +119,18 @@ Build the production installer:
 scripts/package-macos-installer.sh
 ```
 
+Build from the current checkout, verify that production has no unfinished sessions, safely stop it, install the new app, and reopen it:
+
+```sh
+scripts/rebuild-install-restart-production.sh
+```
+
+Check shutdown safety without changing anything:
+
+```sh
+scripts/rebuild-install-restart-production.sh --check-only
+```
+
 Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.dmg` includes `Corptie.app`, an `Applications` shortcut, and a short installer readme.
 
 ## License

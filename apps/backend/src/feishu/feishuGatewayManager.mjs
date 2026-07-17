@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { environmentForCommand, resolveExternalCommand } from "../utils/externalCommand.mjs";
+import { isClearCommand } from "../commands/unifiedCommands.mjs";
 
 const execFileAsync = promisify(execFile);
 const pairingCodePattern = /^\d{6}$/;
@@ -624,7 +625,7 @@ export class FeishuGatewayManager {
       return;
     }
     if (text === "/help") {
-      await this.sendText(botId, event.chatId, "/new 创建会话\n/sessions 查看和切换会话\n/current 查看当前会话\n/status 查看状态\n/usage 查看模型用量余额\n/detach 释放会话\n/stop 中断任务");
+      await this.sendText(botId, event.chatId, "/new 创建会话\n/clear 清空上下文并开始新对话\n/sessions 查看和切换会话\n/current 查看当前会话\n/status 查看状态\n/usage 查看模型用量余额\n/detach 释放会话\n/stop 中断任务");
       return;
     }
     const useMatch = text.match(/^\/(?:use|switch)\s+(.+)$/i);
@@ -657,14 +658,29 @@ export class FeishuGatewayManager {
       await this.sendSessionListCard(botId, event.chatId, 0, { type: "info", text: "请先选择一个会话。" });
       return;
     }
+    if (isClearCommand(text)) {
+      const sendResult = await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
+      if (sendResult?.sessionId && sendResult.sessionId !== assignment.sessionId) {
+        await this.assignSession(botId, binding.id, sendResult.sessionId);
+      }
+      await this.sendText(botId, event.chatId, "已清空上下文，可以开始新的对话。");
+      return;
+    }
     const runtime = this.botRuntime.get(botId) ?? { lastStatus: null, seenItems: new Set() };
     runtime.pendingFeishuInputs = [...(runtime.pendingFeishuInputs ?? []), text];
     this.botRuntime.set(botId, runtime);
     await this.showTyping(botId, event.messageId).catch((error) => {
       console.log(`[feishu] bot=${botId} typing reaction unavailable: ${error.message}`);
     });
-    await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
-    await this.sendText(botId, event.chatId, "已发送，正在处理……");
+    const sendResult = await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
+    if (sendResult?.queued) {
+      await this.clearTyping(botId).catch(() => {});
+      await this.sendText(botId, event.chatId, `已加入队列，前面还有 ${Math.max(0, sendResult.queuePosition - 1)} 条消息。`, {
+        sessionStatus: "queued"
+      });
+    } else {
+      await this.sendText(botId, event.chatId, "已发送，正在处理……");
+    }
   }
 
   async sessionListText(botId) {
@@ -824,10 +840,36 @@ export class FeishuGatewayManager {
       return unseen && ["agentMessage", "assistantMessage"].includes(item.type) && item.text;
     });
     for (const item of newAssistantItems) {
-      await this.sendText(botId, chatId, item.text, {
+      const sentCards = await this.sendText(botId, chatId, item.text, {
         sessionTitle: snapshot.title,
         sessionStatus: snapshot.status
       });
+      runtime.lastAssistantCards = (sentCards ?? [])
+        .map(({ text, result }) => ({
+          itemId: item.id,
+          messageId: result?.data?.message_id ?? result?.data?.message?.message_id ?? null,
+          text,
+          sessionTitle: snapshot.title,
+          sessionStatus: snapshot.status
+        }))
+        .filter((card) => card.messageId);
+    }
+    if (runtime.lastAssistantCards?.some((card) => card.sessionStatus !== snapshot.status)) {
+      for (const card of runtime.lastAssistantCards) {
+        await this.updateSentMessageCard(
+          botId,
+          card.messageId,
+          buildMessageCard(card.text, {
+            sessionTitle: snapshot.title,
+            sessionStatus: snapshot.status
+          })
+        );
+      }
+      runtime.lastAssistantCards = runtime.lastAssistantCards.map((card) => ({
+        ...card,
+        sessionTitle: snapshot.title,
+        sessionStatus: snapshot.status
+      }));
     }
     const newApprovalItems = (snapshot.items ?? []).filter((item) => {
       const unseen = item.id && !runtime.seenItems.has(item.id);
@@ -842,7 +884,7 @@ export class FeishuGatewayManager {
     }
     const newUserItems = (snapshot.items ?? []).filter((item) => {
       const unseen = item.id && !runtime.seenItems.has(item.id);
-      return unseen && item.type === "userMessage" && item.text;
+      return unseen && item.type === "userMessage" && item.status !== "queued" && item.text;
     });
     for (const item of newUserItems) {
       const pendingIndex = (runtime.pendingFeishuInputs ?? []).findIndex((text) => text === item.text);
@@ -870,9 +912,12 @@ export class FeishuGatewayManager {
       sessionStatus ||= context.status;
     }
     const chunks = splitMessage(text, 3500);
+    const sentCards = [];
     for (const chunk of chunks) {
-      await this.sendCard(botId, chatId, buildMessageCard(chunk, { sessionTitle, sessionStatus }));
+      const result = await this.sendCard(botId, chatId, buildMessageCard(chunk, { sessionTitle, sessionStatus }));
+      sentCards.push({ text: chunk, result });
     }
+    return sentCards;
   }
 
   async resolveSessionContext(botId) {
@@ -912,6 +957,15 @@ export class FeishuGatewayManager {
 
   async updateCard(botId, token, card) {
     return this.callApi(botId, "POST", "/open-apis/interactive/v1/card/update", { token, card });
+  }
+
+  async updateSentMessageCard(botId, messageId, card) {
+    return this.callApi(
+      botId,
+      "PATCH",
+      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`,
+      { content: JSON.stringify(card) }
+    );
   }
 
   async showTyping(botId, messageId) {

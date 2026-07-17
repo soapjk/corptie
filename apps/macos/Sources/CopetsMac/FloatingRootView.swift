@@ -12,6 +12,8 @@ struct FloatingRootView: View {
     @State private var isShowingActionMenu = false
     @State private var isShowingLayoutMenu = false
     @State private var isHoveringExternalControls = false
+    @State private var isShowingDetailSessionRail = false
+    @State private var detailSessionRailCloseTask: Task<Void, Never>?
     @State private var actionMenuAnchor = CGRect.zero
     @State private var layoutMenuAnchor = CGRect.zero
     @State private var externalControlsWindow: NSWindow?
@@ -34,6 +36,7 @@ struct FloatingRootView: View {
     @AppStorage("sessionDisplayMode") private var sessionDisplayModeRawValue = SessionDisplayMode.cards.rawValue
     @AppStorage("groupsSessionsByProject") private var groupsSessionsByProject = false
     private let panelContentPadding: CGFloat = 14
+    private let detailSessionRailGutter: CGFloat = 78
     private let listContentFrameKey = "__corptie_list_content__"
     private let topBarControlTopInset: CGFloat = 6
     private let closeButtonLeadingInset: CGFloat = 12
@@ -94,7 +97,7 @@ struct FloatingRootView: View {
                     .zIndex(4)
             }
         }
-        .padding(.leading, PanelLayoutState.externalControlsGutter)
+        .padding(.leading, leadingPanelGutter)
         .overlay {
             if isShowingActionMenu || isShowingLayoutMenu {
                 Color.clear
@@ -120,6 +123,9 @@ struct FloatingRootView: View {
                     )
                 }
             }
+        }
+        .overlay(alignment: .leading) {
+            detailSessionRailOverlay
         }
         .overlay(alignment: .bottom) {
             BottomEdgeResizeHandle()
@@ -307,6 +313,118 @@ struct FloatingRootView: View {
     private var displayMode: SessionDisplayMode {
         get { SessionDisplayMode(rawValue: sessionDisplayModeRawValue) ?? .cards }
         nonmutating set { sessionDisplayModeRawValue = newValue.rawValue }
+    }
+
+    private var leadingPanelGutter: CGFloat {
+        backendClient.selectedSession != nil && backendClient.sessions.count > 1
+            ? detailSessionRailGutter
+            : PanelLayoutState.externalControlsGutter
+    }
+
+    private func detailSessionRail(height: CGFloat) -> some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 6) {
+                ForEach(backendClient.sessions) { session in
+                    let isSelected = backendClient.selectedSession?.id == session.id
+                    Button {
+                        guard !isSelected else { return }
+                        preheatDetail(for: session)
+                        backendClient.select(session: session)
+                    } label: {
+                        detailSessionRailButtonLabel(session: session, isSelected: isSelected)
+                    }
+                    .buttonStyle(.plain)
+                    .help("\(session.title)\n\(session.status.label)")
+                    .onHover { hovering in
+                        if hovering {
+                            preheatDetail(for: session)
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 2)
+        }
+        .frame(width: detailSessionRailGutter - 8, height: height)
+        .background {
+            LiquidGlassControlBackground(cornerRadius: 26)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.12), radius: 8, y: 4)
+    }
+
+    @ViewBuilder
+    private func detailSessionRailButtonLabel(session: TaskSession, isSelected: Bool) -> some View {
+        VStack(spacing: 2) {
+            SessionAvatarView(session: session, avatarSize: isSelected ? 38 : 34)
+                .frame(width: 58, height: 58)
+                .background {
+                    detailSessionSelectionBackground(isSelected)
+                }
+
+            Text(session.title)
+                .font(.system(size: 10, weight: isSelected ? .semibold : .medium, design: .rounded))
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: 64)
+        }
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var detailSessionRailOverlay: some View {
+        if backendClient.selectedSession != nil && backendClient.sessions.count > 1 {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .frame(width: detailSessionRailGutter + 10)
+                        .frame(maxHeight: .infinity)
+
+                    if isShowingDetailSessionRail {
+                        detailSessionRail(height: proxy.size.height)
+                            .padding(.leading, 4)
+                            .transition(.opacity.combined(with: .move(edge: .trailing)))
+                    }
+                }
+                .frame(width: detailSessionRailGutter + 10)
+                .frame(maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onHover(perform: updateDetailSessionRailHover)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func detailSessionSelectionBackground(_ isSelected: Bool) -> some View {
+        if isSelected {
+            Circle()
+                .fill(Color.white.opacity(0.22))
+            Circle()
+                .strokeBorder(Color.white.opacity(0.48), lineWidth: 1)
+        }
+    }
+
+    private func updateDetailSessionRailHover(_ hovering: Bool) {
+        detailSessionRailCloseTask?.cancel()
+        detailSessionRailCloseTask = nil
+        if hovering {
+            withAnimation(.easeOut(duration: 0.16)) {
+                isShowingDetailSessionRail = true
+            }
+            return
+        }
+        detailSessionRailCloseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.16)) {
+                isShowingDetailSessionRail = false
+            }
+        }
     }
 
     private var filteredSessions: [TaskSession] {
@@ -4235,7 +4353,7 @@ private struct ThreadItemView: View {
     }
 
     private var itemMetadataLabel: String {
-        [itemRoleLabel, itemTimeLabel].compactMap { value in
+        [itemRoleLabel, item.status == "queued" ? "排队中" : nil, itemTimeLabel].compactMap { value in
             guard let value, !value.isEmpty else {
                 return nil
             }
@@ -4329,7 +4447,10 @@ private struct ThreadItemView: View {
     }
 
     private var itemColor: Color {
-        switch item.type {
+        if item.status == "queued" {
+            return CorptiePalette.amber
+        }
+        return switch item.type {
         case "userMessage": CorptiePalette.userText
         case "approval", "choice": CorptiePalette.amber
         case "agentMessage": CorptiePalette.agentText

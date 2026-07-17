@@ -16,6 +16,7 @@ import {
 import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { FeishuGatewayManager } from "./feishu/feishuGatewayManager.mjs";
+import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
@@ -61,6 +62,15 @@ let codexModelsCache = null;
 let claudeModelsCache = null;
 
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
+const drainingQueuedSessionIds = new Set();
+const queuedSessionDrainInterval = setInterval(() => {
+  for (const session of listGatewaySessions()) {
+    if (session.id.startsWith("codex:") && !sessionHasActiveRun(session) && store.getQueuedItems(session.id).length > 0) {
+      scheduleQueuedSessionDrain(session.id);
+    }
+  }
+}, 2000);
+queuedSessionDrainInterval.unref?.();
 
 function now() {
   return new Date().toISOString();
@@ -756,6 +766,7 @@ function handleCodexAppServerNotification(message) {
         scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
       }
       emitEvent(failed ? "CodexThreadFailed" : (cancelled ? "CodexThreadCancelled" : "CodexThreadCompleted"), { session: nextSession, threadId, turn });
+      scheduleQueuedSessionDrain(nextSession.id);
       return;
     }
 
@@ -1291,7 +1302,7 @@ async function getUnifiedSessionSnapshot(sessionId) {
     title: preferredSessionTitle(summary, detail),
     status: detail?.status || summary.status,
     activityStatus: detail?.activityStatus ?? summary.activityStatus ?? null,
-    items: detail?.items ?? [],
+    items: [...(detail?.items ?? []), ...store.getQueuedItems(sessionId)],
     lastEventSequence: store.lastSessionEventSequence(sessionId)
   };
 }
@@ -1332,6 +1343,37 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     const error = new Error("Session not found.");
     error.code = "SESSION_NOT_FOUND";
     throw error;
+  }
+
+  if (isClearCommand(value) && sessionId.startsWith("codex:")) {
+    return clearCodexAppServerSession(sessionId, before, source);
+  }
+  if (isClearCommand(value) && before.external?.provider !== "codex-pty") {
+    const error = new Error("/clear is only available for Codex sessions.");
+    error.code = "UNSUPPORTED_COMMAND";
+    throw error;
+  }
+
+  if (sessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
+    const queuedMessage = {
+      id: source.messageId || randomUUID(),
+      turnId: `queued:${randomUUID()}`,
+      turnStatus: "queued",
+      type: "userMessage",
+      title: source.type === "feishu" ? "Feishu" : "User",
+      text: value,
+      status: "queued",
+      createdAt: now()
+    };
+    store.appendItem(sessionId, queuedMessage);
+    const queuePosition = store.getQueuedItems(sessionId).findIndex((item) => item.id === queuedMessage.id) + 1;
+    emitEvent("SessionUserMessageQueued", {
+      sessionId,
+      message: queuedMessage,
+      queuePosition,
+      source
+    }, { sessionId, source });
+    return { accepted: true, queued: true, queuePosition, sessionId, message: queuedMessage };
   }
 
   let result;
@@ -1389,7 +1431,118 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     source
   }, { sessionId, source });
   emitEvent("SessionRunStarted", { sessionId, source }, { sessionId, source });
-  return { accepted: true, sessionId, result };
+  return {
+    accepted: true,
+    cleared: isClearCommand(value) && before.external?.provider === "codex-pty",
+    sessionId,
+    session: isClearCommand(value) && before.external?.provider === "codex-pty" ? before : undefined,
+    result
+  };
+}
+
+async function clearCodexAppServerSession(sessionId, session, source = { type: "desktop" }) {
+  if (sessionHasActiveRun(session)) {
+    const error = new Error("The current task is still running. Stop it before using /clear.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+
+  const cwd = session.external?.cwd || process.cwd();
+  const model = session.external?.currentModel ?? undefined;
+  const reasoningLevel = session.external?.currentReasoningLevel ?? null;
+  const started = await codexClient.startThread({
+    cwd,
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    model
+  });
+  const title = session.title || "Codex";
+  await codexClient.setThreadName(started.thread.id, title).catch((error) => {
+    console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
+  });
+
+  const replacement = {
+    ...mapCodexThreadToSession({
+      ...started.thread,
+      preview: title,
+      name: title,
+      cwd,
+      updatedAt: Date.now() / 1000,
+      status: "idle",
+      source: "corptie",
+      currentModel: model ?? started.model ?? null,
+      currentReasoningLevel: reasoningLevel ?? started.reasoningEffort ?? null
+    }),
+    title,
+    pinned: session.pinned,
+    accent: session.accent ?? "cyan",
+    avatarPath: session.avatarPath ?? null,
+    status: "complete",
+    progress: 1,
+    summary: "Conversation cleared. Ready for a new instruction.",
+    activityStatus: null,
+    capabilities: codexAppServerSessionCapabilities({ canInterrupt: false }),
+    external: {
+      ...mapCodexThreadToSession({
+        ...started.thread,
+        cwd,
+        currentModel: model ?? started.model ?? null,
+        currentReasoningLevel: reasoningLevel ?? started.reasoningEffort ?? null
+      }).external,
+      activeTurnId: null
+    }
+  };
+  upsertManagedCodexSession(replacement);
+  emitEvent("SessionCleared", {
+    previousSessionId: sessionId,
+    session: replacement,
+    source
+  }, { sessionId: replacement.id, source });
+  return {
+    accepted: true,
+    cleared: true,
+    previousSessionId: sessionId,
+    sessionId: replacement.id,
+    session: replacement
+  };
+}
+
+function sessionHasActiveRun(session) {
+  return ["running", "blocked"].includes(session?.status)
+    || Boolean(session?.external?.activeTurnId)
+    || Boolean(session?.rawStatus?.activeTurnId);
+}
+
+function scheduleQueuedSessionDrain(sessionId) {
+  setTimeout(() => {
+    drainQueuedSessionMessage(sessionId).catch((error) => {
+      console.error(`[queue] session=${sessionId} drain failed: ${error.message}`);
+    });
+  }, 0).unref?.();
+}
+
+async function drainQueuedSessionMessage(sessionId) {
+  if (drainingQueuedSessionIds.has(sessionId)) return;
+  const session = listGatewaySessions().find((item) => item.id === sessionId);
+  if (!session || sessionHasActiveRun(session)) return;
+  const queuedMessage = store.getQueuedItems(sessionId)[0];
+  if (!queuedMessage) return;
+
+  drainingQueuedSessionIds.add(sessionId);
+  try {
+    await sendUnifiedSessionMessage(sessionId, queuedMessage.text, {
+      type: queuedMessage.title === "Feishu" ? "feishu" : "desktop",
+      messageId: queuedMessage.id,
+      dequeued: true
+    });
+    store.removeItem(sessionId, queuedMessage.id);
+    emitEvent("SessionUserMessageDequeued", { sessionId, message: queuedMessage }, {
+      sessionId,
+      source: { type: "queue" }
+    });
+  } finally {
+    drainingQueuedSessionIds.delete(sessionId);
+  }
 }
 
 async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
@@ -1490,7 +1643,7 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
 
 function unifiedErrorStatus(error) {
   if (error.code === "SESSION_NOT_FOUND") return 404;
-  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN"].includes(error.code)) return 409;
+  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
 }
@@ -2492,6 +2645,11 @@ function route(request, response) {
           sendJson(response, 400, { error: "Input text is required", adapter: "pty" });
           return;
         }
+        if (isClearCommand(text) && claudeAgents.has(sessionId)) {
+          const error = new Error("/clear is only available for Codex sessions.");
+          error.code = "UNSUPPORTED_COMMAND";
+          throw error;
+        }
         if (claudeAgents.has(sessionId)) {
           store.clearActiveChoicePrompt(sessionId);
           return claudeAgents.send(sessionId, text).then((session) => {
@@ -2504,6 +2662,11 @@ function route(request, response) {
           });
         }
         const session = ptyAgents.get(sessionId);
+        if (isClearCommand(text) && session?.provider !== "codex-pty") {
+          const error = new Error("/clear is only available for Codex sessions.");
+          error.code = "UNSUPPORTED_COMMAND";
+          throw error;
+        }
         store.clearActiveChoicePrompt(sessionId);
         const shouldBindCodexSession = session?.provider === "codex-pty" && !session.agentSessionId;
         const bindStartedAt = session?.createdAt ?? new Date(Date.now() - 5000).toISOString();
@@ -2530,11 +2693,17 @@ function route(request, response) {
         emitEvent("PtySessionInputSent", { sessionId });
         sendJson(response, 202, {
           mode: "pty",
+          cleared: isClearCommand(text) && session?.provider === "codex-pty",
+          sessionId: `pty:${sessionId}`,
           visibleInCodexDesktop: false
         });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
+        sendJson(response, error.code === "UNSUPPORTED_COMMAND" ? 409 : 502, {
+          error: error.message,
+          code: error.code,
+          adapter: "pty"
+        });
       });
     return;
   }
@@ -2896,9 +3065,13 @@ function route(request, response) {
           currentModel: managedSession?.external?.currentModel ?? detail.currentModel ?? null,
           currentReasoningLevel: managedSession?.external?.currentReasoningLevel ?? detail.currentReasoningLevel ?? null
         });
-        syncManagedCodexSessionFromDetail(threadId, enrichedDetail);
+        const detailWithQueue = {
+          ...enrichedDetail,
+          items: [...(enrichedDetail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
+        };
+        syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
         sendJson(response, 200, {
-          thread: enrichedDetail
+          thread: detailWithQueue
         });
       })
       .catch(async (error) => {
@@ -2909,9 +3082,13 @@ function route(request, response) {
             codexClient.liveItemsForThread(threadId),
             error
           ));
-          syncManagedCodexSessionFromDetail(threadId, detail);
+          const detailWithQueue = {
+            ...detail,
+            items: [...(detail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
+          };
+          syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
           sendJson(response, 200, {
-            thread: detail,
+            thread: detailWithQueue,
             liveFallback: true
           });
           return;
@@ -2993,6 +3170,15 @@ function route(request, response) {
         console.log(`[codex] send requested thread=${threadId} chars=${text.length}`);
         const sessionId = `codex:${threadId}`;
         const managedSessionBeforeSend = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+        if (!managedSessionBeforeSend) {
+          sendJson(response, 404, { error: "Session not found", code: "SESSION_NOT_FOUND" });
+          return;
+        }
+        if (isClearCommand(text)) {
+          const result = await clearCodexAppServerSession(sessionId, managedSessionBeforeSend, { type: "desktop" });
+          sendJson(response, 202, result);
+          return;
+        }
         bumpChoiceGeneration(sessionId);
         store.clearActiveChoicePrompt(sessionId);
         if (managedSessionBeforeSend) {
@@ -3060,8 +3246,9 @@ function route(request, response) {
         }
       })
       .catch((error) => {
-        sendJson(response, 502, {
+        sendJson(response, unifiedErrorStatus(error), {
           error: error.message,
+          code: error.code,
           adapter: "codex-app-server"
         });
       });

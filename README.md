@@ -135,6 +135,18 @@ curl -X POST "http://127.0.0.1:47322/codex/pty-sessions" \
 scripts/package-macos-installer.sh
 ```
 
+从当前工作区构建正式版、确认没有未完成会话、安全停止旧版、安装并打开新版：
+
+```sh
+scripts/rebuild-install-restart-production.sh
+```
+
+只检查正式版当前是否可以安全停止：
+
+```sh
+scripts/rebuild-install-restart-production.sh --check-only
+```
+
 产物会写入 `dist/`，包含带时间戳的 `.pkg` 和 `.dmg`。`.dmg` 内含 `Corptie.app`、`Applications` 快捷入口和简短安装说明。
 
 ## License

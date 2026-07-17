@@ -327,6 +327,11 @@ struct CodexApprovalOption: Identifiable, Codable, Equatable {
 
 struct SendMessageResponse: Decodable {
     let mode: String?
+    let cleared: Bool?
+    let sessionId: String?
+    let session: TaskSession?
+    let queued: Bool?
+    let queuePosition: Int?
     let warning: String?
     let error: String?
     let hint: String?
