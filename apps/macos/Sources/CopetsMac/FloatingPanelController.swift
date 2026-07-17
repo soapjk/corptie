@@ -781,6 +781,19 @@ final class FloatingPanel: NSPanel {
         super.mouseDown(with: event)
     }
 
+    override func sendEvent(_ event: NSEvent) {
+        // A floating panel remains visible while another app is active. Promote
+        // it to key before AppKit dispatches the first mouse-down so that the
+        // same click reaches the SwiftUI control instead of only activating the
+        // panel. acceptsFirstMouse on the root hosting view is insufficient for
+        // controls nested inside SwiftUI ScrollView hosting layers.
+        if event.type == .leftMouseDown && !isKeyWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+
     override var canBecomeKey: Bool {
         true
     }

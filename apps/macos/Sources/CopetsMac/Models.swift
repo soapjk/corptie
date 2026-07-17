@@ -114,6 +114,8 @@ enum CorptiePalette {
     static let unboundDot = adaptiveColor(light: (0.58, 0.61, 0.63), dark: (0.62, 0.66, 0.68))
     static let periwinkle = adaptiveColor(light: (0.45, 0.36, 0.70), dark: (0.66, 0.62, 0.84))
     static let amber = adaptiveColor(light: (0.66, 0.43, 0.10), dark: (0.86, 0.68, 0.38))
+    static let collaborationSurface = adaptiveColor(light: (0.96, 0.88, 0.76), dark: (0.27, 0.22, 0.17))
+    static let collaborationBorder = adaptiveColor(light: (0.76, 0.58, 0.38), dark: (0.62, 0.49, 0.34))
     static let primaryText = adaptiveColor(light: (0.10, 0.12, 0.13), dark: (0.94, 0.96, 0.96))
     static let secondaryText = adaptiveColor(light: (0.24, 0.27, 0.29), dark: (0.78, 0.82, 0.84))
     static let mutedText = adaptiveColor(light: (0.38, 0.41, 0.43), dark: (0.62, 0.66, 0.68))
@@ -143,6 +145,122 @@ enum CorptiePalette {
 
 struct SessionsResponse: Decodable {
     let sessions: [TaskSession]
+}
+
+struct CollaborationOverviewResponse: Decodable {
+    let agents: [CollaborationAgent]
+    let services: [CollaborationService]
+    let tasks: [CollaborationTask]
+}
+
+struct CollaborationTaskResponse: Decodable {
+    let task: CollaborationTask
+    let deliveries: [CollaborationDelivery]?
+}
+
+struct CollaborationServiceResponse: Decodable {
+    let service: CollaborationService
+}
+
+struct CollaborationDeliveryResponse: Decodable {
+    let delivery: CollaborationDelivery
+}
+
+struct CollaborationAgent: Identifiable, Decodable, Equatable {
+    var id: String { agentId }
+    let agentId: String
+    let name: String
+    let description: String
+    let status: String
+    let capabilities: [String]
+    let currentSessionId: String?
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct CollaborationService: Identifiable, Decodable, Equatable {
+    var id: String { serviceId }
+    let serviceId: String
+    let name: String
+    let description: String
+    let ownerAgentId: String
+    let currentVersion: String?
+    let status: String
+    let endpoint: String?
+    let repositoryRoot: String?
+    let createdAt: String
+    let updatedAt: String
+}
+
+struct CollaborationTask: Identifiable, Decodable, Equatable {
+    var id: String { taskId }
+    let taskId: String
+    let contextId: String
+    let parentTaskId: String?
+    let initiatorAgentId: String
+    let recipientAgentId: String
+    let serviceId: String?
+    let type: String
+    let status: String
+    let iteration: Int
+    let maxIterations: Int
+    let title: String
+    let summary: String
+    let acceptanceCriteria: [String]
+    let createdAt: String
+    let updatedAt: String
+    let completedAt: String?
+    let messages: [CollaborationMessage]?
+    let artifacts: [CollaborationArtifact]?
+    let events: [CollaborationEvent]?
+}
+
+struct CollaborationMessage: Identifiable, Decodable, Equatable {
+    var id: String { messageId }
+    let messageId: String
+    let taskId: String
+    let senderAgentId: String
+    let recipientAgentId: String
+    let messageType: String
+    let body: String
+    let resourceVersion: String?
+    let createdAt: String
+}
+
+struct CollaborationArtifact: Identifiable, Decodable, Equatable {
+    var id: String { artifactId }
+    let artifactId: String
+    let taskId: String
+    let producerAgentId: String
+    let type: String
+    let name: String
+    let uri: String
+    let createdAt: String
+}
+
+struct CollaborationEvent: Identifiable, Decodable, Equatable {
+    var id: String { eventId }
+    let eventId: String
+    let taskId: String
+    let sequence: Int
+    let type: String
+    let actorAgentId: String?
+    let createdAt: String
+}
+
+struct CollaborationDelivery: Identifiable, Decodable, Equatable {
+    var id: String { deliveryId }
+    let deliveryId: String
+    let messageId: String
+    let recipientAgentId: String
+    let status: String
+    let attemptCount: Int
+    let nextAttemptAt: String?
+    let deliveredAt: String?
+    let targetTurnId: String?
+    let lastError: String?
+    let createdAt: String
+    let updatedAt: String
 }
 
 struct BackendErrorResponse: Decodable {
@@ -217,6 +335,10 @@ struct FeishuSessionAssignment: Codable, Identifiable, Equatable {
 
 struct CodexThreadDetailResponse: Decodable {
     let thread: CodexThreadDetail
+}
+
+struct UnifiedSessionSnapshotResponse: Decodable {
+    let session: CodexThreadDetail
 }
 
 struct CodexThreadDetail: Decodable, Equatable {
@@ -308,6 +430,23 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable {
     let options: [CodexApprovalOption]?
     let status: String?
     let createdAt: String?
+    var sourceType: String? = nil
+    var localVisibility: String? = nil
+    var workItemId: String? = nil
+    var collaborationTaskId: String? = nil
+    var presentationRole: String? = nil
+    var presentationText: String? = nil
+    var collaborationDirection: String? = nil
+    var collaborationSenderAgentId: String? = nil
+    var collaborationSenderName: String? = nil
+    var collaborationRecipientAgentId: String? = nil
+    var collaborationRecipientName: String? = nil
+    var collaborationTaskTitle: String? = nil
+    var collaborationMessageKind: String? = nil
+    var collaborationProcessingStatus: String? = nil
+    var collaborationConfirmationId: String? = nil
+    var collaborationConfirmationStatus: String? = nil
+    var collaborationAcceptanceCriteria: [String]? = nil
     var fileChanges: [CodexFileChange]? = nil
     var turnDiff: String? = nil
 }

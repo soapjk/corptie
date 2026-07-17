@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var settingsWindow: NSWindow?
+    private var collaborationWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -101,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Show \(CorptieAppEnvironment.appName)", action: #selector(showPanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Collaboration...", action: #selector(openCollaboration), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit \(CorptieAppEnvironment.appName)", action: #selector(quit), keyEquivalent: "q"))
@@ -148,6 +150,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         window.makeKeyAndOrderFront(nil)
         settingsWindow = window
+    }
+
+    @objc private func openCollaboration() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let collaborationWindow {
+            collaborationWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "\(CorptieAppEnvironment.appName) Collaboration"
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: CollaborationView())
+        window.makeKeyAndOrderFront(nil)
+        collaborationWindow = window
     }
 
     @objc private func quit() {
