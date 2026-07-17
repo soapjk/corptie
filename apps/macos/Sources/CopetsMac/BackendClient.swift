@@ -895,7 +895,8 @@ final class BackendClient: ObservableObject {
             return
         }
         clearSuggestedOptions(for: session)
-        if reloadDetail {
+        let isClearCommand = trimmed.lowercased() == "/clear"
+        if reloadDetail && !isClearCommand {
             appendOptimisticUserMessage(trimmed, to: session)
         }
 
@@ -928,8 +929,21 @@ final class BackendClient: ObservableObject {
                 }
 
                 onSuccess()
-                if isPtyProvider(session.external?.provider) {
+                if decoded?.cleared == true {
+                    sendStatusMessage = "Conversation cleared"
+                    await refresh()
+                    if let replacement = decoded?.session,
+                       replacement.id != session.id {
+                        select(session: sessions.first(where: { $0.id == replacement.id }) ?? replacement)
+                    } else if reloadDetail {
+                        await loadDetail(for: session)
+                    }
+                    return
+                } else if isPtyProvider(session.external?.provider) {
                     sendStatusMessage = session.external?.provider == "codex-pty" ? "Sent to Codex CLI" : "Sent to PTY agent"
+                } else if decoded?.queued == true {
+                    let position = decoded?.queuePosition.map { " #\($0)" } ?? ""
+                    sendStatusMessage = "Queued\(position)"
                 } else if decoded?.visibleInCodexDesktop == false {
                     sendStatusMessage = decoded?.warning ?? "Sent to background Codex; Desktop may not refresh."
                 } else {

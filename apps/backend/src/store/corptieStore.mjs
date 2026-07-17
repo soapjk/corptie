@@ -418,6 +418,29 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  removeItem(sessionId, itemId) {
+    this.db.run("DELETE FROM session_items WHERE session_id = ? AND id = ?", [sessionId, itemId]);
+    this.scheduleSave();
+  }
+
+  getQueuedItems(sessionId) {
+    return this.selectAll(
+      `SELECT * FROM session_items
+       WHERE session_id = ? AND status = 'queued'
+       ORDER BY created_at ASC`,
+      [sessionId]
+    ).map((row) => ({
+      id: row.id,
+      turnId: row.turn_id,
+      turnStatus: row.turn_status,
+      type: row.type,
+      title: row.title,
+      text: row.text,
+      status: row.status,
+      createdAt: row.created_at
+    }));
+  }
+
   listSessions(options = {}) {
     const archived = options.archived === true ? 1 : 0;
     const rows = this.selectAll(

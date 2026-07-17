@@ -97,6 +97,32 @@ test("the /usage command queries the assigned session without sending a model pr
   assert.match(sent[0], /剩余 \*\*75%\*\*/);
 });
 
+test("the /clear command replaces and rebinds an app-server session", async () => {
+  const sent = [];
+  const assignments = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-old" };
+      }
+    },
+    async sendMessage(sessionId, text) {
+      assert.equal(sessionId, "codex:thread-old");
+      assert.equal(text, "/clear");
+      return { cleared: true, sessionId: "codex:thread-new" };
+    }
+  });
+  manager.assignSession = async (botId, bindingId, sessionId) => {
+    assignments.push({ botId, bindingId, sessionId });
+  };
+  manager.sendText = async (_botId, _chatId, text) => sent.push(text);
+
+  await manager.handleCommand("bot-a", { id: "binding-a" }, { text: "/clear", chatId: "chat-a" });
+
+  assert.deepEqual(assignments, [{ botId: "bot-a", bindingId: "binding-a", sessionId: "codex:thread-new" }]);
+  assert.deepEqual(sent, ["已清空上下文，可以开始新的对话。"]);
+});
+
 test("pending approvals are delivered exactly once, including on the first sync", async () => {
   const cards = [];
   const manager = new FeishuGatewayManager({
