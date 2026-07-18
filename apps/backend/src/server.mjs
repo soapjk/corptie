@@ -765,16 +765,6 @@ function collaborationRuntimeInstructions(agentId) {
   ].join(" ");
 }
 
-function collaborationTurnContext(agentId) {
-  if (!agentId) return undefined;
-  return {
-    "corptie-agent-runtime": {
-      kind: "application",
-      value: collaborationRuntimeInstructions(agentId)
-    }
-  };
-}
-
 function sortSessionsForList(sessions = []) {
   return sessions.slice().sort((a, b) => {
     if (Boolean(a.pinned) !== Boolean(b.pinned)) {
@@ -1672,8 +1662,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     await codexClient.resumeThread(threadId, collaborationThreadOptions(collaborationAgent?.agentId));
     result = await codexClient.startTurn(threadId, value, {
       model: managed?.external?.currentModel ?? options.model ?? undefined,
-      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
-      additionalContext: collaborationTurnContext(collaborationAgent?.agentId)
+      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined
     });
     upsertManagedCodexSession({
       ...managed,
