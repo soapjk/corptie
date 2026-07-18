@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @main
@@ -15,6 +16,7 @@ struct CorptieMacApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backendClient = BackendClient.shared
+    private let appLanguage = AppLanguageController.shared
     private var panelController: FloatingPanelController?
     private var detachedSessionManager: DetachedSessionManager?
     private var completionSoundManager: SessionCompletionSoundManager?
@@ -22,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusMenu: NSMenu?
     private var settingsWindow: NSWindow?
     private var collaborationWindow: NSWindow?
+    private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -46,6 +49,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         completionSoundManager = soundManager
         soundManager.start()
         installStatusItem()
+        appLanguage.$selection
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.refreshLocalizedChrome()
+            }
+            .store(in: &cancellables)
 
         backendClient.start()
     }
@@ -78,15 +87,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "Welcome to Corptie"
-        alert.informativeText = """
+        alert.messageText = L10n("Welcome to Corptie")
+        alert.informativeText = L10n("""
         Corptie keeps your agent tasks visible in a floating panel while you work on other things.
 
         Your session data is stored in ~/Library/Application Support/Corptie/ and stays on this machine.
 
         If you ever need to run tasks in a workspace on an external drive, you may need to grant Corptie Full Disk Access in System Settings.
-        """
-        alert.addButton(withTitle: "Get Started")
+        """)
+        alert.addButton(withTitle: L10n("Get Started"))
         CorptieAppEnvironment.userDefaults.set(true, forKey: key)
         CorptieAppEnvironment.userDefaults.synchronize()
         alert.runModal()
@@ -100,15 +109,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.action = #selector(handleStatusItemClick)
         item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
+        refreshStatusMenu()
+        statusItem = item
+    }
+
+    private func refreshStatusMenu() {
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Show \(CorptieAppEnvironment.appName)", action: #selector(showPanel), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Collaboration...", action: #selector(openCollaboration), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: L10n("Show Corptie"), action: #selector(showPanel), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L10n("Collaboration..."), action: #selector(openCollaboration), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L10n("Settings..."), action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit \(CorptieAppEnvironment.appName)", action: #selector(quit), keyEquivalent: "q"))
+        menu.addItem(NSMenuItem(title: L10n("Quit Corptie"), action: #selector(quit), keyEquivalent: "q"))
         menu.items.forEach { $0.target = self }
         statusMenu = menu
-        statusItem = item
+    }
+
+    private func refreshLocalizedChrome() {
+        refreshStatusMenu()
+        settingsWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
+        collaborationWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Collaboration"))"
     }
 
     @objc private func handleStatusItemClick() {
@@ -142,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "\(CorptieAppEnvironment.appName) Settings"
+        window.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView(
@@ -173,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "\(CorptieAppEnvironment.appName) Collaboration"
+        window.title = "\(CorptieAppEnvironment.appName) \(L10n("Collaboration"))"
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: CollaborationView())
@@ -278,6 +297,7 @@ enum CorptiePermissionManager {
 
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
+    @ObservedObject private var appLanguage = AppLanguageController.shared
     var onClose: () -> Void = {}
     var openArchivedSessions: () -> Void = {
         BackendClient.shared.setShowingArchivedSessions(true)
@@ -305,17 +325,17 @@ struct SettingsView: View {
             TabView {
                 generalSettingsTab
                     .tabItem {
-                        Label("General", systemImage: "gearshape")
+                        Label(L10n("General"), systemImage: "gearshape")
                     }
 
                 proxySettingsTab
                     .tabItem {
-                        Label("Proxy", systemImage: "network")
+                        Label(L10n("Proxy"), systemImage: "network")
                     }
 
                 feishuSettingsTab
                     .tabItem {
-                        Label("Gateway", systemImage: "message.badge.filled.fill")
+                        Label(L10n("Gateway"), systemImage: "message.badge.filled.fill")
                     }
             }
 
@@ -323,7 +343,7 @@ struct SettingsView: View {
 
             HStack {
                 Spacer()
-                Button("Save") {
+                Button(L10n("Save")) {
                     Task {
                         await saveAllSettings()
                     }
@@ -371,6 +391,7 @@ struct SettingsView: View {
                 choiceParserStatus = .idle
             }
         }
+        .environment(\.locale, appLanguage.locale)
     }
 
     private var generalSettingsTab: some View {
@@ -379,9 +400,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 18) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Storage")
+                    Text(L10n("Storage"))
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text("\(CorptieAppEnvironment.displayName) environment on port \(CorptieAppEnvironment.backendPort).")
+                    Text(L10nFormat(
+                        "%@ environment on port %lld.",
+                        L10n(CorptieAppEnvironment.displayName),
+                        CorptieAppEnvironment.backendPort
+                    ))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
@@ -393,11 +418,11 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Data Directory")
+                Text(L10n("Data Directory"))
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(CorptiePalette.secondaryText)
                 HStack(spacing: 8) {
-                    TextField("Choose a data directory", text: $dataDir)
+                    TextField(L10n("Choose a data directory"), text: $dataDir)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
 
@@ -406,13 +431,13 @@ struct SettingsView: View {
                     } label: {
                         Image(systemName: "folder")
                     }
-                    .help("Choose data directory")
+                    .help(L10n("Choose data directory"))
                 }
             }
 
             if let settings = backendClient.settings {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("Database")
+                    Text(L10n("Database"))
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(CorptiePalette.secondaryText)
                     Text(settings.dbPath)
@@ -423,7 +448,7 @@ struct SettingsView: View {
                 }
                 if let configPath = settings.configPath {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Config")
+                        Text(L10n("Config"))
                             .font(.system(size: 12, weight: .bold))
                             .foregroundStyle(CorptiePalette.secondaryText)
                         Text(configPath)
@@ -436,57 +461,71 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Session Management")
+                Text(L10n("Language"))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                Picker(L10n(""), selection: $appLanguage.selection) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(L10n(language.localizationKey)).tag(language)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(maxWidth: 220, alignment: .leading)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n("Session Management"))
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(CorptiePalette.secondaryText)
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Archived Sessions")
+                        Text(L10n("Archived Sessions"))
                             .font(.system(size: 12, weight: .semibold))
-                        Text("View or restore sessions removed from the main screen.")
+                        Text(L10n("View or restore sessions removed from the main screen."))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(CorptiePalette.secondaryText)
                     }
                     Spacer()
-                    Button("View…", systemImage: "archivebox") {
+                    Button(L10n("View…"), systemImage: "archivebox") {
                         openArchivedSessions()
                     }
                 }
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Codex Backend")
+                Text(L10n("Codex Backend"))
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(CorptiePalette.secondaryText)
-                Picker("", selection: $codexBackend.mode) {
-                    Text("App Server").tag("app-server")
-                    Text("PTY Legacy").tag("pty")
+                Picker(L10n(""), selection: $codexBackend.mode) {
+                    Text(L10n("App Server")).tag("app-server")
+                    Text(L10n("PTY Legacy")).tag("pty")
                 }
                 .pickerStyle(.segmented)
-                .help("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI.")
-                Text(codexBackend.mode == "app-server" ? "New Codex sessions use the official Codex app-server protocol." : "New Codex sessions use the legacy terminal adapter.")
+                .help(L10n("Choose how new Codex sessions are created. App Server uses Codex JSON-RPC; PTY Legacy drives the terminal UI."))
+                Text(codexBackend.mode == "app-server" ? L10n("New Codex sessions use the official Codex app-server protocol.") : L10n("New Codex sessions use the legacy terminal adapter."))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
             }
 
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Code Diff Tool")
+                    Text(L10n("Code Diff Tool"))
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(CorptiePalette.secondaryText)
-                    Text("Used when you review files changed by a Codex reply.")
+                    Text(L10n("Used when you review files changed by a Codex reply."))
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
-                Picker("", selection: $codeDiff.tool) {
-                    Text("Automatic").tag("automatic")
-                    Text("Git Difftool").tag("git-difftool")
-                    Text("FileMerge").tag("filemerge")
-                    Text("Visual Studio Code").tag("vscode")
-                    Text("Kaleidoscope").tag("kaleidoscope")
-                    Text("Beyond Compare").tag("beyond-compare")
-                    Text("Sublime Merge").tag("sublime-merge")
+                Picker(L10n(""), selection: $codeDiff.tool) {
+                    Text(L10n("Automatic")).tag("automatic")
+                    Text(L10n("Git Difftool")).tag("git-difftool")
+                    Text(L10n("FileMerge")).tag("filemerge")
+                    Text(L10n("Visual Studio Code")).tag("vscode")
+                    Text(L10n("Kaleidoscope")).tag("kaleidoscope")
+                    Text(L10n("Beyond Compare")).tag("beyond-compare")
+                    Text(L10n("Sublime Merge")).tag("sublime-merge")
                 }
                 .labelsHidden()
                 .frame(width: 180)
@@ -494,39 +533,39 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Toggle("Use LLM-enhanced interactions", isOn: llmInteractionEnabled)
+                    Toggle(L10n("Use LLM-enhanced interactions"), isOn: llmInteractionEnabled)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(CorptiePalette.secondaryText)
                     Spacer()
                 }
-                .help("Enable model-assisted parsing for terminal choice prompts")
+                .help(L10n("Enable model-assisted parsing for terminal choice prompts"))
 
                 if choiceParser.provider != "disabled" {
-                    Picker("", selection: $choiceParser.provider) {
-                        Text("Local Agent").tag("local-agent")
-                        Text("OpenAI-compatible").tag("openai")
+                    Picker(L10n(""), selection: $choiceParser.provider) {
+                        Text(L10n("Local Agent")).tag("local-agent")
+                        Text(L10n("OpenAI-compatible")).tag("openai")
                     }
                     .pickerStyle(.segmented)
-                    .help("Choose how Corptie parses terminal choice prompts")
+                    .help(L10n("Choose how Corptie parses terminal choice prompts"))
 
                     if choiceParser.provider == "openai" {
                         VStack(alignment: .leading, spacing: 8) {
-                            TextField("Base URL, e.g. https://api.openai.com/v1", text: $choiceParser.openaiBaseURL)
+                            TextField(L10n("Base URL, e.g. https://api.openai.com/v1"), text: $choiceParser.openaiBaseURL)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            TextField("OpenAI API key", text: $choiceParser.openaiApiKey)
+                            TextField(L10n("OpenAI API key"), text: $choiceParser.openaiApiKey)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            TextField("Parser model", text: $choiceParser.openaiModel)
+                            TextField(L10n("Parser model"), text: $choiceParser.openaiModel)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 8) {
-                            TextField("Agent command", text: $choiceParser.localCommand)
+                            TextField(L10n("Agent command"), text: $choiceParser.localCommand)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            TextField("Fixed arguments", text: $choiceParser.localArgs)
+                            TextField(L10n("Fixed arguments"), text: $choiceParser.localArgs)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                             ParserModelPicker(
@@ -539,7 +578,7 @@ struct SettingsView: View {
                     }
 
                     HStack {
-                        Text("Timeout")
+                        Text(L10n("Timeout"))
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(CorptiePalette.secondaryText)
                         Stepper("\(choiceParser.timeoutMs / 1000)s", value: $choiceParser.timeoutMs, in: 1000...60000, step: 1000)
@@ -548,14 +587,14 @@ struct SettingsView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("Test") {
+                    Button(L10n("Test")) {
                         Task {
                             await testChoiceParser()
                         }
                     }
                     .disabled(choiceParser.provider == "disabled" || backendClient.isTestingChoiceParser || backendClient.isUpdatingSettings)
 
-                    Button("Confirm") {
+                    Button(L10n("Confirm")) {
                         Task {
                             await confirmChoiceParser()
                         }
@@ -564,7 +603,7 @@ struct SettingsView: View {
                     .disabled(!isChoiceParserDirty || backendClient.isTestingChoiceParser || backendClient.isUpdatingSettings)
 
                     if isChoiceParserDirty {
-                        Button("Cancel") {
+                        Button(L10n("Cancel")) {
                             choiceParser = savedChoiceParser
                             choiceParserStatus = .idle
                         }
@@ -601,9 +640,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Agent Proxy")
+                    Text(L10n("Agent Proxy"))
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text("Proxy settings are applied per agent when Corptie launches agent processes.")
+                    Text(L10n("Proxy settings are applied per agent when Corptie launches agent processes."))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
@@ -617,20 +656,20 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ProxyProfileEditor(
-                        title: "Codex CLI",
-                        subtitle: "Used by new Codex PTY sessions and resumed Codex sessions.",
+                        title: L10n("Codex CLI"),
+                        subtitle: L10n("Used by new Codex PTY sessions and resumed Codex sessions."),
                         profile: $agentProxy.codex
                     )
 
                     ProxyProfileEditor(
-                        title: "Choice Parser",
-                        subtitle: "Used by the Local Agent choice parser test and parsing process.",
+                        title: L10n("Choice Parser"),
+                        subtitle: L10n("Used by the Local Agent choice parser test and parsing process."),
                         profile: $agentProxy.choiceParser
                     )
 
                     ProxyProfileEditor(
-                        title: "Generic PTY Agent",
-                        subtitle: "Used by custom PTY agents launched from the advanced task form.",
+                        title: L10n("Generic PTY Agent"),
+                        subtitle: L10n("Used by custom PTY agents launched from the advanced task form."),
                         profile: $agentProxy.pty
                     )
                 }
@@ -651,9 +690,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Feishu Gateway")
+                    Text(L10n("Feishu Gateway"))
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text("Connect trusted Feishu users to sessions on this Mac.")
+                    Text(L10n("Connect trusted Feishu users to sessions on this Mac."))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
@@ -667,7 +706,7 @@ struct SettingsView: View {
                 } label: {
                     Image(systemName: "arrow.clockwise")
                 }
-                .help("Refresh Feishu bots")
+                .help(L10n("Refresh Feishu bots"))
             }
 
             ScrollView {
@@ -675,21 +714,21 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Trusted Workspaces")
+                                Text(L10n("Trusted Workspaces"))
                                     .font(.system(size: 13, weight: .bold))
-                                Text("These folders appear first when a Feishu user creates a session. Paths used by existing sessions are included automatically.")
+                                Text(L10n("These folders appear first when a Feishu user creates a session. Paths used by existing sessions are included automatically."))
                                     .font(.system(size: 10, weight: .medium))
                                     .foregroundStyle(CorptiePalette.secondaryText)
                             }
                             Spacer()
-                            Button("Add Folder…") {
+                            Button(L10n("Add Folder…")) {
                                 addTrustedWorkspace()
                             }
                             .controlSize(.small)
                         }
 
                         if gateway.trustedWorkspaces.isEmpty {
-                            Text("No pinned workspaces. Existing and recent session folders remain available in Feishu.")
+                            Text(L10n("No pinned workspaces. Existing and recent session folders remain available in Feishu."))
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                         } else {
@@ -709,7 +748,7 @@ struct SettingsView: View {
                                         Image(systemName: "minus.circle")
                                     }
                                     .buttonStyle(.plain)
-                                    .help("Remove trusted workspace")
+                                    .help(L10n("Remove trusted workspace"))
                                 }
                             }
                         }
@@ -719,9 +758,9 @@ struct SettingsView: View {
 
                     if backendClient.feishuBots.isEmpty {
                         ContentUnavailableView(
-                            "No Feishu Bots",
+                            L10n("No Feishu Bots"),
                             systemImage: "message.badge",
-                            description: Text("Add a lark-cli profile below. A bot stays stopped until you explicitly enable it.")
+                            description: Text(L10n("Add a lark-cli profile below. A bot stays stopped until you explicitly enable it."))
                         )
                         .frame(maxWidth: .infinity, minHeight: 150)
                     } else {
@@ -734,33 +773,33 @@ struct SettingsView: View {
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Add Bot")
+                            Text(L10n("Add Bot"))
                                 .font(.system(size: 13, weight: .bold))
                             Spacer()
-                            Link("Create or configure in Feishu Open Platform", destination: URL(string: "https://open.feishu.cn/app")!)
+                            Link(L10n("Create or configure in Feishu Open Platform"), destination: URL(string: "https://open.feishu.cn/app")!)
                                 .font(.system(size: 10, weight: .semibold))
                         }
-                        Text("Feishu requires the enterprise app and bot capability to be created and published in its developer console first. Corptie connects that existing app to local sessions.")
+                        Text(L10n("Feishu requires the enterprise app and bot capability to be created and published in its developer console first. Corptie connects that existing app to local sessions."))
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(CorptiePalette.secondaryText)
-                        Picker("", selection: $feishuAddMode) {
-                            Text("App Credentials").tag("credentials")
-                            Text("Existing CLI Profile").tag("profile")
+                        Picker(L10n(""), selection: $feishuAddMode) {
+                            Text(L10n("App Credentials")).tag("credentials")
+                            Text(L10n("Existing CLI Profile")).tag("profile")
                         }
                         .pickerStyle(.segmented)
                         if feishuAddMode == "credentials" {
-                            TextField("Feishu App ID", text: $newFeishuAppId)
+                            TextField(L10n("Feishu App ID"), text: $newFeishuAppId)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            SecureField("Feishu App Secret", text: $newFeishuAppSecret)
+                            SecureField(L10n("Feishu App Secret"), text: $newFeishuAppSecret)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                         } else if availableFeishuProfiles.isEmpty {
-                            Text("No unused lark-cli Profiles are available. Add a Profile in lark-cli or remove its existing Gateway bot first.")
+                            Text(L10n("No unused lark-cli Profiles are available. Add a Profile in lark-cli or remove its existing Gateway bot first."))
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                         } else {
-                            Picker("lark-cli Profile", selection: $newFeishuProfile) {
+                            Picker(L10n("lark-cli Profile"), selection: $newFeishuProfile) {
                                 ForEach(availableFeishuProfiles) { profile in
                                     Text(profile.active ? "\(profile.name) (Active)" : profile.name)
                                         .tag(profile.name)
@@ -770,12 +809,12 @@ struct SettingsView: View {
                         }
                         HStack {
                             Text(feishuAddMode == "credentials"
-                                ? "The App Secret is passed directly to lark-cli encrypted storage and is never saved in the Corptie database."
-                                : "The existing Profile and its credentials remain owned by lark-cli and are never removed by Corptie.")
+                                ? L10n("The App Secret is passed directly to lark-cli encrypted storage and is never saved in the Corptie database.")
+                                : L10n("The existing Profile and its credentials remain owned by lark-cli and are never removed by Corptie."))
                                 .font(.system(size: 10, weight: .medium))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                             Spacer()
-                            Button("Add Bot") {
+                            Button(L10n("Add Bot")) {
                                 Task {
                                     let added = if feishuAddMode == "credentials" {
                                         await backendClient.addFeishuBot(appId: newFeishuAppId, appSecret: newFeishuAppSecret)
@@ -826,14 +865,14 @@ struct SettingsView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(bot.remoteName ?? "Loading Feishu bot identity…")
+                    Text(bot.remoteName ?? L10n("Loading Feishu bot identity…"))
                         .font(.system(size: 13, weight: .bold))
                     if let remoteName = bot.remoteName {
-                        Text("Search in Feishu: \(remoteName)")
+                        Text(L10nFormat("Search in Feishu: %@", remoteName))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.blue)
                     }
-                    Text("App ID: \(bot.appId ?? "Unknown") · Profile: \(bot.profile)")
+                    Text(L10nFormat("App ID: %@ · Profile: %@", bot.appId ?? L10n("Unknown"), bot.profile))
                         .font(.system(size: 10, weight: .medium, design: .monospaced))
                         .foregroundStyle(CorptiePalette.secondaryText)
                         .textSelection(.enabled)
@@ -842,7 +881,7 @@ struct SettingsView: View {
                 Text(feishuConnectionLabel(bot))
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(bot.connectionStatus == "connected" ? .green : CorptiePalette.secondaryText)
-                Toggle("", isOn: Binding(
+                Toggle(L10n(""), isOn: Binding(
                     get: { bot.enabled },
                     set: { enabled in
                         Task { await backendClient.setFeishuBotEnabled(bot, enabled: enabled) }
@@ -860,13 +899,13 @@ struct SettingsView: View {
             }
 
             HStack(spacing: 14) {
-                Label(bot.bindings.isEmpty ? "Not paired" : "Paired", systemImage: bot.bindings.isEmpty ? "person.crop.circle.badge.questionmark" : "person.crop.circle.badge.checkmark")
+                Label(bot.bindings.isEmpty ? L10n("Not paired") : L10n("Paired"), systemImage: bot.bindings.isEmpty ? "person.crop.circle.badge.questionmark" : "person.crop.circle.badge.checkmark")
                 if let assignment = bot.assignment {
                     Label(assignment.sessionId, systemImage: "link")
                         .lineLimit(1)
                         .truncationMode(.middle)
                 } else {
-                    Label("No session selected", systemImage: "link.badge.plus")
+                    Label(L10n("No session selected"), systemImage: "link.badge.plus")
                 }
             }
             .font(.system(size: 10, weight: .medium))
@@ -874,12 +913,12 @@ struct SettingsView: View {
 
             if let pairing = feishuPairingCodes[bot.id] {
                 HStack(spacing: 8) {
-                    Text("Pairing code")
+                    Text(L10n("Pairing code"))
                         .font(.system(size: 11, weight: .semibold))
                     Text(pairing.code)
                         .font(.system(size: 18, weight: .bold, design: .monospaced))
                         .textSelection(.enabled)
-                    Text("expires \(pairing.expiresAt)")
+                    Text(L10nFormat("expires %@", pairing.expiresAt))
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
@@ -887,7 +926,7 @@ struct SettingsView: View {
             }
 
             HStack(spacing: 8) {
-                Button("Generate Pairing Code") {
+                Button(L10n("Generate Pairing Code")) {
                     Task {
                         if case .success(let pairing) = await backendClient.createFeishuPairingCode(for: bot) {
                             feishuPairingCodes[bot.id] = pairing
@@ -896,17 +935,17 @@ struct SettingsView: View {
                 }
                 .disabled(!bot.enabled)
                 if let binding = bot.bindings.first {
-                    Button("Unpair") {
+                    Button(L10n("Unpair")) {
                         Task { await backendClient.revokeFeishuBinding(binding) }
                     }
                 }
                 if bot.assignment != nil {
-                    Button("Release Session") {
+                    Button(L10n("Release Session")) {
                         Task { await backendClient.releaseFeishuSession(for: bot) }
                     }
                 }
                 Spacer()
-                Button("Delete", role: .destructive) {
+                Button(L10n("Delete"), role: .destructive) {
                     Task {
                         if await backendClient.deleteFeishuBot(bot) {
                             feishuPairingCodes.removeValue(forKey: bot.id)
@@ -924,10 +963,10 @@ struct SettingsView: View {
 
     private func feishuConnectionLabel(_ bot: FeishuBot) -> String {
         switch bot.connectionStatus {
-        case "connected": "Connected"
-        case "connecting": "Connecting"
-        case "error": "Error"
-        default: "Stopped"
+        case "connected": L10n("Connected")
+        case "connecting": L10n("Connecting")
+        case "error": L10n("Error")
+        default: L10n("Stopped")
         }
     }
 
@@ -973,7 +1012,7 @@ struct SettingsView: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.canCreateDirectories = false
-        panel.prompt = "Add Workspace"
+        panel.prompt = L10n("Add Workspace")
         guard panel.runModal() == .OK else { return }
         for url in panel.urls {
             let path = url.standardizedFileURL.path
@@ -1012,7 +1051,7 @@ struct SettingsView: View {
             savedGateway = gateway
             choiceParserStatus = .saved
         } else {
-            choiceParserStatus = .failed(backendClient.lastError ?? "Save failed")
+            choiceParserStatus = .failed(backendClient.lastError ?? L10n("Save failed"))
         }
     }
 
@@ -1065,7 +1104,7 @@ private struct ProxyProfileEditor: View {
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 Spacer()
-                Toggle("", isOn: $profile.enabled)
+                Toggle(L10n(""), isOn: $profile.enabled)
                     .labelsHidden()
             }
 
@@ -1107,14 +1146,14 @@ private enum ChoiceParserStatus: Equatable {
     case saved
     case failed(String)
 
-    var message: String {
+    @MainActor var message: String {
         switch self {
         case .idle:
             ""
         case .passed(let text):
             text
         case .saved:
-            "Saved"
+            L10n("Saved")
         case .failed(let text):
             text
         }
@@ -1146,24 +1185,24 @@ private struct ParserModelPicker: View {
                 .foregroundStyle(CorptiePalette.secondaryText)
 
             if backendClient.codexModels.isEmpty {
-                TextField(defaultModel.isEmpty ? "Automatic" : defaultModel, text: $selection)
+                TextField(defaultModel.isEmpty ? L10n("Automatic") : defaultModel, text: $selection)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
             } else {
-                Picker("", selection: normalizedSelection) {
+                Picker(L10n(""), selection: normalizedSelection) {
                     if allowAutomatic {
-                        Text("Auto").tag("")
+                        Text(L10n("Auto")).tag("")
                     }
                     ForEach(sortedModels) { model in
                         Text(model.name).tag(model.id)
                     }
                     if shouldShowCustom {
-                        Text("Custom: \(selection)").tag(selection)
+                        Text(L10nFormat("Custom: %@", selection)).tag(selection)
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
-                .help("Choose parser model")
+                .help(L10n("Choose parser model"))
             }
         }
     }

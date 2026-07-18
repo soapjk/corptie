@@ -184,7 +184,7 @@ final class BackendClient: ObservableObject {
         let trimmedAppId = appId.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedSecret = appSecret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedAppId.isEmpty, !trimmedSecret.isEmpty else {
-            lastError = "Feishu App ID and App Secret are required."
+            lastError = L10n("Feishu App ID and App Secret are required.")
             return false
         }
         return await performFeishuMutation(method: "POST", path: "feishu/bots", body: [
@@ -198,7 +198,7 @@ final class BackendClient: ObservableObject {
     func addFeishuBot(profile: String) async -> Bool {
         let trimmedProfile = profile.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedProfile.isEmpty else {
-            lastError = "lark-cli Profile is required."
+            lastError = L10n("lark-cli Profile is required.")
             return false
         }
         return await performFeishuMutation(method: "POST", path: "feishu/bots", body: [
@@ -280,7 +280,7 @@ final class BackendClient: ObservableObject {
     func updateSettings(dataDir: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil) async -> Bool {
         let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            lastError = "Data directory is required."
+            lastError = L10n("Data directory is required.")
             return false
         }
 
@@ -491,7 +491,7 @@ final class BackendClient: ObservableObject {
         let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommand.isEmpty else {
-            lastError = "Command is required."
+            lastError = L10n("Command is required.")
             return
         }
 
@@ -522,11 +522,11 @@ final class BackendClient: ObservableObject {
                 }
 
                 onSuccess()
-                sendStatusMessage = "Started PTY agent"
+                sendStatusMessage = L10n("Started PTY agent")
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
             }
         }
     }
@@ -582,11 +582,11 @@ final class BackendClient: ObservableObject {
                 }
 
                 onSuccess()
-                sendStatusMessage = usesAppServer ? "Started Codex App Server session" : "Started Codex CLI"
+                sendStatusMessage = usesAppServer ? L10n("Started Codex App Server session") : L10n("Started Codex CLI")
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
             }
         }
     }
@@ -634,18 +634,18 @@ final class BackendClient: ObservableObject {
                 }
 
                 onSuccess()
-                sendStatusMessage = "Started Claude Code"
+                sendStatusMessage = L10n("Started Claude Code")
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
             }
         }
     }
 
     func respondToCodexApproval(option: CodexApprovalOption) {
         guard let session = selectedSession else {
-            sendStatusMessage = "No Codex approval is active."
+            sendStatusMessage = L10n("No Codex approval is active.")
             return
         }
         respondToCodexApproval(option: option, to: session)
@@ -654,14 +654,14 @@ final class BackendClient: ObservableObject {
     func respondToCodexApproval(option: CodexApprovalOption, to session: TaskSession) {
         guard let provider = session.external?.provider,
               let threadId = session.external?.threadId else {
-            sendStatusMessage = "No Codex approval is active."
+            sendStatusMessage = L10n("No Codex approval is active.")
             return
         }
 
         clearSuggestedOptions(for: session)
         Task {
             isSendingMessage = true
-            sendStatusMessage = "Selecting Codex option..."
+            sendStatusMessage = L10n("Selecting Codex option...")
             defer { isSendingMessage = false }
 
             do {
@@ -685,14 +685,14 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
                 }
 
-                sendStatusMessage = "Selected \(option.label)"
+                sendStatusMessage = L10nFormat("Selected %@", option.label)
                 if selectedSession?.id == session.id {
                     await loadDetail(for: session)
                 }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Approval failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Approval failed: %@", error.localizedDescription)
             }
         }
     }
@@ -700,7 +700,7 @@ final class BackendClient: ObservableObject {
     func respondToCodexApproval(approved: Bool) {
         let fallback = CodexApprovalOption(
             id: approved ? "approve" : "deny",
-            label: approved ? "Approve" : "Deny",
+            label: approved ? L10n("Approve") : L10n("Deny"),
             role: approved ? "approve" : "deny",
             index: approved ? 0 : 1,
             selected: approved
@@ -712,13 +712,13 @@ final class BackendClient: ObservableObject {
         guard let session = selectedSession,
               isPtyProvider(session.external?.provider),
               let threadId = session.external?.threadId else {
-            sendStatusMessage = "No terminal choice is active."
+            sendStatusMessage = L10n("No terminal choice is active.")
             return
         }
 
         Task {
             isSendingMessage = true
-            sendStatusMessage = "Selecting option..."
+            sendStatusMessage = L10n("Selecting option...")
             defer { isSendingMessage = false }
 
             do {
@@ -745,12 +745,12 @@ final class BackendClient: ObservableObject {
                 if let choiceId, !choiceId.isEmpty {
                     markChoiceHandled(choiceId: choiceId, selectedOptionId: option.id)
                 }
-                sendStatusMessage = "Selected \(option.label)"
+                sendStatusMessage = L10nFormat("Selected %@", option.label)
                 await loadDetail(for: session)
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Choice failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Choice failed: %@", error.localizedDescription)
             }
         }
     }
@@ -759,7 +759,7 @@ final class BackendClient: ObservableObject {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else {
-            lastError = "Task prompt is required."
+            lastError = L10n("Task prompt is required.")
             return
         }
 
@@ -791,7 +791,7 @@ final class BackendClient: ObservableObject {
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Create failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
             }
         }
     }
@@ -855,7 +855,7 @@ final class BackendClient: ObservableObject {
         }
 
         guard let selectedSession, selectedSession.external?.threadId != nil else {
-            lastError = "This task does not expose a Codex thread id."
+            lastError = L10n("This task does not expose a Codex thread id.")
             sendStatusMessage = lastError
             return
         }
@@ -878,12 +878,12 @@ final class BackendClient: ObservableObject {
                     let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
                     throw BackendError.message(payload?["error"] as? String ?? "Could not resolve collaboration confirmation.")
                 }
-                sendStatusMessage = approve ? "Collaboration request sent" : "Collaboration request cancelled"
+                sendStatusMessage = approve ? L10n("Collaboration request sent") : L10n("Collaboration request cancelled")
                 await loadDetail(for: selectedSession, showLoading: false)
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Confirmation failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Confirmation failed: %@", error.localizedDescription)
             }
         }
     }
@@ -926,7 +926,7 @@ final class BackendClient: ObservableObject {
 
     private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, isChoiceSelection: Bool, onSuccess: @escaping () -> Void) {
         guard let threadId = session.external?.threadId else {
-            lastError = "This task does not expose a Codex thread id."
+            lastError = L10n("This task does not expose a Codex thread id.")
             sendStatusMessage = lastError
             return
         }
@@ -946,7 +946,7 @@ final class BackendClient: ObservableObject {
 
         Task {
             isSendingMessage = true
-            sendStatusMessage = isPtyProvider(session.external?.provider) ? "Sending to terminal agent..." : "Sending to Codex..."
+            sendStatusMessage = isPtyProvider(session.external?.provider) ? L10n("Sending to terminal agent...") : L10n("Sending to Codex...")
             defer { isSendingMessage = false }
 
             do {
@@ -974,7 +974,7 @@ final class BackendClient: ObservableObject {
 
                 onSuccess()
                 if decoded?.cleared == true {
-                    sendStatusMessage = "Conversation cleared"
+                    sendStatusMessage = L10n("Conversation cleared")
                     await refresh()
                     if let replacement = decoded?.session,
                        replacement.id != session.id {
@@ -984,16 +984,16 @@ final class BackendClient: ObservableObject {
                     }
                     return
                 } else if decoded?.mode == "collaboration-confirmation" {
-                    sendStatusMessage = "Collaboration confirmation resolved"
+                    sendStatusMessage = L10n("Collaboration confirmation resolved")
                 } else if isPtyProvider(session.external?.provider) {
-                    sendStatusMessage = session.external?.provider == "codex-pty" ? "Sent to Codex CLI" : "Sent to PTY agent"
+                    sendStatusMessage = session.external?.provider == "codex-pty" ? L10n("Sent to Codex CLI") : L10n("Sent to PTY agent")
                 } else if decoded?.queued == true {
                     let position = decoded?.queuePosition.map { " #\($0)" } ?? ""
-                    sendStatusMessage = "Queued\(position)"
+                    sendStatusMessage = L10nFormat("Queued%@", position)
                 } else if decoded?.visibleInCodexDesktop == false {
                     sendStatusMessage = decoded?.warning ?? "Sent to background Codex; Desktop may not refresh."
                 } else {
-                    sendStatusMessage = "Sent to Codex"
+                    sendStatusMessage = L10n("Sent to Codex")
                 }
                 if reloadDetail {
                     await loadDetail(for: session)
@@ -1001,7 +1001,7 @@ final class BackendClient: ObservableObject {
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Send failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1136,14 +1136,14 @@ final class BackendClient: ObservableObject {
                 var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/interrupt"))
                 request.httpMethod = "POST"
                 _ = try await URLSession.shared.data(for: request)
-                sendStatusMessage = session.external?.provider == "codex-pty" ? "Interrupted Codex CLI" : "Interrupted PTY agent"
+                sendStatusMessage = session.external?.provider == "codex-pty" ? L10n("Interrupted Codex CLI") : L10n("Interrupted PTY agent")
                 await refresh()
                 if selectedSession?.id == session.id {
                     await loadDetail(for: session)
                 }
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Interrupt failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Interrupt failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1171,7 +1171,7 @@ final class BackendClient: ObservableObject {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
                 }
-                sendStatusMessage = session.isConnected ? "PTY disconnected" : "PTY reconnected"
+                sendStatusMessage = session.isConnected ? L10n("PTY disconnected") : L10n("PTY reconnected")
                 await refresh()
                 if selectedSession?.id == session.id {
                     await loadDetail(for: session, showLoading: false)
@@ -1196,7 +1196,7 @@ final class BackendClient: ObservableObject {
                 connectionTransitionSessionIds.remove(session.id)
             }
             do {
-                sendStatusMessage = "Reconnecting..."
+                sendStatusMessage = L10n("Reconnecting...")
                 var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reconnect"))
                 request.httpMethod = "POST"
                 let (data, response) = try await URLSession.shared.data(for: request)
@@ -1207,14 +1207,14 @@ final class BackendClient: ObservableObject {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
                 }
-                sendStatusMessage = "Reconnected"
+                sendStatusMessage = L10n("Reconnected")
                 await refresh()
                 if selectedSession?.id == session.id {
                     await loadDetail(for: session, showLoading: false)
                 }
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Reconnect failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Reconnect failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1301,7 +1301,7 @@ final class BackendClient: ObservableObject {
     func rename(session: TaskSession, title: String, onSuccess: @escaping () -> Void = {}) {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else {
-            lastError = "Title is required."
+            lastError = L10n("Title is required.")
             return
         }
 
@@ -1379,12 +1379,12 @@ final class BackendClient: ObservableObject {
                 var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/interrupt"))
                 request.httpMethod = "POST"
                 _ = try await URLSession.shared.data(for: request)
-                sendStatusMessage = selectedSession.external?.provider == "codex-pty" ? "Interrupted Codex CLI" : "Interrupted PTY agent"
+                sendStatusMessage = selectedSession.external?.provider == "codex-pty" ? L10n("Interrupted Codex CLI") : L10n("Interrupted PTY agent")
                 await loadDetail(for: selectedSession)
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Interrupt failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Interrupt failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1392,7 +1392,7 @@ final class BackendClient: ObservableObject {
     func switchSelectedCodexModel(to model: CodexModel) {
         guard let selectedSession,
               selectedSession.capabilities?.canSwitchModel == true else {
-            sendStatusMessage = "Model switching is not available for this session."
+            sendStatusMessage = L10n("Model switching is not available for this session.")
             return
         }
 
@@ -1414,12 +1414,12 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message(text)
                 }
                 let provider = selectedSession.external?.provider == "claude-sdk" ? "Claude" : "Codex"
-                sendStatusMessage = "Switching \(provider) model to \(model.name)"
+                sendStatusMessage = L10nFormat("Switching %@ model to %@", provider, model.name)
                 await loadDetail(for: selectedSession)
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Model switch failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Model switch failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1430,7 +1430,7 @@ final class BackendClient: ObservableObject {
             return
         }
         guard let selectedSession else {
-            sendStatusMessage = "Reasoning switching is not available for this session."
+            sendStatusMessage = L10n("Reasoning switching is not available for this session.")
             return
         }
 
@@ -1451,12 +1451,12 @@ final class BackendClient: ObservableObject {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
                 }
-                sendStatusMessage = "Switching Codex reasoning to \(reasoningLabel(trimmedReasoningLevel))"
+                sendStatusMessage = L10nFormat("Switching Codex reasoning to %@", reasoningLabel(trimmedReasoningLevel))
                 await loadDetail(for: selectedSession)
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
-                sendStatusMessage = "Reasoning switch failed: \(error.localizedDescription)"
+                sendStatusMessage = L10nFormat("Reasoning switch failed: %@", error.localizedDescription)
             }
         }
     }
@@ -1576,7 +1576,7 @@ final class BackendClient: ObservableObject {
 
     private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
         guard let threadId = session.external?.threadId else {
-            lastError = "No Codex detail is available for this task."
+            lastError = L10n("No Codex detail is available for this task.")
             return
         }
 
@@ -1947,23 +1947,25 @@ private func agentProxyProfileBody(_ profile: AgentProxyProfile) -> [String: Any
     ]
 }
 
+@MainActor
 private func choiceParserTestMessage(durationMs: Int?) -> String {
     guard let durationMs else {
-        return "Test passed"
+        return L10n("Test passed")
     }
     if durationMs < 1000 {
-        return "Test passed in \(durationMs) ms"
+        return L10nFormat("Test passed in %lld ms", durationMs)
     }
     let seconds = Double(durationMs) / 1000
-    return String(format: "Test passed in %.1f s", seconds)
+    return L10nFormat("Test passed in %.1f s", seconds)
 }
 
+@MainActor
 private func reasoningLabel(_ value: String) -> String {
     switch value.lowercased() {
-    case "low": "Low"
-    case "medium": "Medium"
-    case "high": "High"
-    case "xhigh": "Extra High"
+    case "low": L10n("Low")
+    case "medium": L10n("Medium")
+    case "high": L10n("High")
+    case "xhigh": L10n("Extra High")
     default: value
     }
 }

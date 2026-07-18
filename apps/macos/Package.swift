@@ -4,6 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "CorptieMac",
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v14)
     ],
@@ -25,7 +26,9 @@ let package = Package(
                 "Resources/AppIcon.iconset"
             ],
             resources: [
-                .copy("Resources/AppIcon.png")
+                .copy("Resources/AppIcon.png"),
+                .process("Resources/en.lproj"),
+                .process("Resources/zh-Hans.lproj")
             ]
         )
     ]

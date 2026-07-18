@@ -68,13 +68,13 @@ enum TaskStatus: String, Codable {
     case failed
     case cancelled
 
-    var label: String {
+    @MainActor var label: String {
         switch self {
-        case .running: "Running"
-        case .blocked: "Blocked"
-        case .complete: "Complete"
-        case .failed: "Failed"
-        case .cancelled: "Cancelled"
+        case .running: L10n("Running")
+        case .blocked: L10n("Blocked")
+        case .complete: L10n("Complete")
+        case .failed: L10n("Failed")
+        case .cancelled: L10n("Cancelled")
         }
     }
 
