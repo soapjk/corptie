@@ -35,6 +35,12 @@ export function reconcileAuthoritativeRunState(session, status) {
   };
 }
 
+export function sessionHasActiveRun(session) {
+  return ["running", "blocked"].includes(session?.status)
+    || Boolean(session?.external?.activeTurnId)
+    || Boolean(session?.rawStatus?.activeTurnId);
+}
+
 export function composeStoredSessionList({
   archived = false,
   ptySessions = [],
