@@ -568,7 +568,9 @@ export class CodexAppServerClient {
 export function normalizeCodexTokenUsage(rawUsage, fallback = {}) {
   if (!rawUsage || typeof rawUsage !== "object") return null;
   const active = rawUsage.last ?? rawUsage.lastUsage ?? rawUsage.last_usage
-    ?? rawUsage.total ?? rawUsage.totalUsage ?? rawUsage.total_usage ?? rawUsage;
+    ?? rawUsage.lastTokenUsage ?? rawUsage.last_token_usage
+    ?? rawUsage.total ?? rawUsage.totalUsage ?? rawUsage.total_usage
+    ?? rawUsage.totalTokenUsage ?? rawUsage.total_token_usage ?? rawUsage;
   const usedTokens = finiteNumber(active.totalTokens ?? active.total_tokens ?? rawUsage.totalTokens);
   const contextWindow = finiteNumber(
     rawUsage.modelContextWindow
@@ -588,6 +590,32 @@ export function normalizeCodexTokenUsage(rawUsage, fallback = {}) {
       ? Math.min(100, Math.max(0, usedTokens / contextWindow * 100))
       : null
   };
+}
+
+export async function readCodexRolloutTokenUsage(path) {
+  if (!path) return null;
+  try {
+    return tokenUsageFromCodexRolloutText(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+export function tokenUsageFromCodexRolloutText(text = "") {
+  const lines = String(text).split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (!lines[index].includes('"token_count"')) continue;
+    try {
+      const entry = JSON.parse(lines[index]);
+      const payload = entry?.type === "event_msg" ? entry.payload : null;
+      if (payload?.type !== "token_count") continue;
+      const usage = normalizeCodexTokenUsage(payload.info);
+      if (usage) return usage;
+    } catch {
+      // Ignore partial or malformed rollout lines and keep searching backwards.
+    }
+  }
+  return null;
 }
 
 function finiteNumber(value) {

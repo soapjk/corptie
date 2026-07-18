@@ -12,7 +12,8 @@ import {
   CodexAppServerClient,
   mapCodexThreadToDetail,
   mapCodexThreadToSession,
-  readCodexRolloutDetail
+  readCodexRolloutDetail,
+  readCodexRolloutTokenUsage
 } from "./adapters/codexAppServer.mjs";
 import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
@@ -2370,13 +2371,11 @@ function route(request, response) {
       return;
     }
     const threadId = session.external?.threadId;
-    getGatewayUsage(sessionId)
-      .then((account) => sendJson(response, 200, {
-        account,
-        context: session.external?.provider === "codex-app-server" && threadId
-          ? codexClient.tokenUsageForThread(threadId)
-          : null
-      }))
+    Promise.all([
+      getGatewayUsage(sessionId),
+      resolveSessionContextUsage(session)
+    ])
+      .then(([account, context]) => sendJson(response, 200, { account, context }))
       .catch((error) => sendJson(response, 503, { error: error.message }));
     return;
   }
@@ -3966,6 +3965,16 @@ function route(request, response) {
   }
 
   sendJson(response, 404, { error: "Not found" });
+}
+
+async function resolveSessionContextUsage(session) {
+  if (session.external?.provider !== "codex-app-server") return null;
+  const threadId = session.external?.threadId;
+  if (!threadId) return null;
+  const live = codexClient.tokenUsageForThread(threadId);
+  if (live) return live;
+  const rollout = await findCodexRolloutBySessionId(threadId);
+  return readCodexRolloutTokenUsage(rollout?.path);
 }
 
 const server = http.createServer(route);
