@@ -481,11 +481,15 @@ struct CreateCodexThreadResponse: Decodable {
     let session: TaskSession?
     let warning: String?
     let error: String?
+    let code: String?
+    let suggestedTitle: String?
 }
 
 struct CreatePtySessionResponse: Decodable {
     let session: TaskSession?
     let error: String?
+    let code: String?
+    let suggestedTitle: String?
 }
 
 struct BackendSettings: Codable, Equatable {

@@ -244,23 +244,14 @@ struct FloatingRootView: View {
 
     private var sessionListView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if backendClient.isShowingArchivedSessions {
-                archivedSessionsHeader
-            }
-
             if isSearching {
                 sessionSearchBar
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             if backendClient.sessions.isEmpty {
-                if backendClient.isShowingArchivedSessions {
-                    ArchivedSessionsEmptyView()
-                        .measureListHeight(.cards)
-                } else {
-                    ReadyEmptyView()
-                        .measureListHeight(.cards)
-                }
+                ReadyEmptyView()
+                    .measureListHeight(.cards)
             } else if filteredSessions.isEmpty {
                 ContentUnavailableView.search(text: searchText)
                     .frame(maxWidth: .infinity, minHeight: 150)
@@ -317,33 +308,6 @@ struct FloatingRootView: View {
             sessionCardFrames = [:]
             sessionCardFramesLayoutKey = nil
         }
-    }
-
-    private var archivedSessionsHeader: some View {
-        HStack(spacing: 10) {
-            Label(L10n("Archived Sessions"), systemImage: "archivebox.fill")
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(CorptiePalette.primaryText)
-
-            Spacer(minLength: 8)
-
-            Button {
-                searchText = ""
-                isSearching = false
-                backendClient.setShowingArchivedSessions(false)
-            } label: {
-                Label(L10n("All Sessions"), systemImage: "arrow.uturn.backward")
-                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background(Color.white.opacity(0.10), in: Capsule())
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(CorptiePalette.secondaryText)
-            .help(L10n("Return to active sessions"))
-        }
-        .padding(.leading, 2)
     }
 
     private var displayMode: SessionDisplayMode {
@@ -516,9 +480,6 @@ struct FloatingRootView: View {
             CompactSessionRow(session: session, preheatRequested: preheatDetail)
                 .environmentObject(backendClient)
                 .environmentObject(detachedSessionManager)
-                .measureSessionCardFrame(session.id)
-        } else if backendClient.isShowingArchivedSessions {
-            TaskCardView(session: session, hoverPreviewChanged: updateHoverPreview, preheatRequested: preheatDetail)
                 .measureSessionCardFrame(session.id)
         } else {
             TaskCardView(
@@ -844,14 +805,6 @@ private struct CompactSessionRow: View {
                     .help(projectPath)
             }
             Spacer(minLength: 4)
-            if backendClient.isShowingArchivedSessions {
-                Button(L10n("Restore"), systemImage: "tray.and.arrow.up") {
-                    backendClient.setArchived(false, session: session)
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 11, weight: .semibold))
-                .help(L10n("Restore this session to the main list"))
-            }
         }
         .padding(.horizontal, 10)
         .frame(height: 42)
@@ -861,17 +814,15 @@ private struct CompactSessionRow: View {
         .onTapGesture { backendClient.select(session: session) }
         .contextMenu {
             Button(L10n("Rename"), systemImage: "pencil") { isRenaming = true }
-            if !backendClient.isShowingArchivedSessions {
-                Button(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle") {
-                    detachedSessionManager.float(session: session)
-                }
+            Button(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle") {
+                detachedSessionManager.float(session: session)
+            }
             Button(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: "pin") {
-                    backendClient.setPinned(session.pinned != true, session: session)
-                }
+                backendClient.setPinned(session.pinned != true, session: session)
             }
             Divider()
-            Button(backendClient.isShowingArchivedSessions ? L10n("Unarchive") : L10n("Archive"), systemImage: "archivebox") {
-                backendClient.setArchived(!backendClient.isShowingArchivedSessions, session: session)
+            Button(L10n("Archive"), systemImage: "archivebox") {
+                backendClient.setArchived(true, session: session)
             }
             Button(L10n("Delete"), systemImage: "trash", role: .destructive) {
                 backendClient.delete(session: session)
@@ -1744,6 +1695,7 @@ private struct NewPtyAgentTaskSheet: View {
     @State private var isLookingUpSession = false
     @State private var sessionLookupMessage: String?
     @State private var isShowingAdvanced = false
+    @State private var suggestedSessionTitle: String?
     let close: () -> Void
 
     var body: some View {
@@ -2004,6 +1956,28 @@ private struct NewPtyAgentTaskSheet: View {
         .background(SheetPanelBackground(cornerRadius: 20))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .compositingGroup()
+        .alert(
+            L10n("A session with this name already exists."),
+            isPresented: Binding(
+                get: { suggestedSessionTitle != nil },
+                set: { if !$0 { suggestedSessionTitle = nil } }
+            )
+        ) {
+            if let suggestedSessionTitle {
+                Button(L10nFormat("Create as “%@”", suggestedSessionTitle)) {
+                    title = suggestedSessionTitle
+                    self.suggestedSessionTitle = nil
+                    startSelectedAgent(titleOverride: suggestedSessionTitle)
+                }
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                suggestedSessionTitle = nil
+            }
+        } message: {
+            if let suggestedSessionTitle {
+                Text(L10nFormat("Create the new session with the available name “%@”?", suggestedSessionTitle))
+            }
+        }
         .onAppear {
             if cwd.isEmpty {
                 cwd = backendClient.defaultWorkspacePath
@@ -2158,10 +2132,10 @@ private struct NewPtyAgentTaskSheet: View {
         }
     }
 
-    private func startSelectedAgent() {
+    private func startSelectedAgent(titleOverride: String? = nil) {
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalTitle = trimmedTitle.isEmpty ? workspaceFolderName(workspace) : trimmedTitle
+        let finalTitle = titleOverride ?? (trimmedTitle.isEmpty ? workspaceFolderName(workspace) : trimmedTitle)
         if trimmedCommand == "codex" {
             backendClient.createCodexPtyTask(
                 title: finalTitle,
@@ -2170,7 +2144,8 @@ private struct NewPtyAgentTaskSheet: View {
                 existingSessionId: existingSessionId,
                 sandbox: sandboxMode,
                 approvalPolicy: approvalPolicy,
-                model: selectedModelId
+                model: selectedModelId,
+                onNameConflict: { suggestedSessionTitle = $0 }
             ) {
                 close()
             }
@@ -2181,7 +2156,8 @@ private struct NewPtyAgentTaskSheet: View {
                 cwd: workspace,
                 sandbox: sandboxMode,
                 approvalPolicy: approvalPolicy,
-                model: selectedModelId
+                model: selectedModelId,
+                onNameConflict: { suggestedSessionTitle = $0 }
             ) {
                 close()
             }
@@ -2191,7 +2167,8 @@ private struct NewPtyAgentTaskSheet: View {
                 command: command,
                 arguments: splitArguments(arguments),
                 initialInput: "",
-                cwd: workspace
+                cwd: workspace,
+                onNameConflict: { suggestedSessionTitle = $0 }
             ) {
                 close()
             }
@@ -2457,21 +2434,6 @@ private struct TaskCardView: View {
 
                 Spacer()
 
-                if backendClient.isShowingArchivedSessions {
-                    Button {
-                        backendClient.setArchived(false, session: session)
-                    } label: {
-                        Label(L10n("Restore"), systemImage: "tray.and.arrow.up")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .padding(.horizontal, 9)
-                            .frame(height: 26)
-                            .background(Color.white.opacity(0.10), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .help(L10n("Restore this session to the main list"))
-                }
-
                 if session.pinned == true {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 10, weight: .bold))
@@ -2612,36 +2574,26 @@ private struct TaskCardView: View {
 
             Divider()
 
-            if !backendClient.isShowingArchivedSessions {
-                Button {
-                    detachedSessionManager.float(session: session)
-                } label: {
-                    Label(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle")
-                }
-
-                Divider()
-
-                Button {
-                    backendClient.setPinned(session.pinned != true, session: session)
-                } label: {
-                    Label(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: session.pinned == true ? "pin.slash" : "pin")
-                }
-
-                Divider()
+            Button {
+                detachedSessionManager.float(session: session)
+            } label: {
+                Label(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle")
             }
 
-            if backendClient.isShowingArchivedSessions {
-                Button {
-                    backendClient.setArchived(false, session: session)
-                } label: {
-                    Label(L10n("Unarchive"), systemImage: "tray.and.arrow.up")
-                }
-            } else {
-                Button {
-                    backendClient.setArchived(true, session: session)
-                } label: {
-                    Label(L10n("Archive"), systemImage: "archivebox")
-                }
+            Divider()
+
+            Button {
+                backendClient.setPinned(session.pinned != true, session: session)
+            } label: {
+                Label(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: session.pinned == true ? "pin.slash" : "pin")
+            }
+
+            Divider()
+
+            Button {
+                backendClient.setArchived(true, session: session)
+            } label: {
+                Label(L10n("Archive"), systemImage: "archivebox")
             }
 
             Divider()
@@ -5751,23 +5703,6 @@ private struct ReadyEmptyView: View {
             Text(L10n("Backend ready"))
                 .font(.system(size: 15, weight: .semibold))
             Text(L10n("Click the + button in the lower-left corner to create a session."))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(CorptiePalette.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct ArchivedSessionsEmptyView: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "archivebox")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(CorptiePalette.secondaryText)
-            Text(L10n("No archived sessions"))
-                .font(.system(size: 15, weight: .semibold))
-            Text(L10n("Sessions you archive will appear here and can be restored at any time."))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)

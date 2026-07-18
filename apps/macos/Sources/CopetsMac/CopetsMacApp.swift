@@ -167,11 +167,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = NSHostingView(rootView: SettingsView(
             onClose: {
                 window.close()
-            },
-            openArchivedSessions: { [weak self] in
-                self?.backendClient.setShowingArchivedSessions(true)
-                window.close()
-                self?.panelController?.show()
             }
         ))
         window.makeKeyAndOrderFront(nil)
@@ -295,13 +290,19 @@ enum CorptiePermissionManager {
     }
 }
 
+private enum SettingsTab: Hashable {
+    case general
+    case proxy
+    case gateway
+    case archivedSessions
+}
+
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @ObservedObject private var appLanguage = AppLanguageController.shared
     var onClose: () -> Void = {}
-    var openArchivedSessions: () -> Void = {
-        BackendClient.shared.setShowingArchivedSessions(true)
-    }
+    @State private var selectedTab = SettingsTab.general
+    @State private var archivedSessionPendingDeletion: TaskSession?
     @State private var dataDir = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
@@ -322,35 +323,51 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            TabView {
+            TabView(selection: $selectedTab) {
                 generalSettingsTab
                     .tabItem {
                         Label(L10n("General"), systemImage: "gearshape")
                     }
+                    .tag(SettingsTab.general)
 
                 proxySettingsTab
                     .tabItem {
                         Label(L10n("Proxy"), systemImage: "network")
                     }
+                    .tag(SettingsTab.proxy)
 
                 feishuSettingsTab
                     .tabItem {
                         Label(L10n("Gateway"), systemImage: "message.badge.filled.fill")
                     }
+                    .tag(SettingsTab.gateway)
+
+                archivedSessionsTab
+                    .tabItem {
+                        Label(L10n("Archived Sessions"), systemImage: "archivebox")
+                    }
+                    .tag(SettingsTab.archivedSessions)
             }
 
             Divider()
 
             HStack {
                 Spacer()
-                Button(L10n("Save")) {
-                    Task {
-                        await saveAllSettings()
+                if selectedTab == .archivedSessions {
+                    Button(L10n("Close")) {
+                        onClose()
                     }
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    Button(L10n("Save")) {
+                        Task {
+                            await saveAllSettings()
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(backendClient.isUpdatingSettings || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(backendClient.isUpdatingSettings || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
@@ -390,6 +407,29 @@ struct SettingsView: View {
                 savedGateway = gateway
                 choiceParserStatus = .idle
             }
+        }
+        .onChange(of: selectedTab) { _, tab in
+            guard tab == .archivedSessions else { return }
+            Task { await backendClient.refreshArchivedSessions() }
+        }
+        .confirmationDialog(
+            L10n("Delete this archived session permanently?"),
+            isPresented: Binding(
+                get: { archivedSessionPendingDeletion != nil },
+                set: { if !$0 { archivedSessionPendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Delete"), role: .destructive) {
+                guard let session = archivedSessionPendingDeletion else { return }
+                archivedSessionPendingDeletion = nil
+                backendClient.delete(session: session)
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                archivedSessionPendingDeletion = nil
+            }
+        } message: {
+            Text(L10n("This action cannot be undone."))
         }
         .environment(\.locale, appLanguage.locale)
     }
@@ -488,7 +528,7 @@ struct SettingsView: View {
                     }
                     Spacer()
                     Button(L10n("View…"), systemImage: "archivebox") {
-                        openArchivedSessions()
+                        selectedTab = .archivedSessions
                     }
                 }
             }
@@ -634,6 +674,83 @@ struct SettingsView: View {
             }
 
         }
+    }
+
+    private var archivedSessionsTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n("Archived Sessions"))
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    Text(L10n("Archived sessions are hidden from the main screen until you restore them."))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+
+                Spacer()
+
+                if backendClient.isLoadingArchivedSessions {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+
+                Button(L10n("Refresh"), systemImage: "arrow.clockwise") {
+                    Task { await backendClient.refreshArchivedSessions() }
+                }
+                .disabled(backendClient.isLoadingArchivedSessions)
+            }
+
+            if backendClient.archivedSessions.isEmpty {
+                ContentUnavailableView(
+                    L10n("No archived sessions"),
+                    systemImage: "archivebox",
+                    description: Text(L10n("Sessions you archive will appear here and can be restored at any time."))
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(backendClient.archivedSessions) { session in
+                    HStack(spacing: 12) {
+                        Image(systemName: "archivebox.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(session.accent.color)
+                            .frame(width: 28)
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(session.title)
+                                .font(.system(size: 13, weight: .semibold))
+                                .lineLimit(1)
+                            HStack(spacing: 7) {
+                                Text(session.agent)
+                                Text("·")
+                                Text(session.status.label)
+                                if !session.summary.isEmpty {
+                                    Text("·")
+                                    Text(session.summary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Button(L10n("Restore"), systemImage: "tray.and.arrow.up") {
+                            backendClient.setArchived(false, session: session)
+                        }
+                        .buttonStyle(.borderless)
+
+                        Button(L10n("Delete"), systemImage: "trash", role: .destructive) {
+                            archivedSessionPendingDeletion = session
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    .padding(.vertical, 5)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(.top, 8)
     }
 
     private var proxySettingsTab: some View {

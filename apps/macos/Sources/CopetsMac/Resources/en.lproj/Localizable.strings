@@ -2,6 +2,9 @@
 "System Default" = "System Default";
 "English" = "English";
 "Simplified Chinese" = "Simplified Chinese";
+"Archived sessions are hidden from the main screen until you restore them." = "Archived sessions are hidden from the main screen until you restore them.";
+"Delete this archived session permanently?" = "Delete this archived session permanently?";
+"This action cannot be undone." = "This action cannot be undone.";
 "Agent 协作" = "Agent Collaboration";
 "取消" = "Cancel";
 "确认发送" = "Confirm Send";
@@ -16,4 +19,8 @@
 "这个会话无需手动连接，当前可用。" = "This session is available and does not require a manual connection.";
 "正在切换连接状态。" = "The connection state is changing.";
 "排队中" = "Queued";
+"A session with this name already exists." = "A session with this name already exists.";
+"Could not rename session." = "Could not rename session.";
+"Create as “%@”" = "Create as “%@”";
+"Create the new session with the available name “%@”?" = "Create the new session with the available name “%@”?";
 "协作任务" = "Collaboration Task";
