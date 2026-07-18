@@ -13,6 +13,7 @@
 "Approvals" = "审批";
 "Archive" = "归档";
 "Archived Sessions" = "已归档会话";
+"Archived sessions are hidden from the main screen until you restore them." = "已归档会话不会显示在主界面，恢复后才会重新出现。";
 "Args" = "参数";
 "Ask" = "询问";
 "Ask for Risky Actions" = "危险操作时询问";
@@ -37,6 +38,7 @@
 "Database" = "数据库";
 "Default" = "默认";
 "Delete" = "删除";
+"Delete this archived session permanently?" = "要永久删除这个已归档会话吗？";
 "Deliveries" = "投递记录";
 "Description" = "描述";
 "Existing CLI Profile" = "现有 CLI 配置";
@@ -94,6 +96,7 @@
 "Task name" = "任务名称";
 "These folders appear first when a Feishu user creates a session. Paths used by existing sessions are included automatically." = "飞书用户创建会话时会优先看到这些文件夹；现有会话使用的路径会自动包含。";
 "This is recorded as a user intervention in the task timeline." = "此操作会作为用户干预记录到任务时间线。";
+"This action cannot be undone." = "此操作无法撤销。";
 "This reverses only the recorded patch. It will stop if newer edits conflict." = "这只会撤销该回复记录的补丁；如果与较新的修改冲突，操作会停止。";
 "Timeline" = "时间线";
 "Timeout" = "超时";
@@ -322,3 +325,7 @@
 "%llds ago" = "%lld 秒前";
 "%lldm ago" = "%lld 分钟前";
 "%lldh ago" = "%lld 小时前";
+"A session with this name already exists." = "已存在同名会话。";
+"Could not rename session." = "无法重命名会话。";
+"Create as “%@”" = "使用“%@”创建";
+"Create the new session with the available name “%@”?" = "是否使用可用名称“%@”创建新会话？";

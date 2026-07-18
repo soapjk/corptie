@@ -5,6 +5,7 @@ final class BackendClient: ObservableObject {
     static let shared = BackendClient()
 
     @Published private(set) var sessions: [TaskSession] = []
+    @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
     @Published private(set) var selectedDetail: CodexThreadDetail?
     @Published private(set) var isLoadingDetail = false
@@ -28,7 +29,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isSwitchingReasoning = false
     @Published private(set) var connectionTransitionSessionIds = Set<String>()
     @Published private(set) var undoneCodexTurnIds = Set<String>()
-    @Published private(set) var isShowingArchivedSessions = false
+    @Published private(set) var isLoadingArchivedSessions = false
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
@@ -437,22 +438,13 @@ final class BackendClient: ObservableObject {
     }
 
     func refresh() async {
-        let requestedArchivedState = isShowingArchivedSessions
         do {
-            var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)!
-            if requestedArchivedState {
-                components.queryItems = [URLQueryItem(name: "archived", value: "true")]
-            }
-            let url = components.url!
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "sessions"))
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
 
             let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
-            guard requestedArchivedState == isShowingArchivedSessions else {
-                return
-            }
             if sessions != decoded.sessions {
                 sessions = decoded.sessions
                 syncSelectedSessionFromSessions()
@@ -475,19 +467,34 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func setShowingArchivedSessions(_ isShowing: Bool) {
-        guard isShowingArchivedSessions != isShowing else {
-            return
-        }
-        closeDetail()
-        isShowingArchivedSessions = isShowing
-        sessions = []
-        Task {
-            await refresh()
+    func refreshArchivedSessions() async {
+        isLoadingArchivedSessions = true
+        defer { isLoadingArchivedSessions = false }
+
+        do {
+            var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)!
+            components.queryItems = [URLQueryItem(name: "archived", value: "true")]
+            let (data, response) = try await URLSession.shared.data(from: components.url!)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+
+            let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
+            if archivedSessions != decoded.sessions {
+                archivedSessions = decoded.sessions
+            }
+            if lastError != nil {
+                lastError = nil
+            }
+        } catch {
+            let message = error.localizedDescription
+            if lastError != message {
+                lastError = message
+            }
         }
     }
 
-    func createPtyTask(title: String, command: String, arguments: [String], initialInput: String, cwd: String, onSuccess: @escaping () -> Void = {}) {
+    func createPtyTask(title: String, command: String, arguments: [String], initialInput: String, cwd: String, onNameConflict: @escaping (String) -> Void = { _ in }, onSuccess: @escaping () -> Void = {}) {
         let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedCommand.isEmpty else {
@@ -517,7 +524,13 @@ final class BackendClient: ObservableObject {
                 }
                 let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
                 guard (200..<300).contains(httpResponse.statusCode) else {
-                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    if httpResponse.statusCode == 409, let suggestedTitle = decoded?.suggestedTitle {
+                        onNameConflict(suggestedTitle)
+                        return
+                    }
+                    let message = httpResponse.statusCode == 409
+                        ? L10n("A session with this name already exists.")
+                        : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
 
@@ -539,6 +552,7 @@ final class BackendClient: ObservableObject {
         sandbox: String = "workspace-write",
         approvalPolicy: String = "on-request",
         model: String = "",
+        onNameConflict: @escaping (String) -> Void = { _ in },
         onSuccess: @escaping () -> Void = {}
     ) {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -577,7 +591,13 @@ final class BackendClient: ObservableObject {
                 }
                 let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
                 guard (200..<300).contains(httpResponse.statusCode) else {
-                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    if httpResponse.statusCode == 409, let suggestedTitle = decoded?.suggestedTitle {
+                        onNameConflict(suggestedTitle)
+                        return
+                    }
+                    let message = httpResponse.statusCode == 409
+                        ? L10n("A session with this name already exists.")
+                        : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
 
@@ -598,6 +618,7 @@ final class BackendClient: ObservableObject {
         sandbox: String = "workspace-write",
         approvalPolicy: String = "on-request",
         model: String = "",
+        onNameConflict: @escaping (String) -> Void = { _ in },
         onSuccess: @escaping () -> Void = {}
     ) {
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -629,7 +650,13 @@ final class BackendClient: ObservableObject {
                 }
                 let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
                 guard (200..<300).contains(httpResponse.statusCode) else {
-                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    if httpResponse.statusCode == 409, let suggestedTitle = decoded?.suggestedTitle {
+                        onNameConflict(suggestedTitle)
+                        return
+                    }
+                    let message = httpResponse.statusCode == 409
+                        ? L10n("A session with this name already exists.")
+                        : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
 
@@ -755,7 +782,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func createCodexTask(prompt: String, cwd: String, onSuccess: @escaping () -> Void = {}) {
+    func createCodexTask(prompt: String, cwd: String, onNameConflict: @escaping (String) -> Void = { _ in }, onSuccess: @escaping () -> Void = {}) {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else {
@@ -782,7 +809,13 @@ final class BackendClient: ObservableObject {
                 }
                 let decoded = try? JSONDecoder().decode(CreateCodexThreadResponse.self, from: data)
                 guard (200..<300).contains(httpResponse.statusCode) else {
-                    let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
+                    if httpResponse.statusCode == 409, let suggestedTitle = decoded?.suggestedTitle {
+                        onNameConflict(suggestedTitle)
+                        return
+                    }
+                    let message = httpResponse.statusCode == 409
+                        ? L10n("A session with this name already exists.")
+                        : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
 
@@ -1226,11 +1259,15 @@ final class BackendClient: ObservableObject {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["archived": archived])
-                _ = try await URLSession.shared.data(for: request)
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
                 if selectedSession?.id == session.id {
                     closeDetail()
                 }
                 await refresh()
+                await refreshArchivedSessions()
             } catch {
                 lastError = error.localizedDescription
             }
@@ -1311,9 +1348,15 @@ final class BackendClient: ObservableObject {
                 request.httpMethod = "PATCH"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: ["title": trimmedTitle])
-                let (_, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
+                }
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    if httpResponse.statusCode == 409 {
+                        throw BackendError.message(L10n("A session with this name already exists."))
+                    }
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not rename session."))
                 }
                 onSuccess()
                 await refresh()
@@ -1353,11 +1396,15 @@ final class BackendClient: ObservableObject {
             do {
                 var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)"))
                 request.httpMethod = "DELETE"
-                _ = try await URLSession.shared.data(for: request)
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw URLError(.badServerResponse)
+                }
                 if selectedSession?.id == session.id {
                     closeDetail()
                 }
                 await refresh()
+                await refreshArchivedSessions()
             } catch {
                 lastError = error.localizedDescription
             }

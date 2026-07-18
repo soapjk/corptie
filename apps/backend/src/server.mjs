@@ -32,6 +32,12 @@ import {
   reconcileAuthoritativeRunState,
   sessionHasActiveRun
 } from "./utils/sessionPresentation.mjs";
+import {
+  assertSessionTitleAvailable,
+  deduplicateSessionTitles,
+  normalizeSessionTitle,
+  suggestAvailableSessionTitle
+} from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -44,6 +50,7 @@ const sseClients = new Set();
 const sessionEventListeners = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
+const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
 const collaborationCore = new CollaborationCore(store);
@@ -133,6 +140,61 @@ function sessionTitleForWorkspace(value, cwd) {
     return title;
   }
   return basename(resolve(cwd)) || "Agent";
+}
+
+function knownSessionsForTitleValidation() {
+  const byId = new Map();
+  for (const session of [
+    ...store.listSessions({ archived: false }),
+    ...store.listSessions({ archived: true }),
+    ...listGatewaySessions()
+  ]) {
+    if (session?.id) byId.set(session.id, session);
+  }
+  return Array.from(byId.values());
+}
+
+function reserveSessionTitle(title, excludingSessionId = null) {
+  const knownSessions = knownSessionsForTitleValidation();
+  try {
+    assertSessionTitleAvailable(knownSessions, title, excludingSessionId);
+  } catch (error) {
+    error.suggestedTitle = suggestAvailableSessionTitle(
+      knownSessions,
+      title,
+      excludingSessionId,
+      reservedSessionTitleKeys
+    );
+    throw error;
+  }
+  const key = normalizeSessionTitle(title);
+  if (reservedSessionTitleKeys.has(key)) {
+    const error = new Error(`A session named "${String(title).trim()}" is already being created.`);
+    error.code = "SESSION_TITLE_CONFLICT";
+    error.statusCode = 409;
+    error.suggestedTitle = suggestAvailableSessionTitle(
+      knownSessions,
+      title,
+      excludingSessionId,
+      reservedSessionTitleKeys
+    );
+    throw error;
+  }
+  reservedSessionTitleKeys.add(key);
+  return () => reservedSessionTitleKeys.delete(key);
+}
+
+function errorStatus(error, fallback = 400) {
+  return Number.isInteger(error?.statusCode) ? error.statusCode : fallback;
+}
+
+function sessionTitleErrorPayload(error, extra = {}) {
+  return {
+    error: error.message,
+    code: error.code ?? null,
+    suggestedTitle: error.suggestedTitle ?? null,
+    ...extra
+  };
 }
 
 function safeTurnFileChanges(thread, turnId, cwd) {
@@ -738,6 +800,12 @@ function handleCodexAppServerNotification(message) {
     if (!title || !current) {
       return;
     }
+    try {
+      assertSessionTitleAvailable(knownSessionsForTitleValidation(), title, sessionId);
+    } catch (error) {
+      console.log(`[session-title] ignored duplicate provider rename session=${sessionId} title=${JSON.stringify(title)} conflict=${error.conflictingSessionId ?? "unknown"}`);
+      return;
+    }
     const nextSession = { ...current, title, updatedAt: now() };
     upsertManagedCodexSession(nextSession);
     emitEvent("SessionRenamed", { session: nextSession, source: { type: "codex-app-server" } });
@@ -1304,71 +1372,76 @@ async function createGatewaySession(input = {}) {
   await assertDirectory(cwd);
   const title = sessionTitleForWorkspace(input.title, cwd);
   const agent = input.agent === "claude" ? "claude" : "codex";
+  const releaseTitle = reserveSessionTitle(title);
 
-  if (agent === "claude") {
-    const session = claudeAgents.start({
-      title,
-      prompt: "",
+  try {
+    if (agent === "claude") {
+      const session = claudeAgents.start({
+        title,
+        prompt: "",
+        cwd,
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request"
+      });
+      emitEvent("ClaudeSessionStarted", { session, source: { type: "feishu" } });
+      return session;
+    }
+
+    const collaborationAgentId = `agent-${randomUUID()}`;
+    collaborationCore.registerAgent({
+      agentId: collaborationAgentId,
+      name: title,
+      description: `Independent Corptie Agent for ${cwd}.`,
+      // Keep an unbound identity inactive until Codex has actually created and
+      // persisted its thread. A failed thread/start must not leave a discoverable
+      // Agent that can never receive work.
+      status: "inactive",
+      capabilities: ["codex-session", "corptie-collaboration"]
+    });
+    const started = await codexClient.startThread({
       cwd,
+      approvalPolicy: "on-request",
       sandbox: "workspace-write",
+      ...collaborationThreadOptions(collaborationAgentId)
+    });
+    const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
+      cwd,
       approvalPolicy: "on-request"
     });
-    emitEvent("ClaudeSessionStarted", { session, source: { type: "feishu" } });
-    return session;
-  }
-
-  const collaborationAgentId = `agent-${randomUUID()}`;
-  collaborationCore.registerAgent({
-    agentId: collaborationAgentId,
-    name: title,
-    description: `Independent Corptie Agent for ${cwd}.`,
-    // Keep an unbound identity inactive until Codex has actually created and
-    // persisted its thread. A failed thread/start must not leave a discoverable
-    // Agent that can never receive work.
-    status: "inactive",
-    capabilities: ["codex-session", "corptie-collaboration"]
-  });
-  const started = await codexClient.startThread({
-    cwd,
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
-    ...collaborationThreadOptions(collaborationAgentId)
-  });
-  const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
-    cwd,
-    approvalPolicy: "on-request"
-  });
-  const session = {
-    ...mapCodexThreadToSession({
-      ...started.thread,
-      preview: title,
-      name: title,
-      cwd,
-      updatedAt: Date.now() / 1000,
+    const session = {
+      ...mapCodexThreadToSession({
+        ...started.thread,
+        preview: title,
+        name: title,
+        cwd,
+        updatedAt: Date.now() / 1000,
+        status: "running",
+        source: "corptie",
+        currentModel: started.model ?? null,
+        currentReasoningLevel: started.reasoningEffort ?? null,
+        activeTurnId: turn.turn?.id ?? null
+      }),
+      title,
       status: "running",
-      source: "corptie",
-      currentModel: started.model ?? null,
-      currentReasoningLevel: started.reasoningEffort ?? null,
-      activeTurnId: turn.turn?.id ?? null
-    }),
-    title,
-    status: "running",
-    progress: 0.5,
-    summary: "Initializing Codex session…",
-    activityStatus: "Starting Codex",
-    capabilities: {
-      ...codexAppServerSessionCapabilities(),
-      canInterrupt: true
-    }
-  };
-  upsertManagedCodexSession(session, collaborationAgentId);
-  emitEvent("CodexThreadCreated", {
-    threadId: started.thread.id,
-    turn: turn.turn,
-    session,
-    source: { type: "feishu" }
-  });
-  return session;
+      progress: 0.5,
+      summary: "Initializing Codex session…",
+      activityStatus: "Starting Codex",
+      capabilities: {
+        ...codexAppServerSessionCapabilities(),
+        canInterrupt: true
+      }
+    };
+    upsertManagedCodexSession(session, collaborationAgentId);
+    emitEvent("CodexThreadCreated", {
+      threadId: started.thread.id,
+      turn: turn.turn,
+      session,
+      source: { type: "feishu" }
+    });
+    return session;
+  } finally {
+    releaseTitle();
+  }
 }
 
 async function getUnifiedSessionSnapshot(sessionId) {
@@ -1654,6 +1727,9 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   const cwd = session.external?.cwd || process.cwd();
   const model = session.external?.currentModel ?? undefined;
   const reasoningLevel = session.external?.currentReasoningLevel ?? null;
+  const title = session.title || "Codex";
+  const releaseTitle = reserveSessionTitle(title, sessionId);
+  try {
   const started = await codexClient.startThread({
     cwd,
     approvalPolicy: "on-request",
@@ -1661,7 +1737,6 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     model,
     ...collaborationThreadOptions(previousAgent?.agentId)
   });
-  const title = session.title || "Codex";
   await codexClient.setThreadName(started.thread.id, title).catch((error) => {
     console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
   });
@@ -1697,6 +1772,8 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
       activeTurnId: null
     }
   };
+  managedCodexSessions.delete(sessionId);
+  store.deleteSession(sessionId);
   upsertManagedCodexSession(replacement, previousAgent?.agentId ?? null);
   emitEvent("SessionCleared", {
     previousSessionId: sessionId,
@@ -1710,6 +1787,9 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     sessionId: replacement.id,
     session: replacement
   };
+  } finally {
+    releaseTitle();
+  }
 }
 
 function enqueueUserAgentWork(session, text, source) {
@@ -2784,11 +2864,16 @@ function route(request, response) {
             sendJson(response, 400, { error: "Title is required" });
             return;
           }
-          await codexClient.setThreadName(rawId.slice("codex:".length), title);
-          const nextSession = { ...session, title, updatedAt: new Date().toISOString() };
-          upsertManagedCodexSession(nextSession);
-          emitEvent("SessionRenamed", { session: nextSession });
-          sendJson(response, 200, { session: nextSession });
+          const releaseTitle = reserveSessionTitle(title, rawId);
+          try {
+            await codexClient.setThreadName(rawId.slice("codex:".length), title);
+            const nextSession = { ...session, title, updatedAt: new Date().toISOString() };
+            upsertManagedCodexSession(nextSession);
+            emitEvent("SessionRenamed", { session: nextSession });
+            sendJson(response, 200, { session: nextSession });
+          } finally {
+            releaseTitle();
+          }
           return;
         }
 
@@ -2812,7 +2897,13 @@ function route(request, response) {
           sendJson(response, 400, { error: "Title is required" });
           return;
         }
-        const session = isClaudeSession ? claudeAgents.rename(id, title) : ptyAgents.rename(id, title);
+        const releaseTitle = reserveSessionTitle(title, rawId);
+        let session;
+        try {
+          session = isClaudeSession ? claudeAgents.rename(id, title) : ptyAgents.rename(id, title);
+        } finally {
+          releaseTitle();
+        }
         if (!session) {
           sendJson(response, 404, { error: "Session not found" });
           return;
@@ -2821,7 +2912,7 @@ function route(request, response) {
         sendJson(response, 200, { session });
       })
       .catch((error) => {
-        sendJson(response, 400, { error: error.message });
+        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error));
       });
     return;
   }
@@ -2856,20 +2947,27 @@ function route(request, response) {
         return assertDirectory(cwd).then(() => ({ input, cwd }));
       })
       .then(({ input, cwd }) => {
-        const session = ptyAgents.start({
-          title: sessionTitleForWorkspace(input.title, cwd),
-          command: input.command,
-          args: input.args,
-          cwd,
-          initialInput: input.initialInput,
-          cols: input.cols,
-          rows: input.rows
-        });
+        const title = sessionTitleForWorkspace(input.title, cwd);
+        const releaseTitle = reserveSessionTitle(title);
+        let session;
+        try {
+          session = ptyAgents.start({
+            title,
+            command: input.command,
+            args: input.args,
+            cwd,
+            initialInput: input.initialInput,
+            cols: input.cols,
+            rows: input.rows
+          });
+        } finally {
+          releaseTitle();
+        }
         emitEvent("PtySessionStarted", { session });
         sendJson(response, 201, { session });
       })
       .catch((error) => {
-        sendJson(response, 400, { error: error.message, adapter: "pty" });
+        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "pty" }));
       });
     return;
   }
@@ -2881,19 +2979,26 @@ function route(request, response) {
         return assertDirectory(cwd).then(() => ({ input, cwd }));
       })
       .then(({ input, cwd }) => {
-        const session = claudeAgents.start({
-          title: sessionTitleForWorkspace(input.title, cwd),
-          prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
-          cwd,
-          model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null,
-          sandbox: normalizeCodexSandbox(input.sandbox),
-          approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
-        });
+        const title = sessionTitleForWorkspace(input.title, cwd);
+        const releaseTitle = reserveSessionTitle(title);
+        let session;
+        try {
+          session = claudeAgents.start({
+            title,
+            prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
+            cwd,
+            model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null,
+            sandbox: normalizeCodexSandbox(input.sandbox),
+            approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
+          });
+        } finally {
+          releaseTitle();
+        }
         emitEvent("ClaudeSessionStarted", { session });
         sendJson(response, 201, { session });
       })
       .catch((error) => {
-        sendJson(response, 400, { error: error.message, adapter: "claude-sdk" });
+        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "claude-sdk" }));
       });
     return;
   }
@@ -2906,6 +3011,9 @@ function route(request, response) {
         return assertDirectory(cwd).then(() => ({ input, prompt, cwd }));
       })
       .then(async ({ input, prompt, cwd }) => {
+        const title = sessionTitleForWorkspace(input.title, cwd);
+        const releaseTitle = reserveSessionTitle(title);
+        try {
         const existingSessionId = typeof input.existingSessionId === "string" ? input.existingSessionId.trim() : "";
         const launchPrompt = prompt || "Reply exactly: Ready";
         const codexCommand = resolveCodexCommand(input.command);
@@ -2944,7 +3052,7 @@ function route(request, response) {
           const rolloutMatch = await findCodexRolloutBySessionId(existingSessionId);
           const resumeArgs = ["resume", ...resumeOptions, existingSessionId];
           const session = ptyAgents.start({
-            title: sessionTitleForWorkspace(input.title, cwd),
+            title,
             agentName: "Codex CLI",
             provider: "codex-pty",
             accent: "cyan",
@@ -2978,7 +3086,7 @@ function route(request, response) {
 
         const launchWindowStartedAt = new Date(Date.now() - 5000).toISOString();
         const session = ptyAgents.start({
-          title: sessionTitleForWorkspace(input.title, cwd),
+          title,
           agentName: "Codex CLI",
           provider: "codex-pty",
           accent: "cyan",
@@ -3011,9 +3119,12 @@ function route(request, response) {
         const responseSession = boundSession ? ptyAgents.toSessionSummary(boundSession) : session;
         emitEvent("CodexPtySessionStarted", { session: responseSession });
         sendJson(response, 201, { session: responseSession });
+        } finally {
+          releaseTitle();
+        }
       })
       .catch((error) => {
-        sendJson(response, 400, { error: error.message, adapter: "codex-pty" });
+        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "codex-pty" }));
       });
     return;
   }
@@ -3363,6 +3474,8 @@ function route(request, response) {
           sendJson(response, 400, { error: "Prompt is required" });
           return;
         }
+        const releaseTitle = reserveSessionTitle(title);
+        try {
 
         console.log(`[codex] create thread cwd=${cwd} chars=${prompt.length}`);
 
@@ -3424,12 +3537,14 @@ function route(request, response) {
           visibleInCodexDesktop: false,
           warning: "Started through Corptie' app-server connection. Codex Desktop may not show this thread immediately."
         });
+        } finally {
+          releaseTitle();
+        }
       })
       .catch((error) => {
-        sendJson(response, 502, {
-          error: error.message,
+        sendJson(response, errorStatus(error, 502), sessionTitleErrorPayload(error, {
           adapter: "codex-app-server"
-        });
+        }));
       });
     return;
   }
@@ -3837,10 +3952,19 @@ const server = http.createServer(route);
 
 await store.initialize();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
-const storedSessionsAtStartup = [
+let storedSessionsAtStartup = [
   ...store.listSessions({ archived: false }),
   ...store.listSessions({ archived: true })
 ];
+const uniqueStoredSessionsAtStartup = deduplicateSessionTitles(storedSessionsAtStartup);
+for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
+  const previous = storedSessionsAtStartup[index];
+  const unique = uniqueStoredSessionsAtStartup[index];
+  if (previous.title === unique.title) continue;
+  store.renameSession(normalizeSessionId(previous.id), unique.title);
+  console.log(`[session-title] renamed historical duplicate session=${previous.id} from=${JSON.stringify(previous.title)} to=${JSON.stringify(unique.title)}`);
+}
+storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
 const corptieCodexRuntime = await ensureCorptieCodexRuntime({
   environmentName,
   bundledSkillPath: bundledCollaborationSkillPath,
