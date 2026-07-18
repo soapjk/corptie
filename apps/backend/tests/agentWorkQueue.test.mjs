@@ -5,6 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import {
+  reconcileAuthoritativeRunState,
+  sessionHasActiveRun
+} from "../src/utils/sessionPresentation.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-work-queue-test-"));
@@ -90,6 +94,54 @@ test("a running work item is recovered to queued after restart", async () => {
     const recovered = reopened.getAgentWorkItem("user-1");
     assert.equal(recovered.status, "queued");
     assert.match(recovered.lastError, /restart/);
+  } finally {
+    if (store.saveTimer) clearTimeout(store.saveTimer);
+    if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restart recovery can drain queued work after an interrupted Codex turn", async () => {
+  const { directory, dbPath, store } = await fixture();
+  let reopened = null;
+  try {
+    store.upsertSession({
+      id: "codex:thread-b",
+      title: "Agent B",
+      agent: "Codex",
+      status: "running",
+      progress: 0.5,
+      summary: "Installing browser",
+      updatedAt: "2026-07-18T05:35:59.000Z",
+      external: {
+        provider: "codex-app-server",
+        threadId: "thread-b",
+        sessionId: "thread-b",
+        activeTurnId: "interrupted-turn"
+      }
+    });
+    enqueue(store, { workItemId: "install-browser", kind: "user", priority: 100 });
+    store.claimAgentWorkItem("install-browser");
+    if (store.saveTimer) {
+      clearTimeout(store.saveTimer);
+      store.saveTimer = null;
+    }
+    await store.save();
+
+    reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await reopened.initialize();
+
+    const recoveredWork = reopened.getAgentWorkItem("install-browser");
+    const staleSession = reopened.getSession("codex:thread-b");
+    assert.equal(recoveredWork.status, "queued");
+    assert.equal(sessionHasActiveRun(staleSession), true);
+
+    const reconciledSession = reconcileAuthoritativeRunState(
+      { ...staleSession, status: "complete" },
+      "complete"
+    );
+    assert.equal(sessionHasActiveRun(reconciledSession), false);
+    assert.equal(reopened.claimAgentWorkItem(recoveredWork.workItemId)?.status, "running");
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);

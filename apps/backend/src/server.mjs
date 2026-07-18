@@ -29,7 +29,8 @@ import {
   composeStoredSessionList,
   mergeStoredSessionPresentation,
   preferredSessionTitle,
-  reconcileAuthoritativeRunState
+  reconcileAuthoritativeRunState,
+  sessionHasActiveRun
 } from "./utils/sessionPresentation.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 
@@ -1711,12 +1712,6 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   };
 }
 
-function sessionHasActiveRun(session) {
-  return ["running", "blocked"].includes(session?.status)
-    || Boolean(session?.external?.activeTurnId)
-    || Boolean(session?.rawStatus?.activeTurnId);
-}
-
 function enqueueUserAgentWork(session, text, source) {
   const agent = collaborationCore.getAgentForSession(session.id) ?? ensureCollaborationAgentForSession(session);
   if (!agent) {
@@ -1819,6 +1814,7 @@ async function drainAgentWork(agentId) {
     // queued work blocked indefinitely.
     const liveState = await inspectCollaborationSession(sessionId);
     if (liveState === "running" || liveState === "missing") return;
+    console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
   }
   const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
   if (!next) return;
