@@ -1,4 +1,4 @@
-export function handleCollaborationHttpRequest({ request, response, url, core }) {
+export function handleCollaborationHttpRequest({ request, response, url, core, onConfirmationResolved }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
     || url.pathname.startsWith("/collaboration/tasks/")
@@ -11,7 +11,7 @@ export function handleCollaborationHttpRequest({ request, response, url, core })
   Promise.resolve()
     .then(async () => {
       if (isProductApi) {
-        return handleProductRequest({ request, response, url, core });
+        return handleProductRequest({ request, response, url, core, onConfirmationResolved });
       }
       const actorAgentId = requiredActor(request, core);
 
@@ -112,7 +112,7 @@ export function handleCollaborationHttpRequest({ request, response, url, core })
   return true;
 }
 
-async function handleProductRequest({ request, response, url, core }) {
+async function handleProductRequest({ request, response, url, core, onConfirmationResolved }) {
   if (request.method === "GET" && url.pathname === "/collaboration/overview") {
     return sendJson(response, 200, {
       agents: core.listAgents(),
@@ -133,9 +133,11 @@ async function handleProductRequest({ request, response, url, core }) {
   if (request.method === "POST" && confirmationMatch) {
     const confirmationId = decodeURIComponent(confirmationMatch[1]);
     const action = confirmationMatch[2];
-    const confirmation = action === "confirm"
-      ? core.confirmTaskConfirmation(confirmationId)
-      : core.rejectTaskConfirmation(confirmationId);
+    const confirmation = onConfirmationResolved
+      ? await onConfirmationResolved(confirmationId, action === "confirm", { type: "desktop" })
+      : action === "confirm"
+        ? core.confirmTaskConfirmation(confirmationId)
+        : core.rejectTaskConfirmation(confirmationId);
     return sendJson(response, 200, { confirmation });
   }
 

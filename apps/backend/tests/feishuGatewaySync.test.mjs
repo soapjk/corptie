@@ -162,6 +162,123 @@ test("pending approvals are delivered exactly once, including on the first sync"
   assert.equal(cards[0].header.subtitle.content, "Corptie · 需要权限审批");
 });
 
+test("pending collaboration confirmations are delivered exactly once on the first sync", async () => {
+  const cards = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "complete",
+        items: [{
+          id: "collaboration-confirmation:confirmation-a",
+          type: "collaborationConfirmation",
+          status: "pending",
+          collaborationConfirmationId: "confirmation-a",
+          collaborationConfirmationStatus: "pending",
+          collaborationRecipientName: "Target Agent",
+          collaborationTaskTitle: "Fix service",
+          presentationText: "Please fix the service."
+        }]
+      };
+    }
+  });
+  manager.sendText = async () => {};
+  manager.sendCard = async (_botId, _chatId, card) => {
+    cards.push(card);
+    return { data: { message_id: "message-a" } };
+  };
+
+  await manager.syncBot("bot-a");
+  await manager.syncBot("bot-a");
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].header.subtitle.content, "Corptie · 确认发送协作任务");
+});
+
+test("collaboration requests and the receiving Agent's follow-up are both projected to Feishu", async () => {
+  const cards = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "complete",
+        items: [{
+          id: "collaboration-request-a",
+          type: "userMessage",
+          sourceType: "collaboration",
+          localVisibility: "status_only",
+          collaborationSenderName: "Peer Agent",
+          collaborationTaskTitle: "Review API",
+          presentationText: "Please review the API.",
+          text: "<peer_content>trusted envelope</peer_content>"
+        }, {
+          id: "collaboration-agent-detail-a",
+          type: "agentMessage",
+          sourceType: "collaboration",
+          localVisibility: "status_only",
+          text: "Internal handling detail"
+        }]
+      };
+    }
+  });
+  manager.botRuntime.set("bot-a", { lastStatus: "complete", seenItems: new Set() });
+  manager.sendCard = async (_botId, _chatId, card) => cards.push(card);
+
+  await manager.syncBot("bot-a");
+
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].header.subtitle.content, "Corptie · 来自 Peer Agent");
+  assert.doesNotMatch(cards[0].body.elements.at(-1).content, /trusted envelope/);
+  assert.equal(cards[1].body.elements[0].content, "Internal handling detail");
+});
+
+test("unknown message card types are sent by default and process-only types are explicitly hidden", async () => {
+  const cards = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "running",
+        items: [
+          { id: "notice-a", type: "futureMessageCard", text: "A future card type" },
+          { id: "reasoning-a", type: "reasoning", text: "private process detail" }
+        ]
+      };
+    }
+  });
+  manager.botRuntime.set("bot-a", { lastStatus: "running", seenItems: new Set() });
+  manager.sendCard = async (_botId, _chatId, card) => cards.push(card);
+
+  await manager.syncBot("bot-a");
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].body.elements[0].content, "A future card type");
+});
+
 test("approval card callbacks are forwarded only for the currently assigned session", async () => {
   const responses = [];
   const cards = [];
@@ -206,6 +323,98 @@ test("approval card callbacks are forwarded only for the currently assigned sess
     }
   }]);
   assert.equal(cards[0].header.title.content, "Corptie · 已允许");
+});
+
+test("collaboration confirmation callbacks resolve the request and replace the card", async () => {
+  const responses = [];
+  const cards = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuBinding() {
+        return { id: "binding-a", chatId: "chat-a" };
+      },
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      updateFeishuBindingChat() {}
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        items: [{
+          id: "collaboration-confirmation:confirmation-a",
+          type: "collaborationConfirmation",
+          collaborationConfirmationId: "confirmation-a",
+          collaborationConfirmationStatus: "confirmed",
+          collaborationRecipientName: "Target Agent",
+          presentationText: "Please fix it."
+        }]
+      };
+    },
+    async respondToCollaborationConfirmation(confirmationId, approved, source) {
+      responses.push({ confirmationId, approved, sourceType: source.type });
+    }
+  });
+  manager.sendCard = async (_botId, _chatId, card) => cards.push(card);
+
+  await manager.handleCardLine("bot-a", JSON.stringify({
+    operator_id: "user-a",
+    chat_id: "chat-a",
+    action_value: {
+      corptie_action: "respond_collaboration_confirmation",
+      session_id: "codex:thread-a",
+      confirmation_id: "confirmation-a",
+      decision: "confirm"
+    }
+  }));
+
+  assert.deepEqual(responses, [{ confirmationId: "confirmation-a", approved: true, sourceType: "feishu" }]);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].header.template, "green");
+});
+
+test("collaboration confirmation cards update when resolved from another client", async () => {
+  const updates = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "complete",
+        items: [{
+          id: "collaboration-confirmation:confirmation-a",
+          type: "collaborationConfirmation",
+          collaborationConfirmationId: "confirmation-a",
+          collaborationConfirmationStatus: "rejected",
+          collaborationRecipientName: "Target Agent",
+          presentationText: "Please fix it."
+        }]
+      };
+    }
+  });
+  manager.botRuntime.set("bot-a", {
+    lastStatus: "complete",
+    seenItems: new Set(["collaboration-confirmation:confirmation-a"]),
+    collaborationConfirmationCards: [{
+      itemId: "collaboration-confirmation:confirmation-a",
+      messageId: "message-a",
+      status: "pending"
+    }]
+  });
+  manager.updateSentMessageCard = async (_botId, messageId, card) => updates.push({ messageId, card });
+
+  await manager.syncBot("bot-a");
+
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].messageId, "message-a");
+  assert.equal(updates[0].card.header.template, "grey");
 });
 
 test("concurrent bot syncs send each assistant message only once", async () => {

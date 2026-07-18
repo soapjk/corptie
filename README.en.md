@@ -16,21 +16,21 @@ Corptie keeps Codex, Claude Code, and other CLI or SDK-based agents visible whil
 
 | Capability | Why it matters |
 | --- | --- |
-| 🧭 **Multi-agent supervision** | Keep several long-running agents visible at once without living inside terminals or chat tabs. |
-| 🫧 **Detached session orbs** | Pull one session out of the main list and keep it as a tiny desktop companion with reply bubbles and quick replies. |
-| 🪟 **Desktop-native presence** | Always-on-top floating UI makes agent work feel present across your workspace instead of trapped in one app window. |
-| 🧠 **Structured choice extraction** | Turn messy terminal-style choice prompts into readable options, including via Local Agent or OpenAI-compatible parsers. |
-| 🧪 **Real-work isolation** | Production and development apps can run side by side with separate ports, configs, databases, and remembered UI state. |
+| 🧭 **Multi-agent desktop cockpit** | Run and supervise several Codex, Claude Code, or other agent tasks at once, interrupting you only for input, approval, or exceptions. |
+| 📱 **Feishu remote agent gateway** | Securely pair trusted Feishu users with local sessions to create or take over sessions, exchange messages, interrupt work, and handle approvals remotely. |
+| 🤝 **Structured agent-to-agent collaboration** | Coordinate independent agents through stable identities, service ownership, acceptance criteria, and artifacts, with confirmation, durable delivery, verification, revision, and escalation built in. |
+| 🔎 **Per-turn code review and undo** | Inspect the files changed by a Codex reply, open its patch in an external diff tool, and safely reverse only that turn when it does not conflict with newer edits. |
+| 🧠 **LLM-enhanced interaction** | Convert terminal-style choice prompts into clickable structured actions with either a Local Agent or an OpenAI-compatible endpoint. |
+| 🛡️ **Local-first, isolated runtime** | Keep agents, sessions, queues, and SQLite data on the Mac by default, while running production and development environments side by side with fully separate state. |
 
-## 🖥️ Experience
+## 🎯 Core capabilities
 
 Corptie is designed for work that does not finish instantly:
 
-- Start several agent tasks and keep them visible without switching contexts.
-- Watch real states such as `running`, `needs input`, `approval required`, `complete`, and `failed`.
-- Reply from the main chat view or directly from a detached floating orb.
-- Read model replies in temporary bubbles before choosing the next option.
-- Keep production work and local development safely isolated.
+- Choose the agent, model, reasoning level, sandbox, and approval policy when creating a session.
+- See real states such as `running`, `needs input`, `approval required`, `complete`, and `failed`, with unified controls for replies, approvals, interruption, resume, and safe shutdown.
+- Detach a session into its own floating orb, read the latest reply, and respond without opening the main panel; choose a completion sound per session.
+- Use the Codex App Server protocol by default with a PTY Legacy fallback, or run Claude Code through the Agent SDK.
 
 Corptie intentionally avoids fake percentage progress. It shows the real state of the agent, the latest activity, and the places where human input is actually needed.
 
@@ -70,13 +70,35 @@ apps/macos
 
 apps/backend
   Local Node.js runtime
-  HTTP API, SSE detail streams, PTY agent manager, SQLite store
+  HTTP API, SSE detail streams, agent adapters, unified work queue, SQLite store
+
+apps/backend/src/collaboration
+  Agent/service registry, task state machine, durable delivery, and verification workflow
+
+apps/backend/src/feishu
+  Feishu bots, user pairing, session binding, interactive cards, and approval sync
 
 scripts
   Dev runners, production backend helpers, macOS packaging
 ```
 
-Codex CLI sessions use an explicit PTY adapter with resume support, interrupt support, model switching, approval handling, and streaming detail updates. Managed Codex sessions disable auto-update so an agent cannot invalidate an active session mid-run.
+Codex sessions use structured App Server events by default and retain a PTY compatibility mode. Both support resume, interruption, model switching, and approvals. Agent input goes through one durable work queue so user, Feishu, and peer-agent messages are not lost while a session is busy.
+
+## 📱 Feishu gateway
+
+Feishu integration is optional. It requires `lark-cli` on the Mac and a published enterprise app with bot capability in the Feishu Open Platform.
+
+1. In **Feishu Gateway** settings, add a bot with an App ID/App Secret or an existing `lark-cli` profile.
+2. Add trusted workspaces that remote users may start sessions in, enable the bot, and generate a six-digit pairing code.
+3. Send that code to the bot from the Feishu account you want to trust. Once paired, use interactive cards to choose a workspace and agent, then create or take over a session.
+
+App Secrets are passed to `lark-cli` encrypted storage and are not stored in the Corptie database. Card actions validate the paired user and chat before anything is forwarded to an agent.
+
+## 🤝 Agent collaboration
+
+Corptie assigns a stable agent identity to each managed Codex session and exposes local MCP collaboration tools. Agents can discover peers and services, then coordinate through focused tasks with explicit acceptance criteria and local artifact references.
+
+Every new collaboration request is shown to the user as a confirmation card before delivery. The Collaboration window provides inbox, verification, escalated tasks, agent/service registry, and full task timelines, with controls to cancel tasks or retry failed deliveries.
 
 ## 🚦 Environments
 
@@ -88,6 +110,12 @@ Codex CLI sessions use an explicit PTY adapter with resume support, interrupt su
 The two environments do not share backend config, SQLite data, frontend `UserDefaults`, transparency settings, or remembered window sizes.
 
 ## 🛠️ Develop
+
+Requirements: macOS 14+, Node.js 20+, Swift 6, and an installed and authenticated Codex CLI or Claude Code. Install backend dependencies before the first run:
+
+```sh
+npm install --prefix apps/backend
+```
 
 ```sh
 scripts/run-development.sh
