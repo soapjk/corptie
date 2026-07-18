@@ -1022,17 +1022,22 @@ async function findCodexRolloutBySessionId(sessionId) {
   if (!sessionId) {
     return null;
   }
-  const root = join(os.homedir(), ".codex", "sessions");
-  const files = await listRolloutFiles(root);
-  for (const path of files) {
-    const meta = await readSessionMeta(path).catch(() => null);
-    if (meta?.id === sessionId) {
-      return {
-        id: sessionId,
-        path,
-        cwd: meta.cwd,
-        timestampMs: codexTimestampMs(meta.timestamp)
-      };
+  const roots = [
+    join(corptieCodexRuntimePaths.codexHome, "sessions"),
+    join(os.homedir(), ".codex", "sessions")
+  ];
+  for (const root of [...new Set(roots)]) {
+    const files = await listRolloutFiles(root);
+    for (const path of files) {
+      const meta = await readSessionMeta(path).catch(() => null);
+      if (meta?.id === sessionId) {
+        return {
+          id: sessionId,
+          path,
+          cwd: meta.cwd,
+          timestampMs: codexTimestampMs(meta.timestamp)
+        };
+      }
     }
   }
   return null;
