@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   composeStoredSessionList,
   mergeStoredSessionPresentation,
-  preferredSessionTitle
+  preferredSessionTitle,
+  reconcileAuthoritativeRunState
 } from "../src/utils/sessionPresentation.mjs";
 
 test("a locally saved custom title wins over the Codex thread preview after restart", () => {
@@ -46,4 +47,28 @@ test("the archived session list includes stored Codex sessions", () => {
     "claude:a",
     "codex:a"
   ]);
+});
+
+test("an authoritative idle status clears a stale active turn", () => {
+  const session = {
+    status: "complete",
+    external: { provider: "codex-app-server", activeTurnId: "stale-turn" },
+    rawStatus: { activeTurnId: "stale-turn", source: "vscode" }
+  };
+
+  assert.deepEqual(reconcileAuthoritativeRunState(session, "complete"), {
+    status: "complete",
+    external: { provider: "codex-app-server", activeTurnId: null },
+    rawStatus: { activeTurnId: null, source: "vscode" }
+  });
+});
+
+test("an authoritative running status preserves the active turn", () => {
+  const session = {
+    status: "running",
+    external: { activeTurnId: "live-turn" },
+    rawStatus: { activeTurnId: "live-turn" }
+  };
+
+  assert.equal(reconcileAuthoritativeRunState(session, "running"), session);
 });

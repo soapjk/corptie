@@ -25,7 +25,12 @@ import { handleCollaborationHttpRequest } from "./collaboration/collaborationHtt
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
-import { composeStoredSessionList, mergeStoredSessionPresentation, preferredSessionTitle } from "./utils/sessionPresentation.mjs";
+import {
+  composeStoredSessionList,
+  mergeStoredSessionPresentation,
+  preferredSessionTitle,
+  reconcileAuthoritativeRunState
+} from "./utils/sessionPresentation.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -580,9 +585,10 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
   const latestAgentMessage = Array.isArray(detail.items)
     ? detail.items.slice().reverse().find((item) => item.type === "agentMessage" && item.text)
     : null;
-  const nextSession = {
+  const authoritativeStatus = detail.status ?? session.status;
+  const nextSession = reconcileAuthoritativeRunState({
     ...session,
-    status: detail.status ?? session.status,
+    status: authoritativeStatus,
     progress: detail.status === "running" || detail.status === "blocked" ? 0.5 : 1,
     summary: latestAgentMessage?.text ?? session.summary,
     suggestedOptions: session.suggestedOptions ?? null,
@@ -595,7 +601,7 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
       currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null,
       rawStatus: detail.rawStatus ?? session.external?.rawStatus
     }
-  };
+  }, authoritativeStatus);
   upsertManagedCodexSession(nextSession);
   return nextSession;
 }
@@ -1806,7 +1812,14 @@ async function drainAgentWork(agentId) {
   const sessionId = agent?.currentSessionId ?? null;
   if (!sessionId) return;
   const session = listGatewaySessions().find((item) => item.id === sessionId);
-  if (!session || sessionHasActiveRun(session)) return;
+  if (!session) return;
+  if (sessionHasActiveRun(session)) {
+    // Persisted activeTurnId values can outlive an interrupted turn when the
+    // completion notification was missed. Reconcile with Codex before leaving
+    // queued work blocked indefinitely.
+    const liveState = await inspectCollaborationSession(sessionId);
+    if (liveState === "running" || liveState === "missing") return;
+  }
   const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
   if (!next) return;
 
@@ -1882,7 +1895,7 @@ async function inspectCollaborationSession(sessionId) {
           }
         }
       : live;
-    upsertManagedCodexSession(presentation);
+    upsertManagedCodexSession(reconcileAuthoritativeRunState(presentation, live.status));
     if (sessionHasActiveRun(live)) return "running";
     return ["failed", "cancelled"].includes(live.status) ? "stopped" : "idle";
   } catch {
