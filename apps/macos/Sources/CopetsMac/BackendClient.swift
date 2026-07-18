@@ -30,6 +30,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var connectionTransitionSessionIds = Set<String>()
     @Published private(set) var undoneCodexTurnIds = Set<String>()
     @Published private(set) var isLoadingArchivedSessions = false
+    @Published private(set) var selectedSessionUsage: SessionUsageResponse?
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
@@ -42,6 +43,7 @@ final class BackendClient: ObservableObject {
     private var handledChoiceIds = Set<String>()
     private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
     private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
+    private var usageRefreshTask: Task<Void, Never>?
 
     func start() {
         pollingTask?.cancel()
@@ -67,6 +69,8 @@ final class BackendClient: ObservableObject {
         eventStreamTask = nil
         detailStreamTask?.cancel()
         detailStreamTask = nil
+        usageRefreshTask?.cancel()
+        usageRefreshTask = nil
     }
 
     private func startEventStream() {
@@ -831,6 +835,14 @@ final class BackendClient: ObservableObject {
 
     func select(session: TaskSession) {
         selectedSession = session
+        selectedSessionUsage = nil
+        usageRefreshTask?.cancel()
+        usageRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.loadUsage(for: session)
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
         Task {
             await Task.yield()
             guard selectedSession?.id == session.id else {
@@ -843,11 +855,29 @@ final class BackendClient: ObservableObject {
     }
 
     func closeDetail() {
+        usageRefreshTask?.cancel()
+        usageRefreshTask = nil
         detailStreamTask?.cancel()
         detailStreamTask = nil
         selectedSession = nil
         selectedDetail = nil
+        selectedSessionUsage = nil
         isLoadingDetail = false
+    }
+
+    private func loadUsage(for session: TaskSession) async {
+        guard selectedSession?.id == session.id else { return }
+        do {
+            let url = baseURL.appending(path: "sessions/\(session.id)/usage")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else { return }
+            let usage = try JSONDecoder().decode(SessionUsageResponse.self, from: data)
+            guard selectedSession?.id == session.id else { return }
+            selectedSessionUsage = usage
+        } catch {
+            // Usage is supplementary; chat remains usable if Codex cannot report it.
+        }
     }
 
     func cachedDetail(for sessionId: String) -> CodexThreadDetail? {

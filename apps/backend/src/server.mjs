@@ -2361,6 +2361,26 @@ function route(request, response) {
     return;
   }
 
+  const sessionUsageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
+  if (request.method === "GET" && sessionUsageMatch) {
+    const sessionId = decodeURIComponent(sessionUsageMatch[1]);
+    const session = listGatewaySessions().find((item) => item.id === sessionId);
+    if (!session) {
+      sendJson(response, 404, { error: "Session not found." });
+      return;
+    }
+    const threadId = session.external?.threadId;
+    getGatewayUsage(sessionId)
+      .then((account) => sendJson(response, 200, {
+        account,
+        context: session.external?.provider === "codex-app-server" && threadId
+          ? codexClient.tokenUsageForThread(threadId)
+          : null
+      }))
+      .catch((error) => sendJson(response, 503, { error: error.message }));
+    return;
+  }
+
   const sessionEventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && sessionEventsMatch) {
     const sessionId = decodeURIComponent(sessionEventsMatch[1]);

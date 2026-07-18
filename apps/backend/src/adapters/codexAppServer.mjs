@@ -17,6 +17,7 @@ export class CodexAppServerClient {
     this.notifications = [];
     this.liveItemsByThread = new Map();
     this.turnDiffsByThread = new Map();
+    this.tokenUsageByThread = new Map();
     this.serverRequestsByThread = new Map();
     this.recentApprovedCommands = new Map();
     this.initialized = false;
@@ -297,6 +298,10 @@ export class CodexAppServerClient {
     return new Map(this.turnDiffsByThread.get(threadId) ?? []);
   }
 
+  tokenUsageForThread(threadId) {
+    return this.tokenUsageByThread.get(threadId) ?? null;
+  }
+
   respondToApproval(threadId, input = {}) {
     const requests = this.serverRequestsByThread.get(threadId);
     const request = Array.from(requests?.values() ?? []).reverse().find((candidate) => {
@@ -505,6 +510,14 @@ export class CodexAppServerClient {
       return;
     }
 
+    if (method === "thread/tokenUsage/updated") {
+      const usage = normalizeCodexTokenUsage(params.tokenUsage ?? params.usage, params);
+      if (usage) {
+        this.tokenUsageByThread.set(threadId, usage);
+      }
+      return;
+    }
+
     if (!this.liveItemsByThread.has(threadId)) {
       this.liveItemsByThread.set(threadId, new Map());
     }
@@ -550,6 +563,36 @@ export class CodexAppServerClient {
       });
     }
   }
+}
+
+export function normalizeCodexTokenUsage(rawUsage, fallback = {}) {
+  if (!rawUsage || typeof rawUsage !== "object") return null;
+  const active = rawUsage.last ?? rawUsage.lastUsage ?? rawUsage.last_usage
+    ?? rawUsage.total ?? rawUsage.totalUsage ?? rawUsage.total_usage ?? rawUsage;
+  const usedTokens = finiteNumber(active.totalTokens ?? active.total_tokens ?? rawUsage.totalTokens);
+  const contextWindow = finiteNumber(
+    rawUsage.modelContextWindow
+      ?? rawUsage.model_context_window
+      ?? rawUsage.contextWindow
+      ?? fallback.modelContextWindow
+  );
+  if (usedTokens == null && contextWindow == null) return null;
+  const remainingTokens = usedTokens != null && contextWindow != null
+    ? Math.max(0, contextWindow - usedTokens)
+    : null;
+  return {
+    usedTokens,
+    contextWindow,
+    remainingTokens,
+    usedPercent: usedTokens != null && contextWindow
+      ? Math.min(100, Math.max(0, usedTokens / contextWindow * 100))
+      : null
+  };
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 export function mapCodexThreadToSession(thread) {

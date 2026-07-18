@@ -329,3 +329,5 @@
 "Could not rename session." = "无法重命名会话。";
 "Create as “%@”" = "使用“%@”创建";
 "Create the new session with the available name “%@”?" = "是否使用可用名称“%@”创建新会话？";
+"Context" = "上下文";
+"Codex quota" = "Codex 额度";
