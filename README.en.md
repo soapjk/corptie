@@ -2,13 +2,13 @@
 
 [中文说明](README.zh-CN.md)
 
-**A floating desktop cockpit for asynchronous AI agents.**
+**A low-distraction desktop companion for AI agents.**
 
 <p align="center">
   <img src="apps/macos/Sources/CopetsMac/Resources/AppIcon.png" alt="Corptie app icon" width="180">
 </p>
 
-Corptie keeps Codex, Claude Code, and other CLI or SDK-based agents visible while you work elsewhere. Instead of hiding long-running agent sessions inside terminals or chat tabs, Corptie turns them into native macOS floating panels, detachable orbs, live reply previews, approval controls, and quick-reply surfaces.
+Corptie turns Codex, Claude Code, and other CLI- or SDK-based agents into assistive tools that fit naturally into your wider desktop workflow. Its compact native macOS floating panel and detachable orbs keep interaction focused on the conversation itself, minimize screen intrusion, and let you assign agent tasks without repeatedly interrupting everything else you are doing. Built-in agent-to-agent messaging and task collaboration allow independent agents to coordinate work directly.
 
 > The goal is simple: let agents work in parallel without making you babysit every window.
 
