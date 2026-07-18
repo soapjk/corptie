@@ -145,14 +145,14 @@ private enum CollaborationSection: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    @MainActor var title: String {
         switch self {
-        case .inbox: "Waiting for handling"
-        case .verification: "Waiting for verification"
-        case .escalated: "Needs user attention"
-        case .allTasks: "All tasks"
-        case .agents: "Agents"
-        case .services: "Services"
+        case .inbox: L10n("Waiting for handling")
+        case .verification: L10n("Waiting for verification")
+        case .escalated: L10n("Needs user attention")
+        case .allTasks: L10n("All tasks")
+        case .agents: L10n("Agents")
+        case .services: L10n("Services")
         }
     }
 
@@ -169,6 +169,7 @@ private enum CollaborationSection: String, CaseIterable, Identifiable {
 }
 
 struct CollaborationView: View {
+    @ObservedObject private var appLanguage = AppLanguageController.shared
     @StateObject private var model = CollaborationViewModel()
     @State private var section: CollaborationSection? = .inbox
     @State private var selectedTaskId: String?
@@ -177,30 +178,30 @@ struct CollaborationView: View {
     var body: some View {
         NavigationSplitView {
             List(selection: $section) {
-                Section("Work") {
+                Section(L10n("Work")) {
                     sidebarRow(.inbox, count: model.tasks.filter(\.isWaitingForHandling).count)
                     sidebarRow(.verification, count: model.tasks.filter(\.isWaitingForVerification).count)
                     sidebarRow(.escalated, count: model.tasks.filter(\.needsUserAttention).count)
                     sidebarRow(.allTasks, count: model.tasks.count)
                 }
-                Section("Registry") {
+                Section(L10n("Registry")) {
                     sidebarRow(.agents, count: model.agents.count)
                     sidebarRow(.services, count: model.services.count)
                 }
             }
-            .navigationTitle("Collaboration")
+            .navigationTitle(L10n("Collaboration"))
         } content: {
             content
-                .navigationTitle(section?.title ?? "Collaboration")
+                .navigationTitle(section?.title ?? L10n("Collaboration"))
                 .toolbar {
                     ToolbarItemGroup {
                         if section == .services {
                             Button { isAddingService = true } label: {
-                                Label("Register Service", systemImage: "plus")
+                                Label(L10n("Register Service"), systemImage: "plus")
                             }
                         }
                         Button { Task { await model.refresh() } } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
+                            Label(L10n("Refresh"), systemImage: "arrow.clockwise")
                         }
                     }
                 }
@@ -208,7 +209,7 @@ struct CollaborationView: View {
             if let task = model.selectedTask {
                 CollaborationTaskDetailView(task: task, deliveries: model.selectedDeliveries, model: model)
             } else {
-                ContentUnavailableView("Select a collaboration task", systemImage: "arrow.left.and.right")
+                ContentUnavailableView(L10n("Select a collaboration task"), systemImage: "arrow.left.and.right")
             }
         }
         .frame(minWidth: 980, minHeight: 620)
@@ -237,6 +238,7 @@ struct CollaborationView: View {
                     .padding()
             }
         }
+        .environment(\.locale, appLanguage.locale)
     }
 
     @ViewBuilder
@@ -282,7 +284,7 @@ struct CollaborationView: View {
                 HStack {
                     Text(task.type.replacingOccurrences(of: "_", with: " "))
                     Spacer()
-                    Text("Iteration \(task.iteration)/\(task.maxIterations)")
+                    Text(L10nFormat("Iteration %lld/%lld", task.iteration, task.maxIterations))
                 }
                 .font(.caption)
                 .foregroundStyle(.tertiary)
@@ -292,7 +294,7 @@ struct CollaborationView: View {
         }
         .overlay {
             if tasks.isEmpty {
-                ContentUnavailableView("No tasks in this view", systemImage: "checkmark.circle")
+                ContentUnavailableView(L10n("No tasks in this view"), systemImage: "checkmark.circle")
             }
         }
     }
@@ -356,7 +358,7 @@ private struct CollaborationServiceList: View {
         }
         .overlay {
             if services.isEmpty {
-                ContentUnavailableView("No services registered", systemImage: "shippingbox")
+                ContentUnavailableView(L10n("No services registered"), systemImage: "shippingbox")
             }
         }
     }
@@ -385,14 +387,14 @@ private struct CollaborationTaskDetailView: View {
                     CollaborationStatusBadge(status: task.status)
                 }
 
-                GroupBox("Participants") {
-                    LabeledContent("Initiator", value: task.initiatorAgentId)
-                    LabeledContent("Recipient", value: task.recipientAgentId)
-                    if let serviceId = task.serviceId { LabeledContent("Service", value: serviceId) }
-                    LabeledContent("Iteration", value: "\(task.iteration) of \(task.maxIterations)")
+                GroupBox(L10n("Participants")) {
+                    LabeledContent(L10n("Initiator"), value: task.initiatorAgentId)
+                    LabeledContent(L10n("Recipient"), value: task.recipientAgentId)
+                    if let serviceId = task.serviceId { LabeledContent(L10n("Service"), value: serviceId) }
+                    LabeledContent(L10n("Iteration"), value: L10nFormat("%lld of %lld", task.iteration, task.maxIterations))
                 }
 
-                GroupBox("Acceptance criteria") {
+                GroupBox(L10n("Acceptance criteria")) {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(task.acceptanceCriteria, id: \.self) { criterion in
                             Label(criterion, systemImage: "checkmark.circle")
@@ -401,7 +403,7 @@ private struct CollaborationTaskDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Text("Timeline").font(.headline)
+                Text(L10n("Timeline")).font(.headline)
                 ForEach(timeline) { entry in
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: entry.isMessage ? "bubble.left.fill" : "circle.fill")
@@ -423,7 +425,7 @@ private struct CollaborationTaskDetailView: View {
                 }
 
                 if !deliveries.isEmpty {
-                    Text("Deliveries").font(.headline)
+                    Text(L10n("Deliveries")).font(.headline)
                     ForEach(deliveries) { delivery in
                         CollaborationDeliveryRow(delivery: delivery) {
                             Task { await model.retry(delivery) }
@@ -433,19 +435,19 @@ private struct CollaborationTaskDetailView: View {
 
                 if !task.isTerminal {
                     Divider()
-                    Button("Cancel task…", role: .destructive) { confirmsCancellation = true }
+                    Button(L10n("Cancel task…"), role: .destructive) { confirmsCancellation = true }
                 }
             }
             .padding(24)
         }
-        .alert("Cancel this collaboration task?", isPresented: $confirmsCancellation) {
-            TextField("Reason", text: $cancellationReason)
-            Button("Keep task", role: .cancel) {}
-            Button("Cancel task", role: .destructive) {
+        .alert(L10n("Cancel this collaboration task?"), isPresented: $confirmsCancellation) {
+            TextField(L10n("Reason"), text: $cancellationReason)
+            Button(L10n("Keep task"), role: .cancel) {}
+            Button(L10n("Cancel task"), role: .destructive) {
                 Task { await model.cancelSelectedTask(reason: cancellationReason) }
             }
         } message: {
-            Text("This is recorded as a user intervention in the task timeline.")
+            Text(L10n("This is recorded as a user intervention in the task timeline."))
         }
     }
 
@@ -487,7 +489,7 @@ private struct CollaborationDeliveryRow: View {
             Spacer()
             CollaborationStatusBadge(status: delivery.status)
             if delivery.status == "failed" {
-                Button("Retry", action: retry)
+                Button(L10n("Retry"), action: retry)
             }
         }
     }
@@ -536,22 +538,22 @@ private struct RegisterServiceView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Register Service").font(.title2.bold())
+            Text(L10n("Register Service")).font(.title2.bold())
             Form {
-                TextField("Service ID", text: $serviceId)
-                TextField("Name", text: $name)
-                TextField("Description", text: $description)
-                Picker("Owner", selection: $ownerAgentId) {
-                    Text("Select an Agent").tag("")
+                TextField(L10n("Service ID"), text: $serviceId)
+                TextField(L10n("Name"), text: $name)
+                TextField(L10n("Description"), text: $description)
+                Picker(L10n("Owner"), selection: $ownerAgentId) {
+                    Text(L10n("Select an Agent")).tag("")
                     ForEach(model.agents) { agent in Text(agent.name).tag(agent.agentId) }
                 }
-                TextField("Current version", text: $version)
-                TextField("Local endpoint", text: $endpoint)
+                TextField(L10n("Current version"), text: $version)
+                TextField(L10n("Local endpoint"), text: $endpoint)
             }
             HStack {
                 Spacer()
-                Button("Cancel") { isPresented = false }
-                Button("Register") {
+                Button(L10n("Cancel")) { isPresented = false }
+                Button(L10n("Register")) {
                     Task {
                         if await model.createService(
                             serviceId: serviceId,

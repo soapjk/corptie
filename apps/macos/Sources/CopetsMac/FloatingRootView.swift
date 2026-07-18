@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var appLanguage = AppLanguageController.shared
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @EnvironmentObject private var panelFocusState: PanelFocusState
     @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
@@ -136,6 +137,7 @@ struct FloatingRootView: View {
         .onChange(of: panelFocusState.isFocused) { _, isFocused in
             if !isFocused { dismissExternalMenus() }
         }
+        .environment(\.locale, appLanguage.locale)
     }
 
     private var glassStrength: Double {
@@ -319,7 +321,7 @@ struct FloatingRootView: View {
 
     private var archivedSessionsHeader: some View {
         HStack(spacing: 10) {
-            Label("Archived Sessions", systemImage: "archivebox.fill")
+            Label(L10n("Archived Sessions"), systemImage: "archivebox.fill")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(CorptiePalette.primaryText)
 
@@ -330,7 +332,7 @@ struct FloatingRootView: View {
                 isSearching = false
                 backendClient.setShowingArchivedSessions(false)
             } label: {
-                Label("All Sessions", systemImage: "arrow.uturn.backward")
+                Label(L10n("All Sessions"), systemImage: "arrow.uturn.backward")
                 .font(.system(size: 11.5, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 10)
                 .frame(height: 30)
@@ -339,7 +341,7 @@ struct FloatingRootView: View {
             }
             .buttonStyle(.plain)
             .foregroundStyle(CorptiePalette.secondaryText)
-            .help("Return to active sessions")
+            .help(L10n("Return to active sessions"))
         }
         .padding(.leading, 2)
     }
@@ -489,7 +491,7 @@ struct FloatingRootView: View {
         HStack(spacing: 7) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(CorptiePalette.secondaryText)
-            TextField("Search sessions", text: $searchText)
+            TextField(L10n("Search sessions"), text: $searchText)
                 .textFieldStyle(.plain)
                 .focused($isSearchFieldFocused)
             Button {
@@ -796,7 +798,7 @@ private struct ProjectGroupHeader: View {
     let count: Int
 
     private var name: String {
-        guard path != "No Project" else { return path }
+        guard path != "No Project" else { return L10n("No Project") }
         return URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
     }
 
@@ -843,12 +845,12 @@ private struct CompactSessionRow: View {
             }
             Spacer(minLength: 4)
             if backendClient.isShowingArchivedSessions {
-                Button("Restore", systemImage: "tray.and.arrow.up") {
+                Button(L10n("Restore"), systemImage: "tray.and.arrow.up") {
                     backendClient.setArchived(false, session: session)
                 }
                 .buttonStyle(.borderless)
                 .font(.system(size: 11, weight: .semibold))
-                .help("Restore this session to the main list")
+                .help(L10n("Restore this session to the main list"))
             }
         }
         .padding(.horizontal, 10)
@@ -858,20 +860,20 @@ private struct CompactSessionRow: View {
         .onHover { if $0 { preheatRequested(session) } }
         .onTapGesture { backendClient.select(session: session) }
         .contextMenu {
-            Button("Rename", systemImage: "pencil") { isRenaming = true }
+            Button(L10n("Rename"), systemImage: "pencil") { isRenaming = true }
             if !backendClient.isShowingArchivedSessions {
-                Button("Float Session", systemImage: "rectangle.on.rectangle.circle") {
+                Button(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle") {
                     detachedSessionManager.float(session: session)
                 }
-                Button(session.pinned == true ? "Unpin" : "Pin to Top", systemImage: "pin") {
+            Button(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: "pin") {
                     backendClient.setPinned(session.pinned != true, session: session)
                 }
             }
             Divider()
-            Button(backendClient.isShowingArchivedSessions ? "Unarchive" : "Archive", systemImage: "archivebox") {
+            Button(backendClient.isShowingArchivedSessions ? L10n("Unarchive") : L10n("Archive"), systemImage: "archivebox") {
                 backendClient.setArchived(!backendClient.isShowingArchivedSessions, session: session)
             }
-            Button("Delete", systemImage: "trash", role: .destructive) {
+            Button(L10n("Delete"), systemImage: "trash", role: .destructive) {
                 backendClient.delete(session: session)
             }
         }
@@ -968,7 +970,7 @@ private struct MainPanelCloseButton: View {
         .onHover { hovering in
             isHovering = hovering
         }
-        .help("Close")
+        .help(L10n("Close"))
     }
 }
 
@@ -1404,9 +1406,9 @@ private struct FloatingActionMenu: View {
             .onTapGesture {
                 toggleMenu()
             }
-            .help(isExpanded ? "Close actions" : "Open actions")
+            .help(isExpanded ? L10n("Close actions") : L10n("Open actions"))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(isExpanded ? "Close actions" : "Open actions")
+            .accessibilityLabel(isExpanded ? L10n("Close actions") : L10n("Open actions"))
             .accessibilityAddTraits(.isButton)
     }
 
@@ -1438,9 +1440,9 @@ private struct FloatingLayoutMenu: View {
         )
             .background(ExternalControlAnchorReader(anchorChanged: anchorChanged))
             .onTapGesture { toggle() }
-            .help(isExpanded ? "Close layout options" : "Layout and grouping")
+            .help(isExpanded ? L10n("Close layout options") : L10n("Layout and grouping"))
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(isExpanded ? "Close layout options" : "Layout and grouping")
+            .accessibilityLabel(isExpanded ? L10n("Close layout options") : L10n("Layout and grouping"))
             .accessibilityAddTraits(.isButton)
     }
 
@@ -1456,8 +1458,8 @@ private struct ExternalActionPanelContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            actionButton("New Session", systemImage: "plus.circle.fill", disabled: isBusy, action: createTask)
-            actionButton("Search", systemImage: "magnifyingglass", disabled: false, action: search)
+            actionButton(L10n("New Session"), systemImage: "plus.circle.fill", disabled: isBusy, action: createTask)
+            actionButton(L10n("Search"), systemImage: "magnifyingglass", disabled: false, action: search)
         }
         .padding(6)
         .background(FloatingActionSurface(cornerRadius: 16))
@@ -1496,13 +1498,13 @@ private struct ExternalLayoutPanelContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            optionButton("Cards", systemImage: "rectangle.grid.1x2", selected: displayMode == .cards) {
+            optionButton(L10n("Cards"), systemImage: "rectangle.grid.1x2", selected: displayMode == .cards) {
                 selectDisplayMode(.cards)
             }
-            optionButton("Compact List", systemImage: "list.bullet", selected: displayMode == .compact) {
+            optionButton(L10n("Compact List"), systemImage: "list.bullet", selected: displayMode == .compact) {
                 selectDisplayMode(.compact)
             }
-            optionButton("Group by Project", systemImage: "folder.fill", selected: groupsByProject) {
+            optionButton(L10n("Group by Project"), systemImage: "folder.fill", selected: groupsByProject) {
                 toggleGrouping()
             }
         }
@@ -1747,7 +1749,7 @@ private struct NewPtyAgentTaskSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("New Agent Task")
+                Text(L10n("New Agent Task"))
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                 Spacer()
                 Button {
@@ -1758,11 +1760,11 @@ private struct NewPtyAgentTaskSheet: View {
                         .frame(width: 26, height: 26)
                 }
                 .buttonStyle(IconButtonStyle())
-                .help("Close")
+                .help(L10n("Close"))
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text("Title")
+                Text(L10n("Title"))
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.black)
                 TextField(defaultSessionTitle, text: $title)
@@ -1778,7 +1780,7 @@ private struct NewPtyAgentTaskSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text("Workspace")
+                Text(L10n("Workspace"))
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.black)
                 HStack(spacing: 8) {
@@ -1806,7 +1808,7 @@ private struct NewPtyAgentTaskSheet: View {
                     .buttonStyle(IconButtonStyle())
                     .disabled(isBindingExistingSession)
                     .opacity(isBindingExistingSession ? 0.45 : 1)
-                    .help("Choose workspace folder")
+                    .help(L10n("Choose workspace folder"))
                 }
                 if isBindingExistingSession {
                     HStack(spacing: 6) {
@@ -1814,7 +1816,7 @@ private struct NewPtyAgentTaskSheet: View {
                             ProgressView()
                                 .controlSize(.small)
                         }
-                        Text(sessionLookupMessage ?? "Workspace is locked to the bound Codex session.")
+                        Text(sessionLookupMessage ?? L10n("Workspace is locked to the bound Codex session."))
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(sessionLookupMessage?.hasPrefix("Session not found") == true ? .red : CorptiePalette.secondaryText)
                             .lineLimit(2)
@@ -1823,7 +1825,7 @@ private struct NewPtyAgentTaskSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text("Agent")
+                Text(L10n("Agent"))
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.black)
                 HStack(spacing: 8) {
@@ -1844,12 +1846,12 @@ private struct NewPtyAgentTaskSheet: View {
                     isShowingAdvanced.toggle()
                 }
             } label: {
-                Label(isShowingAdvanced ? "Hide Advanced Settings" : "Advanced Settings", systemImage: "slider.horizontal.3")
+                Label(isShowingAdvanced ? L10n("Hide Advanced Settings") : L10n("Advanced Settings"), systemImage: "slider.horizontal.3")
                     .font(.system(size: 12, weight: .semibold))
             }
             .buttonStyle(.plain)
             .foregroundStyle(CorptiePalette.secondaryText)
-            .help(isShowingAdvanced ? "Hide advanced settings" : "Show advanced settings")
+            .help(isShowingAdvanced ? L10n("Hide advanced settings") : L10n("Show advanced settings"))
 
             if isShowingAdvanced {
                 VStack(alignment: .leading, spacing: 12) {
@@ -1857,10 +1859,10 @@ private struct NewPtyAgentTaskSheet: View {
 
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("Command")
+                            Text(L10n("Command"))
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(Color.black)
-                            TextField("codex", text: $command)
+                            TextField(L10n("codex"), text: $command)
                                 .textFieldStyle(.plain)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                                 .padding(.horizontal, 10)
@@ -1873,10 +1875,10 @@ private struct NewPtyAgentTaskSheet: View {
                         }
 
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("Args")
+                            Text(L10n("Args"))
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(Color.black)
-                            TextField("", text: $arguments)
+                            TextField(L10n(""), text: $arguments)
                                 .textFieldStyle(.plain)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                                 .padding(.horizontal, 10)
@@ -1891,10 +1893,10 @@ private struct NewPtyAgentTaskSheet: View {
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("Session ID")
+                        Text(L10n("Session ID"))
                             .font(.system(size: 13, weight: .bold))
                             .foregroundStyle(Color.black)
-                        TextField("Bind existing Codex session", text: $existingSessionId)
+                        TextField(L10n("Bind existing Codex session"), text: $existingSessionId)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, weight: .medium, design: .monospaced))
                             .padding(.horizontal, 10)
@@ -1904,7 +1906,7 @@ private struct NewPtyAgentTaskSheet: View {
                                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                                     .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                             )
-                            .help("Enter an existing Codex session id to resume it in Corptie")
+                            .help(L10n("Enter an existing Codex session id to resume it in Corptie"))
                             .onChange(of: existingSessionId) { _, value in
                                 scheduleSessionLookup(value)
                             }
@@ -1912,38 +1914,38 @@ private struct NewPtyAgentTaskSheet: View {
 
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("Permission")
+                            Text(L10n("Permission"))
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(Color.black)
-                            Picker("", selection: $sandboxMode) {
-                                Text("Workspace Write").tag("workspace-write")
-                                Text("Full Access").tag("danger-full-access")
-                                Text("Read Only").tag("read-only")
+                            Picker(L10n(""), selection: $sandboxMode) {
+                                Text(L10n("Workspace Write")).tag("workspace-write")
+                                Text(L10n("Full Access")).tag("danger-full-access")
+                                Text(L10n("Read Only")).tag("read-only")
                             }
                             .labelsHidden()
                             .pickerStyle(.menu)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .help("Controls Codex CLI filesystem sandbox mode")
+                            .help(L10n("Controls Codex CLI filesystem sandbox mode"))
                         }
 
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("Approvals")
+                            Text(L10n("Approvals"))
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(Color.black)
-                            Picker("", selection: $approvalPolicy) {
-                                Text("Ask").tag("on-request")
-                                Text("Ask for Risky Actions").tag("ask-risky")
-                                Text("Never Ask").tag("never")
-                                Text("On Failure").tag("on-failure")
+                            Picker(L10n(""), selection: $approvalPolicy) {
+                                Text(L10n("Ask")).tag("on-request")
+                                Text(L10n("Ask for Risky Actions")).tag("ask-risky")
+                                Text(L10n("Never Ask")).tag("never")
+                                Text(L10n("On Failure")).tag("on-failure")
                             }
                             .labelsHidden()
                             .pickerStyle(.menu)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .help("Controls when Codex asks before running privileged actions")
+                            .help(L10n("Controls when Codex asks before running privileged actions"))
                         }
                     }
                     if sandboxMode == "danger-full-access" {
-                        Label("Full Access lets Codex operate outside the workspace. Use it only for trusted tasks.", systemImage: "exclamationmark.triangle")
+                        Label(L10n("Full Access lets Codex operate outside the workspace. Use it only for trusted tasks."), systemImage: "exclamationmark.triangle")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(CorptiePalette.amber)
                     }
@@ -1951,12 +1953,12 @@ private struct NewPtyAgentTaskSheet: View {
                         Button {
                             savePermissionDefaults()
                         } label: {
-                            Label("Set as Future Default", systemImage: "checkmark.seal")
+                            Label(L10n("Set as Future Default"), systemImage: "checkmark.seal")
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(CorptiePalette.softBlue)
-                        .help("Use the selected permission and approval mode for future new sessions")
+                        .help(L10n("Use the selected permission and approval mode for future new sessions"))
 
                         if let defaultSaveMessage {
                             Text(defaultSaveMessage)
@@ -1994,7 +1996,7 @@ private struct NewPtyAgentTaskSheet: View {
                 }
                 .buttonStyle(IconButtonStyle())
                 .disabled(isCreateDisabled)
-                .help("Create task")
+                .help(L10n("Create task"))
             }
         }
         .padding(18)
@@ -2028,12 +2030,12 @@ private struct NewPtyAgentTaskSheet: View {
     @ViewBuilder
     private var modelPicker: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Text("Model")
+            Text(L10n("Model"))
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Color.black)
 
             if !supportsModelSelection {
-                Text("Default")
+                Text(L10n("Default"))
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2048,7 +2050,7 @@ private struct NewPtyAgentTaskSheet: View {
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Loading models")
+                    Text(L10n("Loading models"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
@@ -2057,7 +2059,7 @@ private struct NewPtyAgentTaskSheet: View {
                 .padding(.vertical, 8)
                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
-                Picker("", selection: $selectedModelId) {
+                Picker(L10n(""), selection: $selectedModelId) {
                     Text(defaultModelLabel).tag("")
                     ForEach(backendClient.codexModels) { model in
                         Text(model.name).tag(model.id)
@@ -2066,7 +2068,7 @@ private struct NewPtyAgentTaskSheet: View {
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .help("Choose the model for this new session")
+                .help(L10n("Choose the model for this new session"))
             }
         }
     }
@@ -2090,12 +2092,12 @@ private struct NewPtyAgentTaskSheet: View {
 
     private var defaultModelLabel: String {
         if let model = backendClient.codexModels.first(where: { $0.id == backendClient.codexDefaultModel }) {
-            return "Default (\(model.name))"
+            return L10nFormat("Default (%@)", model.name)
         }
         if let defaultModel = backendClient.codexDefaultModel, !defaultModel.isEmpty {
-            return "Default (\(defaultModel))"
+            return L10nFormat("Default (%@)", defaultModel)
         }
-        return "Default"
+        return L10n("Default")
     }
 
     private func loadModelsForCurrentAgent() {
@@ -2129,7 +2131,7 @@ private struct NewPtyAgentTaskSheet: View {
         defaultSandboxMode = validatedSandboxMode(sandboxMode)
         defaultApprovalPolicy = validatedApprovalPolicy(approvalPolicy)
         withAnimation(.easeOut(duration: 0.12)) {
-            defaultSaveMessage = "Saved"
+            defaultSaveMessage = L10n("Saved")
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
             withAnimation(.easeOut(duration: 0.12)) {
@@ -2259,7 +2261,7 @@ private struct NewPtyAgentTaskSheet: View {
         }
 
         isLookingUpSession = true
-        sessionLookupMessage = "Resolving Codex session workspace..."
+        sessionLookupMessage = L10n("Resolving Codex session workspace...")
         sessionLookupTask = Task {
             try? await Task.sleep(for: .milliseconds(450))
             if Task.isCancelled {
@@ -2273,7 +2275,7 @@ private struct NewPtyAgentTaskSheet: View {
                 await MainActor.run {
                     cwd = result.cwd ?? backendClient.defaultWorkspacePath
                     isLookingUpSession = false
-                    sessionLookupMessage = "Workspace loaded from bound Codex session."
+                    sessionLookupMessage = L10n("Workspace loaded from bound Codex session.")
                 }
             } catch {
                 if Task.isCancelled {
@@ -2334,7 +2336,7 @@ private struct RenameSessionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Rename Task")
+                Text(L10n("Rename Task"))
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                 Spacer()
                 Button {
@@ -2345,10 +2347,10 @@ private struct RenameSessionSheet: View {
                         .frame(width: 26, height: 26)
                 }
                 .buttonStyle(IconButtonStyle())
-                .help("Close")
+                .help(L10n("Close"))
             }
 
-            TextField("Task name", text: $title)
+            TextField(L10n("Task name"), text: $title)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13, weight: .medium))
                 .padding(.horizontal, 10)
@@ -2373,7 +2375,7 @@ private struct RenameSessionSheet: View {
                 }
                 .buttonStyle(IconButtonStyle())
                 .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .help("Save name")
+                .help(L10n("Save name"))
             }
         }
         .padding(18)
@@ -2459,7 +2461,7 @@ private struct TaskCardView: View {
                     Button {
                         backendClient.setArchived(false, session: session)
                     } label: {
-                        Label("Restore", systemImage: "tray.and.arrow.up")
+                        Label(L10n("Restore"), systemImage: "tray.and.arrow.up")
                             .font(.system(size: 11, weight: .semibold, design: .rounded))
                             .padding(.horizontal, 9)
                             .frame(height: 26)
@@ -2467,14 +2469,14 @@ private struct TaskCardView: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(CorptiePalette.secondaryText)
-                    .help("Restore this session to the main list")
+                    .help(L10n("Restore this session to the main list"))
                 }
 
                 if session.pinned == true {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(CorptiePalette.amber)
-                        .help("Pinned")
+                        .help(L10n("Pinned"))
                 }
 
                 Text(session.status.label)
@@ -2526,7 +2528,7 @@ private struct TaskCardView: View {
                                 .frame(width: 24, height: 24)
                         }
                         .buttonStyle(IconButtonStyle())
-                        .help("Stop current run")
+                        .help(L10n("Stop current run"))
                     }
                 } else if canQuickReply {
                     Spacer(minLength: 6)
@@ -2535,7 +2537,7 @@ private struct TaskCardView: View {
                         text: $quickReply,
                         isFocused: $isQuickReplyFocused,
                         isSending: backendClient.isSendingMessage,
-                        placeholder: "Reply",
+                        placeholder: L10n("Reply"),
                         onInteract: {
                         lastQuickReplyInteractionAt = Date()
                         },
@@ -2569,7 +2571,7 @@ private struct TaskCardView: View {
             Button {
                 isRenaming = true
             } label: {
-                Label("Rename", systemImage: "pencil")
+                Label(L10n("Rename"), systemImage: "pencil")
             }
 
             Divider()
@@ -2577,14 +2579,14 @@ private struct TaskCardView: View {
             Button {
                 chooseAvatar()
             } label: {
-                Label("Set Avatar", systemImage: "person.crop.circle")
+                Label(L10n("Set Avatar"), systemImage: "person.crop.circle")
             }
 
             if session.avatarPath?.isEmpty == false {
                 Button {
                     backendClient.updateAvatar(session: session, avatarPath: nil)
                 } label: {
-                    Label("Clear Avatar", systemImage: "xmark.circle")
+                    Label(L10n("Clear Avatar"), systemImage: "xmark.circle")
                 }
             }
 
@@ -2605,7 +2607,7 @@ private struct TaskCardView: View {
                     }
                 }
             } label: {
-                Label("Completion Sound", systemImage: "speaker.wave.2")
+                Label(L10n("Completion Sound"), systemImage: "speaker.wave.2")
             }
 
             Divider()
@@ -2614,7 +2616,7 @@ private struct TaskCardView: View {
                 Button {
                     detachedSessionManager.float(session: session)
                 } label: {
-                    Label("Float Session", systemImage: "rectangle.on.rectangle.circle")
+                    Label(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle")
                 }
 
                 Divider()
@@ -2622,7 +2624,7 @@ private struct TaskCardView: View {
                 Button {
                     backendClient.setPinned(session.pinned != true, session: session)
                 } label: {
-                    Label(session.pinned == true ? "Unpin" : "Pin to Top", systemImage: session.pinned == true ? "pin.slash" : "pin")
+                    Label(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: session.pinned == true ? "pin.slash" : "pin")
                 }
 
                 Divider()
@@ -2632,13 +2634,13 @@ private struct TaskCardView: View {
                 Button {
                     backendClient.setArchived(false, session: session)
                 } label: {
-                    Label("Unarchive", systemImage: "tray.and.arrow.up")
+                    Label(L10n("Unarchive"), systemImage: "tray.and.arrow.up")
                 }
             } else {
                 Button {
                     backendClient.setArchived(true, session: session)
                 } label: {
-                    Label("Archive", systemImage: "archivebox")
+                    Label(L10n("Archive"), systemImage: "archivebox")
                 }
             }
 
@@ -2647,7 +2649,7 @@ private struct TaskCardView: View {
             Button(role: .destructive) {
                 backendClient.delete(session: session)
             } label: {
-                Label("Delete", systemImage: "trash")
+                Label(L10n("Delete"), systemImage: "trash")
             }
         }
         .sheet(isPresented: $isRenaming) {
@@ -2681,7 +2683,7 @@ private struct TaskCardView: View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.turn.down.right")
                 .font(.system(size: 9, weight: .bold))
-            Text(visibleSuggestedOptions.first?.label ?? "Choice available")
+            Text(visibleSuggestedOptions.first?.label ?? L10n("Choice available"))
                 .font(.system(size: 10.5, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -2702,31 +2704,31 @@ private struct TaskCardView: View {
 
     private var connectionIndicatorHelp: String {
         if session.isUnboundCodexSession {
-            return "Session is not bound yet"
+            return L10n("Session is not bound yet")
         }
         if session.capabilities?.canReconnect == true && !session.isConnected {
-            return "Reconnect session"
+            return L10n("Reconnect session")
         }
         if session.external?.provider != "codex-pty" {
-            return "Session is available"
+            return L10n("Session is available")
         }
         if session.isConnecting || backendClient.connectionTransitionSessionIds.contains(session.id) {
-            return "Switching PTY connection"
+            return L10n("Switching PTY connection")
         }
-        return session.isConnected ? "Disconnect PTY" : "Reconnect PTY"
+        return session.isConnected ? L10n("Disconnect PTY") : L10n("Reconnect PTY")
     }
 
     private var connectionIndicatorPopoverText: String {
         if session.isUnboundCodexSession {
-            return "尚未发送消息的会话，无法切换状态。"
+            return L10n("尚未发送消息的会话，无法切换状态。")
         }
         if session.capabilities?.canReconnect == true && !session.isConnected {
-            return "点击重新连接这个会话。"
+            return L10n("点击重新连接这个会话。")
         }
         if session.external?.provider != "codex-pty" {
-            return "这个会话无需手动连接，当前可用。"
+            return L10n("这个会话无需手动连接，当前可用。")
         }
-        return "正在切换连接状态。"
+        return L10n("正在切换连接状态。")
     }
 
     private var connectionIndicatorButton: some View {
@@ -2825,13 +2827,13 @@ private struct TaskCardView: View {
 
         let seconds = max(0, Int(Date().timeIntervalSince(date)))
         if seconds < 60 {
-            return "\(seconds)s ago"
+            return L10nFormat("%llds ago", seconds)
         }
         let minutes = seconds / 60
         if minutes < 60 {
-            return "\(minutes)m ago"
+            return L10nFormat("%lldm ago", minutes)
         }
-        return "\(minutes / 60)h ago"
+        return L10nFormat("%lldh ago", minutes / 60)
     }
 }
 
@@ -3134,7 +3136,7 @@ private struct DetailView: View {
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("Loading Codex thread")
+                    Text(L10n("Loading Codex thread"))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
@@ -3164,7 +3166,7 @@ private struct DetailView: View {
             } else if backendClient.selectedDetail == nil,
                       backendClient.isLoadingDetail == false,
                       backendClient.lastError != nil {
-                OfflineView(error: backendClient.lastError ?? "No detail is available for this task.")
+                OfflineView(error: backendClient.lastError ?? L10n("No detail is available for this task."))
             } else {
                 VStack(spacing: 10) {
                     ProgressView()
@@ -3230,7 +3232,7 @@ private struct DetailView: View {
                             visibleMessageLimit += 100
                             updateCachedDisplayEntries(for: detail)
                         } label: {
-                            Label("Load \(min(100, hiddenCount)) earlier messages", systemImage: "arrow.up.circle")
+                            Label(L10nFormat("Load %lld earlier messages", min(100, hiddenCount)), systemImage: "arrow.up.circle")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                                 .frame(maxWidth: .infinity)
@@ -3317,7 +3319,7 @@ private struct DetailView: View {
                             .frame(width: 30, height: 30)
                     }
                     .buttonStyle(IconButtonStyle())
-                    .help("Jump to latest message")
+                    .help(L10n("Jump to latest message"))
                     .padding(.trailing, 10)
                     .padding(.bottom, 8)
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
@@ -3821,7 +3823,7 @@ private struct DetailHeaderView: View {
                     .frame(width: 28, height: 28)
             }
             .buttonStyle(IconButtonStyle())
-            .help("Back to task list")
+            .help(L10n("Back to task list"))
 
             if let selectedSession = backendClient.selectedSession {
                 SessionAvatarView(session: selectedSession, avatarSize: 32)
@@ -3841,7 +3843,7 @@ private struct DetailHeaderView: View {
                             .lineLimit(1)
                     }
                     .buttonStyle(.plain)
-                    .help("Open folder in Finder")
+                    .help(L10n("Open folder in Finder"))
                 } else {
                     Text(backendClient.selectedSession?.summary ?? "")
                         .font(.system(size: 11, weight: .medium))
@@ -3862,7 +3864,7 @@ private struct DetailHeaderView: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(IconButtonStyle())
-                .help("Reconnect session")
+                .help(L10n("Reconnect session"))
             } else if canInterruptCurrentRun {
                 Button {
                     backendClient.interruptSelectedSession()
@@ -3872,7 +3874,7 @@ private struct DetailHeaderView: View {
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(IconButtonStyle())
-                .help("Stop current run")
+                .help(L10n("Stop current run"))
             }
         }
     }
@@ -4080,8 +4082,8 @@ struct CopyTextButton: View {
         .opacity(isVisible ? 1 : 0)
         .scaleEffect(isVisible ? 1 : 0.88)
         .animation(.easeOut(duration: 0.12), value: isVisible)
-        .help("Copy")
-        .accessibilityLabel("Copy message")
+        .help(L10n("Copy"))
+        .accessibilityLabel(L10n("Copy message"))
         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -4112,7 +4114,7 @@ private struct ThreadProcessGroupView: View {
                     Image(systemName: "arrow.turn.down.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
-                    Text("已处理")
+                    Text(L10n("已处理"))
                         .font(.system(size: 10.5, weight: .semibold))
                     if let durationText {
                         Text(durationText)
@@ -4294,7 +4296,7 @@ private struct ThreadItemView: View {
                     Image(systemName: "paperplane.fill")
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
-                    Text("确认发送协作任务")
+                    Text(L10n("确认发送协作任务"))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.primaryText)
                     Text("· \(collaborationRecipientName)")
@@ -4338,7 +4340,7 @@ private struct ThreadItemView: View {
 
                     if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("验收标准")
+                            Text(L10n("验收标准"))
                                 .font(.system(size: 9.5, weight: .bold))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                             ForEach(criteria, id: \.self) { criterion in
@@ -4355,7 +4357,7 @@ private struct ThreadItemView: View {
                             Button {
                                 backendClient.respondToCollaborationConfirmation(confirmationId: confirmationId, approve: true)
                             } label: {
-                                Label("确认发送", systemImage: "paperplane.fill")
+                                Label(L10n("确认发送"), systemImage: "paperplane.fill")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
@@ -4364,7 +4366,7 @@ private struct ThreadItemView: View {
                             Button {
                                 backendClient.respondToCollaborationConfirmation(confirmationId: confirmationId, approve: false)
                             } label: {
-                                Text("取消")
+                                Text(L10n("取消"))
                                     .frame(minWidth: 52)
                             }
                             .buttonStyle(.bordered)
@@ -4372,7 +4374,7 @@ private struct ThreadItemView: View {
                         .controlSize(.small)
                         .disabled(backendClient.isSendingMessage)
 
-                        Text("也可以直接回复“确认”或“取消”")
+                        Text(L10n("也可以直接回复“确认”或“取消”"))
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(CorptiePalette.secondaryText)
                     }
@@ -4457,7 +4459,7 @@ private struct ThreadItemView: View {
                     Image(systemName: "person.2.wave.2.fill")
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
-                    Text("Agent 协作")
+                    Text(L10n("Agent 协作"))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.primaryText)
                     Text(collaborationKindLabel)
@@ -4524,7 +4526,7 @@ private struct ThreadItemView: View {
                                 }
                                 .padding(.top, 5)
                             } label: {
-                                Text("任务详情")
+                                Text(L10n("任务详情"))
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .foregroundStyle(CorptiePalette.secondaryText)
                             }
@@ -4560,7 +4562,7 @@ private struct ThreadItemView: View {
         .onHover { isHovering = $0 }
         .animation(.spring(response: 0.30, dampingFraction: 0.86, blendDuration: 0.08), value: isCollaborationExpanded)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Agent 协作消息，来自 \(collaborationSenderName)")
+        .accessibilityLabel(L10nFormat("Agent collaboration message from %@", collaborationSenderName))
     }
 
     private func collaborationPartyRow(label: String, name: String) -> some View {
@@ -4752,18 +4754,18 @@ private struct ThreadItemView: View {
             isPresented: $isConfirmingUndo,
             titleVisibility: .visible
         ) {
-            Button("Undo Changes", role: .destructive) {
+            Button(L10n("Undo Changes"), role: .destructive) {
                 undoChanges()
             }
-            Button("Cancel", role: .cancel) {}
+            Button(L10n("Cancel"), role: .cancel) {}
         } message: {
-            Text("This reverses only the recorded patch. It will stop if newer edits conflict.")
+            Text(L10n("This reverses only the recorded patch. It will stop if newer edits conflict."))
         }
-        .alert("Code Diff", isPresented: Binding(
+        .alert(L10n("Code Diff"), isPresented: Binding(
             get: { diffActionError != nil },
             set: { if !$0 { diffActionError = nil } }
         )) {
-            Button("OK", role: .cancel) {}
+            Button(L10n("OK"), role: .cancel) {}
         } message: {
             Text(diffActionError ?? "Unknown error")
         }
@@ -4778,7 +4780,7 @@ private struct ThreadItemView: View {
             Divider()
             HStack(spacing: 6) {
                 Image(systemName: "doc.text.magnifyingglass")
-                Text("Changed Files")
+                Text(L10n("Changed Files"))
                 Text("\(item.fileChanges?.count ?? 0)")
                     .foregroundStyle(CorptiePalette.mutedText)
                 Spacer()
@@ -4805,16 +4807,16 @@ private struct ThreadItemView: View {
                 Button {
                     reviewChanges()
                 } label: {
-                    Label("Review", systemImage: "arrow.up.forward.app")
+                    Label(L10n("Review"), systemImage: "arrow.up.forward.app")
                 }
-                .help("Open this turn's diff in the selected external tool")
+                .help(L10n("Open this turn's diff in the selected external tool"))
 
                 Button(role: .destructive) {
                     isConfirmingUndo = true
                 } label: {
-                    Label(isTurnUndone ? "Undone" : "Undo", systemImage: "arrow.uturn.backward")
+                    Label(isTurnUndone ? L10n("Undone") : L10n("Undo"), systemImage: "arrow.uturn.backward")
                 }
-                .help("Reverse only the changes recorded for this reply")
+                .help(L10n("Reverse only the changes recorded for this reply"))
                 .disabled(isTurnUndone)
 
                 if isDiffActionRunning {
@@ -4872,7 +4874,7 @@ private struct ThreadItemView: View {
     }
 
     private var itemMetadataLabel: String {
-        [itemRoleLabel, item.status == "queued" ? "排队中" : nil, itemTimeLabel].compactMap { value in
+        [itemRoleLabel, item.status == "queued" ? L10n("排队中") : nil, itemTimeLabel].compactMap { value in
             guard let value, !value.isEmpty else {
                 return nil
             }
@@ -4882,15 +4884,15 @@ private struct ThreadItemView: View {
 
     private var itemRoleLabel: String {
         if item.sourceType == "collaboration" {
-            return "协作任务"
+            return L10n("协作任务")
         }
         switch item.type {
         case "userMessage":
-            return "User"
+            return L10n("User")
         case "agentMessage":
-            return "Agent"
+            return L10n("Agent")
         default:
-            return "System"
+            return L10n("System")
         }
     }
 
@@ -4915,7 +4917,7 @@ private struct ThreadItemView: View {
                     messageTextView(text: item.text, allowsSelection: true)
                 }
                 if let selected = item.options?.first(where: { $0.selected == true }) {
-                    Label("Selected: \(selected.label)", systemImage: "checkmark.circle.fill")
+                    Label(L10nFormat("Selected: %@", selected.label), systemImage: "checkmark.circle.fill")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(CorptiePalette.connected)
                 }
@@ -4926,7 +4928,7 @@ private struct ThreadItemView: View {
                 Image(systemName: "checkmark.shield.fill")
                     .font(.system(size: 11, weight: .bold))
                     .foregroundStyle(CorptiePalette.connected)
-                Text("已处理的权限请求")
+                Text(L10n("已处理的权限请求"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(CorptiePalette.secondaryText)
                 if let selected = item.options?.first(where: { $0.selected == true }) {
@@ -5226,7 +5228,7 @@ private struct MessageComposer: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(isSendDisabled)
-                .help(isRunningTurn ? "Stop current run" : "Send instruction")
+                .help(isRunningTurn ? L10n("Stop current run") : L10n("Send instruction"))
                 .padding(.trailing, 6)
             }
             .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
@@ -5310,14 +5312,14 @@ private struct CodexModelMenu: View {
     var body: some View {
         Menu {
             if backendClient.isLoadingCodexModels {
-                Text("Loading models")
+                Text(L10n("Loading models"))
             } else if backendClient.codexModels.isEmpty {
                 Button {
                     Task {
                         await backendClient.loadModelsForSelectedSession(forceRefresh: true)
                     }
                 } label: {
-                    Label("Reload models", systemImage: "arrow.clockwise")
+                    Label(L10n("Reload models"), systemImage: "arrow.clockwise")
                 }
             } else {
                 ForEach(backendClient.codexModels) { model in
@@ -5341,7 +5343,7 @@ private struct CodexModelMenu: View {
 
                     Menu {
                         if currentReasoningLevels.isEmpty {
-                            Text("No reasoning options")
+                            Text(L10n("No reasoning options"))
                         } else {
                             ForEach(currentReasoningLevels, id: \.self) { reasoningLevel in
                                 Button {
@@ -5358,7 +5360,7 @@ private struct CodexModelMenu: View {
                             }
                         }
                     } label: {
-                        Label("Reasoning: \(reasoningLabel(currentReasoningLevel))", systemImage: "brain")
+                        Label(L10nFormat("Reasoning: %@", reasoningLabel(currentReasoningLevel)), systemImage: "brain")
                     }
                     .disabled(currentReasoningLevels.isEmpty || backendClient.isSwitchingReasoning)
                 }
@@ -5368,7 +5370,7 @@ private struct CodexModelMenu: View {
                         await backendClient.loadModelsForSelectedSession(forceRefresh: true)
                     }
                 } label: {
-                    Label("Reload models", systemImage: "arrow.clockwise")
+                    Label(L10n("Reload models"), systemImage: "arrow.clockwise")
                 }
             }
         } label: {
@@ -5411,17 +5413,17 @@ private struct CodexModelMenu: View {
 
     private var currentModelLabel: String {
         guard !currentModelId.isEmpty else {
-            return "Model"
+            return L10n("Model")
         }
         return backendClient.codexModels.first(where: { $0.id == currentModelId })?.name ?? currentModelId
     }
 
     private var currentModelHelp: String {
-        let action = supportsReasoningSwitch ? "Switch model or reasoning" : "Switch model"
-        guard currentModelLabel != "Model" else {
+        let action = supportsReasoningSwitch ? L10n("Switch model or reasoning") : L10n("Switch model")
+        guard !currentModelId.isEmpty else {
             return action
         }
-        return "\(action): \(currentModelLabel)"
+        return L10nFormat("%@: %@", action, currentModelLabel)
     }
 
     private var currentModel: CodexModel? {
@@ -5455,10 +5457,10 @@ private struct CodexModelMenu: View {
 
     private func reasoningLabel(_ value: String) -> String {
         switch value.lowercased() {
-        case "low": "Low"
-        case "medium": "Medium"
-        case "high": "High"
-        case "xhigh": "Extra High"
+        case "low": L10n("Low")
+        case "medium": L10n("Medium")
+        case "high": L10n("High")
+        case "xhigh": L10n("Extra High")
         default: value
         }
     }
@@ -5475,10 +5477,10 @@ private struct CodexModelMenu: View {
 
     private func reasoningDescription(_ value: String) -> String {
         switch value.lowercased() {
-        case "low": "Fast responses with lighter reasoning"
-        case "medium": "Balanced speed and reasoning"
-        case "high": "Greater reasoning depth"
-        case "xhigh": "Extra high reasoning depth"
+        case "low": L10n("Fast responses with lighter reasoning")
+        case "medium": L10n("Balanced speed and reasoning")
+        case "high": L10n("Greater reasoning depth")
+        case "xhigh": L10n("Extra high reasoning depth")
         default: value
         }
     }
@@ -5675,7 +5677,7 @@ private struct QuickReplyField: View {
             .buttonStyle(.plain)
             .foregroundStyle(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? CorptiePalette.disabledText : CorptiePalette.softBlue)
             .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
-            .help("Send reply")
+            .help(L10n("Send reply"))
         }
         .frame(height: 26)
         .simultaneousGesture(TapGesture().onEnded(onInteract))
@@ -5729,7 +5731,7 @@ private struct OfflineView: View {
             Image(systemName: "bolt.horizontal.circle")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(.orange)
-            Text("Backend offline")
+            Text(L10n("Backend offline"))
                 .font(.system(size: 15, weight: .semibold))
             Text(error ?? "Start the Node.js runtime to see agent tasks.")
                 .font(.system(size: 12, weight: .medium))
@@ -5746,9 +5748,9 @@ private struct ReadyEmptyView: View {
             Image(systemName: "checkmark.circle")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(CorptiePalette.connected)
-            Text("Backend ready")
+            Text(L10n("Backend ready"))
                 .font(.system(size: 15, weight: .semibold))
-            Text("Click the + button in the lower-left corner to create a session.")
+            Text(L10n("Click the + button in the lower-left corner to create a session."))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)
@@ -5763,9 +5765,9 @@ private struct ArchivedSessionsEmptyView: View {
             Image(systemName: "archivebox")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(CorptiePalette.secondaryText)
-            Text("No archived sessions")
+            Text(L10n("No archived sessions"))
                 .font(.system(size: 15, weight: .semibold))
-            Text("Sessions you archive will appear here and can be restored at any time.")
+            Text(L10n("Sessions you archive will appear here and can be restored at any time."))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)

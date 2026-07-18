@@ -739,6 +739,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 }
 
 private struct DetachedSessionOrbView: View {
+    @ObservedObject private var appLanguage = AppLanguageController.shared
     @ObservedObject var client: BackendClient
     let sessionId: String
     @ObservedObject var previewState: DetachedReplyPreviewState
@@ -764,6 +765,7 @@ private struct DetachedSessionOrbView: View {
         }
         .frame(width: orbRenderSize, height: orbRenderSize, alignment: .topLeading)
         .background(Color.clear)
+        .environment(\.locale, appLanguage.locale)
     }
 
     @ViewBuilder
@@ -806,6 +808,7 @@ private struct DetachedSessionOrbView: View {
 }
 
 private struct DetachedSessionAccessoryView: View {
+    @ObservedObject private var appLanguage = AppLanguageController.shared
     @ObservedObject var client: BackendClient
     let sessionId: String
     @ObservedObject var previewState: DetachedReplyPreviewState
@@ -813,28 +816,31 @@ private struct DetachedSessionAccessoryView: View {
     let dismissQuickReply: () -> Void
 
     var body: some View {
-        if let session {
-            ZStack(alignment: .topLeading) {
-                floatingAccessory(session: session)
+        Group {
+            if let session {
+                ZStack(alignment: .topLeading) {
+                    floatingAccessory(session: session)
 
-                if !visibleOptions.isEmpty {
-                    optionList(session: session)
-                        .offset(y: contentOffsetBeforeOptionList)
-                }
+                    if !visibleOptions.isEmpty {
+                        optionList(session: session)
+                            .offset(y: contentOffsetBeforeOptionList)
+                    }
 
-                if let hoveredOption {
-                    DetachedOptionTooltip(text: hoveredOption.label)
-                        .offset(x: 8, y: optionTooltipY(for: hoveredOption))
-                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
-                        .zIndex(8)
-                        .allowsHitTesting(false)
+                    if let hoveredOption {
+                        DetachedOptionTooltip(text: hoveredOption.label)
+                            .offset(x: 8, y: optionTooltipY(for: hoveredOption))
+                            .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .bottom)))
+                            .zIndex(8)
+                            .allowsHitTesting(false)
+                    }
                 }
+                .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
+                .background(Color.clear)
+            } else {
+                EmptyView()
             }
-            .frame(width: contentWidth, height: contentHeight, alignment: .topLeading)
-            .background(Color.clear)
-        } else {
-            EmptyView()
         }
+        .environment(\.locale, appLanguage.locale)
     }
 
     @ViewBuilder
@@ -1065,7 +1071,7 @@ private struct DetachedReplyPreviewBubble: View {
             .buttonStyle(.plain)
             .background(Color.black.opacity(0.06), in: Circle())
             .padding(7)
-            .help("Dismiss")
+            .help(L10n("Dismiss"))
 
             CopyTextButton(text: text, isVisible: isHovering && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .frame(width: 300, height: 126, alignment: .bottomTrailing)
@@ -1126,7 +1132,7 @@ private struct DetachedReplyComposerCard: View {
                 }
                 .buttonStyle(.plain)
                 .background(Color.black.opacity(0.06), in: Circle())
-                .help("Dismiss")
+                .help(L10n("Dismiss"))
 
                 CopyTextButton(text: text, isVisible: isHoveringPreview && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
@@ -1140,7 +1146,7 @@ private struct DetachedReplyComposerCard: View {
             HStack(spacing: 6) {
                 ChatInputTextView(
                     text: $draft,
-                    placeholder: "Reply...",
+                    placeholder: L10n("Reply..."),
                     font: .systemFont(ofSize: 12, weight: .semibold),
                     autoFocus: true,
                     onFocusChange: { focused in
@@ -1216,7 +1222,7 @@ private struct DetachedQuickReplyInput: View {
         HStack(spacing: 6) {
             ChatInputTextView(
                 text: $text,
-                placeholder: "Reply...",
+                placeholder: L10n("Reply..."),
                 font: .systemFont(ofSize: 12, weight: .semibold),
                 autoFocus: true,
                 onFocusChange: { focused in
@@ -1423,18 +1429,18 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
         override func rightMouseDown(with event: NSEvent) {
             let menu = NSMenu()
-            menu.addItem(NSMenuItem(title: "Show Main Window", action: #selector(showMain), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "Open Session", action: #selector(openSession), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: L10n("Show Main Window"), action: #selector(showMain), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: L10n("Open Session"), action: #selector(openSession), keyEquivalent: ""))
             menu.addItem(.separator())
             menu.addItem(completionSoundMenuItem())
             menu.addItem(.separator())
-            menu.addItem(NSMenuItem(title: "Close Floating Orb", action: #selector(closeOrb), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: L10n("Close Floating Orb"), action: #selector(closeOrb), keyEquivalent: ""))
             menu.items.forEach { $0.target = self }
             menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
         }
 
         private func completionSoundMenuItem() -> NSMenuItem {
-            let parent = NSMenuItem(title: "Completion Sound", action: nil, keyEquivalent: "")
+            let parent = NSMenuItem(title: L10n("Completion Sound"), action: nil, keyEquivalent: "")
             let submenu = NSMenu()
             let selectedSoundId = SessionCompletionSoundManager.selectedSoundId(for: sessionId)
             for option in SessionCompletionSoundManager.options {
