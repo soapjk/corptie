@@ -87,7 +87,7 @@ export class CodexAppServerClient {
       sourceKinds: params.sourceKinds ?? undefined,
       sortKey: params.sortKey ?? "updated_at",
       sortDirection: params.sortDirection ?? "desc"
-    });
+    }, params.requestTimeoutMs ?? this.requestTimeoutMs);
   }
 
   async readThread(threadId, options = {}) {
