@@ -19,6 +19,22 @@ export function preferredSessionTitle(summary, detail) {
     || "Untitled session";
 }
 
+export function reconcileAuthoritativeRunState(session, status) {
+  if (!session || ["running", "blocked"].includes(status)) {
+    return session;
+  }
+  return {
+    ...session,
+    external: {
+      ...(session.external ?? {}),
+      activeTurnId: null
+    },
+    rawStatus: session.rawStatus && typeof session.rawStatus === "object"
+      ? { ...session.rawStatus, activeTurnId: null }
+      : session.rawStatus
+  };
+}
+
 export function composeStoredSessionList({
   archived = false,
   ptySessions = [],
