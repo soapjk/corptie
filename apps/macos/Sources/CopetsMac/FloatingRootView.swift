@@ -3140,7 +3140,6 @@ private struct DetailView: View {
                 && backendClient.selectedDetail?.capabilities?.canInterrupt != true {
                 ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
             } else {
-                ChatUsageBar(usage: backendClient.selectedSessionUsage)
                 MessageComposer(message: $message)
             }
         }
@@ -3569,11 +3568,9 @@ private struct ChatUsageBar: View {
                         value: "\(formatPercent(max(0, 100 - (window.usedPercent ?? 0))))%"
                     )
                 }
-                Spacer(minLength: 0)
             }
             .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(CorptiePalette.secondaryText)
-            .padding(.horizontal, 8)
         }
     }
 
@@ -3911,27 +3908,35 @@ private struct DetailMessagesPlaceholder: View {
 }
 
 private struct ThreadMetaView: View {
+    @EnvironmentObject private var backendClient: BackendClient
     let detail: CodexThreadDetail
 
     var body: some View {
-        HStack(spacing: 8) {
-            ConnectionIndicatorLight(
-                color: detail.isConnecting ? CorptiePalette.disconnected : detail.connectionColor,
-                size: 8,
-                glowSize: 20,
-                isBreathing: detail.isConnecting
-            )
-            Text(detail.status.label)
-                .foregroundStyle(detail.status.color)
-            if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
-                ActivityStatusText(text: activityStatus, isActive: detail.status == .running)
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                ConnectionIndicatorLight(
+                    color: detail.isConnecting ? CorptiePalette.disconnected : detail.connectionColor,
+                    size: 8,
+                    glowSize: 20,
+                    isBreathing: detail.isConnecting
+                )
+                Text(detail.status.label)
+                    .foregroundStyle(detail.status.color)
+                if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
+                    ActivityStatusText(text: activityStatus, isActive: detail.status == .running)
+                }
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(Color.white.opacity(0.1), in: Capsule())
+
+            Spacer(minLength: 8)
+
+            ChatUsageBar(usage: backendClient.selectedSessionUsage)
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(CorptiePalette.secondaryText)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(Color.white.opacity(0.1), in: Capsule())
+        .frame(maxWidth: .infinity)
     }
 }
 
