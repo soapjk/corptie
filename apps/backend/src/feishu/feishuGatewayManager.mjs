@@ -12,6 +12,17 @@ const execFileAsync = promisify(execFile);
 const pairingCodePattern = /^\d{6}$/;
 const sessionCardPageSize = 5;
 const workspaceCardPageSize = 5;
+const feishuHiddenSessionItemTypes = new Set([
+  "reasoning",
+  "plan",
+  "commandExecution",
+  "fileChange",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "webSearch",
+  "warning",
+  "taskComplete"
+]);
 
 export class FeishuGatewayManager {
   constructor(options) {
@@ -24,6 +35,7 @@ export class FeishuGatewayManager {
     this.sendMessage = options.sendMessage;
     this.interruptSession = options.interruptSession;
     this.respondToApproval = options.respondToApproval;
+    this.respondToCollaborationConfirmation = options.respondToCollaborationConfirmation;
     this.cliPath = options.cliPath || process.env.CORPTIE_LARK_CLI || null;
     this.identityCliPath = null;
     this.processes = new Map();
@@ -569,6 +581,36 @@ export class FeishuGatewayManager {
           card = buildApprovalResultCard(`审批失败：${error.message}`, false);
         }
       }
+    } else if (action === "respond_collaboration_confirmation") {
+      const sessionId = optionalText(event.actionValue?.session_id);
+      const confirmationId = optionalText(event.actionValue?.confirmation_id);
+      const assignment = this.store.getFeishuAssignmentForBot(botId);
+      if (!assignment || assignment.sessionId !== sessionId) {
+        card = buildCollaborationConfirmationResultCard("这个协作确认所属的会话已不再连接，未执行操作。", false);
+      } else if (!this.respondToCollaborationConfirmation) {
+        card = buildCollaborationConfirmationResultCard("当前版本无法处理协作确认，请在电脑端操作。", false);
+      } else {
+        const approved = optionalText(event.actionValue?.decision) === "confirm";
+        try {
+          await this.respondToCollaborationConfirmation(
+            confirmationId,
+            approved,
+            feishuSource(botId, event)
+          );
+          const snapshot = await this.getSnapshot(sessionId);
+          const item = (snapshot.items ?? []).find((candidate) =>
+            candidate.collaborationConfirmationId === confirmationId
+          );
+          card = item
+            ? buildCollaborationConfirmationCard({ sessionId, sessionTitle: snapshot.title, item })
+            : buildCollaborationConfirmationResultCard(
+                approved ? "协作任务已确认发送。" : "协作任务已取消。",
+                approved
+              );
+        } catch (error) {
+          card = buildCollaborationConfirmationResultCard(`协作确认失败：${error.message}`, false);
+        }
+      }
     } else if (action === "create_back_workspaces") {
       card = await this.buildWorkspaceCard(0);
     } else if (action === "create_cancel" || action === "create_back_sessions") {
@@ -820,9 +862,10 @@ export class FeishuGatewayManager {
     if (!existingRuntime) {
       runtime.lastStatus = snapshot.status;
       runtime.seenItems = new Set((snapshot.items ?? [])
-        .filter((item) => !isPendingApprovalItem(item))
+        .filter((item) => !shouldDeliverOnInitialFeishuSync(item))
         .map((item) => item.id)
         .filter(Boolean));
+      runtime.collaborationConfirmationCards = [];
       this.botRuntime.set(botId, runtime);
       await this.sendText(botId, chatId, `当前会话：${snapshot.title}\n状态：${displayStatus(snapshot.status)}`, {
         sessionTitle: snapshot.title,
@@ -835,25 +878,83 @@ export class FeishuGatewayManager {
         await this.clearTyping(botId).catch(() => {});
       }
     }
-    const newAssistantItems = (snapshot.items ?? []).filter((item) => {
-      const unseen = item.id && !runtime.seenItems.has(item.id);
-      const locallyHiddenCollaboration = item.sourceType === "collaboration" && item.localVisibility === "status_only";
-      return unseen && !locallyHiddenCollaboration && ["agentMessage", "assistantMessage"].includes(item.type) && item.text;
-    });
-    for (const item of newAssistantItems) {
-      const sentCards = await this.sendText(botId, chatId, item.text, {
+    runtime.collaborationConfirmationCards ??= [];
+    for (const sent of runtime.collaborationConfirmationCards) {
+      const item = (snapshot.items ?? []).find((candidate) => candidate.id === sent.itemId);
+      const status = collaborationConfirmationStatus(item);
+      if (!item || !status || status === sent.status) continue;
+      await this.updateSentMessageCard(botId, sent.messageId, buildCollaborationConfirmationCard({
+        sessionId: assignment.sessionId,
         sessionTitle: snapshot.title,
-        sessionStatus: snapshot.status
-      });
-      runtime.lastAssistantCards = (sentCards ?? [])
-        .map(({ text, result }) => ({
-          itemId: item.id,
-          messageId: result?.data?.message_id ?? result?.data?.message?.message_id ?? null,
-          text,
+        item
+      }));
+      sent.status = status;
+    }
+
+    const unseenItems = (snapshot.items ?? []).filter((item) => item.id && !runtime.seenItems.has(item.id));
+    for (const item of unseenItems) {
+      const projection = feishuProjectionForSessionItem(item);
+      if (projection === "hidden") {
+        runtime.seenItems.add(item.id);
+        continue;
+      }
+
+      if (projection === "collaboration_confirmation") {
+        const result = await this.sendCard(botId, chatId, buildCollaborationConfirmationCard({
+          sessionId: assignment.sessionId,
+          sessionTitle: snapshot.title,
+          item
+        }));
+        const messageId = sentMessageId(result);
+        if (messageId) {
+          runtime.collaborationConfirmationCards.push({
+            itemId: item.id,
+            messageId,
+            status: collaborationConfirmationStatus(item)
+          });
+        }
+      } else if (projection === "approval") {
+        await this.sendCard(botId, chatId, buildApprovalCard({
+          sessionId: assignment.sessionId,
+          sessionTitle: snapshot.title,
+          item
+        }));
+      } else if (projection === "collaboration") {
+        await this.sendCard(botId, chatId, buildCollaborationMessageCard({
+          sessionTitle: snapshot.title,
+          item
+        }));
+      } else if (projection === "user") {
+        const pendingIndex = (runtime.pendingFeishuInputs ?? []).findIndex((text) => text === item.text);
+        if (pendingIndex >= 0) {
+          runtime.pendingFeishuInputs.splice(pendingIndex, 1);
+        } else {
+          await this.sendText(botId, chatId, `电脑端：${item.text}`, {
+            sessionTitle: snapshot.title,
+            sessionStatus: snapshot.status
+          });
+        }
+      } else if (projection === "assistant") {
+        const sentCards = await this.sendText(botId, chatId, item.text, {
           sessionTitle: snapshot.title,
           sessionStatus: snapshot.status
-        }))
-        .filter((card) => card.messageId);
+        });
+        runtime.lastAssistantCards = (sentCards ?? [])
+          .map(({ text, result }) => ({
+            itemId: item.id,
+            messageId: sentMessageId(result),
+            text,
+            sessionTitle: snapshot.title,
+            sessionStatus: snapshot.status
+          }))
+          .filter((card) => card.messageId);
+      } else {
+        await this.sendCard(botId, chatId, buildSessionItemCard(item, {
+          sessionTitle: snapshot.title,
+          sessionStatus: snapshot.status
+        }));
+      }
+      runtime.seenItems.add(item.id);
     }
     if (runtime.lastAssistantCards?.some((card) => card.sessionStatus !== snapshot.status)) {
       for (const card of runtime.lastAssistantCards) {
@@ -871,35 +972,6 @@ export class FeishuGatewayManager {
         sessionTitle: snapshot.title,
         sessionStatus: snapshot.status
       }));
-    }
-    const newApprovalItems = (snapshot.items ?? []).filter((item) => {
-      const unseen = item.id && !runtime.seenItems.has(item.id);
-      return unseen && isPendingApprovalItem(item);
-    });
-    for (const item of newApprovalItems) {
-      await this.sendCard(botId, chatId, buildApprovalCard({
-        sessionId: assignment.sessionId,
-        sessionTitle: snapshot.title,
-        item
-      }));
-    }
-    const newUserItems = (snapshot.items ?? []).filter((item) => {
-      const unseen = item.id && !runtime.seenItems.has(item.id);
-      return unseen && item.sourceType !== "collaboration" && item.type === "userMessage" && item.status !== "queued" && item.text;
-    });
-    for (const item of newUserItems) {
-      const pendingIndex = (runtime.pendingFeishuInputs ?? []).findIndex((text) => text === item.text);
-      if (pendingIndex >= 0) {
-        runtime.pendingFeishuInputs.splice(pendingIndex, 1);
-      } else {
-        await this.sendText(botId, chatId, `电脑端：${item.text}`, {
-          sessionTitle: snapshot.title,
-          sessionStatus: snapshot.status
-        });
-      }
-    }
-    for (const item of snapshot.items ?? []) {
-      if (item.id) runtime.seenItems.add(item.id);
     }
     this.botRuntime.set(botId, runtime);
   }
@@ -1430,6 +1502,89 @@ export function buildApprovalCard({ sessionId, sessionTitle = "", item }) {
   };
 }
 
+export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "", item }) {
+  const status = collaborationConfirmationStatus(item) || "pending";
+  const pending = status === "pending";
+  const confirmed = status === "confirmed";
+  const recipientName = optionalText(item?.collaborationRecipientName) || "目标 Agent";
+  const recipientId = optionalText(item?.collaborationRecipientAgentId);
+  const taskTitle = optionalText(item?.collaborationTaskTitle);
+  const instruction = optionalText(item?.presentationText) || "等待确认发送协作任务。";
+  const criteria = Array.isArray(item?.collaborationAcceptanceCriteria)
+    ? item.collaborationAcceptanceCriteria.map(optionalText).filter(Boolean)
+    : [];
+  const elements = [
+    { tag: "markdown", content: `**目标 Agent**\n${escapeCardMarkdown(recipientName)}` },
+    ...(recipientId ? [{ tag: "markdown", content: `**Agent ID**\n${escapeCardMarkdown(recipientId)}` }] : []),
+    ...(taskTitle ? [{ tag: "markdown", content: `**任务**\n${escapeCardMarkdown(taskTitle)}` }] : []),
+    { tag: "markdown", content: `**指令**\n${escapeCardMarkdown(instruction)}` },
+    ...(criteria.length ? [{
+      tag: "markdown",
+      content: `**验收标准**\n${criteria.map((criterion) => `- ${escapeCardMarkdown(criterion)}`).join("\n")}`
+    }] : [])
+  ];
+  if (pending) {
+    elements.push(cardButtonRow([
+      gatewayActionButton("确认发送", "respond_collaboration_confirmation", {
+        session_id: sessionId,
+        confirmation_id: item.collaborationConfirmationId,
+        decision: "confirm"
+      }, true),
+      gatewayActionButton("取消", "respond_collaboration_confirmation", {
+        session_id: sessionId,
+        confirmation_id: item.collaborationConfirmationId,
+        decision: "reject"
+      })
+    ]));
+  } else {
+    elements.push({
+      tag: "markdown",
+      content: confirmed ? "<font color='green'>已确认发送</font>" : "<font color='grey'>已取消</font>"
+    });
+  }
+  return cardShell({
+    title: optionalText(sessionTitle) || "确认发送协作任务",
+    subtitle: pending ? "Corptie · 确认发送协作任务" : (confirmed ? "Corptie · 协作任务已发送" : "Corptie · 协作任务已取消"),
+    template: pending ? "orange" : (confirmed ? "green" : "grey"),
+    summary: pending ? `确认向 ${recipientName} 发送协作任务` : (confirmed ? "协作任务已确认发送" : "协作任务已取消"),
+    elements
+  });
+}
+
+export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
+  const sender = optionalText(item?.collaborationSenderName) || "Peer Agent";
+  const taskTitle = optionalText(item?.collaborationTaskTitle);
+  const body = optionalText(item?.presentationText) || optionalText(item?.text) || "收到一条 Agent 协作消息。";
+  return cardShell({
+    title: optionalText(sessionTitle) || "Agent Collaboration",
+    subtitle: `Corptie · 来自 ${sender}`,
+    template: "turquoise",
+    summary: taskTitle || plainTextSummary(body),
+    elements: [
+      ...(taskTitle ? [{ tag: "markdown", content: `**任务**\n${escapeCardMarkdown(taskTitle)}` }] : []),
+      { tag: "markdown", content: escapeCardMarkdown(body) }
+    ]
+  });
+}
+
+function buildCollaborationConfirmationResultCard(message, succeeded) {
+  return cardShell({
+    title: succeeded ? "Corptie · 协作任务已发送" : "Corptie · 协作确认结果",
+    subtitle: succeeded ? "操作成功" : "操作未完成",
+    template: succeeded ? "green" : "grey",
+    summary: message,
+    elements: [{ tag: "markdown", content: escapeCardMarkdown(message) }]
+  });
+}
+
+function buildSessionItemCard(item, { sessionTitle = "", sessionStatus = "" } = {}) {
+  const content = optionalText(item?.presentationText)
+    || optionalText(item?.text)
+    || optionalText(item?.title)
+    || "Corptie 消息";
+  return buildMessageCard(content, { sessionTitle, sessionStatus });
+}
+
 function buildApprovalResultCard(message, approved) {
   return {
     schema: "2.0",
@@ -1692,6 +1847,42 @@ function isPendingApprovalItem(item) {
     && item.status !== "selected"
     && Array.isArray(item.options)
     && item.options.length > 0;
+}
+
+function isPendingCollaborationConfirmationItem(item) {
+  return item?.type === "collaborationConfirmation"
+    && collaborationConfirmationStatus(item) === "pending";
+}
+
+function shouldDeliverOnInitialFeishuSync(item) {
+  return isPendingApprovalItem(item) || isPendingCollaborationConfirmationItem(item);
+}
+
+function feishuProjectionForSessionItem(item) {
+  if (item?.feishuVisibility === "hidden") return "hidden";
+  if (item?.type === "collaborationConfirmation") return "collaboration_confirmation";
+  if (isPendingApprovalItem(item)) return "approval";
+
+  if (item?.sourceType === "collaboration" && item?.type === "userMessage") return "collaboration";
+  if (feishuHiddenSessionItemTypes.has(item?.type)) return "hidden";
+  if (item?.type === "userMessage") {
+    return item.status === "queued" || !optionalText(item.text) ? "hidden" : "user";
+  }
+  if (["agentMessage", "assistantMessage"].includes(item?.type) && optionalText(item.text)) {
+    return "assistant";
+  }
+
+  // Session message cards are remote-visible by default. Types that should
+  // remain local must opt out above or set feishuVisibility=hidden.
+  return "generic";
+}
+
+function collaborationConfirmationStatus(item) {
+  return optionalText(item?.collaborationConfirmationStatus || item?.status).toLowerCase();
+}
+
+function sentMessageId(result) {
+  return result?.data?.message_id ?? result?.data?.message?.message_id ?? null;
 }
 
 function requiredText(value, message) {

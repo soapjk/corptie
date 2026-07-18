@@ -72,7 +72,8 @@ const feishuGateway = new FeishuGatewayManager({
   getUsage: getGatewayUsage,
   sendMessage: sendUnifiedSessionMessage,
   interruptSession: interruptUnifiedSession,
-  respondToApproval: respondUnifiedSessionApproval
+  respondToApproval: respondUnifiedSessionApproval,
+  respondToCollaborationConfirmation: resolveCollaborationConfirmation
 });
 let codexModelsCache = null;
 let claudeModelsCache = null;
@@ -1410,7 +1411,9 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
   const annotated = detailItems.map((item) => {
     const work = workByTurnId.get(item.turnId);
     if (!work) return item;
-    const presentation = collaborationPresentationForWorkItem(work);
+    const presentation = item.type === "userMessage"
+      ? collaborationPresentationForWorkItem(work)
+      : {};
     return {
       ...item,
       title: work.kind === "collaboration" && item.type === "userMessage" ? "Agent Collaboration" : item.title,
@@ -1530,15 +1533,11 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     ? collaborationCore.pendingTaskConfirmationForSession(sessionId)
     : null;
   if (pendingConfirmation) {
-    const confirmation = confirmationReply === "confirm"
-      ? collaborationCore.confirmTaskConfirmation(pendingConfirmation.confirmationId)
-      : collaborationCore.rejectTaskConfirmation(pendingConfirmation.confirmationId);
-    emitEvent("CollaborationConfirmationResolved", { sessionId, confirmation }, { sessionId, source });
-    if (confirmationReply === "confirm") {
-      syncCollaborationDeliveriesIntoAgentWorkQueue().catch((error) => {
-        console.error(`[collaboration] confirmation delivery sync failed: ${error.message}`);
-      });
-    }
+    const confirmation = await resolveCollaborationConfirmation(
+      pendingConfirmation.confirmationId,
+      confirmationReply === "confirm",
+      source
+    );
     return { accepted: true, mode: "collaboration-confirmation", sessionId, collaborationConfirmation: confirmation };
   }
 
@@ -2010,6 +2009,21 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
   return session;
 }
 
+async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {
+  const before = collaborationCore.getTaskConfirmation(confirmationId);
+  const confirmation = approved
+    ? collaborationCore.confirmTaskConfirmation(confirmationId)
+    : collaborationCore.rejectTaskConfirmation(confirmationId);
+  const sessionId = confirmation.sourceSessionId ?? before?.sourceSessionId ?? null;
+  emitEvent("CollaborationConfirmationResolved", { sessionId, confirmation }, { sessionId, source });
+  if (approved) {
+    await syncCollaborationDeliveriesIntoAgentWorkQueue().catch((error) => {
+      console.error(`[collaboration] confirmation delivery sync failed: ${error.message}`);
+    });
+  }
+  return confirmation;
+}
+
 function unifiedErrorStatus(error) {
   if (error.code === "SESSION_NOT_FOUND") return 404;
   if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND"].includes(error.code)) return 409;
@@ -2020,7 +2034,13 @@ function unifiedErrorStatus(error) {
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
-  if (handleCollaborationHttpRequest({ request, response, url, core: collaborationCore })) {
+  if (handleCollaborationHttpRequest({
+    request,
+    response,
+    url,
+    core: collaborationCore,
+    onConfirmationResolved: resolveCollaborationConfirmation
+  })) {
     return;
   }
 

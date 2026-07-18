@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   buildAgentPickerCard,
   buildApprovalCard,
+  buildCollaborationConfirmationCard,
+  buildCollaborationMessageCard,
   buildCreateConfirmationCard,
   buildMessageCard,
   buildSessionListCard,
@@ -55,6 +57,74 @@ test("approval cards send explicit approve and deny callbacks", () => {
       option_role: "deny"
     }
   ]);
+});
+
+test("collaboration confirmation cards send explicit confirm and reject callbacks", () => {
+  const card = buildCollaborationConfirmationCard({
+    sessionId: "codex:thread-a",
+    sessionTitle: "发起方会话",
+    item: {
+      type: "collaborationConfirmation",
+      collaborationConfirmationId: "confirmation-a",
+      collaborationConfirmationStatus: "pending",
+      collaborationRecipientName: "Payments Agent",
+      collaborationRecipientAgentId: "agent-payments",
+      collaborationTaskTitle: "修复支付回调",
+      presentationText: "请修复重复回调问题。",
+      collaborationAcceptanceCriteria: ["重复事件只处理一次"]
+    }
+  });
+
+  const buttons = cardButtons(card);
+  assert.equal(card.header.template, "orange");
+  assert.equal(card.header.title.content, "发起方会话");
+  assert.deepEqual(buttons.map((button) => button.text.content), ["确认发送", "取消"]);
+  assert.deepEqual(buttons.map((button) => button.behaviors[0].value), [
+    {
+      corptie_action: "respond_collaboration_confirmation",
+      session_id: "codex:thread-a",
+      confirmation_id: "confirmation-a",
+      decision: "confirm"
+    },
+    {
+      corptie_action: "respond_collaboration_confirmation",
+      session_id: "codex:thread-a",
+      confirmation_id: "confirmation-a",
+      decision: "reject"
+    }
+  ]);
+});
+
+test("resolved collaboration confirmation cards contain no actions", () => {
+  const card = buildCollaborationConfirmationCard({
+    sessionId: "codex:thread-a",
+    item: {
+      collaborationConfirmationId: "confirmation-a",
+      collaborationConfirmationStatus: "confirmed",
+      collaborationRecipientName: "Payments Agent",
+      presentationText: "Please fix it."
+    }
+  });
+
+  assert.equal(card.header.template, "green");
+  assert.equal(cardButtons(card).length, 0);
+});
+
+test("inbound collaboration messages use presentation text instead of the trusted event capsule", () => {
+  const card = buildCollaborationMessageCard({
+    sessionTitle: "Payments",
+    item: {
+      collaborationSenderName: "Checkout Agent",
+      collaborationTaskTitle: "Investigate callback",
+      presentationText: "Only the task-scoped request is shown.",
+      text: "<peer_content>internal envelope</peer_content>"
+    }
+  });
+
+  assert.equal(card.header.title.content, "Payments");
+  assert.equal(card.header.subtitle.content, "Corptie · 来自 Checkout Agent");
+  assert.match(card.body.elements.at(-1).content.replaceAll("\\", ""), /Only the task-scoped request is shown/);
+  assert.doesNotMatch(card.body.elements.at(-1).content, /peer_content/);
 });
 
 test("session list is a Card 2.0 card with direct session callbacks", () => {

@@ -3503,9 +3503,6 @@ private struct DetailView: View {
             return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
                 + [ChatDisplayEntry(kind: .message(confirmation))]
         }
-        if items.contains(where: { $0.sourceType == "collaboration" && $0.localVisibility == "status_only" }) {
-            return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-        }
         let agentMessages = items.filter {
             $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
@@ -3664,9 +3661,6 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
         return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
             + [ChatDisplayEntry(kind: .message(confirmation))]
-    }
-    if items.contains(where: { $0.sourceType == "collaboration" && $0.localVisibility == "status_only" }) {
-        return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
     }
     let agentMessages = items.filter {
         $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -4555,7 +4549,8 @@ private struct ThreadItemView: View {
     }
 
     private var isCollaborationItem: Bool {
-        item.presentationRole == "collaboration" || item.sourceType == "collaboration"
+        item.type == "userMessage"
+            && (item.presentationRole == "collaboration" || item.sourceType == "collaboration")
     }
 
     private var collaborationPresentationText: String {
@@ -4908,14 +4903,14 @@ private struct ThreadItemView: View {
     }
 
     private var itemBackground: Color {
-        if item.sourceType == "collaboration" {
+        if isCollaborationItem {
             return CorptiePalette.collaborationSurface
         }
         return item.type == "approval" || item.type == "choice" ? Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1)) : Color.white
     }
 
     private var itemBorder: Color {
-        if item.sourceType == "collaboration" {
+        if isCollaborationItem {
             return CorptiePalette.collaborationBorder.opacity(0.62)
         }
         return item.type == "approval" || item.type == "choice" ? CorptiePalette.amber.opacity(0.32) : Color.black.opacity(0.08)
@@ -4925,7 +4920,7 @@ private struct ThreadItemView: View {
         if item.status == "queued" {
             return CorptiePalette.amber
         }
-        if item.sourceType == "collaboration" {
+        if isCollaborationItem {
             return CorptiePalette.periwinkle
         }
         return switch item.type {
