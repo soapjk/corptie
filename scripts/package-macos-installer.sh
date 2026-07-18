@@ -154,9 +154,9 @@ cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
       <string>47321</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/tmp/Corptie/backend.out.log</string>
+    <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/Corptie/backend.err.log</string>
+    <string>/dev/null</string>
   </dict>
 </plist>
 PLIST

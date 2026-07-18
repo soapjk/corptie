@@ -530,12 +530,19 @@ struct BackendSettings: Codable, Equatable {
     let configPath: String?
     let dataDir: String
     let dbPath: String
+    let logDir: String?
+    let logPaths: BackendLogPaths?
     let legacyDbPath: String?
     let choiceParser: ChoiceParserSettings?
     let codexBackend: CodexBackendSettings?
     let codeDiff: CodeDiffSettings?
     let agentProxy: AgentProxySettings?
     let gateway: GatewaySettings?
+}
+
+struct BackendLogPaths: Codable, Equatable {
+    let stdout: String
+    let stderr: String
 }
 
 struct GatewaySettings: Codable, Equatable {

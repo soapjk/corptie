@@ -14,6 +14,7 @@ const legacyDbPath = join(legacyAppSupportDir, "copets.sqlite");
 const configPath = join(appSupportDir, "config.json");
 const legacyConfigPath = join(legacyAppSupportDir, "config.json");
 const fallbackDataDir = appSupportDir;
+const fallbackLogDir = join(os.homedir(), "Library", "Logs", appSupportName);
 const dbFileName = "corptie.sqlite";
 
 export class CorptieStore {
@@ -99,6 +100,8 @@ export class CorptieStore {
       configPath: this.configPath,
       dataDir: this.dataDir,
       dbPath: this.dbPath,
+      logDir: this.logDirectory(),
+      logPaths: this.logPaths(),
       legacyDbPath,
       choiceParser: this.choiceParserSettings(),
       codexBackend: this.codexBackendSettings(),
@@ -130,9 +133,26 @@ export class CorptieStore {
     return normalizeGatewaySettings(this.config.gateway ?? {});
   }
 
+  logDirectory() {
+    return typeof this.config.logDir === "string" && this.config.logDir.trim()
+      ? this.config.logDir.trim()
+      : fallbackLogDir;
+  }
+
+  logPaths() {
+    const directory = this.logDirectory();
+    return {
+      stdout: join(directory, "backend.out.log"),
+      stderr: join(directory, "backend.err.log")
+    };
+  }
+
   async updateSettings(input = {}) {
     if (typeof input.dataDir === "string" && input.dataDir.trim()) {
       await this.setDataDirectory(input.dataDir);
+    }
+    if (typeof input.logDir === "string" && input.logDir.trim()) {
+      await this.setLogDirectory(input.logDir);
     }
     if (input.choiceParser && typeof input.choiceParser === "object") {
       this.config.choiceParser = normalizeChoiceParserSettings(input.choiceParser);
@@ -172,6 +192,15 @@ export class CorptieStore {
     this.dataDir = nextDir;
     this.dbPath = join(nextDir, dbFileName);
     await this.save();
+    await this.writeConfig();
+    return this.settings();
+  }
+
+  async setLogDirectory(logDir) {
+    const nextDir = logDir.trim();
+    if (!nextDir) throw new Error("Log directory is required.");
+    await mkdir(nextDir, { recursive: true });
+    this.config.logDir = nextDir;
     await this.writeConfig();
     return this.settings();
   }

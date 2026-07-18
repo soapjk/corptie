@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
+import { CodexAppServerClient, mapCodexThreadToSession } from "../src/adapters/codexAppServer.mjs";
 
 test("setThreadName uses the Codex app-server thread naming method", async () => {
   const calls = [];
@@ -90,4 +90,34 @@ test("startTurn forwards application context for rules that must apply to an exi
       value: "Every new user instruction creates a new task."
     }
   });
+});
+
+test("startTurn forwards restored sandbox and approval settings", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return { turn: { id: "turn-a" } };
+  };
+
+  await client.startTurn("thread-a", "Modify local files", {
+    approvalPolicy: "never",
+    sandboxPolicy: { type: "dangerFullAccess" }
+  });
+
+  assert.equal(calls[0].params.approvalPolicy, "never");
+  assert.deepEqual(calls[0].params.sandboxPolicy, { type: "dangerFullAccess" });
+});
+
+test("thread mapping retains permission fields returned by Codex", () => {
+  const session = mapCodexThreadToSession({
+    id: "thread-a",
+    status: "idle",
+    sandboxPolicy: { type: "dangerFullAccess" },
+    approvalPolicy: "never"
+  });
+
+  assert.equal(session.external.sandbox, "danger-full-access");
+  assert.equal(session.external.approvalPolicy, "never");
 });
