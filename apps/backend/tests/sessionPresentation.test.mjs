@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  composeStoredSessionList,
   mergeStoredSessionPresentation,
   preferredSessionTitle
 } from "../src/utils/sessionPresentation.mjs";
@@ -29,4 +30,20 @@ test("a gateway snapshot falls back to the provider title when no local title ex
     preferredSessionTitle({ title: " " }, { title: "Provider title" }),
     "Provider title"
   );
+});
+
+test("the archived session list includes stored Codex sessions", () => {
+  const sessions = composeStoredSessionList({
+    archived: true,
+    ptySessions: [{ id: "pty:a" }],
+    claudeSessions: [{ id: "claude:a" }],
+    codexSessions: [{ id: "codex:a" }],
+    mockSessions: [{ id: "mock:a" }]
+  });
+
+  assert.deepEqual(sessions.map((session) => session.id), [
+    "pty:a",
+    "claude:a",
+    "codex:a"
+  ]);
 });

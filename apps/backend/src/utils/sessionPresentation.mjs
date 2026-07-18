@@ -19,6 +19,21 @@ export function preferredSessionTitle(summary, detail) {
     || "Untitled session";
 }
 
+export function composeStoredSessionList({
+  archived = false,
+  ptySessions = [],
+  claudeSessions = [],
+  codexSessions = [],
+  mockSessions = []
+} = {}) {
+  return [
+    ...ptySessions,
+    ...claudeSessions,
+    ...codexSessions,
+    ...(archived ? [] : mockSessions)
+  ];
+}
+
 function nonEmptyText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }

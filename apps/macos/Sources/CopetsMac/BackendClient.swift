@@ -28,7 +28,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isSwitchingReasoning = false
     @Published private(set) var connectionTransitionSessionIds = Set<String>()
     @Published private(set) var undoneCodexTurnIds = Set<String>()
-    @Published var isShowingArchivedSessions = false
+    @Published private(set) var isShowingArchivedSessions = false
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
@@ -437,9 +437,10 @@ final class BackendClient: ObservableObject {
     }
 
     func refresh() async {
+        let requestedArchivedState = isShowingArchivedSessions
         do {
             var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)!
-            if isShowingArchivedSessions {
+            if requestedArchivedState {
                 components.queryItems = [URLQueryItem(name: "archived", value: "true")]
             }
             let url = components.url!
@@ -449,6 +450,9 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
+            guard requestedArchivedState == isShowingArchivedSessions else {
+                return
+            }
             if sessions != decoded.sessions {
                 sessions = decoded.sessions
                 syncSelectedSessionFromSessions()
@@ -468,6 +472,18 @@ final class BackendClient: ObservableObject {
             if lastError != message {
                 lastError = message
             }
+        }
+    }
+
+    func setShowingArchivedSessions(_ isShowing: Bool) {
+        guard isShowingArchivedSessions != isShowing else {
+            return
+        }
+        closeDetail()
+        isShowingArchivedSessions = isShowing
+        sessions = []
+        Task {
+            await refresh()
         }
     }
 

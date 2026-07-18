@@ -57,12 +57,7 @@ struct FloatingRootView: View {
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         if backendClient.isOnline {
-                            if backendClient.sessions.isEmpty {
-                                ReadyEmptyView()
-                                    .measureListHeight(.cards)
-                            } else {
-                                sessionListView
-                            }
+                            sessionListView
                         } else {
                             OfflineView(error: backendClient.lastError)
                                 .measureListHeight(.cards)
@@ -247,12 +242,24 @@ struct FloatingRootView: View {
 
     private var sessionListView: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if backendClient.isShowingArchivedSessions {
+                archivedSessionsHeader
+            }
+
             if isSearching {
                 sessionSearchBar
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            if filteredSessions.isEmpty {
+            if backendClient.sessions.isEmpty {
+                if backendClient.isShowingArchivedSessions {
+                    ArchivedSessionsEmptyView()
+                        .measureListHeight(.cards)
+                } else {
+                    ReadyEmptyView()
+                        .measureListHeight(.cards)
+                }
+            } else if filteredSessions.isEmpty {
                 ContentUnavailableView.search(text: searchText)
                     .frame(maxWidth: .infinity, minHeight: 150)
                     .measureListHeight(.cards)
@@ -310,6 +317,33 @@ struct FloatingRootView: View {
         }
     }
 
+    private var archivedSessionsHeader: some View {
+        HStack(spacing: 10) {
+            Label("Archived Sessions", systemImage: "archivebox.fill")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(CorptiePalette.primaryText)
+
+            Spacer(minLength: 8)
+
+            Button {
+                searchText = ""
+                isSearching = false
+                backendClient.setShowingArchivedSessions(false)
+            } label: {
+                Label("All Sessions", systemImage: "arrow.uturn.backward")
+                .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(Color.white.opacity(0.10), in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.15), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CorptiePalette.secondaryText)
+            .help("Return to active sessions")
+        }
+        .padding(.leading, 2)
+    }
+
     private var displayMode: SessionDisplayMode {
         get { SessionDisplayMode(rawValue: sessionDisplayModeRawValue) ?? .cards }
         nonmutating set { sessionDisplayModeRawValue = newValue.rawValue }
@@ -349,6 +383,7 @@ struct FloatingRootView: View {
         .background {
             LiquidGlassControlBackground(cornerRadius: 26)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
@@ -807,6 +842,14 @@ private struct CompactSessionRow: View {
                     .help(projectPath)
             }
             Spacer(minLength: 4)
+            if backendClient.isShowingArchivedSessions {
+                Button("Restore", systemImage: "tray.and.arrow.up") {
+                    backendClient.setArchived(false, session: session)
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 11, weight: .semibold))
+                .help("Restore this session to the main list")
+            }
         }
         .padding(.horizontal, 10)
         .frame(height: 42)
@@ -2411,6 +2454,21 @@ private struct TaskCardView: View {
                 }
 
                 Spacer()
+
+                if backendClient.isShowingArchivedSessions {
+                    Button {
+                        backendClient.setArchived(false, session: session)
+                    } label: {
+                        Label("Restore", systemImage: "tray.and.arrow.up")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .padding(.horizontal, 9)
+                            .frame(height: 26)
+                            .background(Color.white.opacity(0.10), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                    .help("Restore this session to the main list")
+                }
 
                 if session.pinned == true {
                     Image(systemName: "pin.fill")
@@ -5691,6 +5749,23 @@ private struct ReadyEmptyView: View {
             Text("Backend ready")
                 .font(.system(size: 15, weight: .semibold))
             Text("Click the + button in the lower-left corner to create a session.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ArchivedSessionsEmptyView: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "archivebox")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(CorptiePalette.secondaryText)
+            Text("No archived sessions")
+                .font(.system(size: 15, weight: .semibold))
+            Text("Sessions you archive will appear here and can be restored at any time.")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)
