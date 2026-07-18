@@ -341,6 +341,39 @@ struct UnifiedSessionSnapshotResponse: Decodable {
     let session: CodexThreadDetail
 }
 
+struct SessionUsageResponse: Decodable, Equatable {
+    let account: CodexAccountUsage
+    let context: CodexContextUsage?
+}
+
+struct CodexAccountUsage: Decodable, Equatable {
+    let available: Bool?
+    let provider: String?
+    let model: String?
+    let rateLimits: CodexRateLimitSnapshot?
+    let rateLimitsByLimitId: [String: CodexRateLimitSnapshot]?
+}
+
+struct CodexRateLimitSnapshot: Decodable, Equatable {
+    let limitId: String?
+    let limitName: String?
+    let primary: CodexRateLimitWindow?
+    let secondary: CodexRateLimitWindow?
+}
+
+struct CodexRateLimitWindow: Decodable, Equatable {
+    let usedPercent: Double?
+    let windowDurationMins: Int?
+    let resetsAt: Double?
+}
+
+struct CodexContextUsage: Decodable, Equatable {
+    let usedTokens: Double?
+    let contextWindow: Double?
+    let remainingTokens: Double?
+    let usedPercent: Double?
+}
+
 struct CodexThreadDetail: Decodable, Equatable {
     let id: String
     let title: String

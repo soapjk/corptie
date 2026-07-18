@@ -3140,6 +3140,7 @@ private struct DetailView: View {
                 && backendClient.selectedDetail?.capabilities?.canInterrupt != true {
                 ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
             } else {
+                ChatUsageBar(usage: backendClient.selectedSessionUsage)
                 MessageComposer(message: $message)
             }
         }
@@ -3543,6 +3544,61 @@ private struct DetailView: View {
         default:
             return false
         }
+    }
+}
+
+private struct ChatUsageBar: View {
+    let usage: SessionUsageResponse?
+
+    var body: some View {
+        if let usage, usage.account.provider == "codex" {
+            HStack(spacing: 12) {
+                if let context = usage.context,
+                   let remaining = context.remainingTokens,
+                   let window = context.contextWindow {
+                    usageItem(
+                        icon: "text.alignleft",
+                        label: L10n("Context"),
+                        value: "\(compactTokens(remaining)) / \(compactTokens(window))"
+                    )
+                }
+                if let window = preferredRateLimitWindow(usage.account) {
+                    usageItem(
+                        icon: "gauge.with.dots.needle.33percent",
+                        label: L10n("Codex quota"),
+                        value: "\(formatPercent(max(0, 100 - (window.usedPercent ?? 0))))%"
+                    )
+                }
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(CorptiePalette.secondaryText)
+            .padding(.horizontal, 8)
+        }
+    }
+
+    private func usageItem(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text("\(label) \(value)")
+        }
+        .help("\(label): \(value)")
+    }
+
+    private func preferredRateLimitWindow(_ account: CodexAccountUsage) -> CodexRateLimitWindow? {
+        let snapshots = account.rateLimitsByLimitId?.sorted { $0.key < $1.key }.map(\.value)
+            ?? [account.rateLimits].compactMap { $0 }
+        return snapshots.compactMap(\.primary).first
+    }
+
+    private func compactTokens(_ value: Double) -> String {
+        if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
+        if value >= 1_000 { return String(format: "%.0fK", value / 1_000) }
+        return String(format: "%.0f", value)
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        value.rounded() == value ? String(format: "%.0f", value) : String(format: "%.1f", value)
     }
 }
 
