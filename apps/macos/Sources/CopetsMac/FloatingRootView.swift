@@ -3555,13 +3555,14 @@ private struct ChatUsageBar: View {
                 if let context = usage.context,
                    let remaining = context.remainingTokens,
                    let window = context.contextWindow {
-                    let usedPercent = context.usedPercent ?? max(0, min(100, (window - remaining) / window * 100))
+                    let used = context.usedTokens ?? max(0, window - remaining)
+                    let usedPercent = context.usedPercent ?? max(0, min(100, used / window * 100))
                     usageItem(
                         icon: "text.alignleft",
-                        value: "\(compactTokens(remaining))/\(compactTokens(window))",
+                        value: "\(compactTokens(used))/\(compactTokens(window))",
                         progress: usedPercent / 100,
                         color: contextColor(usedPercent: usedPercent),
-                        help: "\(L10n("Context")): \(compactTokens(remaining)) / \(compactTokens(window)) · \(formatPercent(usedPercent))% used"
+                        help: "\(L10n("Context")): \(compactTokens(used)) / \(compactTokens(window)) · \(formatPercent(usedPercent))% used"
                     )
                 }
                 if let window = preferredRateLimitWindow(usage.account) {
