@@ -3551,35 +3551,55 @@ private struct ChatUsageBar: View {
 
     var body: some View {
         if let usage, usage.account.provider == "codex" {
-            HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
                 if let context = usage.context,
                    let remaining = context.remainingTokens,
                    let window = context.contextWindow {
+                    let usedPercent = context.usedPercent ?? max(0, min(100, (window - remaining) / window * 100))
                     usageItem(
                         icon: "text.alignleft",
-                        label: L10n("Context"),
-                        value: "\(compactTokens(remaining)) / \(compactTokens(window))"
+                        value: compactTokens(remaining),
+                        progress: usedPercent / 100,
+                        color: contextColor(usedPercent: usedPercent),
+                        help: "\(L10n("Context")): \(compactTokens(remaining)) / \(compactTokens(window)) · \(formatPercent(usedPercent))% used"
                     )
                 }
                 if let window = preferredRateLimitWindow(usage.account) {
+                    let remainingPercent = max(0, 100 - (window.usedPercent ?? 0))
                     usageItem(
-                        icon: "gauge.with.dots.needle.33percent",
-                        label: L10n("Codex quota"),
-                        value: "\(formatPercent(max(0, 100 - (window.usedPercent ?? 0))))%"
+                        icon: "bolt.fill",
+                        value: "\(formatPercent(remainingPercent))%",
+                        progress: remainingPercent / 100,
+                        color: quotaColor(remainingPercent: remainingPercent),
+                        help: "\(L10n("Codex quota")): \(formatPercent(remainingPercent))% remaining"
                     )
                 }
             }
             .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(CorptiePalette.secondaryText)
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
-    private func usageItem(icon: String, label: String, value: String) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: icon)
-            Text("\(label) \(value)")
+    private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String) -> some View {
+        HStack(spacing: 5) {
+            UsageProgressRing(icon: icon, progress: progress, color: color)
+            Text(value)
+                .foregroundStyle(color)
+                .monospacedDigit()
         }
-        .help("\(label): \(value)")
+        .help(help)
+    }
+
+    private func quotaColor(remainingPercent: Double) -> Color {
+        if remainingPercent < 30 { return .red }
+        if remainingPercent <= 50 { return .yellow }
+        return CorptiePalette.secondaryText
+    }
+
+    private func contextColor(usedPercent: Double) -> Color {
+        if usedPercent > 70 { return .red }
+        if usedPercent > 50 { return .yellow }
+        return CorptiePalette.secondaryText
     }
 
     private func preferredRateLimitWindow(_ account: CodexAccountUsage) -> CodexRateLimitWindow? {
@@ -3596,6 +3616,27 @@ private struct ChatUsageBar: View {
 
     private func formatPercent(_ value: Double) -> String {
         value.rounded() == value ? String(format: "%.0f", value) : String(format: "%.1f", value)
+    }
+}
+
+private struct UsageProgressRing: View {
+    let icon: String
+    let progress: Double
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(color.opacity(0.18), lineWidth: 1.5)
+            Circle()
+                .trim(from: 0, to: max(0, min(1, progress)))
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Image(systemName: icon)
+                .font(.system(size: 5.5, weight: .bold))
+                .foregroundStyle(color)
+        }
+        .frame(width: 13, height: 13)
     }
 }
 
