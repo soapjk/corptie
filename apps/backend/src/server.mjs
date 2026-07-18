@@ -25,7 +25,7 @@ import { handleCollaborationHttpRequest } from "./collaboration/collaborationHtt
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
-import { mergeStoredSessionPresentation, preferredSessionTitle } from "./utils/sessionPresentation.mjs";
+import { composeStoredSessionList, mergeStoredSessionPresentation, preferredSessionTitle } from "./utils/sessionPresentation.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -2541,7 +2541,13 @@ function route(request, response) {
         ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
       ].filter((session) => !listedIds.has(session.id));
       sendJson(response, 200, {
-        sessions: sortSessionsForList([...ptySessions, ...claudeSessions, ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
+        sessions: sortSessionsForList(composeStoredSessionList({
+          archived,
+          ptySessions,
+          claudeSessions,
+          codexSessions,
+          mockSessions
+        })),
         sources: {
           pty: {
             ok: true,

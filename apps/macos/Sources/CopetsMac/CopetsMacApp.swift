@@ -145,9 +145,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "\(CorptieAppEnvironment.appName) Settings"
         window.center()
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SettingsView {
-            window.close()
-        })
+        window.contentView = NSHostingView(rootView: SettingsView(
+            onClose: {
+                window.close()
+            },
+            openArchivedSessions: { [weak self] in
+                self?.backendClient.setShowingArchivedSessions(true)
+                window.close()
+                self?.panelController?.show()
+            }
+        ))
         window.makeKeyAndOrderFront(nil)
         settingsWindow = window
     }
@@ -272,6 +279,9 @@ enum CorptiePermissionManager {
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     var onClose: () -> Void = {}
+    var openArchivedSessions: () -> Void = {
+        BackendClient.shared.setShowingArchivedSessions(true)
+    }
     @State private var dataDir = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
@@ -421,6 +431,25 @@ struct SettingsView: View {
                             .foregroundStyle(CorptiePalette.secondaryText)
                             .textSelection(.enabled)
                             .lineLimit(2)
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Session Management")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Archived Sessions")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("View or restore sessions removed from the main screen.")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                    Spacer()
+                    Button("View…", systemImage: "archivebox") {
+                        openArchivedSessions()
                     }
                 }
             }
