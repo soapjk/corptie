@@ -82,7 +82,7 @@ PLIST
 BACKEND_SOURCE="${ROOT}/apps/backend"
 BACKEND_DEST="${APP_DIR}/Contents/Resources/backend"
 mkdir -p "${BACKEND_DEST}"
-cp -R "${BACKEND_SOURCE}/package.json" "${BACKEND_SOURCE}/package-lock.json" "${BACKEND_SOURCE}/src" "${BACKEND_SOURCE}/scripts" "${BACKEND_DEST}/"
+cp -R "${BACKEND_SOURCE}/package.json" "${BACKEND_SOURCE}/package-lock.json" "${BACKEND_SOURCE}/src" "${BACKEND_SOURCE}/scripts" "${BACKEND_SOURCE}/resources" "${BACKEND_DEST}/"
 if [ -d "${BACKEND_SOURCE}/node_modules" ]; then
   cp -R "${BACKEND_SOURCE}/node_modules" "${BACKEND_DEST}/"
 fi

@@ -109,6 +109,8 @@ Every new collaboration request is shown to the user as a confirmation card befo
 
 The two environments do not share backend config, SQLite data, frontend `UserDefaults`, transparency settings, or remembered window sizes.
 
+Corptie-managed Codex processes also use isolated runtime homes: production uses `~/.corptie/runtimes/codex/`, while development uses `~/.corptie/development/runtimes/codex/`. Neither modifies the native Codex home at `~/.codex/`. On first initialization, Corptie locally copies the existing authentication and the thread state it already manages; the homes diverge after that one-time bootstrap. Every backend startup verifies and repairs Corptie's built-in Skill, and every new or resumed Agent receives the collaboration MCP configuration dynamically.
+
 ## 🛠️ Develop
 
 Requirements: macOS 14+, Node.js 20+, Swift 6, and an installed and authenticated Codex CLI or Claude Code. Install backend dependencies before the first run:
