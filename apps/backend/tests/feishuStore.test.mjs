@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,7 +14,7 @@ async function withStore(run) {
   });
   try {
     await store.initialize();
-    await run(store);
+    await run(store, directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -142,5 +142,19 @@ test("gateway trusted workspaces are normalized and persisted", async () => {
       gateway: { trustedWorkspaces: [" /tmp/project-a ", "/tmp/project-a", "/tmp/project-b"] }
     });
     assert.deepEqual(store.settings().gateway.trustedWorkspaces, ["/tmp/project-a", "/tmp/project-b"]);
+  });
+});
+
+test("log directory is created, persisted, and exposed with concrete log paths", async () => {
+  await withStore(async (store, directory) => {
+    const logDir = join(directory, "external-logs");
+    await store.updateSettings({ logDir });
+
+    assert.equal(store.settings().logDir, logDir);
+    assert.deepEqual(store.settings().logPaths, {
+      stdout: join(logDir, "backend.out.log"),
+      stderr: join(logDir, "backend.err.log")
+    });
+    assert.equal(JSON.parse(await readFile(join(directory, "config.json"), "utf8")).logDir, logDir);
   });
 });

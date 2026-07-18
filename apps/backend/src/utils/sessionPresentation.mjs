@@ -9,7 +9,12 @@ export function mergeStoredSessionPresentation(session, stored) {
     pinned: stored.pinned,
     sortOrder: stored.sortOrder,
     avatarPath: stored.avatarPath ?? session.avatarPath ?? null,
-    suggestedOptions: stored.suggestedOptions ?? session.suggestedOptions ?? null
+    suggestedOptions: stored.suggestedOptions ?? session.suggestedOptions ?? null,
+    external: {
+      ...(session.external ?? {}),
+      sandbox: stored.external?.sandbox ?? session.external?.sandbox,
+      approvalPolicy: stored.external?.approvalPolicy ?? session.external?.approvalPolicy
+    }
   };
 }
 

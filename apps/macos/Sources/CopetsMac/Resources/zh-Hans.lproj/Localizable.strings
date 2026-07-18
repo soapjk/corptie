@@ -331,3 +331,7 @@
 "Create the new session with the available name “%@”?" = "是否使用可用名称“%@”创建新会话？";
 "Context" = "上下文";
 "Codex quota" = "Codex 额度";
+"Log Directory" = "日志目录";
+"Choose a log directory" = "选择日志目录";
+"Choose log directory" = "选择日志目录";
+"Backend logs rotate automatically at 20 MB and keep five backups." = "后端日志达到 20 MB 后会自动轮转，并保留五份备份。";

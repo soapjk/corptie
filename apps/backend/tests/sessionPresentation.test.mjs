@@ -16,6 +16,23 @@ test("a locally saved custom title wins over the Codex thread preview after rest
   assert.equal(merged.title, "My custom project name");
 });
 
+test("stored Codex permissions survive merging with a resumed thread", () => {
+  const merged = mergeStoredSessionPresentation(
+    {
+      id: "codex:thread-a",
+      external: { provider: "codex-app-server", threadId: "thread-a" }
+    },
+    {
+      id: "codex:thread-a",
+      external: { sandbox: "danger-full-access", approvalPolicy: "never" }
+    }
+  );
+
+  assert.equal(merged.external.sandbox, "danger-full-access");
+  assert.equal(merged.external.approvalPolicy, "never");
+  assert.equal(merged.external.threadId, "thread-a");
+});
+
 test("a gateway snapshot prefers the Corptie summary title over detail title", () => {
   assert.equal(
     preferredSessionTitle(
