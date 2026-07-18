@@ -735,6 +735,9 @@ function collaborationThreadOptions(agentId) {
   if (!agentId) return {};
   return {
     config: {
+      features: {
+        multi_agent: false
+      },
       mcp_servers: {
         "corptie-collaboration": {
           command: process.execPath,
