@@ -30,11 +30,15 @@ test("startThread forwards collaboration MCP config and allows slow MCP startup"
 
   await client.startThread({
     cwd: "/tmp/workspace",
-    config: { mcp_servers: { collaboration: { command: "node" } } },
+    config: {
+      features: { multi_agent: false },
+      mcp_servers: { collaboration: { command: "node" } }
+    },
     developerInstructions: "Stable Agent identity: agent-a"
   });
 
   assert.equal(calls[0].method, "thread/start");
+  assert.equal(calls[0].params.config.features.multi_agent, false);
   assert.equal(calls[0].params.config.mcp_servers.collaboration.command, "node");
   assert.equal(calls[0].params.developerInstructions, "Stable Agent identity: agent-a");
   assert.equal(calls[0].timeoutMs, 30000);
@@ -50,7 +54,10 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
   };
 
   await client.resumeThread("thread-a", {
-    config: { mcp_servers: { collaboration: { command: "node" } } },
+    config: {
+      features: { multi_agent: false },
+      mcp_servers: { collaboration: { command: "node" } }
+    },
     developerInstructions: "Stable Agent identity: agent-a"
   });
 
@@ -58,7 +65,10 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
     method: "thread/resume",
     params: {
       threadId: "thread-a",
-      config: { mcp_servers: { collaboration: { command: "node" } } },
+      config: {
+        features: { multi_agent: false },
+        mcp_servers: { collaboration: { command: "node" } }
+      },
       developerInstructions: "Stable Agent identity: agent-a"
     },
     timeoutMs: 30000
