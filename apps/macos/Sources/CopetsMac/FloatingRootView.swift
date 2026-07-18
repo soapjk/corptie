@@ -3558,7 +3558,7 @@ private struct ChatUsageBar: View {
                     let usedPercent = context.usedPercent ?? max(0, min(100, (window - remaining) / window * 100))
                     usageItem(
                         icon: "text.alignleft",
-                        value: compactTokens(remaining),
+                        value: "\(compactTokens(remaining))/\(compactTokens(window))",
                         progress: usedPercent / 100,
                         color: contextColor(usedPercent: usedPercent),
                         help: "\(L10n("Context")): \(compactTokens(remaining)) / \(compactTokens(window)) · \(formatPercent(usedPercent))% used"
