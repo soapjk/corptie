@@ -3961,11 +3961,11 @@ private struct ThreadMetaView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 ConnectionIndicatorLight(
                     color: detail.isConnecting ? CorptiePalette.disconnected : detail.connectionColor,
-                    size: 6,
-                    glowSize: 14,
+                    size: 5,
+                    glowSize: 10,
                     isBreathing: detail.isConnecting
                 )
                 Text(detail.status.label)
@@ -3974,15 +3974,12 @@ private struct ThreadMetaView: View {
                     ActivityStatusText(text: activityStatus, isActive: detail.status == .running)
                 }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color.white.opacity(0.1), in: Capsule())
 
             Spacer(minLength: 8)
 
             ChatUsageBar(usage: backendClient.selectedSessionUsage)
         }
-        .font(.system(size: 10, weight: .semibold))
+        .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(CorptiePalette.secondaryText)
         .frame(maxWidth: .infinity)
     }
