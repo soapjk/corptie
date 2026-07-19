@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
 
@@ -180,6 +181,7 @@ export class CodexAppServerClient {
     const turn = await this.startTurn(threadId, prompt, {
       cwd,
       approvalPolicy: "never",
+      sandboxPolicy: { type: "readOnly" },
       model
     });
     const turnId = turn.turn.id;
@@ -630,6 +632,7 @@ export function mapCodexThreadToSession(thread) {
   const items = threadItems(thread);
   const latestAgentText = latestAgentMessageTextFromItems(items);
 
+  const permissions = codexPermissionsFromThread(thread);
   return {
     id: `codex:${thread.id}`,
     title: preview.length > 72 ? `${preview.slice(0, 69)}...` : preview,
@@ -649,7 +652,8 @@ export function mapCodexThreadToSession(thread) {
       cwd: thread.cwd,
       source: thread.source,
       currentModel: thread.currentModel ?? thread.model ?? null,
-      currentReasoningLevel: thread.currentReasoningLevel ?? thread.reasoningEffort ?? null
+      currentReasoningLevel: thread.currentReasoningLevel ?? thread.reasoningEffort ?? null,
+      ...(permissions ?? {})
     }
   };
 }

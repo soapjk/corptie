@@ -40,6 +40,16 @@ import {
   suggestAvailableSessionTitle
 } from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
+import {
+  codexPermissionsForSession,
+  codexTurnPermissionOptions,
+  hasCodexSessionPermissions,
+  normalizeCodexApprovalPolicy,
+  normalizeCodexSandbox,
+  readInitialCodexPermissionsFromRollout,
+  withCodexSessionPermissions
+} from "./utils/codexPermissions.mjs";
+import { configureBackendLogging } from "./utils/backendLogging.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -1022,6 +1032,7 @@ async function findCodexRolloutBySessionId(sessionId) {
   for (const root of [...new Set(roots)]) {
     const files = await listRolloutFiles(root);
     for (const path of files) {
+      if (!path.includes(sessionId)) continue;
       const meta = await readSessionMeta(path).catch(() => null);
       if (meta?.id === sessionId) {
         return {
@@ -1034,6 +1045,18 @@ async function findCodexRolloutBySessionId(sessionId) {
     }
   }
   return null;
+}
+
+async function ensureCodexSessionPermissions(session) {
+  if (!session || hasCodexSessionPermissions(session)) return session;
+  const threadId = String(session.id ?? session.external?.threadId ?? "").replace(/^codex:/, "");
+  const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
+  const recovered = rollout?.path
+    ? readInitialCodexPermissionsFromRollout(await readFile(rollout.path, "utf8").catch(() => ""))
+    : null;
+  const next = withCodexSessionPermissions(session, recovered ?? {});
+  if (session.id) upsertManagedCodexSession(next);
+  return next;
 }
 
 async function listRolloutFiles(root) {
@@ -1243,18 +1266,6 @@ function friendlyError(error) {
   }
 }
 
-function normalizeCodexSandbox(value) {
-  const sandbox = typeof value === "string" ? value.trim() : "";
-  const allowed = new Set(["workspace-write", "danger-full-access", "read-only"]);
-  return allowed.has(sandbox) ? sandbox : "workspace-write";
-}
-
-function normalizeCodexApprovalPolicy(value) {
-  const approval = typeof value === "string" ? value.trim() : "";
-  const allowed = new Set(["on-request", "ask-risky", "on-failure", "never"]);
-  return allowed.has(approval) ? approval : "on-request";
-}
-
 function codexApprovalPolicyForCli(approvalPolicy) {
   return approvalPolicy === "ask-risky" ? "on-request" : approvalPolicy;
 }
@@ -1397,17 +1408,17 @@ async function createGatewaySession(input = {}) {
       status: "inactive",
       capabilities: ["codex-session", "corptie-collaboration"]
     });
+    const permissions = { sandbox: "workspace-write", approvalPolicy: "on-request" };
     const started = await codexClient.startThread({
       cwd,
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
+      ...permissions,
       ...collaborationThreadOptions(collaborationAgentId)
     });
     const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
       cwd,
-      approvalPolicy: "on-request"
+      ...codexTurnPermissionOptions({ external: permissions })
     });
-    const session = {
+    const session = withCodexSessionPermissions({
       ...mapCodexThreadToSession({
         ...started.thread,
         preview: title,
@@ -1429,7 +1440,7 @@ async function createGatewaySession(input = {}) {
         ...codexAppServerSessionCapabilities(),
         canInterrupt: true
       }
-    };
+    }, permissions);
     upsertManagedCodexSession(session, collaborationAgentId);
     emitEvent("CodexThreadCreated", {
       threadId: started.thread.id,
@@ -1657,12 +1668,13 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     const threadId = sessionId.slice("codex:".length);
     bumpChoiceGeneration(sessionId);
     store.clearActiveChoicePrompt(sessionId);
-    const managed = managedCodexSessions.get(sessionId) ?? before;
+    const managed = await ensureCodexSessionPermissions(managedCodexSessions.get(sessionId) ?? before);
     const collaborationAgent = collaborationCore.getAgentForSession(sessionId);
     await codexClient.resumeThread(threadId, collaborationThreadOptions(collaborationAgent?.agentId));
     result = await codexClient.startTurn(threadId, value, {
       model: managed?.external?.currentModel ?? options.model ?? undefined,
-      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined
+      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
+      ...codexTurnPermissionOptions(managed)
     });
     upsertManagedCodexSession({
       ...managed,
@@ -1721,6 +1733,8 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     throw error;
   }
 
+  session = await ensureCodexSessionPermissions(session);
+  const permissions = codexPermissionsForSession(session);
   const previousAgent = collaborationCore.getAgentForSession(sessionId);
   const cwd = session.external?.cwd || process.cwd();
   const model = session.external?.currentModel ?? undefined;
@@ -1730,8 +1744,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   try {
   const started = await codexClient.startThread({
     cwd,
-    approvalPolicy: "on-request",
-    sandbox: "workspace-write",
+    ...permissions,
     model,
     ...collaborationThreadOptions(previousAgent?.agentId)
   });
@@ -1739,7 +1752,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
   });
 
-  const replacement = {
+  const replacement = withCodexSessionPermissions({
     ...mapCodexThreadToSession({
       ...started.thread,
       preview: title,
@@ -1769,7 +1782,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
       }).external,
       activeTurnId: null
     }
-  };
+  }, permissions);
   managedCodexSessions.delete(sessionId);
   store.deleteSession(sessionId);
   upsertManagedCodexSession(replacement, previousAgent?.agentId ?? null);
@@ -2199,6 +2212,12 @@ function route(request, response) {
       .then(async (input) => {
         const before = store.settings();
         const settings = await store.updateSettings(input);
+        if (settings.logDir !== before.logDir) {
+          configureBackendLogging(settings.logDir, {
+            mirrorToOriginalConsole: environmentName === "development"
+          });
+          console.log(`[backend-logging] directory changed to ${settings.logDir}`);
+        }
         const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
         const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
         if (codexBackendChanged || codexProxyChanged) {
@@ -2703,7 +2722,9 @@ function route(request, response) {
             external: {
               ...session.external,
               currentModel: managedSession.external?.currentModel ?? session.external?.currentModel ?? null,
-              currentReasoningLevel: managedSession.external?.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null
+              currentReasoningLevel: managedSession.external?.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null,
+              sandbox: managedSession.external?.sandbox ?? session.external?.sandbox,
+              approvalPolicy: managedSession.external?.approvalPolicy ?? session.external?.approvalPolicy
             }
           }, stored);
         });
@@ -3503,10 +3524,13 @@ function route(request, response) {
           status: "inactive",
           capabilities: ["codex-session", "corptie-collaboration"]
         });
+        const permissions = {
+          sandbox: normalizeCodexSandbox(input.sandbox),
+          approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
+        };
         const started = await codexClient.startThread({
           cwd,
-          approvalPolicy: input.approvalPolicy ?? "on-request",
-          sandbox: input.sandbox ?? "workspace-write",
+          ...permissions,
           model: input.model,
           modelProvider: input.modelProvider,
           ...collaborationThreadOptions(collaborationAgentId)
@@ -3515,12 +3539,12 @@ function route(request, response) {
         const threadId = started.thread.id;
         const turn = await codexClient.startTurn(threadId, prompt, {
           cwd,
-          approvalPolicy: input.approvalPolicy ?? "on-request",
+          ...codexTurnPermissionOptions({ external: permissions }),
           model: input.model,
           reasoningEffort: input.reasoningLevel
         });
 
-        const session = {
+        const session = withCodexSessionPermissions({
           ...mapCodexThreadToSession({
             ...started.thread,
             preview: title,
@@ -3539,7 +3563,7 @@ function route(request, response) {
           ...codexAppServerSessionCapabilities(),
           canInterrupt: true
         }
-      };
+      }, permissions);
         upsertManagedCodexSession(session, collaborationAgentId);
 
         emitEvent("CodexThreadCreated", { threadId, session, turn: turn.turn });
@@ -3721,7 +3745,9 @@ function route(request, response) {
 
         console.log(`[codex] send requested thread=${threadId} chars=${text.length}`);
         const sessionId = `codex:${threadId}`;
-        const managedSessionBeforeSend = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+        const managedSessionBeforeSend = await ensureCodexSessionPermissions(
+          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
+        );
         if (!managedSessionBeforeSend) {
           sendJson(response, 404, { error: "Session not found", code: "SESSION_NOT_FOUND" });
           return;
@@ -3747,7 +3773,8 @@ function route(request, response) {
           const managedSession = managedCodexSessions.get(`codex:${threadId}`);
           const result = await codexClient.startTurn(threadId, text, {
             model: managedSession?.external?.currentModel ?? input.model ?? undefined,
-            reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined
+            reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined,
+            ...codexTurnPermissionOptions(managedSession ?? managedSessionBeforeSend)
           });
           if (managedSession) {
             upsertManagedCodexSession({
@@ -3977,6 +4004,7 @@ async function resolveSessionContextUsage(session) {
 const server = http.createServer(route);
 
 await store.initialize();
+activateStoredBackendLogging();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
 let storedSessionsAtStartup = [
   ...store.listSessions({ archived: false }),
@@ -4054,6 +4082,23 @@ process.on("SIGTERM", async () => {
   await store.save();
   process.exit(0);
 });
+
+function activateStoredBackendLogging() {
+  const configuredDirectory = store.settings().logDir;
+  const options = { mirrorToOriginalConsole: environmentName === "development" };
+  try {
+    configureBackendLogging(configuredDirectory, options);
+  } catch (error) {
+    const fallbackDirectory = join(
+      os.homedir(),
+      "Library",
+      "Logs",
+      environmentName === "development" ? "Corptie Development" : "Corptie"
+    );
+    configureBackendLogging(fallbackDirectory, options);
+    console.error(`[backend-logging] configured directory unavailable (${configuredDirectory}); using ${fallbackDirectory}: ${error.message}`);
+  }
+}
 
 function migrateLegacyQueuedSessionItems() {
   for (const session of store.listSessions({ archived: false })) {

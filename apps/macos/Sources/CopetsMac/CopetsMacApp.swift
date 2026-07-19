@@ -304,6 +304,7 @@ struct SettingsView: View {
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
     @State private var dataDir = ""
+    @State private var logDir = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
     @State private var codexBackend = CodexBackendSettings.defaults
@@ -366,7 +367,11 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(backendClient.isUpdatingSettings || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        backendClient.isUpdatingSettings
+                        || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || logDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 }
             }
         }
@@ -381,6 +386,7 @@ struct SettingsView: View {
             if dataDir.isEmpty {
                 dataDir = backendClient.settings?.dataDir ?? defaultDataDirectory
             }
+            logDir = backendClient.settings?.logDir ?? defaultLogDirectory
             choiceParser = backendClient.settings?.choiceParser ?? .defaults
             savedChoiceParser = choiceParser
             codexBackend = backendClient.settings?.codexBackend ?? .defaults
@@ -395,6 +401,7 @@ struct SettingsView: View {
         .onChange(of: backendClient.settings) { _, settings in
             if let settings {
                 dataDir = settings.dataDir
+                logDir = settings.logDir ?? defaultLogDirectory
                 choiceParser = settings.choiceParser ?? .defaults
                 savedChoiceParser = choiceParser
                 codexBackend = settings.codexBackend ?? .defaults
@@ -473,6 +480,27 @@ struct SettingsView: View {
                     }
                     .help(L10n("Choose data directory"))
                 }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n("Log Directory"))
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                HStack(spacing: 8) {
+                    TextField(L10n("Choose a log directory"), text: $logDir)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+
+                    Button {
+                        chooseLogDirectory()
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .help(L10n("Choose log directory"))
+                }
+                Text(L10n("Backend logs rotate automatically at 20 MB and keep five backups."))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
             }
 
             if let settings = backendClient.settings {
@@ -1142,6 +1170,7 @@ struct SettingsView: View {
     private func saveAllSettings() async {
         if await backendClient.updateSettings(
             dataDir: dataDir,
+            logDir: logDir,
             choiceParser: choiceParser,
             codexBackend: codexBackend,
             codeDiff: codeDiff,
@@ -1160,7 +1189,7 @@ struct SettingsView: View {
 
     private func confirmChoiceParser() async {
         choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataDir: dataDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
+        if await backendClient.updateSettings(dataDir: dataDir, logDir: logDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
             savedCodeDiff = codeDiff
@@ -1198,9 +1227,28 @@ struct SettingsView: View {
         }
     }
 
+    private func chooseLogDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = URL(fileURLWithPath: logDir.isEmpty ? defaultLogDirectory : logDir)
+
+        if panel.runModal() == .OK, let url = panel.url {
+            logDir = url.path
+        }
+    }
+
     private var defaultDataDirectory: String {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         return support?.appendingPathComponent(CorptieAppEnvironment.appSupportFolderName, isDirectory: true).path ?? NSHomeDirectory()
+    }
+
+    private var defaultLogDirectory: String {
+        let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs", isDirectory: true)
+        return logs?.appendingPathComponent(CorptieAppEnvironment.appSupportFolderName, isDirectory: true).path ?? NSHomeDirectory()
     }
 }
 
