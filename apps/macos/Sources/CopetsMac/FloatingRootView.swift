@@ -894,11 +894,17 @@ private struct HoverRevealCloseButton: View {
 }
 
 private struct MainPanelCloseButton: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
     @State private var isHovering = false
 
     var body: some View {
         Button {
-            NSApp.keyWindow?.orderOut(nil)
+            let mainWindow = NSApp.keyWindow
+            if let selectedSession = backendClient.selectedSession {
+                detachedSessionManager.float(session: selectedSession)
+            }
+            mainWindow?.orderOut(nil)
         } label: {
             ZStack {
                 Circle()
