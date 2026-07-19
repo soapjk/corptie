@@ -1394,6 +1394,8 @@ export class CorptieStore {
         threadId,
         sessionId: rawStatus.sessionId ?? threadId,
         activeTurnId: rawStatus.activeTurnId ?? null,
+        sandbox: rawStatus.sandbox ?? rawStatus.sandboxMode ?? null,
+        approvalPolicy: rawStatus.approvalPolicy ?? null,
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
         connectionStatus: isCodexAppServer ? null : "pty disconnected",
         currentModel: rawStatus.currentModel ?? rawStatus.resume?.currentModel ?? modelFromArgs(args),
@@ -1616,6 +1618,8 @@ function toRawStatus(session) {
     sessionId: session.external?.sessionId ?? null,
     activeTurnId: session.external?.activeTurnId ?? null,
     source: session.external?.source ?? null,
+    sandbox: session.external?.sandbox ?? session.sandbox ?? null,
+    approvalPolicy: session.external?.approvalPolicy ?? session.approvalPolicy ?? null,
     capabilities: session.capabilities ?? null,
     exitCode: session.exitCode ?? null,
     signal: session.signal ?? null

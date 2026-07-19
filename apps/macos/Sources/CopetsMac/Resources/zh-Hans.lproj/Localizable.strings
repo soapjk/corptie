@@ -163,6 +163,7 @@
 "Complete" = "已完成";
 "Failed" = "失败";
 "Cancelled" = "已取消";
+"Interrupted" = "被中断";
 "Waiting for handling" = "等待处理";
 "Waiting for verification" = "等待验收";
 "Needs user attention" = "需要用户处理";

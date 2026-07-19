@@ -132,6 +132,27 @@ test("thread mapping retains permission fields returned by Codex", () => {
   assert.equal(session.external.approvalPolicy, "never");
 });
 
+test("a not-loaded thread preserves an interrupted latest turn", () => {
+  const thread = {
+    id: "thread-a",
+    status: { type: "notLoaded" },
+    turns: [{ id: "turn-a", status: "interrupted", items: [] }]
+  };
+
+  assert.equal(mapCodexThreadToSession(thread).status, "cancelled");
+  assert.equal(mapCodexThreadToDetail(thread).status, "cancelled");
+});
+
+test("a not-loaded thread remains complete when its latest turn completed", () => {
+  const session = mapCodexThreadToSession({
+    id: "thread-a",
+    status: { type: "notLoaded" },
+    turns: [{ id: "turn-a", status: "completed", items: [] }]
+  });
+
+  assert.equal(session.status, "complete");
+});
+
 test("a completed item does not prematurely complete its active turn", () => {
   const client = new CodexAppServerClient();
   client.captureLiveItem({

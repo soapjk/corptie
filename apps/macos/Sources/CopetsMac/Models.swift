@@ -74,7 +74,7 @@ enum TaskStatus: String, Codable {
         case .blocked: L10n("Blocked")
         case .complete: L10n("Complete")
         case .failed: L10n("Failed")
-        case .cancelled: L10n("Cancelled")
+        case .cancelled: L10n("Interrupted")
         }
     }
 
@@ -84,7 +84,7 @@ enum TaskStatus: String, Codable {
         case .blocked: .orange
         case .complete: .orange
         case .failed: .red
-        case .cancelled: .secondary
+        case .cancelled: .red
         }
     }
 }

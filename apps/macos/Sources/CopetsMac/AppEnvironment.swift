@@ -8,6 +8,15 @@ enum CorptieAppEnvironment {
     }()
 
     static let isDevelopment = rawName == "development"
+    static let canManageProductionBackend: Bool = {
+        guard !isDevelopment,
+              Bundle.main.bundleIdentifier == "com.corptie.mac",
+              Bundle.main.bundleURL.pathExtension.lowercased() == "app",
+              Bundle.main.url(forResource: "com.corptie.backend", withExtension: "plist") != nil else {
+            return false
+        }
+        return true
+    }()
     static let displayName = isDevelopment ? "Development" : "Production"
     static let appName = isDevelopment ? "Corptie Dev" : "Corptie"
     static let appSupportFolderName = isDevelopment ? "Corptie Development" : "Corptie"

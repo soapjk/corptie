@@ -51,3 +51,26 @@ test/
 
 # Local development documents
 development-docs/
+
+# Local AI agent instructions, memory, and tool state
+**/AGENT.md
+**/AGENTS.md
+**/CLAUDE.md
+**/CODEX.md
+**/GEMINI.md
+**/.agent/
+**/.agents/
+**/.codex/
+**/.claude/
+**/.cursor/
+**/.windsurf/
+**/.gemini/
+**/.continue/
+**/.roo/
+**/.cline/
+**/.cursorrules
+**/.windsurfrules
+**/.clinerules
+**/.rooignore
+**/.github/copilot-instructions.md
+**/.github/instructions/
