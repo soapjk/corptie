@@ -3060,6 +3060,7 @@ private struct DetailView: View {
     @State private var displayCacheBySessionId: [String: DetailDisplayCache] = [:]
     @State private var collaborationExpansionByItemKey: [String: Bool] = [:]
     @State private var collaborationConfirmationExpansionByItemKey: [String: Bool] = [:]
+    @State private var expandedProcessTurnIds: Set<String> = []
     @State private var detailScrollViewportHeight: CGFloat = 0
     @State private var detailScrollBottomMaxY: CGFloat = 0
     @State private var isDetailScrolledNearBottom = true
@@ -3095,15 +3096,6 @@ private struct DetailView: View {
                     }
                 }
                 .onAppear {
-                    updateCachedDisplayEntries(for: detail)
-                }
-                .onChange(of: detail.items.count) { _, _ in
-                    updateCachedDisplayEntries(for: detail)
-                }
-                .onChange(of: detail.items.last?.id) { _, _ in
-                    updateCachedDisplayEntries(for: detail)
-                }
-                .onChange(of: detailSourceSignature(for: detail)) { _, _ in
                     updateCachedDisplayEntries(for: detail)
                 }
             } else if backendClient.selectedDetail == nil,
@@ -3159,6 +3151,7 @@ private struct DetailView: View {
             visibleMessageLimit = Self.initialVisibleMessageLimit
             collaborationExpansionByItemKey.removeAll()
             collaborationConfirmationExpansionByItemKey.removeAll()
+            expandedProcessTurnIds.removeAll()
             restoreDisplayCacheForCurrentSession()
         }
     }
@@ -3200,12 +3193,10 @@ private struct DetailView: View {
                                     insertion: .move(edge: .bottom).combined(with: .opacity),
                                     removal: .identity
                                 ))
-                        case .process(_, let items):
+                        case .process(let turnId, let items):
                             ThreadProcessGroupView(
                                 items: items,
-                                onExpandedContentChange: {
-                                    maintainLatestPositionAfterIncomingContent(detail: detail, proxy: proxy)
-                                }
+                                isExpanded: processExpansionBinding(for: turnId)
                             )
                                 .id(entry.id)
                                 .transition(.asymmetric(
@@ -3240,11 +3231,15 @@ private struct DetailView: View {
                 lastVisibleContentSignature = visibleContentSignature(for: cachedDisplayEntries)
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
             }
-            .onChange(of: detail.items.last?.id) { _, _ in
-                updateCachedDisplayEntries(for: detail)
-            }
             .onChange(of: detailSourceSignature(for: detail)) { _, _ in
+                let wasFollowingLatest = isFollowingLatest
+                if wasFollowingLatest && !expandedProcessTurnIds.isEmpty {
+                    isMaintainingFollowPosition = true
+                }
                 updateCachedDisplayEntries(for: detail)
+                if wasFollowingLatest {
+                    isFollowingLatest = true
+                }
                 maintainLatestPositionIfVisibleContentChanged(detail: detail, proxy: proxy)
             }
             .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
@@ -3299,14 +3294,33 @@ private struct DetailView: View {
         "\(sessionId)::\(item.id)"
     }
 
+    private func processExpansionBinding(for turnId: String) -> Binding<Bool> {
+        Binding(
+            get: { expandedProcessTurnIds.contains(turnId) },
+            set: { isExpanded in
+                if isExpanded {
+                    expandedProcessTurnIds.insert(turnId)
+                } else {
+                    expandedProcessTurnIds.remove(turnId)
+                }
+            }
+        )
+    }
+
     private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
         let sourceSignature = detailSourceSignature(for: detail)
         guard cachedSessionId != sessionId || sourceSignature != cachedDetailSourceSignature else {
             return
         }
         let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+        let addsMainCard = preparedDisplay.totalCount > cachedTotalDisplayEntryCount
+        let oldExpandedProcessCounts = expandedProcessItemCounts(in: cachedDisplayEntries)
+        let newExpandedProcessCounts = expandedProcessItemCounts(in: preparedDisplay.visibleEntries)
+        let addsExpandedProcessCard = newExpandedProcessCounts.contains { turnId, count in
+            count > (oldExpandedProcessCounts[turnId] ?? 0)
+        }
         let addsVisibleCard = cachedSessionId == sessionId
-            && preparedDisplay.totalCount > cachedTotalDisplayEntryCount
+            && (addsMainCard || addsExpandedProcessCard)
         var transaction = Transaction(animation: addsVisibleCard ? .easeOut(duration: 0.22) : nil)
         transaction.disablesAnimations = !addsVisibleCard
         withTransaction(transaction) {
@@ -3489,6 +3503,9 @@ private struct DetailView: View {
     ) {
         let signature = visibleContentSignature(for: cachedDisplayEntries)
         guard signature != lastVisibleContentSignature else {
+            if pendingFollowScrollWorkItem == nil {
+                isMaintainingFollowPosition = false
+            }
             return
         }
         lastVisibleContentSignature = signature
@@ -3500,12 +3517,27 @@ private struct DetailView: View {
             switch entry.kind {
             case .message(let item):
                 return "message:" + itemSignature(item)
-            case .process(let turnId, _):
+            case .process(let turnId, let items):
                 // A collapsed process row has fixed height. Its count, duration,
                 // and hidden items can update without changing visible layout.
-                return "process:\(turnId)"
+                guard expandedProcessTurnIds.contains(turnId) else {
+                    return "process:\(turnId)"
+                }
+                return "process:\(turnId):" + items.map(itemSignature).joined(separator: ",")
             }
         }.joined(separator: "|")
+    }
+
+    private func expandedProcessItemCounts(in entries: [ChatDisplayEntry]) -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for entry in entries {
+            guard case .process(let turnId, let items) = entry.kind,
+                  expandedProcessTurnIds.contains(turnId) else {
+                continue
+            }
+            counts[turnId] = items.count
+        }
+        return counts
     }
 
     private var bottomScrollAnchorId: String {
@@ -4247,9 +4279,8 @@ struct CopyTextButton: View {
 }
 
 private struct ThreadProcessGroupView: View {
-    @State private var isExpanded = false
     let items: [CodexThreadItem]
-    let onExpandedContentChange: () -> Void
+    @Binding var isExpanded: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -4301,7 +4332,6 @@ private struct ThreadProcessGroupView: View {
                                 removal: .identity
                             ))
                     }
-                    .animation(.easeOut(duration: 0.22), value: items.map(\.id))
                 }
                 .padding(.leading, 22)
                 .padding(.top, 2)
@@ -4309,16 +4339,6 @@ private struct ThreadProcessGroupView: View {
             }
         }
         .padding(.vertical, 1)
-        .onChange(of: expandedContentSignature) { _, _ in
-            guard isExpanded else {
-                return
-            }
-            onExpandedContentChange()
-        }
-    }
-
-    private var expandedContentSignature: String {
-        items.map(detailItemSignature).joined(separator: "|")
     }
 
     private var durationText: String? {
