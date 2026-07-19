@@ -3210,7 +3210,7 @@ private struct DetailView: View {
                             )
                                 .id(entry.id)
                                 .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
-                        case .process(let items):
+                        case .process(_, let items):
                             ThreadProcessGroupView(items: items)
                                 .id(entry.id)
                                 .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
@@ -3398,8 +3398,8 @@ private struct DetailView: View {
             switch entry.kind {
             case .message(let item):
                 return itemSignature(item)
-            case .process(let items):
-                return items.map(itemSignature).joined(separator: ",")
+            case .process(let turnId, let items):
+                return turnId + ":" + items.map(itemSignature).joined(separator: ",")
             }
         }.joined(separator: "|")
         return "\(visibleMessageLimit)|\(entrySignatures)"
@@ -3473,11 +3473,7 @@ private struct DetailView: View {
         guard displayEntries.count > visibleMessageLimit else {
             return displayEntries
         }
-        var entries = Array(displayEntries.suffix(visibleMessageLimit))
-        while entries.first?.isProcessGroup == true && entries.count > 1 {
-            entries.removeFirst()
-        }
-        return entries
+        return Array(displayEntries.suffix(visibleMessageLimit))
     }
 
     private func displayItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
@@ -3532,8 +3528,9 @@ private struct DetailView: View {
         }
 
         var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-        if !processItems.isEmpty {
-            entries.append(ChatDisplayEntry(kind: .process(processItems)))
+        if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
+           let turnId = items.first?.turnId {
+            entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
         }
         if let presentedAgentMessage {
             entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
@@ -3651,7 +3648,7 @@ private struct UsageProgressRing: View {
 private struct ChatDisplayEntry: Identifiable {
     enum Kind {
         case message(CodexThreadItem)
-        case process([CodexThreadItem])
+        case process(turnId: String, items: [CodexThreadItem])
     }
 
     let kind: Kind
@@ -3660,8 +3657,8 @@ private struct ChatDisplayEntry: Identifiable {
         switch kind {
         case .message(let item):
             return "message:\(item.id)"
-        case .process(let items):
-            return "process:\(items.first?.turnId ?? "unknown-turn")"
+        case .process(let turnId, _):
+            return "process:\(turnId)"
         }
     }
 
@@ -3742,11 +3739,7 @@ private func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit
     guard displayEntries.count > limit else {
         return displayEntries
     }
-    var entries = Array(displayEntries.suffix(limit))
-    while entries.first?.isProcessGroup == true && entries.count > 1 {
-        entries.removeFirst()
-    }
-    return entries
+    return Array(displayEntries.suffix(limit))
 }
 
 private func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
@@ -3787,8 +3780,9 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     }
 
     var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-    if !processItems.isEmpty {
-        entries.append(ChatDisplayEntry(kind: .process(processItems)))
+    if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
+       let turnId = items.first?.turnId {
+        entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
     }
     if let presentedAgentMessage {
         entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
@@ -3824,6 +3818,17 @@ private func isTerminalTurnStatus(_ status: String) -> Bool {
     }
 }
 
+private func shouldShowProcessGroup(
+    items: [CodexThreadItem],
+    userMessages: [CodexThreadItem],
+    processItems: [CodexThreadItem]
+) -> Bool {
+    if !processItems.isEmpty {
+        return true
+    }
+    return !userMessages.isEmpty && items.contains { !isTerminalTurnStatus($0.turnStatus) }
+}
+
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
     if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
         return true
@@ -3848,8 +3853,8 @@ private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visi
         switch entry.kind {
         case .message(let item):
             return detailItemSignature(item)
-        case .process(let items):
-            return items.map(detailItemSignature).joined(separator: ",")
+        case .process(let turnId, let items):
+            return turnId + ":" + items.map(detailItemSignature).joined(separator: ",")
         }
     }.joined(separator: "|")
     return "\(visibleMessageLimit)|\(entrySignatures)"
