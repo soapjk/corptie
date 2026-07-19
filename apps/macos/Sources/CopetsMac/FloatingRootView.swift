@@ -3557,7 +3557,7 @@ private struct ChatUsageBar: View {
 
     var body: some View {
         if let usage, usage.account.provider == "codex" {
-            VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .center, spacing: 10) {
                 if let context = usage.context,
                    let remaining = context.remainingTokens,
                    let window = context.contextWindow {
