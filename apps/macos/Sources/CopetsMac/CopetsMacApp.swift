@@ -73,6 +73,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A development executable must never own the production launch agent.
+        // This bundle-level check remains effective even if its environment is
+        // missing or sanitized when the process is terminated externally.
+        guard CorptieAppEnvironment.canManageProductionBackend else {
+            return .terminateNow
+        }
         guard !isEvaluatingTermination else {
             return .terminateLater
         }
@@ -294,7 +300,7 @@ enum CorptieBackendSupervisor {
     private static let label = "com.corptie.backend"
 
     static func ensureProductionBackendStarted() {
-        guard !CorptieAppEnvironment.isDevelopment else {
+        guard CorptieAppEnvironment.canManageProductionBackend else {
             return
         }
         guard let bundledPlist = Bundle.main.url(forResource: label, withExtension: "plist") else {
@@ -326,7 +332,7 @@ enum CorptieBackendSupervisor {
     }
 
     static func stopProductionBackend() throws {
-        guard !CorptieAppEnvironment.isDevelopment, isLaunchAgentLoaded() else {
+        guard CorptieAppEnvironment.canManageProductionBackend, isLaunchAgentLoaded() else {
             return
         }
         try runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])

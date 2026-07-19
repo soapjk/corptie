@@ -1544,7 +1544,7 @@ struct StatusHalo: View {
         case .failed:
             .red
         case .cancelled:
-            CorptiePalette.mutedText
+            .red
         }
     }
 
@@ -1559,7 +1559,7 @@ struct StatusHalo: View {
         case .failed:
             0.54
         case .cancelled:
-            0.28
+            0.54
         }
     }
 
@@ -1574,7 +1574,7 @@ struct StatusHalo: View {
         case .failed:
             0.28
         case .cancelled:
-            0.14
+            0.28
         }
     }
 

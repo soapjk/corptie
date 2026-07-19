@@ -3282,14 +3282,16 @@ private struct DetailView: View {
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
             }
             .onChange(of: detailSourceSignature(for: detail)) { _, _ in
-                let wasFollowingLatest = isFollowingLatest
+                // Following is valid only while the viewport is actually at the
+                // bottom. A content update can arrive before the next geometry
+                // preference callback after a user scroll, so the historical
+                // follow flag alone is not safe enough to trigger scrollTo.
+                let wasFollowingLatest = isFollowingLatest && isDetailScrolledNearBottom
+                isFollowingLatest = wasFollowingLatest
                 if wasFollowingLatest && !expandedProcessTurnIds.isEmpty {
                     isMaintainingFollowPosition = true
                 }
                 updateCachedDisplayEntries(for: detail)
-                if wasFollowingLatest {
-                    isFollowingLatest = true
-                }
                 maintainLatestPositionIfVisibleContentChanged(detail: detail, proxy: proxy)
             }
             .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
@@ -3371,8 +3373,15 @@ private struct DetailView: View {
         }
         let addsVisibleCard = cachedSessionId == sessionId
             && (addsMainCard || addsExpandedProcessCard)
-        var transaction = Transaction(animation: addsVisibleCard ? .easeOut(duration: 0.22) : nil)
-        transaction.disablesAnimations = !addsVisibleCard
+        // Moving a newly inserted row in from the bottom animates the entire
+        // VStack layout and can shift the viewport even without an explicit
+        // scrollTo. While the user is reading history, update the list in a
+        // non-animated transaction so the currently visible content stays put.
+        let animateInsertion = addsVisibleCard
+            && isFollowingLatest
+            && isDetailScrolledNearBottom
+        var transaction = Transaction(animation: animateInsertion ? .easeOut(duration: 0.22) : nil)
+        transaction.disablesAnimations = !animateInsertion
         withTransaction(transaction) {
             cachedDetailSourceSignature = sourceSignature
             cachedItemsSignature = preparedDisplay.signature
@@ -5280,7 +5289,11 @@ private struct ThreadItemView: View {
 
     @ViewBuilder
     private func messageTextView(text: String, allowsSelection: Bool) -> some View {
-        MarkdownMessageView(text: text, allowsSelection: allowsSelection)
+        MarkdownMessageView(
+            text: text,
+            baseDirectory: backendClient.selectedDetail?.cwd,
+            allowsSelection: allowsSelection
+        )
     }
 
     private var approvalOptions: [CodexApprovalOption] {

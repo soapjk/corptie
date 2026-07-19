@@ -7,6 +7,9 @@ APP_LOG="${CORPTIE_APP_LOG:-/private/tmp/corptie-dev/app.log}"
 BACKEND_LOG="${CORPTIE_BACKEND_LOG:-/private/tmp/corptie-dev/backend.log}"
 BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47322}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}/health"
+PRODUCTION_BACKEND_PORT=47321
+
+PRODUCTION_BACKEND_PID_BEFORE="$(lsof -tiTCP:"${PRODUCTION_BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
 
 mkdir -p "$(dirname "${APP_LOG}")"
 
@@ -114,6 +117,11 @@ fi
 osascript -e "tell application \"System Events\" to set frontmost of first process whose unix id is ${APP_PID} to true" 2>/dev/null || true
 
 BACKEND_PID="$(lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN | head -1 || true)"
+PRODUCTION_BACKEND_PID_AFTER="$(lsof -tiTCP:"${PRODUCTION_BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
+if [[ -n "${PRODUCTION_BACKEND_PID_BEFORE}" && "${PRODUCTION_BACKEND_PID_AFTER}" != "${PRODUCTION_BACKEND_PID_BEFORE}" ]]; then
+  echo "Production backend changed during development restart (before=${PRODUCTION_BACKEND_PID_BEFORE}, after=${PRODUCTION_BACKEND_PID_AFTER:-stopped})."
+  exit 1
+fi
 echo "Corptie backend started with pid ${BACKEND_PID}"
 echo "Backend log: ${BACKEND_LOG}"
 echo "CorptieMac started with pid ${APP_PID}"

@@ -630,7 +630,7 @@ function finiteNumber(value) {
 }
 
 export function mapCodexThreadToSession(thread) {
-  const status = mapCodexStatus(thread.status);
+  const status = mapCodexStatus(thread.status, thread.turns);
   const preview = thread.preview || thread.name || "Untitled Codex thread";
   const cwd = thread.cwd ? ` in ${thread.cwd}` : "";
   const items = threadItems(thread);
@@ -672,7 +672,7 @@ export function mapCodexThreadToDetail(thread, liveItems = [], turnDiffs = new M
   return {
     id: thread.id,
     title: thread.name || thread.preview || "Untitled Codex thread",
-    status: mapCodexStatus(thread.status),
+    status: mapCodexStatus(thread.status, thread.turns),
     source: thread.source,
     connectionStatus: "app-server connected",
     cwd: thread.cwd,
@@ -983,7 +983,7 @@ function mapCodexThreadListDetail(thread, items) {
   return {
     id: thread.id,
     title: thread.name || thread.preview || "Untitled Codex thread",
-    status: mapCodexStatus(thread.status),
+    status: mapCodexStatus(thread.status, thread.turns),
     source: thread.source,
     connectionStatus: "app-server disconnected",
     cwd: thread.cwd,
@@ -1210,7 +1210,7 @@ function truncate(text, maxLength) {
   return `${text.slice(0, maxLength - 3)}...`;
 }
 
-function mapCodexStatus(status) {
+function mapCodexStatus(status, turns = []) {
   if (typeof status === "string") {
     switch (status) {
       case "running":
@@ -1240,9 +1240,32 @@ function mapCodexStatus(status) {
       return "running";
     case "systemError":
       return "failed";
-    case "idle":
     case "notLoaded":
+      return statusFromLatestTurn(turns) ?? "complete";
+    case "idle":
     default:
       return "complete";
+  }
+}
+
+function statusFromLatestTurn(turns = []) {
+  const latestStatus = turns.at(-1)?.status;
+  const value = typeof latestStatus === "object" ? latestStatus?.type : latestStatus;
+  switch (value) {
+    case "running":
+    case "active":
+    case "inProgress":
+      return "running";
+    case "failed":
+    case "systemError":
+      return "failed";
+    case "interrupted":
+    case "cancelled":
+      return "cancelled";
+    case "complete":
+    case "completed":
+      return "complete";
+    default:
+      return null;
   }
 }
