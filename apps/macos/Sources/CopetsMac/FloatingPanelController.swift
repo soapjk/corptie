@@ -18,7 +18,6 @@ struct ListLayoutMetrics: Equatable {
 @MainActor
 final class PanelLayoutState: ObservableObject {
     @Published private(set) var listMetrics: ListLayoutMetrics?
-    @Published var detailLastMessageHeight: CGFloat?
     @Published var canRenderDetailMessages = false
 
     static let horizontalPadding: CGFloat = 18
@@ -52,19 +51,6 @@ final class PanelLayoutState: ObservableObject {
         listMetrics = metrics
     }
 
-    func updateDetailLastMessageHeight(_ height: CGFloat?) {
-        guard let height else {
-            detailLastMessageHeight = nil
-            return
-        }
-        guard height.isFinite, height > 0 else {
-            return
-        }
-        if let detailLastMessageHeight, abs(detailLastMessageHeight - height) < 1 {
-            return
-        }
-        detailLastMessageHeight = height
-    }
 }
 
 @MainActor
@@ -182,16 +168,6 @@ final class FloatingPanelController: NSObject {
                     self.isListTransitionLocked = false
                     self.beginDetailTransition()
                 }
-            }
-            .store(in: &cancellables)
-
-        layoutState.$detailLastMessageHeight
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                guard let self, self.client.selectedSession != nil, !self.isDetailTransitionLocked else {
-                    return
-                }
-                self.applyDetailSizing(animated: false, restoreSavedSize: false)
             }
             .store(in: &cancellables)
 
@@ -385,8 +361,10 @@ final class FloatingPanelController: NSObject {
     }
 
     private func detailMinimumHeight() -> CGFloat {
-        let measuredLastMessageHeight = layoutState.detailLastMessageHeight ?? 0
-        let lastMessageHeight = min(max(measuredLastMessageHeight, 72), 620)
+        // Message content belongs to the scroll view and must never resize the
+        // window as live cards arrive. Only explicit user resizing changes the
+        // detail window after its initial fixed layout has been established.
+        let lastMessageHeight: CGFloat = 72
         let outerPadding = PanelLayoutState.verticalPadding * 2
         let headerHeight: CGFloat = 32
         let metaHeight: CGFloat = 32
