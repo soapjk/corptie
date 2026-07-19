@@ -38,6 +38,7 @@ struct FloatingRootView: View {
     @AppStorage("groupsSessionsByProject") private var groupsSessionsByProject = false
     private let panelContentPadding: CGFloat = 14
     private let detailSessionRailGutter: CGFloat = 78
+    private let detailSessionRailTriggerWidth: CGFloat = 8
     private let listContentFrameKey = "__corptie_list_content__"
     private let topBarControlTopInset: CGFloat = 6
     private let closeButtonLeadingInset: CGFloat = 12
@@ -380,21 +381,29 @@ struct FloatingRootView: View {
         if backendClient.selectedSession != nil && backendClient.sessions.count > 1 {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    Color.black.opacity(0.001)
-                        .contentShape(Rectangle())
+                    if isShowingDetailSessionRail {
+                        ZStack(alignment: .leading) {
+                            Color.black.opacity(0.001)
+                                .contentShape(Rectangle())
+
+                            detailSessionRail(height: proxy.size.height)
+                                .padding(.leading, 4)
+                        }
                         .frame(width: detailSessionRailGutter + 10)
                         .frame(maxHeight: .infinity)
-
-                    if isShowingDetailSessionRail {
-                        detailSessionRail(height: proxy.size.height)
-                            .padding(.leading, 4)
-                            .transition(.opacity.combined(with: .move(edge: .trailing)))
+                        .contentShape(Rectangle())
+                        .onHover(perform: updateDetailSessionRailHover)
+                        .transition(.opacity.combined(with: .move(edge: .trailing)))
+                    } else {
+                        Color.black.opacity(0.001)
+                            .contentShape(Rectangle())
+                            .frame(width: detailSessionRailTriggerWidth)
+                            .frame(maxHeight: .infinity)
+                            .offset(x: detailSessionRailGutter)
+                            .onHover(perform: updateDetailSessionRailHover)
                     }
                 }
-                .frame(width: detailSessionRailGutter + 10)
-                .frame(maxHeight: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onHover(perform: updateDetailSessionRailHover)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
         }
     }
