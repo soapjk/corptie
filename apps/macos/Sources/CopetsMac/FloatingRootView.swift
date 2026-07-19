@@ -80,6 +80,9 @@ struct FloatingRootView: View {
                 .zIndex(0)
         }
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay(alignment: .leading) {
+            collapsedDetailSessionRailTrigger
+        }
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: newSessionPanel.isPresented)
         .overlay(
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -378,33 +381,36 @@ struct FloatingRootView: View {
 
     @ViewBuilder
     private var detailSessionRailOverlay: some View {
-        if backendClient.selectedSession != nil && backendClient.sessions.count > 1 {
+        if backendClient.selectedSession != nil,
+           backendClient.sessions.count > 1,
+           isShowingDetailSessionRail {
             GeometryReader { proxy in
                 ZStack(alignment: .leading) {
-                    if isShowingDetailSessionRail {
-                        ZStack(alignment: .leading) {
-                            Color.black.opacity(0.001)
-                                .contentShape(Rectangle())
-
-                            detailSessionRail(height: proxy.size.height)
-                                .padding(.leading, 4)
-                        }
-                        .frame(width: detailSessionRailGutter + 10)
-                        .frame(maxHeight: .infinity)
+                    Color.black.opacity(0.001)
                         .contentShape(Rectangle())
-                        .onHover(perform: updateDetailSessionRailHover)
-                        .transition(.opacity.combined(with: .move(edge: .trailing)))
-                    } else {
-                        Color.black.opacity(0.001)
-                            .contentShape(Rectangle())
-                            .frame(width: detailSessionRailTriggerWidth)
-                            .frame(maxHeight: .infinity)
-                            .offset(x: detailSessionRailGutter)
-                            .onHover(perform: updateDetailSessionRailHover)
-                    }
+
+                    detailSessionRail(height: proxy.size.height)
+                        .padding(.leading, 4)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .frame(width: detailSessionRailGutter + 10)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onHover(perform: updateDetailSessionRailHover)
+                .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
+        }
+    }
+
+    @ViewBuilder
+    private var collapsedDetailSessionRailTrigger: some View {
+        if backendClient.selectedSession != nil,
+           backendClient.sessions.count > 1,
+           !isShowingDetailSessionRail {
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .frame(width: detailSessionRailTriggerWidth)
+                .frame(maxHeight: .infinity)
+                .onHover(perform: updateDetailSessionRailHover)
         }
     }
 
