@@ -584,13 +584,24 @@ export class CorptieStore {
            END
        WHERE status = 'running'`
     );
+    const restartTimestamp = new Date().toISOString();
+    this.db.run(
+      `UPDATE agent_work_items
+       SET status = 'cancelled', completed_at = ?,
+           last_error = COALESCE(last_error, 'Execution interrupted by process restart after dispatch; message was not resent.'),
+           updated_at = ?
+       WHERE status = 'running'
+         AND kind = 'user'
+         AND target_turn_id IS NOT NULL`,
+      [restartTimestamp, restartTimestamp]
+    );
     this.db.run(
       `UPDATE agent_work_items
        SET status = 'queued', started_at = NULL, target_turn_id = NULL,
-           last_error = COALESCE(last_error, 'Execution interrupted by process restart.'),
+           last_error = COALESCE(last_error, 'Execution interrupted by process restart before dispatch.'),
            updated_at = ?
        WHERE status = 'running'`,
-      [new Date().toISOString()]
+      [restartTimestamp]
     );
     this.db.run(
       `UPDATE collaboration_tasks

@@ -101,7 +101,7 @@ test("a running work item is recovered to queued after restart", async () => {
   }
 });
 
-test("restart recovery can drain queued work after an interrupted Codex turn", async () => {
+test("restart recovery does not resend user work that reached a Codex turn", async () => {
   const { directory, dbPath, store } = await fixture();
   let reopened = null;
   try {
@@ -122,6 +122,7 @@ test("restart recovery can drain queued work after an interrupted Codex turn", a
     });
     enqueue(store, { workItemId: "install-browser", kind: "user", priority: 100 });
     store.claimAgentWorkItem("install-browser");
+    store.updateAgentWorkItem("install-browser", { targetTurnId: "interrupted-turn" });
     if (store.saveTimer) {
       clearTimeout(store.saveTimer);
       store.saveTimer = null;
@@ -133,7 +134,8 @@ test("restart recovery can drain queued work after an interrupted Codex turn", a
 
     const recoveredWork = reopened.getAgentWorkItem("install-browser");
     const staleSession = reopened.getSession("codex:thread-b");
-    assert.equal(recoveredWork.status, "queued");
+    assert.equal(recoveredWork.status, "cancelled");
+    assert.match(recoveredWork.lastError, /not resent/);
     assert.equal(sessionHasActiveRun(staleSession), true);
 
     const reconciledSession = reconcileAuthoritativeRunState(
@@ -141,7 +143,7 @@ test("restart recovery can drain queued work after an interrupted Codex turn", a
       "complete"
     );
     assert.equal(sessionHasActiveRun(reconciledSession), false);
-    assert.equal(reopened.claimAgentWorkItem(recoveredWork.workItemId)?.status, "running");
+    assert.equal(reopened.claimAgentWorkItem(recoveredWork.workItemId), null);
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
