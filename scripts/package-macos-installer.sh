@@ -7,6 +7,7 @@ APP_NAME="${PRODUCT_NAME}.app"
 BUILD_CFG="release"
 ARCHIVE_DIR="${ROOT}/dist"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
+BACKEND_BUILD_ID="${TIMESTAMP}"
 APP_VERSION="0.1.1"
 APP_BUNDLE_PATH="/Applications/Corptie.app"
 ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"
@@ -152,6 +153,8 @@ cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
       <string>production</string>
       <key>CORPTIE_BACKEND_PORT</key>
       <string>47321</string>
+      <key>CORPTIE_BACKEND_BUILD_ID</key>
+      <string>${BACKEND_BUILD_ID}</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/dev/null</string>
