@@ -88,15 +88,19 @@ final class BackendClient: ObservableObject {
                     }
 
                     var eventName = ""
+                    var dataLines: [String] = []
                     for try await line in bytes.lines {
                         if Task.isCancelled {
                             return
                         }
                         if line.isEmpty {
-                            await self.handleGlobalEvent(eventName)
+                            await self.handleGlobalEvent(eventName, data: dataLines.joined(separator: "\n"))
                             eventName = ""
+                            dataLines.removeAll(keepingCapacity: true)
                         } else if line.hasPrefix("event:") {
                             eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                        } else if line.hasPrefix("data:") {
+                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
                         }
                     }
                 } catch {
@@ -109,7 +113,11 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private func handleGlobalEvent(_ eventName: String) async {
+    private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "SessionUsageUpdated" {
+            applyLiveUsageEvent(data)
+            return
+        }
         let refreshEvents: Set<String> = [
             "CodexThreadCreated",
             "CodexTurnStarted",
@@ -137,11 +145,32 @@ final class BackendClient: ObservableObject {
             return
         }
         await refresh()
+        if eventName == "CodexThreadCompleted"
+            || eventName == "CodexThreadFailed"
+            || eventName == "CodexThreadError" {
+            await refreshSelectedUsage()
+        }
         if eventName == "CodexThreadChoiceOptionsUpdated"
             || eventName == "CodexThreadApprovalRequested"
             || eventName == "CodexThreadApprovalResponded" {
             await refreshSelectedDetailFromPolling()
         }
+    }
+
+    private func applyLiveUsageEvent(_ data: String) {
+        guard let payload = data.data(using: .utf8),
+              let event = try? JSONDecoder().decode(SessionUsageEventEnvelope.self, from: payload),
+              selectedSession?.id == event.payload.sessionId else {
+            return
+        }
+        let currentAccount = selectedSessionUsage?.account ?? CodexAccountUsage(
+            available: nil,
+            provider: "codex",
+            model: nil,
+            rateLimits: nil,
+            rateLimitsByLimitId: nil
+        )
+        selectedSessionUsage = SessionUsageResponse(account: currentAccount, context: event.payload.context)
     }
 
     func loadSettings() async {
@@ -891,6 +920,11 @@ final class BackendClient: ObservableObject {
         } catch {
             // Usage is supplementary; chat remains usable if Codex cannot report it.
         }
+    }
+
+    func refreshSelectedUsage() async {
+        guard let selectedSession else { return }
+        await loadUsage(for: selectedSession)
     }
 
     func cachedDetail(for sessionId: String) -> CodexThreadDetail? {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexAppServerClient, mapCodexThreadToSession } from "../src/adapters/codexAppServer.mjs";
+import { CodexAppServerClient, mapCodexThreadToDetail, mapCodexThreadToSession } from "../src/adapters/codexAppServer.mjs";
 
 test("setThreadName uses the Codex app-server thread naming method", async () => {
   const calls = [];
@@ -130,4 +130,53 @@ test("thread mapping retains permission fields returned by Codex", () => {
 
   assert.equal(session.external.sandbox, "danger-full-access");
   assert.equal(session.external.approvalPolicy, "never");
+});
+
+test("a completed item does not prematurely complete its active turn", () => {
+  const client = new CodexAppServerClient();
+  client.captureLiveItem({
+    method: "item/completed",
+    params: {
+      threadId: "thread-a",
+      turnId: "turn-a",
+      item: {
+        id: "message-a",
+        type: "agentMessage",
+        text: "Final response",
+        phase: "final_answer"
+      }
+    }
+  });
+
+  assert.deepEqual(client.liveItemsForThread("thread-a"), [{
+    id: "message-a",
+    turnId: "turn-a",
+    turnStatus: "inProgress",
+    type: "agentMessage",
+    title: "Codex",
+    text: "Final response",
+    status: "completed",
+    presentationRole: "final_answer",
+    createdAt: null
+  }]);
+});
+
+test("thread detail preserves the Codex message phase for presentation", () => {
+  const detail = mapCodexThreadToDetail({
+    id: "thread-a",
+    status: { type: "active" },
+    turns: [{
+      id: "turn-a",
+      status: "inProgress",
+      items: [{
+        id: "message-a",
+        type: "agentMessage",
+        text: "Final response",
+        phase: "final_answer"
+      }]
+    }]
+  });
+
+  assert.equal(detail.items[0].turnStatus, "inProgress");
+  assert.equal(detail.items[0].presentationRole, "final_answer");
 });

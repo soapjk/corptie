@@ -839,6 +839,21 @@ function handleCodexAppServerNotification(message) {
     return;
   }
 
+  if (method === "thread/tokenUsage/updated") {
+    const context = codexClient.tokenUsageForThread(threadId);
+    if (context) {
+      emitEvent("SessionUsageUpdated", {
+        sessionId,
+        threadId,
+        turnId: params.turnId ?? session.external?.activeTurnId ?? null,
+        source: "codex-app-server",
+        isFinal: false,
+        context
+      }, { sessionId, source: { type: "codex-app-server" } });
+    }
+    return;
+  }
+
   const liveItems = codexClient.liveItemsForThread(threadId);
   const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
   const nowIso = now();

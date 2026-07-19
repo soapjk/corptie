@@ -3524,8 +3524,8 @@ private struct DetailView: View {
         let agentMessages = items.filter {
             $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        let finalAgentMessage = agentMessages.last
-        let progressAgentMessages = agentMessages.dropLast()
+        let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
+        let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
         let processItems = items.filter(isProcessItem) + progressAgentMessages
         let trailingItems = items.filter { item in
             item.type != "userMessage" && item.type != "agentMessage" && !isProcessItem(item)
@@ -3535,8 +3535,8 @@ private struct DetailView: View {
         if !processItems.isEmpty {
             entries.append(ChatDisplayEntry(kind: .process(processItems)))
         }
-        if let finalAgentMessage {
-            entries.append(ChatDisplayEntry(kind: .message(finalAgentMessage)))
+        if let presentedAgentMessage {
+            entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
         }
         entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
         return entries
@@ -3565,10 +3565,11 @@ private struct ChatUsageBar: View {
                     let usedPercent = context.usedPercent ?? max(0, min(100, used / window * 100))
                     usageItem(
                         icon: "text.alignleft",
-                        value: "\(compactTokens(used))/\(compactTokens(window))",
+                        value: "\(exactTokens(used))/\(exactTokens(window))",
                         progress: usedPercent / 100,
                         color: contextColor(usedPercent: usedPercent),
-                        help: "\(L10n("Context")): \(compactTokens(used)) / \(compactTokens(window)) · \(formatPercent(usedPercent))% used"
+                        help: "\(L10n("Context")): \(exactTokens(used)) / \(exactTokens(window)) · \(formatPercent(usedPercent, maximumFractionDigits: 2))% used",
+                        numericValue: used
                     )
                 }
                 if let window = preferredRateLimitWindow(usage.account) {
@@ -3578,7 +3579,7 @@ private struct ChatUsageBar: View {
                         value: "\(formatPercent(remainingPercent))%",
                         progress: remainingPercent / 100,
                         color: quotaColor(remainingPercent: remainingPercent),
-                        help: "\(L10n("Codex quota")): \(formatPercent(remainingPercent))% remaining"
+                        help: "\(L10n("Codex quota")): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
                     )
                 }
             }
@@ -3587,12 +3588,14 @@ private struct ChatUsageBar: View {
         }
     }
 
-    private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String) -> some View {
+    private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String, numericValue: Double? = nil) -> some View {
         HStack(spacing: 4) {
             UsageProgressRing(icon: icon, progress: progress, color: color)
             Text(value)
                 .foregroundStyle(color)
                 .monospacedDigit()
+                .contentTransition(.numericText(value: numericValue ?? progress))
+                .animation(.snappy(duration: 0.45), value: numericValue ?? progress)
         }
         .help(help)
     }
@@ -3615,14 +3618,12 @@ private struct ChatUsageBar: View {
         return snapshots.compactMap(\.primary).first
     }
 
-    private func compactTokens(_ value: Double) -> String {
-        if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000) }
-        if value >= 1_000 { return String(format: "%.0fK", value / 1_000) }
-        return String(format: "%.0f", value)
+    private func exactTokens(_ value: Double) -> String {
+        value.formatted(.number.grouping(.automatic).precision(.fractionLength(0)))
     }
 
-    private func formatPercent(_ value: Double) -> String {
-        value.rounded() == value ? String(format: "%.0f", value) : String(format: "%.1f", value)
+    private func formatPercent(_ value: Double, maximumFractionDigits: Int = 1) -> String {
+        value.formatted(.number.grouping(.never).precision(.fractionLength(0...maximumFractionDigits)))
     }
 }
 
@@ -3778,10 +3779,8 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     let agentMessages = items.filter {
         $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
-    let finalAgentMessage = agentMessages.last.flatMap { item in
-        isTerminalTurnStatus(item.turnStatus) ? item : nil
-    }
-    let progressAgentMessages = finalAgentMessage == nil ? agentMessages[...] : agentMessages.dropLast()
+    let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
+    let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
     let processItems = items.filter(isDetailProcessItem) + progressAgentMessages
     let trailingItems = items.filter { item in
         item.type != "userMessage" && item.type != "agentMessage" && !isDetailProcessItem(item)
@@ -3791,20 +3790,17 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     if !processItems.isEmpty {
         entries.append(ChatDisplayEntry(kind: .process(processItems)))
     }
-    if let finalAgentMessage {
-        entries.append(ChatDisplayEntry(kind: .message(finalAgentMessage)))
+    if let presentedAgentMessage {
+        entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
     }
     entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
     return entries
 }
 
-private func isTerminalTurnStatus(_ status: String) -> Bool {
-    switch status.lowercased() {
-    case "completed", "complete", "failed", "cancelled", "canceled", "interrupted":
-        return true
-    default:
-        return false
-    }
+private func preferredPresentedAgentMessage(from messages: [CodexThreadItem]) -> CodexThreadItem? {
+    messages.last(where: {
+        $0.presentationRole?.lowercased() == "final_answer"
+    }) ?? messages.last
 }
 
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
@@ -4172,7 +4168,7 @@ private struct ThreadProcessGroupView: View {
                     Image(systemName: "arrow.turn.down.right")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
-                    Text(L10n("已处理"))
+                    Text(L10n("Execution process"))
                         .font(.system(size: 10.5, weight: .semibold))
                     if let durationText {
                         Text(durationText)
