@@ -3066,6 +3066,7 @@ private struct DetailView: View {
     @State private var isFollowingLatest = true
     @State private var isMaintainingFollowPosition = false
     @State private var pendingFollowScrollWorkItem: DispatchWorkItem?
+    @State private var lastVisibleContentSignature = ""
     @State private var hasNewMessagesBelow = false
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
@@ -3151,6 +3152,7 @@ private struct DetailView: View {
             isMaintainingFollowPosition = false
             pendingFollowScrollWorkItem?.cancel()
             pendingFollowScrollWorkItem = nil
+            lastVisibleContentSignature = ""
             hasNewMessagesBelow = false
             detailScrollViewportHeight = 0
             detailScrollBottomMaxY = 0
@@ -3199,7 +3201,12 @@ private struct DetailView: View {
                                     removal: .identity
                                 ))
                         case .process(_, let items):
-                            ThreadProcessGroupView(items: items)
+                            ThreadProcessGroupView(
+                                items: items,
+                                onExpandedContentChange: {
+                                    maintainLatestPositionAfterIncomingContent(detail: detail, proxy: proxy)
+                                }
+                            )
                                 .id(entry.id)
                                 .transition(.asymmetric(
                                     insertion: .move(edge: .bottom).combined(with: .opacity),
@@ -3231,6 +3238,7 @@ private struct DetailView: View {
             )
             .onAppear {
                 updateCachedDisplayEntries(for: detail)
+                lastVisibleContentSignature = visibleContentSignature(for: cachedDisplayEntries)
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
             }
             .onChange(of: detail.items.last?.id) { _, _ in
@@ -3238,7 +3246,7 @@ private struct DetailView: View {
             }
             .onChange(of: detailSourceSignature(for: detail)) { _, _ in
                 updateCachedDisplayEntries(for: detail)
-                maintainLatestPositionAfterIncomingContent(detail: detail, proxy: proxy)
+                maintainLatestPositionIfVisibleContentChanged(detail: detail, proxy: proxy)
             }
             .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
                 detailScrollViewportHeight = height
@@ -3462,6 +3470,31 @@ private struct DetailView: View {
         }
         pendingFollowScrollWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
+    }
+
+    private func maintainLatestPositionIfVisibleContentChanged(
+        detail: CodexThreadDetail,
+        proxy: ScrollViewProxy
+    ) {
+        let signature = visibleContentSignature(for: cachedDisplayEntries)
+        guard signature != lastVisibleContentSignature else {
+            return
+        }
+        lastVisibleContentSignature = signature
+        maintainLatestPositionAfterIncomingContent(detail: detail, proxy: proxy)
+    }
+
+    private func visibleContentSignature(for entries: [ChatDisplayEntry]) -> String {
+        entries.map { entry in
+            switch entry.kind {
+            case .message(let item):
+                return "message:" + itemSignature(item)
+            case .process(let turnId, _):
+                // A collapsed process row has fixed height. Its count, duration,
+                // and hidden items can update without changing visible layout.
+                return "process:\(turnId)"
+            }
+        }.joined(separator: "|")
     }
 
     private var bottomScrollAnchorId: String {
@@ -4207,6 +4240,7 @@ struct CopyTextButton: View {
 private struct ThreadProcessGroupView: View {
     @State private var isExpanded = false
     let items: [CodexThreadItem]
+    let onExpandedContentChange: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -4266,6 +4300,16 @@ private struct ThreadProcessGroupView: View {
             }
         }
         .padding(.vertical, 1)
+        .onChange(of: expandedContentSignature) { _, _ in
+            guard isExpanded else {
+                return
+            }
+            onExpandedContentChange()
+        }
+    }
+
+    private var expandedContentSignature: String {
+        items.map(detailItemSignature).joined(separator: "|")
     }
 
     private var durationText: String? {
