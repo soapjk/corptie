@@ -3210,7 +3210,8 @@ private struct DetailView: View {
     private func detailMessages(_ detail: CodexThreadDetail) -> some View {
         let preparedDisplay = preparedDisplayEntries(for: detail)
         let displayEntries = preparedDisplay.visibleEntries
-        let hiddenCount = max(0, preparedDisplay.totalCount - displayEntries.count)
+        let visibleDisplayWeight = displayEntries.reduce(0) { $0 + $1.displayWeight }
+        let hiddenCount = max(0, preparedDisplay.totalCount - visibleDisplayWeight)
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
@@ -3235,6 +3236,19 @@ private struct DetailView: View {
                         case .message(let item):
                             ThreadItemView(
                                 item: item,
+                                isCollaborationExpanded: collaborationExpansionBinding(for: item),
+                                isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
+                            )
+                                .id(entry.id)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .identity
+                                ))
+                        case .userTurn(let item, let turnId, let processItems):
+                            ThreadItemView(
+                                item: item,
+                                processItems: processItems,
+                                isProcessExpanded: processExpansionBinding(for: turnId),
                                 isCollaborationExpanded: collaborationExpansionBinding(for: item),
                                 isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
                             )
@@ -3472,6 +3486,8 @@ private struct DetailView: View {
             switch entry.kind {
             case .message(let item):
                 return itemSignature(item)
+            case .userTurn(let item, let turnId, let items):
+                return itemSignature(item) + ":" + turnId + ":" + items.map(itemSignature).joined(separator: ",")
             case .process(let turnId, let items):
                 return turnId + ":" + items.map(itemSignature).joined(separator: ",")
             }
@@ -3576,6 +3592,12 @@ private struct DetailView: View {
             switch entry.kind {
             case .message(let item):
                 return "message:" + itemSignature(item)
+            case .userTurn(let item, let turnId, let items):
+                let messageSignature = "userTurn:" + itemSignature(item) + ":" + turnId
+                guard expandedProcessTurnIds.contains(turnId) else {
+                    return messageSignature
+                }
+                return messageSignature + ":" + items.map(itemSignature).joined(separator: ",")
             case .process(let turnId, let items):
                 // A collapsed process row has fixed height. Its count, duration,
                 // and hidden items can update without changing visible layout.
@@ -3590,11 +3612,18 @@ private struct DetailView: View {
     private func expandedProcessItemCounts(in entries: [ChatDisplayEntry]) -> [String: Int] {
         var counts: [String: Int] = [:]
         for entry in entries {
-            guard case .process(let turnId, let items) = entry.kind,
-                  expandedProcessTurnIds.contains(turnId) else {
+            let processGroup: (turnId: String, items: [CodexThreadItem])?
+            switch entry.kind {
+            case .userTurn(_, let turnId, let items), .process(let turnId, let items):
+                processGroup = (turnId, items)
+            case .message:
+                processGroup = nil
+            }
+            guard let processGroup,
+                  expandedProcessTurnIds.contains(processGroup.turnId) else {
                 continue
             }
-            counts[turnId] = items.count
+            counts[processGroup.turnId] = processGroup.items.count
         }
         return counts
     }
@@ -3633,10 +3662,10 @@ private struct DetailView: View {
     }
 
     private func visibleEntries(from displayEntries: [ChatDisplayEntry]) -> [ChatDisplayEntry] {
-        guard displayEntries.count > visibleMessageLimit else {
+        guard displayEntries.reduce(0, { $0 + $1.displayWeight }) > visibleMessageLimit else {
             return displayEntries
         }
-        return Array(displayEntries.suffix(visibleMessageLimit))
+        return visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
     }
 
     private func displayItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
@@ -3696,7 +3725,15 @@ private struct DetailView: View {
         var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
         if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
            let turnId = items.first?.turnId {
-            entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
+            if userMessages.count == 1,
+               let userMessage = userMessages.first,
+               !isCollaborationUserMessage(userMessage) {
+                entries[entries.count - 1] = ChatDisplayEntry(
+                    kind: .userTurn(message: userMessage, turnId: turnId, processItems: processItems)
+                )
+            } else {
+                entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
+            }
         }
         if let presentedAgentMessage {
             entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
@@ -3814,6 +3851,7 @@ private struct UsageProgressRing: View {
 private struct ChatDisplayEntry: Identifiable {
     enum Kind {
         case message(CodexThreadItem)
+        case userTurn(message: CodexThreadItem, turnId: String, processItems: [CodexThreadItem])
         case process(turnId: String, items: [CodexThreadItem])
     }
 
@@ -3823,6 +3861,8 @@ private struct ChatDisplayEntry: Identifiable {
         switch kind {
         case .message(let item):
             return "message:\(item.id)"
+        case .userTurn(let item, _, _):
+            return "message:\(item.id)"
         case .process(let turnId, _):
             return "process:\(turnId)"
         }
@@ -3830,10 +3870,19 @@ private struct ChatDisplayEntry: Identifiable {
 
     var isProcessGroup: Bool {
         switch kind {
-        case .message:
+        case .message, .userTurn:
             return false
         case .process:
             return true
+        }
+    }
+
+    var displayWeight: Int {
+        switch kind {
+        case .userTurn:
+            return 2
+        case .message, .process:
+            return 1
         }
     }
 }
@@ -3874,7 +3923,7 @@ private func makeVisibleDetailDisplay(
     return (
         displayItems: displayItems,
         visibleEntries: visibleEntries,
-        totalCount: displayEntries.count,
+        totalCount: displayEntries.reduce(0) { $0 + $1.displayWeight },
         signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
         sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
     )
@@ -3900,10 +3949,21 @@ private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMes
 }
 
 private func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -> [ChatDisplayEntry] {
-    guard displayEntries.count > limit else {
+    guard displayEntries.reduce(0, { $0 + $1.displayWeight }) > limit else {
         return displayEntries
     }
-    return Array(displayEntries.suffix(limit))
+    var remainingWeight = limit
+    var startIndex = displayEntries.endIndex
+    while startIndex > displayEntries.startIndex {
+        let candidateIndex = displayEntries.index(before: startIndex)
+        let candidateWeight = displayEntries[candidateIndex].displayWeight
+        remainingWeight -= candidateWeight
+        startIndex = candidateIndex
+        if remainingWeight <= 0 {
+            break
+        }
+    }
+    return Array(displayEntries[startIndex...])
 }
 
 private func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
@@ -3949,7 +4009,15 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
     if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
        let turnId = items.first?.turnId {
-        entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
+        if userMessages.count == 1,
+           let userMessage = userMessages.first,
+           !isCollaborationUserMessage(userMessage) {
+            entries[entries.count - 1] = ChatDisplayEntry(
+                kind: .userTurn(message: userMessage, turnId: turnId, processItems: processItems)
+            )
+        } else {
+            entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
+        }
     }
     if let presentedAgentMessage {
         entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
@@ -3974,6 +4042,11 @@ private func preferredPresentedAgentMessage(from messages: [CodexThreadItem]) ->
         return nil
     }
     return legacyMessage
+}
+
+private func isCollaborationUserMessage(_ item: CodexThreadItem) -> Bool {
+    item.type == "userMessage"
+        && (item.presentationRole == "collaboration" || item.sourceType == "collaboration")
 }
 
 private func isTerminalTurnStatus(_ status: String) -> Bool {
@@ -4020,6 +4093,8 @@ private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visi
         switch entry.kind {
         case .message(let item):
             return detailItemSignature(item)
+        case .userTurn(let item, let turnId, let items):
+            return detailItemSignature(item) + ":" + turnId + ":" + items.map(detailItemSignature).joined(separator: ",")
         case .process(let turnId, let items):
             return turnId + ":" + items.map(detailItemSignature).joined(separator: ",")
         }
@@ -4345,6 +4420,7 @@ struct CopyTextButton: View {
 
 private struct ThreadProcessGroupView: View {
     let items: [CodexThreadItem]
+    var isEmbeddedInUserCard = false
     @Binding var isExpanded: Bool
 
     var body: some View {
@@ -4354,35 +4430,41 @@ private struct ThreadProcessGroupView: View {
                     isExpanded.toggle()
                 }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: isEmbeddedInUserCard ? 4 : 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .bold))
-                        .frame(width: 12, height: 12)
+                        .font(.system(size: isEmbeddedInUserCard ? 7.5 : 9, weight: .bold))
+                        .frame(
+                            width: isEmbeddedInUserCard ? 9 : 12,
+                            height: isEmbeddedInUserCard ? 9 : 12
+                        )
                     Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: isEmbeddedInUserCard ? 8 : 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
                     Text(L10n("Execution process"))
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: isEmbeddedInUserCard ? 9.5 : 10.5, weight: .semibold))
                     if let durationText {
                         Text(durationText)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(.system(size: isEmbeddedInUserCard ? 9 : 10, weight: .medium))
                             .foregroundStyle(CorptiePalette.mutedText)
                     }
                     Text("\(items.count)")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .font(.system(size: isEmbeddedInUserCard ? 8 : 9, weight: .bold, design: .rounded))
                         .foregroundStyle(CorptiePalette.mutedText)
-                        .padding(.horizontal, 5)
-                        .frame(height: 16)
+                        .padding(.horizontal, isEmbeddedInUserCard ? 4 : 5)
+                        .frame(height: isEmbeddedInUserCard ? 13 : 16)
                         .background(Color.black.opacity(0.04), in: Capsule())
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(CorptiePalette.secondaryText)
-                .padding(.horizontal, 9)
-                .frame(height: 26)
-                .background(Color.white.opacity(0.42), in: Capsule())
+                .padding(.horizontal, isEmbeddedInUserCard ? 0 : 9)
+                .frame(height: isEmbeddedInUserCard ? 18 : 26)
+                .background(isEmbeddedInUserCard ? Color.clear : Color.white.opacity(0.42), in: Capsule())
                 .overlay(
                     Capsule()
-                        .strokeBorder(Color.black.opacity(0.045), lineWidth: 1)
+                        .strokeBorder(
+                            isEmbeddedInUserCard ? Color.clear : Color.black.opacity(0.045),
+                            lineWidth: 1
+                        )
                 )
             }
             .buttonStyle(.plain)
@@ -4400,7 +4482,12 @@ private struct ThreadProcessGroupView: View {
                 }
                 .padding(.leading, 22)
                 .padding(.top, 2)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .clipped()
+                .transition(
+                    isEmbeddedInUserCard
+                        ? .opacity.combined(with: .scale(scale: 0.985, anchor: .top))
+                        : .opacity.combined(with: .move(edge: .top))
+                )
             }
         }
         .padding(.vertical, 1)
@@ -4507,15 +4594,21 @@ private struct ThreadItemView: View {
     @State private var isDiffActionRunning = false
     @State private var diffActionError: String?
     let item: CodexThreadItem
+    let processItems: [CodexThreadItem]?
+    @Binding private var isProcessExpanded: Bool
     @Binding private var isCollaborationExpanded: Bool
     @Binding private var isCollaborationConfirmationExpanded: Bool
 
     init(
         item: CodexThreadItem,
+        processItems: [CodexThreadItem]? = nil,
+        isProcessExpanded: Binding<Bool> = .constant(false),
         isCollaborationExpanded: Binding<Bool>,
         isCollaborationConfirmationExpanded: Binding<Bool>
     ) {
         self.item = item
+        self.processItems = processItems
+        _isProcessExpanded = isProcessExpanded
         _isCollaborationExpanded = isCollaborationExpanded
         _isCollaborationConfirmationExpanded = isCollaborationConfirmationExpanded
     }
@@ -4983,6 +5076,18 @@ private struct ThreadItemView: View {
                 if hasFileChanges {
                     codeChangeSummary
                         .padding(.top, 4)
+                }
+
+                if let processItems {
+                    VStack(spacing: 0) {
+                        Divider()
+                            .overlay(Color.black.opacity(0.045))
+                        ThreadProcessGroupView(
+                            items: processItems,
+                            isEmbeddedInUserCard: true,
+                            isExpanded: $isProcessExpanded
+                        )
+                    }
                 }
             }
 
