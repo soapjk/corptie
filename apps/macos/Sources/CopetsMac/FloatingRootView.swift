@@ -3551,7 +3551,7 @@ private struct ChatUsageBar: View {
 
     var body: some View {
         if let usage, usage.account.provider == "codex" {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 if let context = usage.context,
                    let remaining = context.remainingTokens,
                    let window = context.contextWindow {
@@ -3576,13 +3576,13 @@ private struct ChatUsageBar: View {
                     )
                 }
             }
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: 9, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String) -> some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 4) {
             UsageProgressRing(icon: icon, progress: progress, color: color)
             Text(value)
                 .foregroundStyle(color)
@@ -3634,10 +3634,10 @@ private struct UsageProgressRing: View {
                 .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             Image(systemName: icon)
-                .font(.system(size: 5.5, weight: .bold))
+                .font(.system(size: 4.5, weight: .bold))
                 .foregroundStyle(color)
         }
-        .frame(width: 13, height: 13)
+        .frame(width: 10, height: 10)
     }
 }
 
@@ -3954,12 +3954,12 @@ private struct ThreadMetaView: View {
     let detail: CodexThreadDetail
 
     var body: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
                 ConnectionIndicatorLight(
                     color: detail.isConnecting ? CorptiePalette.disconnected : detail.connectionColor,
-                    size: 8,
-                    glowSize: 20,
+                    size: 6,
+                    glowSize: 14,
                     isBreathing: detail.isConnecting
                 )
                 Text(detail.status.label)
@@ -3968,15 +3968,15 @@ private struct ThreadMetaView: View {
                     ActivityStatusText(text: activityStatus, isActive: detail.status == .running)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .background(Color.white.opacity(0.1), in: Capsule())
 
             Spacer(minLength: 8)
 
             ChatUsageBar(usage: backendClient.selectedSessionUsage)
         }
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(CorptiePalette.secondaryText)
         .frame(maxWidth: .infinity)
     }
