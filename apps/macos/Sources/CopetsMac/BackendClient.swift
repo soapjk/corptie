@@ -511,9 +511,10 @@ final class BackendClient: ObservableObject {
             lastError = L10n("Command is required.")
             return
         }
+        guard !isCreatingTask else { return }
+        isCreatingTask = true
 
         Task {
-            isCreatingTask = true
             defer { isCreatingTask = false }
 
             do {
@@ -569,9 +570,10 @@ final class BackendClient: ObservableObject {
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedExistingSessionId = existingSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isCreatingTask else { return }
+        isCreatingTask = true
 
         Task {
-            isCreatingTask = true
             defer { isCreatingTask = false }
 
             do {
@@ -633,9 +635,10 @@ final class BackendClient: ObservableObject {
     ) {
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isCreatingTask else { return }
+        isCreatingTask = true
 
         Task {
-            isCreatingTask = true
             defer { isCreatingTask = false }
 
             do {
@@ -799,9 +802,10 @@ final class BackendClient: ObservableObject {
             lastError = L10n("Task prompt is required.")
             return
         }
+        guard !isCreatingTask else { return }
+        isCreatingTask = true
 
         Task {
-            isCreatingTask = true
             defer { isCreatingTask = false }
 
             do {
