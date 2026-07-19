@@ -231,7 +231,6 @@ enum CorptieBackendSupervisor {
             if !isLaunchAgentLoaded() {
                 try runLaunchctl(["bootstrap", "gui/\(getuid())", installedPlist.path])
             }
-            _ = try? runLaunchctl(["kickstart", "-k", "gui/\(getuid())/\(label)"])
         } catch {
             NSLog("Corptie backend startup failed: \(error.localizedDescription)")
         }
