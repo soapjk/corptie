@@ -50,6 +50,8 @@ import {
   withCodexSessionPermissions
 } from "./utils/codexPermissions.mjs";
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
+import { collaborationMcpServerName } from "./utils/collaborationRuntime.mjs";
+import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -61,6 +63,7 @@ const sseClients = new Set();
 const sessionEventListeners = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
+const codexChoiceParseRetryAfter = new Map();
 const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
@@ -109,6 +112,7 @@ let claudeModelsCache = null;
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
 const drainingAgentWorkIds = new Set();
 let agentWorkQueueInterval = null;
+let activeCodexThreadCreation = null;
 
 function now() {
   return new Date().toISOString();
@@ -579,6 +583,14 @@ function enrichCodexDetailChoiceOptions(detail) {
 }
 
 function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, generation = currentChoiceGeneration(`codex:${threadId}`)) {
+  const parserBackoffKey = choiceParserBackoffKey(choiceParser);
+  const retryAfter = Math.max(
+    codexChoiceParseRetryAfter.get(cacheKey) ?? 0,
+    codexChoiceParseRetryAfter.get(parserBackoffKey) ?? 0
+  );
+  if (retryAfter > Date.now()) {
+    return;
+  }
   if (pendingCodexChoiceParses.has(cacheKey)) {
     return;
   }
@@ -590,6 +602,8 @@ function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, genera
     provider: "codex-app-server"
   })
     .then((parsed) => {
+      codexChoiceParseRetryAfter.delete(cacheKey);
+      codexChoiceParseRetryAfter.delete(parserBackoffKey);
       if (!parsed || !Array.isArray(parsed.options) || parsed.options.length < 2 || parsed.confidence < 0.45) {
         return;
       }
@@ -609,7 +623,11 @@ function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, genera
       emitEvent("CodexThreadChoiceOptionsUpdated", { threadId, optionsCount: options.length });
     })
     .catch((error) => {
-      console.log(`[choice-parser] event=codex-app-server-detail-error session=codex:${threadId} ${JSON.stringify({ error: error.message, async: true })}`);
+      const retryDelayMs = choiceParserRetryDelayMs(error);
+      const retryAt = Date.now() + retryDelayMs;
+      codexChoiceParseRetryAfter.set(cacheKey, retryAt);
+      codexChoiceParseRetryAfter.set(parserBackoffKey, retryAt);
+      console.log(`[choice-parser] event=codex-app-server-detail-error session=codex:${threadId} ${JSON.stringify({ error: error.message, retryDelayMs, retryAt: new Date(retryAt).toISOString(), async: true })}`);
     })
     .finally(() => {
       pendingCodexChoiceParses.delete(cacheKey);
@@ -749,7 +767,7 @@ function collaborationThreadOptions(agentId) {
         multi_agent: false
       },
       mcp_servers: {
-        "corptie-collaboration": {
+        [collaborationMcpServerName(agentId)]: {
           command: process.execPath,
           args: [collaborationMcpServerPath],
           env: {
@@ -757,7 +775,8 @@ function collaborationThreadOptions(agentId) {
             CORPTIE_BACKEND_URL: `http://127.0.0.1:${port}`,
             CORPTIE_ENV: environmentName
           },
-          required: true
+          startup_timeout_sec: 5,
+          required: false
         }
       }
     },
@@ -3511,19 +3530,22 @@ function route(request, response) {
           sendJson(response, 400, { error: "Prompt is required" });
           return;
         }
+        if (activeCodexThreadCreation) {
+          sendJson(response, 409, {
+            error: "Another Codex session is already being created. Wait for it to finish before trying again.",
+            code: "SESSION_CREATION_IN_PROGRESS"
+          });
+          return;
+        }
         const releaseTitle = reserveSessionTitle(title);
+        const creationId = randomUUID();
+        const startedAt = Date.now();
+        activeCodexThreadCreation = { creationId, title, startedAt };
         try {
 
-        console.log(`[codex] create thread cwd=${cwd} chars=${prompt.length}`);
+        console.log(`[codex] create thread request=${creationId} cwd=${cwd} chars=${prompt.length}`);
 
         const collaborationAgentId = `agent-${randomUUID()}`;
-        collaborationCore.registerAgent({
-          agentId: collaborationAgentId,
-          name: title,
-          description: `Independent Corptie Agent for ${cwd}.`,
-          status: "inactive",
-          capabilities: ["codex-session", "corptie-collaboration"]
-        });
         const permissions = {
           sandbox: normalizeCodexSandbox(input.sandbox),
           approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
@@ -3534,6 +3556,14 @@ function route(request, response) {
           model: input.model,
           modelProvider: input.modelProvider,
           ...collaborationThreadOptions(collaborationAgentId)
+        });
+
+        collaborationCore.registerAgent({
+          agentId: collaborationAgentId,
+          name: title,
+          description: `Independent Corptie Agent for ${cwd}.`,
+          status: "inactive",
+          capabilities: ["codex-session", "corptie-collaboration"]
         });
 
         const threadId = started.thread.id;
@@ -3567,7 +3597,7 @@ function route(request, response) {
         upsertManagedCodexSession(session, collaborationAgentId);
 
         emitEvent("CodexThreadCreated", { threadId, session, turn: turn.turn });
-        console.log(`[codex] created thread=${threadId} turn=${turn.turn?.id ?? "unknown"}`);
+        console.log(`[codex] created request=${creationId} thread=${threadId} turn=${turn.turn?.id ?? "unknown"} durationMs=${Date.now() - startedAt}`);
 
         sendJson(response, 201, {
           thread: started.thread,
@@ -3577,7 +3607,13 @@ function route(request, response) {
           visibleInCodexDesktop: false,
           warning: "Started through Corptie' app-server connection. Codex Desktop may not show this thread immediately."
         });
+        } catch (error) {
+          console.error(`[codex] create failed request=${creationId} durationMs=${Date.now() - startedAt} error=${error.message}`);
+          throw error;
         } finally {
+          if (activeCodexThreadCreation?.creationId === creationId) {
+            activeCodexThreadCreation = null;
+          }
           releaseTitle();
         }
       })
