@@ -406,11 +406,9 @@ struct FloatingRootView: View {
         if backendClient.selectedSession != nil,
            backendClient.sessions.count > 1,
            !isShowingDetailSessionRail {
-            Color.black.opacity(0.001)
-                .contentShape(Rectangle())
+            FastHoverTrackingArea(hoverChanged: updateDetailSessionRailHover)
                 .frame(width: detailSessionRailTriggerWidth)
                 .frame(maxHeight: .infinity)
-                .onHover(perform: updateDetailSessionRailHover)
         }
     }
 
@@ -1203,6 +1201,43 @@ private struct WindowDragArea: NSViewRepresentable {
 
         override func mouseDragged(with event: NSEvent) {
             window?.performDrag(with: event)
+        }
+    }
+}
+
+private struct FastHoverTrackingArea: NSViewRepresentable {
+    let hoverChanged: (Bool) -> Void
+
+    func makeNSView(context: Context) -> TrackingView {
+        let view = TrackingView()
+        view.hoverChanged = hoverChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: TrackingView, context: Context) {
+        nsView.hoverChanged = hoverChanged
+    }
+
+    final class TrackingView: NSView {
+        var hoverChanged: ((Bool) -> Void)?
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(
+                rect: .zero,
+                options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                owner: self,
+                userInfo: nil
+            ))
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            hoverChanged?(true)
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            hoverChanged?(false)
         }
     }
 }
