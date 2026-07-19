@@ -335,3 +335,12 @@
 "Choose a log directory" = "选择日志目录";
 "Choose log directory" = "选择日志目录";
 "Backend logs rotate automatically at 20 MB and keep five backups." = "后端日志达到 20 MB 后会自动轮转，并保留五份备份。";
+"Tasks are still running" = "仍有任务正在运行";
+"There are %d unfinished conversations. Quitting will stop the backend and interrupt all of them. Current work may be lost.\n\n%@%@" = "当前有 %d 个未完成的会话。退出将停止后台并中断所有这些会话，当前工作可能会丢失。\n\n%@%@";
+"and %d more tasks" = "以及另外 %d 个任务";
+"Quit and Interrupt Tasks" = "退出并中断任务";
+"Unable to verify running tasks" = "无法确认任务运行状态";
+"Corptie could not read the latest session state. Quitting may interrupt unfinished conversations. Do you still want to stop the frontend and backend?" = "Corptie 无法读取最新的会话状态。退出可能会中断尚未完成的会话。是否仍要停止前端和后台？";
+"Quit Anyway" = "仍然退出";
+"Could not stop the backend" = "无法停止后台";
+"Corptie was kept open because its backend could not be stopped safely.\n\n%@" = "由于无法安全停止后台，Corptie 已保持打开。\n\n%@";

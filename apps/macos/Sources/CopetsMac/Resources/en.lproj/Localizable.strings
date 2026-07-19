@@ -30,3 +30,12 @@
 "协作任务" = "Collaboration Task";
 "Context" = "Context";
 "Codex quota" = "Codex quota";
+"Tasks are still running" = "Tasks are still running";
+"There are %d unfinished conversations. Quitting will stop the backend and interrupt all of them. Current work may be lost.\n\n%@%@" = "There are %d unfinished conversations. Quitting will stop the backend and interrupt all of them. Current work may be lost.\n\n%@%@";
+"and %d more tasks" = "and %d more tasks";
+"Quit and Interrupt Tasks" = "Quit and Interrupt Tasks";
+"Unable to verify running tasks" = "Unable to verify running tasks";
+"Corptie could not read the latest session state. Quitting may interrupt unfinished conversations. Do you still want to stop the frontend and backend?" = "Corptie could not read the latest session state. Quitting may interrupt unfinished conversations. Do you still want to stop the frontend and backend?";
+"Quit Anyway" = "Quit Anyway";
+"Could not stop the backend" = "Could not stop the backend";
+"Corptie was kept open because its backend could not be stopped safely.\n\n%@" = "Corptie was kept open because its backend could not be stopped safely.\n\n%@";

@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var collaborationWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var isEvaluatingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -63,6 +64,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detachedSessionManager?.closeAll()
         completionSoundManager?.stop()
         backendClient.stop()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isEvaluatingTermination else {
+            return .terminateLater
+        }
+        isEvaluatingTermination = true
+
+        Task {
+            let shouldTerminate = await confirmTerminationIfNeeded()
+            guard shouldTerminate else {
+                isEvaluatingTermination = false
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
+
+            do {
+                try CorptieBackendSupervisor.stopProductionBackend()
+                sender.reply(toApplicationShouldTerminate: true)
+            } catch {
+                showBackendShutdownError(error)
+                isEvaluatingTermination = false
+                sender.reply(toApplicationShouldTerminate: false)
+            }
+        }
+        return .terminateLater
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -198,6 +225,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         NSApp.terminate(nil)
     }
+
+    private func confirmTerminationIfNeeded() async -> Bool {
+        do {
+            let sessions = try await backendClient.fetchSessionsForShutdown()
+            let unfinished = sessions.filter(isUnfinishedSession)
+            guard !unfinished.isEmpty else {
+                return true
+            }
+
+            let alert = NSAlert()
+            alert.alertStyle = .critical
+            alert.messageText = L10n("Tasks are still running")
+            let titles = unfinished.prefix(4).map { "• \($0.title)" }.joined(separator: "\n")
+            let remaining = unfinished.count > 4
+                ? "\n" + L10nFormat("and %d more tasks", unfinished.count - 4)
+                : ""
+            alert.informativeText = L10nFormat(
+                "There are %d unfinished conversations. Quitting will stop the backend and interrupt all of them. Current work may be lost.\n\n%@%@",
+                unfinished.count,
+                titles,
+                remaining
+            )
+            alert.addButton(withTitle: L10n("Cancel"))
+            alert.addButton(withTitle: L10n("Quit and Interrupt Tasks"))
+            return alert.runModal() == .alertSecondButtonReturn
+        } catch {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = L10n("Unable to verify running tasks")
+            alert.informativeText = L10n("Corptie could not read the latest session state. Quitting may interrupt unfinished conversations. Do you still want to stop the frontend and backend?")
+            alert.addButton(withTitle: L10n("Cancel"))
+            alert.addButton(withTitle: L10n("Quit Anyway"))
+            return alert.runModal() == .alertSecondButtonReturn
+        }
+    }
+
+    private func isUnfinishedSession(_ session: TaskSession) -> Bool {
+        switch session.status {
+        case .running:
+            return true
+        case .blocked:
+            let activity = session.activityStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+            return activity != "ready" && activity != "idle"
+        case .complete, .failed, .cancelled:
+            return false
+        }
+    }
+
+    private func showBackendShutdownError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = L10n("Could not stop the backend")
+        alert.informativeText = L10nFormat("Corptie was kept open because its backend could not be stopped safely.\n\n%@", error.localizedDescription)
+        alert.addButton(withTitle: L10n("OK"))
+        alert.runModal()
+    }
 }
 
 @MainActor
@@ -234,6 +317,13 @@ enum CorptieBackendSupervisor {
         } catch {
             NSLog("Corptie backend startup failed: \(error.localizedDescription)")
         }
+    }
+
+    static func stopProductionBackend() throws {
+        guard !CorptieAppEnvironment.isDevelopment, isLaunchAgentLoaded() else {
+            return
+        }
+        try runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
     }
 
     private static func isLaunchAgentLoaded() -> Bool {
