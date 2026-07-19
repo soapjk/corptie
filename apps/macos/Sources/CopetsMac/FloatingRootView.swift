@@ -3214,7 +3214,6 @@ private struct DetailView: View {
                                 ))
                         }
                     }
-                    .animation(.easeOut(duration: 0.22), value: displayEntries.map(\.id))
 
                     Color.clear
                         .frame(height: 1)
@@ -3257,23 +3256,25 @@ private struct DetailView: View {
                 updateDetailScrollBottomProximity()
             }
             .overlay(alignment: .bottomTrailing) {
-                if hasNewMessagesBelow && !isDetailScrolledNearBottom {
-                    Button {
-                        isFollowingLatest = true
-                        scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
-                    } label: {
-                        Image(systemName: "arrow.down")
-                            .font(.system(size: 12, weight: .bold))
-                            .frame(width: 30, height: 30)
+                ZStack {
+                    if hasNewMessagesBelow && !isDetailScrolledNearBottom {
+                        Button {
+                            isFollowingLatest = true
+                            scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
+                        } label: {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 12, weight: .bold))
+                                .frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(IconButtonStyle())
+                        .help(L10n("Jump to latest message"))
+                        .padding(.trailing, 10)
+                        .padding(.bottom, 8)
+                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     }
-                    .buttonStyle(IconButtonStyle())
-                    .help(L10n("Jump to latest message"))
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 8)
-                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
                 }
+                .animation(.easeOut(duration: 0.16), value: hasNewMessagesBelow)
             }
-            .animation(.easeOut(duration: 0.16), value: hasNewMessagesBelow)
         }
     }
 
@@ -3304,20 +3305,26 @@ private struct DetailView: View {
             return
         }
         let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
-        cachedDetailSourceSignature = sourceSignature
-        cachedItemsSignature = preparedDisplay.signature
-        cachedSessionId = sessionId
-        cachedDisplayItems = preparedDisplay.displayItems
-        cachedTotalDisplayEntryCount = preparedDisplay.totalCount
-        cachedDisplayEntries = preparedDisplay.visibleEntries
-        displayCacheBySessionId[sessionId] = DetailDisplayCache(
-            sessionId: sessionId,
-            displayItems: preparedDisplay.displayItems,
-            displayEntries: preparedDisplay.visibleEntries,
-            totalDisplayEntryCount: preparedDisplay.totalCount,
-            signature: preparedDisplay.signature,
-            sourceSignature: sourceSignature
-        )
+        let addsVisibleCard = cachedSessionId == sessionId
+            && preparedDisplay.totalCount > cachedTotalDisplayEntryCount
+        var transaction = Transaction(animation: addsVisibleCard ? .easeOut(duration: 0.22) : nil)
+        transaction.disablesAnimations = !addsVisibleCard
+        withTransaction(transaction) {
+            cachedDetailSourceSignature = sourceSignature
+            cachedItemsSignature = preparedDisplay.signature
+            cachedSessionId = sessionId
+            cachedDisplayItems = preparedDisplay.displayItems
+            cachedTotalDisplayEntryCount = preparedDisplay.totalCount
+            cachedDisplayEntries = preparedDisplay.visibleEntries
+            displayCacheBySessionId[sessionId] = DetailDisplayCache(
+                sessionId: sessionId,
+                displayItems: preparedDisplay.displayItems,
+                displayEntries: preparedDisplay.visibleEntries,
+                totalDisplayEntryCount: preparedDisplay.totalCount,
+                signature: preparedDisplay.signature,
+                sourceSignature: sourceSignature
+            )
+        }
     }
 
     private func shouldRenderDetailMessages(for detail: CodexThreadDetail) -> Bool {
@@ -3328,7 +3335,11 @@ private struct DetailView: View {
     }
 
     private func preparedDisplayEntries(for detail: CodexThreadDetail) -> (visibleEntries: [ChatDisplayEntry], totalCount: Int) {
-        if hasPreparedDisplayCacheForCurrentSession && cachedDetailSourceSignature == detailSourceSignature(for: detail) {
+        // Once a session has a display cache, render that cache until the
+        // controlled update path replaces it with the intended transaction.
+        // Recomputing directly from a newer detail here bypasses animation
+        // suppression for folded process-only updates.
+        if hasPreparedDisplayCacheForCurrentSession {
             return (cachedDisplayEntries, cachedTotalDisplayEntryCount)
         }
         if let preheatedDisplayCache, preheatedDisplayCache.sessionId == sessionId {
@@ -3339,7 +3350,7 @@ private struct DetailView: View {
     }
 
     private var hasPreparedDisplayCacheForCurrentSession: Bool {
-        cachedSessionId == sessionId && !cachedDisplayEntries.isEmpty
+        cachedSessionId == sessionId
     }
 
     private var hasPreheatedDisplayCacheForCurrentSession: Bool {
@@ -3762,16 +3773,14 @@ private func makeVisibleDetailDisplay(
     for detail: CodexThreadDetail,
     visibleMessageLimit: Int
 ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String) {
-    let windowSize = min(detail.items.count, max(visibleMessageLimit * 5, visibleMessageLimit + 24))
     let displayItems = detail.items
-        .suffix(windowSize)
         .filter { !isLowSignalDetailProcessItem($0) }
     let displayEntries = makeChatDisplayEntries(from: displayItems)
     let visibleEntries = visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
     return (
         displayItems: displayItems,
         visibleEntries: visibleEntries,
-        totalCount: max(detail.items.count, visibleEntries.count),
+        totalCount: displayEntries.count,
         signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
         sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
     )
