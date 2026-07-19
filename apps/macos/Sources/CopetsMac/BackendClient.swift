@@ -449,14 +449,9 @@ final class BackendClient: ObservableObject {
 
     func refresh() async {
         do {
-            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "sessions"))
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                throw URLError(.badServerResponse)
-            }
-
-            let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
-            if sessions != decoded.sessions {
-                sessions = decoded.sessions
+            let latestSessions = try await fetchSessionsForShutdown()
+            if sessions != latestSessions {
+                sessions = latestSessions
                 syncSelectedSessionFromSessions()
                 syncSelectedDetailMetadataFromSessions()
             }
@@ -475,6 +470,14 @@ final class BackendClient: ObservableObject {
                 lastError = message
             }
         }
+    }
+
+    func fetchSessionsForShutdown() async throws -> [TaskSession] {
+        let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "sessions"))
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(SessionsResponse.self, from: data).sessions
     }
 
     func refreshArchivedSessions() async {
