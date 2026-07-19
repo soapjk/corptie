@@ -997,14 +997,6 @@ private struct SessionSummaryFramePreferenceKey: PreferenceKey {
     }
 }
 
-private struct LastMessageHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
 private struct DetailScrollViewportHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
@@ -1058,17 +1050,6 @@ private extension View {
                 Color.clear.preference(
                     key: SessionSummaryFramePreferenceKey.self,
                     value: [id: proxy.frame(in: .named("session-list"))]
-                )
-            }
-        )
-    }
-
-    func measureLastMessageHeight(isLast: Bool) -> some View {
-        background(
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: LastMessageHeightPreferenceKey.self,
-                    value: isLast ? proxy.size.height : 0
                 )
             }
         )
@@ -3154,9 +3135,6 @@ private struct DetailView: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.white.opacity(0.001))
         )
-        .onDisappear {
-            panelLayoutState.updateDetailLastMessageHeight(nil)
-        }
         .onAppear {
             restorePreheatedDisplayCacheIfNeeded()
         }
@@ -3209,13 +3187,20 @@ private struct DetailView: View {
                                 isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
                             )
                                 .id(entry.id)
-                                .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .identity
+                                ))
                         case .process(_, let items):
                             ThreadProcessGroupView(items: items)
                                 .id(entry.id)
-                                .measureLastMessageHeight(isLast: entry.id == displayEntries.last?.id)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .identity
+                                ))
                         }
                     }
+                    .animation(.easeOut(duration: 0.22), value: displayEntries.map(\.id))
 
                     Color.clear
                         .frame(height: 1)
@@ -3237,27 +3222,15 @@ private struct DetailView: View {
                     Color.clear.preference(key: DetailScrollViewportHeightPreferenceKey.self, value: proxy.size.height)
                 }
             )
-            .defaultScrollAnchor(.bottom)
             .onAppear {
                 updateCachedDisplayEntries(for: detail)
                 scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
-                if detail.items.isEmpty {
-                    panelLayoutState.updateDetailLastMessageHeight(nil)
-                }
             }
             .onChange(of: detail.items.last?.id) { _, _ in
                 updateCachedDisplayEntries(for: detail)
-                scrollToLatestAfterLayout(detail: detail, proxy: proxy)
-                if detail.items.isEmpty {
-                    panelLayoutState.updateDetailLastMessageHeight(nil)
-                }
             }
             .onChange(of: detailSourceSignature(for: detail)) { _, _ in
                 updateCachedDisplayEntries(for: detail)
-                scrollToLatestAfterLayout(detail: detail, proxy: proxy)
-            }
-            .onPreferenceChange(LastMessageHeightPreferenceKey.self) { height in
-                panelLayoutState.updateDetailLastMessageHeight(height > 0 ? height : nil)
             }
             .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
                 detailScrollViewportHeight = height
@@ -4225,7 +4198,12 @@ private struct ThreadProcessGroupView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(items) { item in
                         ProcessMiniCard(item: item)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .identity
+                            ))
                     }
+                    .animation(.easeOut(duration: 0.22), value: items.map(\.id))
                 }
                 .padding(.leading, 22)
                 .padding(.top, 2)
