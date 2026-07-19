@@ -3626,7 +3626,10 @@ private struct DetailView: View {
         }
         let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
         let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
-        let processItems = items.filter(isProcessItem) + progressAgentMessages
+        let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
+        let processItems = items.filter { item in
+            isProcessItem(item) || progressAgentMessageIds.contains(item.id)
+        }
         let trailingItems = items.filter { item in
             item.type != "userMessage" && item.type != "agentMessage" && !isProcessItem(item)
         }
@@ -3876,7 +3879,10 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
     }
     let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
     let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
-    let processItems = items.filter(isDetailProcessItem) + progressAgentMessages
+    let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
+    let processItems = items.filter { item in
+        isDetailProcessItem(item) || progressAgentMessageIds.contains(item.id)
+    }
     let trailingItems = items.filter { item in
         item.type != "userMessage" && item.type != "agentMessage" && !isDetailProcessItem(item)
     }
