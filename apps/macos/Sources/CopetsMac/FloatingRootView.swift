@@ -3661,7 +3661,7 @@ private struct ChatDisplayEntry: Identifiable {
         case .message(let item):
             return "message:\(item.id)"
         case .process(let items):
-            return "process:\(items.first?.id ?? UUID().uuidString)"
+            return "process:\(items.first?.turnId ?? "unknown-turn")"
         }
     }
 
@@ -3798,9 +3798,30 @@ private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatD
 }
 
 private func preferredPresentedAgentMessage(from messages: [CodexThreadItem]) -> CodexThreadItem? {
-    messages.last(where: {
+    if let finalAnswer = messages.last(where: {
         $0.presentationRole?.lowercased() == "final_answer"
-    }) ?? messages.last
+    }) {
+        return finalAnswer
+    }
+
+    // Commentary and other explicitly phased messages are execution progress,
+    // even after a turn ends. Only use the historical fallback for old items
+    // that predate Codex's phase field, and never while their turn is active.
+    guard let legacyMessage = messages.last,
+          legacyMessage.presentationRole?.isEmpty != false,
+          isTerminalTurnStatus(legacyMessage.turnStatus) else {
+        return nil
+    }
+    return legacyMessage
+}
+
+private func isTerminalTurnStatus(_ status: String) -> Bool {
+    switch status.lowercased() {
+    case "completed", "complete", "failed", "cancelled", "canceled", "interrupted":
+        return true
+    default:
+        return false
+    }
 }
 
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
