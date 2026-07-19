@@ -43,9 +43,9 @@ cat > "${PLIST}" <<PLIST
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${LOG_DIR}/backend.out.log</string>
+  <string>/dev/null</string>
   <key>StandardErrorPath</key>
-  <string>${LOG_DIR}/backend.err.log</string>
+  <string>/dev/null</string>
 </dict>
 </plist>
 PLIST

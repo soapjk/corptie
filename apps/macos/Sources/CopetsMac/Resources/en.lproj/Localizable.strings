@@ -23,6 +23,10 @@
 "Could not rename session." = "Could not rename session.";
 "Create as “%@”" = "Create as “%@”";
 "Create the new session with the available name “%@”?" = "Create the new session with the available name “%@”?";
+"Log Directory" = "Log Directory";
+"Choose a log directory" = "Choose a log directory";
+"Choose log directory" = "Choose log directory";
+"Backend logs rotate automatically at 20 MB and keep five backups." = "Backend logs rotate automatically at 20 MB and keep five backups.";
 "协作任务" = "Collaboration Task";
 "Context" = "Context";
 "Codex quota" = "Codex quota";
