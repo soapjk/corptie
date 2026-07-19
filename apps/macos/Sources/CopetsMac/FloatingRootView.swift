@@ -3063,6 +3063,9 @@ private struct DetailView: View {
     @State private var detailScrollViewportHeight: CGFloat = 0
     @State private var detailScrollBottomMaxY: CGFloat = 0
     @State private var isDetailScrolledNearBottom = true
+    @State private var isFollowingLatest = true
+    @State private var isMaintainingFollowPosition = false
+    @State private var pendingFollowScrollWorkItem: DispatchWorkItem?
     @State private var hasNewMessagesBelow = false
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
@@ -3144,6 +3147,10 @@ private struct DetailView: View {
         .onChange(of: sessionId) { _, _ in
             didInitialScroll = false
             isDetailScrolledNearBottom = true
+            isFollowingLatest = true
+            isMaintainingFollowPosition = false
+            pendingFollowScrollWorkItem?.cancel()
+            pendingFollowScrollWorkItem = nil
             hasNewMessagesBelow = false
             detailScrollViewportHeight = 0
             detailScrollBottomMaxY = 0
@@ -3231,6 +3238,7 @@ private struct DetailView: View {
             }
             .onChange(of: detailSourceSignature(for: detail)) { _, _ in
                 updateCachedDisplayEntries(for: detail)
+                maintainLatestPositionAfterIncomingContent(detail: detail, proxy: proxy)
             }
             .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
                 detailScrollViewportHeight = height
@@ -3243,6 +3251,7 @@ private struct DetailView: View {
             .overlay(alignment: .bottomTrailing) {
                 if hasNewMessagesBelow && !isDetailScrolledNearBottom {
                     Button {
+                        isFollowingLatest = true
                         scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
                     } label: {
                         Image(systemName: "arrow.down")
@@ -3401,7 +3410,10 @@ private struct DetailView: View {
         guard !cachedDisplayEntries.isEmpty || !detail.items.isEmpty else {
             return
         }
-        guard force || isDetailScrolledNearBottom else {
+        if force {
+            isFollowingLatest = true
+        }
+        guard force || isFollowingLatest else {
             hasNewMessagesBelow = true
             return
         }
@@ -3422,6 +3434,36 @@ private struct DetailView: View {
         }
     }
 
+    private func maintainLatestPositionAfterIncomingContent(
+        detail: CodexThreadDetail,
+        proxy: ScrollViewProxy
+    ) {
+        guard isFollowingLatest else {
+            hasNewMessagesBelow = true
+            return
+        }
+
+        pendingFollowScrollWorkItem?.cancel()
+        isMaintainingFollowPosition = true
+        scrollToLatestAfterLayout(detail: detail, proxy: proxy)
+
+        // Card insertion runs for 0.22 seconds. Scroll once more after that
+        // layout settles so the old bottom cannot become the new viewport top.
+        let workItem = DispatchWorkItem {
+            guard backendClient.selectedSession?.id == sessionId else {
+                return
+            }
+            isMaintainingFollowPosition = false
+            guard isFollowingLatest else {
+                return
+            }
+            scrollToLatestAfterLayout(detail: detail, proxy: proxy)
+            pendingFollowScrollWorkItem = nil
+        }
+        pendingFollowScrollWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
+    }
+
     private var bottomScrollAnchorId: String {
         "\(sessionId)-bottom-anchor"
     }
@@ -3435,8 +3477,21 @@ private struct DetailView: View {
             return
         }
         let bottomDistance = detailScrollBottomMaxY - detailScrollViewportHeight
-        let isNearBottom = bottomDistance <= 36
+        let isNearBottom = bottomDistance <= 8
         isDetailScrolledNearBottom = isNearBottom
+
+        let currentEvent = NSApp.currentEvent
+        let isUserScrollEvent = currentEvent?.type == .scrollWheel || NSEvent.pressedMouseButtons != 0
+        if isUserScrollEvent {
+            isFollowingLatest = isNearBottom
+            if !isNearBottom {
+                pendingFollowScrollWorkItem?.cancel()
+                pendingFollowScrollWorkItem = nil
+                isMaintainingFollowPosition = false
+            }
+        } else if !isMaintainingFollowPosition {
+            isFollowingLatest = isNearBottom
+        }
         if isNearBottom {
             hasNewMessagesBelow = false
         }
