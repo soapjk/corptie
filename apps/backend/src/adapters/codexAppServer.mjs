@@ -526,9 +526,13 @@ export class CodexAppServerClient {
     const items = this.liveItemsByThread.get(threadId);
 
     if ((method === "item/started" || method === "item/completed") && params.item) {
-      const item = mapThreadItem({ id: turnId ?? threadId, status: method === "item/completed" ? "completed" : "inProgress" }, params.item);
+      // Item completion and turn completion are separate lifecycle events. An
+      // agent message may finish while the turn continues with more work, so
+      // never promote item/completed into a terminal turn status.
+      const item = mapThreadItem({ id: turnId ?? threadId, status: "inProgress" }, params.item);
       item.id = params.item.id ?? `${threadId}:${items.size}`;
-      item.turnStatus = method === "item/completed" ? "completed" : "inProgress";
+      item.turnStatus = "inProgress";
+      item.status = params.item.status ?? (method === "item/completed" ? "completed" : "inProgress");
       items.set(item.id, item);
       return;
     }
@@ -1091,6 +1095,7 @@ function mapThreadItem(turn, item) {
     title: itemTitle(item),
     text: itemText(item),
     status: item.status ?? null,
+    presentationRole: item.phase ?? item.presentationRole ?? null,
     createdAt: createdAtFrom(item, turn)
   };
   if (item.type === "fileChange") {

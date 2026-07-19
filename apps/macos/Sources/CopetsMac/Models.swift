@@ -346,6 +346,15 @@ struct SessionUsageResponse: Decodable, Equatable {
     let context: CodexContextUsage?
 }
 
+struct SessionUsageEventEnvelope: Decodable {
+    let payload: SessionUsageEventPayload
+}
+
+struct SessionUsageEventPayload: Decodable {
+    let sessionId: String
+    let context: CodexContextUsage
+}
+
 struct CodexAccountUsage: Decodable, Equatable {
     let available: Bool?
     let provider: String?

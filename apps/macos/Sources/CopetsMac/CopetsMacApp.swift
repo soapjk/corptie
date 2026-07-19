@@ -66,6 +66,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendClient.stop()
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        Task {
+            await backendClient.refreshSelectedUsage()
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !isEvaluatingTermination else {
             return .terminateLater

@@ -344,3 +344,4 @@
 "Quit Anyway" = "仍然退出";
 "Could not stop the backend" = "无法停止后台";
 "Corptie was kept open because its backend could not be stopped safely.\n\n%@" = "由于无法安全停止后台，Corptie 已保持打开。\n\n%@";
+"Execution process" = "执行过程";
