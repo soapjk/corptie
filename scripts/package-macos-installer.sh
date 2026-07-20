@@ -98,6 +98,14 @@ export CORPTIE_ENV="production"
 export CORPTIE_BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47321}"
 
 NODE_BIN="${NODE_BIN:-}"
+supports_native_sqlite() {
+  [ -x "$1" ] && "$1" -e 'require("node:sqlite").DatabaseSync' >/dev/null 2>&1
+}
+
+if [ -n "${NODE_BIN}" ] && ! supports_native_sqlite "${NODE_BIN}"; then
+  NODE_BIN=""
+fi
+
 if [ -z "${NODE_BIN}" ]; then
   LOGIN_NODE="$(/bin/zsh -lic 'command -v node' 2>/dev/null || true)"
   for candidate in \
@@ -110,7 +118,7 @@ if [ -z "${NODE_BIN}" ]; then
     "/usr/local/bin/node" \
     "/Applications/Codex.app/Contents/Resources/cua_node/bin/node" \
     "$(command -v node 2>/dev/null || true)"; do
-    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+    if [ -n "${candidate}" ] && supports_native_sqlite "${candidate}"; then
       NODE_BIN="${candidate}"
       break
     fi
@@ -118,7 +126,7 @@ if [ -z "${NODE_BIN}" ]; then
 fi
 
 if [ -z "${NODE_BIN}" ]; then
-  echo "Node.js not found in PATH. Please install Node.js and retry." >&2
+  echo "Node.js 22.13 or newer with node:sqlite is required. Please install it and retry." >&2
   exit 1
 fi
 

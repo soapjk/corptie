@@ -113,7 +113,7 @@ Corptie-managed Codex processes also use isolated runtime homes: production uses
 
 ## 🛠️ Develop
 
-Requirements: macOS 14+, Node.js 20+, Swift 6, and an installed and authenticated Codex CLI or Claude Code. Install backend dependencies before the first run:
+Requirements: macOS 14+, Node.js 22.13+, Swift 6, and an installed and authenticated Codex CLI or Claude Code. Install backend dependencies before the first run:
 
 ```sh
 npm install --prefix apps/backend

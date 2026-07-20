@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @MainActor
@@ -128,6 +129,8 @@ final class BackendClient: ObservableObject {
             "CodexThreadChoiceOptionsUpdated",
             "CodexThreadApprovalRequested",
             "CodexThreadApprovalResponded",
+            "CollaborationConfirmationRequested",
+            "CollaborationConfirmationResolved",
             "SessionArchived",
             "SessionUnarchived",
             "SessionDeleted",
@@ -152,7 +155,9 @@ final class BackendClient: ObservableObject {
         }
         if eventName == "CodexThreadChoiceOptionsUpdated"
             || eventName == "CodexThreadApprovalRequested"
-            || eventName == "CodexThreadApprovalResponded" {
+            || eventName == "CodexThreadApprovalResponded"
+            || eventName == "CollaborationConfirmationRequested"
+            || eventName == "CollaborationConfirmationResolved" {
             await refreshSelectedDetailFromPolling()
         }
     }
@@ -479,7 +484,7 @@ final class BackendClient: ObservableObject {
     func refresh() async {
         do {
             let latestSessions = try await fetchSessionsForShutdown()
-            if sessions != latestSessions {
+            if sessions != latestSessions, NSEvent.pressedMouseButtons == 0 {
                 sessions = latestSessions
                 syncSelectedSessionFromSessions()
                 syncSelectedDetailMetadataFromSessions()
@@ -973,8 +978,8 @@ final class BackendClient: ObservableObject {
         sendText(text, to: selectedSession, reloadDetail: true, isChoiceSelection: false, onSuccess: onSuccess)
     }
 
-    func respondToCollaborationConfirmation(confirmationId: String, approve: Bool) {
-        guard let selectedSession else { return }
+    func respondToCollaborationConfirmation(confirmationId: String, approve: Bool, in session: TaskSession? = nil) {
+        guard let targetSession = session ?? selectedSession else { return }
         Task {
             isSendingMessage = true
             defer { isSendingMessage = false }
@@ -989,7 +994,9 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message(payload?["error"] as? String ?? "Could not resolve collaboration confirmation.")
                 }
                 sendStatusMessage = approve ? L10n("Collaboration request sent") : L10n("Collaboration request cancelled")
-                await loadDetail(for: selectedSession, showLoading: false)
+                if selectedSession?.id == targetSession.id {
+                    await loadDetail(for: targetSession, showLoading: false)
+                }
                 await refresh()
             } catch {
                 lastError = error.localizedDescription
@@ -1144,7 +1151,8 @@ final class BackendClient: ObservableObject {
                 sortOrder: existing.sortOrder,
                 avatarPath: existing.avatarPath,
                 capabilities: existing.capabilities,
-                external: existing.external
+                external: existing.external,
+                pendingCollaborationConfirmation: existing.pendingCollaborationConfirmation
             )
         }
     }
@@ -1620,7 +1628,9 @@ final class BackendClient: ObservableObject {
             let detail = try decodeDetail(data, for: session, threadId: threadId)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
             detailCacheBySessionId[session.id] = mergedDetail
-            lastError = nil
+            if lastError != nil {
+                lastError = nil
+            }
             return mergedDetail
         } catch {
             lastError = error.localizedDescription
@@ -1687,12 +1697,14 @@ final class BackendClient: ObservableObject {
         do {
             let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
-            selectedDetail = mergedDetail
+            publishSelectedDetailIfSafe(mergedDetail)
             if let selectedSession {
                 detailCacheBySessionId[selectedSession.id] = mergedDetail
             }
             syncSessionSummary(from: mergedDetail)
-            lastError = nil
+            if lastError != nil {
+                lastError = nil
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -1728,10 +1740,12 @@ final class BackendClient: ObservableObject {
 
             let detail = try decodeDetail(data, for: session, threadId: threadId)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
-            selectedDetail = mergedDetail
+            publishSelectedDetailIfSafe(mergedDetail)
             detailCacheBySessionId[session.id] = mergedDetail
             syncSessionSummary(from: mergedDetail)
-            lastError = nil
+            if lastError != nil {
+                lastError = nil
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -1773,7 +1787,7 @@ final class BackendClient: ObservableObject {
                 && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }?.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        sessions = sessions.map { session in
+        let nextSessions = sessions.map { session in
             guard session.external?.threadId == detail.id else {
                 return session
             }
@@ -1821,8 +1835,12 @@ final class BackendClient: ObservableObject {
                     currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel,
                     cwd: detail.cwd ?? session.external?.cwd,
                     source: session.external?.source ?? detail.source
-                )
+                ),
+                pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
             )
+        }
+        if sessions != nextSessions, NSEvent.pressedMouseButtons == 0 {
+            sessions = nextSessions
         }
     }
 
@@ -1921,7 +1939,7 @@ final class BackendClient: ObservableObject {
             return
         }
 
-        selectedDetail = CodexThreadDetail(
+        let nextDetail = CodexThreadDetail(
             id: detail.id,
             title: detail.title,
             status: session.status,
@@ -1939,6 +1957,14 @@ final class BackendClient: ObservableObject {
             turnCount: detail.turnCount,
             items: detail.items
         )
+        publishSelectedDetailIfSafe(nextDetail)
+    }
+
+    private func publishSelectedDetailIfSafe(_ detail: CodexThreadDetail) {
+        guard selectedDetail != detail, NSEvent.pressedMouseButtons == 0 else {
+            return
+        }
+        selectedDetail = detail
     }
 
     private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {

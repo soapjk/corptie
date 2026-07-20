@@ -1,4 +1,4 @@
-export function handleCollaborationHttpRequest({ request, response, url, core, onConfirmationResolved }) {
+export function handleCollaborationHttpRequest({ request, response, url, core, onConfirmationStaged, onConfirmationResolved }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
     || url.pathname.startsWith("/collaboration/tasks/")
@@ -70,6 +70,7 @@ export function handleCollaborationHttpRequest({ request, response, url, core, o
           sourceSessionId: actor?.currentSessionId,
           sourceTurnId: runningWork?.targetTurnId ?? null
         });
+        await onConfirmationStaged?.(confirmation);
         return sendJson(response, 201, { confirmation });
       }
 

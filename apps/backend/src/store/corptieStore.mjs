@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import os from "node:os";
-import initSqlJs from "sql.js";
+import { backup, DatabaseSync } from "node:sqlite";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -22,26 +22,24 @@ export class CorptieStore {
     this.configPath = options.configPath || process.env.CORPTIE_CONFIG_PATH || configPath;
     this.dataDir = null;
     this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
-    this.SQL = null;
     this.db = null;
-    this.saveTimer = null;
     this.config = {};
   }
 
   async initialize() {
-    this.SQL = await initSqlJs();
     await this.resolveDataPath();
     await mkdir(dirname(this.dbPath), { recursive: true });
-
+    this.db = new NativeDatabase(this.dbPath);
     try {
-      const data = await readFile(this.dbPath);
-      this.db = new this.SQL.Database(data);
-    } catch {
-      this.db = new this.SQL.Database();
+      this.db.run("PRAGMA journal_mode = WAL");
+      this.db.run("PRAGMA synchronous = FULL");
+      this.db.run("PRAGMA busy_timeout = 5000");
+      this.migrate();
+    } catch (error) {
+      this.db.close();
+      this.db = null;
+      throw error;
     }
-
-    this.migrate();
-    await this.save();
   }
 
   async resolveDataPath() {
@@ -184,14 +182,18 @@ export class CorptieStore {
     }
 
     await mkdir(nextDir, { recursive: true });
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = null;
-    }
+    const nextDbPath = join(nextDir, dbFileName);
+    if (nextDbPath === this.dbPath) return this.settings();
 
+    await backup(this.db.database, nextDbPath);
+    this.db.close();
     this.dataDir = nextDir;
-    this.dbPath = join(nextDir, dbFileName);
-    await this.save();
+    this.dbPath = nextDbPath;
+    this.db = new NativeDatabase(this.dbPath);
+    this.db.run("PRAGMA journal_mode = WAL");
+    this.db.run("PRAGMA synchronous = FULL");
+    this.db.run("PRAGMA busy_timeout = 5000");
+    this.db.run("PRAGMA foreign_keys = ON");
     await this.writeConfig();
     return this.settings();
   }
@@ -632,24 +634,20 @@ export class CorptieStore {
   }
 
   async save() {
-    const bytes = this.db.export();
-    await writeFile(this.dbPath, Buffer.from(bytes));
+    this.db.checkpoint();
   }
 
   scheduleSave() {
-    if (this.saveTimer) {
-      return;
-    }
+    // Native SQLite commits each statement directly to the WAL. This method is
+    // kept as a compatibility hook for callers that previously scheduled a
+    // full in-memory database export.
+  }
 
-    this.saveTimer = setTimeout(async () => {
-      this.saveTimer = null;
-      try {
-        await this.save();
-      } catch (error) {
-        console.error(`[store] save failed: ${error.message}`);
-      }
-    }, 120);
-    this.saveTimer.unref?.();
+  async close() {
+    if (!this.db) return;
+    await this.save();
+    this.db.close();
+    this.db = null;
   }
 
   upsertSession(session) {
@@ -1407,6 +1405,68 @@ export class CorptieStore {
     };
   }
 
+}
+
+class NativeDatabase {
+  constructor(path) {
+    this.database = new DatabaseSync(path);
+    this.rowsModified = 0;
+  }
+
+  run(sql, params = []) {
+    const bindings = normalizeSqliteBindings(params);
+    if (bindings.length > 0) {
+      const result = this.database.prepare(sql).run(...bindings);
+      this.rowsModified = Number(result.changes);
+      return;
+    }
+
+    this.database.exec(sql);
+    const result = this.database.prepare("SELECT changes() AS changes").get();
+    this.rowsModified = Number(result?.changes ?? 0);
+  }
+
+  prepare(sql, params = []) {
+    return new NativeStatement(this.database.prepare(sql), params);
+  }
+
+  getRowsModified() {
+    return this.rowsModified;
+  }
+
+  checkpoint() {
+    this.database.exec("PRAGMA wal_checkpoint(PASSIVE)");
+  }
+
+  close() {
+    this.database.close();
+  }
+}
+
+class NativeStatement {
+  constructor(statement, params) {
+    this.rows = statement.all(...normalizeSqliteBindings(params)).map((row) => ({ ...row }));
+    this.index = -1;
+  }
+
+  step() {
+    this.index += 1;
+    return this.index < this.rows.length;
+  }
+
+  getAsObject() {
+    return this.rows[this.index] ?? {};
+  }
+
+  free() {}
+}
+
+function normalizeSqliteBindings(params) {
+  return (Array.isArray(params) ? params : [params]).map((value) => {
+    if (value === undefined) return null;
+    if (typeof value === "boolean") return value ? 1 : 0;
+    return value;
+  });
 }
 
 function feishuBotFromRow(row) {

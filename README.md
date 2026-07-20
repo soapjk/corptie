@@ -137,7 +137,7 @@ Corptie 管理的 Codex 也使用独立运行时目录：正式版位于 `~/.cor
 
 ## 🛠️ 开发
 
-需要 macOS 14+、Node.js 20+、Swift 6，以及已安装并登录的 Codex CLI 或 Claude Code。首次运行先安装后端依赖：
+需要 macOS 14+、Node.js 22.13+、Swift 6，以及已安装并登录的 Codex CLI 或 Claude Code。首次运行先安装后端依赖：
 
 ```sh
 npm install --prefix apps/backend

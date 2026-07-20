@@ -124,6 +124,7 @@ private final class DetachedAccessoryWindowController {
     private let previewTotalWidth: CGFloat = 324
     private let replyComposerTotalHeight: CGFloat = 194
     private let suggestedPromptTotalHeight: CGFloat = 146
+    private let collaborationConfirmationTotalHeight: CGFloat = 276
     private let optionWidth: CGFloat = 246
 
     init(
@@ -242,6 +243,9 @@ private final class DetachedAccessoryWindowController {
     }
 
     private func accessorySize(for session: TaskSession?) -> NSSize {
+        if session?.pendingCollaborationConfirmation != nil {
+            return NSSize(width: previewTotalWidth, height: collaborationConfirmationTotalHeight)
+        }
         let hasPreview = state.isVisible && !state.text.isEmpty
         let hasQuickReply = state.isQuickReplyVisible
         let optionCount = min(visibleOptionCount(for: session), 5)
@@ -846,7 +850,28 @@ private struct DetachedSessionAccessoryView: View {
     @ViewBuilder
     private func floatingAccessory(session: TaskSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let suggestedPromptText {
+            if let confirmation = session.pendingCollaborationConfirmation {
+                DetachedCollaborationConfirmationCard(
+                    confirmation: confirmation,
+                    isSending: client.isSendingMessage,
+                    approve: {
+                        client.respondToCollaborationConfirmation(
+                            confirmationId: confirmation.confirmationId,
+                            approve: true,
+                            in: session
+                        )
+                    },
+                    reject: {
+                        client.respondToCollaborationConfirmation(
+                            confirmationId: confirmation.confirmationId,
+                            approve: false,
+                            in: session
+                        )
+                    }
+                )
+                .padding(10)
+                .frame(width: previewTotalWidth, height: collaborationConfirmationTotalHeight, alignment: .topLeading)
+            } else if let suggestedPromptText {
                 DetachedReplyPreviewBubble(
                     text: suggestedPromptText,
                     dismiss: {
@@ -965,6 +990,9 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var accessoryHeight: CGFloat {
+        if session?.pendingCollaborationConfirmation != nil {
+            return collaborationConfirmationTotalHeight
+        }
         if suggestedPromptText != nil {
             return suggestedPromptTotalHeight
         }
@@ -984,6 +1012,10 @@ private struct DetachedSessionAccessoryView: View {
 
     private var suggestedPromptTotalHeight: CGFloat {
         146
+    }
+
+    private var collaborationConfirmationTotalHeight: CGFloat {
+        276
     }
 
     private var spacing: CGFloat {
@@ -1036,6 +1068,88 @@ private struct DetachedSessionAccessoryView: View {
                 ? NSColor(calibratedWhite: 0.12, alpha: 0.92)
                 : NSColor(calibratedWhite: 1.0, alpha: 0.88)
         })
+    }
+}
+
+private struct DetachedCollaborationConfirmationCard: View {
+    let confirmation: PendingCollaborationConfirmation
+    let isSending: Bool
+    let approve: () -> Void
+    let reject: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "paperplane.fill")
+                    .foregroundStyle(CorptiePalette.softBlue)
+                Text(L10n("确认发送协作任务"))
+                    .font(.system(size: 11, weight: .bold))
+                Spacer(minLength: 4)
+                Text(L10n("等待确认"))
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(CorptiePalette.amber)
+            }
+
+            Divider()
+                .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
+
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 8) {
+                    confirmationField("目标 Agent", value: confirmation.recipientName)
+                    if let recipientAgentId = confirmation.recipientAgentId,
+                       !recipientAgentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        confirmationField("Agent ID", value: recipientAgentId, monospaced: true)
+                    }
+                    confirmationField("任务", value: confirmation.taskTitle)
+                    confirmationField("指令", value: confirmation.summary)
+                    if !confirmation.acceptanceCriteria.isEmpty {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(L10n("验收标准"))
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                            ForEach(confirmation.acceptanceCriteria, id: \.self) { criterion in
+                                Label(criterion, systemImage: "checkmark.circle")
+                                    .font(.system(size: 9.5, weight: .medium))
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 150)
+
+            HStack(spacing: 8) {
+                Button(action: approve) {
+                    Label(L10n("确认发送"), systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(CorptiePalette.softBlue)
+
+                Button(L10n("取消"), action: reject)
+                    .buttonStyle(.bordered)
+            }
+            .controlSize(.small)
+            .disabled(isSending)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(CorptiePalette.collaborationSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(CorptiePalette.collaborationBorder.opacity(0.62), lineWidth: 1)
+        )
+    }
+
+    private func confirmationField(_ label: String, value: String, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(L10n(label))
+                .font(.system(size: 8.5, weight: .bold))
+                .foregroundStyle(CorptiePalette.secondaryText)
+            Text(value)
+                .font(.system(size: 9.5, weight: .medium, design: monospaced ? .monospaced : .default))
+                .foregroundStyle(CorptiePalette.primaryText)
+                .textSelection(.enabled)
+        }
     }
 }
 

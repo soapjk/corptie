@@ -2990,8 +2990,11 @@ struct AgentAvatarView: View {
     }
 
     private var initials: String {
-        if let titleInitial = session.title.first(where: { $0.isLetter || $0.isNumber }) {
-            return String(titleInitial).uppercased()
+        let titleInitials = session.title
+            .filter { $0.isLetter || $0.isNumber }
+            .prefix(2)
+        if !titleInitials.isEmpty {
+            return String(titleInitials).uppercased()
         }
         let words = session.agent
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
@@ -5094,7 +5097,12 @@ private struct ThreadItemView: View {
             CopyTextButton(text: item.text, isVisible: isHovering && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .padding(4)
         }
-        .padding(10)
+        .padding(EdgeInsets(
+            top: 10,
+            leading: 10,
+            bottom: processItems != nil && !isProcessExpanded ? 3 : 10,
+            trailing: 10
+        ))
         .background(itemBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
