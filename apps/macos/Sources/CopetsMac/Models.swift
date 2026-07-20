@@ -20,6 +20,7 @@ struct TaskSession: Identifiable, Codable, Equatable {
     let avatarPath: String?
     let capabilities: SessionCapabilities?
     let external: ExternalSession?
+    var pendingCollaborationConfirmation: PendingCollaborationConfirmation? = nil
 
     var isConnected: Bool {
         isConnectedStatus(external?.connectionStatus, provider: external?.provider)
@@ -39,6 +40,15 @@ struct TaskSession: Identifiable, Codable, Equatable {
         }
         return isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
     }
+}
+
+struct PendingCollaborationConfirmation: Codable, Equatable {
+    let confirmationId: String
+    let recipientAgentId: String?
+    let recipientName: String
+    let taskTitle: String
+    let summary: String
+    let acceptanceCriteria: [String]
 }
 
 struct ExternalSession: Codable, Equatable {

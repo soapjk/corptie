@@ -9,6 +9,7 @@ import {
   reconcileAuthoritativeRunState,
   sessionHasActiveRun
 } from "../src/utils/sessionPresentation.mjs";
+import { shouldReportAgentWorkQueued } from "../src/utils/agentWorkQueue.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-work-queue-test-"));
@@ -34,6 +35,16 @@ function enqueue(store, overrides) {
     createdAt: overrides.createdAt
   });
 }
+
+test("an idle Agent's first message starts without a queue notice", () => {
+  assert.equal(shouldReportAgentWorkQueued({}), false);
+});
+
+test("a message reports queued when an Agent is busy or work is ahead", () => {
+  assert.equal(shouldReportAgentWorkQueued({ sessionHasActiveRun: true }), true);
+  assert.equal(shouldReportAgentWorkQueued({ hasRunningWorkItem: true }), true);
+  assert.equal(shouldReportAgentWorkQueued({ queuedWorkItemsAhead: 1 }), true);
+});
 
 test("user instructions are selected before older collaboration work", async () => {
   const { directory, store } = await fixture();

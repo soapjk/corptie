@@ -17,7 +17,7 @@ import {
 } from "./adapters/codexAppServer.mjs";
 import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
-import { FeishuGatewayManager } from "./feishu/feishuGatewayManager.mjs";
+import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishuGatewayManager.mjs";
 import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDeliveryDispatcher.mjs";
@@ -52,6 +52,7 @@ import {
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
 import { collaborationMcpServerName } from "./utils/collaborationRuntime.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
+import { shouldReportAgentWorkQueued } from "./utils/agentWorkQueue.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -805,6 +806,24 @@ function sortSessionsForList(sessions = []) {
       return aOrder - bOrder;
     }
     return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
+  });
+}
+
+function withPendingCollaborationConfirmations(sessions = []) {
+  return sessions.map((session) => {
+    const confirmation = collaborationCore.pendingTaskConfirmationForSession(session.id);
+    if (!confirmation) return session;
+    return {
+      ...session,
+      pendingCollaborationConfirmation: {
+        confirmationId: confirmation.confirmationId,
+        recipientAgentId: confirmation.recipientAgentId,
+        recipientName: confirmation.recipientAgentName,
+        taskTitle: confirmation.request.title,
+        summary: confirmation.request.summary,
+        acceptanceCriteria: confirmation.request.acceptanceCriteria ?? []
+      }
+    };
   });
 }
 
@@ -1844,6 +1863,8 @@ function enqueueUserAgentWork(session, text, source) {
     error.code = "AGENT_NOT_FOUND";
     throw error;
   }
+  const activeRun = sessionHasActiveRun(session);
+  const hasRunningWorkItem = Boolean(store.getRunningAgentWorkItemForSession(session.id));
   const workItem = store.enqueueAgentWorkItem({
     workItemId: source.messageId || randomUUID(),
     agentId: agent.agentId,
@@ -1857,9 +1878,20 @@ function enqueueUserAgentWork(session, text, source) {
   });
   const queuePosition = store.listQueuedAgentWorkItems(agent.agentId)
     .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
+  const reportAsQueued = shouldReportAgentWorkQueued({
+    sessionHasActiveRun: activeRun,
+    hasRunningWorkItem,
+    queuedWorkItemsAhead: Math.max(0, queuePosition - 1)
+  });
   emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source }, { sessionId: session.id, source });
   scheduleAgentWorkDrain(agent.agentId);
-  return { accepted: true, queued: true, queuePosition, sessionId: session.id, workItem };
+  return {
+    accepted: true,
+    queued: reportAsQueued,
+    queuePosition: reportAsQueued ? queuePosition : 0,
+    sessionId: session.id,
+    workItem
+  };
 }
 
 function scheduleAgentWorkDrain(agentId) {
@@ -2177,6 +2209,12 @@ function route(request, response) {
     response,
     url,
     core: collaborationCore,
+    onConfirmationStaged: async (confirmation) => {
+      emitEvent("CollaborationConfirmationRequested", {
+        sessionId: confirmation.sourceSessionId,
+        confirmation
+      }, { sessionId: confirmation.sourceSessionId });
+    },
     onConfirmationResolved: resolveCollaborationConfirmation
   })) {
     return;
@@ -2291,7 +2329,18 @@ function route(request, response) {
 
   if (request.method === "POST" && url.pathname === "/feishu/bots") {
     readJson(request)
-      .then((input) => feishuGateway.createBot(input))
+      .then(async (input) => {
+        try {
+          return await feishuGateway.createBot(input);
+        } catch (error) {
+          const mode = typeof input.profile === "string" && input.profile.trim() ? "profile" : "credentials";
+          const stage = typeof error.feishuStage === "string" ? error.feishuStage : "validation";
+          console.error(
+            `[feishu] create bot failed mode=${mode} stage=${stage} error=${formatFeishuFailureForLog(error, [input.appSecret])}`
+          );
+          throw error;
+        }
+      })
       .then((bot) => {
         emitEvent("FeishuBotCreated", { bot });
         sendJson(response, 201, { bot });
@@ -2699,13 +2748,13 @@ function route(request, response) {
         ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
       ].filter((session) => !listedIds.has(session.id));
       sendJson(response, 200, {
-        sessions: sortSessionsForList(composeStoredSessionList({
+        sessions: sortSessionsForList(withPendingCollaborationConfirmations(composeStoredSessionList({
           archived,
           ptySessions,
           claudeSessions,
           codexSessions,
           mockSessions
-        })),
+        }))),
         sources: {
           pty: {
             ok: true,
@@ -2772,7 +2821,13 @@ function route(request, response) {
           .filter((session) => !knownIds.has(session.id));
 
         sendJson(response, 200, {
-          sessions: sortSessionsForList([...ptySessions, ...claudeSessions, ...(archived ? [] : managedSessions), ...(archived ? [] : codexSessions), ...(archived ? [] : mockSessions)]),
+          sessions: sortSessionsForList(withPendingCollaborationConfirmations([
+            ...ptySessions,
+            ...claudeSessions,
+            ...(archived ? [] : managedSessions),
+            ...(archived ? [] : codexSessions),
+            ...(archived ? [] : mockSessions)
+          ])),
           sources: {
             pty: {
               ok: true,
@@ -4118,21 +4173,22 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
 });
 
-process.on("SIGINT", async () => {
-  if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
-  await feishuGateway.close();
-  await codexClient.close();
-  await store.save();
-  process.exit(0);
-});
+let shutdownPromise = null;
 
-process.on("SIGTERM", async () => {
-  if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
-  await feishuGateway.close();
-  await codexClient.close();
-  await store.save();
-  process.exit(0);
-});
+function shutdown() {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
+    await feishuGateway.close();
+    await codexClient.close();
+    await store.close();
+    process.exit(0);
+  })();
+  return shutdownPromise;
+}
+
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
 
 function activateStoredBackendLogging() {
   const configuredDirectory = store.settings().logDir;

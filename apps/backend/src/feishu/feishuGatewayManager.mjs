@@ -124,7 +124,14 @@ export class FeishuGatewayManager {
     }
     const existingProfile = optionalText(input.profile);
     if (existingProfile) {
-      const profile = (await this.listProfiles()).find((item) => item.name === existingProfile);
+      let profiles;
+      try {
+        profiles = await this.listProfiles();
+      } catch (error) {
+        error.feishuStage = "profile_lookup";
+        throw error;
+      }
+      const profile = profiles.find((item) => item.name === existingProfile);
       if (!profile) {
         throw new Error("The selected lark-cli profile was not found.");
       }
@@ -147,15 +154,35 @@ export class FeishuGatewayManager {
     if (this.store.listFeishuBots().some((bot) => bot.appId === appId)) {
       throw new Error("A Gateway bot already uses this App ID.");
     }
+    let profiles;
+    try {
+      profiles = await this.listProfiles();
+    } catch (error) {
+      error.feishuStage = "profile_lookup";
+      throw error;
+    }
+    const matchingProfile = profiles.find((item) => item.appId === appId);
+    if (matchingProfile) {
+      const error = new Error(
+        `该 App ID 已存在于 lark-cli 配置“${matchingProfile.name}”。请切换到“现有 CLI 配置”并选择该配置，无需重新输入应用凭证。`
+      );
+      error.feishuStage = "profile_conflict";
+      throw error;
+    }
     const id = randomUUID();
     const profile = `corptie-${id}`;
-    await runWithInput(this.cliPath, [
-      "profile", "add",
-      "--name", profile,
-      "--app-id", appId,
-      "--brand", brand,
-      "--app-secret-stdin"
-    ], `${appSecret}\n`);
+    try {
+      await runWithInput(this.cliPath, [
+        "profile", "add",
+        "--name", profile,
+        "--app-id", appId,
+        "--brand", brand,
+        "--app-secret-stdin"
+      ], `${appSecret}\n`);
+    } catch (error) {
+      error.feishuStage = "profile_create";
+      throw error;
+    }
     let bot;
     try {
       bot = this.store.createFeishuBot({
@@ -231,7 +258,7 @@ export class FeishuGatewayManager {
     this.botRuntime.delete(botId);
   }
 
-  async assignSession(botId, bindingId, sessionId) {
+  async assignSession(botId, bindingId, sessionId, options = {}) {
     const sessions = await this.listSessions();
     if (!sessions.some((session) => session.id === sessionId)) {
       const error = new Error("Session not found.");
@@ -247,9 +274,18 @@ export class FeishuGatewayManager {
       lastEventSequence: this.store.lastSessionEventSequence(sessionId)
     });
     const snapshot = await this.getSnapshot(sessionId);
+    const latestFormalAgentReply = options.replayLatestFormalAgentReply === false
+      ? null
+      : findLatestFormalAgentReply(snapshot.items);
     this.botRuntime.set(botId, {
       lastStatus: snapshot.status,
-      seenItems: new Set((snapshot.items ?? []).map((item) => item.id))
+      seenItems: new Set((snapshot.items ?? [])
+        .filter((item) => item.id !== latestFormalAgentReply?.id && !shouldDeliverOnInitialFeishuSync(item))
+        .map((item) => item.id)
+        .filter(Boolean))
+    });
+    await this.syncBot(botId).catch((error) => {
+      console.error(`[feishu] bot=${botId} initial session sync failed: ${error.message}`);
     });
     return assignment;
   }
@@ -548,7 +584,7 @@ export class FeishuGatewayManager {
       if (!this.createSession) throw new Error("Gateway session creation is unavailable.");
       try {
         const session = await this.createSession({ cwd: workspace.path, agent });
-        await this.assignSession(botId, binding.id, session.id);
+        await this.assignSession(botId, binding.id, session.id, { replayLatestFormalAgentReply: false });
         notice = { type: "success", text: `已创建并连接「${session.title}」` };
       } catch (error) {
         card = buildCreateConfirmationCard({
@@ -703,7 +739,7 @@ export class FeishuGatewayManager {
     if (isClearCommand(text)) {
       const sendResult = await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
       if (sendResult?.sessionId && sendResult.sessionId !== assignment.sessionId) {
-        await this.assignSession(botId, binding.id, sendResult.sessionId);
+        await this.assignSession(botId, binding.id, sendResult.sessionId, { replayLatestFormalAgentReply: false });
       }
       await this.sendText(botId, event.chatId, "已清空上下文，可以开始新的对话。");
       return;
@@ -721,7 +757,14 @@ export class FeishuGatewayManager {
         sessionStatus: "queued"
       });
     } else {
-      await this.sendText(botId, event.chatId, "已发送，正在处理……");
+      const sentCards = await this.sendText(botId, event.chatId, "已发送，正在处理……");
+      runtime.processingAcknowledgementCards = [
+        ...(runtime.processingAcknowledgementCards ?? []),
+        ...(sentCards ?? [])
+          .map(({ result }) => ({ messageId: sentMessageId(result) }))
+          .filter((card) => card.messageId)
+      ];
+      this.botRuntime.set(botId, runtime);
     }
   }
 
@@ -848,7 +891,8 @@ export class FeishuGatewayManager {
 
   async syncBotOnce(botId) {
     const assignment = this.store.getFeishuAssignmentForBot(botId);
-    const binding = this.store.listFeishuBindings(botId)[0];
+    const bindings = this.store.listFeishuBindings(botId);
+    const binding = bindings.find((item) => item.id === assignment?.bindingId) ?? bindings[0];
     if (!assignment || !binding) {
       return;
     }
@@ -877,6 +921,18 @@ export class FeishuGatewayManager {
       if (!isProcessingStatus(snapshot.status)) {
         await this.clearTyping(botId).catch(() => {});
       }
+    }
+    if (!isProcessingStatus(snapshot.status) && runtime.processingAcknowledgementCards?.length) {
+      const remainingCards = [];
+      for (const card of runtime.processingAcknowledgementCards) {
+        try {
+          await this.deleteSentMessage(botId, card.messageId);
+        } catch (error) {
+          remainingCards.push(card);
+          console.log(`[feishu] bot=${botId} processing acknowledgement cleanup failed: ${error.message}`);
+        }
+      }
+      runtime.processingAcknowledgementCards = remainingCards;
     }
     runtime.collaborationConfirmationCards ??= [];
     for (const sent of runtime.collaborationConfirmationCards) {
@@ -1041,6 +1097,14 @@ export class FeishuGatewayManager {
     );
   }
 
+  async deleteSentMessage(botId, messageId) {
+    return this.callApi(
+      botId,
+      "DELETE",
+      `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}`
+    );
+  }
+
   async showTyping(botId, messageId) {
     if (!messageId) return;
     const result = await this.callApi(botId, "POST", `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`, {
@@ -1079,6 +1143,21 @@ export class FeishuGatewayManager {
     }
     return result;
   }
+}
+
+export function formatFeishuFailureForLog(error, secretValues = []) {
+  let message = error instanceof Error ? error.message : String(error ?? "Unknown error");
+  for (const secret of secretValues) {
+    if (typeof secret === "string" && secret.length > 0) {
+      message = message.split(secret).join("[REDACTED]");
+    }
+  }
+  message = message
+    .replace(/((?:app[-_ ]?)?secret\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return message.slice(0, 2000) || "Unknown error";
 }
 
 export async function fetchBotIdentity(commandPath, profile, options = {}) {
@@ -1856,6 +1935,27 @@ function isPendingCollaborationConfirmationItem(item) {
 
 function shouldDeliverOnInitialFeishuSync(item) {
   return isPendingApprovalItem(item) || isPendingCollaborationConfirmationItem(item);
+}
+
+function findLatestFormalAgentReply(items = []) {
+  return (Array.isArray(items) ? items : []).slice().reverse().find((item) => {
+    if (!["agentMessage", "assistantMessage"].includes(item?.type) || !optionalText(item.text)) {
+      return false;
+    }
+    const presentationRole = optionalText(item.presentationRole).toLowerCase();
+    if (presentationRole) {
+      return presentationRole === "final_answer";
+    }
+    if (optionalText(item.status).toLowerCase() === "final_answer") {
+      return true;
+    }
+    return isTerminalTurnStatus(item.turnStatus);
+  }) ?? null;
+}
+
+function isTerminalTurnStatus(status) {
+  return ["completed", "complete", "failed", "cancelled", "canceled", "interrupted"]
+    .includes(optionalText(status).toLowerCase());
 }
 
 function feishuProjectionForSessionItem(item) {

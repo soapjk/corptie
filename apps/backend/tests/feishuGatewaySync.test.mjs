@@ -5,8 +5,46 @@ import test from "node:test";
 import {
   FeishuGatewayManager,
   fetchBotIdentity,
+  formatFeishuFailureForLog,
   formatUsageText
 } from "../src/feishu/feishuGatewayManager.mjs";
+
+test("Feishu failure diagnostics redact secrets and stay on one line", () => {
+  const secret = "super-secret-value";
+  const diagnostic = formatFeishuFailureForLog(
+    new Error(`profile failed\napp_secret=${secret}\nretry`),
+    [secret]
+  );
+
+  assert.equal(diagnostic, "profile failed app_secret=[REDACTED] retry");
+  assert.equal(diagnostic.includes(secret), false);
+});
+
+test("credential setup guides users to an existing CLI profile with the same App ID", async () => {
+  const manager = new FeishuGatewayManager({
+    cliPath: "/unused/lark-cli",
+    store: {
+      listFeishuBots() {
+        return [];
+      }
+    }
+  });
+  manager.listProfiles = async () => [{
+    name: "existing-profile",
+    appId: "cli_existing",
+    brand: "feishu"
+  }];
+
+  await assert.rejects(
+    manager.createBot({ appId: "cli_existing", appSecret: "not-logged" }),
+    (error) => {
+      assert.equal(error.feishuStage, "profile_conflict");
+      assert.match(error.message, /现有 CLI 配置/);
+      assert.match(error.message, /existing-profile/);
+      return true;
+    }
+  );
+});
 
 test("bot identity reads the raw API response instead of lark-cli's normalized output", async () => {
   const calls = [];
@@ -121,6 +159,237 @@ test("the /clear command replaces and rebinds an app-server session", async () =
 
   assert.deepEqual(assignments, [{ botId: "bot-a", bindingId: "binding-a", sessionId: "codex:thread-new" }]);
   assert.deepEqual(sent, ["已清空上下文，可以开始新的对话。"]);
+});
+
+test("an immediately started message does not produce a queue notice", async () => {
+  const sent = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      }
+    },
+    async sendMessage() {
+      return { accepted: true, queued: false, queuePosition: 0 };
+    }
+  });
+  manager.showTyping = async () => {};
+  manager.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [{ text, result: { data: { message_id: "processing-message-a" } } }];
+  };
+
+  await manager.handleCommand("bot-a", { id: "binding-a" }, {
+    text: "开始处理",
+    chatId: "chat-a",
+    messageId: "message-a"
+  });
+
+  assert.deepEqual(sent, ["已发送，正在处理……"]);
+  assert.deepEqual(manager.botRuntime.get("bot-a").processingAcknowledgementCards, [
+    { messageId: "processing-message-a" }
+  ]);
+});
+
+test("a processing acknowledgement is removed after the session stops processing", async () => {
+  const deleted = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "complete",
+        items: []
+      };
+    }
+  });
+  manager.botRuntime.set("bot-a", {
+    lastStatus: "running",
+    seenItems: new Set(),
+    processingAcknowledgementCards: [{ messageId: "processing-message-a" }]
+  });
+  manager.clearTyping = async () => {};
+  manager.deleteSentMessage = async (_botId, messageId) => deleted.push(messageId);
+
+  await manager.syncBot("bot-a");
+
+  assert.deepEqual(deleted, ["processing-message-a"]);
+  assert.deepEqual(manager.botRuntime.get("bot-a").processingAcknowledgementCards, []);
+});
+
+test("a processing acknowledgement remains while the session is running", async () => {
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "running",
+        items: []
+      };
+    }
+  });
+  manager.botRuntime.set("bot-a", {
+    lastStatus: "running",
+    seenItems: new Set(),
+    processingAcknowledgementCards: [{ messageId: "processing-message-a" }]
+  });
+  manager.deleteSentMessage = async () => assert.fail("running acknowledgements must not be deleted");
+
+  await manager.syncBot("bot-a");
+
+  assert.deepEqual(manager.botRuntime.get("bot-a").processingAcknowledgementCards, [
+    { messageId: "processing-message-a" }
+  ]);
+});
+
+test("a waiting message still reports its queue position", async () => {
+  const sent = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      }
+    },
+    async sendMessage() {
+      return { accepted: true, queued: true, queuePosition: 2 };
+    }
+  });
+  manager.showTyping = async () => {};
+  manager.clearTyping = async () => {};
+  manager.sendText = async (_botId, _chatId, text) => sent.push(text);
+
+  await manager.handleCommand("bot-a", { id: "binding-a" }, {
+    text: "继续处理",
+    chatId: "chat-a",
+    messageId: "message-a"
+  });
+
+  assert.deepEqual(sent, ["已加入队列，前面还有 1 条消息。"]);
+});
+
+test("connecting an existing session immediately replays only its latest formal agent reply", async () => {
+  const botId = "bot-a";
+  const sent = [];
+  let assignment = null;
+  const manager = new FeishuGatewayManager({
+    store: {
+      lastSessionEventSequence() {
+        return 12;
+      },
+      assignFeishuSession(nextAssignment) {
+        assignment = nextAssignment;
+        return nextAssignment;
+      },
+      getFeishuAssignmentForBot(id) {
+        return id === botId ? assignment : null;
+      },
+      listFeishuBindings() {
+        return [
+          { id: "binding-other", chatId: "chat-other" },
+          { id: "binding-a", chatId: "chat-a" }
+        ];
+      }
+    },
+    async listSessions() {
+      return [{ id: "session-a", title: "Session A" }];
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "complete",
+        items: [
+          {
+            id: "final-old",
+            type: "agentMessage",
+            text: "Older final answer",
+            presentationRole: "final_answer",
+            turnStatus: "completed"
+          },
+          {
+            id: "final-latest",
+            type: "agentMessage",
+            text: "Latest final answer",
+            presentationRole: "final_answer",
+            turnStatus: "completed"
+          },
+          {
+            id: "commentary-newer",
+            type: "agentMessage",
+            text: "Newer progress update",
+            presentationRole: "commentary",
+            turnStatus: "completed"
+          }
+        ]
+      };
+    }
+  });
+  manager.sendText = async (_botId, chatId, text) => {
+    sent.push({ chatId, text });
+    return [];
+  };
+
+  await manager.assignSession(botId, "binding-a", "session-a");
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, [{ chatId: "chat-a", text: "Latest final answer" }]);
+});
+
+test("connecting a legacy completed session replays its latest unphased agent reply", async () => {
+  const botId = "bot-a";
+  const sent = [];
+  let assignment = null;
+  const manager = new FeishuGatewayManager({
+    store: {
+      lastSessionEventSequence() {
+        return 0;
+      },
+      assignFeishuSession(nextAssignment) {
+        assignment = nextAssignment;
+        return nextAssignment;
+      },
+      getFeishuAssignmentForBot() {
+        return assignment;
+      },
+      listFeishuBindings() {
+        return [{ id: "binding-a", chatId: "chat-a" }];
+      }
+    },
+    async listSessions() {
+      return [{ id: "session-a", title: "Session A" }];
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "complete",
+        items: [
+          { id: "legacy-old", type: "agentMessage", text: "Old", turnStatus: "complete" },
+          { id: "legacy-latest", type: "agentMessage", text: "Latest", turnStatus: "complete" }
+        ]
+      };
+    }
+  });
+  manager.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [];
+  };
+
+  await manager.assignSession(botId, "binding-a", "session-a");
+
+  assert.deepEqual(sent, ["Latest"]);
 });
 
 test("pending approvals are delivered exactly once, including on the first sync", async () => {
