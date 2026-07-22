@@ -191,6 +191,36 @@ test("an immediately started message does not produce a queue notice", async () 
   ]);
 });
 
+test("a slow typing reaction does not delay handing the message to the Agent", async () => {
+  let resolveTyping;
+  let sendCalled = false;
+  const typingBlocked = new Promise((resolve) => { resolveTyping = resolve; });
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "codex:thread-a" };
+      }
+    },
+    async sendMessage() {
+      sendCalled = true;
+      return { accepted: true, queued: false, queuePosition: 0 };
+    }
+  });
+  manager.showTyping = async () => typingBlocked;
+  manager.sendText = async () => [];
+
+  const command = manager.handleCommand("bot-a", { id: "binding-a" }, {
+    text: "开始处理",
+    chatId: "chat-a",
+    messageId: "message-a"
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(sendCalled, true);
+  resolveTyping();
+  await command;
+});
+
 test("a processing acknowledgement is removed after the session stops processing", async () => {
   const deleted = [];
   const manager = new FeishuGatewayManager({

@@ -8,7 +8,7 @@ BUILD_CFG="release"
 ARCHIVE_DIR="${ROOT}/dist"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 BACKEND_BUILD_ID="${TIMESTAMP}"
-APP_VERSION="0.1.1"
+APP_VERSION="0.5.0"
 APP_BUNDLE_PATH="/Applications/Corptie.app"
 ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"
 ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
@@ -51,7 +51,7 @@ else
   rm -rf "${ICONSET_DIR}"
 fi
 
-cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
+cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -69,7 +69,7 @@ cat > "${APP_DIR}/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.1</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>

@@ -3,6 +3,7 @@ import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
+import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -105,6 +106,7 @@ export class CorptieStore {
       codexBackend: this.codexBackendSettings(),
       codeDiff: this.codeDiffSettings(),
       agentProxy: this.agentProxySettings(),
+      newSessionDefaults: this.newSessionDefaults(),
       gateway: this.gatewaySettings()
     };
   }
@@ -125,6 +127,10 @@ export class CorptieStore {
   agentProxySettings() {
     const configured = this.config.agentProxy ?? {};
     return normalizeAgentProxySettings(configured);
+  }
+
+  newSessionDefaults() {
+    return normalizeNewSessionDefaults(this.config.newSessionDefaults ?? {});
   }
 
   gatewaySettings() {
@@ -166,6 +172,10 @@ export class CorptieStore {
     }
     if (input.agentProxy && typeof input.agentProxy === "object") {
       this.config.agentProxy = normalizeAgentProxySettings(input.agentProxy);
+      await this.writeConfig();
+    }
+    if (input.newSessionDefaults && typeof input.newSessionDefaults === "object") {
+      this.config.newSessionDefaults = normalizeNewSessionDefaults(input.newSessionDefaults);
       await this.writeConfig();
     }
     if (input.gateway && typeof input.gateway === "object") {

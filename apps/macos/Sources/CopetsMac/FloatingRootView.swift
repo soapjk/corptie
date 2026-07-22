@@ -827,6 +827,9 @@ private struct CompactSessionRow: View {
         .onTapGesture { backendClient.select(session: session) }
         .contextMenu {
             Button(L10n("Rename"), systemImage: "pencil") { isRenaming = true }
+            Button(L10n("Settings…"), systemImage: "gearshape") {
+                SessionSettingsWindowManager.shared.show(session: session, backendClient: backendClient)
+            }
             Button(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle") {
                 detachedSessionManager.float(session: session)
             }
@@ -2141,6 +2144,9 @@ private struct NewPtyAgentTaskSheet: View {
     private func savePermissionDefaults() {
         defaultSandboxMode = validatedSandboxMode(sandboxMode)
         defaultApprovalPolicy = validatedApprovalPolicy(approvalPolicy)
+        Task {
+            await backendClient.syncNewSessionDefaultsFromPreferences(force: true)
+        }
         withAnimation(.easeOut(duration: 0.12)) {
             defaultSaveMessage = L10n("Saved")
         }
@@ -2571,6 +2577,12 @@ private struct TaskCardView: View {
                 isRenaming = true
             } label: {
                 Label(L10n("Rename"), systemImage: "pencil")
+            }
+
+            Button {
+                SessionSettingsWindowManager.shared.show(session: session, backendClient: backendClient)
+            } label: {
+                Label(L10n("Settings…"), systemImage: "gearshape")
             }
 
             Divider()

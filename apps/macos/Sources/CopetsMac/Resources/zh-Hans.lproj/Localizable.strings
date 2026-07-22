@@ -190,6 +190,13 @@
 "Settings..." = "设置…";
 "Quit Corptie" = "退出 Corptie";
 "Settings" = "设置";
+"Settings…" = "设置…";
+"Settings: %@" = "%@ 的设置";
+"Session permissions updated." = "会话权限已更新。";
+"Permission update failed: %@" = "权限更新失败：%@";
+"Changes apply from the next instruction. The current run is not interrupted." = "更改从下一次指令开始生效，当前任务不会被中断。";
+"This session's permissions are fixed by its launch command and cannot be changed while it exists." = "此会话的权限由启动命令固定，无法在会话存续期间修改。";
+"Could not update this session's permissions." = "无法更新此会话的权限。";
 "Cancel task" = "取消任务";
 "Cancel task…" = "取消任务…";
 "Cards" = "卡片";

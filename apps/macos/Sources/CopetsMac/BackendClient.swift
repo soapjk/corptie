@@ -45,6 +45,7 @@ final class BackendClient: ObservableObject {
     private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
     private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
     private var usageRefreshTask: Task<Void, Never>?
+    private var hasSyncedNewSessionDefaults = false
 
     func start() {
         pollingTask?.cancel()
@@ -57,6 +58,7 @@ final class BackendClient: ObservableObject {
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
+                await self?.syncNewSessionDefaultsFromPreferences()
                 await self?.refreshSelectedDetailFromPolling()
                 try? await Task.sleep(for: .seconds(2))
             }
@@ -187,6 +189,41 @@ final class BackendClient: ObservableObject {
             settings = try JSONDecoder().decode(BackendSettings.self, from: data)
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    func syncNewSessionDefaultsFromPreferences(force: Bool = false) async {
+        guard isOnline, force || !hasSyncedNewSessionDefaults else { return }
+
+        let defaults = CorptieAppEnvironment.userDefaults
+        let sandbox = defaults.string(forKey: "newTask.defaultSandboxMode") ?? "workspace-write"
+        let approvalPolicy = defaults.string(forKey: "newTask.defaultApprovalPolicy") ?? "on-request"
+        if !force,
+           settings?.newSessionDefaults?.sandbox == sandbox,
+           settings?.newSessionDefaults?.approvalPolicy == approvalPolicy {
+            hasSyncedNewSessionDefaults = true
+            return
+        }
+
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "settings"))
+            request.httpMethod = "PATCH"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "newSessionDefaults": [
+                    "sandbox": sandbox,
+                    "approvalPolicy": approvalPolicy
+                ]
+            ])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+            settings = try JSONDecoder().decode(BackendSettings.self, from: data)
+            hasSyncedNewSessionDefaults = true
+        } catch {
+            hasSyncedNewSessionDefaults = false
         }
     }
 
@@ -1593,6 +1630,42 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func updateSessionPermissions(
+        session: TaskSession,
+        sandbox: String,
+        approvalPolicy: String
+    ) async -> Bool {
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/permissions"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "sandbox": sandbox,
+                "approvalPolicy": approvalPolicy
+            ])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                let message = Self.errorMessage(from: data)
+                    ?? String(data: data, encoding: .utf8)
+                    ?? "Bad server response"
+                throw BackendError.message(message)
+            }
+            sendStatusMessage = L10n("Session permissions updated.")
+            await refresh()
+            if selectedSession?.id == session.id {
+                await loadDetail(for: session)
+            }
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            sendStatusMessage = L10nFormat("Permission update failed: %@", error.localizedDescription)
+            return false
+        }
+    }
+
     func reconnectSelectedSession() {
         guard let selectedSession else {
             return
@@ -1792,6 +1865,11 @@ final class BackendClient: ObservableObject {
                 return session
             }
 
+            let pendingChoice = detail.items.reversed().first { item in
+                item.status != "selected" && !(item.options ?? []).isEmpty
+            }
+            let pendingPrompt = pendingChoice?.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
             return TaskSession(
                 id: session.id,
                 title: session.title,
@@ -1799,24 +1877,8 @@ final class BackendClient: ObservableObject {
                 status: detail.status,
                 progress: session.progress,
                 summary: latestSummary?.isEmpty == false ? latestSummary! : session.summary,
-                suggestedOptions: detail.items.reversed().first { item in
-                    guard item.status != "selected" else {
-                        return false
-                    }
-                    guard let options = item.options else {
-                        return false
-                    }
-                    return !options.isEmpty
-                }?.options ?? session.suggestedOptions,
-                suggestedPrompt: detail.items.reversed().first { item in
-                    guard item.status != "selected" else {
-                        return false
-                    }
-                    guard let options = item.options else {
-                        return false
-                    }
-                    return !options.isEmpty && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                }?.text ?? session.suggestedPrompt,
+                suggestedOptions: pendingChoice?.options ?? session.suggestedOptions,
+                suggestedPrompt: pendingPrompt?.isEmpty == false ? pendingPrompt : session.suggestedPrompt,
                 activityStatus: detail.activityStatus ?? session.activityStatus,
                 updatedAt: detail.updatedAt,
                 accent: session.accent,
@@ -1834,6 +1896,8 @@ final class BackendClient: ObservableObject {
                     currentModel: detail.currentModel ?? session.external?.currentModel,
                     currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel,
                     cwd: detail.cwd ?? session.external?.cwd,
+                    sandbox: session.external?.sandbox,
+                    approvalPolicy: session.external?.approvalPolicy,
                     source: session.external?.source ?? detail.source
                 ),
                 pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
