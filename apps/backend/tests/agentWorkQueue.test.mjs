@@ -9,7 +9,7 @@ import {
   reconcileAuthoritativeRunState,
   sessionHasActiveRun
 } from "../src/utils/sessionPresentation.mjs";
-import { shouldReportAgentWorkQueued } from "../src/utils/agentWorkQueue.mjs";
+import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "../src/utils/agentWorkQueue.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-work-queue-test-"));
@@ -44,6 +44,24 @@ test("a message reports queued when an Agent is busy or work is ahead", () => {
   assert.equal(shouldReportAgentWorkQueued({ sessionHasActiveRun: true }), true);
   assert.equal(shouldReportAgentWorkQueued({ hasRunningWorkItem: true }), true);
   assert.equal(shouldReportAgentWorkQueued({ queuedWorkItemsAhead: 1 }), true);
+});
+
+test("a Feishu work item hides its matching session user message during turn startup", () => {
+  const [item] = annotateAgentWorkDetailItems([
+    { id: "input-a", turnId: "turn-a", type: "userMessage", text: "开始处理" }
+  ], [{
+    workItemId: "message-a",
+    kind: "user",
+    status: "running",
+    targetTurnId: null,
+    text: "开始处理",
+    source: { type: "feishu" },
+    localVisibility: "normal"
+  }]);
+
+  assert.equal(item.workItemId, "message-a");
+  assert.equal(item.sourceChannel, "feishu");
+  assert.equal(item.feishuVisibility, "hidden");
 });
 
 test("user instructions are selected before older collaboration work", async () => {

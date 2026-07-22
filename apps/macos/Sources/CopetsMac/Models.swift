@@ -60,6 +60,8 @@ struct ExternalSession: Codable, Equatable {
     let currentModel: String?
     let currentReasoningLevel: String?
     let cwd: String?
+    let sandbox: String?
+    let approvalPolicy: String?
     let source: String?
 }
 
@@ -556,6 +558,7 @@ struct BackendSettings: Codable, Equatable {
     let codexBackend: CodexBackendSettings?
     let codeDiff: CodeDiffSettings?
     let agentProxy: AgentProxySettings?
+    let newSessionDefaults: NewSessionDefaults?
     let gateway: GatewaySettings?
 }
 
@@ -568,6 +571,11 @@ struct GatewaySettings: Codable, Equatable {
     var trustedWorkspaces: [String]
 
     static let defaults = GatewaySettings(trustedWorkspaces: [])
+}
+
+struct NewSessionDefaults: Codable, Equatable {
+    var sandbox: String
+    var approvalPolicy: String
 }
 
 struct CodexBackendSettings: Codable, Equatable {

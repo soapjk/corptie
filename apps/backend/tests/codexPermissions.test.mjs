@@ -10,6 +10,17 @@ import {
   readInitialCodexPermissionsFromRollout,
   withCodexSessionPermissions
 } from "../src/utils/codexPermissions.mjs";
+import { normalizeNewSessionDefaults } from "../src/utils/newSessionDefaults.mjs";
+
+test("new session defaults normalize the values shared by desktop and Feishu", () => {
+  assert.deepEqual(normalizeNewSessionDefaults({
+    sandbox: "dangerFullAccess",
+    approvalPolicy: "never"
+  }), {
+    sandbox: "danger-full-access",
+    approvalPolicy: "never"
+  });
+});
 
 test("Full Access and Never Ask survive a SQLite persistence restart", async () => {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-permissions-test-"));

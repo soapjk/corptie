@@ -139,9 +139,14 @@ test("session events use a durable per-session cursor", async () => {
 test("gateway trusted workspaces are normalized and persisted", async () => {
   await withStore(async (store) => {
     await store.updateSettings({
-      gateway: { trustedWorkspaces: [" /tmp/project-a ", "/tmp/project-a", "/tmp/project-b"] }
+      gateway: { trustedWorkspaces: [" /tmp/project-a ", "/tmp/project-a", "/tmp/project-b"] },
+      newSessionDefaults: { sandbox: "danger-full-access", approvalPolicy: "never" }
     });
     assert.deepEqual(store.settings().gateway.trustedWorkspaces, ["/tmp/project-a", "/tmp/project-b"]);
+    assert.deepEqual(store.settings().newSessionDefaults, {
+      sandbox: "danger-full-access",
+      approvalPolicy: "never"
+    });
   });
 });
 

@@ -17,7 +17,7 @@ export function createCollaborationMcpServer(options) {
   const agentId = required(options.agentId, "agentId");
   const client = options.client;
   const server = new McpServer(
-    { name: "corptie-collaboration", version: "0.1.0" },
+    { name: "corptie-collaboration", version: "0.5.0" },
     {
       instructions: [
         `You are authenticated as Corptie Agent ${agentId}.`,

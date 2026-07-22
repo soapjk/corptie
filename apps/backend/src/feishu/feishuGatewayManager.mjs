@@ -747,11 +747,12 @@ export class FeishuGatewayManager {
     const runtime = this.botRuntime.get(botId) ?? { lastStatus: null, seenItems: new Set() };
     runtime.pendingFeishuInputs = [...(runtime.pendingFeishuInputs ?? []), text];
     this.botRuntime.set(botId, runtime);
-    await this.showTyping(botId, event.messageId).catch((error) => {
+    const typingPromise = this.showTyping(botId, event.messageId).catch((error) => {
       console.log(`[feishu] bot=${botId} typing reaction unavailable: ${error.message}`);
     });
     const sendResult = await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
     if (sendResult?.queued) {
+      await typingPromise;
       await this.clearTyping(botId).catch(() => {});
       await this.sendText(botId, event.chatId, `已加入队列，前面还有 ${Math.max(0, sendResult.queuePosition - 1)} 条消息。`, {
         sessionStatus: "queued"
