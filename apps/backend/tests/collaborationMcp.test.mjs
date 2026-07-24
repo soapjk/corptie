@@ -142,6 +142,7 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     const core = new CollaborationCore(store);
     core.registerAgent({ agentId: "research-agent", name: "Research Agent" });
     core.registerAgent({ agentId: "journal-agent", name: "Journal Agent" });
+    core.registerAgent({ agentId: "deleted-agent", name: "Deleted Agent", status: "inactive" });
     core.registerService({
       serviceId: "investment-journal",
       name: "Investment Journal",
@@ -160,6 +161,14 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
     const research = new CollaborationHttpClient({ baseUrl, agentId: "research-agent" });
     const journal = new CollaborationHttpClient({ baseUrl, agentId: "journal-agent" });
+
+    const discovered = await research.get("/internal/collaboration/agents");
+    assert.deepEqual(
+      discovered.agents.map((agent) => agent.agentId),
+      ["journal-agent", "research-agent"]
+    );
+    const inactive = await research.get("/internal/collaboration/agents", { status: "inactive" });
+    assert.deepEqual(inactive.agents.map((agent) => agent.agentId), ["deleted-agent"]);
 
     let { task } = await research.post("/internal/collaboration/tasks", {
       recipientAgentId: "journal-agent",
@@ -210,7 +219,8 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     const overviewResponse = await fetch(`${baseUrl}/collaboration/overview`);
     assert.equal(overviewResponse.status, 200);
     const overview = await overviewResponse.json();
-    assert.equal(overview.agents.length, 2);
+    assert.equal(overview.agents.length, 3);
+    assert.equal(overview.agents.find((agent) => agent.agentId === "deleted-agent").status, "inactive");
     assert.equal(overview.services.length, 1);
     assert.equal(overview.tasks[0].taskId, task.taskId);
 

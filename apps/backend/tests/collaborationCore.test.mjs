@@ -159,6 +159,51 @@ test("agent identity survives session replacement and a session has one current 
   });
 });
 
+test("deleting a Session deactivates its Agent while preserving collaboration history", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    store.upsertSession({
+      id: "codex:temporary-thread",
+      title: "Research Agent",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    core.bindSession({ agentId: "research-agent", sessionId: "codex:temporary-thread" });
+    const task = newTask(core);
+
+    const deactivated = core.deactivateAgentForSession("codex:temporary-thread");
+    store.deleteSession("codex:temporary-thread");
+
+    assert.equal(deactivated.status, "inactive");
+    assert.equal(deactivated.currentSessionId, null);
+    assert.equal(core.getTask(task.taskId).initiatorAgentId, "research-agent");
+    const binding = store.selectOne(
+      "SELECT unbound_at FROM agent_sessions WHERE agent_id = ? AND session_id = ?",
+      ["research-agent", "codex:temporary-thread"]
+    );
+    assert.ok(binding.unbound_at);
+  });
+});
+
+test("startup reconciliation deactivates Agents bound to already deleted Sessions", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    core.bindSession({ agentId: "research-agent", sessionId: "codex:missing-thread" });
+
+    const deactivated = core.deactivateAgentsWithMissingSessions();
+
+    assert.deepEqual(deactivated.map((agent) => agent.agentId), ["research-agent"]);
+    assert.equal(core.getAgent("research-agent").status, "inactive");
+    assert.equal(core.getAgent("research-agent").currentSessionId, null);
+    assert.ok(store.selectOne(
+      "SELECT unbound_at FROM agent_sessions WHERE agent_id = ? AND session_id = ?",
+      ["research-agent", "codex:missing-thread"]
+    ).unbound_at);
+    assert.deepEqual(core.deactivateAgentsWithMissingSessions(), []);
+  });
+});
+
 test("service requests must target the owner and ownership cannot be silently transferred", async () => {
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
