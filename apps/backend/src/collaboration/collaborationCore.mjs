@@ -116,6 +116,58 @@ export class CollaborationCore {
     return this.getAgent(agent.agentId);
   }
 
+  deactivateAgentForSession(sessionId) {
+    const normalizedSessionId = requiredId(sessionId, "sessionId");
+    const agent = this.store.selectOne(
+      `SELECT a.agent_id
+       FROM agents a
+       LEFT JOIN agent_sessions s
+         ON s.agent_id = a.agent_id
+        AND s.session_id = ?
+        AND s.unbound_at IS NULL
+       WHERE a.current_session_id = ? OR s.session_id = ?
+       LIMIT 1`,
+      [normalizedSessionId, normalizedSessionId, normalizedSessionId]
+    );
+    if (!agent) return null;
+
+    const timestamp = this.clock();
+    this.#transaction(() => {
+      this.store.db.run(
+        "UPDATE agent_sessions SET unbound_at = ? WHERE session_id = ? AND unbound_at IS NULL",
+        [timestamp, normalizedSessionId]
+      );
+      this.store.db.run(
+        `UPDATE agents
+         SET current_session_id = NULL, status = 'inactive', updated_at = ?
+         WHERE agent_id = ?`,
+        [timestamp, agent.agent_id]
+      );
+    });
+    this.store.scheduleSave();
+    return this.getAgent(agent.agent_id);
+  }
+
+  deactivateAgentsWithMissingSessions() {
+    const sessionIds = this.store.selectAll(
+      `SELECT DISTINCT session_id
+       FROM (
+         SELECT current_session_id AS session_id
+         FROM agents
+         WHERE current_session_id IS NOT NULL
+         UNION
+         SELECT session_id
+         FROM agent_sessions
+         WHERE unbound_at IS NULL
+       )
+       WHERE session_id NOT IN (SELECT id FROM sessions)`
+    ).map((row) => row.session_id);
+
+    return sessionIds
+      .map((sessionId) => this.deactivateAgentForSession(sessionId))
+      .filter(Boolean);
+  }
+
   registerService(input) {
     const serviceId = requiredId(input.serviceId, "serviceId");
     const owner = this.#requireAgent(input.ownerAgentId);

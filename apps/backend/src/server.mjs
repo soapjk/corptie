@@ -3101,6 +3101,7 @@ function route(request, response) {
     const rawId = decodeURIComponent(sessionDeleteMatch[1]);
     if (rawId.startsWith("codex:")) {
       const existed = managedCodexSessions.delete(rawId);
+      collaborationCore.deactivateAgentForSession(rawId);
       store.deleteSession(rawId);
       emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
       sendJson(response, 200, { ok: true, deleted: existed });
@@ -3108,6 +3109,7 @@ function route(request, response) {
     }
 
     const id = normalizeSessionId(rawId);
+    collaborationCore.deactivateAgentForSession(id);
     if (claudeAgents.has(id)) {
       claudeAgents.delete(id);
       emitEvent("SessionDeleted", { sessionId: id, provider: "claude-sdk" });
@@ -4164,6 +4166,10 @@ async function resolveSessionContextUsage(session) {
 const server = http.createServer(route);
 
 await store.initialize();
+const deactivatedOrphanedAgents = collaborationCore.deactivateAgentsWithMissingSessions();
+if (deactivatedOrphanedAgents.length > 0) {
+  console.log(`[collaboration] deactivated ${deactivatedOrphanedAgents.length} Agent(s) with deleted Sessions`);
+}
 activateStoredBackendLogging();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
 let storedSessionsAtStartup = [

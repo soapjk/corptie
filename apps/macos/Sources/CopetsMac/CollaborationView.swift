@@ -175,6 +175,10 @@ struct CollaborationView: View {
     @State private var selectedTaskId: String?
     @State private var isAddingService = false
 
+    private var activeAgents: [CollaborationAgent] {
+        model.agents.filter { $0.status != "inactive" }
+    }
+
     var body: some View {
         NavigationSplitView {
             List(selection: $section) {
@@ -185,7 +189,7 @@ struct CollaborationView: View {
                     sidebarRow(.allTasks, count: model.tasks.count)
                 }
                 Section(L10n("Registry")) {
-                    sidebarRow(.agents, count: model.agents.count)
+                    sidebarRow(.agents, count: activeAgents.count)
                     sidebarRow(.services, count: model.services.count)
                 }
             }
@@ -245,7 +249,7 @@ struct CollaborationView: View {
     private var content: some View {
         switch section ?? .inbox {
         case .agents:
-            CollaborationAgentList(agents: model.agents)
+            CollaborationAgentList(agents: activeAgents)
         case .services:
             CollaborationServiceList(services: model.services, agents: model.agents)
         case .inbox:
@@ -545,7 +549,9 @@ private struct RegisterServiceView: View {
                 TextField(L10n("Description"), text: $description)
                 Picker(L10n("Owner"), selection: $ownerAgentId) {
                     Text(L10n("Select an Agent")).tag("")
-                    ForEach(model.agents) { agent in Text(agent.name).tag(agent.agentId) }
+                    ForEach(model.agents.filter { $0.status != "inactive" }) { agent in
+                        Text(agent.name).tag(agent.agentId)
+                    }
                 }
                 TextField(L10n("Current version"), text: $version)
                 TextField(L10n("Local endpoint"), text: $endpoint)
