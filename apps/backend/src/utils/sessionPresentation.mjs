@@ -14,7 +14,11 @@ export function mergeStoredSessionPresentation(session, stored) {
       ...(session.external ?? {}),
       cwd: nonEmptyText(stored.external?.cwd) || session.external?.cwd,
       sandbox: stored.external?.sandbox ?? session.external?.sandbox,
-      approvalPolicy: stored.external?.approvalPolicy ?? session.external?.approvalPolicy
+      approvalPolicy: stored.external?.approvalPolicy ?? session.external?.approvalPolicy,
+      currentModel: nonEmptyText(stored.external?.currentModel) || session.external?.currentModel || null,
+      currentReasoningLevel: nonEmptyText(stored.external?.currentReasoningLevel)
+        || session.external?.currentReasoningLevel
+        || null
     }
   };
 }

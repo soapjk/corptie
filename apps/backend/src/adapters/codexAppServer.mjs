@@ -69,7 +69,7 @@ export class CodexAppServerClient {
       clientInfo: {
         name: "corptie",
         title: "Corptie",
-        version: "0.5.0"
+        version: "0.5.1"
       },
       capabilities: {
         experimentalApi: true,

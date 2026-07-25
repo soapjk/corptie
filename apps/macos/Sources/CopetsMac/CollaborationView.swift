@@ -311,9 +311,11 @@ private struct CollaborationAgentList: View {
         List(agents) { agent in
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Image(systemName: "person.crop.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(agent.status == "available" ? .green : .secondary)
+                    DefaultInitialAvatarView(
+                        seed: agent.name,
+                        initials: DefaultAvatarInitials.make(from: agent.name),
+                        size: 28
+                    )
                     VStack(alignment: .leading) {
                         Text(agent.name).font(.headline)
                         Text(agent.agentId).font(.caption.monospaced()).foregroundStyle(.secondary)

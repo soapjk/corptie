@@ -22,7 +22,9 @@ struct FloatingRootView: View {
     @State private var sessionCardFrames: [String: CGRect] = [:]
     @State private var sessionCardFramesLayoutKey: String?
     @State private var sessionSummaryFrames: [String: CGRect] = [:]
-    @State private var reorderDragOffsetY: CGFloat = 0
+    @State private var reorderDragStartMouseScreenY: CGFloat = 0
+    @State private var reorderDragScreenDeltaY: CGFloat = 0
+    @State private var reorderDragFrame: CGRect?
     @State private var reorderTargetSessionId: String?
     @State private var hasResolvedReorderTarget = false
     @State private var hoverPreviewSessionId: String?
@@ -41,6 +43,7 @@ struct FloatingRootView: View {
     private let detailSessionRailGutter: CGFloat = 78
     private let detailSessionRailTriggerWidth: CGFloat = 8
     private let listContentFrameKey = "__corptie_list_content__"
+    private let listViewportFrameKey = "__corptie_list_viewport__"
     private let topBarControlTopInset: CGFloat = 6
     private let closeButtonLeadingInset: CGFloat = 12
 
@@ -276,13 +279,23 @@ struct FloatingRootView: View {
                         }
                     }
                     .fixedSize(horizontal: false, vertical: true)
-                    .animation(.spring(response: 0.30, dampingFraction: 0.84), value: filteredSessions.map(\.id))
+                    .animation(
+                        draggedSessionId == nil
+                            ? .spring(response: 0.30, dampingFraction: 0.84)
+                            : .interactiveSpring(response: 0.16, dampingFraction: 0.90, blendDuration: 0.04),
+                        value: filteredSessions.map(\.id)
+                    )
                     .measureSessionCardFrame(listContentFrameKey)
                     .measureListHeight(.cards)
                 }
                 .id(listLayoutKey)
                 .measureListGlobalMinY(.scrollTop)
                 .coordinateSpace(name: "session-list")
+                .measureSessionCardFrame(listViewportFrameKey)
+                .simultaneousGesture(sessionListReorderGesture)
+                .overlay(alignment: .topLeading) {
+                    sessionReorderDragOverlay
+                }
                 .overlay(alignment: .topLeading) {
                     if displayMode == .cards { sessionHoverPreviewOverlay }
                 }
@@ -291,11 +304,11 @@ struct FloatingRootView: View {
         .animation(.spring(response: 0.30, dampingFraction: 0.86), value: isSearching)
         .measureListGlobalMinY(.browserTop)
         .onPreferenceChange(SessionCardFramePreferenceKey.self) { frames in
+            sessionCardFrames = frames
+            sessionCardFramesLayoutKey = listLayoutKey
             guard draggedSessionId == nil else {
                 return
             }
-            sessionCardFrames = frames
-            sessionCardFramesLayoutKey = listLayoutKey
             logListGeometry(trigger: "card-frames", frames: frames)
             updatePreferredListHeight(listHeightMeasurements)
         }
@@ -495,6 +508,7 @@ struct FloatingRootView: View {
             CompactSessionRow(session: session, preheatRequested: preheatDetail)
                 .environmentObject(backendClient)
                 .environmentObject(detachedSessionManager)
+                .opacity(draggedSessionId == session.id ? 0 : 1)
                 .measureSessionCardFrame(session.id)
         } else {
             TaskCardView(
@@ -512,13 +526,45 @@ struct FloatingRootView: View {
                     preheatDetail(for: session)
                 }
             )
-                .opacity(draggedSessionId == session.id ? 0.82 : 1)
-                .scaleEffect(draggedSessionId == session.id ? 1.015 : 1)
+                .opacity(draggedSessionId == session.id ? 0 : 1)
                 .measureSessionCardFrame(session.id)
-                .offset(y: draggedSessionId == session.id ? reorderDragOffsetY : 0)
-                .gesture(reorderGesture(for: session))
                 .animation(draggedSessionId == nil ? .spring(response: 0.28, dampingFraction: 0.82) : nil, value: backendClient.sessions.map(\.id))
-                .animation(.spring(response: 0.20, dampingFraction: 0.78), value: draggedSessionId)
+        }
+    }
+
+    @ViewBuilder
+    private var sessionReorderDragOverlay: some View {
+        if let draggedSessionId,
+           let session = backendClient.sessions.first(where: { $0.id == draggedSessionId }),
+           let dragFrame = reorderDragFrame,
+           let viewportFrame = sessionCardFrames[listViewportFrameKey] {
+            Group {
+                if displayMode == .compact {
+                    CompactSessionRow(session: session, preheatRequested: { _ in })
+                        .environmentObject(backendClient)
+                        .environmentObject(detachedSessionManager)
+                } else {
+                    TaskCardView(session: session)
+                        .environmentObject(backendClient)
+                        .environmentObject(detachedSessionManager)
+                }
+            }
+            .frame(width: dragFrame.width)
+            .scaleEffect(1.012)
+            .shadow(color: .black.opacity(0.22), radius: 12, y: 5)
+            .offset(
+                x: dragFrame.minX - viewportFrame.minX,
+                y: SessionReorderLayout.draggedTopY(
+                    initialTopY: dragFrame.minY,
+                    mouseDeltaY: reorderDragScreenDeltaY
+                ) - viewportFrame.minY
+            )
+            .allowsHitTesting(false)
+            .transaction { transaction in
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+            .zIndex(100)
         }
     }
 
@@ -681,29 +727,69 @@ struct FloatingRootView: View {
         "x\(debugNumber(rect.minX)) y\(debugNumber(rect.minY)) w\(debugNumber(rect.width)) h\(debugNumber(rect.height))"
     }
 
-    private func reorderGesture(for session: TaskSession) -> some Gesture {
+    private func debugSessionId(_ id: String) -> String {
+        "\(id.prefix(9))…\(id.suffix(6))"
+    }
+
+    private var sessionListReorderGesture: some Gesture {
         DragGesture(minimumDistance: 7, coordinateSpace: .named("session-list"))
             .onChanged { value in
-                if draggedSessionId != session.id {
-                    draggedSessionId = session.id
+                let session: TaskSession
+                if let activeSessionId = draggedSessionId,
+                   let activeSession = backendClient.sessions.first(where: { $0.id == activeSessionId }) {
+                    session = activeSession
+                } else {
+                    guard let hitSessionId = SessionReorderLayout.sessionId(
+                        at: value.startLocation,
+                        using: sessionCardFrames,
+                        eligibleIds: Set(backendClient.sessions.map(\.id))
+                    ),
+                    let hitSession = backendClient.sessions.first(where: { $0.id == hitSessionId }),
+                    let frame = sessionCardFrames[hitSessionId] else {
+                        return
+                    }
+                    session = hitSession
+                    let mouseScreenY = NSEvent.mouseLocation.y
+                    draggedSessionId = hitSession.id
+                    reorderDragFrame = frame
+                    // The gesture belongs to the stable list viewport rather
+                    // than a row that can move or be recreated. AppKit's global
+                    // coordinate then makes the floating preview independent of
+                    // any SwiftUI layout or coordinate-space rebasing.
+                    reorderDragStartMouseScreenY = mouseScreenY + value.translation.height
+                    reorderDragScreenDeltaY = value.translation.height
                     reorderTargetSessionId = nil
                     hoverPreviewSessionId = nil
                     hasResolvedReorderTarget = false
-                    reorderDragOffsetY = 0
+                    backendClient.beginSessionReorder()
+                    logSessionReorder(
+                        "begin id=\(debugSessionId(hitSession.id)) frame=\(debugRect(frame)) viewport=\(sessionCardFrames[listViewportFrameKey].map(debugRect) ?? "nil") screenY=\(debugNumber(mouseScreenY)) stableDeltaY=\(debugNumber(reorderDragScreenDeltaY)) rawTranslationY=\(debugNumber(value.translation.height))"
+                    )
                 }
 
-                withTransaction(Transaction(animation: nil)) {
-                    reorderDragOffsetY = sessionCardFrames[session.id].map { value.location.y - $0.midY }
-                        ?? value.translation.height
+                let mouseScreenY = NSEvent.mouseLocation.y
+                let stableMouseDeltaY = reorderDragStartMouseScreenY - mouseScreenY
+                var continuousTransaction = Transaction(animation: nil)
+                continuousTransaction.isContinuous = true
+                withTransaction(continuousTransaction) {
+                    reorderDragScreenDeltaY = stableMouseDeltaY
                 }
                 guard !sessionCardFrames.isEmpty else {
                     return
                 }
 
-                let targetSessionId = insertionTargetSessionId(
-                    forDragLocationY: value.location.y,
+                let eligibleIds = Set(backendClient.sessions.lazy
+                    .filter { ($0.pinned == true) == (session.pinned == true) }
+                    .map(\.id))
+                let draggedCenterY = SessionReorderLayout.draggedCenterY(
+                    initialCenterY: reorderDragFrame?.midY ?? sessionCardFrames[session.id]?.midY ?? 0,
+                    mouseDeltaY: stableMouseDeltaY
+                )
+                let targetSessionId = SessionReorderLayout.insertionTargetSessionId(
+                    forDraggedCenterY: draggedCenterY,
                     excluding: session.id,
-                    using: sessionCardFrames
+                    using: sessionCardFrames,
+                    eligibleIds: eligibleIds
                 )
                 guard targetSessionId != reorderTargetSessionId || !hasResolvedReorderTarget else {
                     return
@@ -711,49 +797,36 @@ struct FloatingRootView: View {
 
                 reorderTargetSessionId = targetSessionId
                 hasResolvedReorderTarget = true
+                logSessionReorder(
+                    "target id=\(debugSessionId(session.id)) centerY=\(debugNumber(draggedCenterY)) before=\(targetSessionId.map(debugSessionId) ?? "end") screenY=\(debugNumber(mouseScreenY)) stableDeltaY=\(debugNumber(stableMouseDeltaY)) rawLocationY=\(debugNumber(value.location.y)) rawTranslationY=\(debugNumber(value.translation.height))"
+                )
                 withAnimation(.interactiveSpring(response: 0.22, dampingFraction: 0.88, blendDuration: 0.08)) {
                     backendClient.moveSession(draggedSessionId: session.id, before: targetSessionId)
                 }
             }
             .onEnded { _ in
-                reorderDragOffsetY = 0
+                guard let completedSessionId = draggedSessionId else {
+                    return
+                }
+                let stableMouseDeltaY = reorderDragStartMouseScreenY - NSEvent.mouseLocation.y
+                logSessionReorder(
+                    "end id=\(debugSessionId(completedSessionId)) stableDeltaY=\(debugNumber(stableMouseDeltaY))"
+                )
                 backendClient.persistSessionOrder()
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     draggedSessionId = nil
+                    reorderDragFrame = nil
+                    reorderDragStartMouseScreenY = 0
+                    reorderDragScreenDeltaY = 0
                     reorderTargetSessionId = nil
                     hasResolvedReorderTarget = false
                 }
             }
     }
 
-    private func insertionTargetSessionId(forDragLocationY locationY: CGFloat, excluding draggedId: String, using frames: [String: CGRect]) -> String? {
-        let orderedIds = backendClient.sessions
-            .map(\.id)
-            .filter { $0 != draggedId }
-
-        guard let firstId = orderedIds.first,
-              let firstFrame = frames[firstId] else {
-            return nil
-        }
-
-        if locationY < firstFrame.minY {
-            return firstId
-        }
-
-        for (index, id) in orderedIds.enumerated() {
-            guard let frame = frames[id] else {
-                continue
-            }
-            if locationY <= frame.maxY {
-                if locationY < frame.midY {
-                    return id
-                }
-                let nextIndex = index + 1
-                return nextIndex < orderedIds.count ? orderedIds[nextIndex] : nil
-            }
-        }
-
-        return nil
+    private func logSessionReorder(_ message: String) {
+        guard CorptieAppEnvironment.isDevelopment else { return }
+        print("[reorder-debug] \(message)")
     }
 
 }
@@ -1112,10 +1185,7 @@ private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         if let hostingView = scrollView.documentView as? NSHostingView<Content> {
-            let nextContent = content
-            DispatchQueue.main.async {
-                hostingView.rootView = nextContent
-            }
+            hostingView.rootView = content
         }
         scrollView.hasVerticalScroller = true
         scrollView.scrollerStyle = .legacy
@@ -1724,6 +1794,9 @@ private struct NewPtyAgentTaskSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
     @AppStorage("newTask.defaultSandboxMode", store: CorptieAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
     @AppStorage("newTask.defaultApprovalPolicy", store: CorptieAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
+    @AppStorage("newTask.defaultCodexModel", store: CorptieAppEnvironment.userDefaults) private var defaultCodexModel = ""
+    @AppStorage("newTask.defaultCodexReasoningLevel", store: CorptieAppEnvironment.userDefaults) private var defaultCodexReasoningLevel = ""
+    @AppStorage("newTask.defaultClaudeModel", store: CorptieAppEnvironment.userDefaults) private var defaultClaudeModel = ""
     @State private var title = ""
     @State private var command = "codex"
     @State private var arguments = ""
@@ -1732,6 +1805,7 @@ private struct NewPtyAgentTaskSheet: View {
     @State private var sandboxMode = "workspace-write"
     @State private var approvalPolicy = "on-request"
     @State private var selectedModelId = ""
+    @State private var selectedReasoningLevel = ""
     @State private var defaultSaveMessage: String?
     @State private var sessionLookupTask: Task<Void, Never>?
     @State private var isLookingUpSession = false
@@ -1850,6 +1924,7 @@ private struct NewPtyAgentTaskSheet: View {
             if isShowingAdvanced {
                 VStack(alignment: .leading, spacing: 12) {
                     modelPicker
+                    reasoningPicker
 
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 7) {
@@ -1945,14 +2020,14 @@ private struct NewPtyAgentTaskSheet: View {
                     }
                     HStack(spacing: 8) {
                         Button {
-                            savePermissionDefaults()
+                            saveNewSessionDefaults()
                         } label: {
                             Label(L10n("Set as Future Default"), systemImage: "checkmark.seal")
                                 .font(.system(size: 11, weight: .semibold))
                         }
                         .buttonStyle(.plain)
                         .foregroundStyle(CorptiePalette.softBlue)
-                        .help(L10n("Use the selected permission and approval mode for future new sessions"))
+                        .help(L10n("Use the selected model, reasoning, permission, and approval settings for future new sessions"))
 
                         if let defaultSaveMessage {
                             Text(defaultSaveMessage)
@@ -2033,6 +2108,7 @@ private struct NewPtyAgentTaskSheet: View {
         }
         .onChange(of: command) { _, _ in
             selectedModelId = ""
+            selectedReasoningLevel = ""
             loadModelsForCurrentAgent()
         }
         .onChange(of: backendClient.codexDefaultModel) { _, value in
@@ -2040,6 +2116,12 @@ private struct NewPtyAgentTaskSheet: View {
         }
         .onChange(of: backendClient.codexModels) { _, _ in
             applyDefaultModelIfNeeded(backendClient.codexDefaultModel)
+        }
+        .onChange(of: backendClient.codexDefaultReasoningLevel) { _, _ in
+            applyDefaultReasoningIfNeeded()
+        }
+        .onChange(of: selectedModelId) { _, _ in
+            applyDefaultReasoningIfNeeded(preferCurrentSelection: true)
         }
     }
 
@@ -2076,15 +2158,51 @@ private struct NewPtyAgentTaskSheet: View {
                 .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
                 Picker(L10n(""), selection: $selectedModelId) {
-                    Text(defaultModelLabel).tag("")
+                    if !selectedModelId.isEmpty,
+                       !backendClient.codexModels.contains(where: { $0.id == selectedModelId }) {
+                        Text(selectedModelId).tag(selectedModelId)
+                    }
                     ForEach(backendClient.codexModels) { model in
                         Text(model.name).tag(model.id)
+                    }
+                    if selectedModelId.isEmpty && backendClient.codexModels.isEmpty {
+                        Text(L10n("No models available")).tag("")
                     }
                 }
                 .labelsHidden()
                 .pickerStyle(.menu)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .help(L10n("Choose the model for this new session"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var reasoningPicker: some View {
+        if trimmedCommand == "codex" {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(L10n("Reasoning"))
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.black)
+
+                Picker(L10n(""), selection: $selectedReasoningLevel) {
+                    if !selectedReasoningLevel.isEmpty,
+                       !currentReasoningLevels.contains(selectedReasoningLevel) {
+                        Text(newSessionReasoningLabel(selectedReasoningLevel))
+                            .tag(selectedReasoningLevel)
+                    }
+                    ForEach(currentReasoningLevels, id: \.self) { reasoningLevel in
+                        Text(newSessionReasoningLabel(reasoningLevel))
+                            .tag(reasoningLevel)
+                    }
+                    if selectedReasoningLevel.isEmpty && currentReasoningLevels.isEmpty {
+                        Text(L10n("No reasoning options")).tag("")
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(L10n("Choose the reasoning strength for this new session"))
             }
         }
     }
@@ -2106,14 +2224,26 @@ private struct NewPtyAgentTaskSheet: View {
         trimmedCommand == "claude" ? "claude-sdk" : "codex-pty"
     }
 
-    private var defaultModelLabel: String {
-        if let model = backendClient.codexModels.first(where: { $0.id == backendClient.codexDefaultModel }) {
-            return L10nFormat("Default (%@)", model.name)
+    private var currentReasoningLevels: [String] {
+        selectedModel?.reasoningLevels ?? []
+    }
+
+    private var selectedModel: CodexModel? {
+        backendClient.codexModels.first(where: { $0.id == selectedModelId })
+    }
+
+    private var savedModelForCurrentAgent: String? {
+        if trimmedCommand == "claude" {
+            return nonEmptyNewSessionValue(defaultClaudeModel)
+                ?? backendClient.settings?.newSessionDefaults?.claudeModel
         }
-        if let defaultModel = backendClient.codexDefaultModel, !defaultModel.isEmpty {
-            return L10nFormat("Default (%@)", defaultModel)
-        }
-        return L10n("Default")
+        return nonEmptyNewSessionValue(defaultCodexModel)
+            ?? backendClient.settings?.newSessionDefaults?.codexModel
+    }
+
+    private var savedCodexReasoning: String? {
+        nonEmptyNewSessionValue(defaultCodexReasoningLevel)
+            ?? backendClient.settings?.newSessionDefaults?.codexReasoningLevel
     }
 
     private func loadModelsForCurrentAgent() {
@@ -2137,15 +2267,38 @@ private struct NewPtyAgentTaskSheet: View {
         guard supportsModelSelection, selectedModelId.isEmpty else {
             return
         }
-        guard let defaultModel, backendClient.codexModels.contains(where: { $0.id == defaultModel }) else {
-            return
-        }
-        selectedModelId = defaultModel
+        selectedModelId = NewSessionModelSelection.preferredModelId(
+            savedModelId: savedModelForCurrentAgent,
+            providerDefaultModelId: defaultModel,
+            models: backendClient.codexModels
+        )
+        applyDefaultReasoningIfNeeded()
     }
 
-    private func savePermissionDefaults() {
+    private func applyDefaultReasoningIfNeeded(preferCurrentSelection: Bool = false) {
+        guard trimmedCommand == "codex" else {
+            selectedReasoningLevel = ""
+            return
+        }
+        let preferredReasoning = preferCurrentSelection && !selectedReasoningLevel.isEmpty
+            ? selectedReasoningLevel
+            : savedCodexReasoning
+        selectedReasoningLevel = NewSessionModelSelection.preferredReasoningLevel(
+            savedReasoningLevel: preferredReasoning,
+            providerDefaultReasoningLevel: backendClient.codexDefaultReasoningLevel,
+            model: selectedModel
+        )
+    }
+
+    private func saveNewSessionDefaults() {
         defaultSandboxMode = validatedSandboxMode(sandboxMode)
         defaultApprovalPolicy = validatedApprovalPolicy(approvalPolicy)
+        if trimmedCommand == "codex" {
+            defaultCodexModel = selectedModelId
+            defaultCodexReasoningLevel = selectedReasoningLevel
+        } else if trimmedCommand == "claude" {
+            defaultClaudeModel = selectedModelId
+        }
         Task {
             await backendClient.syncNewSessionDefaultsFromPreferences(force: true)
         }
@@ -2157,6 +2310,24 @@ private struct NewPtyAgentTaskSheet: View {
                 defaultSaveMessage = nil
             }
         }
+    }
+
+    private func newSessionReasoningLabel(_ value: String) -> String {
+        switch value.lowercased() {
+        case "low": L10n("Low")
+        case "medium": L10n("Medium")
+        case "high": L10n("High")
+        case "xhigh": L10n("Extra High")
+        default: value
+        }
+    }
+
+    private func nonEmptyNewSessionValue(_ value: String?) -> String? {
+        guard let value else {
+            return nil
+        }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func validatedSandboxMode(_ value: String) -> String {
@@ -2190,6 +2361,7 @@ private struct NewPtyAgentTaskSheet: View {
                 sandbox: sandboxMode,
                 approvalPolicy: approvalPolicy,
                 model: selectedModelId,
+                reasoningLevel: selectedReasoningLevel,
                 onNameConflict: { suggestedSessionTitle = $0 }
             ) {
                 close()
@@ -2264,6 +2436,12 @@ private struct NewPtyAgentTaskSheet: View {
             return true
         }
         if isShowingAdvanced && trimmedCommand.isEmpty {
+            return true
+        }
+        if supportsModelSelection && selectedModelId.isEmpty {
+            return true
+        }
+        if trimmedCommand == "codex" && selectedReasoningLevel.isEmpty {
             return true
         }
         return trimmedCommand.isEmpty
@@ -2979,19 +3157,11 @@ struct AgentAvatarView: View {
                 AnimatedAvatarImage(path: avatarPath)
                     .background(Color.white.opacity(0.16))
             } else {
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [session.accent.color.opacity(0.92), CorptiePalette.softBlue.opacity(0.72)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    Text(initials)
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.black)
-                }
+                DefaultInitialAvatarView(
+                    seed: session.title,
+                    initials: initials,
+                    size: size
+                )
             }
         }
         .frame(width: size, height: size)
@@ -4149,6 +4319,7 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 
 private struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @State private var didCopySessionName = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -4169,9 +4340,23 @@ private struct DetailHeaderView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(backendClient.selectedSession?.title ?? "Codex thread")
+                Button(action: copySelectedSessionName) {
+                    HStack(spacing: 5) {
+                        Text(backendClient.selectedSession?.title ?? "Codex thread")
+                            .lineLimit(1)
+                        if didCopySessionName {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(CorptiePalette.connected)
+                                .transition(.opacity.combined(with: .scale))
+                        }
+                    }
                     .font(.system(size: 15, weight: .semibold))
-                    .lineLimit(1)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L10n("Copy session name"))
+                .accessibilityLabel(L10n("Copy session name"))
                 if let cwd = backendClient.selectedDetail?.cwd, !cwd.isEmpty {
                     Button {
                         NSWorkspace.shared.open(URL(fileURLWithPath: cwd, isDirectory: true))
@@ -4221,6 +4406,21 @@ private struct DetailHeaderView: View {
     private var canInterruptCurrentRun: Bool {
         backendClient.selectedDetail?.status == .running
             && backendClient.selectedDetail?.capabilities?.canInterrupt == true
+    }
+
+    private func copySelectedSessionName() {
+        guard copySessionNameToPasteboard(backendClient.selectedSession?.title) else {
+            return
+        }
+        withAnimation(.easeOut(duration: 0.12)) {
+            didCopySessionName = true
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            withAnimation(.easeOut(duration: 0.12)) {
+                didCopySessionName = false
+            }
+        }
     }
 }
 
@@ -4372,6 +4572,16 @@ struct CopyTextButton: View {
                 : NSColor(calibratedWhite: 1.0, alpha: 0.92)
         })
     }
+}
+
+@discardableResult
+private func copySessionNameToPasteboard(_ rawName: String?) -> Bool {
+    guard let name = rawName?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !name.isEmpty else {
+        return false
+    }
+    NSPasteboard.general.clearContents()
+    return NSPasteboard.general.setString(name, forType: .string)
 }
 
 private struct ThreadProcessGroupView: View {
@@ -4549,6 +4759,7 @@ private struct ThreadItemView: View {
     @State private var isConfirmingUndo = false
     @State private var isDiffActionRunning = false
     @State private var diffActionError: String?
+    @State private var didCopySessionName = false
     let item: CodexThreadItem
     let processItems: [CodexThreadItem]?
     @Binding private var isProcessExpanded: Bool
@@ -4879,11 +5090,11 @@ private struct ThreadItemView: View {
     }
 
     private func collaborationAvatar(name: String) -> some View {
-        Text(String(name.prefix(1)).uppercased())
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(CorptiePalette.softBlue)
-            .frame(width: 20, height: 20)
-            .background(Color.white.opacity(0.24), in: Circle())
+        DefaultInitialAvatarView(
+            seed: name,
+            initials: DefaultAvatarInitials.make(from: name),
+            size: 20
+        )
     }
 
     @ViewBuilder
@@ -4980,9 +5191,7 @@ private struct ThreadItemView: View {
         ZStack(alignment: .bottomTrailing) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text(item.title)
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(itemColor)
+                    itemTitleView
                     Spacer()
                     Text(itemMetadataLabel)
                         .font(.system(size: 10, weight: .semibold))
@@ -5085,6 +5294,48 @@ private struct ThreadItemView: View {
             Button(L10n("OK"), role: .cancel) {}
         } message: {
             Text(diffActionError ?? "Unknown error")
+        }
+    }
+
+    @ViewBuilder
+    private var itemTitleView: some View {
+        if item.type == "agentMessage" {
+            Button(action: copySelectedSessionName) {
+                HStack(spacing: 4) {
+                    Text(item.title)
+                    if didCopySessionName {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(CorptiePalette.connected)
+                            .transition(.opacity.combined(with: .scale))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(L10n("Copy session name"))
+            .accessibilityLabel(L10n("Copy session name"))
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(itemColor)
+        } else {
+            Text(item.title)
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(itemColor)
+        }
+    }
+
+    private func copySelectedSessionName() {
+        guard copySessionNameToPasteboard(backendClient.selectedSession?.title) else {
+            return
+        }
+        withAnimation(.easeOut(duration: 0.12)) {
+            didCopySessionName = true
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            withAnimation(.easeOut(duration: 0.12)) {
+                didCopySessionName = false
+            }
         }
     }
 
@@ -5778,8 +6029,8 @@ private struct CodexModelMenu: View {
     private var currentReasoningLevel: String {
         backendClient.selectedDetail?.currentReasoningLevel
             ?? backendClient.selectedSession?.external?.currentReasoningLevel
-            ?? currentModel?.defaultReasoningLevel
             ?? backendClient.codexDefaultReasoningLevel
+            ?? currentModel?.defaultReasoningLevel
             ?? "medium"
     }
 

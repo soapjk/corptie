@@ -145,7 +145,10 @@ test("gateway trusted workspaces are normalized and persisted", async () => {
     assert.deepEqual(store.settings().gateway.trustedWorkspaces, ["/tmp/project-a", "/tmp/project-b"]);
     assert.deepEqual(store.settings().newSessionDefaults, {
       sandbox: "danger-full-access",
-      approvalPolicy: "never"
+      approvalPolicy: "never",
+      codexModel: null,
+      codexReasoningLevel: null,
+      claudeModel: null
     });
   });
 });

@@ -397,7 +397,11 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.hidesOnDeactivate = false
-        panel.isMovableByWindowBackground = true
+        // DetachedOrbEventLayer owns the complete click-versus-drag gesture.
+        // Leaving background dragging enabled gives this transparent event view
+        // a second AppKit window mover and makes both implementations fight over
+        // the panel origin.
+        panel.isMovableByWindowBackground = false
         panel.delegate = self
         panel.contentView = DetachedFirstMouseHostingView(
             rootView: DetachedSessionOrbView(
@@ -422,9 +426,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 },
                 dismissQuickReply: { [weak self] in
                     self?.hideQuickReply()
-                    self?.updateAccessory(for: self?.currentSession)
-                },
-                moved: { [weak self] in
                     self?.updateAccessory(for: self?.currentSession)
                 },
                 close: { [weak self] in
@@ -752,7 +753,6 @@ private struct DetachedSessionOrbView: View {
     let openSession: (TaskSession) -> Void
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
-    let moved: () -> Void
     let close: () -> Void
 
     var body: some View {
@@ -790,7 +790,6 @@ private struct DetachedSessionOrbView: View {
                     openSession(session)
                 },
                 showMain: showMain,
-                moved: moved,
                 close: close
             )
             .frame(width: 72, height: 72)
@@ -1446,7 +1445,6 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     let open: () -> Void
     let openSession: () -> Void
     let showMain: () -> Void
-    let moved: () -> Void
     let close: () -> Void
 
     func makeNSView(context: Context) -> EventView {
@@ -1455,7 +1453,6 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         view.open = open
         view.openSessionAction = openSession
         view.showMainAction = showMain
-        view.moved = moved
         view.close = close
         return view
     }
@@ -1465,7 +1462,6 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         nsView.open = open
         nsView.openSessionAction = openSession
         nsView.showMainAction = showMain
-        nsView.moved = moved
         nsView.close = close
     }
 
@@ -1474,7 +1470,6 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         var open: (() -> Void)?
         var openSessionAction: (() -> Void)?
         var showMainAction: (() -> Void)?
-        var moved: (() -> Void)?
         var close: (() -> Void)?
         private var initialMouseScreenPoint: NSPoint?
         private var initialWindowOrigin: NSPoint?
@@ -1483,6 +1478,10 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
         override var acceptsFirstResponder: Bool {
             true
+        }
+
+        override var mouseDownCanMoveWindow: Bool {
+            false
         }
 
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -1500,7 +1499,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
             let shouldOpenImmediately = !NSApp.isActive || !window.isKeyWindow
-            initialMouseScreenPoint = window.convertPoint(toScreen: event.locationInWindow)
+            initialMouseScreenPoint = NSEvent.mouseLocation
             initialWindowOrigin = window.frame.origin
             didDrag = false
             openedOnMouseDown = false
@@ -1518,17 +1517,20 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
                 return
             }
 
-            let currentMouseScreenPoint = window.convertPoint(toScreen: event.locationInWindow)
+            let currentMouseScreenPoint = NSEvent.mouseLocation
             let dx = currentMouseScreenPoint.x - initialMouseScreenPoint.x
             let dy = currentMouseScreenPoint.y - initialMouseScreenPoint.y
             if abs(dx) > 2 || abs(dy) > 2 {
                 didDrag = true
             }
 
-            var frame = window.frame
-            frame.origin = NSPoint(x: initialWindowOrigin.x + dx, y: initialWindowOrigin.y + dy)
-            window.setFrame(frame, display: true)
-            moved?()
+            window.setFrameOrigin(
+                DetachedWindowDragGeometry.windowOrigin(
+                    initialWindowOrigin: initialWindowOrigin,
+                    initialMouseScreenPoint: initialMouseScreenPoint,
+                    currentMouseScreenPoint: currentMouseScreenPoint
+                )
+            )
         }
 
         override func mouseUp(with event: NSEvent) {

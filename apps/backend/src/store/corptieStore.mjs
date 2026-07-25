@@ -175,7 +175,10 @@ export class CorptieStore {
       await this.writeConfig();
     }
     if (input.newSessionDefaults && typeof input.newSessionDefaults === "object") {
-      this.config.newSessionDefaults = normalizeNewSessionDefaults(input.newSessionDefaults);
+      this.config.newSessionDefaults = normalizeNewSessionDefaults({
+        ...(this.config.newSessionDefaults ?? {}),
+        ...input.newSessionDefaults
+      });
       await this.writeConfig();
     }
     if (input.gateway && typeof input.gateway === "object") {
