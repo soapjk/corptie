@@ -1,3 +1,10 @@
+import { basename, resolve } from "node:path";
+
+export function defaultSessionTitleForWorkspace(cwd) {
+  const folderName = basename(resolve(String(cwd ?? "").trim() || "."));
+  return folderName ? `${folderName}_agent` : "Agent";
+}
+
 export function normalizeSessionTitle(title) {
   return String(title ?? "").trim().normalize("NFKC").toLocaleLowerCase("en-US");
 }

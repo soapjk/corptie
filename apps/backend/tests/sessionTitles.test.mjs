@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertSessionTitleAvailable,
+  defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   findSessionTitleConflict,
   normalizeSessionTitle,
   suggestAvailableSessionTitle
 } from "../src/utils/sessionTitles.mjs";
+
+test("the default session title appends the agent suffix to the workspace folder", () => {
+  assert.equal(defaultSessionTitleForWorkspace("/Volumes/T9/projects/corptie"), "corptie_agent");
+  assert.equal(defaultSessionTitleForWorkspace("/Volumes/T9/projects/corptie/"), "corptie_agent");
+});
 
 test("session title matching ignores surrounding whitespace, case and Unicode width", () => {
   assert.equal(normalizeSessionTitle("  Ｄｅｆａｕｌｔ  "), "default");
