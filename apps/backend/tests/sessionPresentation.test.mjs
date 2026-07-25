@@ -34,6 +34,31 @@ test("stored Codex permissions survive merging with a resumed thread", () => {
   assert.equal(merged.external.threadId, "thread-a");
 });
 
+test("stored Codex model and reasoning survive a provider refresh with empty metadata", () => {
+  const merged = mergeStoredSessionPresentation(
+    {
+      id: "codex:thread-a",
+      external: {
+        provider: "codex-app-server",
+        threadId: "thread-a",
+        currentModel: null,
+        currentReasoningLevel: null
+      }
+    },
+    {
+      id: "codex:thread-a",
+      external: {
+        currentModel: "gpt-5.6-sol",
+        currentReasoningLevel: "xhigh"
+      }
+    }
+  );
+
+  assert.equal(merged.external.currentModel, "gpt-5.6-sol");
+  assert.equal(merged.external.currentReasoningLevel, "xhigh");
+  assert.equal(merged.external.threadId, "thread-a");
+});
+
 test("the stored project path survives a provider refresh with a process directory", () => {
   const merged = mergeStoredSessionPresentation(
     {

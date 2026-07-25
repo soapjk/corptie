@@ -1107,11 +1107,20 @@ struct SettingsView: View {
                             .resizable()
                             .scaledToFill()
                     } placeholder: {
-                        Image(systemName: "message.badge")
-                            .foregroundStyle(CorptiePalette.secondaryText)
+                        DefaultInitialAvatarView(
+                            seed: bot.remoteName ?? bot.name,
+                            initials: DefaultAvatarInitials.make(from: bot.remoteName ?? bot.name),
+                            size: 30
+                        )
                     }
                     .frame(width: 30, height: 30)
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                } else {
+                    DefaultInitialAvatarView(
+                        seed: bot.remoteName ?? bot.name,
+                        initials: DefaultAvatarInitials.make(from: bot.remoteName ?? bot.name),
+                        size: 30
+                    )
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(bot.remoteName ?? L10n("Loading Feishu bot identity…"))

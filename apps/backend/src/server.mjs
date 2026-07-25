@@ -52,7 +52,15 @@ import {
   readInitialCodexPermissionsFromRollout,
   withCodexSessionPermissions
 } from "./utils/codexPermissions.mjs";
-import { normalizeNewSessionDefaults } from "./utils/newSessionDefaults.mjs";
+import {
+  hasCodexSessionRuntimeConfig,
+  readLatestCodexRuntimeConfigFromRollout,
+  withCodexSessionRuntimeConfig
+} from "./utils/codexRuntimeConfig.mjs";
+import {
+  normalizeNewSessionDefaults,
+  resolveNewCodexRuntimeConfig
+} from "./utils/newSessionDefaults.mjs";
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
 import { collaborationMcpServerName } from "./utils/collaborationRuntime.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "./collaboration/collaborationDynamicTools.mjs";
@@ -1116,13 +1124,37 @@ async function findCodexRolloutBySessionId(sessionId) {
 }
 
 async function ensureCodexSessionPermissions(session) {
-  if (!session || hasCodexSessionPermissions(session)) return session;
+  if (!session) return session;
+  const needsPermissions = !hasCodexSessionPermissions(session);
+  const needsRuntimeConfig = !hasCodexSessionRuntimeConfig(session);
+  if (!needsPermissions && !needsRuntimeConfig) return session;
+
   const threadId = String(session.id ?? session.external?.threadId ?? "").replace(/^codex:/, "");
   const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
-  const recovered = rollout?.path
-    ? readInitialCodexPermissionsFromRollout(await readFile(rollout.path, "utf8").catch(() => ""))
+  const rolloutText = rollout?.path
+    ? await readFile(rollout.path, "utf8").catch(() => "")
+    : "";
+  const recoveredPermissions = needsPermissions
+    ? readInitialCodexPermissionsFromRollout(rolloutText)
     : null;
-  const next = withCodexSessionPermissions(session, recovered ?? {});
+  const rolloutRuntime = needsRuntimeConfig
+    ? readLatestCodexRuntimeConfigFromRollout(rolloutText)
+    : null;
+  const defaultRuntime = needsRuntimeConfig
+    ? await resolvedNewCodexRuntimeConfig().catch(() => ({}))
+    : null;
+  const recoveredRuntime = needsRuntimeConfig
+    ? {
+        model: rolloutRuntime?.model ?? defaultRuntime?.model ?? null,
+        reasoningLevel: rolloutRuntime?.reasoningLevel ?? defaultRuntime?.reasoningLevel ?? null
+      }
+    : null;
+  const withPermissions = needsPermissions
+    ? withCodexSessionPermissions(session, recoveredPermissions ?? {})
+    : session;
+  const next = needsRuntimeConfig
+    ? withCodexSessionRuntimeConfig(withPermissions, recoveredRuntime ?? {})
+    : withPermissions;
   if (session.id) upsertManagedCodexSession(next);
   return next;
 }
@@ -1276,6 +1308,19 @@ async function readCodexDefaultConfig() {
     model: modelMatch?.[1] ?? null,
     reasoningLevel: reasoningMatch?.[1] ?? null
   };
+}
+
+async function resolvedNewCodexRuntimeConfig(input = {}) {
+  const [currentConfig, modelPayload] = await Promise.all([
+    readCodexDefaultConfig(),
+    loadCodexModels().catch(() => ({ models: [] }))
+  ]);
+  return resolveNewCodexRuntimeConfig({
+    request: input,
+    defaults: store.settings().newSessionDefaults,
+    currentConfig,
+    models: modelPayload.models
+  });
 }
 
 function normalizeSessionId(id) {
@@ -1450,7 +1495,11 @@ async function createGatewaySession(input = {}) {
   await assertDirectory(cwd);
   const title = sessionTitleForWorkspace(input.title, cwd);
   const agent = input.agent === "claude" ? "claude" : "codex";
-  const permissions = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
+  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
+  const permissions = {
+    sandbox: defaults.sandbox,
+    approvalPolicy: defaults.approvalPolicy
+  };
   const releaseTitle = reserveSessionTitle(title);
 
   try {
@@ -1459,6 +1508,7 @@ async function createGatewaySession(input = {}) {
         title,
         prompt: "",
         cwd,
+        model: defaults.claudeModel,
         ...permissions
       });
       emitEvent("ClaudeSessionStarted", { session, source: { type: "feishu" } });
@@ -1476,14 +1526,18 @@ async function createGatewaySession(input = {}) {
       status: "inactive",
       capabilities: ["codex-session", "corptie-collaboration"]
     });
+    const runtime = await resolvedNewCodexRuntimeConfig();
     const started = await codexClient.startThread({
       cwd,
       ...permissions,
+      model: runtime.model,
       ...collaborationThreadOptions(collaborationAgentId)
     });
     const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
       cwd,
-      ...codexTurnPermissionOptions({ external: permissions })
+      ...codexTurnPermissionOptions({ external: permissions }),
+      model: runtime.model,
+      reasoningEffort: runtime.reasoningLevel
     });
     const session = withCodexSessionPermissions({
       ...mapCodexThreadToSession({
@@ -1494,8 +1548,8 @@ async function createGatewaySession(input = {}) {
         updatedAt: Date.now() / 1000,
         status: "running",
         source: "corptie",
-        currentModel: started.model ?? null,
-        currentReasoningLevel: started.reasoningEffort ?? null,
+        currentModel: runtime.model ?? started.model ?? null,
+        currentReasoningLevel: runtime.reasoningLevel ?? started.reasoningEffort ?? null,
         activeTurnId: turn.turn?.id ?? null
       }),
       title,
@@ -2064,6 +2118,10 @@ async function inspectCollaborationSession(sessionId) {
           external: {
             ...(session.external ?? {}),
             ...(live.external ?? {}),
+            currentModel: live.external?.currentModel ?? session.external?.currentModel ?? null,
+            currentReasoningLevel: live.external?.currentReasoningLevel
+              ?? session.external?.currentReasoningLevel
+              ?? null,
             activeTurnId: sessionHasActiveRun(live)
               ? (live.external?.activeTurnId ?? session.external?.activeTurnId ?? null)
               : null
@@ -2246,7 +2304,7 @@ function route(request, response) {
     sendJson(response, 200, {
       ok: true,
       service: "corptie-backend",
-      version: "0.5.0",
+      version: "0.5.1",
       time: now()
     });
     return;
@@ -2860,10 +2918,10 @@ function route(request, response) {
         const codexSessions = result.data.map((thread) => {
           const session = mapCodexThreadToSession(thread);
           const managedSession = managedCodexSessions.get(session.id);
-          if (!managedSession) {
-            return session;
-          }
           const stored = store.getSession(session.id);
+          if (!managedSession) {
+            return mergeStoredSessionPresentation(session, stored);
+          }
           return mergeStoredSessionPresentation({
             ...session,
             status: managedSession.status ?? session.status,
@@ -3180,11 +3238,13 @@ function route(request, response) {
         const releaseTitle = reserveSessionTitle(title);
         let session;
         try {
+          const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
+          const requestedModel = typeof input.model === "string" ? input.model.trim() : "";
           session = claudeAgents.start({
             title,
             prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
             cwd,
-            model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null,
+            model: requestedModel || defaults.claudeModel,
             sandbox: normalizeCodexSandbox(input.sandbox),
             approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
           });
@@ -3217,6 +3277,7 @@ function route(request, response) {
         const sandbox = normalizeCodexSandbox(input.sandbox);
         const approvalMode = normalizeCodexApprovalPolicy(input.approvalPolicy);
         const approval = codexApprovalPolicyForCli(approvalMode);
+        const runtime = await resolvedNewCodexRuntimeConfig(input);
         const safetyArgs = [
           "-c",
           `approval_policy="${approval}"`,
@@ -3232,11 +3293,11 @@ function route(request, response) {
         const args = [...safetyArgs, ...hookArgs, ...mcpArgs, "--no-alt-screen", "-C", cwd, "-s", sandbox, "-a", approval];
         const resumeOptions = [...safetyArgs, ...hookArgs, ...mcpArgs, "--no-alt-screen", "-C", cwd, "-s", sandbox, "-a", approval];
 
-        const reasoningLevel = typeof input.reasoningLevel === "string" ? input.reasoningLevel.trim() : "";
+        const reasoningLevel = runtime.reasoningLevel ?? "";
 
-        if (typeof input.model === "string" && input.model.trim()) {
-          args.push("-m", input.model.trim());
-          resumeOptions.push("-m", input.model.trim());
+        if (runtime.model) {
+          args.push("-m", runtime.model);
+          resumeOptions.push("-m", runtime.model);
         }
         if (reasoningLevel) {
           args.push("-c", `model_reasoning_effort="${reasoningLevel}"`);
@@ -3263,11 +3324,13 @@ function route(request, response) {
               strategy: "codex-resume-session-id",
               agentSessionId: existingSessionId,
               cwd,
+              currentModel: runtime.model,
               currentReasoningLevel: reasoningLevel || null,
               resumeOptions,
               rolloutPath: rolloutMatch?.path ?? null
             },
             agentSessionId: existingSessionId,
+            currentModel: runtime.model,
             currentReasoningLevel: reasoningLevel || null,
             phase: "connecting",
             connectionReady: false,
@@ -3296,9 +3359,11 @@ function route(request, response) {
             args: [],
             strategy: "pending-codex-session-id",
             cwd,
+            currentModel: runtime.model,
             currentReasoningLevel: reasoningLevel || null,
             resumeOptions
           },
+          currentModel: runtime.model,
           currentReasoningLevel: reasoningLevel || null,
           phase: "starting",
           canResume: false
@@ -3691,10 +3756,11 @@ function route(request, response) {
           sandbox: normalizeCodexSandbox(input.sandbox),
           approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
         };
+        const runtime = await resolvedNewCodexRuntimeConfig(input);
         const started = await codexClient.startThread({
           cwd,
           ...permissions,
-          model: input.model,
+          model: runtime.model,
           modelProvider: input.modelProvider,
           ...collaborationThreadOptions(collaborationAgentId)
         });
@@ -3711,8 +3777,8 @@ function route(request, response) {
         const turn = await codexClient.startTurn(threadId, prompt, {
           cwd,
           ...codexTurnPermissionOptions({ external: permissions }),
-          model: input.model,
-          reasoningEffort: input.reasoningLevel
+          model: runtime.model,
+          reasoningEffort: runtime.reasoningLevel
         });
 
         const session = withCodexSessionPermissions({
@@ -3724,8 +3790,8 @@ function route(request, response) {
             updatedAt: Date.now() / 1000,
             status: "running",
             source: "corptie",
-          currentModel: input.model ?? started.model ?? null,
-          currentReasoningLevel: input.reasoningLevel ?? started.reasoningEffort ?? null,
+          currentModel: runtime.model ?? started.model ?? null,
+          currentReasoningLevel: runtime.reasoningLevel ?? started.reasoningEffort ?? null,
           activeTurnId: turn.turn?.id ?? null
         }),
         title,
@@ -3806,7 +3872,10 @@ function route(request, response) {
     codexClient
       .readThread(threadId, { includeTurns: true })
       .then(async (result) => {
-        const managedSession = managedCodexSessions.get(`codex:${threadId}`);
+        const sessionId = `codex:${threadId}`;
+        const managedSession = await ensureCodexSessionPermissions(
+          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
+        );
         const detail = mapCodexThreadToDetail(
           result.thread,
           codexClient.liveItemsForThread(threadId),
@@ -3828,7 +3897,10 @@ function route(request, response) {
         });
       })
       .catch(async (error) => {
-        const managedSession = managedCodexSessions.get(`codex:${threadId}`);
+        const sessionId = `codex:${threadId}`;
+        const managedSession = await ensureCodexSessionPermissions(
+          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
+        );
         if (managedSession) {
           const detail = enrichCodexDetailChoiceOptions(createManagedCodexDetail(
             managedSession,
@@ -4222,7 +4294,10 @@ if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
   const rebuiltCount = Array.isArray(rebuilt?.data) ? rebuilt.data.length : 0;
   console.log(`[codex-runtime] migrated rollouts=${corptieCodexRuntime.threadMigration.rolloutCount} indexed=${rebuiltCount}`);
 }
-for (const session of storedSessionsAtStartup) {
+for (const storedSession of storedSessionsAtStartup) {
+  const session = storedSession.external?.provider === "codex-app-server"
+    ? await ensureCodexSessionPermissions(storedSession)
+    : storedSession;
   ensureCollaborationAgentForSession(session);
 }
 migrateLegacyQueuedSessionItems();

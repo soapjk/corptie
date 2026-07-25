@@ -10,19 +10,33 @@ import {
   readInitialCodexPermissionsFromRollout,
   withCodexSessionPermissions
 } from "../src/utils/codexPermissions.mjs";
-import { normalizeNewSessionDefaults } from "../src/utils/newSessionDefaults.mjs";
+import {
+  hasCodexSessionRuntimeConfig,
+  readLatestCodexRuntimeConfigFromRollout,
+  withCodexSessionRuntimeConfig
+} from "../src/utils/codexRuntimeConfig.mjs";
+import {
+  normalizeNewSessionDefaults,
+  resolveNewCodexRuntimeConfig
+} from "../src/utils/newSessionDefaults.mjs";
 
 test("new session defaults normalize the values shared by desktop and Feishu", () => {
   assert.deepEqual(normalizeNewSessionDefaults({
     sandbox: "dangerFullAccess",
-    approvalPolicy: "never"
+    approvalPolicy: "never",
+    codexModel: " gpt-5.6-sol ",
+    codexReasoningLevel: "XHIGH",
+    claudeModel: " claude-opus-4-6 "
   }), {
     sandbox: "danger-full-access",
-    approvalPolicy: "never"
+    approvalPolicy: "never",
+    codexModel: "gpt-5.6-sol",
+    codexReasoningLevel: "xhigh",
+    claudeModel: "claude-opus-4-6"
   });
 });
 
-test("Full Access and Never Ask survive a SQLite persistence restart", async () => {
+test("permissions, model, and reasoning survive a SQLite persistence restart", async () => {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-permissions-test-"));
   const dbPath = join(directory, "corptie.sqlite");
   const configPath = join(directory, "config.json");
@@ -30,7 +44,7 @@ test("Full Access and Never Ask survive a SQLite persistence restart", async () 
   let reopened = null;
 
   await store.initialize();
-  const created = withCodexSessionPermissions({
+  const created = withCodexSessionRuntimeConfig(withCodexSessionPermissions({
     id: "codex:thread-a",
     title: "Full access session",
     agent: "Codex",
@@ -40,6 +54,9 @@ test("Full Access and Never Ask survive a SQLite persistence restart", async () 
   }, {
     sandbox: "danger-full-access",
     approvalPolicy: "never"
+  }), {
+    model: "gpt-5.6-sol",
+    reasoningLevel: "xhigh"
   });
   try {
     store.upsertSession(created);
@@ -56,6 +73,9 @@ test("Full Access and Never Ask survive a SQLite persistence restart", async () 
     assert.equal(hasCodexSessionPermissions(restored), true);
     assert.equal(restored.external.sandbox, "danger-full-access");
     assert.equal(restored.external.approvalPolicy, "never");
+    assert.equal(hasCodexSessionRuntimeConfig(restored), true);
+    assert.equal(restored.external.currentModel, "gpt-5.6-sol");
+    assert.equal(restored.external.currentReasoningLevel, "xhigh");
     assert.deepEqual(codexTurnPermissionOptions(restored), {
       approvalPolicy: "never",
       sandboxPolicy: { type: "dangerFullAccess" }
@@ -113,5 +133,57 @@ test("legacy sessions recover their creation-time permission context from the ro
   assert.deepEqual(readInitialCodexPermissionsFromRollout(rollout), {
     sandbox: "danger-full-access",
     approvalPolicy: "never"
+  });
+});
+
+test("new Codex sessions resolve an explicit model and a supported reasoning level", () => {
+  const models = [
+    {
+      id: "gpt-5.6-sol",
+      defaultReasoningLevel: "low",
+      reasoningLevels: ["low", "medium", "high", "xhigh"]
+    }
+  ];
+
+  assert.deepEqual(resolveNewCodexRuntimeConfig({
+    request: {},
+    defaults: {
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+      codexModel: "gpt-5.6-sol",
+      codexReasoningLevel: "xhigh"
+    },
+    currentConfig: { model: "gpt-5.6-sol", reasoningLevel: "high" },
+    models
+  }), {
+    model: "gpt-5.6-sol",
+    reasoningLevel: "xhigh"
+  });
+
+  assert.deepEqual(resolveNewCodexRuntimeConfig({
+    request: { model: "gpt-5.6-sol", reasoningLevel: "unsupported" },
+    models
+  }), {
+    model: "gpt-5.6-sol",
+    reasoningLevel: "low"
+  });
+});
+
+test("legacy sessions recover their latest model and reasoning from the rollout", () => {
+  const rollout = [
+    JSON.stringify({
+      type: "turn_context",
+      payload: { model: "gpt-5.5", effort: "high" }
+    }),
+    "partially written line",
+    JSON.stringify({
+      type: "turn_context",
+      payload: { model: "gpt-5.6-sol", effort: "xhigh" }
+    })
+  ].join("\n");
+
+  assert.deepEqual(readLatestCodexRuntimeConfigFromRollout(rollout), {
+    model: "gpt-5.6-sol",
+    reasoningLevel: "xhigh"
   });
 });

@@ -576,6 +576,9 @@ struct GatewaySettings: Codable, Equatable {
 struct NewSessionDefaults: Codable, Equatable {
     var sandbox: String
     var approvalPolicy: String
+    var codexModel: String?
+    var codexReasoningLevel: String?
+    var claudeModel: String?
 }
 
 struct CodexBackendSettings: Codable, Equatable {

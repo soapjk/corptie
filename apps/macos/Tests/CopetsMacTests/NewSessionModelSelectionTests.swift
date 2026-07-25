@@ -1,0 +1,56 @@
+import XCTest
+@testable import CorptieMac
+
+final class NewSessionModelSelectionTests: XCTestCase {
+    private let models = [
+        CodexModel(
+            id: "gpt-5.6-sol",
+            name: "GPT-5.6",
+            description: nil,
+            defaultReasoningLevel: "low",
+            reasoningLevels: ["low", "medium", "high", "xhigh"],
+            serviceTiers: nil
+        )
+    ]
+
+    func testSavedModelAndReasoningWinOverProviderDefaults() {
+        XCTAssertEqual(
+            NewSessionModelSelection.preferredModelId(
+                savedModelId: "gpt-5.6-sol",
+                providerDefaultModelId: "other-model",
+                models: models
+            ),
+            "gpt-5.6-sol"
+        )
+        XCTAssertEqual(
+            NewSessionModelSelection.preferredReasoningLevel(
+                savedReasoningLevel: "xhigh",
+                providerDefaultReasoningLevel: "high",
+                model: models[0]
+            ),
+            "xhigh"
+        )
+    }
+
+    func testProviderReasoningWinsOverModelMetadataDefaultWhenNoSavedDefaultExists() {
+        XCTAssertEqual(
+            NewSessionModelSelection.preferredReasoningLevel(
+                savedReasoningLevel: nil,
+                providerDefaultReasoningLevel: "xhigh",
+                model: models[0]
+            ),
+            "xhigh"
+        )
+    }
+
+    func testUnsupportedReasoningFallsBackToModelDefault() {
+        XCTAssertEqual(
+            NewSessionModelSelection.preferredReasoningLevel(
+                savedReasoningLevel: "unsupported",
+                providerDefaultReasoningLevel: nil,
+                model: models[0]
+            ),
+            "low"
+        )
+    }
+}

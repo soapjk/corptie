@@ -46,6 +46,8 @@ final class BackendClient: ObservableObject {
     private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
     private var usageRefreshTask: Task<Void, Never>?
     private var hasSyncedNewSessionDefaults = false
+    private var isReorderingSessions = false
+    private var sessionReorderRevision = 0
 
     func start() {
         pollingTask?.cancel()
@@ -198,22 +200,38 @@ final class BackendClient: ObservableObject {
         let defaults = CorptieAppEnvironment.userDefaults
         let sandbox = defaults.string(forKey: "newTask.defaultSandboxMode") ?? "workspace-write"
         let approvalPolicy = defaults.string(forKey: "newTask.defaultApprovalPolicy") ?? "on-request"
+        let codexModel = nonEmptyPreference(defaults.string(forKey: "newTask.defaultCodexModel"))
+        let codexReasoningLevel = nonEmptyPreference(defaults.string(forKey: "newTask.defaultCodexReasoningLevel"))
+        let claudeModel = nonEmptyPreference(defaults.string(forKey: "newTask.defaultClaudeModel"))
         if !force,
            settings?.newSessionDefaults?.sandbox == sandbox,
-           settings?.newSessionDefaults?.approvalPolicy == approvalPolicy {
+           settings?.newSessionDefaults?.approvalPolicy == approvalPolicy,
+           codexModel == nil || settings?.newSessionDefaults?.codexModel == codexModel,
+           codexReasoningLevel == nil || settings?.newSessionDefaults?.codexReasoningLevel == codexReasoningLevel,
+           claudeModel == nil || settings?.newSessionDefaults?.claudeModel == claudeModel {
             hasSyncedNewSessionDefaults = true
             return
         }
 
         do {
+            var newSessionDefaults: [String: Any] = [
+                "sandbox": sandbox,
+                "approvalPolicy": approvalPolicy
+            ]
+            if let codexModel {
+                newSessionDefaults["codexModel"] = codexModel
+            }
+            if let codexReasoningLevel {
+                newSessionDefaults["codexReasoningLevel"] = codexReasoningLevel
+            }
+            if let claudeModel {
+                newSessionDefaults["claudeModel"] = claudeModel
+            }
             var request = URLRequest(url: baseURL.appending(path: "settings"))
             request.httpMethod = "PATCH"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
             request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "newSessionDefaults": [
-                    "sandbox": sandbox,
-                    "approvalPolicy": approvalPolicy
-                ]
+                "newSessionDefaults": newSessionDefaults
             ])
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
@@ -521,7 +539,7 @@ final class BackendClient: ObservableObject {
     func refresh() async {
         do {
             let latestSessions = try await fetchSessionsForShutdown()
-            if sessions != latestSessions, NSEvent.pressedMouseButtons == 0 {
+            if sessions != latestSessions, !isReorderingSessions, NSEvent.pressedMouseButtons == 0 {
                 sessions = latestSessions
                 syncSelectedSessionFromSessions()
                 syncSelectedDetailMetadataFromSessions()
@@ -637,6 +655,7 @@ final class BackendClient: ObservableObject {
         sandbox: String = "workspace-write",
         approvalPolicy: String = "on-request",
         model: String = "",
+        reasoningLevel: String = "",
         onNameConflict: @escaping (String) -> Void = { _ in },
         onSuccess: @escaping () -> Void = {}
     ) {
@@ -644,6 +663,7 @@ final class BackendClient: ObservableObject {
         let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedExistingSessionId = existingSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedReasoningLevel = reasoningLevel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !isCreatingTask else { return }
         isCreatingTask = true
 
@@ -664,6 +684,9 @@ final class BackendClient: ObservableObject {
                 ]
                 if !trimmedModel.isEmpty {
                     body["model"] = trimmedModel
+                }
+                if !trimmedReasoningLevel.isEmpty {
+                    body["reasoningLevel"] = trimmedReasoningLevel
                 }
                 if !usesAppServer {
                     body["prompt"] = trimmedPrompt
@@ -1422,15 +1445,17 @@ final class BackendClient: ObservableObject {
 
         let movedSession = sessions.remove(at: fromIndex)
         guard let targetSessionId,
-              let targetIndex = sessions.firstIndex(where: { $0.id == targetSessionId }) else {
-            if fromIndex == sessions.count {
-                sessions.insert(movedSession, at: fromIndex)
-                return
+              let targetIndex = sessions.firstIndex(where: {
+                  $0.id == targetSessionId && ($0.pinned == true) == (movedSession.pinned == true)
+              }) else {
+            let lastMatchingIndex = sessions.lastIndex {
+                ($0.pinned == true) == (movedSession.pinned == true)
             }
-            sessions.append(movedSession)
+            let insertionIndex = lastMatchingIndex.map { $0 + 1 } ?? min(fromIndex, sessions.count)
+            sessions.insert(movedSession, at: insertionIndex)
             return
         }
-        let insertionIndex = fromIndex < targetIndex ? targetIndex : targetIndex
+        let insertionIndex = targetIndex
         if insertionIndex == fromIndex {
             sessions.insert(movedSession, at: fromIndex)
             return
@@ -1438,8 +1463,14 @@ final class BackendClient: ObservableObject {
         sessions.insert(movedSession, at: max(0, min(insertionIndex, sessions.count)))
     }
 
+    func beginSessionReorder() {
+        sessionReorderRevision += 1
+        isReorderingSessions = true
+    }
+
     func persistSessionOrder() {
         let orderedIds = sessions.map(\.id)
+        let revision = sessionReorderRevision
         Task {
             do {
                 var request = URLRequest(url: baseURL.appending(path: "sessions/reorder"))
@@ -1450,9 +1481,16 @@ final class BackendClient: ObservableObject {
                 guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
                     throw URLError(.badServerResponse)
                 }
-                await refresh()
+                if revision == sessionReorderRevision {
+                    isReorderingSessions = false
+                    await refresh()
+                }
             } catch {
-                lastError = error.localizedDescription
+                if revision == sessionReorderRevision {
+                    isReorderingSessions = false
+                    lastError = error.localizedDescription
+                    await refresh()
+                }
             }
         }
     }
@@ -1883,7 +1921,7 @@ final class BackendClient: ObservableObject {
                 pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
             )
         }
-        if sessions != nextSessions, NSEvent.pressedMouseButtons == 0 {
+        if sessions != nextSessions, !isReorderingSessions, NSEvent.pressedMouseButtons == 0 {
             sessions = nextSessions
         }
     }
@@ -2121,6 +2159,14 @@ private func normalizedMessageText(_ text: String) -> String {
         .components(separatedBy: .whitespacesAndNewlines)
         .filter { !$0.isEmpty }
         .joined(separator: " ")
+}
+
+private func nonEmptyPreference(_ value: String?) -> String? {
+    guard let value else {
+        return nil
+    }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
 }
 
 private func agentProxyBody(_ settings: AgentProxySettings) -> [String: Any] {
