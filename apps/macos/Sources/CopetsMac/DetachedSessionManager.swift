@@ -4,6 +4,8 @@ import SwiftUI
 
 @MainActor
 final class DetachedSessionManager: ObservableObject {
+    private static let orbWindowSize = NSSize(width: 88, height: 88)
+
     private let client: BackendClient
     private let openSession: (TaskSession) -> Void
     private let showMain: () -> Void
@@ -29,8 +31,16 @@ final class DetachedSessionManager: ObservableObject {
             return
         }
 
+        let targetScreen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
+        let visibleFrame = targetScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let initialOrigin = DetachedOrbPlacementGeometry.origin(
+            visibleFrame: visibleFrame,
+            windowSize: Self.orbWindowSize,
+            occupiedFrames: controllers.values.map(\.frame)
+        )
         let controller = DetachedSessionWindowController(
             sessionId: id,
+            initialOrigin: initialOrigin,
             client: client,
             showMain: { [weak self] in
                 self?.showMain()
@@ -365,8 +375,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
 
+    var frame: NSRect {
+        panel.frame
+    }
+
     init(
         sessionId: String,
+        initialOrigin: NSPoint,
         client: BackendClient,
         showMain: @escaping () -> Void,
         isMainVisible: @escaping () -> Bool,
@@ -382,7 +397,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
         let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
         self.panel = DetachedSessionPanel(
-            contentRect: NSRect(x: 1220, y: 620, width: size.width, height: size.height),
+            contentRect: NSRect(origin: initialOrigin, size: size),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false

@@ -3158,7 +3158,8 @@ struct AgentAvatarView: View {
                     .background(Color.white.opacity(0.16))
             } else {
                 DefaultInitialAvatarView(
-                    seed: session.title,
+                    familySeed: session.external?.cwd ?? session.agent,
+                    variationSeed: session.id,
                     initials: initials,
                     size: size
                 )
