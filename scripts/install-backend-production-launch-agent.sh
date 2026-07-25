@@ -17,8 +17,9 @@ if [ -z "${NODE_BIN}" ]; then
 fi
 PLIST="${HOME}/Library/LaunchAgents/com.corptie.backend.plist"
 LOG_DIR="${HOME}/Library/Logs/Corptie"
+DEFAULT_WORKSPACE="${CORPTIE_DEFAULT_WORKSPACE:-${HOME}/corptie}"
 
-mkdir -p "$(dirname "${PLIST}")" "${LOG_DIR}"
+mkdir -p "$(dirname "${PLIST}")" "${LOG_DIR}" "${DEFAULT_WORKSPACE}"
 
 cat > "${PLIST}" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -33,13 +34,15 @@ cat > "${PLIST}" <<PLIST
     <string>${BACKEND_DIR}/src/server.mjs</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${BACKEND_DIR}</string>
+  <string>${DEFAULT_WORKSPACE}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>CORPTIE_ENV</key>
     <string>production</string>
     <key>CORPTIE_BACKEND_PORT</key>
     <string>47321</string>
+    <key>CORPTIE_DEFAULT_WORKSPACE</key>
+    <string>${DEFAULT_WORKSPACE}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

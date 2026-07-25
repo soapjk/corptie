@@ -74,6 +74,8 @@ cat > "${APP_DIR}/Contents/Info.plist" <<PLIST
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
   </dict>
@@ -94,8 +96,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="${SCRIPT_DIR}/backend"
+DEFAULT_WORKSPACE="${CORPTIE_DEFAULT_WORKSPACE:-${HOME}/corptie}"
 export CORPTIE_ENV="production"
 export CORPTIE_BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47321}"
+export CORPTIE_DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE}"
 
 NODE_BIN="${NODE_BIN:-}"
 supports_native_sqlite() {
@@ -135,8 +139,9 @@ fi
 NODE_DIR="$(dirname "${NODE_BIN}")"
 export PATH="${NODE_DIR}:${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin}"
 
-cd "${BACKEND_DIR}"
-exec "${NODE_BIN}" src/server.mjs
+mkdir -p "${DEFAULT_WORKSPACE}"
+cd "${DEFAULT_WORKSPACE}"
+exec "${NODE_BIN}" "${BACKEND_DIR}/src/server.mjs"
 LAUNCHER
 chmod +x "${APP_DIR}/Contents/Resources/corptie-backend-launch.sh"
 
@@ -161,6 +166,8 @@ cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
       <string>production</string>
       <key>CORPTIE_BACKEND_PORT</key>
       <string>47321</string>
+      <key>CORPTIE_DEFAULT_WORKSPACE</key>
+      <string>${HOME}/corptie</string>
       <key>CORPTIE_BACKEND_BUILD_ID</key>
       <string>${BACKEND_BUILD_ID}</string>
     </dict>

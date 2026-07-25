@@ -19,7 +19,7 @@ test("setThreadName uses the Codex app-server thread naming method", async () =>
   }]);
 });
 
-test("startThread forwards collaboration MCP config and allows slow MCP startup", async () => {
+test("startThread installs host-owned collaboration tools and keeps the isolated MCP compatibility path", async () => {
   const calls = [];
   const client = new CodexAppServerClient();
   client.initialize = async () => {};
@@ -34,14 +34,23 @@ test("startThread forwards collaboration MCP config and allows slow MCP startup"
       features: { multi_agent: false },
       mcp_servers: { collaboration: { command: "node" } }
     },
+    dynamicTools: [{
+      type: "function",
+      name: "corptie_agents_discover",
+      description: "Discover Agents",
+      inputSchema: { type: "object" }
+    }],
+    dynamicToolAgentId: "agent-a",
     developerInstructions: "Stable Agent identity: agent-a"
   });
 
   assert.equal(calls[0].method, "thread/start");
   assert.equal(calls[0].params.config.features.multi_agent, false);
   assert.equal(calls[0].params.config.mcp_servers.collaboration.command, "node");
+  assert.equal(calls[0].params.dynamicTools[0].name, "corptie_agents_discover");
   assert.equal(calls[0].params.developerInstructions, "Stable Agent identity: agent-a");
   assert.equal(calls[0].timeoutMs, 30000);
+  assert.equal(client.dynamicToolAgentsByThread.get("thread-a"), "agent-a");
 });
 
 test("resumeThread restores collaboration MCP config and Agent identity", async () => {
@@ -58,6 +67,7 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
       features: { multi_agent: false },
       mcp_servers: { collaboration: { command: "node" } }
     },
+    dynamicToolAgentId: "agent-a",
     developerInstructions: "Stable Agent identity: agent-a"
   });
 
@@ -73,6 +83,42 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
     },
     timeoutMs: 30000
   }]);
+  assert.equal(client.dynamicToolAgentsByThread.get("thread-a"), "agent-a");
+});
+
+test("dynamic tool calls are executed by the host with the thread's bound Agent identity", async () => {
+  const responses = [];
+  const client = new CodexAppServerClient({
+    onDynamicToolCall: async (params) => ({
+      agentId: params.agentId,
+      tool: params.tool,
+      input: params.arguments
+    })
+  });
+  client.dynamicToolAgentsByThread.set("thread-a", "agent-a");
+  client.respondToServerRequest = async (id, result) => {
+    responses.push({ id, result });
+  };
+
+  await client.handleDynamicToolCall({
+    id: 42,
+    method: "item/tool/call",
+    params: {
+      threadId: "thread-a",
+      turnId: "turn-a",
+      callId: "call-a",
+      tool: "corptie_agents_discover",
+      arguments: { status: "available" }
+    }
+  });
+
+  assert.equal(responses[0].id, 42);
+  assert.equal(responses[0].result.success, true);
+  assert.deepEqual(JSON.parse(responses[0].result.contentItems[0].text), {
+    agentId: "agent-a",
+    tool: "corptie_agents_discover",
+    input: { status: "available" }
+  });
 });
 
 test("startTurn forwards application context for rules that must apply to an existing thread", async () => {

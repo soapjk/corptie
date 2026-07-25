@@ -2,7 +2,7 @@ import Foundation
 import AppKit
 import SwiftUI
 
-struct TaskSession: Identifiable, Codable, Equatable {
+struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
     let agent: String
@@ -42,7 +42,7 @@ struct TaskSession: Identifiable, Codable, Equatable {
     }
 }
 
-struct PendingCollaborationConfirmation: Codable, Equatable {
+struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let confirmationId: String
     let recipientAgentId: String?
     let recipientName: String
@@ -51,7 +51,7 @@ struct PendingCollaborationConfirmation: Codable, Equatable {
     let acceptanceCriteria: [String]
 }
 
-struct ExternalSession: Codable, Equatable {
+struct ExternalSession: Codable, Equatable, Sendable {
     let provider: String
     let threadId: String?
     let sessionId: String?
@@ -65,7 +65,7 @@ struct ExternalSession: Codable, Equatable {
     let source: String?
 }
 
-struct SessionCapabilities: Codable, Equatable {
+struct SessionCapabilities: Codable, Equatable, Sendable {
     let canSend: Bool?
     let canSwitchModel: Bool?
     let canSwitchReasoning: Bool?
@@ -73,7 +73,7 @@ struct SessionCapabilities: Codable, Equatable {
     let canReconnect: Bool?
 }
 
-enum TaskStatus: String, Codable {
+enum TaskStatus: String, Codable, Sendable {
     case running
     case blocked
     case complete
@@ -101,7 +101,7 @@ enum TaskStatus: String, Codable {
     }
 }
 
-enum Accent: String, Codable {
+enum Accent: String, Codable, Sendable {
     case cyan
     case mint
     case violet
@@ -155,7 +155,7 @@ enum CorptiePalette {
     }
 }
 
-struct SessionsResponse: Decodable {
+struct SessionsResponse: Decodable, Sendable {
     let sessions: [TaskSession]
 }
 
@@ -345,11 +345,11 @@ struct FeishuSessionAssignment: Codable, Identifiable, Equatable {
     let lastEventSequence: Int
 }
 
-struct CodexThreadDetailResponse: Decodable {
+struct CodexThreadDetailResponse: Decodable, Sendable {
     let thread: CodexThreadDetail
 }
 
-struct UnifiedSessionSnapshotResponse: Decodable {
+struct UnifiedSessionSnapshotResponse: Decodable, Sendable {
     let session: CodexThreadDetail
 }
 
@@ -395,7 +395,7 @@ struct CodexContextUsage: Decodable, Equatable {
     let usedPercent: Double?
 }
 
-struct CodexThreadDetail: Decodable, Equatable {
+struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let id: String
     let title: String
     let status: TaskStatus
@@ -474,7 +474,7 @@ struct CodexServiceTier: Decodable, Equatable {
     let name: String
 }
 
-struct CodexThreadItem: Identifiable, Decodable, Equatable {
+struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let id: String
     let turnId: String
     let turnStatus: String
@@ -505,12 +505,12 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable {
     var turnDiff: String? = nil
 }
 
-struct CodexFileChange: Decodable, Equatable {
+struct CodexFileChange: Decodable, Equatable, Sendable {
     let path: String
     let kind: String
 }
 
-struct CodexApprovalOption: Identifiable, Codable, Equatable {
+struct CodexApprovalOption: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let label: String
     let role: String?

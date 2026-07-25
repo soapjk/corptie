@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
+import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 
 export class ClaudeAgentManager {
   constructor(options = {}) {
@@ -23,7 +24,7 @@ export class ClaudeAgentManager {
       accent: "amber",
       command: "claude-sdk",
       args: [],
-      cwd: input.cwd || process.cwd(),
+      cwd: input.cwd || defaultWorkspacePath(),
       sandbox: input.sandbox ?? "workspace-write",
       approvalPolicy: input.approvalPolicy ?? "on-request",
       permissionMode: claudePermissionMode(input.sandbox, input.approvalPolicy),
@@ -283,7 +284,7 @@ export class ClaudeAgentManager {
       accent: stored.accent || "amber",
       command: "claude-sdk",
       args: [],
-      cwd: stored.external?.cwd || raw.cwd || process.cwd(),
+      cwd: stored.external?.cwd || raw.cwd || defaultWorkspacePath(),
       sandbox: raw.sandbox ?? "workspace-write",
       approvalPolicy: raw.approvalPolicy ?? "on-request",
       permissionMode: raw.permissionMode ?? claudePermissionMode(raw.sandbox, raw.approvalPolicy),

@@ -7,6 +7,7 @@ import { CodexAppServerClient } from "./codexAppServer.mjs";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { resolveCodexCommand } from "../utils/codexCommand.mjs";
 import { environmentForCommand } from "../utils/externalCommand.mjs";
+import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 
 const ansiPattern = /\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))/g;
 export class PtyAgentManager {
@@ -24,7 +25,7 @@ export class PtyAgentManager {
 
   start(input = {}) {
     const id = input.id || randomUUID();
-    const cwd = input.cwd || process.cwd();
+    const cwd = input.cwd || defaultWorkspacePath();
     const command = input.command || defaultShell();
     const args = Array.isArray(input.args) ? input.args.map(String) : [];
     const title = input.title || input.initialInput || `${command} ${args.join(" ")}`.trim();
@@ -1279,7 +1280,7 @@ function defaultCodexResumeArgs(cwd) {
     "resume",
     "--no-alt-screen",
     "-C",
-    cwd || process.cwd(),
+    cwd || defaultWorkspacePath(),
     "-s",
     "workspace-write",
     "-a",

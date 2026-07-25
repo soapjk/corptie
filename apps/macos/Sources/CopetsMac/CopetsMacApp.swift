@@ -28,7 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isEvaluatingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        // Corptie is a menu-bar and floating-panel utility. Accessory apps can
+        // still own key windows and text input, but don't appear in the Dock or
+        // the Command-Tab application switcher.
+        NSApp.setActivationPolicy(.accessory)
         configureApplicationIcon()
 
         showWelcomePromptIfNeeded()

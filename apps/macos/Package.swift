@@ -30,6 +30,11 @@ let package = Package(
                 .process("Resources/en.lproj"),
                 .process("Resources/zh-Hans.lproj")
             ]
+        ),
+        .testTarget(
+            name: "CorptieMacTests",
+            dependencies: ["CorptieMac"],
+            path: "Tests/CopetsMacTests"
         )
     ]
 )

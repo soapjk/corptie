@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
+import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 
 export class CodexAppServerClient {
   constructor(options = {}) {
@@ -11,6 +12,7 @@ export class CodexAppServerClient {
     this.env = options.env ?? process.env;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
     this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
+    this.onDynamicToolCall = typeof options.onDynamicToolCall === "function" ? options.onDynamicToolCall : null;
     this.process = null;
     this.readline = null;
     this.nextRequestId = 1;
@@ -21,6 +23,7 @@ export class CodexAppServerClient {
     this.tokenUsageByThread = new Map();
     this.serverRequestsByThread = new Map();
     this.recentApprovedCommands = new Map();
+    this.dynamicToolAgentsByThread = new Map();
     this.initialized = false;
   }
 
@@ -107,26 +110,35 @@ export class CodexAppServerClient {
 
   async startThread(options = {}) {
     await this.initialize();
-    return this.request("thread/start", {
-      cwd: options.cwd ?? process.cwd(),
+    const result = await this.request("thread/start", {
+      cwd: options.cwd ?? defaultWorkspacePath(),
       approvalPolicy: options.approvalPolicy ?? "on-request",
       sandbox: options.sandbox ?? "workspace-write",
       model: options.model ?? undefined,
       modelProvider: options.modelProvider ?? undefined,
       config: options.config ?? undefined,
       developerInstructions: options.developerInstructions ?? undefined,
+      dynamicTools: options.dynamicTools ?? undefined,
       threadSource: "user",
       ephemeral: options.ephemeral ?? false
     }, options.requestTimeoutMs ?? 30000);
+    if (result?.thread?.id && options.dynamicToolAgentId) {
+      this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
+    }
+    return result;
   }
 
   async resumeThread(threadId, options = {}) {
     await this.initialize();
-    return this.request("thread/resume", {
+    const result = await this.request("thread/resume", {
       threadId,
       config: options.config ?? undefined,
       developerInstructions: options.developerInstructions ?? undefined
     }, options.requestTimeoutMs ?? 30000);
+    if (options.dynamicToolAgentId) {
+      this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
+    }
+    return result;
   }
 
   async startTurn(threadId, text, options = {}) {
@@ -165,7 +177,7 @@ export class CodexAppServerClient {
   async runChoiceParser(options = {}) {
     const timeoutMs = options.timeoutMs ?? 30000;
     const prompt = options.prompt ?? "";
-    const cwd = options.cwd ?? process.cwd();
+    const cwd = options.cwd ?? defaultWorkspacePath();
     const model = options.model ?? undefined;
     const notificationStart = this.notifications.length;
     const liveStart = this.liveItemsByThread.size;
@@ -406,6 +418,10 @@ export class CodexAppServerClient {
   }
 
   handleServerRequest(message) {
+    if (message.method === "item/tool/call") {
+      this.handleDynamicToolCall(message);
+      return;
+    }
     const request = {
       method: message.method,
       params: {
@@ -442,6 +458,35 @@ export class CodexAppServerClient {
           createdAt: request.params.createdAt
         }
       });
+    }
+  }
+
+  async handleDynamicToolCall(message) {
+    const params = message.params ?? {};
+    const agentId = this.dynamicToolAgentsByThread.get(params.threadId);
+    try {
+      if (!this.onDynamicToolCall || !agentId) {
+        throw new Error(`No Corptie dynamic-tool identity is bound to thread ${params.threadId ?? "unknown"}.`);
+      }
+      const value = await this.onDynamicToolCall({
+        ...params,
+        agentId
+      });
+      await this.respondToServerRequest(message.id, {
+        contentItems: [{ type: "inputText", text: JSON.stringify(value, null, 2) }],
+        success: true
+      });
+    } catch (error) {
+      await this.respondToServerRequest(message.id, {
+        contentItems: [{
+          type: "inputText",
+          text: JSON.stringify({
+            code: error.code ?? "COLLABORATION_ERROR",
+            error: error.message
+          })
+        }],
+        success: false
+      }).catch(() => {});
     }
   }
 

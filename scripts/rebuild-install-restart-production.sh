@@ -164,7 +164,9 @@ stop_production() {
   while IFS= read -r pid; do
     [[ -n "${pid}" ]] && app_pids+=("${pid}")
   done < <(production_app_pids)
-  stop_pids "production app" "${app_pids[@]}"
+  if (( ${#app_pids[@]} > 0 )); then
+    stop_pids "production app" "${app_pids[@]}"
+  fi
 
   launchctl bootout "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1 \
     || launchctl bootout "gui/$(id -u)" "${LAUNCH_AGENT_PLIST}" >/dev/null 2>&1 \
@@ -173,7 +175,9 @@ stop_production() {
   while IFS= read -r pid; do
     [[ -n "${pid}" ]] && backend_pids+=("${pid}")
   done < <(lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true)
-  stop_pids "production backend" "${backend_pids[@]}"
+  if (( ${#backend_pids[@]} > 0 )); then
+    stop_pids "production backend" "${backend_pids[@]}"
+  fi
 
   if lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Production backend port ${BACKEND_PORT} is still occupied." >&2
@@ -194,7 +198,9 @@ cleanup() {
     while IFS= read -r pid; do
       [[ -n "${pid}" ]] && app_pids+=("${pid}")
     done < <(production_app_pids)
-    stop_pids "failed replacement app" "${app_pids[@]}" >/dev/null 2>&1 || true
+    if (( ${#app_pids[@]} > 0 )); then
+      stop_pids "failed replacement app" "${app_pids[@]}" >/dev/null 2>&1 || true
+    fi
     launchctl bootout "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1 || true
     rm -rf "${APP_PATH}" 2>/dev/null || true
     mv "${OLD_APP}" "${APP_PATH}" 2>/dev/null || true

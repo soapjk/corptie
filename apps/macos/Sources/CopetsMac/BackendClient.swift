@@ -548,7 +548,7 @@ final class BackendClient: ObservableObject {
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             throw URLError(.badServerResponse)
         }
-        return try JSONDecoder().decode(SessionsResponse.self, from: data).sessions
+        return try await BackendResponseDecoder.sessions(from: data)
     }
 
     func refreshArchivedSessions() async {
@@ -1698,7 +1698,7 @@ final class BackendClient: ObservableObject {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
-            let detail = try decodeDetail(data, for: session, threadId: threadId)
+            let detail = try await decodeDetail(data, for: session, threadId: threadId)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
             detailCacheBySessionId[session.id] = mergedDetail
             if lastError != nil {
@@ -1768,8 +1768,8 @@ final class BackendClient: ObservableObject {
             return
         }
         do {
-            let decoded = try JSONDecoder().decode(CodexThreadDetailResponse.self, from: payload)
-            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decoded.thread)))
+            let decodedDetail = try await BackendResponseDecoder.streamedDetail(from: payload)
+            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decodedDetail)))
             publishSelectedDetailIfSafe(mergedDetail)
             if let selectedSession {
                 detailCacheBySessionId[selectedSession.id] = mergedDetail
@@ -1811,7 +1811,7 @@ final class BackendClient: ObservableObject {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
-            let detail = try decodeDetail(data, for: session, threadId: threadId)
+            let detail = try await decodeDetail(data, for: session, threadId: threadId)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
             publishSelectedDetailIfSafe(mergedDetail)
             detailCacheBySessionId[session.id] = mergedDetail
@@ -1824,32 +1824,12 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) throws -> CodexThreadDetail {
-        if isPtyProvider(session.external?.provider) {
-            return try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data).thread
-        }
-
-        let snapshot = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: data).session
-        // The unified endpoint identifies the envelope by Corptie Session ID.
-        // Internally this client keys optimistic messages and detail merging by
-        // the provider thread ID, so retain that stable identity here.
-        return CodexThreadDetail(
-            id: threadId,
-            title: snapshot.title,
-            status: snapshot.status,
-            source: snapshot.source,
-            connectionStatus: snapshot.connectionStatus,
-            currentModel: snapshot.currentModel,
-            currentReasoningLevel: snapshot.currentReasoningLevel,
-            activityStatus: snapshot.activityStatus,
-            cwd: snapshot.cwd,
-            createdAt: snapshot.createdAt,
-            updatedAt: snapshot.updatedAt,
-            canSend: snapshot.canSend,
-            sendUnavailableReason: snapshot.sendUnavailableReason,
-            capabilities: snapshot.capabilities,
-            turnCount: snapshot.turnCount,
-            items: snapshot.items
+    private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) async throws -> CodexThreadDetail {
+        try await BackendResponseDecoder.detail(
+            from: data,
+            isPtyProvider: isPtyProvider(session.external?.provider),
+            threadId: threadId,
+            authoritativeCwd: session.external?.cwd
         )
     }
 
@@ -1895,7 +1875,7 @@ final class BackendClient: ObservableObject {
                     connectionStatus: detail.connectionStatus ?? session.external?.connectionStatus,
                     currentModel: detail.currentModel ?? session.external?.currentModel,
                     currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel,
-                    cwd: detail.cwd ?? session.external?.cwd,
+                    cwd: session.external?.cwd ?? detail.cwd,
                     sandbox: session.external?.sandbox,
                     approvalPolicy: session.external?.approvalPolicy,
                     source: session.external?.source ?? detail.source
