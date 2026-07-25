@@ -2,18 +2,28 @@ import Foundation
 import SwiftUI
 
 struct DefaultAvatarGradientStyle: Equatable, Hashable {
+    let familyHue: Int
     let primaryHue: Int
     let hueSpan: Int
     let directionIndex: Int
+    let toneIndex: Int
 
     static func make(seed: String) -> DefaultAvatarGradientStyle {
-        let normalized = normalizedSeed(seed)
-        let coordinate = prefixCoordinate(normalized)
-        let prefixHash = stableHash(String(normalized.prefix(4)))
+        make(familySeed: seed, variationSeed: seed)
+    }
+
+    static func make(familySeed: String, variationSeed: String) -> DefaultAvatarGradientStyle {
+        let familyHash = stableHash(normalizedSeed(familySeed))
+        let variationHash = stableHash(normalizedSeed(variationSeed))
+        let familyHue = Int(familyHash % 3_600)
+        let variantIndex = Int(variationHash % UInt64(hueOffsets.count))
+        let primaryHue = positiveModulo(familyHue + hueOffsets[variantIndex], 3_600)
         return DefaultAvatarGradientStyle(
-            primaryHue: Int((coordinate * 3_600).rounded()) % 3_600,
-            hueSpan: 520 + Int(prefixHash % 420),
-            directionIndex: Int((prefixHash >> 12) % UInt64(directions.count))
+            familyHue: familyHue,
+            primaryHue: primaryHue,
+            hueSpan: 360 + Int((familyHash >> 12) % 160),
+            directionIndex: Int((variationHash >> 16) % UInt64(directions.count)),
+            toneIndex: Int((variationHash >> 24) % UInt64(tones.count))
         )
     }
 
@@ -21,16 +31,26 @@ struct DefaultAvatarGradientStyle: Equatable, Hashable {
         let middleHue = (primaryHue + hueSpan / 2) % 3_600
         let secondaryHue = (primaryHue + hueSpan) % 3_600
         let direction = Self.directions[directionIndex]
+        let tone = Self.tones[toneIndex]
         return LinearGradient(
             colors: [
-                Self.color(hue: primaryHue, saturation: 0.68, brightness: 0.94),
-                Self.color(hue: middleHue, saturation: 0.72, brightness: 0.86),
-                Self.color(hue: secondaryHue, saturation: 0.76, brightness: 0.76)
+                Self.color(hue: primaryHue, saturation: tone.saturation - 0.04, brightness: tone.brightness + 0.08),
+                Self.color(hue: middleHue, saturation: tone.saturation, brightness: tone.brightness),
+                Self.color(hue: secondaryHue, saturation: tone.saturation + 0.04, brightness: tone.brightness - 0.10)
             ],
             startPoint: direction.start,
             endPoint: direction.end
         )
     }
+
+    // Variants stay within a 54-degree workspace family, while adjacent slots
+    // remain 18 degrees apart so sessions do not collapse into near-identical hues.
+    private static let hueOffsets = [-270, -90, 90, 270]
+
+    private static let tones: [(saturation: Double, brightness: Double)] = [
+        (0.68, 0.84),
+        (0.80, 0.78)
+    ]
 
     private static let directions: [(start: UnitPoint, end: UnitPoint)] = [
         (.topLeading, .bottomTrailing),
@@ -46,26 +66,25 @@ struct DefaultAvatarGradientStyle: Equatable, Hashable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .precomposedStringWithCanonicalMapping
-            .filter { $0.isLetter || $0.isNumber }
         return normalized.isEmpty ? "defaultavatar" : normalized
     }
 
-    private static func prefixCoordinate(_ seed: String) -> Double {
-        var coordinate = 0.0
-        var weight = 0.5
-        for scalar in seed.unicodeScalars.prefix(18) {
-            let mixed = UInt64(scalar.value) &* 11_400_714_819_323_198_485 &+ 7_046_029_254_386_353_131
-            let unitValue = Double((mixed ^ (mixed >> 29)) % 10_000) / 10_000
-            coordinate += unitValue * weight
-            weight *= 0.5
-        }
-        return coordinate.truncatingRemainder(dividingBy: 1)
+    private static func positiveModulo(_ value: Int, _ divisor: Int) -> Int {
+        let remainder = value % divisor
+        return remainder >= 0 ? remainder : remainder + divisor
     }
 
     private static func stableHash(_ seed: String) -> UInt64 {
-        seed.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { hash, byte in
+        let hash = seed.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { hash, byte in
             (hash ^ UInt64(byte)) &* 1_099_511_628_211
         }
+        var mixed = hash
+        mixed ^= mixed >> 30
+        mixed &*= 0xbf58_476d_1ce4_e5b9
+        mixed ^= mixed >> 27
+        mixed &*= 0x94d0_49bb_1331_11eb
+        mixed ^= mixed >> 31
+        return mixed
     }
 
     private static func color(hue: Int, saturation: Double, brightness: Double) -> Color {
@@ -78,14 +97,36 @@ struct DefaultAvatarGradientStyle: Equatable, Hashable {
 }
 
 struct DefaultInitialAvatarView: View {
-    let seed: String
+    let familySeed: String
+    let variationSeed: String
     let initials: String
     let size: CGFloat
+
+    init(seed: String, initials: String, size: CGFloat) {
+        self.init(
+            familySeed: seed,
+            variationSeed: seed,
+            initials: initials,
+            size: size
+        )
+    }
+
+    init(familySeed: String, variationSeed: String, initials: String, size: CGFloat) {
+        self.familySeed = familySeed
+        self.variationSeed = variationSeed
+        self.initials = initials
+        self.size = size
+    }
 
     var body: some View {
         ZStack {
             Circle()
-                .fill(DefaultAvatarGradientStyle.make(seed: seed).gradient)
+                .fill(
+                    DefaultAvatarGradientStyle.make(
+                        familySeed: familySeed,
+                        variationSeed: variationSeed
+                    ).gradient
+                )
             Circle()
                 .fill(
                     RadialGradient(

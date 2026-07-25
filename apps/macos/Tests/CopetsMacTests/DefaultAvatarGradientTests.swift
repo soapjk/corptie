@@ -13,16 +13,38 @@ final class DefaultAvatarGradientTests: XCTestCase {
         )
     }
 
-    func testSharedNamePrefixesStayInTheSameColorFamily() {
-        let corptie = DefaultAvatarGradientStyle.make(seed: "corptie_agent")
-        let corptieChild = DefaultAvatarGradientStyle.make(seed: "corptie_agent_1")
-        let marketcow = DefaultAvatarGradientStyle.make(seed: "marketcow_agent")
-        let marketcowVisualization = DefaultAvatarGradientStyle.make(seed: "marketcow_visualization_agent")
+    func testWorkspaceDefinesTheColorFamily() {
+        let first = DefaultAvatarGradientStyle.make(
+            familySeed: "/Volumes/T9/projects/corptie",
+            variationSeed: "session-1"
+        )
+        let second = DefaultAvatarGradientStyle.make(
+            familySeed: "/Volumes/T9/projects/corptie",
+            variationSeed: "session-2"
+        )
+        let otherWorkspace = DefaultAvatarGradientStyle.make(
+            familySeed: "/Volumes/T9/projects/marketcow",
+            variationSeed: "session-1"
+        )
 
-        XCTAssertLessThanOrEqual(hueDistance(corptie.primaryHue, corptieChild.primaryHue), 8)
-        XCTAssertLessThanOrEqual(hueDistance(marketcow.primaryHue, marketcowVisualization.primaryHue), 70)
-        XCTAssertEqual(corptie.hueSpan, corptieChild.hueSpan)
-        XCTAssertEqual(marketcow.directionIndex, marketcowVisualization.directionIndex)
+        XCTAssertEqual(first.familyHue, second.familyHue)
+        XCTAssertEqual(first.hueSpan, second.hueSpan)
+        XCTAssertNotEqual(first.familyHue, otherWorkspace.familyHue)
+    }
+
+    func testSessionsInTheSameWorkspaceUseSeparatedVariants() {
+        let first = DefaultAvatarGradientStyle.make(
+            familySeed: "/Volumes/T9/projects/corptie",
+            variationSeed: "session-1"
+        )
+        let second = DefaultAvatarGradientStyle.make(
+            familySeed: "/Volumes/T9/projects/corptie",
+            variationSeed: "session-2"
+        )
+
+        XCTAssertGreaterThanOrEqual(hueDistance(first.primaryHue, second.primaryHue), 180)
+        XCTAssertLessThanOrEqual(hueDistance(first.primaryHue, first.familyHue), 270)
+        XCTAssertLessThanOrEqual(hueDistance(second.primaryHue, second.familyHue), 270)
     }
 
     func testDifferentPrefixesStillProduceAUsefulRangeOfColors() {
