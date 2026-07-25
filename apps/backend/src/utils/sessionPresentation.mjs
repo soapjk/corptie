@@ -12,6 +12,7 @@ export function mergeStoredSessionPresentation(session, stored) {
     suggestedOptions: stored.suggestedOptions ?? session.suggestedOptions ?? null,
     external: {
       ...(session.external ?? {}),
+      cwd: nonEmptyText(stored.external?.cwd) || session.external?.cwd,
       sandbox: stored.external?.sandbox ?? session.external?.sandbox,
       approvalPolicy: stored.external?.approvalPolicy ?? session.external?.approvalPolicy
     }
@@ -22,6 +23,13 @@ export function preferredSessionTitle(summary, detail) {
   return nonEmptyText(summary?.title)
     || nonEmptyText(detail?.title)
     || "Untitled session";
+}
+
+export function preferredSessionCwd(summary, detail) {
+  return nonEmptyText(summary?.external?.cwd)
+    || nonEmptyText(summary?.cwd)
+    || nonEmptyText(detail?.cwd)
+    || null;
 }
 
 export function reconcileAuthoritativeRunState(session, status) {

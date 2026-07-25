@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_BIN="${ROOT_DIR}/apps/macos/.build/arm64-apple-macosx/debug/CorptieMac"
 APP_LOG="${CORPTIE_APP_LOG:-/private/tmp/corptie-dev/app.log}"
 BACKEND_LOG="${CORPTIE_BACKEND_LOG:-/private/tmp/corptie-dev/backend.log}"
-BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47322}"
+BACKEND_PORT="${CORPTIE_DEVELOPMENT_BACKEND_PORT:-47322}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}/health"
 PRODUCTION_BACKEND_PORT=47321
 

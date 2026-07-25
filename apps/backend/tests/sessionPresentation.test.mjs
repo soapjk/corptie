@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   composeStoredSessionList,
   mergeStoredSessionPresentation,
+  preferredSessionCwd,
   preferredSessionTitle,
   reconcileAuthoritativeRunState
 } from "../src/utils/sessionPresentation.mjs";
@@ -33,6 +34,24 @@ test("stored Codex permissions survive merging with a resumed thread", () => {
   assert.equal(merged.external.threadId, "thread-a");
 });
 
+test("the stored project path survives a provider refresh with a process directory", () => {
+  const merged = mergeStoredSessionPresentation(
+    {
+      id: "codex:thread-a",
+      external: {
+        provider: "codex-app-server",
+        cwd: "/Applications/Corptie.app/Contents/Resources/backend"
+      }
+    },
+    {
+      id: "codex:thread-a",
+      external: { cwd: "/Volumes/T9/projects/corptie" }
+    }
+  );
+
+  assert.equal(merged.external.cwd, "/Volumes/T9/projects/corptie");
+});
+
 test("a gateway snapshot prefers the Corptie summary title over detail title", () => {
   assert.equal(
     preferredSessionTitle(
@@ -47,6 +66,23 @@ test("a gateway snapshot falls back to the provider title when no local title ex
   assert.equal(
     preferredSessionTitle({ title: " " }, { title: "Provider title" }),
     "Provider title"
+  );
+});
+
+test("a gateway snapshot keeps the saved project path when provider detail reports its process directory", () => {
+  assert.equal(
+    preferredSessionCwd(
+      { external: { cwd: "/Volumes/T9/projects/corptie" } },
+      { cwd: "/Applications/Corptie.app/Contents/Resources/backend" }
+    ),
+    "/Volumes/T9/projects/corptie"
+  );
+});
+
+test("a gateway snapshot uses the provider path only when no saved project path exists", () => {
+  assert.equal(
+    preferredSessionCwd({}, { cwd: "/Volumes/T9/projects/new-project" }),
+    "/Volumes/T9/projects/new-project"
   );
 });
 

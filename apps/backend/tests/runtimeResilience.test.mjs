@@ -6,7 +6,11 @@ import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "../src/utils/c
 test("collaboration MCP names are stable and isolated per Agent", () => {
   assert.equal(collaborationMcpServerName("agent-a"), collaborationMcpServerName("agent-a"));
   assert.notEqual(collaborationMcpServerName("agent-a"), collaborationMcpServerName("agent-b"));
-  assert.match(collaborationMcpServerName("agent-a"), /^corptie-collaboration-[a-f0-9]{12}$/);
+  assert.match(collaborationMcpServerName("agent-a"), /^ctc-[a-f0-9]{12}$/);
+  assert.ok(
+    `mcp__${collaborationMcpServerName("agent-a").replaceAll("-", "_")}__corptie_collaboration_request`.length < 64,
+    "the longest collaboration tool name must remain below the provider boundary"
+  );
 });
 
 test("choice parser rate limits receive a long provider backoff", () => {

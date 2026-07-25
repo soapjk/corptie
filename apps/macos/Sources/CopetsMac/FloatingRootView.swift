@@ -30,6 +30,7 @@ struct FloatingRootView: View {
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
     @State private var detailPreheatTasks: [String: Task<Void, Never>] = [:]
     @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var listHeightMeasurements: [ListHeightMetric: CGFloat] = [:]
     @State private var isSearching = false
     @State private var searchText = ""
@@ -53,7 +54,8 @@ struct FloatingRootView: View {
                 if let selectedSession = backendClient.selectedSession {
                     DetailView(
                         sessionId: selectedSession.id,
-                        preheatedDisplayCache: detailDisplayCacheBySessionId[selectedSession.id]
+                        preheatedDisplayCache: detailDisplayCacheBySessionId[selectedSession.id],
+                        composerDraftRepository: composerDraftRepository
                     )
                         .transition(.opacity)
                 } else {
@@ -2512,8 +2514,9 @@ private struct TaskCardView: View {
                 if let activityStatus = session.activityStatus,
                    !activityStatus.isEmpty,
                    session.status == .running {
-                    ActivityStatusText(text: activityStatus, isActive: true)
-                        .font(.system(size: 11, weight: .semibold))
+                    ActivityStatusText(text: activityStatus, isActive: true, fontSize: 11)
+                        .frame(height: 14)
+                        .layoutPriority(-1)
                 }
 
                 Text(relativeTime(session.updatedAt))
@@ -3113,7 +3116,6 @@ private struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     static let initialVisibleMessageLimit = 7
-    @State private var message = ""
     @State private var didInitialScroll = false
     @State private var visibleMessageLimit = initialVisibleMessageLimit
     @State private var cachedDisplayItems: [CodexThreadItem] = []
@@ -3136,6 +3138,7 @@ private struct DetailView: View {
     @State private var hasNewMessagesBelow = false
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
+    let composerDraftRepository: ComposerDraftRepository
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -3188,7 +3191,11 @@ private struct DetailView: View {
                 && backendClient.selectedDetail?.capabilities?.canInterrupt != true {
                 ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
             } else {
-                MessageComposer(message: $message)
+                MessageComposer(
+                    sessionId: sessionId,
+                    draftRepository: composerDraftRepository
+                )
+                    .id(sessionId)
             }
         }
         .padding(1)
@@ -4250,7 +4257,12 @@ private struct ThreadMetaView: View {
                 Text(detail.status.label)
                     .foregroundStyle(detail.status.color)
                 if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
-                    ActivityStatusText(text: activityStatus, isActive: detail.status == .running)
+                    ActivityStatusText(
+                        text: activityStatus,
+                        isActive: detail.status == .running,
+                        fontSize: 9
+                    )
+                        .layoutPriority(-1)
                 }
             }
 
@@ -4321,77 +4333,6 @@ struct ConnectionIndicatorLight: View {
                 }
             }
         }
-    }
-}
-
-private struct ActivityStatusText: View {
-    let text: String
-    let isActive: Bool
-    @State private var shimmerPhase = false
-
-    var body: some View {
-        baseText
-            .foregroundStyle(isActive ? AnyShapeStyle(activeGradient) : AnyShapeStyle(idleColor))
-            .overlay(shimmerOverlay)
-            .onAppear {
-                if isActive {
-                    withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
-                        shimmerPhase = true
-                    }
-                }
-            }
-            .onChange(of: isActive) { _, value in
-                shimmerPhase = false
-                if value {
-                    withAnimation(.linear(duration: 1.45).repeatForever(autoreverses: false)) {
-                        shimmerPhase = true
-                    }
-                }
-            }
-    }
-
-    private var baseText: some View {
-        Text(text)
-            .lineLimit(1)
-            .truncationMode(.tail)
-    }
-
-    @ViewBuilder
-    private var shimmerOverlay: some View {
-        if isActive {
-            GeometryReader { proxy in
-                LinearGradient(
-                    colors: [
-                        .clear,
-                        .white.opacity(0.85),
-                        .clear
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-                .frame(width: max(42, proxy.size.width * 0.38))
-                .offset(x: shimmerPhase ? proxy.size.width + 28 : -proxy.size.width * 0.55)
-                .blendMode(.screen)
-                .allowsHitTesting(false)
-            }
-            .mask(baseText)
-        }
-    }
-
-    private var activeGradient: LinearGradient {
-        LinearGradient(
-            colors: [
-                CorptiePalette.connected,
-                CorptiePalette.softBlue,
-                CorptiePalette.periwinkle
-            ],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-    }
-
-    private var idleColor: Color {
-        .secondary
     }
 }
 
@@ -5561,19 +5502,34 @@ private struct AgentMessageParts {
 
 private struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @Binding var message: String
+    let sessionId: String
+    let draftRepository: ComposerDraftRepository
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
+    @State private var editorController: ComposerEditorController
+    @State private var hasSendableText: Bool
+
+    init(sessionId: String, draftRepository: ComposerDraftRepository) {
+        self.sessionId = sessionId
+        self.draftRepository = draftRepository
+        let draft = draftRepository.draft(for: sessionId)
+        _editorController = State(initialValue: ComposerEditorController(draft: draft))
+        _hasSendableText = State(initialValue: draft.hasSendableText)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             HStack(spacing: 6) {
-                ChatInputTextView(
-                    text: $message,
+                ComposerInputTextView(
+                    controller: editorController,
                     placeholder: "Send a instruction",
                     font: .systemFont(ofSize: 12, weight: .medium),
-                    isEditable: true,
                     onFocusChange: { isFocused = $0 },
+                    onSendableTextChange: { nextValue in
+                        if hasSendableText != nextValue {
+                            hasSendableText = nextValue
+                        }
+                    },
                     onSubmit: send
                 )
                     .frame(height: 32)
@@ -5588,7 +5544,7 @@ private struct MessageComposer: View {
                     if isRunningTurn {
                         backendClient.interruptSelectedSession()
                     } else {
-                        send()
+                        sendCurrentDraft()
                     }
                 } label: {
                     if backendClient.isSendingMessage {
@@ -5639,13 +5595,22 @@ private struct MessageComposer: View {
         }
     }
 
-    private func send() {
-        guard backendClient.selectedDetail?.canSend != false else {
+    private func sendCurrentDraft() {
+        guard let submission = editorController.submission() else {
             return
         }
-        let text = message
-        backendClient.sendMessage(text) {
-            message = ""
+        send(submission)
+    }
+
+    private func send(_ submission: ComposerDraftBuffer.Submission) {
+        guard backendClient.selectedDetail?.canSend != false,
+              !backendClient.isSendingMessage else {
+            return
+        }
+        backendClient.sendMessage(submission.text) {
+            if editorController.clear(ifUnchangedSince: submission) {
+                hasSendableText = false
+            }
         }
     }
 
@@ -5658,7 +5623,7 @@ private struct MessageComposer: View {
         if isRunningTurn {
             return backendClient.isSendingMessage
         }
-        return message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return !hasSendableText
             || backendClient.isSendingMessage
             || backendClient.selectedDetail?.canSend == false
     }
@@ -5862,6 +5827,193 @@ private struct CodexModelMenu: View {
         case "high": L10n("Greater reasoning depth")
         case "xhigh": L10n("Extra high reasoning depth")
         default: value
+        }
+    }
+}
+
+private struct ComposerInputTextView: NSViewRepresentable {
+    let controller: ComposerEditorController
+    let placeholder: String
+    let font: NSFont
+    var textInsetHeight: CGFloat = 6
+    var onFocusChange: (Bool) -> Void = { _ in }
+    var onSendableTextChange: (Bool) -> Void = { _ in }
+    let onSubmit: (ComposerDraftBuffer.Submission) -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+
+        let textView = ComposerSubmitTextView()
+        textView.delegate = context.coordinator
+        textView.placeholder = placeholder
+        textView.font = font
+        textView.drawsBackground = false
+        textView.isRichText = false
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainerInset = NSSize(width: 0, height: textInsetHeight)
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.widthTracksTextView = true
+        textView.autoresizingMask = [.width]
+        textView.string = controller.draft.text
+        textView.onFocusChange = onFocusChange
+        textView.onSubmit = context.coordinator.submit
+
+        scrollView.documentView = textView
+        controller.attach(textView)
+        context.coordinator.attach(textView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? ComposerSubmitTextView else {
+            return
+        }
+        context.coordinator.update(
+            controller: controller,
+            onFocusChange: onFocusChange,
+            onSendableTextChange: onSendableTextChange,
+            onSubmit: onSubmit
+        )
+        textView.placeholder = placeholder
+        textView.font = font
+        textView.textContainerInset = NSSize(width: 0, height: textInsetHeight)
+        textView.onFocusChange = onFocusChange
+        textView.onSubmit = context.coordinator.submit
+        controller.attach(textView)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            controller: controller,
+            onFocusChange: onFocusChange,
+            onSendableTextChange: onSendableTextChange,
+            onSubmit: onSubmit
+        )
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        private var controller: ComposerEditorController
+        private var onFocusChange: (Bool) -> Void
+        private var onSendableTextChange: (Bool) -> Void
+        private var onSubmit: (ComposerDraftBuffer.Submission) -> Void
+        private var lastSendableState: Bool
+
+        init(
+            controller: ComposerEditorController,
+            onFocusChange: @escaping (Bool) -> Void,
+            onSendableTextChange: @escaping (Bool) -> Void,
+            onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
+        ) {
+            self.controller = controller
+            self.onFocusChange = onFocusChange
+            self.onSendableTextChange = onSendableTextChange
+            self.onSubmit = onSubmit
+            lastSendableState = controller.draft.hasSendableText
+        }
+
+        func attach(_ textView: ComposerSubmitTextView) {
+            textView.onFocusChange = onFocusChange
+            textView.onSubmit = submit
+        }
+
+        func update(
+            controller: ComposerEditorController,
+            onFocusChange: @escaping (Bool) -> Void,
+            onSendableTextChange: @escaping (Bool) -> Void,
+            onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
+        ) {
+            self.controller = controller
+            self.onFocusChange = onFocusChange
+            self.onSendableTextChange = onSendableTextChange
+            self.onSubmit = onSubmit
+            lastSendableState = controller.draft.hasSendableText
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else {
+                return
+            }
+            controller.recordEditorText(textView.string)
+            let nextSendableState = controller.draft.hasSendableText
+            guard nextSendableState != lastSendableState else {
+                return
+            }
+            lastSendableState = nextSendableState
+            onSendableTextChange(nextSendableState)
+        }
+
+        func submit() {
+            guard let submission = controller.submission() else {
+                return
+            }
+            onSubmit(submission)
+        }
+    }
+
+    final class ComposerSubmitTextView: NSTextView {
+        var onSubmit: (() -> Void)?
+        var onFocusChange: ((Bool) -> Void)?
+        var placeholder = "" {
+            didSet {
+                needsDisplay = true
+            }
+        }
+
+        override func keyDown(with event: NSEvent) {
+            let isReturn = event.keyCode == 36 || event.keyCode == 76
+            let wantsNewline = event.modifierFlags.contains(.shift)
+            if isReturn, hasMarkedText() {
+                super.keyDown(with: event)
+                return
+            }
+            if isReturn && !wantsNewline {
+                onSubmit?()
+                return
+            }
+            super.keyDown(with: event)
+        }
+
+        override func becomeFirstResponder() -> Bool {
+            let result = super.becomeFirstResponder()
+            if result {
+                onFocusChange?(true)
+            }
+            return result
+        }
+
+        override func resignFirstResponder() -> Bool {
+            let result = super.resignFirstResponder()
+            if result {
+                onFocusChange?(false)
+            }
+            return result
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            guard string.isEmpty, !placeholder.isEmpty else {
+                return
+            }
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font ?? NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+            let textSize = placeholder.size(withAttributes: attributes)
+            let centeredY = max(0, (bounds.height - textSize.height) / 2)
+            let origin = NSPoint(x: textContainerInset.width, y: centeredY)
+            placeholder.draw(at: origin, withAttributes: attributes)
         }
     }
 }

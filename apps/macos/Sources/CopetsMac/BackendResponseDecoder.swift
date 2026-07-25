@@ -1,0 +1,63 @@
+import Foundation
+
+enum BackendResponseDecoder {
+    static func sessions(from data: Data) async throws -> [TaskSession] {
+        try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(SessionsResponse.self, from: data).sessions
+        }.value
+    }
+
+    static func detail(
+        from data: Data,
+        isPtyProvider: Bool,
+        threadId: String,
+        authoritativeCwd: String?
+    ) async throws -> CodexThreadDetail {
+        try await Task.detached(priority: .userInitiated) {
+            if isPtyProvider {
+                return try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data).thread
+            }
+
+            let snapshot = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: data).session
+            return CodexThreadDetail(
+                id: threadId,
+                title: snapshot.title,
+                status: snapshot.status,
+                source: snapshot.source,
+                connectionStatus: snapshot.connectionStatus,
+                currentModel: snapshot.currentModel,
+                currentReasoningLevel: snapshot.currentReasoningLevel,
+                activityStatus: snapshot.activityStatus,
+                cwd: preferredWorkspacePath(
+                    authoritativePath: authoritativeCwd,
+                    providerPath: snapshot.cwd
+                ),
+                createdAt: snapshot.createdAt,
+                updatedAt: snapshot.updatedAt,
+                canSend: snapshot.canSend,
+                sendUnavailableReason: snapshot.sendUnavailableReason,
+                capabilities: snapshot.capabilities,
+                turnCount: snapshot.turnCount,
+                items: snapshot.items
+            )
+        }.value
+    }
+
+    static func preferredWorkspacePath(
+        authoritativePath: String?,
+        providerPath: String?
+    ) -> String? {
+        let saved = authoritativePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let saved, !saved.isEmpty {
+            return saved
+        }
+        let provider = providerPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return provider?.isEmpty == false ? provider : nil
+    }
+
+    static func streamedDetail(from data: Data) async throws -> CodexThreadDetail {
+        try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data).thread
+        }.value
+    }
+}
