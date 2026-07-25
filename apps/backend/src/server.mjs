@@ -35,6 +35,7 @@ import {
 } from "./utils/sessionPresentation.mjs";
 import {
   assertSessionTitleAvailable,
+  defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   normalizeSessionTitle,
   suggestAvailableSessionTitle
@@ -156,7 +157,7 @@ function sessionTitleForWorkspace(value, cwd) {
   if (title) {
     return title;
   }
-  return basename(resolve(cwd)) || "Agent";
+  return defaultSessionTitleForWorkspace(cwd);
 }
 
 function knownSessionsForTitleValidation() {

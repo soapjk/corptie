@@ -2178,7 +2178,7 @@ private struct NewPtyAgentTaskSheet: View {
     private func startSelectedAgent(titleOverride: String? = nil) {
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let finalTitle = titleOverride ?? (trimmedTitle.isEmpty ? workspaceFolderName(workspace) : trimmedTitle)
+        let finalTitle = titleOverride ?? (trimmedTitle.isEmpty ? defaultSessionTitle(for: workspace) : trimmedTitle)
         if trimmedCommand == "codex" {
             backendClient.createCodexPtyTask(
                 title: finalTitle,
@@ -2220,12 +2220,12 @@ private struct NewPtyAgentTaskSheet: View {
 
     private var defaultSessionTitle: String {
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
-        return workspaceFolderName(workspace)
+        return defaultSessionTitle(for: workspace)
     }
 
-    private func workspaceFolderName(_ path: String) -> String {
+    private func defaultSessionTitle(for path: String) -> String {
         let folderName = URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
-        return folderName.isEmpty ? "Agent" : folderName
+        return folderName.isEmpty ? "Agent" : "\(folderName)_agent"
     }
 
     private func splitArguments(_ value: String) -> [String] {
