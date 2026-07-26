@@ -1489,7 +1489,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         private var initialMouseScreenPoint: NSPoint?
         private var initialWindowOrigin: NSPoint?
         private var didDrag = false
-        private var openedOnMouseDown = false
+        private var pendingSingleClick: DispatchWorkItem?
 
         override var acceptsFirstResponder: Bool {
             true
@@ -1513,16 +1513,12 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
-            let shouldOpenImmediately = !NSApp.isActive || !window.isKeyWindow
+            pendingSingleClick?.cancel()
+            pendingSingleClick = nil
             initialMouseScreenPoint = NSEvent.mouseLocation
             initialWindowOrigin = window.frame.origin
             didDrag = false
-            openedOnMouseDown = false
             window.makeKey()
-            if shouldOpenImmediately {
-                openedOnMouseDown = true
-                open?()
-            }
         }
 
         override func mouseDragged(with event: NSEvent) {
@@ -1549,16 +1545,32 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
-            if !didDrag && !openedOnMouseDown {
-                open?()
+            switch DetachedOrbClickBehavior.action(clickCount: event.clickCount, didDrag: didDrag) {
+            case .none:
+                break
+            case .schedulePrimary:
+                let workItem = DispatchWorkItem { [weak self] in
+                    self?.open?()
+                    self?.pendingSingleClick = nil
+                }
+                pendingSingleClick = workItem
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + NSEvent.doubleClickInterval,
+                    execute: workItem
+                )
+            case .openSession:
+                pendingSingleClick?.cancel()
+                pendingSingleClick = nil
+                openSessionAction?()
             }
             initialMouseScreenPoint = nil
             initialWindowOrigin = nil
             didDrag = false
-            openedOnMouseDown = false
         }
 
         override func rightMouseDown(with event: NSEvent) {
+            pendingSingleClick?.cancel()
+            pendingSingleClick = nil
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: L10n("Show Main Window"), action: #selector(showMain), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: L10n("Open Session"), action: #selector(openSession), keyEquivalent: ""))
