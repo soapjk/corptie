@@ -2304,7 +2304,7 @@ function route(request, response) {
     sendJson(response, 200, {
       ok: true,
       service: "corptie-backend",
-      version: "0.5.1",
+      version: "0.5.2",
       time: now()
     });
     return;
