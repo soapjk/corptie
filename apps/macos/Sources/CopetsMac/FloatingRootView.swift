@@ -4321,6 +4321,7 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 private struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var didCopySessionName = false
+    @State private var gitBranchName: String?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -4341,23 +4342,29 @@ private struct DetailHeaderView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                Button(action: copySelectedSessionName) {
-                    HStack(spacing: 5) {
-                        Text(backendClient.selectedSession?.title ?? "Codex thread")
-                            .lineLimit(1)
-                        if didCopySessionName {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(CorptiePalette.connected)
-                                .transition(.opacity.combined(with: .scale))
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Button(action: copySelectedSessionName) {
+                        HStack(spacing: 5) {
+                            Text(backendClient.selectedSession?.title ?? "Codex thread")
+                                .lineLimit(1)
+                            if didCopySessionName {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(CorptiePalette.connected)
+                                    .transition(.opacity.combined(with: .scale))
+                            }
                         }
+                        .font(.system(size: 15, weight: .semibold))
+                        .contentShape(Rectangle())
                     }
-                    .font(.system(size: 15, weight: .semibold))
-                    .contentShape(Rectangle())
+                    .buttonStyle(.plain)
+                    .help(L10n("Copy session name"))
+                    .accessibilityLabel(L10n("Copy session name"))
+
+                    if let gitBranchName {
+                        GitBranchStamp(branchName: gitBranchName)
+                    }
                 }
-                .buttonStyle(.plain)
-                .help(L10n("Copy session name"))
-                .accessibilityLabel(L10n("Copy session name"))
                 if let cwd = backendClient.selectedDetail?.cwd, !cwd.isEmpty {
                     Button {
                         NSWorkspace.shared.open(URL(fileURLWithPath: cwd, isDirectory: true))
@@ -4402,6 +4409,34 @@ private struct DetailHeaderView: View {
                 .help(L10n("Stop current run"))
             }
         }
+        .task(id: workspacePath) {
+            await refreshGitBranch()
+        }
+    }
+
+    private var workspacePath: String? {
+        let detailPath = backendClient.selectedDetail?.cwd?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let detailPath, !detailPath.isEmpty {
+            return detailPath
+        }
+        let sessionPath = backendClient.selectedSession?.external?.cwd?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return sessionPath?.isEmpty == false ? sessionPath : nil
+    }
+
+    private func refreshGitBranch() async {
+        guard let workspacePath else {
+            gitBranchName = nil
+            return
+        }
+        while !Task.isCancelled {
+            let nextBranchName = await GitBranchResolver.branchName(at: workspacePath)
+            if gitBranchName != nextBranchName {
+                gitBranchName = nextBranchName
+            }
+            try? await Task.sleep(for: .seconds(3))
+        }
     }
 
     private var canInterruptCurrentRun: Bool {
@@ -4422,6 +4457,28 @@ private struct DetailHeaderView: View {
                 didCopySessionName = false
             }
         }
+    }
+}
+
+private struct GitBranchStamp: View {
+    let branchName: String
+
+    var body: some View {
+        Text(branchName)
+            .font(.system(size: 7.5, weight: .bold, design: .monospaced))
+            .foregroundStyle(Color.white)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.78), lineWidth: 0.75)
+            }
+            .offset(y: -4)
+            .help(branchName)
+            .accessibilityLabel(L10nFormat("Git branch: %@", branchName))
     }
 }
 

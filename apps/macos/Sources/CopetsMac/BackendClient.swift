@@ -582,8 +582,9 @@ final class BackendClient: ObservableObject {
             }
 
             let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
-            if archivedSessions != decoded.sessions {
-                archivedSessions = decoded.sessions
+            let explicitlyArchivedSessions = decoded.sessions.filter { $0.archived == true }
+            if archivedSessions != explicitlyArchivedSessions {
+                archivedSessions = explicitlyArchivedSessions
             }
             if lastError != nil {
                 lastError = nil

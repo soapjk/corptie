@@ -111,19 +111,48 @@ test("a gateway snapshot uses the provider path only when no saved project path 
   );
 });
 
-test("the archived session list includes stored Codex sessions", () => {
+test("the archived session list includes only explicitly archived sessions", () => {
   const sessions = composeStoredSessionList({
     archived: true,
-    ptySessions: [{ id: "pty:a" }],
-    claudeSessions: [{ id: "claude:a" }],
-    codexSessions: [{ id: "codex:a" }],
+    ptySessions: [{ id: "pty:archived", archived: true }],
+    claudeSessions: [
+      { id: "claude:archived", archived: true },
+      { id: "claude:active", archived: false }
+    ],
+    codexSessions: [
+      { id: "codex:archived", archived: true },
+      { id: "codex:active", archived: false },
+      { id: "codex:history-without-archive-marker" }
+    ],
     mockSessions: [{ id: "mock:a" }]
   });
 
   assert.deepEqual(sessions.map((session) => session.id), [
-    "pty:a",
-    "claude:a",
-    "codex:a"
+    "pty:archived",
+    "claude:archived",
+    "codex:archived"
+  ]);
+});
+
+test("the active session list excludes explicitly archived sessions", () => {
+  const sessions = composeStoredSessionList({
+    archived: false,
+    ptySessions: [
+      { id: "pty:active", archived: false },
+      { id: "pty:archived", archived: true }
+    ],
+    codexSessions: [
+      { id: "codex:active", archived: false },
+      { id: "codex:legacy-active" }
+    ],
+    mockSessions: [{ id: "mock:active" }]
+  });
+
+  assert.deepEqual(sessions.map((session) => session.id), [
+    "pty:active",
+    "codex:active",
+    "codex:legacy-active",
+    "mock:active"
   ]);
 });
 

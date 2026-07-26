@@ -65,12 +65,13 @@ export function composeStoredSessionList({
   codexSessions = [],
   mockSessions = []
 } = {}) {
-  return [
+  const candidates = [
     ...ptySessions,
     ...claudeSessions,
     ...codexSessions,
     ...(archived ? [] : mockSessions)
   ];
+  return candidates.filter((session) => Boolean(session?.archived) === archived);
 }
 
 function nonEmptyText(value) {

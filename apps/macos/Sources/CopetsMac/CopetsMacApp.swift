@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CorptieBackendSupervisor.ensureProductionBackendStarted()
 
         let detachedManager = DetachedSessionManager(client: backendClient, showMain: { [weak self] in
+            self?.backendClient.closeDetail()
             self?.panelController?.show()
         }, isMainVisible: { [weak self] in
             self?.panelController?.isVisible ?? false
