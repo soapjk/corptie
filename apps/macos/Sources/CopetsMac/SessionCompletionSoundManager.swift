@@ -24,6 +24,7 @@ final class SessionCompletionSoundManager {
     ]
 
     private static let storageKey = "corptie.sessionCompletionSounds"
+    private static var activeSound: NSSound?
 
     private let client: BackendClient
     private var cancellables = Set<AnyCancellable>()
@@ -67,6 +68,21 @@ final class SessionCompletionSoundManager {
         options.first { $0.id == soundId } ?? options[0]
     }
 
+    static func previewSound(_ soundId: String) {
+        activeSound?.stop()
+        activeSound = nil
+        let option = option(for: soundId)
+        guard let soundName = option.systemSoundName else {
+            return
+        }
+        if let sound = NSSound(named: NSSound.Name(soundName)) {
+            activeSound = sound
+            sound.play()
+        } else {
+            NSSound.beep()
+        }
+    }
+
     private func handleSessionsUpdate(_ sessions: [TaskSession]) {
         let currentIds = Set(sessions.map(\.id))
         previousStatusesBySessionId = previousStatusesBySessionId.filter { currentIds.contains($0.key) }
@@ -91,15 +107,7 @@ final class SessionCompletionSoundManager {
     }
 
     private func playCompletionSound(for session: TaskSession) {
-        let option = Self.option(for: Self.selectedSoundId(for: session.id))
-        guard let soundName = option.systemSoundName else {
-            return
-        }
-        if let sound = NSSound(named: NSSound.Name(soundName)) {
-            sound.play()
-        } else {
-            NSSound.beep()
-        }
+        Self.previewSound(Self.selectedSoundId(for: session.id))
     }
 
     private static func storedSoundIdsBySessionId() -> [String: String] {
