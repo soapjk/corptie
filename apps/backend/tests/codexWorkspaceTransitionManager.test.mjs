@@ -3,7 +3,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CodexWorkspaceTransitionManager } from "../src/runtime/codexWorkspaceTransitionManager.mjs";
+import {
+  CodexWorkspaceTransitionManager,
+  isForkUnsupported,
+  rewriteWorkspacePath,
+  workspaceHandoffPrompt
+} from "../src/runtime/codexWorkspaceTransitionManager.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 test("workspace transition waits for an active turn then atomically routes a fork", async () => {
@@ -123,6 +128,233 @@ test("invalid fork instruction sources preserve the original route and retain an
   }
 });
 
+test("an unsupported fork falls back to a new thread with a bounded local handoff", async () => {
+  const fixture = await createFixture("handoff-fallback");
+  const calls = [];
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async forkThread() {
+        const error = new Error("thread/fork is an unknown method");
+        error.code = -32601;
+        throw error;
+      },
+      async startThread(options) {
+        calls.push({ method: "startThread", options });
+        return {
+          thread: { id: "thread-handoff", cwd: fixture.feature },
+          cwd: fixture.feature,
+          runtimeWorkspaceRoots: [fixture.feature],
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      },
+      async readThread() {
+        return {
+          thread: {
+            turns: [{
+              id: "turn-7",
+              status: "completed",
+              items: [
+                { type: "userMessage", content: [{ type: "text", text: "Finish the workspace migration." }] },
+                { type: "agentMessage", text: "The registry is complete." }
+              ]
+            }]
+          }
+        };
+      },
+      async startTurn(threadId, prompt, options) {
+        calls.push({ method: "startTurn", threadId, prompt, options });
+        return { turn: { id: "turn-handoff" } };
+      }
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.switchWorkspace({
+      transitionId: "transition:handoff-fallback",
+      logicalSessionId: "logical:one",
+      targetWorktreeId: "worktree:feature",
+      lastCompletedTurnId: "turn-7"
+    });
+    assert.equal(result.status, "committed");
+    assert.equal(result.transition.strategy, "handoff");
+    assert.equal(result.logicalSession.activeThreadId, "thread-handoff");
+    assert.equal(result.event.handoffTurnId, "turn-handoff");
+    assert.deepEqual(calls.map((call) => call.method), ["startThread", "startTurn"]);
+    assert.equal(calls[0].options.cwd, fixture.feature);
+    assert.match(calls[1].prompt, /host-generated local handoff/);
+    assert.match(calls[1].prompt, /Finish the workspace migration/);
+    assert.match(calls[1].prompt, /The registry is complete/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a cross-repository switch uses handoff without attempting a fork", async () => {
+  const fixture = await createFixture("cross-repository");
+  const other = join(fixture.directory, "other repository");
+  await mkdir(other);
+  const otherInstructions = join(other, "AGENTS.md");
+  await writeFile(otherInstructions, "other");
+  fixture.store.upsertGitWorkspaceSnapshot({
+    repository: {
+      id: "repository:two",
+      commonGitDirCanonicalPath: join(other, ".git"),
+      discoveredAt: "2026-07-28T00:00:00.000Z",
+      lastValidatedAt: "2026-07-28T00:00:00.000Z"
+    },
+    inventoryVersion: "inventory:two",
+    observedAt: "2026-07-28T00:00:00.000Z",
+    worktrees: [
+      workspaceRecord("worktree:other", other, join(other, ".git"), true, "main")
+    ]
+  });
+  let forked = false;
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async forkThread() {
+        forked = true;
+        assert.fail("cross-repository switching must not fork");
+      },
+      async startThread() {
+        return {
+          thread: { id: "thread-other", cwd: other },
+          cwd: other,
+          runtimeWorkspaceRoots: [other],
+          instructionSources: [otherInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [other] }
+        };
+      },
+      async readThread() {
+        return { thread: { turns: [{ id: "turn-7", status: "completed", items: [] }] } };
+      },
+      async startTurn() {
+        return { turn: { id: "turn-other-handoff" } };
+      }
+    },
+    requiredInstructionSources: async () => [otherInstructions]
+  });
+
+  try {
+    const result = await manager.switchWorkspace({
+      transitionId: "transition:cross-repository",
+      logicalSessionId: "logical:one",
+      targetWorktreeId: "worktree:other",
+      lastCompletedTurnId: "turn-7"
+    });
+    assert.equal(forked, false);
+    assert.equal(result.transition.strategy, "handoff");
+    assert.equal(result.logicalSession.repositoryId, "repository:two");
+    assert.equal(result.logicalSession.activeWorkspaceId, "worktree:other");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("fork fallback detection and handoff prompt are conservative", () => {
+  assert.equal(isForkUnsupported(Object.assign(new Error("missing"), { code: -32601 })), true);
+  assert.equal(isForkUnsupported(new Error("thread/fork unsupported by server")), true);
+  assert.equal(isForkUnsupported(new Error("thread/fork timed out")), false);
+  const prompt = workspaceHandoffPrompt({
+    turns: [{
+      id: "turn-1",
+      items: [{ type: "userMessage", content: [{ type: "text", text: "Keep going" }] }]
+    }]
+  }, {
+    sourceCwd: "/old",
+    targetCwd: "/new",
+    lastCompletedTurnId: "turn-1"
+  });
+  assert.match(prompt, /not a new user instruction/);
+  assert.match(prompt, /Keep going/);
+});
+
+test("a moved worktree path is rebound in place with updated sandbox roots and instructions", async () => {
+  const fixture = await createFixture("settings-update");
+  const moved = join(fixture.directory, "moved main worktree");
+  await mkdir(moved);
+  const movedInstructions = join(moved, "AGENTS.md");
+  await writeFile(movedInstructions, "moved");
+  fixture.store.upsertGitWorkspaceSnapshot({
+    repository: {
+      id: "repository:one",
+      commonGitDirCanonicalPath: join(fixture.directory, ".git"),
+      discoveredAt: "2026-07-28T00:00:00.000Z",
+      lastValidatedAt: "2026-07-28T00:02:00.000Z"
+    },
+    inventoryVersion: "inventory:moved",
+    observedAt: "2026-07-28T00:02:00.000Z",
+    worktrees: [
+      workspaceRecord("worktree:main", moved, join(fixture.directory, ".git"), true, "main"),
+      workspaceRecord(
+        "worktree:feature",
+        fixture.feature,
+        join(fixture.directory, ".git", "worktrees", "feature"),
+        false,
+        "feature/workspace"
+      )
+    ]
+  });
+  const calls = [];
+  const events = [];
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async updateThreadSettings(threadId, options) {
+        calls.push({ method: "settings", threadId, options });
+        return {};
+      },
+      async resumeThread(threadId, options) {
+        calls.push({ method: "resume", threadId, options });
+        return {
+          thread: { id: threadId, cwd: moved },
+          cwd: moved,
+          runtimeWorkspaceRoots: [moved],
+          instructionSources: [fixture.rootInstructions, movedInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [moved] }
+        };
+      }
+    },
+    requiredInstructionSources: async () => [fixture.rootInstructions, movedInstructions],
+    onRouteCommitted: async (event) => events.push(event)
+  });
+
+  try {
+    const result = await manager.reconcileActiveWorkspacePath("logical:one");
+    assert.equal(result.status, "rebound");
+    assert.equal(result.logicalSession.activeThreadId, "thread-source");
+    assert.equal(result.logicalSession.activeBinding.boundCwd, moved);
+    assert.equal(result.logicalSession.routingVersion, 2);
+    assert.equal(calls[0].method, "settings");
+    assert.deepEqual(calls[0].options.sandboxPolicy.writableRoots, [moved]);
+    assert.equal(calls[1].method, "resume");
+    assert.deepEqual(calls[1].options.runtimeWorkspaceRoots, [moved]);
+    assert.equal(events[0].strategy, "settingsUpdate");
+    assert.equal(events[0].previousCwd, fixture.main);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("workspace path rewriting changes only the moved workspace prefix", () => {
+  assert.deepEqual(rewriteWorkspacePath({
+    writableRoots: ["/old/worktree", "/old/worktree/generated", "/other"],
+    nested: { cwd: "/old/worktree" }
+  }, "/old/worktree", "/new/worktree"), {
+    writableRoots: ["/new/worktree", "/new/worktree/generated", "/other"],
+    nested: { cwd: "/new/worktree" }
+  });
+});
+
 test("restart recovery resumes a validated fork and commits the stored transition", async () => {
   const fixture = await createFixture("recover-validating");
   fixture.store.beginWorkspaceTransition({
@@ -165,6 +397,72 @@ test("restart recovery resumes a validated fork and commits the stored transitio
     assert.equal(result.logicalSession.activeThreadId, "thread-recovered");
     assert.equal(result.logicalSession.routingVersion, 2);
     assert.equal(result.event.recovered, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("restart recovery starts a missing handoff turn before committing its route", async () => {
+  const fixture = await createFixture("recover-handoff");
+  fixture.store.beginWorkspaceTransition({
+    transitionId: "transition:recover-handoff",
+    logicalSessionId: "logical:one",
+    targetWorktreeId: "worktree:feature",
+    sourceRoutingVersion: 1,
+    lastCompletedTurnId: "turn-7",
+    strategy: "handoff",
+    phase: "forking"
+  });
+  fixture.store.updateWorkspaceTransition("transition:recover-handoff", {
+    phase: "validatingInstructions",
+    newThreadId: "thread-handoff-recovered"
+  });
+  const startedTurns = [];
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async resumeThread() {
+        return {
+          thread: { id: "thread-handoff-recovered", cwd: fixture.feature },
+          cwd: fixture.feature,
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      },
+      async readThread(threadId) {
+        if (threadId === "thread-handoff-recovered") {
+          return { thread: { id: threadId, turns: [] } };
+        }
+        return {
+          thread: {
+            id: threadId,
+            turns: [{
+              id: "turn-7",
+              status: "completed",
+              items: [{ type: "userMessage", content: [{ type: "text", text: "Resume me" }] }]
+            }]
+          }
+        };
+      },
+      async startTurn(threadId, prompt) {
+        startedTurns.push({ threadId, prompt });
+        return { turn: { id: "turn-recovered-handoff" } };
+      }
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.recoverWorkspaceTransition("transition:recover-handoff");
+    assert.equal(result.status, "committed");
+    assert.equal(result.event.strategy, "handoff");
+    assert.equal(result.event.handoffTurnId, "turn-recovered-handoff");
+    assert.equal(startedTurns.length, 1);
+    assert.match(startedTurns[0].prompt, /Resume me/);
   } finally {
     await fixture.close();
   }

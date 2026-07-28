@@ -72,6 +72,10 @@ import { CodexWorkspaceTransitionManager } from "./runtime/codexWorkspaceTransit
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
+import {
+  resumeWorkAfterTransition,
+  workspaceTransitionBlocksWork
+} from "./runtime/workspaceTransitionBarrier.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -84,6 +88,7 @@ const sessionEventListeners = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
 const codexChoiceParseRetryAfter = new Map();
+const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
@@ -272,6 +277,7 @@ function sessionWithLogicalWorkspace(session, logical) {
     ? store.getGitWorktree(logical.activeWorkspaceId)
     : null;
   const cwd = worktree?.canonicalPath || worktree?.path || logical.activeBinding?.boundCwd || session.external?.cwd;
+  const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
   return {
     ...session,
     external: {
@@ -285,10 +291,41 @@ function sessionWithLogicalWorkspace(session, logical) {
         path: cwd,
         availability: worktree?.availability ?? "available",
         branchName: worktree?.branchName ?? null,
-        headOid: worktree?.headOid ?? null
+        headOid: worktree?.headOid ?? null,
+        transitionStrategy: latestTransition?.strategy ?? null,
+        previousThreadId: latestTransition?.sourceThreadId ?? null
       },
       routingVersion: logical.routingVersion
     }
+  };
+}
+
+function historicalDetailProjection(binding, detail) {
+  if (!binding || binding.state === "active") return detail;
+  return {
+    ...detail,
+    cwd: binding.boundCwd || detail.cwd,
+    canSend: false,
+    sendUnavailableReason: "This is a read-only historical workspace thread.",
+    capabilities: {
+      ...(detail.capabilities ?? {}),
+      canSend: false,
+      canInterrupt: false
+    },
+    workspaceHistory: {
+      logicalSessionId: binding.logicalSessionId,
+      providerThreadId: binding.providerThreadId,
+      worktreeId: binding.worktreeId,
+      state: binding.state,
+      readOnly: true
+    },
+    items: (detail.items ?? []).map((item) => item.type === "commandExecution"
+      ? {
+          ...item,
+          title: `${item.title} · old workspace`,
+          workspaceBoundary: "historical"
+        }
+      : item)
   };
 }
 
@@ -341,11 +378,11 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
   const transition = logical
     ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
     : null;
-  if (!transition || transition.phase !== "waitingForTurn") return;
+  if (!transition || transition.phase !== "waitingForTurn") return null;
   const agent = logical.legacySessionId
     ? collaborationCore.getAgentForSession(logical.legacySessionId)
     : null;
-  codexWorkspaceTransitions.continueWorkspaceTransition(transition.transitionId, {
+  return codexWorkspaceTransitions.continueWorkspaceTransition(transition.transitionId, {
     lastCompletedTurnId,
     ...collaborationThreadOptions(agent?.agentId)
   }).catch((error) => {
@@ -361,24 +398,91 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
 
 function refreshWorkspaceInventoryAfterTurn(logical) {
   if (!logical?.repositoryId || !logical.activeBinding?.boundCwd) return;
+  const previousWorktrees = store.listGitWorktrees(logical.repositoryId);
+  const previousWorktreeIds = new Set(previousWorktrees.map((worktree) => worktree.worktreeId));
   const previousVersion = logical.activeWorkspaceId
     ? store.getGitWorktree(logical.activeWorkspaceId)?.inventoryVersion
     : null;
   createGitWorkspaceSnapshot(logical.activeBinding.boundCwd)
-    .then((snapshot) => {
+    .then(async (snapshot) => {
       store.upsertGitWorkspaceSnapshot(snapshot);
+      await reconcileMovedWorkspaceRoutes(snapshot.worktrees);
       if (snapshot.inventoryVersion === previousVersion) return;
       emitEvent("WorkspaceInventoryChanged", {
         sessionId: logical.legacySessionId,
         logicalSessionId: logical.logicalSessionId,
         repositoryId: logical.repositoryId,
         inventoryVersion: snapshot.inventoryVersion,
-        workspaces: store.listGitWorktrees(logical.repositoryId)
+        workspaces: store.listGitWorktrees(logical.repositoryId),
+        newlyDiscoveredWorkspaces: snapshot.worktrees.filter((worktree) => {
+          return !previousWorktreeIds.has(worktree.worktreeId);
+        })
       }, { sessionId: logical.legacySessionId });
     })
     .catch((error) => {
       console.warn(`[workspace-inventory] refresh failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
     });
+}
+
+async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
+  for (const worktree of worktrees) {
+    if (worktree.availability !== "available") continue;
+    for (const logical of store.listLogicalSessionsByWorkspaceId(worktree.worktreeId)) {
+      const targetCwd = worktree.canonicalPath || worktree.path;
+      if (!targetCwd || logical.activeBinding?.boundCwd === targetCwd) continue;
+      if (reconcilingWorkspacePaths.has(logical.logicalSessionId)) continue;
+      const session = logical.legacySessionId
+        ? managedCodexSessions.get(logical.legacySessionId) ?? store.getSession(logical.legacySessionId)
+        : null;
+      if (sessionHasActiveRun(session)) {
+        emitEvent("SessionWorkspacePathRebindDeferred", {
+          sessionId: logical.legacySessionId,
+          logicalSessionId: logical.logicalSessionId,
+          providerThreadId: logical.activeThreadId,
+          worktreeId: logical.activeWorkspaceId,
+          previousCwd: logical.activeBinding?.boundCwd,
+          cwd: targetCwd,
+          reason: "activeTurn"
+        }, { sessionId: logical.legacySessionId });
+        continue;
+      }
+      if (options.verifyProviderIdle) {
+        try {
+          const response = await codexClient.readThread(logical.activeThreadId, {
+            includeTurns: true
+          });
+          const latest = (response.thread?.turns ?? response.turns ?? []).at(-1);
+          if (["inProgress", "in_progress", "running"].includes(latest?.status)) continue;
+        } catch (error) {
+          console.warn(`[workspace-route] path rebind preflight failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
+          continue;
+        }
+      }
+      reconcilingWorkspacePaths.add(logical.logicalSessionId);
+      const agent = logical.legacySessionId
+        ? collaborationCore.getAgentForSession(logical.legacySessionId)
+        : null;
+      try {
+        await codexWorkspaceTransitions.reconcileActiveWorkspacePath(
+          logical.logicalSessionId,
+          collaborationThreadOptions(agent?.agentId)
+        );
+      } catch (error) {
+        console.warn(`[workspace-route] path rebind failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
+        emitEvent("SessionWorkspacePathRebindFailed", {
+          sessionId: logical.legacySessionId,
+          logicalSessionId: logical.logicalSessionId,
+          providerThreadId: logical.activeThreadId,
+          worktreeId: logical.activeWorkspaceId,
+          previousCwd: logical.activeBinding?.boundCwd,
+          cwd: targetCwd,
+          error: error.message
+        }, { sessionId: logical.legacySessionId });
+      } finally {
+        reconcilingWorkspacePaths.delete(logical.logicalSessionId);
+      }
+    }
+  }
 }
 
 function reserveSessionTitle(title, excludingSessionId = null) {
@@ -1004,6 +1108,23 @@ async function callWorkspaceDynamicTool(params) {
     throw new Error("Workspace operations are only available from the active logical Session thread.");
   }
   const runtimeOptions = collaborationThreadOptions(params.agentId);
+  if (params.tool === "corptie_list_workspaces") {
+    return {
+      logicalSessionId: logical.logicalSessionId,
+      activeWorktreeId: logical.activeWorkspaceId,
+      activeRepositoryId: logical.repositoryId,
+      workspaces: store.listAllGitWorktrees().map((worktree) => ({
+        id: worktree.worktreeId,
+        repositoryId: worktree.repositoryId,
+        path: worktree.canonicalPath || worktree.path,
+        availability: worktree.availability,
+        branchName: worktree.branchName,
+        headOid: worktree.headOid,
+        detached: worktree.isDetached,
+        isMain: worktree.isMain
+      }))
+    };
+  }
   if (params.tool === "corptie_create_worktree") {
     const input = params.arguments ?? {};
     return gitWorkspaces.createWorktree({
@@ -1041,7 +1162,7 @@ function collaborationRuntimeInstructions(agentId) {
     "For a new peer request, resolve the user-provided alias with corptie_agents_discover, then call corptie_collaboration_request immediately with the final recipient and task fields. The tool stages a structured confirmation card; do not write your own confirmation message and do not call the tool a second time after confirmation.",
     "Every new user instruction to a peer is a new collaboration task, even if it resembles a previous failed request. Reuse an existing task only when the user explicitly names that task and continues the exact same objective and acceptance criteria. Never call collaboration.reply for a new user instruction.",
     "After collaboration.request stages confirmation, end the current turn immediately. Corptie handles confirm or reject programmatically and pushes any peer response into this Agent's unified queue as a later turn; do not poll or wait.",
-    "Use corptie_create_worktree and corptie_switch_workspace for Git worktree creation or logical workspace switching. A switch requested during a turn is applied only after that turn completes."
+    "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. A switch requested during a turn is applied only after that turn completes."
   ].join(" ");
 }
 
@@ -1246,10 +1367,14 @@ function handleCodexAppServerNotification(message) {
         });
       }
       const agent = collaborationCore.getAgentForSession(nextSession.id);
-      if (agent) scheduleAgentWorkDrain(agent.agentId);
       if (!failed && !cancelled) {
         refreshWorkspaceInventoryAfterTurn(logicalRoute);
-        continuePendingWorkspaceTransition(logicalRoute, turn.id);
+        const continuation = continuePendingWorkspaceTransition(logicalRoute, turn.id);
+        resumeWorkAfterTransition(continuation, () => {
+          if (agent) scheduleAgentWorkDrain(agent.agentId);
+        });
+      } else if (agent) {
+        scheduleAgentWorkDrain(agent.agentId);
       }
       return;
     }
@@ -2023,6 +2148,11 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     }
   } else if (sessionId.startsWith("codex:")) {
     const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
+    if (workspaceTransitionBlocksWork(logicalRoute)) {
+      const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
     const threadId = logicalRoute?.activeThreadId ?? sessionId.slice("codex:".length);
     const activeRoute = logicalRoute
       ? await assertWorkspaceRouteUsable({
@@ -2309,6 +2439,7 @@ async function drainAgentWork(agentId) {
     if (liveState === "running" || liveState === "missing") return;
     console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
   }
+  if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
   const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
   if (!next) return;
 
@@ -3964,15 +4095,38 @@ function route(request, response) {
         }
         let logical = await ensureLogicalRouteForCodexSession(session);
         if (logical.activeBinding?.boundCwd) {
-          const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-          store.upsertGitWorkspaceSnapshot(snapshot);
-          logical = store.getLogicalSession(logical.logicalSessionId);
+          try {
+            const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
+            store.upsertGitWorkspaceSnapshot(snapshot);
+            await reconcileMovedWorkspaceRoutes(snapshot.worktrees);
+            logical = store.getLogicalSession(logical.logicalSessionId);
+          } catch (error) {
+            console.warn(`[workspace-inventory] session workspace refresh failed session=${sessionId} error=${error.message}`);
+          }
         }
         sendJson(response, 200, {
           logicalSession: logical,
           workspaces: logical.repositoryId
             ? store.listGitWorktrees(logical.repositoryId)
-            : []
+            : [],
+          history: store.listProviderThreadBindings(logical.logicalSessionId).map((binding) => {
+            const worktree = binding.worktreeId
+              ? store.getGitWorktree(binding.worktreeId)
+              : null;
+            return {
+              providerThreadId: binding.providerThreadId,
+              state: binding.state,
+              readOnly: binding.state !== "active",
+              boundCwd: binding.boundCwd,
+              worktreeId: binding.worktreeId,
+              repositoryId: worktree?.repositoryId ?? null,
+              branchName: worktree?.branchName ?? null,
+              headOid: worktree?.headOid ?? null,
+              availability: worktree?.availability ?? null,
+              createdAt: binding.createdAt,
+              updatedAt: binding.updatedAt
+            };
+          })
         });
       })
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
@@ -4177,7 +4331,8 @@ function route(request, response) {
       ? assertWorkspaceRouteUsable({
           store,
           logicalSession: logicalRoute,
-          providerThreadId: threadId
+          providerThreadId: threadId,
+          allowHistorical: action === "review"
         })
       : null)
       .then((activeRoute) => Promise.all([
@@ -4205,7 +4360,15 @@ function route(request, response) {
             worktreeId: activeRoute?.worktreeId ?? null,
             routingVersion: activeRoute?.routingVersion ?? null
           });
-          return { ok: true, tool };
+          return {
+            ok: true,
+            tool,
+            logicalSessionId: activeRoute?.logicalSessionId ?? null,
+            providerThreadId: threadId,
+            worktreeId: activeRoute?.worktreeId ?? null,
+            routingVersion: activeRoute?.routingVersion ?? null,
+            historical: activeRoute?.historical === true
+          };
         }
 
         const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
@@ -4243,37 +4406,43 @@ function route(request, response) {
           codexClient.liveItemsForThread(threadId),
           codexClient.turnDiffsForThread(threadId)
         );
-        const enrichedDetail = enrichCodexDetailChoiceOptions({
+        const binding = store.getProviderThreadBinding(threadId);
+        const enrichedDetail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, {
           ...detail,
           activityStatus: managedSession?.activityStatus ?? detail.activityStatus ?? null,
           currentModel: managedSession?.external?.currentModel ?? detail.currentModel ?? null,
           currentReasoningLevel: managedSession?.external?.currentReasoningLevel ?? detail.currentReasoningLevel ?? null
-        });
+        }));
         const detailWithQueue = {
           ...enrichedDetail,
           items: [...(enrichedDetail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
         };
-        syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
+        if (binding?.state !== "superseded" && binding?.state !== "invalid" && binding?.state !== "orphaned") {
+          syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
+        }
         sendJson(response, 200, {
           thread: detailWithQueue
         });
       })
       .catch(async (error) => {
         const sessionId = `codex:${threadId}`;
+        const binding = store.getProviderThreadBinding(threadId);
         const managedSession = await ensureCodexSessionPermissions(
           managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
         );
         if (managedSession) {
-          const detail = enrichCodexDetailChoiceOptions(createManagedCodexDetail(
+          const detail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, createManagedCodexDetail(
             managedSession,
             codexClient.liveItemsForThread(threadId),
             error
-          ));
+          )));
           const detailWithQueue = {
             ...detail,
             items: [...(detail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
           };
-          syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
+          if (!binding || binding.state === "active") {
+            syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
+          }
           sendJson(response, 200, {
             thread: detailWithQueue,
             liveFallback: true
@@ -4292,7 +4461,10 @@ function route(request, response) {
             return;
           }
 
-          const detail = await readCodexRolloutDetail(thread, error);
+          const detail = historicalDetailProjection(
+            binding,
+            await readCodexRolloutDetail(thread, error)
+          );
           sendJson(response, 200, {
             thread: detail,
             fallback: true
@@ -4691,6 +4863,17 @@ for (const transition of store.listPendingWorkspaceTransitions()) {
     console.warn(`[workspace-transition] recovery failed transition=${transition.transitionId} error=${error.message}`);
   }
 }
+const knownActiveWorktrees = new Map();
+for (const storedSession of storedSessionsAtStartup) {
+  const logical = store.getLogicalSessionByLegacySessionId(storedSession.id);
+  const worktree = logical?.activeWorkspaceId
+    ? store.getGitWorktree(logical.activeWorkspaceId)
+    : null;
+  if (worktree) knownActiveWorktrees.set(worktree.worktreeId, worktree);
+}
+await reconcileMovedWorkspaceRoutes([...knownActiveWorktrees.values()], {
+  verifyProviderIdle: true
+});
 migrateLegacyQueuedSessionItems();
 sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
 await feishuGateway.initialize();

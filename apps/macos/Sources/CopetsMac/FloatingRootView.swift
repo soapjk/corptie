@@ -4335,6 +4335,15 @@ private struct DetailHeaderView: View {
                        gitHeadState.stampText != nil {
                         GitBranchStamp(headState: gitHeadState)
                     }
+                    if backendClient.viewingHistoricalThreadId != nil {
+                        Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.orange)
+                    } else if backendClient.selectedSession?.external?.workspace?.transitionStrategy == "handoff" {
+                        Label(L10n("Context handoff"), systemImage: "arrow.triangle.branch")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
                 }
                 if let cwd = workspacePath, !cwd.isEmpty {
                     Button {
@@ -4356,6 +4365,18 @@ private struct DetailHeaderView: View {
             }
 
             Spacer()
+
+            if backendClient.viewingHistoricalThreadId != nil {
+                Button {
+                    backendClient.returnToActiveThread()
+                } label: {
+                    Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(L10n("Return to the active workspace thread"))
+            }
 
             if backendClient.selectedSession?.capabilities?.canReconnect == true
                 && backendClient.selectedSession?.isConnected == false {
@@ -4386,6 +4407,13 @@ private struct DetailHeaderView: View {
     }
 
     private var workspacePath: String? {
+        if backendClient.viewingHistoricalThreadId != nil {
+            let historicalPath = backendClient.selectedDetail?.cwd?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let historicalPath, !historicalPath.isEmpty {
+                return historicalPath
+            }
+        }
         let routedPath = backendClient.selectedSession?.external?.workspace?.path?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let routedPath, !routedPath.isEmpty {

@@ -56,3 +56,15 @@
 "Screen Recording access required" = "Screen Recording access required";
 "Open System Settings" = "Open System Settings";
 "Check Again" = "Check Again";
+"Read-only history" = "Read-only history";
+"Context handoff" = "Context handoff";
+"Active thread" = "Active thread";
+"Return to the active workspace thread" = "Return to the active workspace thread";
+"Workspace History" = "Workspace History";
+"The active thread was created through a context handoff." = "The active thread was created through a context handoff.";
+"Commands and terminals started by previous threads remain attached to their original workspace." = "Commands and terminals started by previous threads remain attached to their original workspace.";
+"No previous workspace threads." = "No previous workspace threads.";
+"Detached or non-branch workspace" = "Detached or non-branch workspace";
+"Open Read Only" = "Open Read Only";
+"Active" = "Active";
+"A new Git worktree was detected. Ask the Agent to list workspaces or switch to it." = "A new Git worktree was detected. Ask the Agent to list workspaces or switch to it.";

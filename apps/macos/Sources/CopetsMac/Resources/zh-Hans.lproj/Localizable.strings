@@ -369,3 +369,15 @@
 "Screen Recording access required" = "需要屏幕录制权限";
 "Open System Settings" = "打开系统设置";
 "Check Again" = "重新检查";
+"Read-only history" = "只读历史";
+"Context handoff" = "上下文交接";
+"Active thread" = "活动线程";
+"Return to the active workspace thread" = "返回活动工作区线程";
+"Workspace History" = "工作区历史";
+"The active thread was created through a context handoff." = "活动线程通过上下文交接创建。";
+"Commands and terminals started by previous threads remain attached to their original workspace." = "先前线程启动的命令和终端仍归属于原工作区。";
+"No previous workspace threads." = "没有先前的工作区线程。";
+"Detached or non-branch workspace" = "分离 HEAD 或非分支工作区";
+"Open Read Only" = "只读打开";
+"Active" = "活动";
+"A new Git worktree was detected. Ask the Agent to list workspaces or switch to it." = "检测到新的 Git worktree。可以让 Agent 列出工作区或切换到该工作区。";

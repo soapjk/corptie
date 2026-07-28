@@ -15,6 +15,11 @@ function tool(name, description, properties, required = []) {
 
 export const workspaceDynamicTools = Object.freeze([
   tool(
+    "corptie_list_workspaces",
+    "List Corptie's registered local Git worktrees, including opaque ids accepted by corptie_switch_workspace. This is read-only.",
+    {}
+  ),
+  tool(
     "corptie_create_worktree",
     "Create a validated Git worktree for the active repository. By default, Corptie schedules the logical Session to switch after the current turn completes.",
     {

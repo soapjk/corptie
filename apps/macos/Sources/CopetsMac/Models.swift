@@ -75,6 +75,40 @@ struct SessionWorkspace: Codable, Equatable, Sendable {
     let availability: String?
     let branchName: String?
     let headOid: String?
+    var transitionStrategy: String? = nil
+    var previousThreadId: String? = nil
+}
+
+struct SessionWorkspaceHistoryResponse: Decodable, Sendable {
+    let history: [SessionWorkspaceHistory]
+}
+
+struct WorkspaceInventoryEventEnvelope: Decodable, Sendable {
+    struct Payload: Decodable, Sendable {
+        let newlyDiscoveredWorkspaces: [GitWorkspaceEventItem]
+    }
+
+    let payload: Payload
+}
+
+struct GitWorkspaceEventItem: Decodable, Sendable {
+    let worktreeId: String
+    let path: String
+}
+
+struct SessionWorkspaceHistory: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { providerThreadId }
+    let providerThreadId: String
+    let state: String
+    let readOnly: Bool
+    let boundCwd: String
+    let worktreeId: String?
+    let repositoryId: String?
+    let branchName: String?
+    let headOid: String?
+    let availability: String?
+    let createdAt: String
+    let updatedAt: String
 }
 
 struct SessionCapabilities: Codable, Equatable, Sendable {

@@ -9,6 +9,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
     @Published private(set) var selectedDetail: CodexThreadDetail?
+    @Published private(set) var viewingHistoricalThreadId: String?
     @Published private(set) var isLoadingDetail = false
     @Published private(set) var isSendingMessage = false
     @Published private(set) var sendStatusMessage: String?
@@ -123,6 +124,11 @@ final class BackendClient: ObservableObject {
             applyLiveUsageEvent(data)
             return
         }
+        if eventName == "WorkspaceInventoryChanged" {
+            applyWorkspaceInventoryEvent(data)
+            await refresh()
+            return
+        }
         let refreshEvents: Set<String> = [
             "CodexThreadCreated",
             "CodexTurnStarted",
@@ -164,6 +170,17 @@ final class BackendClient: ObservableObject {
             || eventName == "CollaborationConfirmationResolved" {
             await refreshSelectedDetailFromPolling()
         }
+    }
+
+    private func applyWorkspaceInventoryEvent(_ data: String) {
+        guard let payload = data.data(using: .utf8),
+              let event = try? JSONDecoder().decode(WorkspaceInventoryEventEnvelope.self, from: payload),
+              !event.payload.newlyDiscoveredWorkspaces.isEmpty else {
+            return
+        }
+        sendStatusMessage = L10n(
+            "A new Git worktree was detected. Ask the Agent to list workspaces or switch to it."
+        )
     }
 
     private func applyLiveUsageEvent(_ data: String) {
@@ -942,6 +959,7 @@ final class BackendClient: ObservableObject {
     }
 
     func select(session: TaskSession) {
+        viewingHistoricalThreadId = nil
         selectedSession = session
         selectedSessionUsage = nil
         usageRefreshTask?.cancel()
@@ -969,6 +987,7 @@ final class BackendClient: ObservableObject {
         detailStreamTask = nil
         selectedSession = nil
         selectedDetail = nil
+        viewingHistoricalThreadId = nil
         selectedSessionUsage = nil
         isLoadingDetail = false
     }
@@ -1713,10 +1732,61 @@ final class BackendClient: ObservableObject {
     }
 
     private func refreshSelectedDetailFromPolling() async {
-        guard let selectedSession else {
+        guard viewingHistoricalThreadId == nil, let selectedSession else {
             return
         }
         await loadDetail(for: selectedSession, showLoading: false)
+    }
+
+    func workspaceHistory(for session: TaskSession) async -> [SessionWorkspaceHistory] {
+        do {
+            let url = baseURL.appending(path: "sessions/\(session.id)/workspaces")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load workspace history.")
+            }
+            return try JSONDecoder().decode(SessionWorkspaceHistoryResponse.self, from: data).history
+        } catch {
+            lastError = error.localizedDescription
+            return []
+        }
+    }
+
+    func openHistoricalThread(_ history: SessionWorkspaceHistory, for session: TaskSession) async -> Bool {
+        guard history.readOnly else {
+            select(session: session)
+            return true
+        }
+        do {
+            let url = baseURL.appending(path: "codex/threads/\(history.providerThreadId)")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load historical thread.")
+            }
+            let detail = try await BackendResponseDecoder.detail(
+                from: data,
+                isPtyProvider: false,
+                threadId: history.providerThreadId,
+                authoritativeCwd: history.boundCwd,
+                workspacePath: history.boundCwd
+            )
+            selectedSession = session
+            selectedDetail = detail
+            viewingHistoricalThreadId = history.providerThreadId
+            detailStreamTask?.cancel()
+            detailStreamTask = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func returnToActiveThread() {
+        guard let selectedSession else { return }
+        select(session: selectedSession)
     }
 
     func fetchDetail(for session: TaskSession) async -> CodexThreadDetail? {
@@ -1940,6 +2010,7 @@ final class BackendClient: ObservableObject {
             || current.external?.routingVersion != refreshed.external?.routingVersion
         selectedSession = refreshed
         if routeChanged {
+            viewingHistoricalThreadId = nil
             selectedDetail = nil
             detailCacheBySessionId.removeValue(forKey: refreshed.id)
             Task { [weak self] in

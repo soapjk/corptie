@@ -96,6 +96,46 @@ test("createWorktree rejects a branch already checked out by another worktree", 
   }
 });
 
+test("a failed post-create transition preserves the worktree and retry does not duplicate it", async () => {
+  const fixture = await createFixture("transition-retry");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: {
+      async switchWorkspace() {
+        throw new Error("simulated transition failure");
+      }
+    }
+  });
+  const target = join(fixture.directory, "preserved worktree");
+
+  try {
+    await assert.rejects(
+      () => manager.createWorktree({
+        logicalSessionId: "logical:one",
+        targetPath: target,
+        branch: "feature/preserved"
+      }),
+      /simulated transition failure/
+    );
+    const identity = await inspectGitWorkspace(target);
+    assert.equal(
+      fixture.store.getGitWorktree(identity.worktreeId)?.branchName,
+      "feature/preserved"
+    );
+
+    await assert.rejects(
+      () => manager.createWorktree({
+        logicalSessionId: "logical:one",
+        targetPath: target,
+        branch: "feature/preserved"
+      }),
+      /already exists/
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(label) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, "main repo");
