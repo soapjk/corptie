@@ -104,6 +104,24 @@ enum OrbPlacementPlanner {
             CGPoint(x: userAnchor.x, y: visibleFrame.minY),
             CGPoint(x: userAnchor.x, y: maximumOriginY)
         ])
+        let verticalEdgeSlots = evenlySpacedValues(
+            from: visibleFrame.minY,
+            through: maximumOriginY,
+            count: 6
+        )
+        let horizontalEdgeSlots = evenlySpacedValues(
+            from: visibleFrame.minX,
+            through: maximumOriginX,
+            count: 6
+        )
+        for y in verticalEdgeSlots {
+            rawCandidates.append(CGPoint(x: maximumOriginX, y: y))
+            rawCandidates.append(CGPoint(x: visibleFrame.minX, y: y))
+        }
+        for x in horizontalEdgeSlots {
+            rawCandidates.append(CGPoint(x: x, y: maximumOriginY))
+            rawCandidates.append(CGPoint(x: x, y: visibleFrame.minY))
+        }
 
         var seen = Set<String>()
         return rawCandidates
@@ -316,6 +334,18 @@ enum OrbPlacementPlanner {
             return distances[$0] < distances[$1]
         } ?? 0
         return (priority, distances[priority])
+    }
+
+    private static func evenlySpacedValues(
+        from minimum: CGFloat,
+        through maximum: CGFloat,
+        count: Int
+    ) -> [CGFloat] {
+        guard count > 1, maximum > minimum else {
+            return [minimum]
+        }
+        let step = (maximum - minimum) / CGFloat(count - 1)
+        return (0..<count).map { minimum + CGFloat($0) * step }
     }
 
     private static func distance(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
