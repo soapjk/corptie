@@ -371,6 +371,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
+    private var observationTask: Task<Void, Never>?
+    private var hasScheduledObservation = false
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
@@ -463,14 +465,19 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     func show() {
         panel.orderFrontRegardless()
         updateAccessory(for: currentSession)
+        scheduleObservationIfNeeded()
     }
 
     func close() {
+        observationTask?.cancel()
+        observationTask = nil
         accessoryController.close()
         panel.close()
     }
 
     func windowWillClose(_ notification: Notification) {
+        observationTask?.cancel()
+        observationTask = nil
         removeOutsideClickMonitor()
         closeHandler(sessionId)
     }
@@ -528,6 +535,51 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func updateAccessory(for session: TaskSession?) {
         accessoryController.update(for: session, orbCenter: currentOrbCenter, screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+    }
+
+    private func scheduleObservationIfNeeded() {
+        guard DetachedOrbObservationMode.isEnabled, !hasScheduledObservation else {
+            return
+        }
+        guard let screen = panel.screen,
+              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                as? CGDirectDisplayID,
+              let searchRect = DetachedOrbObservationGeometry.searchRect(
+                around: panel.frame,
+                visibleFrame: screen.visibleFrame
+              ) else {
+            return
+        }
+
+        hasScheduledObservation = true
+        let target = ScreenContentCaptureTarget(
+            displayID: displayID,
+            screenFrame: screen.frame,
+            sampleRect: searchRect
+        )
+        observationTask = Task { [sessionId] in
+            do {
+                try await Task.sleep(for: .milliseconds(800))
+                try Task.checkCancellation()
+                let observation = try await ScreenContentSampler.shared.observe(target: target)
+                print(
+                    "[orb-avoidance] observation session=\(sessionId) " +
+                    "display=\(displayID) source=\(Self.logDescription(observation.sourceRect)) " +
+                    "pixels=\(observation.pixelWidth)x\(observation.pixelHeight) " +
+                    "duration_ms=\(observation.durationMilliseconds)"
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                let category = (error as? ScreenContentSamplerError)?.description
+                    ?? String(describing: type(of: error))
+                print("[orb-avoidance] observation_failed session=\(sessionId) category=\(category)")
+            }
+        }
+    }
+
+    private static func logDescription(_ rect: CGRect) -> String {
+        "\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
     }
 
     private func updateReplyPreview(for session: TaskSession?) {
