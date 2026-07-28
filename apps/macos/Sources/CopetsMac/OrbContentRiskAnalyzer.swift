@@ -35,6 +35,7 @@ struct OrbLuminanceSignature: Equatable, Sendable {
 
 struct OrbContentRisk: Equatable, Sendable {
     let edgeDensity: Double
+    let localContrastSalience: Double
     let luminanceVariance: Double
     let colorEntropy: Double
     let regionalDifference: Double
@@ -64,6 +65,11 @@ enum OrbContentAnalysis: Equatable, Sendable {
 }
 
 enum OrbContentRiskAnalyzer {
+    private struct EdgeAnalysis {
+        let density: Double
+        let localContrastSalience: Double
+    }
+
     private struct Sample {
         let x: Int
         let y: Int
@@ -124,7 +130,9 @@ enum OrbContentRiskAnalyzer {
             } / Double(luminances.count)
         )
 
-        let edgeDensity = edgeDensity(samples: samples, lumaByCoordinate: lumaByCoordinate)
+        let edgeAnalysis = edgeAnalysis(samples: samples, lumaByCoordinate: lumaByCoordinate)
+        let edgeDensity = edgeAnalysis.density
+        let localContrastSalience = edgeAnalysis.localContrastSalience
         let luminanceVariance = clamp01(standardDeviation / 0.25)
         let colorEntropy = colorEntropy(samples: samples)
         let regionalDifference = regionalDifference(
@@ -147,17 +155,19 @@ enum OrbContentRiskAnalyzer {
             colorEntropy: colorEntropy
         )
         let totalRisk = clamp01(
-            0.35 * edgeDensity
-                + 0.20 * luminanceVariance
-                + 0.15 * colorEntropy
-                + 0.15 * regionalDifference
-                + 0.15 * temporalChange
+            0.30 * edgeDensity
+                + 0.25 * localContrastSalience
+                + 0.15 * luminanceVariance
+                + 0.10 * colorEntropy
+                + 0.10 * regionalDifference
+                + 0.10 * temporalChange
                 - 0.05 * extremeToneBonus
         )
 
         return .known(
             risk: OrbContentRisk(
                 edgeDensity: edgeDensity,
+                localContrastSalience: localContrastSalience,
                 luminanceVariance: luminanceVariance,
                 colorEntropy: colorEntropy,
                 regionalDifference: regionalDifference,
@@ -219,13 +229,15 @@ enum OrbContentRiskAnalyzer {
         return result
     }
 
-    private static func edgeDensity(
+    private static func edgeAnalysis(
         samples: [Sample],
         lumaByCoordinate: [Int64: Double]
-    ) -> Double {
+    ) -> EdgeAnalysis {
         var strongEdgeCount = 0
         var gradientSum = 0.0
         var gradientCount = 0
+        var gradients: [Double] = []
+        gradients.reserveCapacity(samples.count)
 
         for sample in samples {
             var gradient = 0.0
@@ -235,6 +247,7 @@ enum OrbContentRiskAnalyzer {
             if let below = lumaByCoordinate[coordinateKey(x: sample.x, y: sample.y + 1)] {
                 gradient = max(gradient, abs(below - sample.luminance))
             }
+            gradients.append(gradient)
             guard gradient > 0 else {
                 continue
             }
@@ -246,11 +259,33 @@ enum OrbContentRiskAnalyzer {
         }
 
         guard gradientCount > 0 else {
-            return 0
+            return EdgeAnalysis(density: 0, localContrastSalience: 0)
         }
         let strongEdgeRatio = Double(strongEdgeCount) / Double(samples.count)
         let meanGradient = gradientSum / Double(gradientCount)
-        return clamp01(0.65 * strongEdgeRatio + 0.35 * clamp01(meanGradient / 0.20))
+        let density = clamp01(
+            0.65 * strongEdgeRatio
+                + 0.35 * clamp01(meanGradient / 0.20)
+        )
+
+        gradients.sort()
+        let percentileIndex = min(
+            gradients.count - 1,
+            Int((Double(gradients.count - 1) * 0.90).rounded())
+        )
+        let highPercentileGradient = gradients[percentileIndex]
+        let contrastStrength = clamp01((highPercentileGradient - 0.004) / 0.025)
+        let subtleEdgeCoverage = Double(
+            gradients.lazy.filter { $0 >= 0.012 }.count
+        ) / Double(samples.count)
+        let normalizedCoverage = clamp01(subtleEdgeCoverage / 0.08)
+        let localContrastSalience = clamp01(
+            0.70 * contrastStrength + 0.30 * normalizedCoverage
+        )
+        return EdgeAnalysis(
+            density: density,
+            localContrastSalience: localContrastSalience
+        )
     }
 
     private static func colorEntropy(samples: [Sample]) -> Double {

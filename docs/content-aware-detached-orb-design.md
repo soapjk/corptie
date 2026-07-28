@@ -318,6 +318,7 @@ DetachedSessionManager
 ~~~text
 OrbContentRisk {
   edgeDensity
+  localContrastSalience
   luminanceVariance
   colorEntropy
   regionalDifference
@@ -398,11 +399,12 @@ temporalChange = mean(abs(currentLuma - previousLuma))
 
 ~~~text
 contentRisk =
-    0.35 * edgeDensity
-  + 0.20 * luminanceVariance
-  + 0.15 * colorEntropy
-  + 0.15 * regionalDifference
-  + 0.15 * temporalChange
+    0.30 * edgeDensity
+  + 0.25 * localContrastSalience
+  + 0.15 * luminanceVariance
+  + 0.10 * colorEntropy
+  + 0.10 * regionalDifference
+  + 0.10 * temporalChange
   - 0.05 * extremeToneBonus
 ~~~
 
