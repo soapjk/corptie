@@ -414,6 +414,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
     private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
     private var safeRegionHistory = OrbSafeRegionHistory()
+    private var observationCadence = DetachedOrbObservationCadence()
     private var cooldownUntil = Date.distantPast
     private var captureFailureCount = 0
     private var isPointerDown = false
@@ -540,6 +541,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 } else {
                     self.cancelObservation()
                     self.safeRegionHistory.reset()
+                    self.observationCadence.reset()
                 }
             }
             .store(in: &cancellables)
@@ -790,6 +792,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         let currentIdentifier = Self.originIdentifier(request.currentOrigin)
         guard case let .known(currentRisk, _)? = analysesByIdentifier[currentIdentifier] else {
             pendingCandidateOrigin = nil
+            observationCadence.reset()
             scheduleObservationIfNeeded(delay: idleObservationInterval)
             return
         }
@@ -848,7 +851,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         switch plan.action {
         case let .hold(reason):
             pendingCandidateOrigin = plan.pendingCandidateOrigin
-            let nextDelay = reason == .awaitingConfirmation ? 0.65 : idleObservationInterval
+            let nextDelay = observationCadence.nextDelay(after: reason)
             let bestScoreDescription = bestCandidateRisk.map(Self.logScore) ?? "unknown"
             logDevelopment(
                 "[orb-avoidance] evaluated session=\(sessionId) " +
@@ -859,6 +862,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             scheduleObservationIfNeeded(delay: nextDelay)
         case let .move(proposal):
             pendingCandidateOrigin = nil
+            observationCadence.reset()
             moveAutomatically(
                 to: proposal.origin,
                 currentRisk: currentRisk.totalRisk,
@@ -911,6 +915,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func handlePointerInteractionBegan() {
         isPointerDown = true
+        observationCadence.reset()
         cancelObservation()
     }
 
@@ -924,6 +929,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         recentAutomaticPositions.removeAll()
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
+        observationCadence.reset()
         pendingCandidateOrigin = nil
         cooldownUntil = Date().addingTimeInterval(0.8)
         scheduleObservationIfNeeded(delay: 0.85)
@@ -942,6 +948,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         cancelObservation()
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
+        observationCadence.reset()
         scheduleObservationIfNeeded(delay: delay)
     }
 
