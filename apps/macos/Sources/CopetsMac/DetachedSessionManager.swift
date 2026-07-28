@@ -142,31 +142,89 @@ final class DetachedSessionManager: ObservableObject {
         }
         logDevelopment("[orb-avoidance] batch_started orbs=\(batchControllers.count)")
 
-        var evaluations: [DetachedOrbBatchEvaluation] = []
-        evaluations.reserveCapacity(batchControllers.count)
+        var pendingObservations: [DetachedOrbPendingObservation] = []
+        pendingObservations.reserveCapacity(batchControllers.count)
         for controller in batchControllers {
             guard controllers[controller.sessionId] === controller,
                   let request = controller.makeBatchObservationRequest() else {
                 continue
             }
+            pendingObservations.append(
+                DetachedOrbPendingObservation(controller: controller, request: request)
+            )
+        }
+
+        var evaluations: [DetachedOrbBatchEvaluation] = []
+        evaluations.reserveCapacity(pendingObservations.count)
+        let observationsByDisplay = Dictionary(
+            grouping: pendingObservations,
+            by: { $0.request.target.displayID }
+        )
+        logDevelopment(
+            "[orb-avoidance] batch_captures displays=\(observationsByDisplay.count) "
+                + "requests=\(pendingObservations.count)"
+        )
+        for displayID in observationsByDisplay.keys.sorted() {
+            guard let displayObservations = observationsByDisplay[displayID],
+                  let firstObservation = displayObservations.first else {
+                continue
+            }
+            let sharedSampleRect = displayObservations.reduce(CGRect.null) {
+                $0.union($1.request.target.sampleRect)
+            }
+            let sharedTarget = ScreenContentCaptureTarget(
+                displayID: displayID,
+                screenFrame: firstObservation.request.target.screenFrame,
+                sampleRect: sharedSampleRect,
+                maximumOutputDimension:
+                    DetachedOrbBatchCoordinatorLogic.sharedCaptureMaximumDimension(
+                        sharedSampleRect: sharedSampleRect,
+                        individualSampleRects: displayObservations.map {
+                            $0.request.target.sampleRect
+                        }
+                    )
+            )
+            let sharedRegions = displayObservations.flatMap(\.request.regions)
             do {
                 let observation = try await ScreenContentSampler.shared.analyze(
-                    target: request.target,
-                    regions: request.regions
+                    target: sharedTarget,
+                    regions: sharedRegions
                 )
                 try Task.checkCancellation()
-                guard controllers[controller.sessionId] === controller,
-                      let evaluation = controller.evaluateBatchObservation(
-                        observation,
-                        request: request
-                      ) else {
-                    continue
+                var regionOffset = 0
+                for pendingObservation in displayObservations {
+                    let controller = pendingObservation.controller
+                    let request = pendingObservation.request
+                    let regionEnd = regionOffset + request.regions.count
+                    guard regionEnd <= observation.regions.count else {
+                        controller.noteBatchAnalysisFailure(
+                            ScreenContentSamplerError.pixelConversionFailed
+                        )
+                        break
+                    }
+                    let controllerObservation = ScreenContentAnalysisObservation(
+                        sourceRect: observation.sourceRect,
+                        pixelWidth: observation.pixelWidth,
+                        pixelHeight: observation.pixelHeight,
+                        durationMilliseconds: observation.durationMilliseconds,
+                        regions: Array(observation.regions[regionOffset..<regionEnd])
+                    )
+                    regionOffset = regionEnd
+                    guard controllers[controller.sessionId] === controller,
+                          let evaluation = controller.evaluateBatchObservation(
+                            controllerObservation,
+                            request: request
+                          ) else {
+                        continue
+                    }
+                    evaluations.append(evaluation)
                 }
-                evaluations.append(evaluation)
             } catch is CancellationError {
                 return
             } catch {
-                controller.noteBatchAnalysisFailure(error)
+                for pendingObservation in displayObservations {
+                    pendingObservation.controller.noteBatchAnalysisFailure(error)
+                }
             }
         }
 
@@ -519,6 +577,12 @@ private struct DetachedOrbObservationRequest {
     let candidateOrigins: [CGPoint]
     let occupiedFrames: [CGRect]
     let excludedFrames: [CGRect]
+}
+
+@MainActor
+private struct DetachedOrbPendingObservation {
+    let controller: DetachedSessionWindowController
+    let request: DetachedOrbObservationRequest
 }
 
 private struct DetachedOrbRecentAutomaticPosition {

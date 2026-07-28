@@ -14,6 +14,13 @@ struct OrbContentPixelFrame: Equatable, Sendable {
     }
 }
 
+struct OrbContentPreparedFrame: Equatable, Sendable {
+    let pixels: OrbContentPixelFrame
+    let luminances: [Float]
+    let rightGradients: [Float]
+    let downGradients: [Float]
+}
+
 struct OrbCircularMask: Equatable, Sendable {
     let centerX: Double
     let centerY: Double
@@ -85,11 +92,83 @@ enum OrbContentRiskAnalyzer {
         mask requestedMask: OrbCircularMask? = nil,
         previousSignature: OrbLuminanceSignature? = nil
     ) -> OrbContentAnalysis {
+        guard let preparedFrame = prepare(frame: frame) else {
+            guard frame.width >= 3,
+                  frame.height >= 3,
+                  frame.bytesPerRow >= frame.width * 4 else {
+                return .unknown(.invalidDimensions)
+            }
+            return .unknown(.invalidPixelData)
+        }
+        return analyze(
+            preparedFrame: preparedFrame,
+            mask: requestedMask,
+            previousSignature: previousSignature
+        )
+    }
+
+    static func prepare(frame: OrbContentPixelFrame) -> OrbContentPreparedFrame? {
+        guard frame.width >= 3,
+              frame.height >= 3,
+              frame.bytesPerRow >= frame.width * 4 else {
+            return nil
+        }
+        guard frame.height <= Int.max / frame.bytesPerRow,
+              frame.rgbaBytes.count >= frame.height * frame.bytesPerRow,
+              frame.width <= Int.max / frame.height else {
+            return nil
+        }
+
+        let pixelCount = frame.width * frame.height
+        var luminances = Array(repeating: Float.zero, count: pixelCount)
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let byteOffset = y * frame.bytesPerRow + x * 4
+                luminances[y * frame.width + x] = Float((
+                    0.2126 * Double(frame.rgbaBytes[byteOffset])
+                        + 0.7152 * Double(frame.rgbaBytes[byteOffset + 1])
+                        + 0.0722 * Double(frame.rgbaBytes[byteOffset + 2])
+                ) / 255)
+            }
+        }
+        var rightGradients = Array(repeating: Float.zero, count: pixelCount)
+        var downGradients = Array(repeating: Float.zero, count: pixelCount)
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let index = y * frame.width + x
+                if x + 1 < frame.width {
+                    rightGradients[index] = abs(luminances[index + 1] - luminances[index])
+                }
+                if y + 1 < frame.height {
+                    downGradients[index] = abs(
+                        luminances[index + frame.width] - luminances[index]
+                    )
+                }
+            }
+        }
+        return OrbContentPreparedFrame(
+            pixels: frame,
+            luminances: luminances,
+            rightGradients: rightGradients,
+            downGradients: downGradients
+        )
+    }
+
+    static func analyze(
+        preparedFrame: OrbContentPreparedFrame,
+        mask requestedMask: OrbCircularMask? = nil,
+        previousSignature: OrbLuminanceSignature? = nil
+    ) -> OrbContentAnalysis {
+        let frame = preparedFrame.pixels
         guard frame.width >= 3, frame.height >= 3, frame.bytesPerRow >= frame.width * 4 else {
             return .unknown(.invalidDimensions)
         }
         guard frame.height <= Int.max / frame.bytesPerRow,
-              frame.rgbaBytes.count >= frame.height * frame.bytesPerRow else {
+              frame.rgbaBytes.count >= frame.height * frame.bytesPerRow,
+              frame.width <= Int.max / frame.height,
+              preparedFrame.luminances.count >= frame.width * frame.height,
+              preparedFrame.rightGradients.count >= frame.width * frame.height,
+              preparedFrame.downGradients.count >= frame.width * frame.height else {
             return .unknown(.invalidPixelData)
         }
 
@@ -101,7 +180,7 @@ enum OrbContentRiskAnalyzer {
             return .unknown(.emptyMask)
         }
 
-        let samples = samples(in: frame, mask: mask)
+        let samples = samples(in: preparedFrame, mask: mask)
         guard samples.count >= 9 else {
             return .unknown(.emptyMask)
         }
@@ -127,7 +206,11 @@ enum OrbContentRiskAnalyzer {
             } / Double(luminances.count)
         )
 
-        let edgeAnalysis = edgeAnalysis(samples: samples, frame: frame, mask: mask)
+        let edgeAnalysis = edgeAnalysis(
+            samples: samples,
+            preparedFrame: preparedFrame,
+            mask: mask
+        )
         let edgeDensity = edgeAnalysis.density
         let localContrastSalience = edgeAnalysis.localContrastSalience
         let luminanceVariance = clamp01(standardDeviation / 0.25)
@@ -178,9 +261,10 @@ enum OrbContentRiskAnalyzer {
     }
 
     private static func samples(
-        in frame: OrbContentPixelFrame,
+        in preparedFrame: OrbContentPreparedFrame,
         mask: OrbCircularMask
     ) -> [Sample] {
+        let frame = preparedFrame.pixels
         let radiusSquared = mask.radius * mask.radius
         var result: [Sample] = []
         let minimumX = max(0, Int(floor(mask.centerX - mask.radius)))
@@ -205,11 +289,7 @@ enum OrbContentRiskAnalyzer {
                 let green = frame.rgbaBytes[offset + 1]
                 let blue = frame.rgbaBytes[offset + 2]
                 let alpha = frame.rgbaBytes[offset + 3]
-                let luminance = (
-                    0.2126 * Double(red)
-                        + 0.7152 * Double(green)
-                        + 0.0722 * Double(blue)
-                ) / 255
+                let luminance = Double(preparedFrame.luminances[y * frame.width + x])
                 result.append(
                     Sample(
                         x: x,
@@ -228,7 +308,7 @@ enum OrbContentRiskAnalyzer {
 
     private static func edgeAnalysis(
         samples: [Sample],
-        frame: OrbContentPixelFrame,
+        preparedFrame: OrbContentPreparedFrame,
         mask: OrbCircularMask
     ) -> EdgeAnalysis {
         let histogramBucketCount = 1_024
@@ -240,21 +320,35 @@ enum OrbContentRiskAnalyzer {
 
         for sample in samples {
             var gradient = 0.0
-            if let right = luminance(
+            if contains(
                 atX: sample.x + 1,
                 y: sample.y,
-                in: frame,
+                in: preparedFrame,
                 mask: mask
             ) {
-                gradient = max(gradient, abs(right - sample.luminance))
+                gradient = max(
+                    gradient,
+                    Double(
+                        preparedFrame.rightGradients[
+                            sample.y * preparedFrame.pixels.width + sample.x
+                        ]
+                    )
+                )
             }
-            if let below = luminance(
+            if contains(
                 atX: sample.x,
                 y: sample.y + 1,
-                in: frame,
+                in: preparedFrame,
                 mask: mask
             ) {
-                gradient = max(gradient, abs(below - sample.luminance))
+                gradient = max(
+                    gradient,
+                    Double(
+                        preparedFrame.downGradients[
+                            sample.y * preparedFrame.pixels.width + sample.x
+                        ]
+                    )
+                )
             }
             let bucket = min(
                 histogramBucketCount - 1,
@@ -420,26 +514,19 @@ enum OrbContentRiskAnalyzer {
         return 1
     }
 
-    private static func luminance(
+    private static func contains(
         atX x: Int,
         y: Int,
-        in frame: OrbContentPixelFrame,
+        in preparedFrame: OrbContentPreparedFrame,
         mask: OrbCircularMask
-    ) -> Double? {
+    ) -> Bool {
+        let frame = preparedFrame.pixels
         guard x >= 0, x < frame.width, y >= 0, y < frame.height else {
-            return nil
+            return false
         }
         let dx = (Double(x) + 0.5) - mask.centerX
         let dy = (Double(y) + 0.5) - mask.centerY
-        guard dx * dx + dy * dy <= mask.radius * mask.radius else {
-            return nil
-        }
-        let offset = y * frame.bytesPerRow + x * 4
-        return (
-            0.2126 * Double(frame.rgbaBytes[offset])
-                + 0.7152 * Double(frame.rgbaBytes[offset + 1])
-                + 0.0722 * Double(frame.rgbaBytes[offset + 2])
-        ) / 255
+        return dx * dx + dy * dy <= mask.radius * mask.radius
     }
 
     private static func clamp01(_ value: Double) -> Double {
