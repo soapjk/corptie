@@ -4291,7 +4291,7 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 private struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var didCopySessionName = false
-    @State private var gitBranchName: String?
+    @State private var gitHeadState: GitHeadState?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -4331,8 +4331,9 @@ private struct DetailHeaderView: View {
                     .help(L10n("Copy session name"))
                     .accessibilityLabel(L10n("Copy session name"))
 
-                    if let gitBranchName {
-                        GitBranchStamp(branchName: gitBranchName)
+                    if let gitHeadState,
+                       gitHeadState.stampText != nil {
+                        GitBranchStamp(headState: gitHeadState)
                     }
                 }
                 if let cwd = backendClient.selectedDetail?.cwd, !cwd.isEmpty {
@@ -4397,13 +4398,16 @@ private struct DetailHeaderView: View {
 
     private func refreshGitBranch() async {
         guard let workspacePath else {
-            gitBranchName = nil
+            gitHeadState = nil
             return
         }
         while !Task.isCancelled {
-            let nextBranchName = await GitBranchResolver.branchName(at: workspacePath)
-            if gitBranchName != nextBranchName {
-                gitBranchName = nextBranchName
+            let nextHeadState = await GitBranchResolver.headState(at: workspacePath)
+            guard !Task.isCancelled, workspacePath == self.workspacePath else {
+                return
+            }
+            if gitHeadState != nextHeadState {
+                gitHeadState = nextHeadState
             }
             try? await Task.sleep(for: .seconds(3))
         }
@@ -4431,24 +4435,30 @@ private struct DetailHeaderView: View {
 }
 
 private struct GitBranchStamp: View {
-    let branchName: String
+    let headState: GitHeadState
 
     var body: some View {
-        Text(branchName)
+        Text(headState.stampText ?? "")
             .font(.system(size: 7.5, weight: .bold, design: .monospaced))
-            .foregroundStyle(Color.white)
+            .foregroundStyle(headState.isWarning ? CorptiePalette.amber : Color.white)
             .lineLimit(1)
             .truncationMode(.middle)
             .padding(.horizontal, 4)
             .padding(.vertical, 2)
-            .background(Color.black.opacity(0.34), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .background(
+                headState.isWarning ? CorptiePalette.amber.opacity(0.12) : Color.black.opacity(0.34),
+                in: RoundedRectangle(cornerRadius: 3, style: .continuous)
+            )
             .overlay {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.78), lineWidth: 0.75)
+                    .strokeBorder(
+                        headState.isWarning ? CorptiePalette.amber.opacity(0.8) : Color.white.opacity(0.78),
+                        lineWidth: 0.75
+                    )
             }
             .offset(y: -4)
-            .help(branchName)
-            .accessibilityLabel(L10nFormat("Git branch: %@", branchName))
+            .help(headState.helpText ?? "")
+            .accessibilityLabel(headState.helpText ?? "")
     }
 }
 
