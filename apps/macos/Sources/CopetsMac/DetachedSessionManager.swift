@@ -12,7 +12,6 @@ final class DetachedSessionManager: ObservableObject {
     private let isMainVisible: () -> Bool
     private var controllers: [String: DetachedSessionWindowController] = [:]
     private var avoidanceLoopTask: Task<Void, Never>?
-    private let avoidanceInterval: TimeInterval = 5
 
     init(
         client: BackendClient,
@@ -104,7 +103,8 @@ final class DetachedSessionManager: ObservableObject {
             guard let self else {
                 return
             }
-            var delay = self.avoidanceInterval
+            var cadence = DetachedOrbObservationCadence()
+            var delay = cadence.activeInterval
             while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(delay))
@@ -113,9 +113,13 @@ final class DetachedSessionManager: ObservableObject {
                     return
                 }
                 let batchStartedAt = Date()
-                await self.runAvoidanceBatch()
+                let outcome = await self.runAvoidanceBatch()
+                let interval = cadence.nextInterval(after: outcome)
+                self.logDevelopment(
+                    "[orb-avoidance] cadence outcome=\(outcome) interval=\(interval)"
+                )
                 delay = DetachedOrbBatchCoordinatorLogic.nextDelay(
-                    interval: self.avoidanceInterval,
+                    interval: interval,
                     batchDuration: Date().timeIntervalSince(batchStartedAt)
                 )
             }
@@ -130,15 +134,15 @@ final class DetachedSessionManager: ObservableObject {
         avoidanceLoopTask = nil
     }
 
-    private func runAvoidanceBatch() async {
+    private func runAvoidanceBatch() async -> DetachedOrbBatchOutcome {
         guard DetachedOrbSmartAvoidancePreferences.shared.canCapture else {
-            return
+            return .idle
         }
         let batchControllers = controllers
             .sorted { $0.key < $1.key }
             .map(\.value)
         guard !batchControllers.isEmpty else {
-            return
+            return .idle
         }
         logDevelopment("[orb-avoidance] batch_started orbs=\(batchControllers.count)")
 
@@ -153,10 +157,15 @@ final class DetachedSessionManager: ObservableObject {
                 DetachedOrbPendingObservation(controller: controller, request: request)
             )
         }
+        let hasSkippedControllers = pendingObservations.count < batchControllers.count
+        guard !pendingObservations.isEmpty else {
+            return .active
+        }
 
         var evaluations: [DetachedOrbBatchEvaluation] = []
         evaluations.reserveCapacity(pendingObservations.count)
         var hasIncompleteEvaluation = false
+        var hasCaptureFailure = false
         let observationsByDisplay = Dictionary(
             grouping: pendingObservations,
             by: { $0.request.target.displayID }
@@ -223,12 +232,13 @@ final class DetachedSessionManager: ObservableObject {
                     evaluations.append(evaluation)
                 }
             } catch is CancellationError {
-                return
+                return .idle
             } catch {
                 for pendingObservation in displayObservations {
                     pendingObservation.controller.noteBatchAnalysisFailure(error)
                 }
                 hasIncompleteEvaluation = true
+                hasCaptureFailure = true
             }
         }
 
@@ -241,7 +251,7 @@ final class DetachedSessionManager: ObservableObject {
                 "[orb-avoidance] batch_aborted reason=incomplete_evaluation "
                     + "evaluated=\(evaluations.count) expected=\(pendingObservations.count)"
             )
-            return
+            return hasCaptureFailure ? .captureFailure : .active
         }
 
         var reservedDestinationFrames: [CGRect] = []
@@ -277,6 +287,11 @@ final class DetachedSessionManager: ObservableObject {
             "[orb-avoidance] batch_planned evaluated=\(evaluations.count) moves=\(moves.count)"
         )
         moveTogether(moves)
+        return hasSkippedControllers
+            || !moves.isEmpty
+            || evaluations.contains(where: \.isCurrentPositionRisky)
+            ? .active
+            : .stable
     }
 
     private func moveTogether(_ moves: [DetachedOrbBatchMove]) {
@@ -612,6 +627,7 @@ private struct DetachedOrbBatchEvaluation {
     let request: DetachedOrbObservationRequest
     let currentRisk: Double
     let currentCaptureConfidence: Double
+    let isCurrentPositionRisky: Bool
     let candidates: [OrbPlacementCandidate]
     let recentAutomaticOrigins: [CGPoint]
     let cooldownActive: Bool
@@ -1061,6 +1077,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             request: request,
             currentRisk: currentRisk.totalRisk,
             currentCaptureConfidence: currentRisk.captureConfidence,
+            isCurrentPositionRisky:
+                currentRisk.totalRisk >= placementConfiguration.triggerRisk,
             candidates: candidates,
             recentAutomaticOrigins: recentAutomaticPositions.compactMap {
                 Date().timeIntervalSince($0.date) <= 15 ? $0.origin : nil
