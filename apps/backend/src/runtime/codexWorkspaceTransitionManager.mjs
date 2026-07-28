@@ -101,6 +101,7 @@ export class CodexWorkspaceTransitionManager {
           ?? "workspace-write",
         permissions: input.permissions,
         dynamicToolAgentId: input.dynamicToolAgentId,
+        config: input.config,
         developerInstructions: input.developerInstructions,
         threadSource: "user",
         excludeTurns: false,

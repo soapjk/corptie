@@ -238,6 +238,47 @@ test("logical session transitions reject stale routing versions without changing
   }
 });
 
+test("a stable Codex session id can route to a different active provider thread", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-stable-session-provider-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "codex:stable-ui-id",
+      title: "Stable UI",
+      agent: "Codex",
+      provider: "codex-app-server",
+      cwd: "/repo/feature",
+      status: "complete",
+      external: {
+        provider: "codex-app-server",
+        threadId: "provider-thread-after-fork",
+        cwd: "/repo/feature",
+        logicalSessionId: "logical:stable",
+        workspace: {
+          id: "worktree:feature",
+          repositoryId: "repository:one",
+          path: "/repo/feature"
+        },
+        routingVersion: 3
+      }
+    });
+
+    const restored = store.getSession("codex:stable-ui-id");
+    assert.equal(restored.id, "codex:stable-ui-id");
+    assert.equal(restored.external.threadId, "provider-thread-after-fork");
+    assert.equal(restored.external.logicalSessionId, "logical:stable");
+    assert.equal(restored.external.workspace.id, "worktree:feature");
+    assert.equal(restored.external.routingVersion, 3);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function workspaceSnapshot() {
   return {
     repository: {

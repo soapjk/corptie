@@ -1013,6 +1013,22 @@ export class CorptieStore {
     };
   }
 
+  getLogicalSessionByLegacySessionId(legacySessionId) {
+    const row = this.selectOne(
+      "SELECT logical_session_id FROM logical_sessions WHERE legacy_session_id = ?",
+      [legacySessionId]
+    );
+    return row ? this.getLogicalSession(row.logical_session_id) : null;
+  }
+
+  getLogicalSessionByProviderThreadId(providerThreadId) {
+    const row = this.selectOne(
+      "SELECT logical_session_id FROM provider_thread_bindings WHERE provider_thread_id = ?",
+      [providerThreadId]
+    );
+    return row ? this.getLogicalSession(row.logical_session_id) : null;
+  }
+
   getProviderThreadBinding(providerThreadId) {
     const row = this.selectOne(
       "SELECT * FROM provider_thread_bindings WHERE provider_thread_id = ?",
@@ -1279,6 +1295,16 @@ export class CorptieStore {
     const row = this.selectOne(
       "SELECT * FROM workspace_transitions WHERE transition_id = ?",
       [transitionId]
+    );
+    return row ? workspaceTransitionFromRow(row) : null;
+  }
+
+  getPendingWorkspaceTransition(logicalSessionId) {
+    const row = this.selectOne(
+      `SELECT * FROM workspace_transitions
+       WHERE logical_session_id = ? AND phase NOT IN ('committed', 'failed')
+       ORDER BY created_at DESC LIMIT 1`,
+      [logicalSessionId]
     );
     return row ? workspaceTransitionFromRow(row) : null;
   }
@@ -1999,7 +2025,9 @@ export class CorptieStore {
     const status = row.status;
     const isCodexAppServer = row.provider === "codex-app-server";
     const publicId = isCodexAppServer || String(row.id).startsWith("codex:") ? row.id : `pty:${row.id}`;
-    const threadId = isCodexAppServer ? String(row.id).replace(/^codex:/, "") : row.id;
+    const threadId = isCodexAppServer
+      ? rawStatus.threadId ?? String(row.id).replace(/^codex:/, "")
+      : row.id;
     const isUnsafeLegacyCodexResume = row.provider === "codex-pty"
       && rawStatus.resume?.strategy === "codex-resume-last"
       && !rawStatus.resume?.agentSessionId
@@ -2045,6 +2073,9 @@ export class CorptieStore {
         activeTurnId: rawStatus.activeTurnId ?? null,
         sandbox: rawStatus.sandbox ?? rawStatus.sandboxMode ?? null,
         approvalPolicy: rawStatus.approvalPolicy ?? null,
+        logicalSessionId: rawStatus.logicalSessionId ?? null,
+        workspace: rawStatus.workspace ?? null,
+        routingVersion: Number(rawStatus.routingVersion ?? 0),
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
         connectionStatus: isCodexAppServer ? null : "pty disconnected",
         currentModel: rawStatus.currentModel ?? rawStatus.resume?.currentModel ?? modelFromArgs(args),
@@ -2369,6 +2400,9 @@ function toRawStatus(session) {
     source: session.external?.source ?? null,
     sandbox: session.external?.sandbox ?? session.sandbox ?? null,
     approvalPolicy: session.external?.approvalPolicy ?? session.approvalPolicy ?? null,
+    logicalSessionId: session.external?.logicalSessionId ?? null,
+    workspace: session.external?.workspace ?? null,
+    routingVersion: Number(session.external?.routingVersion ?? 0),
     capabilities: session.capabilities ?? null,
     exitCode: session.exitCode ?? null,
     signal: session.signal ?? null
