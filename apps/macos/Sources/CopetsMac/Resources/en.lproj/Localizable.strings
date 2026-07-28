@@ -40,3 +40,9 @@
 "Quit Anyway" = "Quit Anyway";
 "Could not stop the backend" = "Could not stop the backend";
 "Corptie was kept open because its backend could not be stopped safely.\n\n%@" = "Corptie was kept open because its backend could not be stopped safely.\n\n%@";
+"Smart Floating Orb Avoidance" = "Smart Floating Orb Avoidance";
+"Automatically moves detached session orbs to nearby areas with less visual content. Corptie analyzes only nearby screen pixels in memory and never saves or uploads screenshots." = "Automatically moves detached session orbs to nearby areas with less visual content. Corptie analyzes only nearby screen pixels in memory and never saves or uploads screenshots.";
+"Screen Recording access granted" = "Screen Recording access granted";
+"Screen Recording access required" = "Screen Recording access required";
+"Open System Settings" = "Open System Settings";
+"Check Again" = "Check Again";

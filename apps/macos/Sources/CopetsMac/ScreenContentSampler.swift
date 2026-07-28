@@ -4,19 +4,10 @@ import ScreenCaptureKit
 
 enum ScreenCapturePermissionStatus: Equatable, Sendable {
     case authorized
-    case denied
+    case notGranted
 
     static var current: Self {
-        CGPreflightScreenCaptureAccess() ? .authorized : .denied
-    }
-}
-
-enum DetachedOrbObservationMode {
-    static var isEnabled: Bool {
-        let value = ProcessInfo.processInfo.environment["CORPTIE_ORB_AVOIDANCE_OBSERVE"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return value == "1" || value == "true" || value == "yes"
+        CGPreflightScreenCaptureAccess() ? .authorized : .notGranted
     }
 }
 
