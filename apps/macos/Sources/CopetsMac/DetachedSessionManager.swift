@@ -298,24 +298,83 @@ final class DetachedSessionManager: ObservableObject {
         guard !moves.isEmpty else {
             return
         }
+        let animation = DetachedOrbTeleportAnimation.configuration(
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
         for move in moves {
             move.controller.prepareBatchMove(move)
         }
+        beginBatchMoveDisappearance(moves, animation: animation)
+
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(animation.disappearDuration))
+            guard let self else {
+                return
+            }
+            let continuingMoves = moves.filter {
+                self.controllers[$0.controller.sessionId] === $0.controller
+                    && $0.controller.canContinueBatchMove($0)
+            }
+            for move in continuingMoves {
+                move.controller.teleportBatchMove(move)
+            }
+            self.beginBatchMoveAppearance(continuingMoves, animation: animation)
+
+            try? await Task.sleep(for: .seconds(animation.appearDuration))
+            let appearingMoves = continuingMoves.filter {
+                self.controllers[$0.controller.sessionId] === $0.controller
+                    && $0.controller.canContinueBatchMove($0)
+            }
+            for move in appearingMoves {
+                move.controller.settleBatchMoveAppearance(
+                    move,
+                    animation: animation
+                )
+            }
+
+            if animation.settleDuration > 0 {
+                try? await Task.sleep(for: .seconds(animation.settleDuration))
+            }
+            for move in appearingMoves where self.controllers[move.controller.sessionId]
+                === move.controller && move.controller.canContinueBatchMove(move) {
+                move.controller.finishBatchMove(move)
+            }
+            for move in moves where !move.controller.canContinueBatchMove(move) {
+                if self.controllers[move.controller.sessionId] === move.controller {
+                    move.controller.restoreBatchMoveAppearanceIfNeeded()
+                }
+            }
+        }
+    }
+
+    private func beginBatchMoveDisappearance(
+        _ moves: [DetachedOrbBatchMove],
+        animation: DetachedOrbTeleportAnimation
+    ) {
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.22
+            context.duration = animation.disappearDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            for move in moves {
+                move.controller.beginBatchMoveDisappearance(
+                    move,
+                    animation: animation
+                )
+            }
+        }
+    }
+
+    private func beginBatchMoveAppearance(
+        _ moves: [DetachedOrbBatchMove],
+        animation: DetachedOrbTeleportAnimation
+    ) {
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = animation.appearDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             for move in moves {
-                move.controller.applyBatchMove(move)
-            }
-        } completionHandler: {
-            Task { @MainActor [weak self] in
-                guard let self else {
-                    return
-                }
-                for move in moves where self.controllers[move.controller.sessionId]
-                    === move.controller {
-                    move.controller.finishBatchMove(move)
-                }
+                move.controller.beginBatchMoveAppearance(
+                    move,
+                    animation: animation
+                )
             }
         }
     }
@@ -338,6 +397,11 @@ private final class DetachedReplyPreviewState: ObservableObject {
     @Published var quickReplyDraft = ""
     @Published var dismissedOptionsFingerprint: String?
     @Published var hoveredOptionId: String?
+}
+
+@MainActor
+private final class DetachedOrbAnimationState: ObservableObject {
+    @Published var scale: CGFloat = 1
 }
 
 private enum DetachedReplyPlacement {
@@ -656,6 +720,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private let requestBatchObservation: () -> Void
     private let panel: NSPanel
     private let previewState = DetachedReplyPreviewState()
+    private let animationState = DetachedOrbAnimationState()
     private lazy var accessoryController = DetachedAccessoryWindowController(
         state: previewState,
         client: client,
@@ -689,6 +754,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var isPointerDown = false
     private var isPointerHovering = false
     private var isMovingAutomatically = false
+    private var automaticMoveDestination: CGPoint?
+    private var automaticMoveDidTeleport = false
     private var isClosing = false
 
     private let orbSize: CGFloat = 72
@@ -749,6 +816,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 client: client,
                 sessionId: sessionId,
                 previewState: previewState,
+                animationState: animationState,
                 primaryAction: { [weak self] in
                     self?.showQuickReply()
                 },
@@ -1147,22 +1215,83 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     func prepareBatchMove(_ move: DetachedOrbBatchMove) {
+        isMovingAutomatically = true
+        automaticMoveDestination = move.origin
+        automaticMoveDidTeleport = false
+    }
+
+    func beginBatchMoveDisappearance(
+        _ move: DetachedOrbBatchMove,
+        animation: DetachedOrbTeleportAnimation
+    ) {
+        guard canContinueBatchMove(move) else {
+            return
+        }
+        withAnimation(.easeIn(duration: animation.disappearDuration)) {
+            animationState.scale = animation.collapsedScale
+        }
+        panel.animator().alphaValue = 0
+    }
+
+    func teleportBatchMove(_ move: DetachedOrbBatchMove) {
+        guard canContinueBatchMove(move) else {
+            return
+        }
+        panel.alphaValue = 0
+        panel.setFrameOrigin(move.origin)
         recentAutomaticPositions.append(
             DetachedOrbRecentAutomaticPosition(origin: move.previousOrigin, date: Date())
         )
         recentAutomaticPositions = Array(recentAutomaticPositions.suffix(4))
-        isMovingAutomatically = true
+        automaticMoveDidTeleport = true
     }
 
-    func applyBatchMove(_ move: DetachedOrbBatchMove) {
-        panel.animator().setFrame(
-            NSRect(origin: move.origin, size: panel.frame.size),
-            display: true
-        )
+    func beginBatchMoveAppearance(
+        _ move: DetachedOrbBatchMove,
+        animation: DetachedOrbTeleportAnimation
+    ) {
+        guard canContinueBatchMove(move) else {
+            return
+        }
+        withAnimation(.easeOut(duration: animation.appearDuration)) {
+            animationState.scale = animation.overshootScale
+        }
+        panel.animator().alphaValue = 1
+    }
+
+    func settleBatchMoveAppearance(
+        _ move: DetachedOrbBatchMove,
+        animation: DetachedOrbTeleportAnimation
+    ) {
+        guard canContinueBatchMove(move) else {
+            return
+        }
+        guard animation.settleDuration > 0 else {
+            animationState.scale = 1
+            return
+        }
+        withAnimation(.easeInOut(duration: animation.settleDuration)) {
+            animationState.scale = 1
+        }
+    }
+
+    func canContinueBatchMove(_ move: DetachedOrbBatchMove) -> Bool {
+        guard isMovingAutomatically, !isClosing, let automaticMoveDestination else {
+            return false
+        }
+        return Self.distance(automaticMoveDestination, move.origin) <= 0.5
+    }
+
+    func restoreBatchMoveAppearanceIfNeeded() {
+        panel.alphaValue = 1
+        animationState.scale = 1
     }
 
     func finishBatchMove(_ move: DetachedOrbBatchMove) {
         isMovingAutomatically = false
+        automaticMoveDestination = nil
+        automaticMoveDidTeleport = false
+        restoreBatchMoveAppearanceIfNeeded()
         cooldownUntil = Date().addingTimeInterval(automaticMoveCooldown)
         updateAccessory(for: currentSession)
         logDevelopment(
@@ -1190,6 +1319,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func handlePointerInteractionBegan() {
+        cancelAutomaticMoveForInteraction()
         isPointerDown = true
     }
 
@@ -1209,6 +1339,9 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func handleHoverChanged(_ hovering: Bool) {
         isPointerHovering = hovering
+        if hovering {
+            cancelAutomaticMoveForInteraction()
+        }
         if !hovering {
             scheduleObservationIfNeeded(delay: 0.8)
         }
@@ -1218,6 +1351,25 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
         scheduleObservationIfNeeded(delay: delay)
+    }
+
+    private func cancelAutomaticMoveForInteraction() {
+        guard isMovingAutomatically else {
+            return
+        }
+        let didTeleport = automaticMoveDidTeleport
+        isMovingAutomatically = false
+        automaticMoveDestination = nil
+        automaticMoveDidTeleport = false
+        restoreBatchMoveAppearanceIfNeeded()
+        if didTeleport {
+            cooldownUntil = Date().addingTimeInterval(automaticMoveCooldown)
+            updateAccessory(for: currentSession)
+        }
+        logDevelopment(
+            "[orb-avoidance] batch_animation_cancelled session=\(sessionId) "
+                + "phase=\(didTeleport ? "after_teleport" : "before_teleport")"
+        )
     }
 
     private var isInteractionFrozen: Bool {
@@ -1496,6 +1648,7 @@ private struct DetachedSessionOrbView: View {
     @ObservedObject var client: BackendClient
     let sessionId: String
     @ObservedObject var previewState: DetachedReplyPreviewState
+    @ObservedObject var animationState: DetachedOrbAnimationState
     let primaryAction: () -> Void
     let showMain: () -> Void
     let openSession: (TaskSession) -> Void
@@ -1519,6 +1672,7 @@ private struct DetachedSessionOrbView: View {
             }
         }
         .frame(width: orbRenderSize, height: orbRenderSize, alignment: .topLeading)
+        .scaleEffect(animationState.scale)
         .background(Color.clear)
         .environment(\.locale, appLanguage.locale)
     }
