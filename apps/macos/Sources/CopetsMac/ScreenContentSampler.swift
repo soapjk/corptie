@@ -155,7 +155,7 @@ actor AsyncSerialGate {
 actor ScreenContentSampler {
     static let shared = ScreenContentSampler()
 
-    private let outputSize = 256
+    private let outputSize = 384
     private let contentCacheLifetime: TimeInterval = 2
     private let captureGate = AsyncSerialGate()
     private var cachedContent: SCShareableContent?

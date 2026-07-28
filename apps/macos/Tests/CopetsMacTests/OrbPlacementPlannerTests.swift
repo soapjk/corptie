@@ -21,6 +21,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
         })
         let distances = candidates.map { hypot($0.x - current.x, $0.y - current.y) }
         XCTAssertEqual(distances, distances.sorted())
+        XCTAssertGreaterThan(distances.max() ?? 0, 300)
     }
 
     func testGenerationFiltersOccupiedAndAccessoryFrames() {
@@ -41,7 +42,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
         })
     }
 
-    func testConfirmedPlanChoosesNearestSafeCandidate() {
+    func testConfirmedPlanKeepsPreviouslyConfirmedSafeCandidate() {
         let nearest = CGPoint(x: 952, y: 600)
         let farther = CGPoint(x: 880, y: 600)
         let input = makeInput(
@@ -59,6 +60,34 @@ final class OrbPlacementPlannerTests: XCTestCase {
         }
         XCTAssertEqual(proposal.origin, nearest)
         XCTAssertEqual(plan.userAnchor, current)
+    }
+
+    func testInitialPlanPrefersFartherCandidateAmongSimilarlySafePositions() {
+        let nearby = CGPoint(x: 952, y: 600)
+        let farAway = CGPoint(x: 680, y: 600)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(candidates: [
+                candidate(nearby, risk: 0.02),
+                candidate(farAway, risk: 0.04)
+            ])
+        )
+
+        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
+        XCTAssertEqual(plan.pendingCandidateOrigin, farAway)
+    }
+
+    func testMeaningfullyCleanerCandidateWinsEvenWhenItIsCloser() {
+        let nearby = CGPoint(x: 952, y: 600)
+        let farAway = CGPoint(x: 680, y: 600)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(candidates: [
+                candidate(nearby, risk: 0.01),
+                candidate(farAway, risk: 0.08)
+            ])
+        )
+
+        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
+        XCTAssertEqual(plan.pendingCandidateOrigin, nearby)
     }
 
     func testObservedModerateTextRiskCanMoveToClearlySaferCandidate() {
