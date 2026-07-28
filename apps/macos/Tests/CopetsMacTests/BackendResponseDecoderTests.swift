@@ -74,4 +74,23 @@ final class BackendResponseDecoderTests: XCTestCase {
         XCTAssertEqual(session?.external?.workspace?.branchName, "feature/workspace")
         XCTAssertEqual(session?.external?.routingVersion, 4)
     }
+
+    func testWorkspaceInventoryEventDecodesNewlyDiscoveredWorktrees() throws {
+        let data = Data(
+            """
+            {
+              "payload": {
+                "newlyDiscoveredWorkspaces": [{
+                  "worktreeId": "worktree:new",
+                  "path": "/repo/feature worktree"
+                }]
+              }
+            }
+            """.utf8
+        )
+
+        let event = try JSONDecoder().decode(WorkspaceInventoryEventEnvelope.self, from: data)
+        XCTAssertEqual(event.payload.newlyDiscoveredWorkspaces.first?.worktreeId, "worktree:new")
+        XCTAssertEqual(event.payload.newlyDiscoveredWorkspaces.first?.path, "/repo/feature worktree")
+    }
 }

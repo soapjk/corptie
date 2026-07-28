@@ -631,6 +631,7 @@ export class CorptieStore {
         forked_at_turn_id TEXT,
         instruction_sources_json TEXT NOT NULL DEFAULT '[]',
         permission_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        routing_version INTEGER NOT NULL DEFAULT 1,
         state TEXT NOT NULL
           CHECK (state IN ('active', 'superseded', 'invalid', 'orphaned')),
         created_at TEXT NOT NULL,
@@ -689,6 +690,7 @@ export class CorptieStore {
     this.ensureColumn("sessions", "sort_order", "REAL");
     this.ensureColumn("sessions", "avatar_path", "TEXT");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
+    this.ensureColumn("provider_thread_bindings", "routing_version", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -904,6 +906,12 @@ export class CorptieStore {
     }));
   }
 
+  listAllGitWorktrees() {
+    return this.selectAll(
+      "SELECT worktree_id FROM git_worktrees ORDER BY availability ASC, path ASC"
+    ).map((row) => this.getGitWorktree(row.worktree_id));
+  }
+
   getGitWorktree(worktreeId) {
     const row = this.selectOne(
       "SELECT * FROM git_worktrees WHERE worktree_id = ?",
@@ -960,8 +968,8 @@ export class CorptieStore {
         `INSERT INTO provider_thread_bindings (
           provider_thread_id, logical_session_id, worktree_id, bound_cwd,
           parent_thread_id, forked_at_turn_id, instruction_sources_json,
-          permission_snapshot_json, state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, 'active', ?, ?)`,
+          permission_snapshot_json, routing_version, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, 1, 'active', ?, ?)`,
         [
           providerThreadId,
           logicalSessionId,
@@ -1029,6 +1037,74 @@ export class CorptieStore {
     return row ? this.getLogicalSession(row.logical_session_id) : null;
   }
 
+  listLogicalSessionsByWorkspaceId(worktreeId) {
+    return this.selectAll(
+      "SELECT logical_session_id FROM logical_sessions WHERE active_workspace_id = ?",
+      [worktreeId]
+    ).map((row) => this.getLogicalSession(row.logical_session_id));
+  }
+
+  rebindActiveWorkspacePath(input) {
+    const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
+    const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
+    const worktreeId = requiredText(input?.worktreeId, "worktreeId");
+    const boundCwd = requiredText(input?.boundCwd, "boundCwd");
+    const routingVersion = Number(input.routingVersion);
+    const timestamp = input.updatedAt || new Date().toISOString();
+    const target = this.getGitWorktree(worktreeId);
+    if (!target || target.availability !== "available") {
+      throw new Error(`Worktree ${worktreeId} is not available.`);
+    }
+    if (boundCwd !== (target.canonicalPath || target.path)) {
+      throw new Error("The rebound cwd does not match the registered worktree path.");
+    }
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const logical = this.selectOne(
+        "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
+        [logicalSessionId]
+      );
+      if (!logical
+        || logical.active_thread_id !== providerThreadId
+        || logical.active_workspace_id !== worktreeId
+        || Number(logical.routing_version) !== routingVersion) {
+        throw new Error("The logical session route changed before its workspace path could be rebound.");
+      }
+      this.db.run(
+        `UPDATE provider_thread_bindings
+         SET bound_cwd = ?, instruction_sources_json = ?, permission_snapshot_json = ?,
+             routing_version = ?, updated_at = ?
+         WHERE provider_thread_id = ? AND state = 'active'`,
+        [
+          boundCwd,
+          JSON.stringify(input.instructionSources ?? []),
+          JSON.stringify(input.permissionSnapshot ?? {}),
+          routingVersion + 1,
+          timestamp,
+          providerThreadId
+        ]
+      );
+      this.db.run(
+        `UPDATE logical_sessions
+         SET routing_version = routing_version + 1, updated_at = ?
+         WHERE logical_session_id = ?`,
+        [timestamp, logicalSessionId]
+      );
+      this.db.run(
+        `UPDATE sessions SET cwd = ?, updated_at = ?
+         WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
+        [boundCwd, timestamp, logicalSessionId]
+      );
+      this.assertLogicalSessionRoute(logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getLogicalSession(logicalSessionId);
+  }
+
   getProviderThreadBinding(providerThreadId) {
     const row = this.selectOne(
       "SELECT * FROM provider_thread_bindings WHERE provider_thread_id = ?",
@@ -1059,8 +1135,8 @@ export class CorptieStore {
       `INSERT INTO provider_thread_bindings (
         provider_thread_id, logical_session_id, worktree_id, bound_cwd,
         parent_thread_id, forked_at_turn_id, instruction_sources_json,
-        permission_snapshot_json, state, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        permission_snapshot_json, routing_version, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(provider_thread_id) DO UPDATE SET
         instruction_sources_json=excluded.instruction_sources_json,
         permission_snapshot_json=excluded.permission_snapshot_json,
@@ -1075,6 +1151,7 @@ export class CorptieStore {
         input.forkedAtTurnId || null,
         JSON.stringify(input.instructionSources ?? []),
         JSON.stringify(input.permissionSnapshot ?? {}),
+        Number(input.routingVersion) || 1,
         state,
         timestamp,
         timestamp
@@ -1155,6 +1232,10 @@ export class CorptieStore {
     if (!allowedPhases.has(update.phase)) {
       throw new Error(`Unsupported workspace transition phase: ${update.phase}`);
     }
+    const allowedStrategies = new Set(["fork", "handoff", "settingsUpdate"]);
+    if (update.strategy !== undefined && !allowedStrategies.has(update.strategy)) {
+      throw new Error(`Unsupported workspace transition strategy: ${update.strategy}`);
+    }
     const transition = this.getWorkspaceTransition(transitionId);
     if (!transition) throw new Error(`Workspace transition ${transitionId} was not found.`);
     const timestamp = update.updatedAt || new Date().toISOString();
@@ -1162,11 +1243,12 @@ export class CorptieStore {
     try {
       this.db.run(
         `UPDATE workspace_transitions
-         SET phase = ?, last_completed_turn_id = ?, new_thread_id = ?,
+         SET phase = ?, strategy = ?, last_completed_turn_id = ?, new_thread_id = ?,
              error_json = ?, updated_at = ?
          WHERE transition_id = ?`,
         [
           update.phase,
+          update.strategy ?? transition.strategy,
           update.lastCompletedTurnId ?? transition.lastCompletedTurnId,
           update.newThreadId ?? transition.newThreadId,
           update.error === undefined ? (transition.error ? JSON.stringify(transition.error) : null) : JSON.stringify(update.error),
@@ -1230,8 +1312,8 @@ export class CorptieStore {
         `INSERT INTO provider_thread_bindings (
           provider_thread_id, logical_session_id, worktree_id, bound_cwd,
           parent_thread_id, forked_at_turn_id, instruction_sources_json,
-          permission_snapshot_json, state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          permission_snapshot_json, routing_version, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
         [
           newThreadId,
           transition.logicalSessionId,
@@ -1241,6 +1323,7 @@ export class CorptieStore {
           binding.forkedAtTurnId || transition.lastCompletedTurnId,
           JSON.stringify(binding.instructionSources ?? []),
           JSON.stringify(binding.permissionSnapshot ?? {}),
+          Number(logical.routing_version) + 1,
           timestamp,
           timestamp
         ]
@@ -1304,6 +1387,16 @@ export class CorptieStore {
       `SELECT * FROM workspace_transitions
        WHERE logical_session_id = ? AND phase NOT IN ('committed', 'failed')
        ORDER BY created_at DESC LIMIT 1`,
+      [logicalSessionId]
+    );
+    return row ? workspaceTransitionFromRow(row) : null;
+  }
+
+  getLatestCommittedWorkspaceTransition(logicalSessionId) {
+    const row = this.selectOne(
+      `SELECT * FROM workspace_transitions
+       WHERE logical_session_id = ? AND phase = 'committed'
+       ORDER BY updated_at DESC LIMIT 1`,
       [logicalSessionId]
     );
     return row ? workspaceTransitionFromRow(row) : null;
@@ -2169,6 +2262,7 @@ function providerThreadBindingFromRow(row) {
     forkedAtTurnId: row.forked_at_turn_id,
     instructionSources: parseJson(row.instruction_sources_json, []),
     permissionSnapshot: parseJson(row.permission_snapshot_json, {}),
+    routingVersion: Number(row.routing_version ?? 1),
     state: row.state,
     createdAt: row.created_at,
     updatedAt: row.updated_at

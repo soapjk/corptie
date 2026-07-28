@@ -8,10 +8,10 @@ export async function assertWorkspaceRouteUsable(input) {
   }
 
   if (input.providerThreadId && logical.activeThreadId !== input.providerThreadId) {
-    throw routeError(
-      "STALE_WORKSPACE_ROUTE",
-      `Thread ${input.providerThreadId} is no longer active for this session.`
-    );
+    if (input.allowHistorical === true) {
+      return assertHistoricalWorkspaceUsable(input, logical);
+    }
+    throw routeError("STALE_WORKSPACE_ROUTE", `Thread ${input.providerThreadId} is no longer active for this session.`);
   }
 
   const binding = logical.activeBinding;
@@ -67,6 +67,52 @@ export async function assertWorkspaceRouteUsable(input) {
     providerThreadId: logical.activeThreadId,
     worktreeId: logical.activeWorkspaceId,
     routingVersion: logical.routingVersion
+  };
+}
+
+async function assertHistoricalWorkspaceUsable(input, logical) {
+  const binding = input.store.getProviderThreadBinding(input.providerThreadId);
+  if (!binding
+    || binding.logicalSessionId !== logical.logicalSessionId
+    || binding.state === "active") {
+    throw routeError("STALE_WORKSPACE_ROUTE", `Thread ${input.providerThreadId} is not a historical route for this session.`);
+  }
+  const worktree = binding.worktreeId
+    ? input.store.getGitWorktree(binding.worktreeId)
+    : null;
+  if (binding.worktreeId && (!worktree || worktree.availability !== "available")) {
+    throw routeError("WORKSPACE_UNAVAILABLE", "The historical Git worktree is unavailable.");
+  }
+  try {
+    if (binding.worktreeId) {
+      const identity = await (input.inspectWorkspace ?? inspectGitWorkspace)(binding.boundCwd);
+      if (
+        identity.worktreeId !== binding.worktreeId
+        || identity.repositoryId !== worktree.repositoryId
+      ) {
+        throw routeError("WORKSPACE_IDENTITY_CHANGED", "The historical path now resolves to a different Git worktree.");
+      }
+      return routeMetadata(logical, binding, identity.canonicalPath);
+    }
+    return routeMetadata(
+      logical,
+      binding,
+      await (input.realpath ?? realpath)(binding.boundCwd)
+    );
+  } catch (error) {
+    if (error?.code && error.statusCode) throw error;
+    throw routeError("WORKSPACE_UNAVAILABLE", "The historical workspace path is unavailable.");
+  }
+}
+
+function routeMetadata(logical, binding, cwd) {
+  return {
+    cwd,
+    logicalSessionId: logical.logicalSessionId,
+    providerThreadId: binding.providerThreadId,
+    worktreeId: binding.worktreeId ?? null,
+    routingVersion: binding.routingVersion,
+    historical: binding.state !== "active"
   };
 }
 

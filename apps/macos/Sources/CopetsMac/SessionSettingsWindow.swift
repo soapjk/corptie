@@ -36,21 +36,22 @@ private final class SessionSettingsWindowController: NSObject, NSWindowDelegate 
     init(session: TaskSession, backendClient: BackendClient, didClose: @escaping () -> Void) {
         self.didClose = didClose
         let closeHandler = SessionSettingsWindowCloseHandler()
-        let content = SessionSettingsView(session: session) { [weak backendClient] sandbox, approvalPolicy in
-            guard let backendClient else { return false }
-            let succeeded = await backendClient.updateSessionPermissions(
-                session: session,
-                sandbox: sandbox,
-                approvalPolicy: approvalPolicy
-            )
-            if succeeded {
-                closeHandler.close()
+        let content = SessionSettingsView(session: session, backendClient: backendClient) {
+            [weak backendClient] sandbox, approvalPolicy in
+                guard let backendClient else { return false }
+                let succeeded = await backendClient.updateSessionPermissions(
+                    session: session,
+                    sandbox: sandbox,
+                    approvalPolicy: approvalPolicy
+                )
+                if succeeded {
+                    closeHandler.close()
+                }
+                return succeeded
             }
-            return succeeded
-        }
         let hostingController = NSHostingController(rootView: content)
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 430, height: 330),
+            contentRect: NSRect(x: 0, y: 0, width: 470, height: 480),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -84,12 +85,20 @@ private struct SessionSettingsView: View {
     @State private var completionSoundId: String
     @State private var isSaving = false
     @State private var errorMessage: String?
+    @State private var workspaceHistory: [SessionWorkspaceHistory] = []
+    @State private var isLoadingWorkspaceHistory = false
 
     let session: TaskSession
+    @ObservedObject var backendClient: BackendClient
     let save: (String, String) async -> Bool
 
-    init(session: TaskSession, save: @escaping (String, String) async -> Bool) {
+    init(
+        session: TaskSession,
+        backendClient: BackendClient,
+        save: @escaping (String, String) async -> Bool
+    ) {
         self.session = session
+        self.backendClient = backendClient
         self.save = save
         _sandbox = State(initialValue: session.external?.sandbox ?? "workspace-write")
         _approvalPolicy = State(initialValue: session.external?.approvalPolicy ?? "on-request")
@@ -177,6 +186,48 @@ private struct SessionSettingsView: View {
                 SessionCompletionSoundManager.setSelectedSoundId(soundId, for: session.id)
             }
 
+            if session.external?.provider == "codex-app-server" {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label(L10n("Workspace History"), systemImage: "point.3.connected.trianglepath.dotted")
+                            .fontWeight(.semibold)
+                        Spacer()
+                        if isLoadingWorkspaceHistory {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                    if session.external?.workspace?.transitionStrategy == "handoff" {
+                        Label(
+                            L10n("The active thread was created through a context handoff."),
+                            systemImage: "arrow.triangle.branch"
+                        )
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    }
+                    Label(
+                        L10n("Commands and terminals started by previous threads remain attached to their original workspace."),
+                        systemImage: "terminal"
+                    )
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    if workspaceHistory.isEmpty && !isLoadingWorkspaceHistory {
+                        Text(L10n("No previous workspace threads."))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: 6) {
+                                ForEach(workspaceHistory) { entry in
+                                    workspaceHistoryRow(entry)
+                                }
+                            }
+                        }
+                        .frame(maxHeight: 105)
+                    }
+                }
+            }
+
             if let errorMessage {
                 Text(errorMessage)
                     .font(.system(size: 11, weight: .medium))
@@ -195,7 +246,13 @@ private struct SessionSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 430, height: 330)
+        .frame(width: 470, height: 480)
+        .task {
+            guard session.external?.provider == "codex-app-server" else { return }
+            isLoadingWorkspaceHistory = true
+            workspaceHistory = await backendClient.workspaceHistory(for: session)
+            isLoadingWorkspaceHistory = false
+        }
     }
 
     private var selectedSoundOption: SessionCompletionSoundOption {
@@ -204,6 +261,43 @@ private struct SessionSettingsView: View {
 
     private var supportsPermissionChanges: Bool {
         session.external?.provider == "codex-app-server"
+    }
+
+    @ViewBuilder
+    private func workspaceHistoryRow(_ entry: SessionWorkspaceHistory) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: entry.readOnly ? "clock" : "circle.fill")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(entry.readOnly ? .secondary : CorptiePalette.connected)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.branchName ?? L10n("Detached or non-branch workspace"))
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .lineLimit(1)
+                Text(entry.boundCwd)
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer()
+            if entry.readOnly {
+                Button(L10n("Open Read Only")) {
+                    Task {
+                        if await backendClient.openHistoricalThread(entry, for: session) {
+                            NSApp.activate(ignoringOtherApps: true)
+                        }
+                    }
+                }
+                .controlSize(.small)
+            } else {
+                Text(L10n("Active"))
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(CorptiePalette.connected)
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func saveChanges() {

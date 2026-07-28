@@ -51,6 +51,36 @@ test("rejects an inactive provider thread", async () => {
   );
 });
 
+test("allows read-only review against a validated historical worktree route", async () => {
+  const result = await assertWorkspaceRouteUsable({
+    store: {
+      getProviderThreadBinding: () => ({
+        providerThreadId: "thread:old",
+        logicalSessionId: "logical:one",
+        worktreeId: "worktree:old",
+        boundCwd: "/repo/old",
+        routingVersion: 2,
+        state: "superseded"
+      }),
+      getGitWorktree: (id) => id === "worktree:old"
+        ? { worktreeId: id, repositoryId: "repository:one", availability: "available" }
+        : worktree
+    },
+    logicalSession: route(),
+    providerThreadId: "thread:old",
+    allowHistorical: true,
+    inspectWorkspace: async () => ({
+      repositoryId: "repository:one",
+      worktreeId: "worktree:old",
+      canonicalPath: "/repo/old"
+    })
+  });
+
+  assert.equal(result.historical, true);
+  assert.equal(result.routingVersion, 2);
+  assert.equal(result.cwd, "/repo/old");
+});
+
 test("rejects missing and invalidated worktrees", async () => {
   for (const unavailable of [null, { ...worktree, availability: "missing" }]) {
     await assert.rejects(
