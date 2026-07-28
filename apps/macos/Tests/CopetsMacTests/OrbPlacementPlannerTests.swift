@@ -61,6 +61,20 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertEqual(plan.userAnchor, current)
     }
 
+    func testObservedModerateTextRiskCanMoveToClearlySaferCandidate() {
+        let target = CGPoint(x: 952, y: 600)
+        let input = makeInput(
+            currentRisk: 0.283,
+            candidates: [candidate(target, risk: 0.15)],
+            pending: target
+        )
+
+        guard case let .move(proposal) = OrbPlacementPlanner.plan(input: input).action else {
+            return XCTFail("Expected observed moderate content risk to trigger avoidance")
+        }
+        XCTAssertEqual(proposal.origin, target)
+    }
+
     func testFirstMatchingEvaluationWaitsForConfirmation() {
         let target = CGPoint(x: 952, y: 600)
         let plan = OrbPlacementPlanner.plan(
@@ -85,10 +99,10 @@ final class OrbPlacementPlannerTests: XCTestCase {
     func testInsufficientImprovementKeepsCurrentPosition() {
         let input = makeInput(
             currentRisk: 0.43,
-            candidates: [candidate(CGPoint(x: 952, y: 600), risk: 0.21)]
+            candidates: [candidate(CGPoint(x: 952, y: 600), risk: 0.17)]
         )
         var configuration = OrbPlacementPlannerConfiguration()
-        configuration.minimumImprovement = 0.25
+        configuration.minimumImprovement = 0.30
 
         XCTAssertEqual(
             OrbPlacementPlanner.plan(input: input, configuration: configuration).action,

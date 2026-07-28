@@ -804,14 +804,21 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 cooldownActive: Date() < cooldownUntil
             )
         )
+        let bestCandidateRisk = candidates
+            .filter { Self.distance($0.origin, request.currentOrigin) > 0.5 }
+            .map(\.contentRisk)
+            .min()
 
         switch plan.action {
         case let .hold(reason):
             pendingCandidateOrigin = plan.pendingCandidateOrigin
             let nextDelay = reason == .awaitingConfirmation ? 0.65 : idleObservationInterval
+            let bestScoreDescription = bestCandidateRisk.map(Self.logScore) ?? "unknown"
             logDevelopment(
                 "[orb-avoidance] evaluated session=\(sessionId) " +
-                "risk=\(Self.logScore(currentRisk.totalRisk)) decision=\(reason)"
+                "risk=\(Self.logScore(currentRisk.totalRisk)) " +
+                "best=\(bestScoreDescription) " +
+                "decision=\(reason)"
             )
             scheduleObservationIfNeeded(delay: nextDelay)
         case let .move(proposal):
