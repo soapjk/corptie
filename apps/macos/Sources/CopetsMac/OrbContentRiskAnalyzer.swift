@@ -118,9 +118,6 @@ enum OrbContentRiskAnalyzer {
             return .unknown(.zeroOrTransparentCapture)
         }
 
-        let lumaByCoordinate = Dictionary(
-            uniqueKeysWithValues: samples.map { (coordinateKey(x: $0.x, y: $0.y), $0.luminance) }
-        )
         let luminances = samples.map(\.luminance)
         let meanLuminance = luminances.reduce(0, +) / Double(luminances.count)
         let standardDeviation = sqrt(
@@ -130,7 +127,7 @@ enum OrbContentRiskAnalyzer {
             } / Double(luminances.count)
         )
 
-        let edgeAnalysis = edgeAnalysis(samples: samples, lumaByCoordinate: lumaByCoordinate)
+        let edgeAnalysis = edgeAnalysis(samples: samples, frame: frame, mask: mask)
         let edgeDensity = edgeAnalysis.density
         let localContrastSalience = edgeAnalysis.localContrastSalience
         let luminanceVariance = clamp01(standardDeviation / 0.25)
@@ -231,23 +228,42 @@ enum OrbContentRiskAnalyzer {
 
     private static func edgeAnalysis(
         samples: [Sample],
-        lumaByCoordinate: [Int64: Double]
+        frame: OrbContentPixelFrame,
+        mask: OrbCircularMask
     ) -> EdgeAnalysis {
+        let histogramBucketCount = 1_024
         var strongEdgeCount = 0
+        var subtleEdgeCount = 0
         var gradientSum = 0.0
         var gradientCount = 0
-        var gradients: [Double] = []
-        gradients.reserveCapacity(samples.count)
+        var gradientHistogram = Array(repeating: 0, count: histogramBucketCount)
 
         for sample in samples {
             var gradient = 0.0
-            if let right = lumaByCoordinate[coordinateKey(x: sample.x + 1, y: sample.y)] {
+            if let right = luminance(
+                atX: sample.x + 1,
+                y: sample.y,
+                in: frame,
+                mask: mask
+            ) {
                 gradient = max(gradient, abs(right - sample.luminance))
             }
-            if let below = lumaByCoordinate[coordinateKey(x: sample.x, y: sample.y + 1)] {
+            if let below = luminance(
+                atX: sample.x,
+                y: sample.y + 1,
+                in: frame,
+                mask: mask
+            ) {
                 gradient = max(gradient, abs(below - sample.luminance))
             }
-            gradients.append(gradient)
+            let bucket = min(
+                histogramBucketCount - 1,
+                max(0, Int((gradient * Double(histogramBucketCount - 1)).rounded()))
+            )
+            gradientHistogram[bucket] += 1
+            if gradient >= 0.012 {
+                subtleEdgeCount += 1
+            }
             guard gradient > 0 else {
                 continue
             }
@@ -268,16 +284,20 @@ enum OrbContentRiskAnalyzer {
                 + 0.35 * clamp01(meanGradient / 0.20)
         )
 
-        gradients.sort()
-        let percentileIndex = min(
-            gradients.count - 1,
-            Int((Double(gradients.count - 1) * 0.90).rounded())
-        )
-        let highPercentileGradient = gradients[percentileIndex]
+        let percentileRank = Int((Double(samples.count - 1) * 0.90).rounded())
+        var accumulatedCount = 0
+        var percentileBucket = 0
+        for (bucket, count) in gradientHistogram.enumerated() {
+            accumulatedCount += count
+            if accumulatedCount > percentileRank {
+                percentileBucket = bucket
+                break
+            }
+        }
+        let highPercentileGradient =
+            Double(percentileBucket) / Double(histogramBucketCount - 1)
         let contrastStrength = clamp01((highPercentileGradient - 0.004) / 0.025)
-        let subtleEdgeCoverage = Double(
-            gradients.lazy.filter { $0 >= 0.012 }.count
-        ) / Double(samples.count)
+        let subtleEdgeCoverage = Double(subtleEdgeCount) / Double(samples.count)
         let normalizedCoverage = clamp01(subtleEdgeCoverage / 0.08)
         let localContrastSalience = clamp01(
             0.70 * contrastStrength + 0.30 * normalizedCoverage
@@ -289,19 +309,26 @@ enum OrbContentRiskAnalyzer {
     }
 
     private static func colorEntropy(samples: [Sample]) -> Double {
-        var buckets: [Int: Int] = [:]
+        var buckets = Array(repeating: 0, count: 512)
+        var populatedBucketCount = 0
         for sample in samples {
             let bucket = (Int(sample.red >> 5) << 6)
                 | (Int(sample.green >> 5) << 3)
                 | Int(sample.blue >> 5)
-            buckets[bucket, default: 0] += 1
+            if buckets[bucket] == 0 {
+                populatedBucketCount += 1
+            }
+            buckets[bucket] += 1
         }
-        guard buckets.count > 1 else {
+        guard populatedBucketCount > 1 else {
             return 0
         }
 
         let count = Double(samples.count)
-        let entropy = buckets.values.reduce(0.0) { result, bucketCount in
+        let entropy = buckets.reduce(0.0) { result, bucketCount in
+            guard bucketCount > 0 else {
+                return result
+            }
             let probability = Double(bucketCount) / count
             return result - probability * log2(probability)
         }
@@ -393,8 +420,26 @@ enum OrbContentRiskAnalyzer {
         return 1
     }
 
-    private static func coordinateKey(x: Int, y: Int) -> Int64 {
-        (Int64(y) << 32) ^ Int64(UInt32(truncatingIfNeeded: x))
+    private static func luminance(
+        atX x: Int,
+        y: Int,
+        in frame: OrbContentPixelFrame,
+        mask: OrbCircularMask
+    ) -> Double? {
+        guard x >= 0, x < frame.width, y >= 0, y < frame.height else {
+            return nil
+        }
+        let dx = (Double(x) + 0.5) - mask.centerX
+        let dy = (Double(y) + 0.5) - mask.centerY
+        guard dx * dx + dy * dy <= mask.radius * mask.radius else {
+            return nil
+        }
+        let offset = y * frame.bytesPerRow + x * 4
+        return (
+            0.2126 * Double(frame.rgbaBytes[offset])
+                + 0.7152 * Double(frame.rgbaBytes[offset + 1])
+                + 0.0722 * Double(frame.rgbaBytes[offset + 2])
+        ) / 255
     }
 
     private static func clamp01(_ value: Double) -> Double {
