@@ -123,6 +123,80 @@ test("invalid fork instruction sources preserve the original route and retain an
   }
 });
 
+test("restart recovery resumes a validated fork and commits the stored transition", async () => {
+  const fixture = await createFixture("recover-validating");
+  fixture.store.beginWorkspaceTransition({
+    transitionId: "transition:recover",
+    logicalSessionId: "logical:one",
+    targetWorktreeId: "worktree:feature",
+    sourceRoutingVersion: 1,
+    lastCompletedTurnId: "turn-7",
+    phase: "forking"
+  });
+  fixture.store.updateWorkspaceTransition("transition:recover", {
+    phase: "validatingInstructions",
+    newThreadId: "thread-recovered"
+  });
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async resumeThread(threadId, options) {
+        assert.equal(threadId, "thread-recovered");
+        assert.equal(options.cwd, fixture.feature);
+        return {
+          thread: { id: threadId, cwd: fixture.feature },
+          cwd: fixture.feature,
+          runtimeWorkspaceRoots: [fixture.feature],
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      }
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.recoverWorkspaceTransition("transition:recover");
+    assert.equal(result.status, "committed");
+    assert.equal(result.logicalSession.activeThreadId, "thread-recovered");
+    assert.equal(result.logicalSession.routingVersion, 2);
+    assert.equal(result.event.recovered, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("restart recovery fails an ambiguous forking journal without changing the source route", async () => {
+  const fixture = await createFixture("recover-ambiguous");
+  fixture.store.beginWorkspaceTransition({
+    transitionId: "transition:ambiguous",
+    logicalSessionId: "logical:one",
+    targetWorktreeId: "worktree:feature",
+    sourceRoutingVersion: 1,
+    lastCompletedTurnId: "turn-7",
+    phase: "forking"
+  });
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {}
+  });
+
+  try {
+    const result = await manager.recoverWorkspaceTransition("transition:ambiguous");
+    assert.equal(result.status, "failed");
+    assert.match(result.transition.error.message, /could not uniquely identify/);
+    const logical = fixture.store.getLogicalSession("logical:one");
+    assert.equal(logical.activeThreadId, "thread-source");
+    assert.equal(logical.routingVersion, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(label) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-transition-${label}-`));
   const main = join(directory, "main worktree");

@@ -358,6 +358,28 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
   });
 }
 
+function refreshWorkspaceInventoryAfterTurn(logical) {
+  if (!logical?.repositoryId || !logical.activeBinding?.boundCwd) return;
+  const previousVersion = logical.activeWorkspaceId
+    ? store.getGitWorktree(logical.activeWorkspaceId)?.inventoryVersion
+    : null;
+  createGitWorkspaceSnapshot(logical.activeBinding.boundCwd)
+    .then((snapshot) => {
+      store.upsertGitWorkspaceSnapshot(snapshot);
+      if (snapshot.inventoryVersion === previousVersion) return;
+      emitEvent("WorkspaceInventoryChanged", {
+        sessionId: logical.legacySessionId,
+        logicalSessionId: logical.logicalSessionId,
+        repositoryId: logical.repositoryId,
+        inventoryVersion: snapshot.inventoryVersion,
+        workspaces: store.listGitWorktrees(logical.repositoryId)
+      }, { sessionId: logical.legacySessionId });
+    })
+    .catch((error) => {
+      console.warn(`[workspace-inventory] refresh failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
+    });
+}
+
 function reserveSessionTitle(title, excludingSessionId = null) {
   const knownSessions = knownSessionsForTitleValidation();
   try {
@@ -1225,6 +1247,7 @@ function handleCodexAppServerNotification(message) {
       const agent = collaborationCore.getAgentForSession(nextSession.id);
       if (agent) scheduleAgentWorkDrain(agent.agentId);
       if (!failed && !cancelled) {
+        refreshWorkspaceInventoryAfterTurn(logicalRoute);
         continuePendingWorkspaceTransition(logicalRoute, turn.id);
       }
       return;
@@ -4616,6 +4639,21 @@ for (const storedSession of storedSessionsAtStartup) {
     }
   } else {
     ensureCollaborationAgentForSession(session);
+  }
+}
+for (const transition of store.listPendingWorkspaceTransitions()) {
+  const logical = store.getLogicalSession(transition.logicalSessionId);
+  const agent = logical?.legacySessionId
+    ? collaborationCore.getAgentForSession(logical.legacySessionId)
+    : null;
+  try {
+    const recovered = await codexWorkspaceTransitions.recoverWorkspaceTransition(
+      transition.transitionId,
+      collaborationThreadOptions(agent?.agentId)
+    );
+    console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
+  } catch (error) {
+    console.warn(`[workspace-transition] recovery failed transition=${transition.transitionId} error=${error.message}`);
   }
 }
 migrateLegacyQueuedSessionItems();

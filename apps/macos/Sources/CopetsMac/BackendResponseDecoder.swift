@@ -11,7 +11,8 @@ enum BackendResponseDecoder {
         from data: Data,
         isPtyProvider: Bool,
         threadId: String,
-        authoritativeCwd: String?
+        authoritativeCwd: String?,
+        workspacePath: String? = nil
     ) async throws -> CodexThreadDetail {
         try await Task.detached(priority: .userInitiated) {
             if isPtyProvider {
@@ -30,7 +31,8 @@ enum BackendResponseDecoder {
                 activityStatus: snapshot.activityStatus,
                 cwd: preferredWorkspacePath(
                     authoritativePath: authoritativeCwd,
-                    providerPath: snapshot.cwd
+                    providerPath: snapshot.cwd,
+                    workspacePath: workspacePath
                 ),
                 createdAt: snapshot.createdAt,
                 updatedAt: snapshot.updatedAt,
@@ -45,8 +47,13 @@ enum BackendResponseDecoder {
 
     static func preferredWorkspacePath(
         authoritativePath: String?,
-        providerPath: String?
+        providerPath: String?,
+        workspacePath: String? = nil
     ) -> String? {
+        let workspace = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let workspace, !workspace.isEmpty {
+            return workspace
+        }
         let saved = authoritativePath?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let saved, !saved.isEmpty {
             return saved

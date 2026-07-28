@@ -1868,7 +1868,8 @@ final class BackendClient: ObservableObject {
             from: data,
             isPtyProvider: isPtyProvider(session.external?.provider),
             threadId: threadId,
-            authoritativeCwd: session.external?.cwd
+            authoritativeCwd: session.external?.cwd,
+            workspacePath: session.external?.workspace?.path
         )
     }
 
@@ -1917,7 +1918,10 @@ final class BackendClient: ObservableObject {
                     cwd: session.external?.cwd ?? detail.cwd,
                     sandbox: session.external?.sandbox,
                     approvalPolicy: session.external?.approvalPolicy,
-                    source: session.external?.source ?? detail.source
+                    source: session.external?.source ?? detail.source,
+                    logicalSessionId: session.external?.logicalSessionId,
+                    workspace: session.external?.workspace,
+                    routingVersion: session.external?.routingVersion
                 ),
                 pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
             )
@@ -1932,7 +1936,16 @@ final class BackendClient: ObservableObject {
               let refreshed = sessions.first(where: { $0.id == current.id }) else {
             return
         }
+        let routeChanged = current.external?.threadId != refreshed.external?.threadId
+            || current.external?.routingVersion != refreshed.external?.routingVersion
         selectedSession = refreshed
+        if routeChanged {
+            selectedDetail = nil
+            detailCacheBySessionId.removeValue(forKey: refreshed.id)
+            Task { [weak self] in
+                await self?.loadDetail(for: refreshed, showLoading: false)
+            }
+        }
     }
 
     private func markChoiceHandled(choiceId: String, selectedOptionId: String) {
