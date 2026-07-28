@@ -47,23 +47,20 @@ final class OrbPlacementPlannerTests: XCTestCase {
         })
     }
 
-    func testConfirmedPlanKeepsPreviouslyConfirmedSafeCandidate() {
+    func testSingleBatchSelectsSafestCandidateWithoutIndependentConfirmation() {
         let nearest = CGPoint(x: 952, y: 600)
         let farther = CGPoint(x: 880, y: 600)
-        let input = makeInput(
-            candidates: [
-                candidate(farther, risk: 0.01),
-                candidate(nearest, risk: 0.18)
-            ],
-            pending: nearest
-        )
+        let input = makeInput(candidates: [
+            candidate(farther, risk: 0.01),
+            candidate(nearest, risk: 0.18)
+        ])
 
         let plan = OrbPlacementPlanner.plan(input: input)
 
         guard case let .move(proposal) = plan.action else {
             return XCTFail("Expected a move, got \(plan)")
         }
-        XCTAssertEqual(proposal.origin, nearest)
+        XCTAssertEqual(proposal.origin, farther)
         XCTAssertEqual(plan.userAnchor, current)
     }
 
@@ -77,8 +74,10 @@ final class OrbPlacementPlannerTests: XCTestCase {
             ])
         )
 
-        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
-        XCTAssertEqual(plan.pendingCandidateOrigin, farAway)
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an immediate batch move")
+        }
+        XCTAssertEqual(proposal.origin, farAway)
     }
 
     func testMeaningfullyCleanerCandidateWinsEvenWhenItIsCloser() {
@@ -91,8 +90,10 @@ final class OrbPlacementPlannerTests: XCTestCase {
             ])
         )
 
-        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
-        XCTAssertEqual(plan.pendingCandidateOrigin, nearby)
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an immediate batch move")
+        }
+        XCTAssertEqual(proposal.origin, nearby)
     }
 
     func testHistoricallySafeCandidateWinsBeforeDistanceWhenRiskIsSimilar() {
@@ -105,8 +106,10 @@ final class OrbPlacementPlannerTests: XCTestCase {
             ])
         )
 
-        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
-        XCTAssertEqual(plan.pendingCandidateOrigin, persistentNearby)
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an immediate batch move")
+        }
+        XCTAssertEqual(proposal.origin, persistentNearby)
     }
 
     func testHighestOverlapCountWinsEvenWhenAnotherSafeRegionHasLowerRisk() {
@@ -119,16 +122,17 @@ final class OrbPlacementPlannerTests: XCTestCase {
             ])
         )
 
-        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
-        XCTAssertEqual(plan.pendingCandidateOrigin, persistent)
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an immediate batch move")
+        }
+        XCTAssertEqual(proposal.origin, persistent)
     }
 
     func testObservedModerateTextRiskCanMoveToClearlySaferCandidate() {
         let target = CGPoint(x: 952, y: 600)
         let input = makeInput(
             currentRisk: 0.283,
-            candidates: [candidate(target, risk: 0.15)],
-            pending: target
+            candidates: [candidate(target, risk: 0.15)]
         )
 
         guard case let .move(proposal) = OrbPlacementPlanner.plan(input: input).action else {
@@ -137,52 +141,54 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertEqual(proposal.origin, target)
     }
 
-    func testFirstMatchingEvaluationWaitsForConfirmation() {
+    func testFirstMatchingEvaluationMovesInTheCurrentBatch() {
         let target = CGPoint(x: 952, y: 600)
         let plan = OrbPlacementPlanner.plan(
             input: makeInput(candidates: [candidate(target, risk: 0.1)])
         )
 
-        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
-        XCTAssertEqual(plan.pendingCandidateOrigin, target)
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an immediate batch move")
+        }
+        XCTAssertEqual(proposal.origin, target)
     }
 
-    func testConfirmationKeepsPendingSafeCandidateWhenAnotherCandidateBecomesCheaper() {
-        let pending = CGPoint(x: 952, y: 600)
+    func testCurrentBatchUsesNewlySaferCandidate() {
+        let previousCandidate = CGPoint(x: 952, y: 600)
         let newlyCheaper = CGPoint(x: 976, y: 642)
         let plan = OrbPlacementPlanner.plan(
             input: makeInput(
                 currentRisk: 0.55,
                 candidates: [
-                    candidate(pending, risk: 0.12),
+                    candidate(previousCandidate, risk: 0.12),
                     candidate(newlyCheaper, risk: 0.02)
-                ],
-                pending: pending
+                ]
             )
         )
 
         guard case let .move(proposal) = plan.action else {
-            return XCTFail("Expected the still-safe pending candidate to be confirmed")
+            return XCTFail("Expected the safest current candidate")
         }
-        XCTAssertEqual(proposal.origin, pending)
+        XCTAssertEqual(proposal.origin, newlyCheaper)
     }
 
-    func testUnsafePendingCandidateIsReplacedAndAwaitsFreshConfirmation() {
-        let unsafePending = CGPoint(x: 952, y: 600)
+    func testUnsafeCandidateIsRejectedForSafeReplacement() {
+        let unsafe = CGPoint(x: 952, y: 600)
         let replacement = CGPoint(x: 976, y: 642)
         let plan = OrbPlacementPlanner.plan(
             input: makeInput(
                 currentRisk: 0.55,
                 candidates: [
-                    candidate(unsafePending, risk: 0.24),
+                    candidate(unsafe, risk: 0.24),
                     candidate(replacement, risk: 0.04)
-                ],
-                pending: unsafePending
+                ]
             )
         )
 
-        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
-        XCTAssertEqual(plan.pendingCandidateOrigin, replacement)
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an immediate safe replacement")
+        }
+        XCTAssertEqual(proposal.origin, replacement)
     }
 
     func testNoSafeCandidateKeepsCurrentPosition() {
@@ -193,7 +199,6 @@ final class OrbPlacementPlannerTests: XCTestCase {
         )
 
         XCTAssertEqual(plan.action, .hold(.noSafeCandidate))
-        XCTAssertNil(plan.pendingCandidateOrigin)
     }
 
     func testInsufficientImprovementKeepsCurrentPosition() {
@@ -251,8 +256,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
                 candidate(previous, risk: 0.05),
                 candidate(alternative, risk: 0.10)
             ],
-            recentOrigins: [previous],
-            pending: alternative
+            recentOrigins: [previous]
         )
 
         guard case let .move(proposal) = OrbPlacementPlanner.plan(input: input).action else {
@@ -299,8 +303,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
                 candidate(occupiedOrigin, risk: 0.05),
                 candidate(safeOrigin, risk: 0.10)
             ],
-            occupiedFrames: [CGRect(origin: occupiedOrigin, size: orbSize)],
-            pending: safeOrigin
+            occupiedFrames: [CGRect(origin: occupiedOrigin, size: orbSize)]
         )
 
         guard case let .move(proposal) = OrbPlacementPlanner.plan(input: input).action else {
@@ -315,8 +318,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
         let plan = OrbPlacementPlanner.plan(
             input: makeInput(
                 userAnchor: anchor,
-                candidates: [candidate(target, risk: 0.1)],
-                pending: target
+                candidates: [candidate(target, risk: 0.1)]
             )
         )
 
@@ -345,7 +347,6 @@ final class OrbPlacementPlannerTests: XCTestCase {
         candidates: [OrbPlacementCandidate],
         occupiedFrames: [CGRect] = [],
         recentOrigins: [CGPoint] = [],
-        pending: CGPoint? = nil,
         interactionFrozen: Bool = false,
         cooldownActive: Bool = false
     ) -> OrbPlacementPlanningInput {
@@ -360,7 +361,6 @@ final class OrbPlacementPlannerTests: XCTestCase {
             currentCaptureConfidence: currentConfidence,
             candidates: candidates,
             recentAutomaticOrigins: recentOrigins,
-            pendingCandidateOrigin: pending,
             interactionFrozen: interactionFrozen,
             cooldownActive: cooldownActive
         )

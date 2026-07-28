@@ -3,6 +3,29 @@ import XCTest
 @testable import CorptieMac
 
 final class DetachedOrbObservationGeometryTests: XCTestCase {
+    func testCurrentOriginIsAlwaysAnalyzedEvenWhenPlacementFilteringRemovedIt() {
+        let current = CGPoint(x: 400, y: 300)
+        let candidates = [
+            CGPoint(x: 500, y: 300),
+            CGPoint(x: 600, y: 300)
+        ]
+
+        XCTAssertEqual(
+            DetachedOrbObservationGeometry.analysisOrigins(
+                currentOrigin: current,
+                candidateOrigins: candidates
+            ),
+            [current] + candidates
+        )
+        XCTAssertEqual(
+            DetachedOrbObservationGeometry.analysisOrigins(
+                currentOrigin: current,
+                candidateOrigins: [current] + candidates
+            ),
+            [current] + candidates
+        )
+    }
+
     func testSearchRectExpandsAroundOrbAndClipsToVisibleFrame() {
         XCTAssertEqual(
             DetachedOrbObservationGeometry.searchRect(

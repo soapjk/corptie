@@ -156,6 +156,7 @@ final class DetachedSessionManager: ObservableObject {
 
         var evaluations: [DetachedOrbBatchEvaluation] = []
         evaluations.reserveCapacity(pendingObservations.count)
+        var hasIncompleteEvaluation = false
         let observationsByDisplay = Dictionary(
             grouping: pendingObservations,
             by: { $0.request.target.displayID }
@@ -200,6 +201,7 @@ final class DetachedSessionManager: ObservableObject {
                         controller.noteBatchAnalysisFailure(
                             ScreenContentSamplerError.pixelConversionFailed
                         )
+                        hasIncompleteEvaluation = true
                         break
                     }
                     let controllerObservation = ScreenContentAnalysisObservation(
@@ -215,6 +217,7 @@ final class DetachedSessionManager: ObservableObject {
                             controllerObservation,
                             request: request
                           ) else {
+                        hasIncompleteEvaluation = true
                         continue
                     }
                     evaluations.append(evaluation)
@@ -225,7 +228,20 @@ final class DetachedSessionManager: ObservableObject {
                 for pendingObservation in displayObservations {
                     pendingObservation.controller.noteBatchAnalysisFailure(error)
                 }
+                hasIncompleteEvaluation = true
             }
+        }
+
+        guard DetachedOrbBatchCoordinatorLogic.canCommitBatch(
+            evaluatedCount: evaluations.count,
+            expectedCount: pendingObservations.count,
+            hasIncompleteEvaluation: hasIncompleteEvaluation
+        ) else {
+            logDevelopment(
+                "[orb-avoidance] batch_aborted reason=incomplete_evaluation "
+                    + "evaluated=\(evaluations.count) expected=\(pendingObservations.count)"
+            )
+            return
         }
 
         var reservedDestinationFrames: [CGRect] = []
@@ -598,7 +614,6 @@ private struct DetachedOrbBatchEvaluation {
     let currentCaptureConfidence: Double
     let candidates: [OrbPlacementCandidate]
     let recentAutomaticOrigins: [CGPoint]
-    let pendingCandidateOrigin: CGPoint?
     let cooldownActive: Bool
     let bestCandidateRisk: Double?
 }
@@ -650,7 +665,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
     private var userAnchor: CGPoint
-    private var pendingCandidateOrigin: CGPoint?
     private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
     private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
     private var safeRegionHistory = OrbSafeRegionHistory()
@@ -778,7 +792,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 if isEnabled, permissionStatus == .authorized, !isSuspended {
                     self.scheduleObservationIfNeeded(delay: 0.4)
                 } else {
-                    self.cancelObservation()
                     self.safeRegionHistory.reset()
                 }
             }
@@ -819,14 +832,12 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     func close() {
         isClosing = true
-        cancelObservation()
         accessoryController.close()
         panel.close()
     }
 
     func windowWillClose(_ notification: Notification) {
         isClosing = true
-        cancelObservation()
         removeOutsideClickMonitor()
         closeHandler(sessionId)
     }
@@ -866,7 +877,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func showQuickReply() {
-        cancelObservation()
         previewState.isQuickReplyVisible = true
         showLatestReplyPreviewIfNeeded()
         ignoreOutsideClickUntil = Date().addingTimeInterval(0.35)
@@ -893,10 +903,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             return
         }
         requestBatchObservation()
-    }
-
-    private func cancelObservation() {
-        pendingCandidateOrigin = nil
     }
 
     func makeBatchObservationRequest() -> DetachedOrbObservationRequest? {
@@ -931,8 +937,12 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         guard !candidates.isEmpty else {
             return nil
         }
+        let analysisOrigins = DetachedOrbObservationGeometry.analysisOrigins(
+            currentOrigin: currentOrigin,
+            candidateOrigins: candidates
+        )
 
-        let coverage = candidates.reduce(CGRect.null) { partial, origin in
+        let coverage = analysisOrigins.reduce(CGRect.null) { partial, origin in
             partial.union(contentFrame(forPanelOrigin: origin))
         }
         let searchRect = coverage
@@ -942,7 +952,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             return nil
         }
 
-        let regions = candidates.map { origin in
+        let regions = analysisOrigins.map { origin in
             let identifier = Self.originIdentifier(origin)
             return ScreenContentAnalysisRegion(
                 identifier: identifier,
@@ -970,11 +980,20 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         _ observation: ScreenContentAnalysisObservation,
         request: DetachedOrbObservationRequest
     ) -> DetachedOrbBatchEvaluation? {
-        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture,
-              !isClosing,
-              Self.distance(panel.frame.origin, request.currentOrigin) <= 0.5,
-              panel.screen?.visibleFrame == request.visibleFrame else {
-            invalidatePlacementAndReschedule(delay: 5)
+        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture else {
+            logInvalidEvaluation("capture_disabled")
+            return nil
+        }
+        guard !isClosing else {
+            logInvalidEvaluation("closing")
+            return nil
+        }
+        guard Self.distance(panel.frame.origin, request.currentOrigin) <= 0.5 else {
+            logInvalidEvaluation("position_changed")
+            return nil
+        }
+        guard panel.screen?.visibleFrame == request.visibleFrame else {
+            logInvalidEvaluation("screen_changed")
             return nil
         }
 
@@ -987,8 +1006,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
 
         let currentIdentifier = Self.originIdentifier(request.currentOrigin)
-        guard case let .known(currentRisk, _)? = analysesByIdentifier[currentIdentifier] else {
-            pendingCandidateOrigin = nil
+        guard let currentAnalysis = analysesByIdentifier[currentIdentifier] else {
+            logInvalidEvaluation("current_region_missing")
+            return nil
+        }
+        guard case let .known(currentRisk, _) = currentAnalysis else {
+            if case let .unknown(reason) = currentAnalysis {
+                logInvalidEvaluation("current_region_\(reason)")
+            }
             return nil
         }
 
@@ -1040,7 +1065,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             recentAutomaticOrigins: recentAutomaticPositions.compactMap {
                 Date().timeIntervalSince($0.date) <= 15 ? $0.origin : nil
             },
-            pendingCandidateOrigin: pendingCandidateOrigin,
             cooldownActive: Date() < cooldownUntil,
             bestCandidateRisk: bestCandidateRisk
         )
@@ -1062,7 +1086,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 currentCaptureConfidence: evaluation.currentCaptureConfidence,
                 candidates: evaluation.candidates,
                 recentAutomaticOrigins: evaluation.recentAutomaticOrigins,
-                pendingCandidateOrigin: evaluation.pendingCandidateOrigin,
                 interactionFrozen: isInteractionFrozen,
                 cooldownActive: evaluation.cooldownActive
             ),
@@ -1076,7 +1099,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     ) -> DetachedOrbBatchMove? {
         switch plan.action {
         case let .hold(reason):
-            pendingCandidateOrigin = plan.pendingCandidateOrigin
             let bestScoreDescription =
                 evaluation.bestCandidateRisk.map(Self.logScore) ?? "unknown"
             logDevelopment(
@@ -1089,10 +1111,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         case let .move(proposal):
             guard !isInteractionFrozen,
                   Self.distance(panel.frame.origin, evaluation.request.currentOrigin) <= 0.5 else {
-                pendingCandidateOrigin = nil
                 return nil
             }
-            pendingCandidateOrigin = nil
             let previousOrigin = panel.frame.origin
             return DetachedOrbBatchMove(
                 controller: self,
@@ -1145,9 +1165,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         )
     }
 
+    private func logInvalidEvaluation(_ reason: String) {
+        logDevelopment(
+            "[orb-avoidance] evaluation_invalid session=\(sessionId) reason=\(reason)"
+        )
+    }
+
     private func handlePointerInteractionBegan() {
         isPointerDown = true
-        cancelObservation()
     }
 
     private func handlePointerInteractionEnded(didDrag: Bool) {
@@ -1160,22 +1185,18 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         recentAutomaticPositions.removeAll()
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
-        pendingCandidateOrigin = nil
         cooldownUntil = Date().addingTimeInterval(0.8)
         scheduleObservationIfNeeded(delay: 0.85)
     }
 
     private func handleHoverChanged(_ hovering: Bool) {
         isPointerHovering = hovering
-        if hovering {
-            cancelObservation()
-        } else {
+        if !hovering {
             scheduleObservationIfNeeded(delay: 0.8)
         }
     }
 
     private func invalidatePlacementAndReschedule(delay: TimeInterval) {
-        cancelObservation()
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
         scheduleObservationIfNeeded(delay: delay)
