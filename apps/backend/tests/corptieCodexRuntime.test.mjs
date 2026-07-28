@@ -11,18 +11,24 @@ import {
 async function withFixture(run) {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-codex-runtime-test-"));
   const sourceAuthPath = join(directory, "native-codex", "auth.json");
+  const bundledAgentsPath = join(directory, "bundle", "global-instructions.production.md");
   const bundledSkillPath = join(directory, "bundle", "SKILL.md");
   const collaborationMcpServerPath = join(directory, "bundle", "collaborationMcpServer.mjs");
   await mkdir(join(directory, "native-codex"), { recursive: true });
   await mkdir(join(directory, "bundle"), { recursive: true });
   await writeFile(sourceAuthPath, '{"token":"local-test-token"}\n');
+  await writeFile(bundledAgentsPath, "# Corptie global instructions\n\nCODEX_HOME: `{{CODEX_HOME}}`\n");
   await writeFile(bundledSkillPath, "---\nname: corptie-collaboration\ndescription: test\n---\n\n# Test\n");
   await writeFile(collaborationMcpServerPath, "export {};\n");
   try {
-    await run({ directory, sourceAuthPath, bundledSkillPath, collaborationMcpServerPath });
+    await run({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 test("resolves isolated production and development Codex homes", () => {
@@ -33,45 +39,56 @@ test("resolves isolated production and development Codex homes", () => {
 });
 
 test("initialization copies authentication and installs required runtime files", async () => {
-  await withFixture(async ({ directory, sourceAuthPath, bundledSkillPath, collaborationMcpServerPath }) => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
     const result = await ensureCorptieCodexRuntime({
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
+      bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath
     });
 
     assert.equal(result.authCopied, true);
+    assert.equal(result.agentsCreated, true);
     assert.equal(result.skillChanged, true);
     assert.equal(result.authAvailable, true);
+    assert.equal(result.agentsAvailable, true);
     assert.match(await readFile(result.configPath, "utf8"), /cli_auth_credentials_store = "file"/);
     assert.match(await readFile(result.configPath, "utf8"), /mcp_oauth_credentials_store = "file"/);
     assert.equal(await readFile(result.authPath, "utf8"), '{"token":"local-test-token"}\n');
     assert.match(await readFile(result.authBootstrapMarkerPath, "utf8"), /"source": "copied"/);
+    const agents = await readFile(result.agentsPath, "utf8");
+    assert.match(agents, new RegExp(`CODEX_HOME: \\\`${escapeRegExp(result.codexHome)}\\\``));
+    assert.doesNotMatch(agents, /\{\{CODEX_HOME\}\}/);
     assert.equal(await readFile(result.collaborationSkillPath, "utf8"), await readFile(bundledSkillPath, "utf8"));
     assert.equal((await stat(result.codexHome)).mode & 0o777, 0o700);
     assert.equal((await stat(result.authPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(result.agentsPath)).mode & 0o777, 0o600);
   });
 });
 
-test("startup self-heals config and Skill without replacing isolated authentication", async () => {
-  await withFixture(async ({ directory, sourceAuthPath, bundledSkillPath, collaborationMcpServerPath }) => {
+test("startup self-heals managed files without replacing authentication or AGENTS.md", async () => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
     const options = {
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
+      bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath
     };
     const first = await ensureCorptieCodexRuntime(options);
     await writeFile(first.authPath, '{"token":"corptie-account"}\n');
+    await writeFile(first.agentsPath, "# User customized instructions\n");
     await writeFile(first.configPath, 'model = "custom"\ncli_auth_credentials_store = "keyring"\n[features]\nplugins = true\n');
     await writeFile(first.collaborationSkillPath, "stale\n");
 
     const second = await ensureCorptieCodexRuntime(options);
     const config = await readFile(second.configPath, "utf8");
     assert.equal(second.authCopied, false);
+    assert.equal(second.agentsCreated, false);
     assert.equal(second.skillChanged, true);
     assert.equal(await readFile(second.authPath, "utf8"), '{"token":"corptie-account"}\n');
+    assert.equal(await readFile(second.agentsPath, "utf8"), "# User customized instructions\n");
     assert.match(config, /model = "custom"/);
     assert.match(config, /cli_auth_credentials_store = "file"/);
     assert.match(config, /mcp_oauth_credentials_store = "file"/);
@@ -81,10 +98,11 @@ test("startup self-heals config and Skill without replacing isolated authenticat
 });
 
 test("authentication bootstrap never restores native credentials after a Corptie logout", async () => {
-  await withFixture(async ({ directory, sourceAuthPath, bundledSkillPath, collaborationMcpServerPath }) => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
     const options = {
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
+      bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath
     };
@@ -100,7 +118,7 @@ test("authentication bootstrap never restores native credentials after a Corptie
 });
 
 test("first startup migrates only Corptie-owned legacy rollouts and support files", async () => {
-  await withFixture(async ({ directory, sourceAuthPath, bundledSkillPath, collaborationMcpServerPath }) => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
     const legacyCodexHome = join(directory, "legacy-codex");
     const wantedThread = "019f-wanted-thread";
     const unrelatedThread = "019f-unrelated-thread";
@@ -115,6 +133,7 @@ test("first startup migrates only Corptie-owned legacy rollouts and support file
       sourceAuthPath,
       legacyCodexHome,
       legacyThreadIds: [`codex:${wantedThread}`],
+      bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath
     });
@@ -134,6 +153,7 @@ test("first startup migrates only Corptie-owned legacy rollouts and support file
       sourceAuthPath,
       legacyCodexHome,
       legacyThreadIds: [`codex:${wantedThread}`],
+      bundledAgentsPath,
       bundledSkillPath,
       collaborationMcpServerPath
     });
@@ -141,13 +161,14 @@ test("first startup migrates only Corptie-owned legacy rollouts and support file
   });
 });
 
-test("initialization fails closed when a required built-in component is absent", async () => {
+test("initialization fails closed when the built-in AGENTS.md is absent", async () => {
   await assert.rejects(
     ensureCorptieCodexRuntime({
       corptieHome: join(os.tmpdir(), "corptie-missing-runtime"),
+      bundledAgentsPath: join(os.tmpdir(), "missing-agents"),
       bundledSkillPath: join(os.tmpdir(), "missing-skill"),
       collaborationMcpServerPath: join(os.tmpdir(), "missing-mcp")
     }),
-    /Skill is missing/
+    /AGENTS\.md is missing/
   );
 });

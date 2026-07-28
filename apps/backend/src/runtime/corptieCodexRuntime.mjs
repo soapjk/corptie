@@ -8,6 +8,7 @@ const REQUIRED_CONFIG = Object.freeze({
   cli_auth_credentials_store: "file",
   mcp_oauth_credentials_store: "file"
 });
+const CODEX_HOME_PLACEHOLDER = "{{CODEX_HOME}}";
 
 export function resolveCorptieRuntimePaths(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());
@@ -23,6 +24,7 @@ export function resolveCorptieRuntimePaths(options = {}) {
     codexHome,
     configPath: join(codexHome, "config.toml"),
     authPath: join(codexHome, "auth.json"),
+    agentsPath: join(codexHome, "AGENTS.md"),
     skillsDir: join(codexHome, "skills"),
     collaborationSkillDir: join(codexHome, "skills", "corptie-collaboration"),
     collaborationSkillPath: join(codexHome, "skills", "corptie-collaboration", "SKILL.md"),
@@ -36,8 +38,12 @@ export function resolveCorptieRuntimePaths(options = {}) {
 export async function ensureCorptieCodexRuntime(options = {}) {
   const paths = resolveCorptieRuntimePaths(options);
   const bundledSkillPath = resolve(String(options.bundledSkillPath ?? ""));
+  const bundledAgentsPath = resolve(String(options.bundledAgentsPath ?? ""));
   const collaborationMcpServerPath = resolve(String(options.collaborationMcpServerPath ?? ""));
 
+  if (!options.bundledAgentsPath || !await isFile(bundledAgentsPath)) {
+    throw new Error(`Bundled Codex global AGENTS.md is missing: ${bundledAgentsPath}`);
+  }
   if (!options.bundledSkillPath || !await isFile(bundledSkillPath)) {
     throw new Error(`Bundled Corptie collaboration Skill is missing: ${bundledSkillPath}`);
   }
@@ -51,18 +57,22 @@ export async function ensureCorptieCodexRuntime(options = {}) {
 
   const configChanged = await ensureRuntimeConfig(paths.configPath);
   const authCopied = await bootstrapAuthentication(paths);
+  const agentsCreated = await installInitialAgentsFile(bundledAgentsPath, paths.agentsPath, paths.codexHome, 0o600);
   const skillChanged = await syncManagedFile(bundledSkillPath, paths.collaborationSkillPath, 0o600);
   const threadMigration = await migrateLegacyThreads(paths, options.legacyThreadIds ?? []);
 
   return {
     ...paths,
+    bundledAgentsPath,
     bundledSkillPath,
     collaborationMcpServerPath,
     configChanged,
     authCopied,
+    agentsCreated,
     skillChanged,
     threadMigration,
     authAvailable: await isFile(paths.authPath),
+    agentsAvailable: await isFile(paths.agentsPath),
     skillAvailable: await isFile(paths.collaborationSkillPath),
     mcpAvailable: true
   };
@@ -206,6 +216,24 @@ async function syncManagedFile(source, destination, mode) {
     return false;
   }
   await atomicWrite(destination, expected, mode);
+  return true;
+}
+
+async function installInitialAgentsFile(source, destination, codexHome, mode) {
+  const template = await readFile(source, "utf8");
+  if (!template.includes(CODEX_HOME_PLACEHOLDER)) {
+    throw new Error(`Bundled Codex global instructions are missing ${CODEX_HOME_PLACEHOLDER}: ${source}`);
+  }
+  const content = template.replaceAll(CODEX_HOME_PLACEHOLDER, codexHome);
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  try {
+    await writeFile(destination, content, { flag: "wx", mode });
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    await chmod(destination, mode);
+    return false;
+  }
+  await chmod(destination, mode);
   return true;
 }
 
