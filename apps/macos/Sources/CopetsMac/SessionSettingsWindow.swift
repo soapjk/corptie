@@ -50,7 +50,7 @@ private final class SessionSettingsWindowController: NSObject, NSWindowDelegate 
         }
         let hostingController = NSHostingController(rootView: content)
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 390, height: 280),
+            contentRect: NSRect(x: 0, y: 0, width: 430, height: 330),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -81,6 +81,7 @@ private final class SessionSettingsWindowController: NSObject, NSWindowDelegate 
 private struct SessionSettingsView: View {
     @State private var sandbox: String
     @State private var approvalPolicy: String
+    @State private var completionSoundId: String
     @State private var isSaving = false
     @State private var errorMessage: String?
 
@@ -92,6 +93,9 @@ private struct SessionSettingsView: View {
         self.save = save
         _sandbox = State(initialValue: session.external?.sandbox ?? "workspace-write")
         _approvalPolicy = State(initialValue: session.external?.approvalPolicy ?? "on-request")
+        _completionSoundId = State(
+            initialValue: SessionCompletionSoundManager.selectedSoundId(for: session.id)
+        )
     }
 
     var body: some View {
@@ -143,6 +147,36 @@ private struct SessionSettingsView: View {
                 .foregroundStyle(.secondary)
             }
 
+            Divider()
+
+            Grid(alignment: .leading, horizontalSpacing: 18) {
+                GridRow {
+                    Label(L10n("Completion Sound"), systemImage: "speaker.wave.2")
+                        .fontWeight(.semibold)
+
+                    HStack(spacing: 8) {
+                        Picker("", selection: $completionSoundId) {
+                            ForEach(SessionCompletionSoundManager.options) { option in
+                                Text(L10n(option.label)).tag(option.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity)
+
+                        Button {
+                            SessionCompletionSoundManager.previewSound(completionSoundId)
+                        } label: {
+                            Label(L10n("Preview"), systemImage: "play.fill")
+                        }
+                        .disabled(selectedSoundOption.systemSoundName == nil)
+                        .help(L10n("Preview the selected completion sound"))
+                    }
+                }
+            }
+            .onChange(of: completionSoundId) { _, soundId in
+                SessionCompletionSoundManager.setSelectedSoundId(soundId, for: session.id)
+            }
+
             if let errorMessage {
                 Text(errorMessage)
                     .font(.system(size: 11, weight: .medium))
@@ -161,7 +195,11 @@ private struct SessionSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 390, height: 280)
+        .frame(width: 430, height: 330)
+    }
+
+    private var selectedSoundOption: SessionCompletionSoundOption {
+        SessionCompletionSoundManager.option(for: completionSoundId)
     }
 
     private var supportsPermissionChanges: Bool {
