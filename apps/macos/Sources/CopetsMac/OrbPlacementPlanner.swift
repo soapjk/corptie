@@ -11,9 +11,9 @@ struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
     var searchRadii: [CGFloat] = [24, 48, 72, 96, 128, 160, 180]
     var directionsPerRing = 12
     var maximumRadius: CGFloat = 180
-    var triggerRisk = 0.42
-    var safeRisk = 0.22
-    var minimumImprovement = 0.15
+    var triggerRisk = 0.26
+    var safeRisk = 0.18
+    var minimumImprovement = 0.08
     var minimumCaptureConfidence = 0.8
     var confirmationTolerance: CGFloat = 8
     var recentPositionExclusionRadius: CGFloat = 16
