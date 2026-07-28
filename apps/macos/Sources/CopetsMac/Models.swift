@@ -63,6 +63,18 @@ struct ExternalSession: Codable, Equatable, Sendable {
     let sandbox: String?
     let approvalPolicy: String?
     let source: String?
+    let logicalSessionId: String?
+    let workspace: SessionWorkspace?
+    let routingVersion: Int?
+}
+
+struct SessionWorkspace: Codable, Equatable, Sendable {
+    let id: String?
+    let repositoryId: String?
+    let path: String?
+    let availability: String?
+    let branchName: String?
+    let headOid: String?
 }
 
 struct SessionCapabilities: Codable, Equatable, Sendable {

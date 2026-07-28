@@ -196,6 +196,135 @@ export class CodexWorkspaceTransitionManager {
     }
   }
 
+  async recoverWorkspaceTransition(transitionId, input = {}) {
+    const transition = this.store.getWorkspaceTransition(transitionId);
+    if (!transition) throw new Error(`Workspace transition ${transitionId} was not found.`);
+    if (transition.phase === "committed") {
+      return {
+        status: "committed",
+        transition,
+        logicalSession: this.store.getLogicalSession(transition.logicalSessionId)
+      };
+    }
+    if (transition.phase === "failed") {
+      return { status: "failed", transition };
+    }
+    if (["waitingForTurn", "preflighting"].includes(transition.phase)) {
+      const source = await this.codexClient.readThread(transition.sourceThreadId, {
+        includeTurns: true
+      });
+      const thread = source.thread ?? source;
+      const latestTurn = (thread.turns ?? []).at(-1);
+      if (["inProgress", "in_progress", "running"].includes(latestTurn?.status)) {
+        return { status: "waitingForTurn", transition };
+      }
+      const lastCompletedTurnId = (thread.turns ?? []).slice().reverse().find((turn) => {
+        return ["completed", "complete"].includes(turn?.status);
+      })?.id ?? transition.lastCompletedTurnId;
+      return this.continueWorkspaceTransition(transitionId, {
+        ...input,
+        lastCompletedTurnId
+      });
+    }
+    if (transition.phase === "forking" && !transition.newThreadId) {
+      this.store.updateWorkspaceTransition(transitionId, {
+        phase: "failed",
+        error: {
+          message: "Recovery could not uniquely identify the forked thread; the original route remains active."
+        }
+      });
+      return {
+        status: "failed",
+        transition: this.store.getWorkspaceTransition(transitionId)
+      };
+    }
+    if (!transition.newThreadId) {
+      throw new Error(`Workspace transition ${transitionId} has no recoverable forked thread.`);
+    }
+    const logical = this.store.getLogicalSession(transition.logicalSessionId);
+    const target = this.requireAvailableTarget(transition.targetWorktreeId);
+    const targetCwd = target.canonicalPath || target.path;
+    let response = null;
+    let validation = null;
+    try {
+      response = await this.codexClient.resumeThread(transition.newThreadId, {
+        cwd: targetCwd,
+        runtimeWorkspaceRoots: [targetCwd],
+        dynamicToolAgentId: input.dynamicToolAgentId,
+        config: input.config,
+        developerInstructions: input.developerInstructions
+      });
+      if (response.cwd !== targetCwd && response.thread?.cwd !== targetCwd) {
+        throw new Error("The recovered Codex thread is not bound to the target workspace.");
+      }
+      validation = await validateWorkspaceInstructionSources({
+        sourceCwd: logical.activeBinding.boundCwd,
+        targetCwd,
+        instructionSources: response.instructionSources ?? [],
+        requiredTargetSources: await this.requiredInstructionSources({
+          cwd: targetCwd,
+          repositoryId: target.repositoryId,
+          worktreeId: target.worktreeId
+        }),
+        globalInstructionSources: await this.globalInstructionSources()
+      });
+      if (!validation.valid) {
+        throw new Error("The recovered Codex thread loaded invalid workspace instruction sources.");
+      }
+      this.store.updateWorkspaceTransition(transitionId, {
+        phase: "committingRoute",
+        newThreadId: transition.newThreadId
+      });
+      const switched = this.store.commitWorkspaceTransition(transitionId, {
+        providerThreadId: transition.newThreadId,
+        boundCwd: targetCwd,
+        forkedAtTurnId: transition.lastCompletedTurnId,
+        instructionSources: validation.instructionSources,
+        permissionSnapshot: permissionSnapshotFromAppServerResponse(response)
+      });
+      const event = {
+        logicalSessionId: switched.logicalSessionId,
+        providerThreadId: switched.activeThreadId,
+        worktreeId: switched.activeWorkspaceId,
+        repositoryId: switched.repositoryId,
+        cwd: targetCwd,
+        routingVersion: switched.routingVersion,
+        transitionId,
+        recovered: true,
+        transitionContext: workspaceTransitionContext({
+          sourceCwd: logical.activeBinding.boundCwd,
+          targetCwd,
+          instructionSources: validation.instructionSources
+        })
+      };
+      await this.onRouteCommitted?.(event);
+      return {
+        status: "committed",
+        transition: this.store.getWorkspaceTransition(transitionId),
+        logicalSession: switched,
+        event
+      };
+    } catch (error) {
+      this.store.recordProviderThreadBinding({
+        providerThreadId: transition.newThreadId,
+        logicalSessionId: transition.logicalSessionId,
+        worktreeId: transition.targetWorktreeId,
+        boundCwd: targetCwd,
+        parentThreadId: transition.sourceThreadId,
+        forkedAtTurnId: transition.lastCompletedTurnId,
+        instructionSources: response?.instructionSources ?? [],
+        permissionSnapshot: permissionSnapshotFromAppServerResponse(response ?? {}),
+        state: validation && !validation.valid ? "invalid" : "orphaned"
+      });
+      this.store.updateWorkspaceTransition(transitionId, {
+        phase: "failed",
+        newThreadId: transition.newThreadId,
+        error: { message: error.message, instructionValidation: validation }
+      });
+      throw error;
+    }
+  }
+
   requireAvailableTarget(worktreeId) {
     const target = this.store.getGitWorktree(worktreeId);
     if (!target || target.availability !== "available") {

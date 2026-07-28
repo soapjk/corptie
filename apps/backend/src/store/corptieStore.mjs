@@ -1309,6 +1309,14 @@ export class CorptieStore {
     return row ? workspaceTransitionFromRow(row) : null;
   }
 
+  listPendingWorkspaceTransitions() {
+    return this.selectAll(
+      `SELECT * FROM workspace_transitions
+       WHERE phase NOT IN ('committed', 'failed')
+       ORDER BY created_at ASC`
+    ).map(workspaceTransitionFromRow);
+  }
+
   assertLogicalSessionRoute(logicalSessionId) {
     const row = this.selectOne(
       `SELECT ls.active_thread_id, ls.active_workspace_id, binding.worktree_id, binding.state

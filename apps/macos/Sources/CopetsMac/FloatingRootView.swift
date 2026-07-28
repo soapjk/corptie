@@ -4336,7 +4336,7 @@ private struct DetailHeaderView: View {
                         GitBranchStamp(headState: gitHeadState)
                     }
                 }
-                if let cwd = backendClient.selectedDetail?.cwd, !cwd.isEmpty {
+                if let cwd = workspacePath, !cwd.isEmpty {
                     Button {
                         NSWorkspace.shared.open(URL(fileURLWithPath: cwd, isDirectory: true))
                     } label: {
@@ -4380,12 +4380,17 @@ private struct DetailHeaderView: View {
                 .help(L10n("Stop current run"))
             }
         }
-        .task(id: workspacePath) {
+        .task(id: workspaceRouteIdentity) {
             await refreshGitBranch()
         }
     }
 
     private var workspacePath: String? {
+        let routedPath = backendClient.selectedSession?.external?.workspace?.path?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let routedPath, !routedPath.isEmpty {
+            return routedPath
+        }
         let detailPath = backendClient.selectedDetail?.cwd?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let detailPath, !detailPath.isEmpty {
@@ -4394,6 +4399,11 @@ private struct DetailHeaderView: View {
         let sessionPath = backendClient.selectedSession?.external?.cwd?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return sessionPath?.isEmpty == false ? sessionPath : nil
+    }
+
+    private var workspaceRouteIdentity: String {
+        let version = backendClient.selectedSession?.external?.routingVersion ?? 0
+        return "\(version):\(workspacePath ?? "")"
     }
 
     private func refreshGitBranch() async {
