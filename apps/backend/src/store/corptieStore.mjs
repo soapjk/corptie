@@ -603,6 +603,85 @@ export class CorptieStore {
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_git_worktrees_git_dir
       ON git_worktrees(repository_id, git_dir) WHERE git_dir IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS logical_sessions (
+        logical_session_id TEXT PRIMARY KEY,
+        legacy_session_id TEXT UNIQUE,
+        active_thread_id TEXT,
+        active_workspace_id TEXT,
+        repository_id TEXT,
+        routing_version INTEGER NOT NULL DEFAULT 1,
+        transition_state TEXT,
+        title TEXT,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        avatar_path TEXT,
+        archived INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE SET NULL,
+        FOREIGN KEY (active_workspace_id) REFERENCES git_worktrees(worktree_id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS provider_thread_bindings (
+        provider_thread_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        worktree_id TEXT,
+        bound_cwd TEXT NOT NULL,
+        parent_thread_id TEXT,
+        forked_at_turn_id TEXT,
+        instruction_sources_json TEXT NOT NULL DEFAULT '[]',
+        permission_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        state TEXT NOT NULL
+          CHECK (state IN ('active', 'superseded', 'invalid', 'orphaned')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE SET NULL,
+        FOREIGN KEY (parent_thread_id) REFERENCES provider_thread_bindings(provider_thread_id) ON DELETE SET NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_thread_bindings_active
+      ON provider_thread_bindings(logical_session_id) WHERE state = 'active';
+
+      CREATE INDEX IF NOT EXISTS idx_provider_thread_bindings_worktree
+      ON provider_thread_bindings(worktree_id, state);
+
+      CREATE TABLE IF NOT EXISTS provider_thread_lineage (
+        child_thread_id TEXT PRIMARY KEY,
+        parent_thread_id TEXT NOT NULL,
+        logical_session_id TEXT NOT NULL,
+        transition_id TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (child_thread_id) REFERENCES provider_thread_bindings(provider_thread_id) ON DELETE CASCADE,
+        FOREIGN KEY (parent_thread_id) REFERENCES provider_thread_bindings(provider_thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS workspace_transitions (
+        transition_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        target_worktree_id TEXT NOT NULL,
+        source_routing_version INTEGER NOT NULL,
+        last_completed_turn_id TEXT,
+        new_thread_id TEXT,
+        phase TEXT NOT NULL
+          CHECK (phase IN (
+            'waitingForTurn', 'preflighting', 'forking', 'validatingInstructions',
+            'committingRoute', 'committed', 'failed'
+          )),
+        strategy TEXT NOT NULL DEFAULT 'fork'
+          CHECK (strategy IN ('fork', 'handoff', 'settingsUpdate')),
+        error_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_thread_id) REFERENCES provider_thread_bindings(provider_thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (target_worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_workspace_transitions_session
+      ON workspace_transitions(logical_session_id, created_at DESC);
     `);
 
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -823,6 +902,403 @@ export class CorptieStore {
       inventoryVersion: row.inventory_version,
       observedAt: row.observed_at
     }));
+  }
+
+  getGitWorktree(worktreeId) {
+    const row = this.selectOne(
+      "SELECT * FROM git_worktrees WHERE worktree_id = ?",
+      [worktreeId]
+    );
+    return row ? {
+      worktreeId: row.worktree_id,
+      repositoryId: row.repository_id,
+      path: row.path,
+      canonicalPath: row.canonical_path,
+      gitDirCanonicalPath: row.git_dir,
+      isMain: Boolean(row.is_main),
+      availability: row.availability,
+      headOid: row.head_oid,
+      branchRef: row.branch_ref,
+      branchName: row.branch_name,
+      isDetached: Boolean(row.detached),
+      isLocked: Boolean(row.locked),
+      lockReason: row.lock_reason,
+      isPrunable: Boolean(row.prunable),
+      pruneReason: row.prune_reason,
+      inventoryVersion: row.inventory_version,
+      observedAt: row.observed_at
+    } : null;
+  }
+
+  createLogicalSessionRoute(input) {
+    const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
+    const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
+    const boundCwd = requiredText(input?.boundCwd, "boundCwd");
+    const timestamp = input.createdAt || new Date().toISOString();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `INSERT INTO logical_sessions (
+          logical_session_id, legacy_session_id, active_thread_id, active_workspace_id,
+          repository_id, routing_version, transition_state, title, pinned, avatar_path,
+          archived, created_at, updated_at
+        ) VALUES (?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?)`,
+        [
+          logicalSessionId,
+          input.legacySessionId || null,
+          input.worktreeId || null,
+          input.repositoryId || null,
+          input.title || null,
+          input.pinned ? 1 : 0,
+          input.avatarPath || null,
+          input.archived ? 1 : 0,
+          timestamp,
+          timestamp
+        ]
+      );
+      this.db.run(
+        `INSERT INTO provider_thread_bindings (
+          provider_thread_id, logical_session_id, worktree_id, bound_cwd,
+          parent_thread_id, forked_at_turn_id, instruction_sources_json,
+          permission_snapshot_json, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, 'active', ?, ?)`,
+        [
+          providerThreadId,
+          logicalSessionId,
+          input.worktreeId || null,
+          boundCwd,
+          JSON.stringify(input.instructionSources ?? []),
+          JSON.stringify(input.permissionSnapshot ?? {}),
+          timestamp,
+          timestamp
+        ]
+      );
+      this.db.run(
+        "UPDATE logical_sessions SET active_thread_id = ? WHERE logical_session_id = ?",
+        [providerThreadId, logicalSessionId]
+      );
+      this.assertLogicalSessionRoute(logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getLogicalSession(logicalSessionId);
+  }
+
+  getLogicalSession(logicalSessionId) {
+    const row = this.selectOne(
+      "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
+      [logicalSessionId]
+    );
+    if (!row) return null;
+    return {
+      logicalSessionId: row.logical_session_id,
+      legacySessionId: row.legacy_session_id,
+      activeThreadId: row.active_thread_id,
+      activeWorkspaceId: row.active_workspace_id,
+      repositoryId: row.repository_id,
+      routingVersion: Number(row.routing_version),
+      transitionState: row.transition_state,
+      title: row.title,
+      pinned: Boolean(row.pinned),
+      avatarPath: row.avatar_path,
+      archived: Boolean(row.archived),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      activeBinding: row.active_thread_id
+        ? this.getProviderThreadBinding(row.active_thread_id)
+        : null
+    };
+  }
+
+  getProviderThreadBinding(providerThreadId) {
+    const row = this.selectOne(
+      "SELECT * FROM provider_thread_bindings WHERE provider_thread_id = ?",
+      [providerThreadId]
+    );
+    return row ? providerThreadBindingFromRow(row) : null;
+  }
+
+  listProviderThreadBindings(logicalSessionId) {
+    return this.selectAll(
+      `SELECT * FROM provider_thread_bindings
+       WHERE logical_session_id = ?
+       ORDER BY created_at ASC, provider_thread_id ASC`,
+      [logicalSessionId]
+    ).map(providerThreadBindingFromRow);
+  }
+
+  recordProviderThreadBinding(input) {
+    const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
+    const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
+    const boundCwd = requiredText(input?.boundCwd, "boundCwd");
+    const state = input.state || "orphaned";
+    if (!["invalid", "orphaned"].includes(state)) {
+      throw new Error("Detached provider bindings must be invalid or orphaned.");
+    }
+    const timestamp = input.createdAt || new Date().toISOString();
+    this.db.run(
+      `INSERT INTO provider_thread_bindings (
+        provider_thread_id, logical_session_id, worktree_id, bound_cwd,
+        parent_thread_id, forked_at_turn_id, instruction_sources_json,
+        permission_snapshot_json, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(provider_thread_id) DO UPDATE SET
+        instruction_sources_json=excluded.instruction_sources_json,
+        permission_snapshot_json=excluded.permission_snapshot_json,
+        state=excluded.state,
+        updated_at=excluded.updated_at`,
+      [
+        providerThreadId,
+        logicalSessionId,
+        input.worktreeId || null,
+        boundCwd,
+        input.parentThreadId || null,
+        input.forkedAtTurnId || null,
+        JSON.stringify(input.instructionSources ?? []),
+        JSON.stringify(input.permissionSnapshot ?? {}),
+        state,
+        timestamp,
+        timestamp
+      ]
+    );
+    this.scheduleSave();
+    return this.getProviderThreadBinding(providerThreadId);
+  }
+
+  beginWorkspaceTransition(input) {
+    const transitionId = requiredText(input?.transitionId, "transitionId");
+    const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
+    const targetWorktreeId = requiredText(input?.targetWorktreeId, "targetWorktreeId");
+    const timestamp = input.createdAt || new Date().toISOString();
+    const logicalSession = this.getLogicalSession(logicalSessionId);
+    if (!logicalSession?.activeBinding) {
+      throw new Error(`Logical session ${logicalSessionId} has no active binding.`);
+    }
+    const sourceRoutingVersion = Number(input.sourceRoutingVersion);
+    if (sourceRoutingVersion !== logicalSession.routingVersion) {
+      throw new Error(`Logical session routing version changed from ${sourceRoutingVersion} to ${logicalSession.routingVersion}.`);
+    }
+    const target = this.selectOne(
+      "SELECT availability FROM git_worktrees WHERE worktree_id = ?",
+      [targetWorktreeId]
+    );
+    if (!target || target.availability !== "available") {
+      throw new Error(`Target worktree ${targetWorktreeId} is not available.`);
+    }
+    const unfinished = this.selectOne(
+      `SELECT transition_id FROM workspace_transitions
+       WHERE logical_session_id = ? AND phase NOT IN ('committed', 'failed')`,
+      [logicalSessionId]
+    );
+    if (unfinished) {
+      throw new Error(`Logical session ${logicalSessionId} already has transition ${unfinished.transition_id}.`);
+    }
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `INSERT INTO workspace_transitions (
+          transition_id, logical_session_id, source_thread_id, target_worktree_id,
+          source_routing_version, last_completed_turn_id, phase, strategy,
+          error_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        [
+          transitionId,
+          logicalSessionId,
+          logicalSession.activeThreadId,
+          targetWorktreeId,
+          sourceRoutingVersion,
+          input.lastCompletedTurnId || null,
+          input.phase || "waitingForTurn",
+          input.strategy || "fork",
+          timestamp,
+          timestamp
+        ]
+      );
+      this.db.run(
+        `UPDATE logical_sessions SET transition_state = ?, updated_at = ?
+         WHERE logical_session_id = ?`,
+        [input.phase || "waitingForTurn", timestamp, logicalSessionId]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getWorkspaceTransition(transitionId);
+  }
+
+  updateWorkspaceTransition(transitionId, update = {}) {
+    const allowedPhases = new Set([
+      "waitingForTurn", "preflighting", "forking", "validatingInstructions",
+      "committingRoute", "committed", "failed"
+    ]);
+    if (!allowedPhases.has(update.phase)) {
+      throw new Error(`Unsupported workspace transition phase: ${update.phase}`);
+    }
+    const transition = this.getWorkspaceTransition(transitionId);
+    if (!transition) throw new Error(`Workspace transition ${transitionId} was not found.`);
+    const timestamp = update.updatedAt || new Date().toISOString();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `UPDATE workspace_transitions
+         SET phase = ?, last_completed_turn_id = ?, new_thread_id = ?,
+             error_json = ?, updated_at = ?
+         WHERE transition_id = ?`,
+        [
+          update.phase,
+          update.lastCompletedTurnId ?? transition.lastCompletedTurnId,
+          update.newThreadId ?? transition.newThreadId,
+          update.error === undefined ? (transition.error ? JSON.stringify(transition.error) : null) : JSON.stringify(update.error),
+          timestamp,
+          transitionId
+        ]
+      );
+      this.db.run(
+        `UPDATE logical_sessions SET transition_state = ?, updated_at = ?
+         WHERE logical_session_id = ?`,
+        [update.phase === "committed" ? null : update.phase, timestamp, transition.logicalSessionId]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getWorkspaceTransition(transitionId);
+  }
+
+  commitWorkspaceTransition(transitionId, binding) {
+    const transition = this.getWorkspaceTransition(transitionId);
+    if (!transition) throw new Error(`Workspace transition ${transitionId} was not found.`);
+    if (transition.phase === "failed") throw new Error(`Workspace transition ${transitionId} has failed.`);
+    if (transition.phase === "committed") {
+      const current = this.getLogicalSession(transition.logicalSessionId);
+      if (current?.activeThreadId === transition.newThreadId) return current;
+      throw new Error(`Committed workspace transition ${transitionId} has an inconsistent route.`);
+    }
+    const newThreadId = requiredText(binding?.providerThreadId, "providerThreadId");
+    const boundCwd = requiredText(binding?.boundCwd, "boundCwd");
+    const target = this.selectOne(
+      "SELECT * FROM git_worktrees WHERE worktree_id = ?",
+      [transition.targetWorktreeId]
+    );
+    if (!target || target.availability !== "available") {
+      throw new Error(`Target worktree ${transition.targetWorktreeId} is not available.`);
+    }
+    if (boundCwd !== (target.canonical_path || target.path)) {
+      throw new Error("The new thread cwd does not match the target worktree.");
+    }
+    const timestamp = binding.createdAt || new Date().toISOString();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const logical = this.selectOne(
+        "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
+        [transition.logicalSessionId]
+      );
+      if (!logical
+        || logical.active_thread_id !== transition.sourceThreadId
+        || Number(logical.routing_version) !== transition.sourceRoutingVersion) {
+        throw new Error("The logical session route changed before the workspace transition committed.");
+      }
+      this.db.run(
+        `UPDATE provider_thread_bindings SET state = 'superseded', updated_at = ?
+         WHERE provider_thread_id = ? AND state = 'active'`,
+        [timestamp, transition.sourceThreadId]
+      );
+      this.db.run(
+        `INSERT INTO provider_thread_bindings (
+          provider_thread_id, logical_session_id, worktree_id, bound_cwd,
+          parent_thread_id, forked_at_turn_id, instruction_sources_json,
+          permission_snapshot_json, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        [
+          newThreadId,
+          transition.logicalSessionId,
+          transition.targetWorktreeId,
+          boundCwd,
+          transition.sourceThreadId,
+          binding.forkedAtTurnId || transition.lastCompletedTurnId,
+          JSON.stringify(binding.instructionSources ?? []),
+          JSON.stringify(binding.permissionSnapshot ?? {}),
+          timestamp,
+          timestamp
+        ]
+      );
+      this.db.run(
+        `INSERT INTO provider_thread_lineage (
+          child_thread_id, parent_thread_id, logical_session_id, transition_id, created_at
+        ) VALUES (?, ?, ?, ?, ?)`,
+        [
+          newThreadId,
+          transition.sourceThreadId,
+          transition.logicalSessionId,
+          transitionId,
+          timestamp
+        ]
+      );
+      this.db.run(
+        `UPDATE logical_sessions
+         SET active_thread_id = ?, active_workspace_id = ?, repository_id = ?,
+             routing_version = routing_version + 1, transition_state = NULL, updated_at = ?
+         WHERE logical_session_id = ?`,
+        [
+          newThreadId,
+          transition.targetWorktreeId,
+          target.repository_id,
+          timestamp,
+          transition.logicalSessionId
+        ]
+      );
+      this.db.run(
+        `UPDATE sessions SET cwd = ?, updated_at = ?
+         WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
+        [boundCwd, timestamp, transition.logicalSessionId]
+      );
+      this.db.run(
+        `UPDATE workspace_transitions
+         SET new_thread_id = ?, phase = 'committed', error_json = NULL, updated_at = ?
+         WHERE transition_id = ?`,
+        [newThreadId, timestamp, transitionId]
+      );
+      this.assertLogicalSessionRoute(transition.logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getLogicalSession(transition.logicalSessionId);
+  }
+
+  getWorkspaceTransition(transitionId) {
+    const row = this.selectOne(
+      "SELECT * FROM workspace_transitions WHERE transition_id = ?",
+      [transitionId]
+    );
+    return row ? workspaceTransitionFromRow(row) : null;
+  }
+
+  assertLogicalSessionRoute(logicalSessionId) {
+    const row = this.selectOne(
+      `SELECT ls.active_thread_id, ls.active_workspace_id, binding.worktree_id, binding.state
+       FROM logical_sessions ls
+       LEFT JOIN provider_thread_bindings binding
+         ON binding.provider_thread_id = ls.active_thread_id
+       WHERE ls.logical_session_id = ?`,
+      [logicalSessionId]
+    );
+    if (!row?.active_thread_id || row.state !== "active") {
+      throw new Error(`Logical session ${logicalSessionId} has no valid active thread.`);
+    }
+    if ((row.active_workspace_id ?? null) !== (row.worktree_id ?? null)) {
+      throw new Error(`Logical session ${logicalSessionId} has mismatched thread and workspace bindings.`);
+    }
+    return true;
   }
 
   upsertSession(session) {
@@ -1642,6 +2118,44 @@ function normalizeSqliteBindings(params) {
     if (typeof value === "boolean") return value ? 1 : 0;
     return value;
   });
+}
+
+function providerThreadBindingFromRow(row) {
+  return {
+    providerThreadId: row.provider_thread_id,
+    logicalSessionId: row.logical_session_id,
+    worktreeId: row.worktree_id,
+    boundCwd: row.bound_cwd,
+    parentThreadId: row.parent_thread_id,
+    forkedAtTurnId: row.forked_at_turn_id,
+    instructionSources: parseJson(row.instruction_sources_json, []),
+    permissionSnapshot: parseJson(row.permission_snapshot_json, {}),
+    state: row.state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function workspaceTransitionFromRow(row) {
+  return {
+    transitionId: row.transition_id,
+    logicalSessionId: row.logical_session_id,
+    sourceThreadId: row.source_thread_id,
+    targetWorktreeId: row.target_worktree_id,
+    sourceRoutingVersion: Number(row.source_routing_version),
+    lastCompletedTurnId: row.last_completed_turn_id,
+    newThreadId: row.new_thread_id,
+    phase: row.phase,
+    strategy: row.strategy,
+    error: parseJson(row.error_json, null),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function requiredText(value, name) {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required.`);
+  return value;
 }
 
 function feishuBotFromRow(row) {

@@ -75,15 +75,89 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
     method: "thread/resume",
     params: {
       threadId: "thread-a",
+      cwd: undefined,
+      runtimeWorkspaceRoots: undefined,
+      approvalPolicy: undefined,
+      approvalsReviewer: undefined,
+      sandbox: undefined,
+      permissions: undefined,
+      model: undefined,
+      modelProvider: undefined,
       config: {
         features: { multi_agent: false },
         mcp_servers: { collaboration: { command: "node" } }
       },
-      developerInstructions: "Stable Agent identity: agent-a"
+      developerInstructions: "Stable Agent identity: agent-a",
+      excludeTurns: undefined,
+      initialTurnsPage: undefined
     },
     timeoutMs: 30000
   }]);
   assert.equal(client.dynamicToolAgentsByThread.get("thread-a"), "agent-a");
+});
+
+test("forkThread fixes the forked thread to the target workspace and completed source turn", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params, timeoutMs) => {
+    calls.push({ method, params, timeoutMs });
+    return {
+      thread: { id: "thread-feature" },
+      cwd: "/repo/feature worktree",
+      runtimeWorkspaceRoots: ["/repo/feature worktree"],
+      instructionSources: ["/repo/feature worktree/AGENTS.md"]
+    };
+  };
+
+  const result = await client.forkThread("thread-source", {
+    lastTurnId: "turn-complete",
+    cwd: "/repo/feature worktree",
+    runtimeWorkspaceRoots: ["/repo/feature worktree"],
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    dynamicToolAgentId: "agent-a"
+  });
+
+  assert.equal(calls[0].method, "thread/fork");
+  assert.equal(calls[0].params.threadId, "thread-source");
+  assert.equal(calls[0].params.lastTurnId, "turn-complete");
+  assert.equal(calls[0].params.cwd, "/repo/feature worktree");
+  assert.deepEqual(calls[0].params.runtimeWorkspaceRoots, ["/repo/feature worktree"]);
+  assert.equal(calls[0].params.sandbox, "workspace-write");
+  assert.equal(calls[0].params.deferGoalContinuation, true);
+  assert.equal(calls[0].timeoutMs, 30000);
+  assert.deepEqual(result.instructionSources, ["/repo/feature worktree/AGENTS.md"]);
+  assert.equal(client.dynamicToolAgentsByThread.get("thread-feature"), "agent-a");
+});
+
+test("updateThreadSettings updates cwd and sandbox policy together for recovery", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params, timeoutMs) => {
+    calls.push({ method, params, timeoutMs });
+    return {};
+  };
+
+  await client.updateThreadSettings("thread-a", {
+    cwd: "/repo/moved worktree",
+    approvalPolicy: "never",
+    sandboxPolicy: {
+      type: "workspaceWrite",
+      writableRoots: ["/repo/moved worktree"],
+      networkAccess: true,
+      excludeTmpdirEnvVar: false,
+      excludeSlashTmp: false
+    }
+  });
+
+  assert.equal(calls[0].method, "thread/settings/update");
+  assert.equal(calls[0].params.threadId, "thread-a");
+  assert.equal(calls[0].params.cwd, "/repo/moved worktree");
+  assert.deepEqual(calls[0].params.sandboxPolicy.writableRoots, ["/repo/moved worktree"]);
+  assert.equal(calls[0].params.approvalPolicy, "never");
+  assert.equal(calls[0].timeoutMs, 8000);
 });
 
 test("dynamic tool calls are executed by the host with the thread's bound Agent identity", async () => {
