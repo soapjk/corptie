@@ -53,6 +53,28 @@ final class OrbContentRiskAnalyzerTests: XCTestCase {
         XCTAssertGreaterThan(lowContrastText.totalRisk, blank.totalRisk + 0.025)
     }
 
+    func testWhiteTextOnLightBackgroundReachesAvoidanceTrigger() throws {
+        let blank = try knownRisk(analyzing: solidFrame(red: 235, green: 235, blue: 235))
+        let whiteText = try knownRisk(analyzing: textFrame(
+            background: (235, 235, 235),
+            foreground: (255, 255, 255)
+        ))
+
+        XCTAssertGreaterThan(whiteText.localContrastSalience, 0.70)
+        XCTAssertGreaterThanOrEqual(whiteText.totalRisk, 0.26)
+        XCTAssertLessThan(blank.totalRisk, 0.18)
+    }
+
+    func testSubtleSmoothLightGradientDoesNotReachAvoidanceTrigger() throws {
+        let gradient = try knownRisk(analyzing: frame(size: 64) { x, _ in
+            let tone = UInt8(225 + x / 4)
+            return (tone, tone, tone)
+        })
+
+        XCTAssertLessThan(gradient.localContrastSalience, 0.20)
+        XCTAssertLessThan(gradient.totalRisk, 0.26)
+    }
+
     func testRegionalBoundaryIsRiskierThanBlankSpace() throws {
         let blank = try knownRisk(analyzing: solidFrame(red: 255, green: 255, blue: 255))
         let split = try knownRisk(analyzing: splitFrame())
