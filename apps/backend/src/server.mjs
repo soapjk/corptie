@@ -67,6 +67,11 @@ import { collaborationDynamicTools, callCollaborationDynamicTool } from "./colla
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "./utils/agentWorkQueue.mjs";
+import { LanWebGateway } from "./http/lanWebGateway.mjs";
+import { WebAccessAuth } from "./webAccess/webAccessAuth.mjs";
+import { ApiV1Service } from "./webAccess/apiV1Service.mjs";
+import { ensureWebAccessCertificate } from "./webAccess/webAccessTls.mjs";
+import { listLanAddresses } from "./utils/webAccessSettings.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -74,6 +79,9 @@ const execFileAsync = promisify(execFile);
 const sessions = new Map();
 const managedCodexSessions = new Map();
 const eventLog = [];
+const webEventListeners = new Set();
+const maxEventLogEntries = 2_000;
+let nextEventId = 1;
 const sseClients = new Set();
 const sessionEventListeners = new Set();
 const codexChoiceOptionsCache = new Map();
@@ -82,6 +90,50 @@ const codexChoiceParseRetryAfter = new Map();
 const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
+const webAccessAuth = new WebAccessAuth({ store });
+const webRootPath = process.env.CORPTIE_WEB_ROOT || fileURLToPath(new URL(
+  environmentName === "development" ? "../../web/dist" : "../resources/web",
+  import.meta.url
+));
+const apiV1Service = new ApiV1Service({
+  store,
+  environmentName,
+  listSessions: listGatewaySessions,
+  getSession: getUnifiedSessionSnapshot,
+  perform: performWebApiAction,
+  eventCursor: latestEventId,
+  eventsAfter: eventsAfter,
+  subscribeEvents: (listener) => {
+    webEventListeners.add(listener);
+    return () => webEventListeners.delete(listener);
+  },
+  creationOptions: webCreationOptions,
+  createSession: createGatewaySession,
+  reorderSessions: reorderUnifiedSessions,
+  getSessionMetadata: resolveWebSessionMetadata,
+  getCollaborationOverview: () => ({
+    agents: collaborationCore.listAgents(),
+    services: collaborationCore.listServices(),
+    tasks: collaborationCore.listTasks({ limit: 200 })
+  }),
+  getCollaborationTask: (taskId) => {
+    const task = collaborationCore.getTask(taskId);
+    return task ? { task, deliveries: collaborationCore.listDeliveriesForTask(taskId) } : null;
+  },
+  performCollaborationAction: ({ action, targetId, reason }) => {
+    if (action === "task.cancel") return { task: collaborationCore.cancelByUser(targetId, reason || "Canceled from Corptie Web") };
+    return { delivery: collaborationCore.retryDeliveryByUser(targetId) };
+  },
+  getTurnDiff: resolveWebTurnDiff,
+  performTurnAction: performWebTurnAction
+});
+const lanWebGateway = new LanWebGateway({
+  environmentName,
+  auth: webAccessAuth,
+  api: apiV1Service,
+  webRoot: webRootPath,
+  tlsProvider: ({ host }) => ensureWebAccessCertificate({ dataPath: store.dbPath, host })
+});
 const collaborationCore = new CollaborationCore(store);
 const collaborationMcpServerPath = fileURLToPath(new URL("./mcp/collaborationMcpServer.mjs", import.meta.url));
 const bundledCollaborationSkillPath = fileURLToPath(new URL("../resources/codex/skills/corptie-collaboration/SKILL.md", import.meta.url));
@@ -474,20 +526,18 @@ function seedSessions() {
 }
 
 function emitEvent(type, payload, options = {}) {
+  const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
   const event = {
-    id: eventLog.length + 1,
+    id: nextEventId,
     type,
     payload,
-    createdAt: now()
+    createdAt: now(),
+    sessionId,
+    sessionRevision: null
   };
+  nextEventId += 1;
   eventLog.push(event);
-
-  const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
-  for (const response of sseClients) {
-    response.write(frame);
-  }
-
-  const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
+  if (eventLog.length > maxEventLogEntries) eventLog.splice(0, eventLog.length - maxEventLogEntries);
   if (sessionId && store.db) {
     const sessionEvent = store.appendSessionEvent({
       eventId: randomUUID(),
@@ -498,11 +548,24 @@ function emitEvent(type, payload, options = {}) {
       createdAt: event.createdAt
     });
     if (sessionEvent) {
+      event.sessionRevision = sessionEvent.sequence;
       for (const listener of sessionEventListeners) {
         listener(sessionEvent);
       }
     }
   }
+
+  const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+  for (const response of sseClients) response.write(frame);
+  for (const listener of webEventListeners) listener(event);
+}
+
+function latestEventId() {
+  return nextEventId - 1;
+}
+
+function eventsAfter(cursor) {
+  return eventLog.filter((event) => event.id > cursor);
 }
 
 function sessionIdFromEventPayload(payload = {}) {
@@ -1497,21 +1560,23 @@ async function createGatewaySession(input = {}) {
   const agent = input.agent === "claude" ? "claude" : "codex";
   const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
   const permissions = {
-    sandbox: defaults.sandbox,
-    approvalPolicy: defaults.approvalPolicy
+    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
+    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy)
   };
+  const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
+  const source = input.source ?? { type: "web" };
   const releaseTitle = reserveSessionTitle(title);
 
   try {
     if (agent === "claude") {
       const session = claudeAgents.start({
         title,
-        prompt: "",
+        prompt,
         cwd,
-        model: defaults.claudeModel,
+        model: String(input.model || defaults.claudeModel || ""),
         ...permissions
       });
-      emitEvent("ClaudeSessionStarted", { session, source: { type: "feishu" } });
+      emitEvent("ClaudeSessionStarted", { session, source });
       return session;
     }
 
@@ -1526,14 +1591,14 @@ async function createGatewaySession(input = {}) {
       status: "inactive",
       capabilities: ["codex-session", "corptie-collaboration"]
     });
-    const runtime = await resolvedNewCodexRuntimeConfig();
+    const runtime = await resolvedNewCodexRuntimeConfig(input);
     const started = await codexClient.startThread({
       cwd,
       ...permissions,
       model: runtime.model,
       ...collaborationThreadOptions(collaborationAgentId)
     });
-    const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
+    const turn = await codexClient.startTurn(started.thread.id, prompt || "Reply exactly: Ready", {
       cwd,
       ...codexTurnPermissionOptions({ external: permissions }),
       model: runtime.model,
@@ -1567,12 +1632,97 @@ async function createGatewaySession(input = {}) {
       threadId: started.thread.id,
       turn: turn.turn,
       session,
-      source: { type: "feishu" }
+      source
     });
     return session;
   } finally {
     releaseTitle();
   }
+}
+
+async function webCreationOptions() {
+  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
+  const [codex, claude] = await Promise.all([
+    loadCodexModels().catch(() => ({ models: [] })),
+    loadClaudeModels().catch(() => ({ models: [] }))
+  ]);
+  const workspaces = listGatewayWorkspaces().map(({ path, name }) => ({ path, name }));
+  return {
+    workspaces,
+    agents: ["codex", "claude"],
+    models: {
+      codex: codex.models.map(({ id, name }) => ({ id, name })),
+      claude: claude.models.map(({ id, name }) => ({ id, name }))
+    },
+    defaults: {
+      agent: "codex",
+      workspace: workspaces[0]?.path ?? null,
+      codexModel: defaults.codexModel || null,
+      claudeModel: defaults.claudeModel || null,
+      reasoningLevel: defaults.codexReasoningLevel || "medium",
+      sandbox: defaults.sandbox,
+      approvalPolicy: defaults.approvalPolicy
+    }
+  };
+}
+
+function reorderUnifiedSessions(sessionIds) {
+  const normalized = sessionIds.map((id) => normalizeSessionId(id));
+  const sessions = ptyAgents.reorder(normalized);
+  sessionIds.forEach((id, index) => {
+    if (!managedCodexSessions.has(id)) return;
+    const next = { ...managedCodexSessions.get(id), sortOrder: index, updatedAt: now() };
+    upsertManagedCodexSession(next);
+  });
+  emitEvent("SessionsReordered", { sessionIds, source: { type: "web" } });
+  return listGatewaySessions();
+}
+
+async function resolveWebSessionMetadata(session) {
+  const cwd = session.external?.cwd;
+  const branch = cwd ? await execFileAsync("git", ["-C", cwd, "branch", "--show-current"], {
+    timeout: 3_000,
+    maxBuffer: 64 * 1024
+  }).then(({ stdout }) => stdout.trim() || null).catch(() => null) : null;
+  const [accountUsage, contextUsage] = await Promise.all([
+    getGatewayUsage(session.id).catch(() => null),
+    resolveSessionContextUsage(session).catch(() => null)
+  ]);
+  return { branch, accountUsage, contextUsage };
+}
+
+async function resolveWebTurnDiff(sessionId, turnId) {
+  if (!sessionId.startsWith("codex:")) return null;
+  const threadId = sessionId.slice("codex:".length);
+  const result = await codexClient.readThread(threadId, { includeTurns: true });
+  const cwd = result.thread.cwd || managedCodexSessions.get(sessionId)?.external?.cwd;
+  if (!cwd) throw webActionError("ACTION_EXPIRED", "The task working directory is unavailable.");
+  const changes = safeTurnFileChanges(result.thread, turnId, cwd);
+  return { files: changes.map((change) => change.path), diff: turnDiffFor(threadId, turnId, changes), cwd, changes };
+}
+
+async function performWebTurnAction(sessionId, turnId, action) {
+  const resolved = await resolveWebTurnDiff(sessionId, turnId);
+  if (!resolved) throw webActionError("ACTION_EXPIRED", "Turn diff is unavailable.");
+  const threadId = sessionId.slice("codex:".length);
+  if (action === "open-finder") {
+    launchDetached("/usr/bin/open", [resolved.cwd]);
+    emitEvent("CodexTurnFinderOpened", { sessionId, turnId }, { sessionId, source: { type: "web" } });
+    return { ok: true };
+  }
+  if (action === "open-diff") {
+    const review = await prepareExternalDiff(resolved.cwd, threadId, turnId, resolved.changes, resolved.diff);
+    const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, resolved.changes);
+    emitEvent("CodexTurnDiffReviewOpened", { threadId, turnId, tool }, { sessionId, source: { type: "web" } });
+    return { ok: true, tool };
+  }
+  const { patchPath } = await writeTurnPatch(threadId, turnId, resolved.diff);
+  await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd: resolved.cwd });
+  await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd: resolved.cwd });
+  emitEvent("CodexTurnChangesUndone", {
+    threadId, turnId, files: resolved.files, source: { type: "web" }
+  }, { sessionId, source: { type: "web" } });
+  return { ok: true, files: resolved.files };
 }
 
 async function getUnifiedSessionSnapshot(sessionId) {
@@ -2274,11 +2424,273 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
   return confirmation;
 }
 
+async function performWebApiAction(sessionId, request, context = {}) {
+  const source = context.source ?? { type: "web" };
+  const payload = request.payload ?? {};
+  switch (request.action) {
+    case "message.send": {
+      const text = String(payload.text ?? "").trim();
+      if (!text || text.length > 100_000) {
+        throw webActionError("INVALID_REQUEST", "Message text is required and must be at most 100000 characters.");
+      }
+      return sendUnifiedSessionMessage(sessionId, text, source);
+    }
+    case "session.interrupt":
+      return { session: await interruptUnifiedSession(sessionId, source) };
+    case "session.reconnect":
+      return { session: await reconnectUnifiedSession(sessionId, source) };
+    case "session.model.set":
+      return { session: await setUnifiedSessionModel(sessionId, payload.model, source) };
+    case "session.reasoning.set":
+      return { session: setUnifiedSessionReasoning(sessionId, payload.reasoningLevel, source) };
+    case "session.permissions.set":
+      return {
+        session: setUnifiedSessionPermissions(
+          sessionId,
+          { sandbox: payload.sandbox, approvalPolicy: payload.approvalPolicy },
+          source
+        )
+      };
+    case "choice.respond":
+      return {
+        session: await respondUnifiedSessionApproval(sessionId, {
+          ...payload,
+          approved: payload.approved === true,
+          itemType: "choice"
+        }, source)
+      };
+    case "approval.respond":
+      return {
+        session: await respondUnifiedSessionApproval(sessionId, {
+          ...payload,
+          approved: payload.approved === true,
+          itemType: "approval"
+        }, source)
+      };
+    case "collaboration.confirm":
+    case "collaboration.reject": {
+      const confirmationId = String(payload.confirmationId ?? "").trim();
+      if (!confirmationId) throw webActionError("ACTION_EXPIRED", "The collaboration confirmation is no longer available.");
+      return {
+        confirmation: await resolveCollaborationConfirmation(
+          confirmationId,
+          request.action === "collaboration.confirm",
+          source
+        )
+      };
+    }
+    case "session.archive":
+      return { session: archiveUnifiedSession(sessionId, true) };
+    case "session.unarchive":
+      return { session: archiveUnifiedSession(sessionId, false) };
+    case "session.pin":
+      return { session: pinUnifiedSession(sessionId, payload.pinned !== false) };
+    case "session.rename":
+      return { session: await renameUnifiedSession(sessionId, payload.title) };
+    case "session.delete":
+      return deleteUnifiedSession(sessionId);
+    default:
+      throw webActionError("ACTION_NOT_AVAILABLE", "This action is not available from the Web client yet.");
+  }
+}
+
+async function reconnectUnifiedSession(sessionId, source = { type: "desktop" }) {
+  if (!sessionId.startsWith("pty:")) {
+    throw webActionError("ACTION_NOT_AVAILABLE", "This session does not support reconnect.");
+  }
+  const id = normalizeSessionId(sessionId);
+  const stored = store.getSession(id);
+  let session;
+  if (claudeAgents.has(id) || stored?.external?.provider === "claude-sdk") {
+    session = await claudeAgents.reconnect(id);
+    if (!session) throw webActionError("ACTION_EXPIRED", "Claude session cannot be reconnected.");
+    emitEvent("ClaudeSessionReconnected", { session, source }, { sessionId, source });
+    return session;
+  }
+  session = ptyAgents.reconnect(id);
+  if (!session) throw webActionError("ACTION_EXPIRED", "PTY session cannot be reconnected.");
+  const ready = await ptyAgents.waitForConnectionReady(id);
+  const connected = ptyAgents.get(id);
+  if (!ready || !connected) throw webActionError("SESSION_BUSY", "PTY session did not become ready in time.");
+  const summary = ptyAgents.toSessionSummary(connected);
+  emitEvent("PtySessionReconnected", { session: summary, source }, { sessionId, source });
+  return summary;
+}
+
+async function setUnifiedSessionModel(sessionId, rawModel, source = { type: "desktop" }) {
+  const model = typeof rawModel === "string" ? rawModel.trim() : "";
+  if (!model || model.length > 200) throw webActionError("INVALID_REQUEST", "Model is required.");
+  if (sessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(sessionId);
+    const session = claudeAgents.has(id)
+      ? await claudeAgents.switchModel(id, model)
+      : ptyAgents.switchModel(id, model);
+    emitEvent(claudeAgents.has(id) ? "ClaudeSessionModelChanged" : "PtySessionModelChanged", {
+      sessionId, model, source
+    }, { sessionId, source });
+    return session;
+  }
+  const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!previous || !sessionId.startsWith("codex:")) {
+    throw webActionError("ACTION_EXPIRED", "Session no longer supports model switching.");
+  }
+  const next = {
+    ...previous,
+    updatedAt: now(),
+    external: { ...previous.external, currentModel: model }
+  };
+  upsertManagedCodexSession(next);
+  emitEvent("CodexThreadModelChanged", { threadId: sessionId.slice(6), model, source }, { sessionId, source });
+  return next;
+}
+
+function setUnifiedSessionReasoning(sessionId, rawLevel, source = { type: "desktop" }) {
+  const reasoningLevel = typeof rawLevel === "string" ? rawLevel.trim() : "";
+  if (!["low", "medium", "high", "xhigh"].includes(reasoningLevel)) {
+    throw webActionError("INVALID_REQUEST", "Unsupported reasoning level.");
+  }
+  if (sessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(sessionId);
+    const session = ptyAgents.switchReasoning(id, reasoningLevel);
+    emitEvent("PtySessionReasoningChanged", { sessionId, reasoningLevel, source }, { sessionId, source });
+    return session;
+  }
+  const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!previous || !sessionId.startsWith("codex:")) {
+    throw webActionError("ACTION_EXPIRED", "Session no longer supports reasoning changes.");
+  }
+  const next = {
+    ...previous,
+    updatedAt: now(),
+    external: { ...previous.external, currentReasoningLevel: reasoningLevel }
+  };
+  upsertManagedCodexSession(next);
+  emitEvent("CodexThreadReasoningChanged", {
+    threadId: sessionId.slice(6), reasoningLevel, source
+  }, { sessionId, source });
+  return next;
+}
+
+function setUnifiedSessionPermissions(sessionId, input, source = { type: "desktop" }) {
+  const sandbox = normalizeCodexSandbox(input.sandbox, "");
+  const approvalPolicy = normalizeCodexApprovalPolicy(input.approvalPolicy, "");
+  if (!["workspace-write", "danger-full-access", "read-only"].includes(input.sandbox)
+    || !["on-request", "ask-risky", "never", "on-failure"].includes(input.approvalPolicy)) {
+    throw webActionError("INVALID_REQUEST", "Unsupported permission configuration.");
+  }
+  const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!previous || previous.external?.provider !== "codex-app-server") {
+    throw webActionError("ACTION_EXPIRED", "Session no longer supports permission changes.");
+  }
+  const next = withCodexSessionPermissions({ ...previous, updatedAt: now() }, { sandbox, approvalPolicy });
+  upsertManagedCodexSession(next);
+  emitEvent("CodexThreadPermissionsChanged", {
+    sessionId,
+    threadId: next.external?.threadId,
+    sandbox,
+    approvalPolicy,
+    source
+  }, { sessionId, source });
+  return next;
+}
+
+function archiveUnifiedSession(rawId, archived) {
+  if (rawId.startsWith("codex:")) {
+    const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
+    if (!session) throw webActionError("SESSION_NOT_FOUND", "Session not found.");
+    const nextSession = { ...session, archived, updatedAt: now() };
+    if (archived) {
+      managedCodexSessions.delete(rawId);
+      store.archiveSession(rawId, true);
+    } else {
+      upsertManagedCodexSession(nextSession);
+    }
+    emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session: nextSession });
+    return nextSession;
+  }
+  const session = ptyAgents.archive(normalizeSessionId(rawId), archived);
+  if (!session) throw webActionError("SESSION_NOT_FOUND", "Session not found.");
+  emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session });
+  return session;
+}
+
+function pinUnifiedSession(rawId, pinned) {
+  const id = normalizeSessionId(rawId);
+  const session = ptyAgents.pin(id, pinned);
+  if (!session) throw webActionError("SESSION_NOT_FOUND", "Session not found.");
+  if (managedCodexSessions.has(rawId)) {
+    managedCodexSessions.set(rawId, {
+      ...managedCodexSessions.get(rawId),
+      pinned,
+      sortOrder: session.sortOrder ?? managedCodexSessions.get(rawId).sortOrder
+    });
+  }
+  emitEvent(pinned ? "SessionPinned" : "SessionUnpinned", { session });
+  return session;
+}
+
+async function renameUnifiedSession(rawId, value) {
+  const title = typeof value === "string" ? value.trim() : "";
+  if (!title) throw webActionError("INVALID_REQUEST", "Title is required.");
+  const releaseTitle = reserveSessionTitle(title, rawId);
+  try {
+    if (rawId.startsWith("codex:")) {
+      const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
+      if (!session) throw webActionError("SESSION_NOT_FOUND", "Session not found.");
+      await codexClient.setThreadName(rawId.slice("codex:".length), title);
+      const nextSession = { ...session, title, updatedAt: now() };
+      upsertManagedCodexSession(nextSession);
+      emitEvent("SessionRenamed", { session: nextSession });
+      return nextSession;
+    }
+    const id = normalizeSessionId(rawId);
+    const stored = store.getSession(id);
+    const session = claudeAgents.has(id) || stored?.external?.provider === "claude-sdk"
+      ? claudeAgents.rename(id, title)
+      : ptyAgents.rename(id, title);
+    if (!session) throw webActionError("SESSION_NOT_FOUND", "Session not found.");
+    emitEvent("SessionRenamed", { session });
+    return session;
+  } finally {
+    releaseTitle();
+  }
+}
+
+function deleteUnifiedSession(rawId) {
+  if (rawId.startsWith("codex:")) {
+    const existed = managedCodexSessions.delete(rawId);
+    collaborationCore.deactivateAgentForSession(rawId);
+    store.deleteSession(rawId);
+    emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
+    return { deleted: existed, sessionId: rawId };
+  }
+  const id = normalizeSessionId(rawId);
+  collaborationCore.deactivateAgentForSession(id);
+  if (claudeAgents.has(id)) claudeAgents.delete(id);
+  else ptyAgents.delete(id);
+  emitEvent("SessionDeleted", { sessionId: id });
+  return { deleted: true, sessionId: rawId };
+}
+
+function webActionError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
 function unifiedErrorStatus(error) {
   if (error.code === "SESSION_NOT_FOUND") return 404;
   if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
+}
+
+function webAccessErrorStatus(error) {
+  if (error.code === "SESSION_NOT_FOUND") return 404;
+  if (["ACTION_EXPIRED", "WEB_ACCESS_DISABLED"].includes(error.code)) return 409;
+  if (String(error.code || "").startsWith("PAIRING_")) return 401;
+  if (String(error.code || "").startsWith("AUTHENTICATION_")) return 401;
+  return 400;
 }
 
 function route(request, response) {
@@ -2312,6 +2724,60 @@ function route(request, response) {
 
   if (request.method === "GET" && url.pathname === "/settings") {
     sendJson(response, 200, store.settings());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/web-access/status") {
+    sendJson(response, 200, {
+      settings: store.settings().webAccess,
+      runtime: lanWebGateway.status(),
+      availableHosts: listLanAddresses(),
+      pendingRequests: webAccessAuth.pendingRequests(),
+      devices: webAccessAuth.listDevices()
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/web-access/pairing-code") {
+    try {
+      if (!store.settings().webAccess.enabled || !lanWebGateway.status().listening) {
+        sendJson(response, 409, {
+          error: "Enable Web Access before creating a pairing code.",
+          code: "WEB_ACCESS_DISABLED"
+        });
+        return;
+      }
+      sendJson(response, 201, webAccessAuth.createPairingCode());
+    } catch (error) {
+      sendJson(response, webAccessErrorStatus(error), { error: error.message, code: error.code });
+    }
+    return;
+  }
+
+  const webPairingResolutionMatch = url.pathname.match(/^\/web-access\/pairing-requests\/([^/]+)\/(approve|reject)$/);
+  if (request.method === "POST" && webPairingResolutionMatch) {
+    const requestId = decodeURIComponent(webPairingResolutionMatch[1]);
+    const action = webPairingResolutionMatch[2];
+    readJson(request)
+      .then((input) => action === "approve"
+        ? webAccessAuth.approveRequest(requestId, input.permission)
+        : webAccessAuth.rejectRequest(requestId))
+      .then((pairingRequest) => sendJson(response, 200, { pairingRequest }))
+      .catch((error) => sendJson(response, webAccessErrorStatus(error), {
+        error: error.message,
+        code: error.code
+      }));
+    return;
+  }
+
+  const webDeviceMatch = url.pathname.match(/^\/web-access\/devices\/([^/]+)$/);
+  if (request.method === "DELETE" && webDeviceMatch) {
+    try {
+      webAccessAuth.revokeDevice(decodeURIComponent(webDeviceMatch[1]));
+      sendJson(response, 200, { ok: true });
+    } catch (error) {
+      sendJson(response, webAccessErrorStatus(error), { error: error.message, code: error.code });
+    }
     return;
   }
 
@@ -2364,6 +2830,17 @@ function route(request, response) {
       .then(async (input) => {
         const before = store.settings();
         const settings = await store.updateSettings(input);
+        try {
+          await lanWebGateway.applySettings(settings.webAccess);
+        } catch (error) {
+          await store.updateSettings({ webAccess: before.webAccess });
+          await lanWebGateway.applySettings(before.webAccess).catch(() => {});
+          throw error;
+        }
+        if ((before.webAccess.enabled && !settings.webAccess.enabled)
+          || before.webAccess.httpsEnabled !== settings.webAccess.httpsEnabled) {
+          webAccessAuth.revokeAllDevices();
+        }
         if (settings.logDir !== before.logDir) {
           configureBackendLogging(settings.logDir, {
             mirrorToOriginalConsole: environmentName === "development"
@@ -4253,6 +4730,9 @@ async function resolveSessionContextUsage(session) {
 const server = http.createServer(route);
 
 await store.initialize();
+await lanWebGateway.applySettings(store.settings().webAccess).catch((error) => {
+  console.error(`[lan-web] configured listener could not start; Core backend remains available: ${error.message}`);
+});
 const deactivatedOrphanedAgents = collaborationCore.deactivateAgentsWithMissingSessions();
 if (deactivatedOrphanedAgents.length > 0) {
   console.log(`[collaboration] deactivated ${deactivatedOrphanedAgents.length} Agent(s) with deleted Sessions`);
@@ -4329,6 +4809,7 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
+    await lanWebGateway.close();
     await feishuGateway.close();
     await codexClient.close();
     await store.close();

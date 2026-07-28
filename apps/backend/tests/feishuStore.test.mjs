@@ -153,6 +153,32 @@ test("gateway trusted workspaces are normalized and persisted", async () => {
   });
 });
 
+test("Web Access settings are disabled by default and persist an explicit interface", async () => {
+  await withStore(async (store) => {
+    assert.deepEqual(store.settings().webAccess, {
+      enabled: false,
+      host: "",
+      port: 47323,
+      httpsEnabled: true
+    });
+
+    await store.updateSettings({
+      webAccess: {
+        enabled: true,
+        host: "192.168.1.25",
+        port: 48324
+      }
+    });
+
+    assert.deepEqual(store.settings().webAccess, {
+      enabled: true,
+      host: "192.168.1.25",
+      port: 48324,
+      httpsEnabled: true
+    });
+  });
+});
+
 test("log directory is created, persisted, and exposed with concrete log paths", async () => {
   await withStore(async (store, directory) => {
     const logDir = join(directory, "external-logs");

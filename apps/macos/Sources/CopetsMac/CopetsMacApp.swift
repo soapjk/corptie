@@ -1,6 +1,20 @@
 import AppKit
 import Combine
+import CoreImage.CIFilterBuiltins
 import SwiftUI
+
+private func qrCodeImage(for value: String) -> NSImage? {
+    let filter = CIFilter.qrCodeGenerator()
+    filter.message = Data(value.utf8)
+    filter.correctionLevel = "M"
+    guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else {
+        return nil
+    }
+    let representation = NSCIImageRep(ciImage: output)
+    let image = NSImage(size: representation.size)
+    image.addRepresentation(representation)
+    return image
+}
 
 @main
 struct CorptieMacApp: App {
@@ -398,6 +412,7 @@ enum CorptiePermissionManager {
 private enum SettingsTab: Hashable {
     case general
     case proxy
+    case webAccess
     case gateway
     case archivedSessions
 }
@@ -420,6 +435,8 @@ struct SettingsView: View {
     @State private var savedAgentProxy = AgentProxySettings.defaults
     @State private var gateway = GatewaySettings.defaults
     @State private var savedGateway = GatewaySettings.defaults
+    @State private var webAccess = WebAccessSettings.defaults
+    @State private var showWebAccessHttpsGuide = false
     @State private var choiceParserStatus: ChoiceParserStatus = .idle
     @State private var feishuAddMode = "credentials"
     @State private var newFeishuAppId = ""
@@ -441,6 +458,12 @@ struct SettingsView: View {
                         Label(L10n("Proxy"), systemImage: "network")
                     }
                     .tag(SettingsTab.proxy)
+
+                webAccessSettingsTab
+                    .tabItem {
+                        Label(L10n("Web Access"), systemImage: "network.badge.shield.half.filled")
+                    }
+                    .tag(SettingsTab.webAccess)
 
                 feishuSettingsTab
                     .tabItem {
@@ -486,6 +509,7 @@ struct SettingsView: View {
             await backendClient.loadSettings()
             await backendClient.loadFeishuBots()
             await backendClient.loadFeishuProfiles()
+            await backendClient.loadWebAccessStatus()
             selectDefaultFeishuProfileIfNeeded()
             await backendClient.loadModels(for: "codex-pty")
             if dataDir.isEmpty {
@@ -502,6 +526,11 @@ struct SettingsView: View {
             savedAgentProxy = agentProxy
             gateway = backendClient.settings?.gateway ?? .defaults
             savedGateway = gateway
+            let loadedWebAccess = backendClient.settings?.webAccess ?? .defaults
+            webAccess = webAccessSettingsUsingAvailableLAN(
+                loadedWebAccess,
+                availableHosts: backendClient.webAccessStatus?.availableHosts ?? []
+            )
         }
         .onChange(of: backendClient.settings) { _, settings in
             if let settings {
@@ -517,12 +546,29 @@ struct SettingsView: View {
                 savedAgentProxy = agentProxy
                 gateway = settings.gateway ?? .defaults
                 savedGateway = gateway
+                webAccess = webAccessSettingsUsingAvailableLAN(
+                    settings.webAccess ?? .defaults,
+                    availableHosts: backendClient.webAccessStatus?.availableHosts ?? []
+                )
                 choiceParserStatus = .idle
             }
         }
         .onChange(of: selectedTab) { _, tab in
             guard tab == .archivedSessions else { return }
             Task { await backendClient.refreshArchivedSessions() }
+        }
+        .task(id: selectedTab) {
+            guard selectedTab == .webAccess else { return }
+            while !Task.isCancelled {
+                await backendClient.loadWebAccessStatus()
+                if let current = backendClient.webAccessStatus?.settings {
+                    webAccess = webAccessSettingsUsingAvailableLAN(
+                        current,
+                        availableHosts: backendClient.webAccessStatus?.availableHosts ?? []
+                    )
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
         .confirmationDialog(
             L10n("Delete this archived session permanently?"),
@@ -936,6 +982,389 @@ struct SettingsView: View {
         }
     }
 
+    private var webAccessSettingsTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n("Web Access"))
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                    Text(L10n("Continue working from a phone or tablet on the same local network."))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+                Spacer()
+                Text(L10n(CorptieAppEnvironment.displayName))
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        CorptieAppEnvironment.isDevelopment ? Color.orange.opacity(0.2) : Color.green.opacity(0.2),
+                        in: Capsule()
+                    )
+                if backendClient.isUpdatingWebAccess {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(L10n("Allow Web Access on this Mac"), isOn: Binding(
+                            get: { webAccess.enabled },
+                            set: { enabled in
+                                webAccess.enabled = enabled
+                                if enabled && webAccess.httpsEnabled {
+                                    showWebAccessHttpsGuide = true
+                                }
+                                Task {
+                                    if !(await backendClient.setWebAccess(webAccess)),
+                                       let current = backendClient.webAccessStatus?.settings {
+                                        webAccess = current
+                                    }
+                                }
+                            }
+                        ))
+                        .toggleStyle(.switch)
+                        .disabled(!webAccess.enabled && !webAccessHostIsAvailable)
+
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(L10n("LAN Address"))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                                TextField("192.168.1.10", text: $webAccess.host)
+                                    .textFieldStyle(.roundedBorder)
+                                    .font(.system(size: 12, design: .monospaced))
+                            }
+                            if !availableWebAccessHosts.isEmpty {
+                                Menu(L10n("Use LAN Address")) {
+                                    ForEach(availableWebAccessHosts, id: \.self) { host in
+                                        Button(host) {
+                                            webAccess.host = host
+                                        }
+                                    }
+                                }
+                                .controlSize(.small)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(L10n("Port"))
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                                TextField("47323", value: $webAccess.port, format: .number.grouping(.never))
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 86)
+                                    .font(.system(size: 12, design: .monospaced))
+                            }
+                            Button(L10n("Apply")) {
+                                Task { _ = await backendClient.setWebAccess(webAccess) }
+                            }
+                            .disabled(
+                                backendClient.isUpdatingWebAccess
+                                || !webAccessHostIsAvailable
+                                || !(1...65535).contains(webAccess.port)
+                            )
+                        }
+
+                        if !webAccessHostIsAvailable {
+                            Text(availableWebAccessHosts.isEmpty
+                                ? L10n("No usable LAN address was found. Connect this Mac to the same Wi-Fi or Ethernet network as the mobile device.")
+                                : L10n("Choose this Mac's current LAN address before enabling Web Access. Loopback addresses such as 127.0.0.1 cannot be opened from a phone."))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.orange)
+                        }
+
+                        Divider()
+
+                        Toggle(L10n("Protect Web Access with local HTTPS"), isOn: Binding(
+                            get: { webAccess.httpsEnabled },
+                            set: { enabled in
+                                webAccess.httpsEnabled = enabled
+                                showWebAccessHttpsGuide = enabled
+                                Task {
+                                    if !(await backendClient.setWebAccess(webAccess)),
+                                       let current = backendClient.webAccessStatus?.settings {
+                                        webAccess = current
+                                    }
+                                }
+                            }
+                        ))
+                        .toggleStyle(.switch)
+
+                        if webAccess.httpsEnabled {
+                            DisclosureGroup(
+                                isExpanded: $showWebAccessHttpsGuide,
+                                content: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(L10n("Corptie creates one private root CA for this Mac. Install it once on each device; LAN address changes only rotate the server certificate."))
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundStyle(CorptiePalette.secondaryText)
+
+                                        Text(L10n("1. Enable Web Access and open one of the certificate downloads below on the device."))
+                                            .font(.system(size: 10, weight: .semibold))
+                                        HStack(spacing: 12) {
+                                            if let certificateProfileURL {
+                                                Link(L10n("iPhone / iPad Profile"), destination: certificateProfileURL)
+                                                    .font(.system(size: 10, weight: .semibold))
+                                            }
+                                            if let certificateDerURL {
+                                                Link(L10n("Root CA (.cer)"), destination: certificateDerURL)
+                                                    .font(.system(size: 10, weight: .semibold))
+                                            }
+                                            if let certificateURL {
+                                                Link(L10n("Root CA (.pem)"), destination: certificateURL)
+                                                    .font(.system(size: 10, weight: .semibold))
+                                            }
+                                        }
+
+                                        Text(L10n("2. On iPhone or iPad, install the downloaded profile, then enable full trust in Settings › General › About › Certificate Trust Settings."))
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(CorptiePalette.secondaryText)
+                                        Text(L10n("3. Compare the root fingerprint shown below with the installed certificate before pairing."))
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(CorptiePalette.secondaryText)
+
+                                        if let certificate = backendClient.webAccessStatus?.runtime.certificate {
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text(L10n("Root CA fingerprint"))
+                                                    .font(.system(size: 9, weight: .bold))
+                                                Text(certificate.fingerprint)
+                                                    .font(.system(size: 9, design: .monospaced))
+                                                    .textSelection(.enabled)
+                                                Text(L10nFormat("Root CA expires: %@", certificate.expiresAt))
+                                                    .font(.system(size: 9, design: .monospaced))
+                                                    .foregroundStyle(CorptiePalette.secondaryText)
+                                                if let leafExpiresAt = certificate.leafExpiresAt {
+                                                    Text(L10nFormat("Server certificate expires: %@", leafExpiresAt))
+                                                        .font(.system(size: 9, design: .monospaced))
+                                                        .foregroundStyle(CorptiePalette.secondaryText)
+                                                }
+                                            }
+                                        } else {
+                                            Text(L10n("Enable Web Access to generate the private root CA and show download links."))
+                                                .font(.system(size: 10, weight: .medium))
+                                                .foregroundStyle(.orange)
+                                        }
+                                    }
+                                    .padding(.top, 6)
+                                },
+                                label: {
+                                    Label(L10n("Set up HTTPS on a device"), systemImage: "lock.shield")
+                                        .font(.system(size: 11, weight: .bold))
+                                }
+                            )
+                        } else {
+                            Label(
+                                L10n("HTTP sends pairing data, session cookies, conversations, and commands without transport encryption. Use it only on a network you fully trust."),
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.orange)
+                        }
+
+                        if let url = webAccessURL {
+                            HStack {
+                                Image(systemName: "link")
+                                Link(url.absoluteString, destination: url)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .textSelection(.enabled)
+                                Spacer()
+                                Button(L10n("Copy Address")) {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(url.absoluteString, forType: .string)
+                                }
+                                .controlSize(.small)
+                            }
+                            if let certificate = backendClient.webAccessStatus?.runtime.certificate {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label(L10n("Local HTTPS is active"), systemImage: "lock.shield.fill")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(.green)
+                                    Text(L10n("The stable root CA identifies this Mac. Server certificates rotate automatically without reinstalling the root CA."))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(CorptiePalette.secondaryText)
+                                    Text(certificate.fingerprint)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle(CorptiePalette.secondaryText)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        } else {
+                            Text(L10n("Web Access is off. Existing Web sessions are revoked when it is disabled."))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        }
+                    }
+                    .padding(12)
+                    .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                    if webAccess.enabled {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text(L10n("Pair a Device"))
+                                    .font(.system(size: 13, weight: .bold))
+                                Spacer()
+                                Button(L10n("New Pairing Code")) {
+                                    Task { _ = await backendClient.createWebPairingCode() }
+                                }
+                                .disabled(backendClient.isUpdatingWebAccess)
+                            }
+
+                            if let pairing = backendClient.webPairingCode {
+                                HStack(spacing: 16) {
+                                    if let url = pairingURL(pairing),
+                                       let image = qrCodeImage(for: url.absoluteString) {
+                                        Image(nsImage: image)
+                                            .interpolation(.none)
+                                            .resizable()
+                                            .frame(width: 104, height: 104)
+                                            .background(.white)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Text(pairing.code)
+                                            .font(.system(size: 28, weight: .bold, design: .monospaced))
+                                            .textSelection(.enabled)
+                                        Text(L10n("Scan the QR code or open the address, then confirm the device below."))
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundStyle(CorptiePalette.secondaryText)
+                                        Text(L10nFormat("Expires: %@", pairing.expiresAt))
+                                            .font(.system(size: 9, design: .monospaced))
+                                            .foregroundStyle(CorptiePalette.secondaryText)
+                                    }
+                                }
+                            } else {
+                                Text(L10n("Create a short-lived code when the phone is ready to pair."))
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundStyle(CorptiePalette.secondaryText)
+                            }
+                        }
+                        .padding(12)
+                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+
+                    webPairingRequestsSection
+                    webDevicesSection
+                }
+                .padding(.trailing, 8)
+            }
+
+            if let error = backendClient.lastError {
+                Text(error)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var webPairingRequestsSection: some View {
+        let requests = backendClient.webAccessStatus?.pendingRequests ?? []
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n("Pending Devices"))
+                .font(.system(size: 13, weight: .bold))
+            if requests.isEmpty {
+                Text(L10n("No device is waiting for approval."))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+            } else {
+                ForEach(requests) { request in
+                    HStack(spacing: 10) {
+                        Image(systemName: "iphone.gen2")
+                            .font(.system(size: 18))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(request.deviceName)
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("\(request.sourceIp ?? "LAN") · \(request.requestedPermission)")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        }
+                        Spacer()
+                        Button(L10n("Reject"), role: .destructive) {
+                            Task { _ = await backendClient.resolveWebPairingRequest(request, approve: false) }
+                        }
+                        Button(L10n("Approve")) {
+                            Task { _ = await backendClient.resolveWebPairingRequest(request, approve: true) }
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var webDevicesSection: some View {
+        let devices = backendClient.webAccessStatus?.devices ?? []
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n("Paired Devices"))
+                .font(.system(size: 13, weight: .bold))
+            if devices.isEmpty {
+                Text(L10n("No paired devices."))
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+            } else {
+                ForEach(devices) { device in
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.shield")
+                            .foregroundStyle(.green)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(device.name)
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("\(device.permission) · \(device.sourceIp ?? "LAN")")
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        }
+                        Spacer()
+                        Button(L10n("Revoke"), role: .destructive) {
+                            Task { _ = await backendClient.revokeWebDevice(device) }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var webAccessURL: URL? {
+        guard webAccess.enabled,
+              backendClient.webAccessStatus?.runtime.listening == true,
+              let port = backendClient.webAccessStatus?.runtime.port else {
+            return nil
+        }
+        let scheme = backendClient.webAccessStatus?.runtime.secure == true ? "https" : "http"
+        return URL(string: "\(scheme)://\(webAccess.host):\(port)")
+    }
+
+    private var availableWebAccessHosts: [String] {
+        backendClient.webAccessStatus?.availableHosts ?? []
+    }
+
+    private var webAccessHostIsAvailable: Bool {
+        availableWebAccessHosts.contains(webAccess.host)
+    }
+
+    private func pairingURL(_ pairing: WebPairingCodeResponse) -> URL? {
+        guard let base = webAccessURL else { return nil }
+        return URL(string: "\(base.absoluteString)/pair#code=\(pairing.code)")
+    }
+
+    private var certificateURL: URL? {
+        webAccessURL?.appendingPathComponent("pair/certificate")
+    }
+
+    private var certificateDerURL: URL? {
+        webAccessURL?.appendingPathComponent("pair/certificate.cer")
+    }
+
+    private var certificateProfileURL: URL? {
+        webAccessURL?.appendingPathComponent("pair/certificate.mobileconfig")
+    }
+
     private var feishuSettingsTab: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -1289,7 +1718,8 @@ struct SettingsView: View {
             codexBackend: codexBackend,
             codeDiff: codeDiff,
             agentProxy: agentProxy,
-            gateway: gateway
+            gateway: gateway,
+            webAccess: webAccess
         ) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
@@ -1303,7 +1733,7 @@ struct SettingsView: View {
 
     private func confirmChoiceParser() async {
         choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataDir: dataDir, logDir: logDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
+        if await backendClient.updateSettings(dataDir: dataDir, logDir: logDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway, webAccess: webAccess) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
             savedCodeDiff = codeDiff

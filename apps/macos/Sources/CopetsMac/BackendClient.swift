@@ -21,6 +21,9 @@ final class BackendClient: ObservableObject {
     @Published private(set) var feishuBots: [FeishuBot] = []
     @Published private(set) var feishuProfiles: [FeishuProfile] = []
     @Published private(set) var isUpdatingFeishu = false
+    @Published private(set) var webAccessStatus: WebAccessStatusResponse?
+    @Published private(set) var webPairingCode: WebPairingCodeResponse?
+    @Published private(set) var isUpdatingWebAccess = false
     @Published private(set) var codexModels: [CodexModel] = []
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
@@ -258,6 +261,110 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func loadWebAccessStatus() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(
+                from: baseURL.appending(path: "web-access/status")
+            )
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            webAccessStatus = try JSONDecoder().decode(WebAccessStatusResponse.self, from: data)
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func setWebAccess(_ value: WebAccessSettings) async -> Bool {
+        isUpdatingWebAccess = true
+        defer { isUpdatingWebAccess = false }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "settings"))
+            request.httpMethod = "PATCH"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONEncoder().encode(["webAccess": value])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Web Access update failed.")
+            }
+            settings = try JSONDecoder().decode(BackendSettings.self, from: data)
+            if !value.enabled {
+                webPairingCode = nil
+            }
+            await loadWebAccessStatus()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func createWebPairingCode() async -> Bool {
+        isUpdatingWebAccess = true
+        defer { isUpdatingWebAccess = false }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "web-access/pairing-code"))
+            request.httpMethod = "POST"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not create pairing code.")
+            }
+            webPairingCode = try JSONDecoder().decode(WebPairingCodeResponse.self, from: data)
+            lastError = nil
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func resolveWebPairingRequest(_ request: WebPairingRequest, approve: Bool) async -> Bool {
+        let body: [String: Any]? = approve ? ["permission": request.requestedPermission] : nil
+        return await performWebAccessMutation(
+            method: "POST",
+            path: "web-access/pairing-requests/\(request.id)/\(approve ? "approve" : "reject")",
+            body: body
+        )
+    }
+
+    func revokeWebDevice(_ device: WebPairedDevice) async -> Bool {
+        await performWebAccessMutation(
+            method: "DELETE",
+            path: "web-access/devices/\(device.id)"
+        )
+    }
+
+    private func performWebAccessMutation(
+        method: String,
+        path: String,
+        body: [String: Any]? = nil
+    ) async -> Bool {
+        isUpdatingWebAccess = true
+        defer { isUpdatingWebAccess = false }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: path))
+            request.httpMethod = method
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Web Access request failed.")
+            }
+            await loadWebAccessStatus()
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
     func loadFeishuProfiles() async {
         do {
             let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "feishu/profiles"))
@@ -371,7 +478,7 @@ final class BackendClient: ObservableObject {
     }
 
     @discardableResult
-    func updateSettings(dataDir: String, logDir: String? = nil, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil) async -> Bool {
+    func updateSettings(dataDir: String, logDir: String? = nil, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil, webAccess: WebAccessSettings? = nil) async -> Bool {
         let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = L10n("Data directory is required.")
@@ -417,6 +524,13 @@ final class BackendClient: ObservableObject {
             }
             if let gateway {
                 body["gateway"] = ["trustedWorkspaces": gateway.trustedWorkspaces]
+            }
+            if let webAccess {
+                body["webAccess"] = [
+                    "enabled": webAccess.enabled,
+                    "host": webAccess.host,
+                    "port": webAccess.port
+                ]
             }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
 

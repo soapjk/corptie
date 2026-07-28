@@ -5,6 +5,7 @@ import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
 import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
+import { normalizeWebAccessSettings } from "../utils/webAccessSettings.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -107,7 +108,8 @@ export class CorptieStore {
       codeDiff: this.codeDiffSettings(),
       agentProxy: this.agentProxySettings(),
       newSessionDefaults: this.newSessionDefaults(),
-      gateway: this.gatewaySettings()
+      gateway: this.gatewaySettings(),
+      webAccess: this.webAccessSettings()
     };
   }
 
@@ -135,6 +137,10 @@ export class CorptieStore {
 
   gatewaySettings() {
     return normalizeGatewaySettings(this.config.gateway ?? {});
+  }
+
+  webAccessSettings() {
+    return normalizeWebAccessSettings(this.config.webAccess ?? {}, { environmentName });
   }
 
   logDirectory() {
@@ -183,6 +189,13 @@ export class CorptieStore {
     }
     if (input.gateway && typeof input.gateway === "object") {
       this.config.gateway = normalizeGatewaySettings(input.gateway);
+      await this.writeConfig();
+    }
+    if (input.webAccess && typeof input.webAccess === "object") {
+      this.config.webAccess = normalizeWebAccessSettings({
+        ...(this.config.webAccess ?? {}),
+        ...input.webAccess
+      }, { environmentName, rejectLoopback: true });
       await this.writeConfig();
     }
     return this.settings();
@@ -336,6 +349,95 @@ export class CorptieStore {
         event_id TEXT PRIMARY KEY,
         bot_id TEXT NOT NULL,
         received_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS web_pairing_codes (
+        id TEXT PRIMARY KEY,
+        code_salt TEXT NOT NULL,
+        code_hash TEXT NOT NULL,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 5,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS web_pairing_requests (
+        id TEXT PRIMARY KEY,
+        pairing_code_id TEXT NOT NULL,
+        exchange_token_hash TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        user_agent TEXT,
+        source_ip TEXT,
+        requested_permission TEXT NOT NULL DEFAULT 'full-control'
+          CHECK (requested_permission IN ('read-only', 'reply', 'full-control')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'approved', 'rejected', 'claimed', 'expired')),
+        device_id TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        resolved_at TEXT,
+        claimed_at TEXT,
+        FOREIGN KEY (pairing_code_id) REFERENCES web_pairing_codes(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_web_pairing_requests_status
+      ON web_pairing_requests(status, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS web_devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        permission TEXT NOT NULL
+          CHECK (permission IN ('read-only', 'reply', 'full-control')),
+        user_agent TEXT,
+        source_ip TEXT,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT,
+        revoked_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS web_sessions (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        csrf_token TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        idle_expires_at TEXT NOT NULL,
+        absolute_expires_at TEXT NOT NULL,
+        revoked_at TEXT,
+        FOREIGN KEY (device_id) REFERENCES web_devices(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_web_sessions_device
+      ON web_sessions(device_id, revoked_at, idle_expires_at);
+
+      CREATE TABLE IF NOT EXISTS web_operations (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK (status IN ('accepted', 'succeeded', 'failed', 'result-unknown')),
+        session_revision INTEGER,
+        result_json TEXT NOT NULL DEFAULT '{}',
+        error_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (device_id, idempotency_key),
+        FOREIGN KEY (device_id) REFERENCES web_devices(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_web_operations_device_created
+      ON web_operations(device_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS web_attention_reads (
+        device_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        read_at TEXT NOT NULL,
+        PRIMARY KEY (device_id, session_id),
+        FOREIGN KEY (device_id) REFERENCES web_devices(id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS agents (
@@ -1312,6 +1414,350 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  replaceWebPairingCode(code) {
+    this.db.run(
+      "UPDATE web_pairing_codes SET consumed_at = ? WHERE consumed_at IS NULL",
+      [code.createdAt]
+    );
+    this.db.run(
+      `INSERT INTO web_pairing_codes (
+        id, code_salt, code_hash, attempt_count, max_attempts, expires_at, consumed_at, created_at
+      ) VALUES (?, ?, ?, 0, ?, ?, NULL, ?)`,
+      [code.id, code.codeSalt, code.codeHash, code.maxAttempts, code.expiresAt, code.createdAt]
+    );
+    this.scheduleSave();
+  }
+
+  listUsableWebPairingCodes(at = new Date().toISOString()) {
+    return this.selectAll(
+      `SELECT * FROM web_pairing_codes
+       WHERE consumed_at IS NULL
+         AND expires_at > ?
+         AND attempt_count < max_attempts
+       ORDER BY created_at DESC`,
+      [at]
+    ).map(webPairingCodeFromRow);
+  }
+
+  recordWebPairingFailure(id, at = new Date().toISOString()) {
+    this.db.run(
+      `UPDATE web_pairing_codes
+       SET attempt_count = attempt_count + 1,
+           consumed_at = CASE WHEN attempt_count + 1 >= max_attempts THEN ? ELSE consumed_at END
+       WHERE id = ? AND consumed_at IS NULL`,
+      [at, id]
+    );
+    this.scheduleSave();
+  }
+
+  createWebPairingRequest(request) {
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      const code = this.selectOne(
+        `SELECT id FROM web_pairing_codes
+         WHERE id = ? AND consumed_at IS NULL AND expires_at > ? AND attempt_count < max_attempts`,
+        [request.pairingCodeId, request.createdAt]
+      );
+      if (!code) {
+        const error = new Error("Pairing code is no longer available.");
+        error.code = "PAIRING_CODE_EXPIRED";
+        throw error;
+      }
+      this.db.run(
+        "UPDATE web_pairing_codes SET consumed_at = ? WHERE id = ?",
+        [request.createdAt, request.pairingCodeId]
+      );
+      this.db.run(
+        `INSERT INTO web_pairing_requests (
+          id, pairing_code_id, exchange_token_hash, device_name, user_agent, source_ip,
+          requested_permission, status, device_id, created_at, expires_at, resolved_at, claimed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, NULL, NULL)`,
+        [
+          request.id,
+          request.pairingCodeId,
+          request.exchangeTokenHash,
+          request.deviceName,
+          request.userAgent,
+          request.sourceIp,
+          request.requestedPermission,
+          request.createdAt,
+          request.expiresAt
+        ]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getWebPairingRequest(request.id);
+  }
+
+  getWebPairingRequest(id) {
+    const row = this.selectOne("SELECT * FROM web_pairing_requests WHERE id = ?", [id]);
+    return row ? webPairingRequestFromRow(row) : null;
+  }
+
+  listPendingWebPairingRequests(at = new Date().toISOString()) {
+    this.db.run(
+      `UPDATE web_pairing_requests
+       SET status = 'expired', resolved_at = ?
+       WHERE status = 'pending' AND expires_at <= ?`,
+      [at, at]
+    );
+    return this.selectAll(
+      "SELECT * FROM web_pairing_requests WHERE status = 'pending' ORDER BY created_at ASC"
+    ).map(webPairingRequestFromRow);
+  }
+
+  resolveWebPairingRequest(id, resolution) {
+    const current = this.getWebPairingRequest(id);
+    if (!current || current.status !== "pending" || current.expiresAt <= resolution.resolvedAt) {
+      return null;
+    }
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      if (resolution.approved) {
+        this.db.run(
+          `INSERT INTO web_devices (
+            id, name, permission, user_agent, source_ip, created_at, last_seen_at, revoked_at
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+          [
+            resolution.deviceId,
+            current.deviceName,
+            resolution.permission,
+            current.userAgent,
+            current.sourceIp,
+            resolution.resolvedAt
+          ]
+        );
+        this.db.run(
+          `UPDATE web_pairing_requests
+           SET status = 'approved', device_id = ?, resolved_at = ?
+           WHERE id = ? AND status = 'pending'`,
+          [resolution.deviceId, resolution.resolvedAt, id]
+        );
+      } else {
+        this.db.run(
+          `UPDATE web_pairing_requests
+           SET status = 'rejected', resolved_at = ?
+           WHERE id = ? AND status = 'pending'`,
+          [resolution.resolvedAt, id]
+        );
+      }
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getWebPairingRequest(id);
+  }
+
+  claimWebPairingRequest(id, claim) {
+    const current = this.getWebPairingRequest(id);
+    if (!current
+      || current.status !== "approved"
+      || current.exchangeTokenHash !== claim.exchangeTokenHash
+      || current.expiresAt <= claim.claimedAt) {
+      return null;
+    }
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      this.db.run(
+        `INSERT INTO web_sessions (
+          id, device_id, token_hash, csrf_token, created_at, last_seen_at,
+          idle_expires_at, absolute_expires_at, revoked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        [
+          claim.sessionId,
+          current.deviceId,
+          claim.tokenHash,
+          claim.csrfToken,
+          claim.claimedAt,
+          claim.claimedAt,
+          claim.idleExpiresAt,
+          claim.absoluteExpiresAt
+        ]
+      );
+      this.db.run(
+        `UPDATE web_pairing_requests
+         SET status = 'claimed', claimed_at = ?
+         WHERE id = ? AND status = 'approved'`,
+        [claim.claimedAt, id]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getWebSessionByTokenHash(claim.tokenHash, claim.claimedAt);
+  }
+
+  getWebSessionByTokenHash(tokenHash, at = new Date().toISOString()) {
+    const row = this.selectOne(
+      `SELECT s.*, d.name AS device_name, d.permission AS device_permission,
+              d.created_at AS device_created_at, d.last_seen_at AS device_last_seen_at,
+              d.revoked_at AS device_revoked_at
+       FROM web_sessions s
+       JOIN web_devices d ON d.id = s.device_id
+       WHERE s.token_hash = ?
+         AND s.revoked_at IS NULL
+         AND d.revoked_at IS NULL
+         AND s.idle_expires_at > ?
+         AND s.absolute_expires_at > ?`,
+      [tokenHash, at, at]
+    );
+    return row ? webSessionFromRow(row) : null;
+  }
+
+  touchWebSession(id, at, idleExpiresAt) {
+    this.db.run(
+      `UPDATE web_sessions
+       SET last_seen_at = ?, idle_expires_at = MIN(absolute_expires_at, ?)
+       WHERE id = ? AND revoked_at IS NULL`,
+      [at, idleExpiresAt, id]
+    );
+    this.db.run(
+      `UPDATE web_devices SET last_seen_at = ?
+       WHERE id = (SELECT device_id FROM web_sessions WHERE id = ?)`,
+      [at, id]
+    );
+    this.scheduleSave();
+  }
+
+  listWebDevices() {
+    return this.selectAll(
+      "SELECT * FROM web_devices WHERE revoked_at IS NULL ORDER BY created_at ASC"
+    ).map(webDeviceFromRow);
+  }
+
+  revokeWebDevice(id, revokedAt = new Date().toISOString()) {
+    const device = this.selectOne(
+      "SELECT id FROM web_devices WHERE id = ? AND revoked_at IS NULL",
+      [id]
+    );
+    if (!device) return false;
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      this.db.run(
+        "UPDATE web_devices SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+        [revokedAt, id]
+      );
+      this.db.run(
+        "UPDATE web_sessions SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL",
+        [revokedAt, id]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return true;
+  }
+
+  revokeAllWebDevices(revokedAt = new Date().toISOString()) {
+    const active = Number(this.selectOne(
+      "SELECT COUNT(*) AS count FROM web_devices WHERE revoked_at IS NULL"
+    )?.count ?? 0);
+    this.db.run("BEGIN TRANSACTION");
+    try {
+      this.db.run(
+        "UPDATE web_devices SET revoked_at = ? WHERE revoked_at IS NULL",
+        [revokedAt]
+      );
+      this.db.run(
+        "UPDATE web_sessions SET revoked_at = ? WHERE revoked_at IS NULL",
+        [revokedAt]
+      );
+      this.db.run(
+        `UPDATE web_pairing_requests
+         SET status = 'rejected', resolved_at = ?
+         WHERE status IN ('pending', 'approved')`,
+        [revokedAt]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return active;
+  }
+
+  getWebOperation(deviceId, idempotencyKey) {
+    const row = this.selectOne(
+      "SELECT * FROM web_operations WHERE device_id = ? AND idempotency_key = ?",
+      [deviceId, idempotencyKey]
+    );
+    return row ? webOperationFromRow(row) : null;
+  }
+
+  getWebOperationById(deviceId, id) {
+    const row = this.selectOne(
+      "SELECT * FROM web_operations WHERE device_id = ? AND id = ?",
+      [deviceId, id]
+    );
+    return row ? webOperationFromRow(row) : null;
+  }
+
+  createWebOperation(operation) {
+    this.db.run(
+      `INSERT INTO web_operations (
+        id, device_id, idempotency_key, request_hash, session_id, status,
+        session_revision, result_json, error_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'accepted', NULL, '{}', NULL, ?, ?)`,
+      [
+        operation.id,
+        operation.deviceId,
+        operation.idempotencyKey,
+        operation.requestHash,
+        operation.sessionId,
+        operation.createdAt,
+        operation.createdAt
+      ]
+    );
+    this.scheduleSave();
+    return this.getWebOperation(operation.deviceId, operation.idempotencyKey);
+  }
+
+  completeWebOperation(id, completion) {
+    this.db.run(
+      `UPDATE web_operations
+       SET status = ?, session_revision = ?, result_json = ?, error_json = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        completion.status,
+        completion.sessionRevision ?? null,
+        JSON.stringify(completion.result ?? {}),
+        completion.error ? JSON.stringify(completion.error) : null,
+        completion.updatedAt,
+        id
+      ]
+    );
+    this.scheduleSave();
+  }
+
+  getWebAttentionReadAt(deviceId, sessionId) {
+    return this.selectOne(
+      "SELECT read_at FROM web_attention_reads WHERE device_id = ? AND session_id = ?",
+      [deviceId, sessionId]
+    )?.read_at ?? null;
+  }
+
+  markWebAttentionRead(deviceId, sessionId, readAt = new Date().toISOString()) {
+    this.db.run(
+      `INSERT INTO web_attention_reads (device_id, session_id, read_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(device_id, session_id) DO UPDATE SET read_at = excluded.read_at`,
+      [deviceId, sessionId, readAt]
+    );
+    this.scheduleSave();
+    return readAt;
+  }
+
   selectAll(sql, params = []) {
     const stmt = this.db.prepare(sql, params);
     const rows = [];
@@ -1523,6 +1969,88 @@ function feishuAssignmentFromRow(row) {
     sessionId: row.session_id,
     assignedAt: row.assigned_at,
     lastEventSequence: Number(row.last_event_sequence ?? 0)
+  };
+}
+
+function webPairingCodeFromRow(row) {
+  return {
+    id: row.id,
+    codeSalt: row.code_salt,
+    codeHash: row.code_hash,
+    attemptCount: Number(row.attempt_count),
+    maxAttempts: Number(row.max_attempts),
+    expiresAt: row.expires_at,
+    consumedAt: row.consumed_at || null,
+    createdAt: row.created_at
+  };
+}
+
+function webPairingRequestFromRow(row) {
+  return {
+    id: row.id,
+    pairingCodeId: row.pairing_code_id,
+    exchangeTokenHash: row.exchange_token_hash,
+    deviceName: row.device_name,
+    userAgent: row.user_agent || null,
+    sourceIp: row.source_ip || null,
+    requestedPermission: row.requested_permission,
+    status: row.status,
+    deviceId: row.device_id || null,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    resolvedAt: row.resolved_at || null,
+    claimedAt: row.claimed_at || null
+  };
+}
+
+function webDeviceFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    permission: row.permission,
+    userAgent: row.user_agent || null,
+    sourceIp: row.source_ip || null,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at || null,
+    revokedAt: row.revoked_at || null
+  };
+}
+
+function webSessionFromRow(row) {
+  return {
+    id: row.id,
+    deviceId: row.device_id,
+    tokenHash: row.token_hash,
+    csrfToken: row.csrf_token,
+    createdAt: row.created_at,
+    lastSeenAt: row.last_seen_at,
+    idleExpiresAt: row.idle_expires_at,
+    absoluteExpiresAt: row.absolute_expires_at,
+    revokedAt: row.revoked_at || null,
+    device: {
+      id: row.device_id,
+      name: row.device_name,
+      permission: row.device_permission,
+      createdAt: row.device_created_at,
+      lastSeenAt: row.device_last_seen_at || null,
+      revokedAt: row.device_revoked_at || null
+    }
+  };
+}
+
+function webOperationFromRow(row) {
+  return {
+    id: row.id,
+    deviceId: row.device_id,
+    idempotencyKey: row.idempotency_key,
+    requestHash: row.request_hash,
+    sessionId: row.session_id,
+    status: row.status,
+    sessionRevision: row.session_revision == null ? null : Number(row.session_revision),
+    result: parseJson(row.result_json, {}),
+    error: row.error_json ? parseJson(row.error_json, null) : null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 

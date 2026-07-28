@@ -1,0 +1,20 @@
+{
+  "name": "Corptie",
+  "short_name": "Corptie",
+  "description": "Continue local agent development from a trusted device on the same LAN.",
+  "id": "/",
+  "start_url": "/attention",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0b0d12",
+  "theme_color": "#0b0d12",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/corptie-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

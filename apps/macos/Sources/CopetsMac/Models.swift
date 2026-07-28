@@ -560,6 +560,7 @@ struct BackendSettings: Codable, Equatable {
     let agentProxy: AgentProxySettings?
     let newSessionDefaults: NewSessionDefaults?
     let gateway: GatewaySettings?
+    let webAccess: WebAccessSettings?
 }
 
 struct BackendLogPaths: Codable, Equatable {
@@ -571,6 +572,93 @@ struct GatewaySettings: Codable, Equatable {
     var trustedWorkspaces: [String]
 
     static let defaults = GatewaySettings(trustedWorkspaces: [])
+}
+
+struct WebAccessSettings: Codable, Equatable {
+    var enabled: Bool
+    var host: String
+    var port: Int
+    var httpsEnabled: Bool
+
+    static var defaults: WebAccessSettings {
+        let environment = ProcessInfo.processInfo.environment["CORPTIE_ENV"]?.lowercased()
+        let isDevelopment = environment == "dev" || environment == "development"
+        return WebAccessSettings(
+            enabled: false,
+            host: "",
+            port: isDevelopment ? 47324 : 47323,
+            httpsEnabled: true
+        )
+    }
+}
+
+func webAccessSettingsUsingAvailableLAN(
+    _ settings: WebAccessSettings,
+    availableHosts: [String]
+) -> WebAccessSettings {
+    guard !settings.enabled,
+          !availableHosts.isEmpty,
+          !availableHosts.contains(settings.host) else {
+        return settings
+    }
+    var resolved = settings
+    resolved.host = availableHosts[0]
+    return resolved
+}
+
+struct WebAccessRuntime: Codable, Equatable {
+    let enabled: Bool
+    let listening: Bool
+    let host: String
+    let port: Int?
+    let environment: String
+    let secure: Bool?
+    let certificate: WebAccessCertificate?
+}
+
+struct WebAccessCertificate: Codable, Equatable {
+    let type: String?
+    let fingerprint: String
+    let expiresAt: String
+    let leafFingerprint: String?
+    let leafExpiresAt: String?
+}
+
+struct WebPairingRequest: Codable, Identifiable, Equatable {
+    let id: String
+    let deviceName: String
+    let userAgent: String?
+    let sourceIp: String?
+    let requestedPermission: String
+    let status: String
+    let deviceId: String?
+    let createdAt: String
+    let expiresAt: String
+    let resolvedAt: String?
+}
+
+struct WebPairedDevice: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let permission: String
+    let userAgent: String?
+    let sourceIp: String?
+    let createdAt: String
+    let lastSeenAt: String?
+    let revokedAt: String?
+}
+
+struct WebAccessStatusResponse: Codable, Equatable {
+    let settings: WebAccessSettings
+    let runtime: WebAccessRuntime
+    let availableHosts: [String]?
+    let pendingRequests: [WebPairingRequest]
+    let devices: [WebPairedDevice]
+}
+
+struct WebPairingCodeResponse: Codable, Equatable {
+    let code: String
+    let expiresAt: String
 }
 
 struct NewSessionDefaults: Codable, Equatable {
