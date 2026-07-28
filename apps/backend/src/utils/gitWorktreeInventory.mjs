@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -74,6 +77,82 @@ export async function listGitWorktrees(workingDirectory, options = {}) {
   return parseGitWorktreePorcelain(result.stdout);
 }
 
+export async function inspectGitWorkspace(workingDirectory, options = {}) {
+  const run = options.execFile ?? execFileAsync;
+  const resolveRealpath = options.realpath ?? realpath;
+  const requestedPath = resolve(String(workingDirectory));
+  const [topLevel, gitDir, commonGitDir] = await Promise.all([
+    readGitPath(run, requestedPath, "--show-toplevel"),
+    readGitPath(run, requestedPath, "--git-dir"),
+    readGitPath(run, requestedPath, "--git-common-dir")
+  ]);
+  const [canonicalPath, gitDirCanonicalPath, commonGitDirCanonicalPath] = await Promise.all([
+    resolveRealpath(topLevel),
+    resolveRealpath(gitDir),
+    resolveRealpath(commonGitDir)
+  ]);
+  const repositoryId = stableId("repository", commonGitDirCanonicalPath);
+  return {
+    repositoryId,
+    worktreeId: stableId("worktree", `${repositoryId}\0${gitDirCanonicalPath}`),
+    path: topLevel,
+    canonicalPath,
+    gitDirCanonicalPath,
+    commonGitDirCanonicalPath,
+    isMain: gitDirCanonicalPath === commonGitDirCanonicalPath
+  };
+}
+
+export async function createGitWorkspaceSnapshot(workingDirectory, options = {}) {
+  const inspectedAt = options.inspectedAt ?? new Date().toISOString();
+  const anchor = await inspectGitWorkspace(workingDirectory, options);
+  const inventory = await listGitWorktrees(workingDirectory, options);
+  const worktrees = [];
+
+  for (const record of inventory) {
+    try {
+      const identity = await inspectGitWorkspace(record.path, options);
+      if (identity.repositoryId !== anchor.repositoryId) {
+        throw new Error(`Worktree ${record.path} resolved to another repository`);
+      }
+      worktrees.push({
+        ...record,
+        ...identity,
+        availability: "available",
+        observedAt: inspectedAt
+      });
+    } catch (error) {
+      worktrees.push({
+        ...record,
+        repositoryId: anchor.repositoryId,
+        worktreeId: stableId("missing-worktree", `${anchor.repositoryId}\0${record.path}`),
+        canonicalPath: null,
+        gitDirCanonicalPath: null,
+        commonGitDirCanonicalPath: anchor.commonGitDirCanonicalPath,
+        isMain: false,
+        availability: record.isPrunable ? "missing" : "invalid",
+        inspectionError: error.message,
+        observedAt: inspectedAt
+      });
+    }
+  }
+
+  const inventoryVersion = createHash("sha256")
+    .update(JSON.stringify(worktrees.map(worktreeSnapshotFingerprint)))
+    .digest("hex");
+  return {
+    repository: {
+      id: anchor.repositoryId,
+      commonGitDirCanonicalPath: anchor.commonGitDirCanonicalPath,
+      discoveredAt: inspectedAt,
+      lastValidatedAt: inspectedAt
+    },
+    worktrees,
+    inventoryVersion,
+    observedAt: inspectedAt
+  };
+}
+
 function emptyWorktreeRecord(path) {
   return {
     path,
@@ -93,4 +172,39 @@ function emptyWorktreeRecord(path) {
 function shortBranchName(ref) {
   const prefix = "refs/heads/";
   return ref.startsWith(prefix) ? ref.slice(prefix.length) : ref || null;
+}
+
+async function readGitPath(run, workingDirectory, flag) {
+  const result = await run(
+    "git",
+    ["-C", workingDirectory, "rev-parse", "--path-format=absolute", flag],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 }
+  );
+  const value = stripTrailingLineEnding(String(result.stdout ?? ""));
+  if (!value) throw new Error(`git rev-parse ${flag} returned an empty path`);
+  return value;
+}
+
+function stripTrailingLineEnding(value) {
+  if (value.endsWith("\r\n")) return value.slice(0, -2);
+  if (value.endsWith("\n")) return value.slice(0, -1);
+  return value;
+}
+
+function stableId(namespace, value) {
+  return `${namespace}:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function worktreeSnapshotFingerprint(worktree) {
+  return {
+    worktreeId: worktree.worktreeId,
+    path: worktree.path,
+    gitDirCanonicalPath: worktree.gitDirCanonicalPath,
+    availability: worktree.availability,
+    headOid: worktree.headOid,
+    branchRef: worktree.branchRef,
+    isDetached: worktree.isDetached,
+    isLocked: worktree.isLocked,
+    isPrunable: worktree.isPrunable
+  };
 }

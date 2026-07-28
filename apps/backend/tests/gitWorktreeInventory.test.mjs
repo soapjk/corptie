@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { listGitWorktrees, parseGitWorktreePorcelain } from "../src/utils/gitWorktreeInventory.mjs";
+import { promisify } from "node:util";
+import {
+  createGitWorkspaceSnapshot,
+  inspectGitWorkspace,
+  listGitWorktrees,
+  parseGitWorktreePorcelain
+} from "../src/utils/gitWorktreeInventory.mjs";
+
+const execFileAsync = promisify(execFile);
 
 test("parseGitWorktreePorcelain preserves paths that contain spaces and newlines", () => {
   const input = Buffer.from([
@@ -90,3 +102,66 @@ test("listGitWorktrees invokes git with NUL-delimited porcelain output", async (
   assert.equal(calls[0][2].encoding, null);
   assert.equal(records[0].branchName, "main");
 });
+
+test("inspectGitWorkspace gives linked worktrees one repository identity and distinct worktree identities", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-worktree-identity-"));
+  const repository = join(directory, "main repo");
+  const linked = join(directory, "feature worktree");
+  try {
+    await mkdir(repository);
+    await git(["init", "-b", "main"], repository);
+    await git(["commit", "--allow-empty", "-m", "initial"], repository);
+    await git(["worktree", "add", "-b", "feature/identity", linked], repository);
+
+    const mainIdentity = await inspectGitWorkspace(repository);
+    const linkedIdentity = await inspectGitWorkspace(linked);
+    assert.equal(mainIdentity.repositoryId, linkedIdentity.repositoryId);
+    assert.notEqual(mainIdentity.worktreeId, linkedIdentity.worktreeId);
+    assert.equal(mainIdentity.isMain, true);
+    assert.equal(linkedIdentity.isMain, false);
+    assert.equal(mainIdentity.commonGitDirCanonicalPath, linkedIdentity.commonGitDirCanonicalPath);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("createGitWorkspaceSnapshot captures every worktree with a stable inventory version", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-worktree-snapshot-"));
+  const repository = join(directory, "main");
+  const linked = join(directory, "linked");
+  try {
+    await mkdir(repository);
+    await git(["init", "-b", "main"], repository);
+    await git(["commit", "--allow-empty", "-m", "initial"], repository);
+    await git(["worktree", "add", "-b", "feature/snapshot", linked], repository);
+
+    const first = await createGitWorkspaceSnapshot(repository, {
+      inspectedAt: "2026-07-28T00:00:00.000Z"
+    });
+    const second = await createGitWorkspaceSnapshot(linked, {
+      inspectedAt: "2026-07-28T00:01:00.000Z"
+    });
+    assert.equal(first.repository.id, second.repository.id);
+    assert.equal(first.inventoryVersion, second.inventoryVersion);
+    assert.equal(first.worktrees.length, 2);
+    assert.deepEqual(first.worktrees.map((entry) => entry.availability), ["available", "available"]);
+    assert.deepEqual(
+      new Set(first.worktrees.map((entry) => entry.branchName)),
+      new Set(["main", "feature/snapshot"])
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function git(arguments_, cwd) {
+  await execFileAsync("git", ["-C", cwd, ...arguments_], {
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "Corptie Tests",
+      GIT_AUTHOR_EMAIL: "tests@corptie.local",
+      GIT_COMMITTER_NAME: "Corptie Tests",
+      GIT_COMMITTER_EMAIL: "tests@corptie.local"
+    }
+  });
+}
