@@ -5,7 +5,8 @@ struct OrbPlacementCandidate: Equatable, Sendable {
     let origin: CGPoint
     let contentRisk: Double
     let captureConfidence: Double
-    let historicalSafety: Double
+    let historicalOverlapCount: Int
+    let historicalCoverage: Double
 }
 
 struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
@@ -19,7 +20,6 @@ struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
     var confirmationTolerance: CGFloat = 8
     var recentPositionExclusionRadius: CGFloat = 16
     var safestRiskTolerance = 0.025
-    var historicalSafetyTolerance = 0.05
     var anchorSeparationWeight = 0.18
     var edgePreferenceWeight = 0.03
 }
@@ -176,8 +176,20 @@ enum OrbPlacementPlanner {
             return hold(.noSafeCandidate, input: input)
         }
 
+        let maximumOverlapCount = eligible.map(\.historicalOverlapCount).max() ?? 0
+        let mostPersistentCandidates = maximumOverlapCount > 0
+            ? eligible.filter { $0.historicalOverlapCount == maximumOverlapCount }
+            : eligible
+        let maximumHistoricalCoverage =
+            mostPersistentCandidates.map(\.historicalCoverage).max() ?? 0
+        let bestCoveredCandidates = maximumOverlapCount > 0
+            ? mostPersistentCandidates.filter {
+                abs($0.historicalCoverage - maximumHistoricalCoverage) <= 0.001
+            }
+            : mostPersistentCandidates
+
         if let pendingOrigin = input.pendingCandidateOrigin,
-           let confirmed = eligible.first(where: {
+           let confirmed = bestCoveredCandidates.first(where: {
                distance($0.origin, pendingOrigin) <= configuration.confirmationTolerance
                    && input.currentRisk - $0.contentRisk >= configuration.minimumImprovement
            }) {
@@ -198,16 +210,11 @@ enum OrbPlacementPlanner {
             )
         }
 
-        let minimumRisk = eligible.map(\.contentRisk).min() ?? 0
-        let safestCandidates = eligible.filter {
+        let minimumRisk = bestCoveredCandidates.map(\.contentRisk).min() ?? 0
+        let safestCandidates = bestCoveredCandidates.filter {
             $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
         }
-        let maximumHistoricalSafety = safestCandidates.map(\.historicalSafety).max() ?? 0
-        let historicallyStableCandidates = safestCandidates.filter {
-            $0.historicalSafety
-                >= maximumHistoricalSafety - configuration.historicalSafetyTolerance
-        }
-        let selected = historicallyStableCandidates.min { lhs, rhs in
+        let selected = safestCandidates.min { lhs, rhs in
             let lhsSeparation = distance(lhs.origin, input.userAnchor)
             let rhsSeparation = distance(rhs.origin, input.userAnchor)
             if abs(lhsSeparation - rhsSeparation) > 0.5 {

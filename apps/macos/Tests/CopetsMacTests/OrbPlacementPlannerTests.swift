@@ -95,13 +95,27 @@ final class OrbPlacementPlannerTests: XCTestCase {
         let transientFarAway = CGPoint(x: 680, y: 600)
         let plan = OrbPlacementPlanner.plan(
             input: makeInput(candidates: [
-                candidate(persistentNearby, risk: 0.04, historicalSafety: 0.9),
-                candidate(transientFarAway, risk: 0.02, historicalSafety: 0.1)
+                candidate(persistentNearby, risk: 0.04, overlapCount: 8),
+                candidate(transientFarAway, risk: 0.02, overlapCount: 2)
             ])
         )
 
         XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
         XCTAssertEqual(plan.pendingCandidateOrigin, persistentNearby)
+    }
+
+    func testHighestOverlapCountWinsEvenWhenAnotherSafeRegionHasLowerRisk() {
+        let persistent = CGPoint(x: 904, y: 600)
+        let transient = CGPoint(x: 680, y: 600)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(candidates: [
+                candidate(persistent, risk: 0.16, overlapCount: 9),
+                candidate(transient, risk: 0.01, overlapCount: 3)
+            ])
+        )
+
+        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
+        XCTAssertEqual(plan.pendingCandidateOrigin, persistent)
     }
 
     func testObservedModerateTextRiskCanMoveToClearlySaferCandidate() {
@@ -307,13 +321,15 @@ final class OrbPlacementPlannerTests: XCTestCase {
     private func candidate(
         _ origin: CGPoint,
         risk: Double,
-        historicalSafety: Double = 0
+        overlapCount: Int = 0,
+        historicalCoverage: Double = 0
     ) -> OrbPlacementCandidate {
         OrbPlacementCandidate(
             origin: origin,
             contentRisk: risk,
             captureConfidence: 1,
-            historicalSafety: historicalSafety
+            historicalOverlapCount: overlapCount,
+            historicalCoverage: historicalCoverage
         )
     }
 
