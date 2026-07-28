@@ -47,6 +47,24 @@ final class OrbPlacementPlannerTests: XCTestCase {
         })
     }
 
+    func testGenerationIncludesAllScreenEdgesBeyondTheRingRadius() {
+        let candidates = OrbPlacementPlanner.candidateOrigins(
+            currentOrigin: current,
+            userAnchor: current,
+            windowSize: orbSize,
+            visibleFrame: screen
+        )
+
+        XCTAssertTrue(candidates.contains(CGPoint(x: screen.minX, y: current.y)))
+        XCTAssertTrue(candidates.contains(
+            CGPoint(x: screen.maxX - orbSize.width, y: current.y)
+        ))
+        XCTAssertTrue(candidates.contains(CGPoint(x: current.x, y: screen.minY)))
+        XCTAssertTrue(candidates.contains(
+            CGPoint(x: current.x, y: screen.maxY - orbSize.height)
+        ))
+    }
+
     func testSingleBatchSelectsSafestCandidateWithoutIndependentConfirmation() {
         let nearest = CGPoint(x: 952, y: 600)
         let farther = CGPoint(x: 880, y: 600)
@@ -110,6 +128,47 @@ final class OrbPlacementPlannerTests: XCTestCase {
             return XCTFail("Expected an immediate batch move")
         }
         XCTAssertEqual(proposal.origin, persistentNearby)
+    }
+
+    func testScreenEdgePreferenceUsesRightThenTopThenLeftThenBottom() {
+        let right = CGPoint(x: screen.maxX - orbSize.width, y: 400)
+        let top = CGPoint(x: 700, y: screen.maxY - orbSize.height)
+        let left = CGPoint(x: screen.minX, y: 400)
+        let bottom = CGPoint(x: 700, y: screen.minY)
+        let cases: [([CGPoint], CGPoint)] = [
+            ([bottom, left, top, right], right),
+            ([bottom, left, top], top),
+            ([bottom, left], left),
+            ([bottom], bottom)
+        ]
+
+        for (origins, expected) in cases {
+            let plan = OrbPlacementPlanner.plan(
+                input: makeInput(
+                    candidates: origins.map { candidate($0, risk: 0.04) }
+                )
+            )
+            guard case let .move(proposal) = plan.action else {
+                return XCTFail("Expected an edge move for \(origins)")
+            }
+            XCTAssertEqual(proposal.origin, expected)
+        }
+    }
+
+    func testMeaningfullySaferEdgeWinsBeforeDirectionalPreference() {
+        let right = CGPoint(x: screen.maxX - orbSize.width, y: 400)
+        let top = CGPoint(x: 700, y: screen.maxY - orbSize.height)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(candidates: [
+                candidate(right, risk: 0.08),
+                candidate(top, risk: 0.01)
+            ])
+        )
+
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected an edge move")
+        }
+        XCTAssertEqual(proposal.origin, top)
     }
 
     func testHighestOverlapCountWinsEvenWhenAnotherSafeRegionHasLowerRisk() {
