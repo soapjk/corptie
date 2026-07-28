@@ -701,6 +701,16 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func makeObservationRequest() -> DetachedOrbObservationRequest? {
+        let reconciledInteraction = DetachedOrbInteractionRecovery.reconcile(
+            reportedPointerDown: isPointerDown,
+            reportedPointerHovering: isPointerHovering,
+            pressedMouseButtons: NSEvent.pressedMouseButtons,
+            mouseLocation: NSEvent.mouseLocation,
+            windowFrame: panel.frame
+        )
+        isPointerDown = reconciledInteraction.isPointerDown
+        isPointerHovering = reconciledInteraction.isPointerHovering
+
         guard !isInteractionFrozen,
               let screen = panel.screen,
               let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
@@ -975,6 +985,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             return
         }
         print(message())
+        fflush(stdout)
     }
 
     private func updateReplyPreview(for session: TaskSession?) {
