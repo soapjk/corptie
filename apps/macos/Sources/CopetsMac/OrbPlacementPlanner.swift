@@ -169,20 +169,8 @@ enum OrbPlacementPlanner {
             return hold(.noSafeCandidate, input: input)
         }
 
-        let maximumOverlapCount = eligible.map(\.historicalOverlapCount).max() ?? 0
-        let mostPersistentCandidates = maximumOverlapCount > 0
-            ? eligible.filter { $0.historicalOverlapCount == maximumOverlapCount }
-            : eligible
-        let maximumHistoricalCoverage =
-            mostPersistentCandidates.map(\.historicalCoverage).max() ?? 0
-        let bestCoveredCandidates = maximumOverlapCount > 0
-            ? mostPersistentCandidates.filter {
-                abs($0.historicalCoverage - maximumHistoricalCoverage) <= 0.001
-            }
-            : mostPersistentCandidates
-
-        let minimumRisk = bestCoveredCandidates.map(\.contentRisk).min() ?? 0
-        let safestCandidates = bestCoveredCandidates.filter {
+        let minimumRisk = eligible.map(\.contentRisk).min() ?? 0
+        let safestCandidates = eligible.filter {
             $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
         }
         let edgeCandidates = safestCandidates.filter {
@@ -192,8 +180,36 @@ enum OrbPlacementPlanner {
                 visibleFrame: input.visibleFrame
             ).distance <= configuration.preferredEdgeDistance
         }
-        let directionalCandidates = edgeCandidates.isEmpty ? safestCandidates : edgeCandidates
-        let selected = directionalCandidates.min { lhs, rhs in
+        let edgePool = edgeCandidates.isEmpty ? safestCandidates : edgeCandidates
+        let placements = edgePool.map {
+            (
+                candidate: $0,
+                edge: edgePlacement(
+                    origin: $0.origin,
+                    windowSize: input.windowSize,
+                    visibleFrame: input.visibleFrame
+                )
+            )
+        }
+        let preferredPriority = placements.map(\.edge.priority).min() ?? 0
+        let directionCandidates = placements
+            .filter { $0.edge.priority == preferredPriority }
+            .map(\.candidate)
+        let maximumOverlapCount =
+            directionCandidates.map(\.historicalOverlapCount).max() ?? 0
+        let mostPersistentCandidates = maximumOverlapCount > 0
+            ? directionCandidates.filter {
+                $0.historicalOverlapCount == maximumOverlapCount
+            }
+            : directionCandidates
+        let maximumHistoricalCoverage =
+            mostPersistentCandidates.map(\.historicalCoverage).max() ?? 0
+        let bestCoveredCandidates = maximumOverlapCount > 0
+            ? mostPersistentCandidates.filter {
+                abs($0.historicalCoverage - maximumHistoricalCoverage) <= 0.001
+            }
+            : mostPersistentCandidates
+        let selected = bestCoveredCandidates.min { lhs, rhs in
             let lhsEdge = edgePlacement(
                 origin: lhs.origin,
                 windowSize: input.windowSize,
@@ -204,14 +220,11 @@ enum OrbPlacementPlanner {
                 windowSize: input.windowSize,
                 visibleFrame: input.visibleFrame
             )
-            if !edgeCandidates.isEmpty, lhsEdge.priority != rhsEdge.priority {
-                return lhsEdge.priority < rhsEdge.priority
-            }
             if abs(lhsEdge.distance - rhsEdge.distance) > 0.5 {
                 return lhsEdge.distance < rhsEdge.distance
             }
-            if lhsEdge.priority != rhsEdge.priority {
-                return lhsEdge.priority < rhsEdge.priority
+            if abs(lhs.contentRisk - rhs.contentRisk) > 0.001 {
+                return lhs.contentRisk < rhs.contentRisk
             }
             return placementCost(candidate: lhs, input: input, configuration: configuration)
                 < placementCost(candidate: rhs, input: input, configuration: configuration)
