@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 @MainActor
@@ -32,6 +33,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var undoneCodexTurnIds = Set<String>()
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var selectedSessionUsage: SessionUsageResponse?
+    let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
@@ -121,6 +123,20 @@ final class BackendClient: ObservableObject {
     private func handleGlobalEvent(_ eventName: String, data: String) async {
         if eventName == "SessionUsageUpdated" {
             applyLiveUsageEvent(data)
+            return
+        }
+        if eventName == "SessionCleared" {
+            if let payload = data.data(using: .utf8),
+               let event = try? JSONDecoder().decode(SessionClearedEventEnvelope.self, from: payload) {
+                let wasSelected = selectedSession?.id == event.payload.previousSessionId
+                publishSessionReplacement(event.payload)
+                await refresh()
+                if wasSelected {
+                    select(session: sessions.first(where: { $0.id == event.payload.session.id }) ?? event.payload.session)
+                }
+                return
+            }
+            await refresh()
             return
         }
         let refreshEvents: Set<String> = [
@@ -1153,6 +1169,13 @@ final class BackendClient: ObservableObject {
                 onSuccess()
                 if decoded?.cleared == true {
                     sendStatusMessage = L10n("Conversation cleared")
+                    if let replacement = decoded?.session,
+                       replacement.id != session.id {
+                        publishSessionReplacement(SessionReplacement(
+                            previousSessionId: session.id,
+                            session: replacement
+                        ))
+                    }
                     await refresh()
                     if let replacement = decoded?.session,
                        replacement.id != session.id {
@@ -1182,6 +1205,15 @@ final class BackendClient: ObservableObject {
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
             }
         }
+    }
+
+    private func publishSessionReplacement(_ replacement: SessionReplacement) {
+        if let index = sessions.firstIndex(where: { $0.id == replacement.previousSessionId }) {
+            sessions[index] = replacement.session
+        } else if !sessions.contains(where: { $0.id == replacement.session.id }) {
+            sessions.append(replacement.session)
+        }
+        sessionReplacements.send(replacement)
     }
 
     private static func isCollaborationConfirmationReply(_ text: String) -> Bool {
