@@ -31,4 +31,26 @@ final class DetachedOrbBatchCoordinatorLogicTests: XCTestCase {
             0
         )
     }
+
+    func testSharedCapturePreservesIndividualSamplingDensityWithinCap() {
+        let individual = [
+            CGRect(x: 0, y: 0, width: 800, height: 600),
+            CGRect(x: 800, y: 0, width: 800, height: 600)
+        ]
+
+        XCTAssertEqual(
+            DetachedOrbBatchCoordinatorLogic.sharedCaptureMaximumDimension(
+                sharedSampleRect: CGRect(x: 0, y: 0, width: 1_600, height: 600),
+                individualSampleRects: individual
+            ),
+            768
+        )
+        XCTAssertEqual(
+            DetachedOrbBatchCoordinatorLogic.sharedCaptureMaximumDimension(
+                sharedSampleRect: CGRect(x: 0, y: 0, width: 3_840, height: 2_160),
+                individualSampleRects: individual
+            ),
+            1_024
+        )
+    }
 }

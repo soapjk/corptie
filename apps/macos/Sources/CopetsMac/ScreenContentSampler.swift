@@ -15,6 +15,19 @@ struct ScreenContentCaptureTarget: Sendable {
     let displayID: CGDirectDisplayID
     let screenFrame: CGRect
     let sampleRect: CGRect
+    let maximumOutputDimension: Int
+
+    init(
+        displayID: CGDirectDisplayID,
+        screenFrame: CGRect,
+        sampleRect: CGRect,
+        maximumOutputDimension: Int = 384
+    ) {
+        self.displayID = displayID
+        self.screenFrame = screenFrame
+        self.sampleRect = sampleRect
+        self.maximumOutputDimension = maximumOutputDimension
+    }
 }
 
 struct ScreenContentObservation: Equatable, Sendable {
@@ -155,7 +168,6 @@ actor AsyncSerialGate {
 actor ScreenContentSampler {
     static let shared = ScreenContentSampler()
 
-    private let outputSize = 384
     private let contentCacheLifetime: TimeInterval = 2
     private let captureGate = AsyncSerialGate()
     private var cachedContent: SCShareableContent?
@@ -179,6 +191,9 @@ actor ScreenContentSampler {
         guard let frame = ScreenContentPixelConverter.pixelFrame(from: capture.image) else {
             throw ScreenContentSamplerError.pixelConversionFailed
         }
+        guard let preparedFrame = OrbContentRiskAnalyzer.prepare(frame: frame) else {
+            throw ScreenContentSamplerError.pixelConversionFailed
+        }
 
         let analyses = regions.map { region -> ScreenContentRegionAnalysis in
             guard let mask = ScreenContentAnalysisGeometry.mask(
@@ -195,7 +210,7 @@ actor ScreenContentSampler {
             return ScreenContentRegionAnalysis(
                 identifier: region.identifier,
                 analysis: OrbContentRiskAnalyzer.analyze(
-                    frame: frame,
+                    preparedFrame: preparedFrame,
                     mask: mask,
                     previousSignature: region.previousSignature
                 )
@@ -242,7 +257,7 @@ actor ScreenContentSampler {
             in: target.screenFrame
         ), let outputSize = ScreenContentAnalysisGeometry.outputPixelSize(
             for: sourceRect,
-            maximumDimension: outputSize
+            maximumDimension: target.maximumOutputDimension
         ) else {
             throw ScreenContentSamplerError.invalidSourceRect
         }

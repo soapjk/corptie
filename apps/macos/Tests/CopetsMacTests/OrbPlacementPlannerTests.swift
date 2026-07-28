@@ -22,6 +22,11 @@ final class OrbPlacementPlannerTests: XCTestCase {
         let distances = candidates.map { hypot($0.x - current.x, $0.y - current.y) }
         XCTAssertEqual(distances, distances.sorted())
         XCTAssertGreaterThan(distances.max() ?? 0, 300)
+        XCTAssertLessThanOrEqual(
+            candidates.count,
+            38,
+            "A single orb should use a sparse search grid, not over 100 overlapping masks"
+        )
     }
 
     func testGenerationFiltersOccupiedAndAccessoryFrames() {

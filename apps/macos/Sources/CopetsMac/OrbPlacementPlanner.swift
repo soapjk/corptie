@@ -10,8 +10,8 @@ struct OrbPlacementCandidate: Equatable, Sendable {
 }
 
 struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
-    var searchRadii: [CGFloat] = [48, 96, 144, 192, 256, 320, 360]
-    var directionsPerRing = 16
+    var searchRadii: [CGFloat] = [96, 192, 288, 360]
+    var directionsPerRing = 8
     var maximumRadius: CGFloat = 360
     var triggerRisk = 0.26
     var safeRisk = 0.18
