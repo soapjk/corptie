@@ -90,6 +90,20 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertEqual(plan.pendingCandidateOrigin, nearby)
     }
 
+    func testHistoricallySafeCandidateWinsBeforeDistanceWhenRiskIsSimilar() {
+        let persistentNearby = CGPoint(x: 904, y: 600)
+        let transientFarAway = CGPoint(x: 680, y: 600)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(candidates: [
+                candidate(persistentNearby, risk: 0.04, historicalSafety: 0.9),
+                candidate(transientFarAway, risk: 0.02, historicalSafety: 0.1)
+            ])
+        )
+
+        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
+        XCTAssertEqual(plan.pendingCandidateOrigin, persistentNearby)
+    }
+
     func testObservedModerateTextRiskCanMoveToClearlySaferCandidate() {
         let target = CGPoint(x: 952, y: 600)
         let input = makeInput(
@@ -290,8 +304,17 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertEqual(plan.userAnchor, anchor)
     }
 
-    private func candidate(_ origin: CGPoint, risk: Double) -> OrbPlacementCandidate {
-        OrbPlacementCandidate(origin: origin, contentRisk: risk, captureConfidence: 1)
+    private func candidate(
+        _ origin: CGPoint,
+        risk: Double,
+        historicalSafety: Double = 0
+    ) -> OrbPlacementCandidate {
+        OrbPlacementCandidate(
+            origin: origin,
+            contentRisk: risk,
+            captureConfidence: 1,
+            historicalSafety: historicalSafety
+        )
     }
 
     private func makeInput(

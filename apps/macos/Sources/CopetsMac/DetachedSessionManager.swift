@@ -413,6 +413,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var pendingCandidateOrigin: CGPoint?
     private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
     private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
+    private var safeRegionHistory = OrbSafeRegionHistory()
     private var cooldownUntil = Date.distantPast
     private var captureFailureCount = 0
     private var isPointerDown = false
@@ -425,6 +426,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private let automaticMoveDuration: TimeInterval = 0.22
     private let automaticMoveCooldown: TimeInterval = 2.5
     private let idleObservationInterval: TimeInterval = 2
+    private let placementConfiguration = OrbPlacementPlannerConfiguration()
 
     var frame: NSRect {
         panel.frame
@@ -537,6 +539,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                     self.scheduleObservationIfNeeded(delay: 0.4)
                 } else {
                     self.cancelObservation()
+                    self.safeRegionHistory.reset()
                 }
             }
             .store(in: &cancellables)
@@ -781,15 +784,19 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             return
         }
 
+        let observationDate = Date()
+        safeRegionHistory.prune(at: observationDate)
         let candidates = request.candidateOrigins.compactMap { origin -> OrbPlacementCandidate? in
             let identifier = Self.originIdentifier(origin)
             guard case let .known(risk, _)? = analysesByIdentifier[identifier] else {
                 return nil
             }
+            let candidateFrame = contentFrame(forPanelOrigin: origin)
             return OrbPlacementCandidate(
                 origin: origin,
                 contentRisk: risk.totalRisk,
-                captureConfidence: risk.captureConfidence
+                captureConfidence: risk.captureConfidence,
+                historicalSafety: safeRegionHistory.persistenceScore(for: candidateFrame)
             )
         }
         let plan = OrbPlacementPlanner.plan(
@@ -809,7 +816,19 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 pendingCandidateOrigin: pendingCandidateOrigin,
                 interactionFrozen: isInteractionFrozen,
                 cooldownActive: Date() < cooldownUntil
-            )
+            ),
+            configuration: placementConfiguration
+        )
+        safeRegionHistory.record(
+            frames: candidates.compactMap { candidate in
+                guard candidate.captureConfidence
+                        >= placementConfiguration.minimumCaptureConfidence,
+                      candidate.contentRisk <= placementConfiguration.safeRisk else {
+                    return nil
+                }
+                return contentFrame(forPanelOrigin: candidate.origin)
+            },
+            at: observationDate
         )
         let bestCandidateRisk = candidates
             .filter { Self.distance($0.origin, request.currentOrigin) > 0.5 }
@@ -894,6 +913,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         userAnchor = panel.frame.origin
         recentAutomaticPositions.removeAll()
         luminanceSignatures.removeAll()
+        safeRegionHistory.reset()
         pendingCandidateOrigin = nil
         cooldownUntil = Date().addingTimeInterval(0.8)
         scheduleObservationIfNeeded(delay: 0.85)
@@ -911,6 +931,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private func invalidatePlacementAndReschedule(delay: TimeInterval) {
         cancelObservation()
         luminanceSignatures.removeAll()
+        safeRegionHistory.reset()
         scheduleObservationIfNeeded(delay: delay)
     }
 

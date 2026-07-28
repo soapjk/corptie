@@ -5,6 +5,7 @@ struct OrbPlacementCandidate: Equatable, Sendable {
     let origin: CGPoint
     let contentRisk: Double
     let captureConfidence: Double
+    let historicalSafety: Double
 }
 
 struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
@@ -18,6 +19,7 @@ struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
     var confirmationTolerance: CGFloat = 8
     var recentPositionExclusionRadius: CGFloat = 16
     var safestRiskTolerance = 0.025
+    var historicalSafetyTolerance = 0.05
     var anchorSeparationWeight = 0.18
     var edgePreferenceWeight = 0.03
 }
@@ -200,7 +202,12 @@ enum OrbPlacementPlanner {
         let safestCandidates = eligible.filter {
             $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
         }
-        let selected = safestCandidates.min { lhs, rhs in
+        let maximumHistoricalSafety = safestCandidates.map(\.historicalSafety).max() ?? 0
+        let historicallyStableCandidates = safestCandidates.filter {
+            $0.historicalSafety
+                >= maximumHistoricalSafety - configuration.historicalSafetyTolerance
+        }
+        let selected = historicallyStableCandidates.min { lhs, rhs in
             let lhsSeparation = distance(lhs.origin, input.userAnchor)
             let rhsSeparation = distance(rhs.origin, input.userAnchor)
             if abs(lhsSeparation - rhsSeparation) > 0.5 {
