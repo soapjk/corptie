@@ -850,7 +850,10 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = automaticMoveDuration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().setFrameOrigin(origin)
+            panel.animator().setFrame(
+                NSRect(origin: origin, size: panel.frame.size),
+                display: true
+            )
         } completionHandler: { [weak self] in
             Task { @MainActor in
                 guard let self else {
@@ -862,6 +865,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 self.logDevelopment(
                     "[orb-avoidance] moved session=\(self.sessionId) " +
                     "from=\(Self.logPoint(previousOrigin)) to=\(Self.logPoint(origin)) " +
+                    "actual=\(Self.logPoint(self.panel.frame.origin)) " +
                     "risk=\(Self.logScore(currentRisk))->\(Self.logScore(candidateRisk))"
                 )
                 self.scheduleObservationIfNeeded(delay: self.automaticMoveCooldown)
