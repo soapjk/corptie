@@ -531,6 +531,15 @@ struct SendMessageResponse: Decodable {
     let visibleInCodexDesktop: Bool?
 }
 
+struct SessionReplacement: Decodable, Equatable, Sendable {
+    let previousSessionId: String
+    let session: TaskSession
+}
+
+struct SessionClearedEventEnvelope: Decodable {
+    let payload: SessionReplacement
+}
+
 struct CreateCodexThreadResponse: Decodable {
     let session: TaskSession?
     let warning: String?
