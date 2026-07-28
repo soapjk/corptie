@@ -2,6 +2,28 @@ import XCTest
 @testable import CorptieMac
 
 final class DetachedOrbBatchCoordinatorLogicTests: XCTestCase {
+    func testCadenceBacksOffOnlyAfterThreeStableBatches() {
+        var cadence = DetachedOrbObservationCadence()
+
+        XCTAssertEqual(cadence.nextInterval(after: .stable), 2)
+        XCTAssertEqual(cadence.nextInterval(after: .stable), 2)
+        XCTAssertEqual(cadence.nextInterval(after: .stable), 5)
+        XCTAssertEqual(cadence.nextInterval(after: .stable), 5)
+        XCTAssertEqual(cadence.nextInterval(after: .active), 2)
+        XCTAssertEqual(cadence.nextInterval(after: .stable), 2)
+    }
+
+    func testCadenceExponentiallyBacksOffCaptureFailures() {
+        var cadence = DetachedOrbObservationCadence()
+
+        XCTAssertEqual(cadence.nextInterval(after: .captureFailure), 5)
+        XCTAssertEqual(cadence.nextInterval(after: .captureFailure), 10)
+        XCTAssertEqual(cadence.nextInterval(after: .captureFailure), 20)
+        XCTAssertEqual(cadence.nextInterval(after: .captureFailure), 20)
+        XCTAssertEqual(cadence.nextInterval(after: .active), 2)
+        XCTAssertEqual(cadence.nextInterval(after: .captureFailure), 5)
+    }
+
     func testEveryOrbAppearsOnceInRiskPriorityOrder() {
         let priorities = [
             DetachedOrbBatchPriority(identifier: "orb-b", currentRisk: 0.7),

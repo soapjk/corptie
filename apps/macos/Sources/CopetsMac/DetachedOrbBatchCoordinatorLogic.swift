@@ -6,6 +6,48 @@ struct DetachedOrbBatchPriority: Equatable, Sendable {
     let currentRisk: Double
 }
 
+enum DetachedOrbBatchOutcome: Equatable, Sendable {
+    case active
+    case stable
+    case captureFailure
+    case idle
+}
+
+struct DetachedOrbObservationCadence: Equatable, Sendable {
+    var activeInterval: TimeInterval = 2
+    var stableInterval: TimeInterval = 5
+    var stableBatchesBeforeBackoff = 3
+    var initialFailureInterval: TimeInterval = 5
+    var maximumFailureInterval: TimeInterval = 20
+
+    private(set) var consecutiveStableBatches = 0
+    private(set) var consecutiveCaptureFailures = 0
+
+    mutating func nextInterval(after outcome: DetachedOrbBatchOutcome) -> TimeInterval {
+        switch outcome {
+        case .active:
+            consecutiveStableBatches = 0
+            consecutiveCaptureFailures = 0
+            return activeInterval
+        case .stable:
+            consecutiveCaptureFailures = 0
+            consecutiveStableBatches += 1
+            return consecutiveStableBatches >= stableBatchesBeforeBackoff
+                ? stableInterval
+                : activeInterval
+        case .captureFailure:
+            consecutiveStableBatches = 0
+            consecutiveCaptureFailures += 1
+            let multiplier = pow(2, Double(max(0, consecutiveCaptureFailures - 1)))
+            return min(maximumFailureInterval, initialFailureInterval * multiplier)
+        case .idle:
+            consecutiveStableBatches = 0
+            consecutiveCaptureFailures = 0
+            return stableInterval
+        }
+    }
+}
+
 enum DetachedOrbBatchCoordinatorLogic {
     static func canCommitBatch(
         evaluatedCount: Int,
