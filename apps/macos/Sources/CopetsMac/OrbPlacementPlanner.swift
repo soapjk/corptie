@@ -173,6 +173,28 @@ enum OrbPlacementPlanner {
             return hold(.noSafeCandidate, input: input)
         }
 
+        if let pendingOrigin = input.pendingCandidateOrigin,
+           let confirmed = eligible.first(where: {
+               distance($0.origin, pendingOrigin) <= configuration.confirmationTolerance
+                   && input.currentRisk - $0.contentRisk >= configuration.minimumImprovement
+           }) {
+            return OrbPlacementPlan(
+                action: .move(
+                    OrbPlacementProposal(
+                        origin: confirmed.origin,
+                        contentRisk: confirmed.contentRisk,
+                        placementCost: placementCost(
+                            candidate: confirmed,
+                            input: input,
+                            configuration: configuration
+                        )
+                    )
+                ),
+                pendingCandidateOrigin: nil,
+                userAnchor: input.userAnchor
+            )
+        }
+
         let nearestDistance = eligible.map {
             distance($0.origin, input.currentOrigin)
         }.min() ?? 0
@@ -204,18 +226,9 @@ enum OrbPlacementPlanner {
                 configuration: configuration
             )
         )
-        guard let pendingOrigin = input.pendingCandidateOrigin,
-              distance(pendingOrigin, selected.origin) <= configuration.confirmationTolerance else {
-            return OrbPlacementPlan(
-                action: .hold(.awaitingConfirmation),
-                pendingCandidateOrigin: selected.origin,
-                userAnchor: input.userAnchor
-            )
-        }
-
         return OrbPlacementPlan(
-            action: .move(proposal),
-            pendingCandidateOrigin: nil,
+            action: .hold(.awaitingConfirmation),
+            pendingCandidateOrigin: proposal.origin,
             userAnchor: input.userAnchor
         )
     }
