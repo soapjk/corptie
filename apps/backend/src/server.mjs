@@ -71,6 +71,7 @@ import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWork
 import { CodexWorkspaceTransitionManager } from "./runtime/codexWorkspaceTransitionManager.mjs";
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
+import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -2023,13 +2024,20 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   } else if (sessionId.startsWith("codex:")) {
     const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
     const threadId = logicalRoute?.activeThreadId ?? sessionId.slice("codex:".length);
+    const activeRoute = logicalRoute
+      ? await assertWorkspaceRouteUsable({
+          store,
+          logicalSession: logicalRoute,
+          providerThreadId: threadId
+        })
+      : null;
     bumpChoiceGeneration(sessionId);
     store.clearActiveChoicePrompt(sessionId);
     const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
       managedCodexSessions.get(sessionId) ?? before,
       logicalRoute
     ));
-    const activeCwd = logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
+    const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
     const collaborationAgent = collaborationCore.getAgentForSession(sessionId);
     const startingSession = {
       ...managed,
@@ -4164,9 +4172,22 @@ function route(request, response) {
     const threadId = decodeURIComponent(codexTurnDiffMatch[1]);
     const turnId = decodeURIComponent(codexTurnDiffMatch[2]);
     const action = codexTurnDiffMatch[3];
-    codexClient.readThread(threadId, { includeTurns: true })
-      .then(async (result) => {
-        const cwd = result.thread.cwd || managedCodexSessions.get(`codex:${threadId}`)?.external?.cwd;
+    const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
+    Promise.resolve(logicalRoute
+      ? assertWorkspaceRouteUsable({
+          store,
+          logicalSession: logicalRoute,
+          providerThreadId: threadId
+        })
+      : null)
+      .then((activeRoute) => Promise.all([
+        codexClient.readThread(threadId, { includeTurns: true }),
+        activeRoute
+      ]))
+      .then(async ([result, activeRoute]) => {
+        const cwd = activeRoute?.cwd
+          || result.thread.cwd
+          || managedCodexSessions.get(`codex:${threadId}`)?.external?.cwd;
         if (!cwd) {
           throw new Error("The task working directory is unavailable.");
         }
@@ -4176,14 +4197,28 @@ function route(request, response) {
         if (action === "review") {
           const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
           const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
-          emitEvent("CodexTurnDiffReviewOpened", { threadId, turnId, tool });
+          emitEvent("CodexTurnDiffReviewOpened", {
+            threadId,
+            turnId,
+            tool,
+            logicalSessionId: activeRoute?.logicalSessionId ?? null,
+            worktreeId: activeRoute?.worktreeId ?? null,
+            routingVersion: activeRoute?.routingVersion ?? null
+          });
           return { ok: true, tool };
         }
 
         const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
         await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
         await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
-        emitEvent("CodexTurnChangesUndone", { threadId, turnId, files: changes.map((change) => change.path) });
+        emitEvent("CodexTurnChangesUndone", {
+          threadId,
+          turnId,
+          files: changes.map((change) => change.path),
+          logicalSessionId: activeRoute?.logicalSessionId ?? null,
+          worktreeId: activeRoute?.worktreeId ?? null,
+          routingVersion: activeRoute?.routingVersion ?? null
+        });
         return { ok: true, files: changes.map((change) => change.path) };
       })
       .then((payload) => sendJson(response, 200, payload))
