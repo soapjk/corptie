@@ -2,10 +2,10 @@ import XCTest
 @testable import CorptieMac
 
 final class DetachedOrbClickBehaviorTests: XCTestCase {
-    func testSingleClickSchedulesThePrimaryQuickReplyAction() {
+    func testSingleClickImmediatelyPerformsThePrimaryQuickReplyAction() {
         XCTAssertEqual(
             DetachedOrbClickBehavior.action(clickCount: 1, didDrag: false),
-            .schedulePrimary
+            .primary
         )
     }
 

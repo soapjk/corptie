@@ -42,6 +42,11 @@ final class DetachedSessionManager: ObservableObject {
             sessionId: id,
             initialOrigin: initialOrigin,
             client: client,
+            occupiedFrames: { [weak self] excludingSessionId in
+                self?.controllers.compactMap { sessionId, controller in
+                    sessionId == excludingSessionId ? nil : controller.frame
+                } ?? []
+            },
             showMain: { [weak self] in
                 self?.showMain()
             },
@@ -57,6 +62,16 @@ final class DetachedSessionManager: ObservableObject {
         )
         controllers[id] = controller
         controller.show()
+    }
+
+    func floatForMainWindowCloseIfNeeded(session: TaskSession) {
+        guard DetachedSessionCloseBehavior.shouldCreateOrb(
+            status: session.status,
+            isAlreadyFloating: controllers[session.id] != nil
+        ) else {
+            return
+        }
+        float(session: session)
     }
 
     func close(sessionId: String) {
@@ -248,6 +263,10 @@ private final class DetachedAccessoryWindowController {
         panel.isKeyWindow
     }
 
+    var visibleFrame: NSRect? {
+        panel.isVisible ? panel.frame : nil
+    }
+
     func contains(window: NSWindow?) -> Bool {
         window === panel
     }
@@ -338,9 +357,27 @@ private final class DetachedAccessoryWindowController {
 }
 
 @MainActor
+private struct DetachedOrbObservationRequest {
+    let target: ScreenContentCaptureTarget
+    let regions: [ScreenContentAnalysisRegion]
+    let currentOrigin: CGPoint
+    let userAnchor: CGPoint
+    let visibleFrame: CGRect
+    let candidateOrigins: [CGPoint]
+    let occupiedFrames: [CGRect]
+    let excludedFrames: [CGRect]
+}
+
+private struct DetachedOrbRecentAutomaticPosition {
+    let origin: CGPoint
+    let date: Date
+}
+
+@MainActor
 private final class DetachedSessionWindowController: NSObject, NSWindowDelegate {
     private let sessionId: String
     private let client: BackendClient
+    private let occupiedFrames: (String) -> [CGRect]
     private let showMain: () -> Void
     private let isMainVisible: () -> Bool
     private let openSession: (TaskSession) -> Void
@@ -372,10 +409,22 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
     private var observationTask: Task<Void, Never>?
-    private var hasScheduledObservation = false
+    private var userAnchor: CGPoint
+    private var pendingCandidateOrigin: CGPoint?
+    private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
+    private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
+    private var cooldownUntil = Date.distantPast
+    private var captureFailureCount = 0
+    private var isPointerDown = false
+    private var isPointerHovering = false
+    private var isMovingAutomatically = false
+    private var isClosing = false
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
+    private let automaticMoveDuration: TimeInterval = 0.22
+    private let automaticMoveCooldown: TimeInterval = 2.5
+    private let idleObservationInterval: TimeInterval = 5
 
     var frame: NSRect {
         panel.frame
@@ -385,6 +434,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         sessionId: String,
         initialOrigin: NSPoint,
         client: BackendClient,
+        occupiedFrames: @escaping (String) -> [CGRect],
         showMain: @escaping () -> Void,
         isMainVisible: @escaping () -> Bool,
         openSession: @escaping (TaskSession) -> Void,
@@ -392,10 +442,12 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     ) {
         self.sessionId = sessionId
         self.client = client
+        self.occupiedFrames = occupiedFrames
         self.showMain = showMain
         self.isMainVisible = isMainVisible
         self.openSession = openSession
         self.closeHandler = close
+        self.userAnchor = initialOrigin
 
         let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
         self.panel = DetachedSessionPanel(
@@ -447,6 +499,15 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 },
                 close: { [weak self] in
                     self?.close()
+                },
+                interactionBegan: { [weak self] in
+                    self?.handlePointerInteractionBegan()
+                },
+                interactionEnded: { [weak self] didDrag in
+                    self?.handlePointerInteractionEnded(didDrag: didDrag)
+                },
+                hoverChanged: { [weak self] hovering in
+                    self?.handleHoverChanged(hovering)
                 }
             )
         )
@@ -458,6 +519,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 let session = sessions.first { $0.id == self.sessionId }
                 self.updateReplyPreview(for: session)
                 self.updateAccessory(for: session)
+                self.scheduleObservationIfNeeded(delay: 1)
             }
             .store(in: &cancellables)
 
@@ -472,27 +534,48 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                     return
                 }
                 if isEnabled, permissionStatus == .authorized, !isSuspended {
-                    self.scheduleObservationIfNeeded()
+                    self.scheduleObservationIfNeeded(delay: 0.4)
                 } else {
                     self.cancelObservation()
                 }
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.invalidatePlacementAndReschedule(delay: 1)
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.didActivateApplicationNotification
+        )
+        .merge(with: NSWorkspace.shared.notificationCenter.publisher(
+            for: NSWorkspace.activeSpaceDidChangeNotification
+        ))
+        .receive(on: RunLoop.main)
+        .sink { [weak self] _ in
+            self?.invalidatePlacementAndReschedule(delay: 0.8)
+        }
+        .store(in: &cancellables)
     }
 
     func show() {
         panel.orderFrontRegardless()
         updateAccessory(for: currentSession)
-        scheduleObservationIfNeeded()
+        scheduleObservationIfNeeded(delay: 0.8)
     }
 
     func close() {
+        isClosing = true
         cancelObservation()
         accessoryController.close()
         panel.close()
     }
 
     func windowWillClose(_ notification: Notification) {
+        isClosing = true
         cancelObservation()
         removeOutsideClickMonitor()
         closeHandler(sessionId)
@@ -533,6 +616,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func showQuickReply() {
+        cancelObservation()
         previewState.isQuickReplyVisible = true
         showLatestReplyPreviewIfNeeded()
         ignoreOutsideClickUntil = Date().addingTimeInterval(0.35)
@@ -547,50 +631,55 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func hideQuickReply() {
         previewState.isQuickReplyVisible = false
+        scheduleObservationIfNeeded(delay: 1)
     }
 
     private func updateAccessory(for session: TaskSession?) {
         accessoryController.update(for: session, orbCenter: currentOrbCenter, screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
     }
 
-    private func scheduleObservationIfNeeded() {
+    private func scheduleObservationIfNeeded(delay: TimeInterval) {
         guard DetachedOrbSmartAvoidancePreferences.shared.canCapture,
-              !hasScheduledObservation else {
+              observationTask == nil,
+              !isClosing else {
             return
         }
-        guard let screen = panel.screen,
-              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
-                as? CGDirectDisplayID,
-              let searchRect = DetachedOrbObservationGeometry.searchRect(
-                around: panel.frame,
-                visibleFrame: screen.visibleFrame
-              ) else {
-            return
-        }
-
-        hasScheduledObservation = true
-        let target = ScreenContentCaptureTarget(
-            displayID: displayID,
-            screenFrame: screen.frame,
-            sampleRect: searchRect
-        )
-        observationTask = Task { [sessionId] in
+        observationTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
             do {
-                try await Task.sleep(for: .milliseconds(800))
+                try await Task.sleep(for: .seconds(max(0, delay)))
                 try Task.checkCancellation()
-                let observation = try await ScreenContentSampler.shared.observe(target: target)
-                print(
-                    "[orb-avoidance] observation session=\(sessionId) " +
-                    "display=\(displayID) source=\(Self.logDescription(observation.sourceRect)) " +
-                    "pixels=\(observation.pixelWidth)x\(observation.pixelHeight) " +
-                    "duration_ms=\(observation.durationMilliseconds)"
+                guard let request = self.makeObservationRequest() else {
+                    self.observationTask = nil
+                    self.scheduleObservationIfNeeded(delay: self.idleObservationInterval)
+                    return
+                }
+                let observation = try await ScreenContentSampler.shared.analyze(
+                    target: request.target,
+                    regions: request.regions
                 )
+                try Task.checkCancellation()
+                self.observationTask = nil
+                self.captureFailureCount = 0
+                self.handleObservation(observation, request: request)
             } catch is CancellationError {
                 return
             } catch {
+                self.observationTask = nil
+                self.captureFailureCount += 1
                 let category = (error as? ScreenContentSamplerError)?.description
                     ?? String(describing: type(of: error))
-                print("[orb-avoidance] observation_failed session=\(sessionId) category=\(category)")
+                let retryDelay = min(
+                    60,
+                    pow(2, Double(min(self.captureFailureCount, 5)))
+                )
+                print(
+                    "[orb-avoidance] analysis_failed session=\(self.sessionId) " +
+                    "category=\(category) retry_s=\(Int(retryDelay))"
+                )
+                self.scheduleObservationIfNeeded(delay: retryDelay)
             }
         }
     }
@@ -598,11 +687,249 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private func cancelObservation() {
         observationTask?.cancel()
         observationTask = nil
-        hasScheduledObservation = false
+        pendingCandidateOrigin = nil
     }
 
-    private static func logDescription(_ rect: CGRect) -> String {
-        "\(Int(rect.minX)),\(Int(rect.minY)),\(Int(rect.width)),\(Int(rect.height))"
+    private func makeObservationRequest() -> DetachedOrbObservationRequest? {
+        guard !isInteractionFrozen,
+              let screen = panel.screen,
+              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                as? CGDirectDisplayID else {
+            return nil
+        }
+
+        let currentOrigin = panel.frame.origin
+        let occupied = occupiedFrames(sessionId)
+        let excluded = accessoryController.visibleFrame.map { [$0] } ?? []
+        let candidates = OrbPlacementPlanner.candidateOrigins(
+            currentOrigin: currentOrigin,
+            userAnchor: userAnchor,
+            windowSize: panel.frame.size,
+            visibleFrame: screen.visibleFrame,
+            occupiedFrames: occupied,
+            excludedFrames: excluded
+        )
+        guard !candidates.isEmpty else {
+            return nil
+        }
+
+        let coverage = candidates.reduce(CGRect.null) { partial, origin in
+            partial.union(contentFrame(forPanelOrigin: origin))
+        }
+        let searchRect = coverage
+            .insetBy(dx: -8, dy: -8)
+            .intersection(screen.visibleFrame)
+        guard !searchRect.isNull, !searchRect.isEmpty else {
+            return nil
+        }
+
+        let regions = candidates.map { origin in
+            let identifier = Self.originIdentifier(origin)
+            return ScreenContentAnalysisRegion(
+                identifier: identifier,
+                frame: contentFrame(forPanelOrigin: origin),
+                previousSignature: luminanceSignatures[identifier]
+            )
+        }
+        return DetachedOrbObservationRequest(
+            target: ScreenContentCaptureTarget(
+                displayID: displayID,
+                screenFrame: screen.frame,
+                sampleRect: searchRect
+            ),
+            regions: regions,
+            currentOrigin: currentOrigin,
+            userAnchor: userAnchor,
+            visibleFrame: screen.visibleFrame,
+            candidateOrigins: candidates,
+            occupiedFrames: occupied,
+            excludedFrames: excluded
+        )
+    }
+
+    private func handleObservation(
+        _ observation: ScreenContentAnalysisObservation,
+        request: DetachedOrbObservationRequest
+    ) {
+        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture,
+              !isClosing,
+              Self.distance(panel.frame.origin, request.currentOrigin) <= 0.5,
+              panel.screen?.visibleFrame == request.visibleFrame else {
+            invalidatePlacementAndReschedule(delay: 1)
+            return
+        }
+
+        var analysesByIdentifier: [String: OrbContentAnalysis] = [:]
+        for region in observation.regions {
+            analysesByIdentifier[region.identifier] = region.analysis
+            if case let .known(_, signature) = region.analysis {
+                luminanceSignatures[region.identifier] = signature
+            }
+        }
+
+        let currentIdentifier = Self.originIdentifier(request.currentOrigin)
+        guard case let .known(currentRisk, _)? = analysesByIdentifier[currentIdentifier] else {
+            pendingCandidateOrigin = nil
+            scheduleObservationIfNeeded(delay: idleObservationInterval)
+            return
+        }
+
+        let candidates = request.candidateOrigins.compactMap { origin -> OrbPlacementCandidate? in
+            let identifier = Self.originIdentifier(origin)
+            guard case let .known(risk, _)? = analysesByIdentifier[identifier] else {
+                return nil
+            }
+            return OrbPlacementCandidate(
+                origin: origin,
+                contentRisk: risk.totalRisk,
+                captureConfidence: risk.captureConfidence
+            )
+        }
+        let plan = OrbPlacementPlanner.plan(
+            input: OrbPlacementPlanningInput(
+                currentOrigin: request.currentOrigin,
+                userAnchor: request.userAnchor,
+                windowSize: panel.frame.size,
+                visibleFrame: request.visibleFrame,
+                occupiedFrames: occupiedFrames(sessionId),
+                excludedFrames: accessoryController.visibleFrame.map { [$0] } ?? [],
+                currentRisk: currentRisk.totalRisk,
+                currentCaptureConfidence: currentRisk.captureConfidence,
+                candidates: candidates,
+                recentAutomaticOrigins: recentAutomaticPositions.compactMap {
+                    Date().timeIntervalSince($0.date) <= 15 ? $0.origin : nil
+                },
+                pendingCandidateOrigin: pendingCandidateOrigin,
+                interactionFrozen: isInteractionFrozen,
+                cooldownActive: Date() < cooldownUntil
+            )
+        )
+
+        switch plan.action {
+        case let .hold(reason):
+            pendingCandidateOrigin = plan.pendingCandidateOrigin
+            let nextDelay = reason == .awaitingConfirmation ? 0.65 : idleObservationInterval
+            print(
+                "[orb-avoidance] evaluated session=\(sessionId) " +
+                "risk=\(Self.logScore(currentRisk.totalRisk)) decision=\(reason)"
+            )
+            scheduleObservationIfNeeded(delay: nextDelay)
+        case let .move(proposal):
+            pendingCandidateOrigin = nil
+            moveAutomatically(
+                to: proposal.origin,
+                currentRisk: currentRisk.totalRisk,
+                candidateRisk: proposal.contentRisk
+            )
+        }
+    }
+
+    private func moveAutomatically(
+        to origin: CGPoint,
+        currentRisk: Double,
+        candidateRisk: Double
+    ) {
+        guard !isInteractionFrozen else {
+            scheduleObservationIfNeeded(delay: 1)
+            return
+        }
+        let previousOrigin = panel.frame.origin
+        recentAutomaticPositions.append(
+            DetachedOrbRecentAutomaticPosition(origin: previousOrigin, date: Date())
+        )
+        recentAutomaticPositions = Array(recentAutomaticPositions.suffix(4))
+        isMovingAutomatically = true
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = automaticMoveDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrameOrigin(origin)
+        } completionHandler: { [weak self] in
+            Task { @MainActor in
+                guard let self else {
+                    return
+                }
+                self.isMovingAutomatically = false
+                self.cooldownUntil = Date().addingTimeInterval(self.automaticMoveCooldown)
+                self.updateAccessory(for: self.currentSession)
+                print(
+                    "[orb-avoidance] moved session=\(self.sessionId) " +
+                    "from=\(Self.logPoint(previousOrigin)) to=\(Self.logPoint(origin)) " +
+                    "risk=\(Self.logScore(currentRisk))->\(Self.logScore(candidateRisk))"
+                )
+                self.scheduleObservationIfNeeded(delay: self.automaticMoveCooldown)
+            }
+        }
+    }
+
+    private func handlePointerInteractionBegan() {
+        isPointerDown = true
+        cancelObservation()
+    }
+
+    private func handlePointerInteractionEnded(didDrag: Bool) {
+        isPointerDown = false
+        guard didDrag else {
+            scheduleObservationIfNeeded(delay: 1)
+            return
+        }
+        userAnchor = panel.frame.origin
+        recentAutomaticPositions.removeAll()
+        luminanceSignatures.removeAll()
+        pendingCandidateOrigin = nil
+        cooldownUntil = Date().addingTimeInterval(0.8)
+        scheduleObservationIfNeeded(delay: 0.85)
+    }
+
+    private func handleHoverChanged(_ hovering: Bool) {
+        isPointerHovering = hovering
+        if hovering {
+            cancelObservation()
+        } else {
+            scheduleObservationIfNeeded(delay: 0.8)
+        }
+    }
+
+    private func invalidatePlacementAndReschedule(delay: TimeInterval) {
+        cancelObservation()
+        luminanceSignatures.removeAll()
+        scheduleObservationIfNeeded(delay: delay)
+    }
+
+    private var isInteractionFrozen: Bool {
+        isPointerDown
+            || isPointerHovering
+            || isMovingAutomatically
+            || isClosing
+            || panel.isKeyWindow
+            || accessoryController.isKeyWindow
+            || accessoryController.visibleFrame != nil
+            || previewState.isQuickReplyVisible
+    }
+
+    private func contentFrame(forPanelOrigin origin: CGPoint) -> CGRect {
+        CGRect(
+            x: origin.x + orbHaloPadding,
+            y: origin.y + orbHaloPadding,
+            width: orbSize,
+            height: orbSize
+        )
+    }
+
+    private static func originIdentifier(_ origin: CGPoint) -> String {
+        "\(Int(origin.x.rounded())):\(Int(origin.y.rounded()))"
+    }
+
+    private static func distance(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
+        hypot(lhs.x - rhs.x, lhs.y - rhs.y)
+    }
+
+    private static func logPoint(_ point: CGPoint) -> String {
+        "\(Int(point.x.rounded())),\(Int(point.y.rounded()))"
+    }
+
+    private static func logScore(_ score: Double) -> String {
+        String(format: "%.3f", score)
     }
 
     private func updateReplyPreview(for session: TaskSession?) {
@@ -844,6 +1171,9 @@ private struct DetachedSessionOrbView: View {
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
     let close: () -> Void
+    let interactionBegan: () -> Void
+    let interactionEnded: (Bool) -> Void
+    let hoverChanged: (Bool) -> Void
 
     var body: some View {
         Group {
@@ -880,7 +1210,10 @@ private struct DetachedSessionOrbView: View {
                     openSession(session)
                 },
                 showMain: showMain,
-                close: close
+                close: close,
+                interactionBegan: interactionBegan,
+                interactionEnded: interactionEnded,
+                hoverChanged: hoverChanged
             )
             .frame(width: 72, height: 72)
         )
@@ -1536,6 +1869,9 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
     let openSession: () -> Void
     let showMain: () -> Void
     let close: () -> Void
+    let interactionBegan: () -> Void
+    let interactionEnded: (Bool) -> Void
+    let hoverChanged: (Bool) -> Void
 
     func makeNSView(context: Context) -> EventView {
         let view = EventView()
@@ -1544,6 +1880,9 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         view.openSessionAction = openSession
         view.showMainAction = showMain
         view.close = close
+        view.interactionBegan = interactionBegan
+        view.interactionEnded = interactionEnded
+        view.hoverChanged = hoverChanged
         return view
     }
 
@@ -1553,6 +1892,9 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         nsView.openSessionAction = openSession
         nsView.showMainAction = showMain
         nsView.close = close
+        nsView.interactionBegan = interactionBegan
+        nsView.interactionEnded = interactionEnded
+        nsView.hoverChanged = hoverChanged
     }
 
     final class EventView: NSView {
@@ -1561,10 +1903,13 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         var openSessionAction: (() -> Void)?
         var showMainAction: (() -> Void)?
         var close: (() -> Void)?
+        var interactionBegan: (() -> Void)?
+        var interactionEnded: ((Bool) -> Void)?
+        var hoverChanged: ((Bool) -> Void)?
         private var initialMouseScreenPoint: NSPoint?
         private var initialWindowOrigin: NSPoint?
         private var didDrag = false
-        private var pendingSingleClick: DispatchWorkItem?
+        private var trackingAreaReference: NSTrackingArea?
 
         override var acceptsFirstResponder: Bool {
             true
@@ -1586,14 +1931,36 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
             return dx * dx + dy * dy <= radius * radius ? self : nil
         }
 
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            if let trackingAreaReference {
+                removeTrackingArea(trackingAreaReference)
+            }
+            let trackingArea = NSTrackingArea(
+                rect: bounds,
+                options: [.activeAlways, .mouseEnteredAndExited],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(trackingArea)
+            trackingAreaReference = trackingArea
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            hoverChanged?(true)
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            hoverChanged?(false)
+        }
+
         override func mouseDown(with event: NSEvent) {
             guard let window else { return }
-            pendingSingleClick?.cancel()
-            pendingSingleClick = nil
             initialMouseScreenPoint = NSEvent.mouseLocation
             initialWindowOrigin = window.frame.origin
             didDrag = false
             window.makeKey()
+            interactionBegan?()
         }
 
         override func mouseDragged(with event: NSEvent) {
@@ -1620,22 +1987,14 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         }
 
         override func mouseUp(with event: NSEvent) {
+            let completedDrag = didDrag
+            interactionEnded?(completedDrag)
             switch DetachedOrbClickBehavior.action(clickCount: event.clickCount, didDrag: didDrag) {
             case .none:
                 break
-            case .schedulePrimary:
-                let workItem = DispatchWorkItem { [weak self] in
-                    self?.open?()
-                    self?.pendingSingleClick = nil
-                }
-                pendingSingleClick = workItem
-                DispatchQueue.main.asyncAfter(
-                    deadline: .now() + NSEvent.doubleClickInterval,
-                    execute: workItem
-                )
+            case .primary:
+                open?()
             case .openSession:
-                pendingSingleClick?.cancel()
-                pendingSingleClick = nil
                 openSessionAction?()
             }
             initialMouseScreenPoint = nil
@@ -1644,8 +2003,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
         }
 
         override func rightMouseDown(with event: NSEvent) {
-            pendingSingleClick?.cancel()
-            pendingSingleClick = nil
+            interactionBegan?()
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: L10n("Show Main Window"), action: #selector(showMain), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: L10n("Open Session"), action: #selector(openSession), keyEquivalent: ""))
@@ -1655,6 +2013,7 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
             menu.addItem(NSMenuItem(title: L10n("Close Floating Orb"), action: #selector(closeOrb), keyEquivalent: ""))
             menu.items.forEach { $0.target = self }
             menu.popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
+            interactionEnded?(false)
         }
 
         private func completionSoundMenuItem() -> NSMenuItem {

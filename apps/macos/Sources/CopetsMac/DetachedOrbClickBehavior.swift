@@ -1,6 +1,6 @@
 enum DetachedOrbClickAction: Equatable {
     case none
-    case schedulePrimary
+    case primary
     case openSession
 }
 
@@ -12,6 +12,6 @@ enum DetachedOrbClickBehavior {
         if clickCount >= 2 {
             return .openSession
         }
-        return clickCount == 1 ? .schedulePrimary : .none
+        return clickCount == 1 ? .primary : .none
     }
 }
