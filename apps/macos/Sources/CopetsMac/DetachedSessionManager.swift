@@ -745,7 +745,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
-    private var userAnchor: CGPoint
     private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
     private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
     private var safeRegionHistory = OrbSafeRegionHistory()
@@ -786,8 +785,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         self.openSession = openSession
         self.closeHandler = close
         self.requestBatchObservation = requestBatchObservation
-        self.userAnchor = initialOrigin
-
         let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
         self.panel = DetachedSessionPanel(
             contentRect: NSRect(origin: initialOrigin, size: size),
@@ -1008,11 +1005,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         }
 
         let currentOrigin = panel.frame.origin
+        // Persistent user anchoring is intentionally disabled. Every batch searches
+        // from the orb's current position, including after a manual drag.
+        let searchOrigin = currentOrigin
         let occupied = occupiedFrames(sessionId)
         let excluded = accessoryController.visibleFrame.map { [$0] } ?? []
         let candidates = OrbPlacementPlanner.candidateOrigins(
             currentOrigin: currentOrigin,
-            userAnchor: userAnchor,
+            userAnchor: searchOrigin,
             windowSize: panel.frame.size,
             visibleFrame: screen.visibleFrame,
             occupiedFrames: occupied,
@@ -1052,7 +1052,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             ),
             regions: regions,
             currentOrigin: currentOrigin,
-            userAnchor: userAnchor,
+            userAnchor: searchOrigin,
             visibleFrame: screen.visibleFrame,
             candidateOrigins: candidates,
             occupiedFrames: occupied,
@@ -1329,10 +1329,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             scheduleObservationIfNeeded(delay: 1)
             return
         }
-        userAnchor = panel.frame.origin
         recentAutomaticPositions.removeAll()
-        luminanceSignatures.removeAll()
-        safeRegionHistory.reset()
         cooldownUntil = Date().addingTimeInterval(0.8)
         scheduleObservationIfNeeded(delay: 0.85)
     }

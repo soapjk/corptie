@@ -19,8 +19,9 @@ struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
     var minimumCaptureConfidence = 0.8
     var recentPositionExclusionRadius: CGFloat = 16
     var safestRiskTolerance = 0.025
-    var anchorSeparationWeight = 0.18
+    var searchSeparationWeight = 0.18
     var edgePreferenceWeight = 0.03
+    var preferredEdgeDistance: CGFloat = 24
 }
 
 struct OrbPlacementPlanningInput: Equatable, Sendable {
@@ -108,9 +109,6 @@ enum OrbPlacementPlanner {
         return rawCandidates
             .map { CGPoint(x: $0.x.rounded(), y: $0.y.rounded()) }
             .filter { origin in
-                guard distance(origin, userAnchor) <= configuration.maximumRadius + 0.5 else {
-                    return false
-                }
                 let frame = CGRect(origin: origin, size: windowSize)
                 guard visibleFrame.contains(frame),
                       occupiedFrames.allSatisfy({ !$0.intersects(frame) }),
@@ -159,8 +157,7 @@ enum OrbPlacementPlanner {
                     visibleFrame: input.visibleFrame,
                     occupiedFrames: input.occupiedFrames,
                     excludedFrames: input.excludedFrames
-                  ),
-                  distance(candidate.origin, input.userAnchor) <= configuration.maximumRadius + 0.5
+                  )
             else {
                 return false
             }
@@ -188,11 +185,33 @@ enum OrbPlacementPlanner {
         let safestCandidates = bestCoveredCandidates.filter {
             $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
         }
-        let selected = safestCandidates.min { lhs, rhs in
-            let lhsSeparation = distance(lhs.origin, input.userAnchor)
-            let rhsSeparation = distance(rhs.origin, input.userAnchor)
-            if abs(lhsSeparation - rhsSeparation) > 0.5 {
-                return lhsSeparation > rhsSeparation
+        let edgeCandidates = safestCandidates.filter {
+            edgePlacement(
+                origin: $0.origin,
+                windowSize: input.windowSize,
+                visibleFrame: input.visibleFrame
+            ).distance <= configuration.preferredEdgeDistance
+        }
+        let directionalCandidates = edgeCandidates.isEmpty ? safestCandidates : edgeCandidates
+        let selected = directionalCandidates.min { lhs, rhs in
+            let lhsEdge = edgePlacement(
+                origin: lhs.origin,
+                windowSize: input.windowSize,
+                visibleFrame: input.visibleFrame
+            )
+            let rhsEdge = edgePlacement(
+                origin: rhs.origin,
+                windowSize: input.windowSize,
+                visibleFrame: input.visibleFrame
+            )
+            if !edgeCandidates.isEmpty, lhsEdge.priority != rhsEdge.priority {
+                return lhsEdge.priority < rhsEdge.priority
+            }
+            if abs(lhsEdge.distance - rhsEdge.distance) > 0.5 {
+                return lhsEdge.distance < rhsEdge.distance
+            }
+            if lhsEdge.priority != rhsEdge.priority {
+                return lhsEdge.priority < rhsEdge.priority
             }
             return placementCost(candidate: lhs, input: input, configuration: configuration)
                 < placementCost(candidate: rhs, input: input, configuration: configuration)
@@ -245,7 +264,7 @@ enum OrbPlacementPlanner {
         input: OrbPlacementPlanningInput,
         configuration: OrbPlacementPlannerConfiguration
     ) -> Double {
-        let normalizedAnchorSeparation = min(
+        let normalizedSearchSeparation = min(
             1,
             Double(distance(candidate.origin, input.userAnchor) / configuration.maximumRadius)
         )
@@ -261,8 +280,29 @@ enum OrbPlacementPlanner {
             max(0, Double(edgeDistance / max(1, configuration.maximumRadius)))
         )
         return candidate.contentRisk
-            - configuration.anchorSeparationWeight * normalizedAnchorSeparation
+            - configuration.searchSeparationWeight * normalizedSearchSeparation
             + configuration.edgePreferenceWeight * normalizedEdgeDistance
+    }
+
+    private static func edgePlacement(
+        origin: CGPoint,
+        windowSize: CGSize,
+        visibleFrame: CGRect
+    ) -> (priority: Int, distance: CGFloat) {
+        let frame = CGRect(origin: origin, size: windowSize)
+        let distances = [
+            max(0, visibleFrame.maxX - frame.maxX), // right
+            max(0, visibleFrame.maxY - frame.maxY), // top
+            max(0, frame.minX - visibleFrame.minX), // left
+            max(0, frame.minY - visibleFrame.minY) // bottom
+        ]
+        let priority = distances.indices.min {
+            if abs(distances[$0] - distances[$1]) <= 0.5 {
+                return $0 < $1
+            }
+            return distances[$0] < distances[$1]
+        } ?? 0
+        return (priority, distances[priority])
     }
 
     private static func distance(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
