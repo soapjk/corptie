@@ -1160,23 +1160,38 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         _ evaluation: DetachedOrbBatchEvaluation,
         additionalOccupiedFrames: [CGRect]
     ) -> OrbPlacementPlan {
-        OrbPlacementPlanner.plan(
-            input: OrbPlacementPlanningInput(
-                currentOrigin: evaluation.request.currentOrigin,
-                userAnchor: evaluation.request.userAnchor,
-                windowSize: panel.frame.size,
-                visibleFrame: evaluation.request.visibleFrame,
-                occupiedFrames: evaluation.request.occupiedFrames + additionalOccupiedFrames,
-                excludedFrames: evaluation.request.excludedFrames,
-                currentRisk: evaluation.currentRisk,
-                currentCaptureConfidence: evaluation.currentCaptureConfidence,
-                candidates: evaluation.candidates,
-                recentAutomaticOrigins: evaluation.recentAutomaticOrigins,
-                interactionFrozen: isInteractionFrozen,
-                cooldownActive: evaluation.cooldownActive
-            ),
+        let input = OrbPlacementPlanningInput(
+            currentOrigin: evaluation.request.currentOrigin,
+            userAnchor: evaluation.request.userAnchor,
+            windowSize: panel.frame.size,
+            visibleFrame: evaluation.request.visibleFrame,
+            occupiedFrames: evaluation.request.occupiedFrames + additionalOccupiedFrames,
+            excludedFrames: evaluation.request.excludedFrames,
+            currentRisk: evaluation.currentRisk,
+            currentCaptureConfidence: evaluation.currentCaptureConfidence,
+            candidates: evaluation.candidates,
+            recentAutomaticOrigins: evaluation.recentAutomaticOrigins,
+            interactionFrozen: isInteractionFrozen,
+            cooldownActive: evaluation.cooldownActive
+        )
+        let plan = OrbPlacementPlanner.plan(
+            input: input,
             configuration: placementConfiguration
         )
+        if case .move = plan.action {
+            let diagnostics = OrbPlacementPlanner.directionalDiagnostics(
+                input: input,
+                configuration: placementConfiguration
+            )
+            logDevelopment(
+                "[orb-avoidance] direction_candidates session=\(sessionId) "
+                    + "right=\(Self.logDirectionStatistic(diagnostics.right)) "
+                    + "top=\(Self.logDirectionStatistic(diagnostics.top)) "
+                    + "left=\(Self.logDirectionStatistic(diagnostics.left)) "
+                    + "bottom=\(Self.logDirectionStatistic(diagnostics.bottom))"
+            )
+        }
+        return plan
     }
 
     func acceptBatchPlan(
@@ -1402,6 +1417,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private static func logScore(_ score: Double) -> String {
         String(format: "%.3f", score)
+    }
+
+    private static func logDirectionStatistic(
+        _ statistic: OrbPlacementDirectionStatistic
+    ) -> String {
+        let risk = statistic.minimumRisk.map(logScore) ?? "none"
+        return "\(statistic.safeCandidateCount)/\(risk)"
     }
 
     private func logDevelopment(_ message: @autoclosure () -> String) {
