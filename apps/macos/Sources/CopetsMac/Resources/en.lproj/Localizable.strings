@@ -3,6 +3,13 @@
 "Preview" = "Preview";
 "Preview the selected completion sound" = "Preview the selected completion sound";
 "Off" = "Off";
+"Workspace missing" = "Workspace missing";
+"Git status unavailable" = "Git status unavailable";
+"Git branch: %@" = "Git branch: %@";
+"Unborn Git branch: %@" = "Unborn Git branch: %@";
+"Detached Git HEAD: %@" = "Detached Git HEAD: %@";
+"The session workspace no longer exists." = "The session workspace no longer exists.";
+"Git status is currently unavailable." = "Git status is currently unavailable.";
 "English" = "English";
 "Simplified Chinese" = "Simplified Chinese";
 "Archived sessions are hidden from the main screen until you restore them." = "Archived sessions are hidden from the main screen until you restore them.";

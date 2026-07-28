@@ -40,6 +40,13 @@
 "Preview" = "试听";
 "Preview the selected completion sound" = "试听所选的完成提示音";
 "Off" = "关闭";
+"Workspace missing" = "工作区已丢失";
+"Git status unavailable" = "Git 状态不可用";
+"Git branch: %@" = "Git 分支：%@";
+"Unborn Git branch: %@" = "尚无提交的 Git 分支：%@";
+"Detached Git HEAD: %@" = "分离的 Git HEAD：%@";
+"The session workspace no longer exists." = "此会话的工作区已不存在。";
+"Git status is currently unavailable." = "当前无法读取 Git 状态。";
 "Delete" = "删除";
 "Delete this archived session permanently?" = "要永久删除这个已归档会话吗？";
 "Deliveries" = "投递记录";
