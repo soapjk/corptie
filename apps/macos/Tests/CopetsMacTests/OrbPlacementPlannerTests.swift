@@ -24,8 +24,8 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertGreaterThan(distances.max() ?? 0, 300)
         XCTAssertLessThanOrEqual(
             candidates.count,
-            38,
-            "A single orb should use a sparse search grid, not over 100 overlapping masks"
+            64,
+            "A single orb should keep edge coverage sparse and remain well below 100 masks"
         )
     }
 
@@ -63,6 +63,40 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertTrue(candidates.contains(
             CGPoint(x: current.x, y: screen.maxY - orbSize.height)
         ))
+    }
+
+    func testOccupiedAlignedRightSlotStillLeavesOtherRightEdgeCandidates() {
+        let alignedRight = CGRect(
+            x: screen.maxX - orbSize.width,
+            y: current.y,
+            width: orbSize.width,
+            height: orbSize.height
+        )
+        let candidates = OrbPlacementPlanner.candidateOrigins(
+            currentOrigin: current,
+            userAnchor: current,
+            windowSize: orbSize,
+            visibleFrame: screen,
+            occupiedFrames: [alignedRight]
+        )
+        let rightEdgeX = screen.maxX - orbSize.width
+        let rightEdgeCandidates = candidates.filter { abs($0.x - rightEdgeX) <= 0.5 }
+
+        XCTAssertGreaterThanOrEqual(rightEdgeCandidates.count, 3)
+        XCTAssertTrue(rightEdgeCandidates.allSatisfy {
+            !CGRect(origin: $0, size: orbSize).intersects(alignedRight)
+        })
+
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(
+                candidates: candidates.map { candidate($0, risk: 0.01) },
+                occupiedFrames: [alignedRight]
+            )
+        )
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected another right-edge slot to remain selectable")
+        }
+        XCTAssertEqual(proposal.origin.x, rightEdgeX)
     }
 
     func testSingleBatchSelectsSafestCandidateWithoutIndependentConfirmation() {
