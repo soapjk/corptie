@@ -799,17 +799,36 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
         let observationDate = Date()
         safeRegionHistory.prune(at: observationDate)
-        let candidates = request.candidateOrigins.compactMap { origin -> OrbPlacementCandidate? in
+        let observedCandidates = request.candidateOrigins.compactMap {
+            origin -> (origin: CGPoint, risk: OrbContentRisk)? in
             let identifier = Self.originIdentifier(origin)
             guard case let .known(risk, _)? = analysesByIdentifier[identifier] else {
                 return nil
             }
+            return (origin, risk)
+        }
+        safeRegionHistory.record(
+            frames: observedCandidates
+                .filter {
+                    $0.risk.captureConfidence
+                        >= placementConfiguration.minimumCaptureConfidence
+                        && $0.risk.totalRisk <= placementConfiguration.safeRisk
+                }
+                .sorted { $0.risk.totalRisk < $1.risk.totalRisk }
+                .map { contentFrame(forPanelOrigin: $0.origin) },
+            at: observationDate
+        )
+        let candidates = observedCandidates.map { observedCandidate in
+            let origin = observedCandidate.origin
+            let risk = observedCandidate.risk
             let candidateFrame = contentFrame(forPanelOrigin: origin)
+            let historicalMatch = safeRegionHistory.match(for: candidateFrame)
             return OrbPlacementCandidate(
                 origin: origin,
                 contentRisk: risk.totalRisk,
                 captureConfidence: risk.captureConfidence,
-                historicalSafety: safeRegionHistory.persistenceScore(for: candidateFrame)
+                historicalOverlapCount: historicalMatch.overlapCount,
+                historicalCoverage: historicalMatch.coverage
             )
         }
         let plan = OrbPlacementPlanner.plan(
@@ -831,17 +850,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 cooldownActive: Date() < cooldownUntil
             ),
             configuration: placementConfiguration
-        )
-        safeRegionHistory.record(
-            frames: candidates.compactMap { candidate in
-                guard candidate.captureConfidence
-                        >= placementConfiguration.minimumCaptureConfidence,
-                      candidate.contentRisk <= placementConfiguration.safeRisk else {
-                    return nil
-                }
-                return contentFrame(forPanelOrigin: candidate.origin)
-            },
-            at: observationDate
         )
         let bestCandidateRisk = candidates
             .filter { Self.distance($0.origin, request.currentOrigin) > 0.5 }
