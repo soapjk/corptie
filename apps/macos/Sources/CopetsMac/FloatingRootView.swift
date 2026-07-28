@@ -872,7 +872,6 @@ private struct ProjectGroupHeader: View {
 
 private struct CompactSessionRow: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
     @State private var isRenaming = false
     let session: TaskSession
     var preheatRequested: (TaskSession) -> Void = { _ in }
@@ -901,23 +900,7 @@ private struct CompactSessionRow: View {
         .onHover { if $0 { preheatRequested(session) } }
         .onTapGesture { backendClient.select(session: session) }
         .contextMenu {
-            Button(L10n("Rename"), systemImage: "pencil") { isRenaming = true }
-            Button(L10n("Settings…"), systemImage: "gearshape") {
-                SessionSettingsWindowManager.shared.show(session: session, backendClient: backendClient)
-            }
-            Button(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle") {
-                detachedSessionManager.float(session: session)
-            }
-            Button(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: "pin") {
-                backendClient.setPinned(session.pinned != true, session: session)
-            }
-            Divider()
-            Button(L10n("Archive"), systemImage: "archivebox") {
-                backendClient.setArchived(true, session: session)
-            }
-            Button(L10n("Delete"), systemImage: "trash", role: .destructive) {
-                backendClient.delete(session: session)
-            }
+            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
         }
         .sheet(isPresented: $isRenaming) {
             RenameSessionSheet(session: session) { isRenaming = false }
@@ -929,6 +912,90 @@ private struct CompactSessionRow: View {
     private var projectPath: String? {
         let path = session.external?.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return path.isEmpty ? nil : path
+    }
+}
+
+private struct SessionContextMenuContent: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
+
+    let session: TaskSession
+    @Binding var isRenaming: Bool
+
+    var body: some View {
+        Button {
+            isRenaming = true
+        } label: {
+            Label(L10n("Rename"), systemImage: "pencil")
+        }
+
+        Button {
+            SessionSettingsWindowManager.shared.show(session: session, backendClient: backendClient)
+        } label: {
+            Label(L10n("Settings…"), systemImage: "gearshape")
+        }
+
+        Divider()
+
+        Button {
+            chooseAvatar()
+        } label: {
+            Label(L10n("Set Avatar"), systemImage: "person.crop.circle")
+        }
+
+        if session.avatarPath?.isEmpty == false {
+            Button {
+                backendClient.updateAvatar(session: session, avatarPath: nil)
+            } label: {
+                Label(L10n("Clear Avatar"), systemImage: "xmark.circle")
+            }
+        }
+
+        Divider()
+
+        Button {
+            detachedSessionManager.float(session: session)
+        } label: {
+            Label(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle")
+        }
+
+        Divider()
+
+        Button {
+            backendClient.setPinned(session.pinned != true, session: session)
+        } label: {
+            Label(
+                session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"),
+                systemImage: session.pinned == true ? "pin.slash" : "pin"
+            )
+        }
+
+        Divider()
+
+        Button {
+            backendClient.setArchived(true, session: session)
+        } label: {
+            Label(L10n("Archive"), systemImage: "archivebox")
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
+            backendClient.delete(session: session)
+        } label: {
+            Label(L10n("Delete"), systemImage: "trash")
+        }
+    }
+
+    private func chooseAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        if panel.runModal() == .OK, let url = panel.url {
+            backendClient.updateAvatar(session: session, avatarPath: url.path)
+        }
     }
 }
 
@@ -2624,14 +2691,12 @@ private struct SheetPanelBackground: View {
 
 private struct TaskCardView: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
     @State private var quickReply = ""
     @State private var lastQuickReplyInteractionAt = Date.distantPast
     @State private var isRenaming = false
     @State private var isShowingUnboundHint = false
     @State private var isHoveringSummary = false
     @State private var hoverPreviewTask: Task<Void, Never>?
-    @State private var completionSoundId = SessionCompletionSoundManager.defaultSoundId
     @FocusState private var isQuickReplyFocused: Bool
 
     let session: TaskSession
@@ -2754,85 +2819,7 @@ private struct TaskCardView: View {
             }
         }
         .contextMenu {
-            Button {
-                isRenaming = true
-            } label: {
-                Label(L10n("Rename"), systemImage: "pencil")
-            }
-
-            Button {
-                SessionSettingsWindowManager.shared.show(session: session, backendClient: backendClient)
-            } label: {
-                Label(L10n("Settings…"), systemImage: "gearshape")
-            }
-
-            Divider()
-
-            Button {
-                chooseAvatar()
-            } label: {
-                Label(L10n("Set Avatar"), systemImage: "person.crop.circle")
-            }
-
-            if session.avatarPath?.isEmpty == false {
-                Button {
-                    backendClient.updateAvatar(session: session, avatarPath: nil)
-                } label: {
-                    Label(L10n("Clear Avatar"), systemImage: "xmark.circle")
-                }
-            }
-
-            Divider()
-
-            Menu {
-                ForEach(SessionCompletionSoundManager.options) { option in
-                    Button {
-                        completionSoundId = option.id
-                        SessionCompletionSoundManager.setSelectedSoundId(option.id, for: session.id)
-                    } label: {
-                        HStack {
-                            if completionSoundId == option.id {
-                                Image(systemName: "checkmark")
-                            }
-                            Text(option.label)
-                        }
-                    }
-                }
-            } label: {
-                Label(L10n("Completion Sound"), systemImage: "speaker.wave.2")
-            }
-
-            Divider()
-
-            Button {
-                detachedSessionManager.float(session: session)
-            } label: {
-                Label(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle")
-            }
-
-            Divider()
-
-            Button {
-                backendClient.setPinned(session.pinned != true, session: session)
-            } label: {
-                Label(session.pinned == true ? L10n("Unpin") : L10n("Pin to Top"), systemImage: session.pinned == true ? "pin.slash" : "pin")
-            }
-
-            Divider()
-
-            Button {
-                backendClient.setArchived(true, session: session)
-            } label: {
-                Label(L10n("Archive"), systemImage: "archivebox")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                backendClient.delete(session: session)
-            } label: {
-                Label(L10n("Delete"), systemImage: "trash")
-            }
+            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
         }
         .sheet(isPresented: $isRenaming) {
             RenameSessionSheet(session: session) {
@@ -2840,12 +2827,6 @@ private struct TaskCardView: View {
             }
             .environmentObject(backendClient)
             .presentationBackground(.clear)
-        }
-        .onAppear {
-            completionSoundId = SessionCompletionSoundManager.selectedSoundId(for: session.id)
-        }
-        .onChange(of: session.id) { _, sessionId in
-            completionSoundId = SessionCompletionSoundManager.selectedSoundId(for: sessionId)
         }
     }
 
@@ -2951,17 +2932,6 @@ private struct TaskCardView: View {
                 .padding(.vertical, 9)
                 .frame(width: 220)
                 .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-    }
-
-    private func chooseAvatar() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
-        if panel.runModal() == .OK, let url = panel.url {
-            backendClient.updateAvatar(session: session, avatarPath: url.path)
         }
     }
 

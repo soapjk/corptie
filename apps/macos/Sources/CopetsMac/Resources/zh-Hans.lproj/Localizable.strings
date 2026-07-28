@@ -37,6 +37,9 @@
 "Data Directory" = "数据目录";
 "Database" = "数据库";
 "Default" = "默认";
+"Preview" = "试听";
+"Preview the selected completion sound" = "试听所选的完成提示音";
+"Off" = "关闭";
 "Delete" = "删除";
 "Delete this archived session permanently?" = "要永久删除这个已归档会话吗？";
 "Deliveries" = "投递记录";
