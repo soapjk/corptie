@@ -119,7 +119,9 @@ export class CodexAppServerClient {
       config: options.config ?? undefined,
       developerInstructions: options.developerInstructions ?? undefined,
       dynamicTools: options.dynamicTools ?? undefined,
-      threadSource: "user",
+      runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? undefined,
+      permissions: options.permissions ?? undefined,
+      threadSource: options.threadSource ?? "user",
       ephemeral: options.ephemeral ?? false
     }, options.requestTimeoutMs ?? 30000);
     if (result?.thread?.id && options.dynamicToolAgentId) {
@@ -132,13 +134,68 @@ export class CodexAppServerClient {
     await this.initialize();
     const result = await this.request("thread/resume", {
       threadId,
+      cwd: options.cwd ?? undefined,
+      runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? undefined,
+      approvalPolicy: options.approvalPolicy ?? undefined,
+      approvalsReviewer: options.approvalsReviewer ?? undefined,
+      sandbox: options.sandbox ?? undefined,
+      permissions: options.permissions ?? undefined,
+      model: options.model ?? undefined,
+      modelProvider: options.modelProvider ?? undefined,
       config: options.config ?? undefined,
-      developerInstructions: options.developerInstructions ?? undefined
+      developerInstructions: options.developerInstructions ?? undefined,
+      excludeTurns: options.excludeTurns ?? undefined,
+      initialTurnsPage: options.initialTurnsPage ?? undefined
     }, options.requestTimeoutMs ?? 30000);
     if (options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
     }
     return result;
+  }
+
+  async forkThread(threadId, options = {}) {
+    await this.initialize();
+    const result = await this.request("thread/fork", {
+      threadId,
+      lastTurnId: options.lastTurnId ?? undefined,
+      beforeTurnId: options.beforeTurnId ?? undefined,
+      cwd: options.cwd ?? undefined,
+      runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? undefined,
+      approvalPolicy: options.approvalPolicy ?? undefined,
+      approvalsReviewer: options.approvalsReviewer ?? undefined,
+      sandbox: options.sandbox ?? undefined,
+      permissions: options.permissions ?? undefined,
+      model: options.model ?? undefined,
+      modelProvider: options.modelProvider ?? undefined,
+      config: options.config ?? undefined,
+      developerInstructions: options.developerInstructions ?? undefined,
+      threadSource: options.threadSource ?? "user",
+      ephemeral: options.ephemeral ?? false,
+      excludeTurns: options.excludeTurns ?? false,
+      deferGoalContinuation: options.deferGoalContinuation ?? true
+    }, options.requestTimeoutMs ?? 30000);
+    if (result?.thread?.id && options.dynamicToolAgentId) {
+      this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
+    }
+    return result;
+  }
+
+  async updateThreadSettings(threadId, options = {}) {
+    await this.initialize();
+    return this.request("thread/settings/update", {
+      threadId,
+      cwd: options.cwd ?? undefined,
+      approvalPolicy: options.approvalPolicy ?? undefined,
+      approvalsReviewer: options.approvalsReviewer ?? undefined,
+      sandboxPolicy: options.sandboxPolicy ?? undefined,
+      permissions: options.permissions ?? undefined,
+      model: options.model ?? undefined,
+      serviceTier: options.serviceTier ?? undefined,
+      effort: options.reasoningEffort ?? undefined,
+      summary: options.reasoningSummary ?? undefined,
+      collaborationMode: options.collaborationMode ?? undefined,
+      personality: options.personality ?? undefined
+    }, options.requestTimeoutMs ?? this.requestTimeoutMs);
   }
 
   async startTurn(threadId, text, options = {}) {

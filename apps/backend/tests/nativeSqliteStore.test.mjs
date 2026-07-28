@@ -110,3 +110,177 @@ test("Git workspace snapshots persist stable repository and worktree identities"
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("logical session route commits switch the active thread and workspace atomically", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-logical-session-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertGitWorkspaceSnapshot(workspaceSnapshot());
+    store.upsertSession({
+      id: "codex:thread-source",
+      title: "Stable UI session",
+      agent: "Codex",
+      provider: "codex-app-server",
+      cwd: "/repo/main",
+      status: "complete",
+      createdAt: "2026-07-28T00:00:00.000Z",
+      updatedAt: "2026-07-28T00:00:00.000Z"
+    });
+
+    const created = store.createLogicalSessionRoute({
+      logicalSessionId: "logical:one",
+      legacySessionId: "codex:thread-source",
+      providerThreadId: "thread-source",
+      repositoryId: "repository:one",
+      worktreeId: "worktree:main",
+      boundCwd: "/repo/main",
+      instructionSources: ["/repo/main/AGENTS.md"],
+      permissionSnapshot: { sandbox: "workspaceWrite", writableRoots: ["/repo/main"] },
+      title: "Stable UI session",
+      createdAt: "2026-07-28T00:00:00.000Z"
+    });
+    assert.equal(created.activeThreadId, "thread-source");
+    assert.equal(created.activeWorkspaceId, "worktree:main");
+    assert.equal(created.routingVersion, 1);
+    assert.equal(store.assertLogicalSessionRoute("logical:one"), true);
+
+    store.beginWorkspaceTransition({
+      transitionId: "transition:one",
+      logicalSessionId: "logical:one",
+      targetWorktreeId: "worktree:feature",
+      sourceRoutingVersion: 1,
+      lastCompletedTurnId: "turn-7",
+      strategy: "fork",
+      phase: "forking",
+      createdAt: "2026-07-28T00:01:00.000Z"
+    });
+    store.updateWorkspaceTransition("transition:one", {
+      phase: "validatingInstructions",
+      newThreadId: "thread-feature",
+      updatedAt: "2026-07-28T00:02:00.000Z"
+    });
+    const switched = store.commitWorkspaceTransition("transition:one", {
+      providerThreadId: "thread-feature",
+      boundCwd: "/repo/feature worktree",
+      instructionSources: ["/repo/feature worktree/AGENTS.md"],
+      permissionSnapshot: {
+        sandbox: "workspaceWrite",
+        writableRoots: ["/repo/feature worktree"]
+      },
+      createdAt: "2026-07-28T00:03:00.000Z"
+    });
+
+    assert.equal(switched.logicalSessionId, "logical:one");
+    assert.equal(switched.activeThreadId, "thread-feature");
+    assert.equal(switched.activeWorkspaceId, "worktree:feature");
+    assert.equal(switched.routingVersion, 2);
+    assert.equal(switched.transitionState, null);
+    assert.equal(store.assertLogicalSessionRoute("logical:one"), true);
+    assert.equal(store.getSession("codex:thread-source").external.cwd, "/repo/feature worktree");
+
+    const bindings = store.listProviderThreadBindings("logical:one");
+    assert.deepEqual(bindings.map((binding) => binding.state), ["superseded", "active"]);
+    assert.equal(bindings[1].parentThreadId, "thread-source");
+    assert.equal(bindings[1].forkedAtTurnId, "turn-7");
+    assert.deepEqual(bindings[1].instructionSources, ["/repo/feature worktree/AGENTS.md"]);
+    assert.deepEqual(bindings[1].permissionSnapshot.writableRoots, ["/repo/feature worktree"]);
+    assert.equal(store.getWorkspaceTransition("transition:one").phase, "committed");
+
+    const retried = store.commitWorkspaceTransition("transition:one", {
+      providerThreadId: "thread-feature",
+      boundCwd: "/repo/feature worktree"
+    });
+    assert.equal(retried.routingVersion, 2);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("logical session transitions reject stale routing versions without changing the active route", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-logical-session-stale-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertGitWorkspaceSnapshot(workspaceSnapshot());
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:stale",
+      providerThreadId: "thread-source",
+      repositoryId: "repository:one",
+      worktreeId: "worktree:main",
+      boundCwd: "/repo/main"
+    });
+
+    assert.throws(
+      () => store.beginWorkspaceTransition({
+        transitionId: "transition:stale",
+        logicalSessionId: "logical:stale",
+        targetWorktreeId: "worktree:feature",
+        sourceRoutingVersion: 0
+      }),
+      /routing version changed/
+    );
+    const logical = store.getLogicalSession("logical:stale");
+    assert.equal(logical.activeThreadId, "thread-source");
+    assert.equal(logical.activeWorkspaceId, "worktree:main");
+    assert.equal(logical.routingVersion, 1);
+    assert.equal(logical.transitionState, null);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function workspaceSnapshot() {
+  return {
+    repository: {
+      id: "repository:one",
+      commonGitDirCanonicalPath: "/repo/main/.git",
+      discoveredAt: "2026-07-28T00:00:00.000Z",
+      lastValidatedAt: "2026-07-28T00:00:00.000Z"
+    },
+    inventoryVersion: "inventory:one",
+    observedAt: "2026-07-28T00:00:00.000Z",
+    worktrees: [
+      {
+        worktreeId: "worktree:main",
+        path: "/repo/main",
+        canonicalPath: "/repo/main",
+        gitDirCanonicalPath: "/repo/main/.git",
+        isMain: true,
+        availability: "available",
+        headOid: "abc123",
+        branchRef: "refs/heads/main",
+        branchName: "main",
+        isDetached: false,
+        isLocked: false,
+        lockReason: null,
+        isPrunable: false,
+        pruneReason: null
+      },
+      {
+        worktreeId: "worktree:feature",
+        path: "/repo/feature worktree",
+        canonicalPath: "/repo/feature worktree",
+        gitDirCanonicalPath: "/repo/main/.git/worktrees/feature",
+        isMain: false,
+        availability: "available",
+        headOid: "def456",
+        branchRef: "refs/heads/feature/workspace",
+        branchName: "feature/workspace",
+        isDetached: false,
+        isLocked: false,
+        lockReason: null,
+        isPrunable: false,
+        pruneReason: null
+      }
+    ]
+  };
+}
