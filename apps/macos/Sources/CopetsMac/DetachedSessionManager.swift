@@ -12,6 +12,7 @@ final class DetachedSessionManager: ObservableObject {
     private let isMainVisible: () -> Bool
     private var controllers: [String: DetachedSessionWindowController] = [:]
     private var avoidanceLoopTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
 
     init(
         client: BackendClient,
@@ -23,9 +24,19 @@ final class DetachedSessionManager: ObservableObject {
         self.showMain = showMain
         self.isMainVisible = isMainVisible
         self.openSession = openSession
+
+        client.sessionReplacements
+            .sink { [weak self] replacement in
+                self?.rebindFloatingSession(replacement)
+            }
+            .store(in: &cancellables)
     }
 
     func float(session: TaskSession) {
+        float(session: session, initialOrigin: nil)
+    }
+
+    private func float(session: TaskSession, initialOrigin preservedOrigin: NSPoint?) {
         let id = session.id
         if let controller = controllers[id] {
             controller.show()
@@ -34,7 +45,7 @@ final class DetachedSessionManager: ObservableObject {
 
         let targetScreen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         let visibleFrame = targetScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        let initialOrigin = DetachedOrbPlacementGeometry.origin(
+        let initialOrigin = preservedOrigin ?? DetachedOrbPlacementGeometry.origin(
             visibleFrame: visibleFrame,
             windowSize: Self.orbWindowSize,
             occupiedFrames: controllers.values.map(\.frame)
@@ -68,6 +79,20 @@ final class DetachedSessionManager: ObservableObject {
         controllers[id] = controller
         controller.show()
         ensureAvoidanceLoop()
+    }
+
+    private func rebindFloatingSession(_ replacement: SessionReplacement) {
+        guard DetachedSessionReplacementLogic.shouldRebind(
+            previousSessionId: replacement.previousSessionId,
+            replacementSessionId: replacement.session.id,
+            floatingSessionIds: Set(controllers.keys)
+        ), let previousController = controllers.removeValue(forKey: replacement.previousSessionId) else {
+            return
+        }
+
+        let preservedOrigin = previousController.frame.origin
+        previousController.close()
+        float(session: replacement.session, initialOrigin: preservedOrigin)
     }
 
     func floatForMainWindowCloseIfNeeded(session: TaskSession) {
