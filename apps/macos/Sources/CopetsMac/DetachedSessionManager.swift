@@ -460,6 +460,24 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 self.updateAccessory(for: session)
             }
             .store(in: &cancellables)
+
+        DetachedOrbSmartAvoidancePreferences.shared.$isEnabled
+            .combineLatest(
+                DetachedOrbSmartAvoidancePreferences.shared.$permissionStatus,
+                DetachedOrbSmartAvoidancePreferences.shared.$isCaptureSuspended
+            )
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isEnabled, permissionStatus, isSuspended in
+                guard let self else {
+                    return
+                }
+                if isEnabled, permissionStatus == .authorized, !isSuspended {
+                    self.scheduleObservationIfNeeded()
+                } else {
+                    self.cancelObservation()
+                }
+            }
+            .store(in: &cancellables)
     }
 
     func show() {
@@ -469,15 +487,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     func close() {
-        observationTask?.cancel()
-        observationTask = nil
+        cancelObservation()
         accessoryController.close()
         panel.close()
     }
 
     func windowWillClose(_ notification: Notification) {
-        observationTask?.cancel()
-        observationTask = nil
+        cancelObservation()
         removeOutsideClickMonitor()
         closeHandler(sessionId)
     }
@@ -538,7 +554,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func scheduleObservationIfNeeded() {
-        guard DetachedOrbObservationMode.isEnabled, !hasScheduledObservation else {
+        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture,
+              !hasScheduledObservation else {
             return
         }
         guard let screen = panel.screen,
@@ -576,6 +593,12 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 print("[orb-avoidance] observation_failed session=\(sessionId) category=\(category)")
             }
         }
+    }
+
+    private func cancelObservation() {
+        observationTask?.cancel()
+        observationTask = nil
+        hasScheduledObservation = false
     }
 
     private static func logDescription(_ rect: CGRect) -> String {

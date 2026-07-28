@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var collaborationWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
+    private var workspaceNotificationObservers: [NSObjectProtocol] = []
+    private var distributedNotificationObservers: [NSObjectProtocol] = []
     private var isEvaluatingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -53,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         detachedSessionManager = detachedManager
         completionSoundManager = soundManager
         soundManager.start()
+        installScreenCaptureLifecycleObservers()
         installStatusItem()
         appLanguage.$selection
             .dropFirst()
@@ -65,12 +68,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        DetachedOrbSmartAvoidancePreferences.shared.suspendCapture()
+        removeScreenCaptureLifecycleObservers()
         detachedSessionManager?.closeAll()
         completionSoundManager?.stop()
         backendClient.stop()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        DetachedOrbSmartAvoidancePreferences.shared.refreshPermission()
         Task {
             await backendClient.refreshSelectedUsage()
         }
@@ -154,6 +160,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         refreshStatusMenu()
         statusItem = item
+    }
+
+    private func installScreenCaptureLifecycleObservers() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceNotificationObservers = [
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    DetachedOrbSmartAvoidancePreferences.shared.suspendCapture()
+                }
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    DetachedOrbSmartAvoidancePreferences.shared.resumeCapture()
+                }
+            }
+        ]
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        distributedNotificationObservers = [
+            distributedCenter.addObserver(
+                forName: Notification.Name("com.apple.screenIsLocked"),
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    DetachedOrbSmartAvoidancePreferences.shared.suspendCapture()
+                }
+            },
+            distributedCenter.addObserver(
+                forName: Notification.Name("com.apple.screenIsUnlocked"),
+                object: nil,
+                queue: .main
+            ) { _ in
+                Task { @MainActor in
+                    DetachedOrbSmartAvoidancePreferences.shared.resumeCapture()
+                }
+            }
+        ]
+    }
+
+    private func removeScreenCaptureLifecycleObservers() {
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceNotificationObservers.forEach(workspaceCenter.removeObserver)
+        workspaceNotificationObservers.removeAll()
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        distributedNotificationObservers.forEach(distributedCenter.removeObserver)
+        distributedNotificationObservers.removeAll()
     }
 
     private func refreshStatusMenu() {
@@ -393,6 +455,21 @@ enum CorptiePermissionManager {
             }
         }
     }
+
+    @MainActor
+    static func openScreenRecordingSettings() {
+        let candidateURLs: [URL] = [
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!,
+            URL(fileURLWithPath: "/System/Library/PreferencePanes/Security.prefPane")
+        ]
+
+        for url in candidateURLs {
+            if NSWorkspace.shared.open(url) {
+                break
+            }
+        }
+    }
 }
 
 private enum SettingsTab: Hashable {
@@ -405,6 +482,7 @@ private enum SettingsTab: Hashable {
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @ObservedObject private var appLanguage = AppLanguageController.shared
+    @ObservedObject private var orbAvoidancePreferences = DetachedOrbSmartAvoidancePreferences.shared
     var onClose: () -> Void = {}
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
@@ -662,6 +740,50 @@ struct SettingsView: View {
                     Spacer()
                     Button(L10n("View…"), systemImage: "archivebox") {
                         selectedTab = .archivedSessions
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    L10n("Smart Floating Orb Avoidance"),
+                    isOn: Binding(
+                        get: { orbAvoidancePreferences.isEnabled },
+                        set: { orbAvoidancePreferences.setEnabledByUser($0) }
+                    )
+                )
+                .font(.system(size: 12, weight: .bold))
+
+                Text(L10n("Automatically moves detached session orbs to nearby areas with less visual content. Corptie analyzes only nearby screen pixels in memory and never saves or uploads screenshots."))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Label(
+                        orbAvoidancePreferences.permissionStatus == .authorized
+                            ? L10n("Screen Recording access granted")
+                            : L10n("Screen Recording access required"),
+                        systemImage: orbAvoidancePreferences.permissionStatus == .authorized
+                            ? "checkmark.circle.fill"
+                            : "exclamationmark.triangle.fill"
+                    )
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(
+                        orbAvoidancePreferences.permissionStatus == .authorized
+                            ? Color.green
+                            : CorptiePalette.secondaryText
+                    )
+
+                    Spacer()
+
+                    if orbAvoidancePreferences.permissionStatus != .authorized {
+                        Button(L10n("Open System Settings")) {
+                            CorptiePermissionManager.openScreenRecordingSettings()
+                        }
+                        Button(L10n("Check Again")) {
+                            orbAvoidancePreferences.refreshPermission()
+                        }
                     }
                 }
             }

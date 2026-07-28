@@ -353,3 +353,9 @@
 "Could not stop the backend" = "无法停止后台";
 "Corptie was kept open because its backend could not be stopped safely.\n\n%@" = "由于无法安全停止后台，Corptie 已保持打开。\n\n%@";
 "Execution process" = "执行过程";
+"Smart Floating Orb Avoidance" = "分离浮球智能避让";
+"Automatically moves detached session orbs to nearby areas with less visual content. Corptie analyzes only nearby screen pixels in memory and never saves or uploads screenshots." = "自动将分离浮球移动到附近视觉内容较少的位置。Corptie 只在内存中分析浮球附近的屏幕像素，绝不会保存或上传截图。";
+"Screen Recording access granted" = "已授予屏幕录制权限";
+"Screen Recording access required" = "需要屏幕录制权限";
+"Open System Settings" = "打开系统设置";
+"Check Again" = "重新检查";
