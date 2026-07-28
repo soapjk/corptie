@@ -85,6 +85,44 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertEqual(plan.pendingCandidateOrigin, target)
     }
 
+    func testConfirmationKeepsPendingSafeCandidateWhenAnotherCandidateBecomesCheaper() {
+        let pending = CGPoint(x: 952, y: 600)
+        let newlyCheaper = CGPoint(x: 976, y: 642)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(
+                currentRisk: 0.55,
+                candidates: [
+                    candidate(pending, risk: 0.12),
+                    candidate(newlyCheaper, risk: 0.02)
+                ],
+                pending: pending
+            )
+        )
+
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected the still-safe pending candidate to be confirmed")
+        }
+        XCTAssertEqual(proposal.origin, pending)
+    }
+
+    func testUnsafePendingCandidateIsReplacedAndAwaitsFreshConfirmation() {
+        let unsafePending = CGPoint(x: 952, y: 600)
+        let replacement = CGPoint(x: 976, y: 642)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(
+                currentRisk: 0.55,
+                candidates: [
+                    candidate(unsafePending, risk: 0.24),
+                    candidate(replacement, risk: 0.04)
+                ],
+                pending: unsafePending
+            )
+        )
+
+        XCTAssertEqual(plan.action, .hold(.awaitingConfirmation))
+        XCTAssertEqual(plan.pendingCandidateOrigin, replacement)
+    }
+
     func testNoSafeCandidateKeepsCurrentPosition() {
         let plan = OrbPlacementPlanner.plan(
             input: makeInput(candidates: [

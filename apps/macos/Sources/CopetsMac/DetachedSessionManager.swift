@@ -424,7 +424,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private let orbHaloPadding: CGFloat = 8
     private let automaticMoveDuration: TimeInterval = 0.22
     private let automaticMoveCooldown: TimeInterval = 2.5
-    private let idleObservationInterval: TimeInterval = 5
+    private let idleObservationInterval: TimeInterval = 2
 
     var frame: NSRect {
         panel.frame
@@ -564,6 +564,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     func show() {
         panel.orderFrontRegardless()
         updateAccessory(for: currentSession)
+        let preferences = DetachedOrbSmartAvoidancePreferences.shared
+        logDevelopment(
+            "[orb-avoidance] shown session=\(sessionId) " +
+            "enabled=\(preferences.isEnabled) " +
+            "permission=\(preferences.permissionStatus) " +
+            "suspended=\(preferences.isCaptureSuspended)"
+        )
         scheduleObservationIfNeeded(delay: 0.8)
     }
 
@@ -912,7 +919,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             || isPointerHovering
             || isMovingAutomatically
             || isClosing
-            || panel.isKeyWindow
             || accessoryController.isKeyWindow
             || accessoryController.visibleFrame != nil
             || previewState.isQuickReplyVisible
