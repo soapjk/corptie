@@ -18,7 +18,6 @@ struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
     var minimumImprovement = 0.08
     var minimumCaptureConfidence = 0.8
     var recentPositionExclusionRadius: CGFloat = 16
-    var safestRiskTolerance = 0.025
     var searchSeparationWeight = 0.18
     var edgePreferenceWeight = 0.03
     var preferredEdgeDistance: CGFloat = 24
@@ -62,6 +61,18 @@ enum OrbPlacementAction: Equatable, Sendable {
 struct OrbPlacementPlan: Equatable, Sendable {
     let action: OrbPlacementAction
     let userAnchor: CGPoint
+}
+
+struct OrbPlacementDirectionStatistic: Equatable, Sendable {
+    let safeCandidateCount: Int
+    let minimumRisk: Double?
+}
+
+struct OrbPlacementDirectionalDiagnostics: Equatable, Sendable {
+    let right: OrbPlacementDirectionStatistic
+    let top: OrbPlacementDirectionStatistic
+    let left: OrbPlacementDirectionStatistic
+    let bottom: OrbPlacementDirectionStatistic
 }
 
 enum OrbPlacementPlanner {
@@ -165,40 +176,19 @@ enum OrbPlacementPlanner {
             return hold(.currentPositionIsSafe, input: input)
         }
 
-        let eligible = input.candidates.filter { candidate in
-            guard candidate.captureConfidence >= configuration.minimumCaptureConfidence,
-                  candidate.contentRisk <= configuration.safeRisk,
-                  distance(candidate.origin, input.currentOrigin) > 0.5,
-                  isValid(
-                    origin: candidate.origin,
-                    windowSize: input.windowSize,
-                    visibleFrame: input.visibleFrame,
-                    occupiedFrames: input.occupiedFrames,
-                    excludedFrames: input.excludedFrames
-                  )
-            else {
-                return false
-            }
-            return input.recentAutomaticOrigins.allSatisfy {
-                distance(candidate.origin, $0) > configuration.recentPositionExclusionRadius
-            }
-        }
+        let eligible = eligibleCandidates(input: input, configuration: configuration)
         guard !eligible.isEmpty else {
             return hold(.noSafeCandidate, input: input)
         }
 
-        let minimumRisk = eligible.map(\.contentRisk).min() ?? 0
-        let safestCandidates = eligible.filter {
-            $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
-        }
-        let edgeCandidates = safestCandidates.filter {
+        let edgeCandidates = eligible.filter {
             edgePlacement(
                 origin: $0.origin,
                 windowSize: input.windowSize,
                 visibleFrame: input.visibleFrame
             ).distance <= configuration.preferredEdgeDistance
         }
-        let edgePool = edgeCandidates.isEmpty ? safestCandidates : edgeCandidates
+        let edgePool = edgeCandidates.isEmpty ? eligible : edgeCandidates
         let placements = edgePool.map {
             (
                 candidate: $0,
@@ -267,6 +257,39 @@ enum OrbPlacementPlanner {
         )
     }
 
+    static func directionalDiagnostics(
+        input: OrbPlacementPlanningInput,
+        configuration: OrbPlacementPlannerConfiguration = .init()
+    ) -> OrbPlacementDirectionalDiagnostics {
+        let edgeCandidates = eligibleCandidates(input: input, configuration: configuration)
+            .compactMap { candidate -> (candidate: OrbPlacementCandidate, priority: Int)? in
+                let edge = edgePlacement(
+                    origin: candidate.origin,
+                    windowSize: input.windowSize,
+                    visibleFrame: input.visibleFrame
+                )
+                guard edge.distance <= configuration.preferredEdgeDistance else {
+                    return nil
+                }
+                return (candidate, edge.priority)
+            }
+        func statistic(priority: Int) -> OrbPlacementDirectionStatistic {
+            let candidates = edgeCandidates
+                .filter { $0.priority == priority }
+                .map(\.candidate)
+            return OrbPlacementDirectionStatistic(
+                safeCandidateCount: candidates.count,
+                minimumRisk: candidates.map(\.contentRisk).min()
+            )
+        }
+        return OrbPlacementDirectionalDiagnostics(
+            right: statistic(priority: 0),
+            top: statistic(priority: 1),
+            left: statistic(priority: 2),
+            bottom: statistic(priority: 3)
+        )
+    }
+
     private static func hold(
         _ reason: OrbPlacementHoldReason,
         input: OrbPlacementPlanningInput
@@ -288,6 +311,30 @@ enum OrbPlacementPlanner {
         return visibleFrame.contains(frame)
             && occupiedFrames.allSatisfy { !$0.intersects(frame) }
             && excludedFrames.allSatisfy { !$0.intersects(frame) }
+    }
+
+    private static func eligibleCandidates(
+        input: OrbPlacementPlanningInput,
+        configuration: OrbPlacementPlannerConfiguration
+    ) -> [OrbPlacementCandidate] {
+        input.candidates.filter { candidate in
+            guard candidate.captureConfidence >= configuration.minimumCaptureConfidence,
+                  candidate.contentRisk <= configuration.safeRisk,
+                  distance(candidate.origin, input.currentOrigin) > 0.5,
+                  isValid(
+                    origin: candidate.origin,
+                    windowSize: input.windowSize,
+                    visibleFrame: input.visibleFrame,
+                    occupiedFrames: input.occupiedFrames,
+                    excludedFrames: input.excludedFrames
+                  )
+            else {
+                return false
+            }
+            return input.recentAutomaticOrigins.allSatisfy {
+                distance(candidate.origin, $0) > configuration.recentPositionExclusionRadius
+            }
+        }
     }
 
     private static func placementCost(

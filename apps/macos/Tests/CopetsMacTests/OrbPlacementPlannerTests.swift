@@ -205,7 +205,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertEqual(proposal.origin, right)
     }
 
-    func testMeaningfullySaferEdgeWinsBeforeDirectionalPreference() {
+    func testAnySafeRightEdgeWinsBeforeLowerPriorityDirections() {
         let right = CGPoint(x: screen.maxX - orbSize.width, y: 400)
         let top = CGPoint(x: 700, y: screen.maxY - orbSize.height)
         let plan = OrbPlacementPlanner.plan(
@@ -218,10 +218,59 @@ final class OrbPlacementPlannerTests: XCTestCase {
         guard case let .move(proposal) = plan.action else {
             return XCTFail("Expected an edge move")
         }
+        XCTAssertEqual(proposal.origin, right)
+    }
+
+    func testUnsafeRightEdgeFallsBackToSafeTopEdge() {
+        let right = CGPoint(x: screen.maxX - orbSize.width, y: 400)
+        let top = CGPoint(x: 700, y: screen.maxY - orbSize.height)
+        let plan = OrbPlacementPlanner.plan(
+            input: makeInput(candidates: [
+                candidate(right, risk: 0.24),
+                candidate(top, risk: 0.01)
+            ])
+        )
+
+        guard case let .move(proposal) = plan.action else {
+            return XCTFail("Expected a safe fallback edge")
+        }
         XCTAssertEqual(proposal.origin, top)
     }
 
-    func testMeaningfullyLowerRiskWinsBeforeHistoricalOverlap() {
+    func testDirectionalDiagnosticsReportOnlyEligibleSafeEdgeCandidates() {
+        let right = CGPoint(x: screen.maxX - orbSize.width, y: 400)
+        let top = CGPoint(x: 700, y: screen.maxY - orbSize.height)
+        let left = CGPoint(x: screen.minX, y: 400)
+        let bottom = CGPoint(x: 700, y: screen.minY)
+        let diagnostics = OrbPlacementPlanner.directionalDiagnostics(
+            input: makeInput(candidates: [
+                candidate(right, risk: 0.08),
+                candidate(CGPoint(x: right.x, y: 600), risk: 0.24),
+                candidate(top, risk: 0.01),
+                candidate(left, risk: 0.04),
+                candidate(bottom, risk: 0.05)
+            ])
+        )
+
+        XCTAssertEqual(
+            diagnostics.right,
+            OrbPlacementDirectionStatistic(safeCandidateCount: 1, minimumRisk: 0.08)
+        )
+        XCTAssertEqual(
+            diagnostics.top,
+            OrbPlacementDirectionStatistic(safeCandidateCount: 1, minimumRisk: 0.01)
+        )
+        XCTAssertEqual(
+            diagnostics.left,
+            OrbPlacementDirectionStatistic(safeCandidateCount: 1, minimumRisk: 0.04)
+        )
+        XCTAssertEqual(
+            diagnostics.bottom,
+            OrbPlacementDirectionStatistic(safeCandidateCount: 1, minimumRisk: 0.05)
+        )
+    }
+
+    func testHistoricalOverlapWinsWithinTheSelectedDirection() {
         let persistent = CGPoint(x: 904, y: 600)
         let transient = CGPoint(x: 680, y: 600)
         let plan = OrbPlacementPlanner.plan(
@@ -234,7 +283,7 @@ final class OrbPlacementPlannerTests: XCTestCase {
         guard case let .move(proposal) = plan.action else {
             return XCTFail("Expected an immediate batch move")
         }
-        XCTAssertEqual(proposal.origin, transient)
+        XCTAssertEqual(proposal.origin, persistent)
     }
 
     func testObservedModerateTextRiskCanMoveToClearlySaferCandidate() {
