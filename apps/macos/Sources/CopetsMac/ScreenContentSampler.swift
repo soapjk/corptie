@@ -129,11 +129,35 @@ enum ScreenContentPixelConverter {
     }
 }
 
+actor AsyncSerialGate {
+    private var isLocked = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        guard isLocked else {
+            isLocked = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        guard !waiters.isEmpty else {
+            isLocked = false
+            return
+        }
+        waiters.removeFirst().resume()
+    }
+}
+
 actor ScreenContentSampler {
     static let shared = ScreenContentSampler()
 
     private let outputSize = 256
     private let contentCacheLifetime: TimeInterval = 2
+    private let captureGate = AsyncSerialGate()
     private var cachedContent: SCShareableContent?
     private var cachedContentDate = Date.distantPast
 
@@ -195,6 +219,21 @@ actor ScreenContentSampler {
     private func capture(
         target: ScreenContentCaptureTarget
     ) async throws -> (sourceRect: CGRect, image: CGImage, durationMilliseconds: Int) {
+        await captureGate.acquire()
+        do {
+            let result = try await performCapture(target: target)
+            await captureGate.release()
+            return result
+        } catch {
+            await captureGate.release()
+            throw error
+        }
+    }
+
+    private func performCapture(
+        target: ScreenContentCaptureTarget
+    ) async throws -> (sourceRect: CGRect, image: CGImage, durationMilliseconds: Int) {
+        try Task.checkCancellation()
         guard ScreenCapturePermissionStatus.current == .authorized else {
             throw ScreenContentSamplerError.permissionDenied
         }
