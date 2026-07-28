@@ -993,7 +993,7 @@ private struct MainPanelCloseButton: View {
         Button {
             let mainWindow = NSApp.keyWindow
             if let selectedSession = backendClient.selectedSession {
-                detachedSessionManager.float(session: selectedSession)
+                detachedSessionManager.floatForMainWindowCloseIfNeeded(session: selectedSession)
             }
             mainWindow?.orderOut(nil)
         } label: {

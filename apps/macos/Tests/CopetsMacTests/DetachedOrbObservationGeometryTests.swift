@@ -51,4 +51,62 @@ final class DetachedOrbObservationGeometryTests: XCTestCase {
             )
         )
     }
+
+    func testAnalysisOutputPreservesSourceAspectRatio() {
+        XCTAssertEqual(
+            ScreenContentAnalysisGeometry.outputPixelSize(
+                for: CGRect(x: 0, y: 0, width: 400, height: 200),
+                maximumDimension: 256
+            ),
+            CGSize(width: 256, height: 128)
+        )
+        XCTAssertEqual(
+            ScreenContentAnalysisGeometry.outputPixelSize(
+                for: CGRect(x: 0, y: 0, width: 100, height: 300),
+                maximumDimension: 256
+            ),
+            CGSize(width: 85, height: 256)
+        )
+    }
+
+    func testAnalysisMaskMapsAppKitCoordinatesToTopLeftPixels() {
+        let mask = ScreenContentAnalysisGeometry.mask(
+            for: CGRect(x: 180, y: 320, width: 40, height: 40),
+            in: CGRect(x: 100, y: 200, width: 400, height: 200),
+            pixelWidth: 400,
+            pixelHeight: 200
+        )
+
+        XCTAssertEqual(mask?.centerX, 100)
+        XCTAssertEqual(mask?.centerY, 60)
+        XCTAssertEqual(mask?.radius, 20)
+    }
+
+    func testPixelConversionKeepsTopScanlineFirst() throws {
+        let sourceBytes: [UInt8] = [
+            255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+            0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+            0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255
+        ]
+        let data = Data(sourceBytes) as CFData
+        let provider = try XCTUnwrap(CGDataProvider(data: data))
+        let image = try XCTUnwrap(CGImage(
+            width: 3,
+            height: 3,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: 12,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        ))
+
+        let frame = try XCTUnwrap(ScreenContentPixelConverter.pixelFrame(from: image))
+
+        XCTAssertEqual(Array(frame.rgbaBytes[0..<4]), [255, 0, 0, 255])
+        XCTAssertEqual(Array(frame.rgbaBytes[24..<28]), [0, 0, 255, 255])
+    }
 }

@@ -24,11 +24,31 @@ struct ScreenContentObservation: Equatable, Sendable {
     let durationMilliseconds: Int
 }
 
+struct ScreenContentAnalysisRegion: Equatable, Sendable {
+    let identifier: String
+    let frame: CGRect
+    let previousSignature: OrbLuminanceSignature?
+}
+
+struct ScreenContentRegionAnalysis: Equatable, Sendable {
+    let identifier: String
+    let analysis: OrbContentAnalysis
+}
+
+struct ScreenContentAnalysisObservation: Equatable, Sendable {
+    let sourceRect: CGRect
+    let pixelWidth: Int
+    let pixelHeight: Int
+    let durationMilliseconds: Int
+    let regions: [ScreenContentRegionAnalysis]
+}
+
 enum ScreenContentSamplerError: Error, Equatable, CustomStringConvertible {
     case permissionDenied
     case displayUnavailable(CGDirectDisplayID)
     case currentProcessUnavailable
     case invalidSourceRect
+    case pixelConversionFailed
 
     var description: String {
         switch self {
@@ -40,7 +60,72 @@ enum ScreenContentSamplerError: Error, Equatable, CustomStringConvertible {
             "current_process_unavailable"
         case .invalidSourceRect:
             "invalid_source_rect"
+        case .pixelConversionFailed:
+            "pixel_conversion_failed"
         }
+    }
+}
+
+enum ScreenContentAnalysisGeometry {
+    static func outputPixelSize(for sourceRect: CGRect, maximumDimension: Int) -> CGSize? {
+        guard sourceRect.width > 0, sourceRect.height > 0, maximumDimension >= 3 else {
+            return nil
+        }
+        let scale = CGFloat(maximumDimension) / max(sourceRect.width, sourceRect.height)
+        return CGSize(
+            width: max(3, (sourceRect.width * scale).rounded()),
+            height: max(3, (sourceRect.height * scale).rounded())
+        )
+    }
+
+    static func mask(
+        for regionFrame: CGRect,
+        in sampleRect: CGRect,
+        pixelWidth: Int,
+        pixelHeight: Int
+    ) -> OrbCircularMask? {
+        guard sampleRect.width > 0,
+              sampleRect.height > 0,
+              pixelWidth >= 3,
+              pixelHeight >= 3 else {
+            return nil
+        }
+        let pixelsPerPointX = Double(pixelWidth) / sampleRect.width
+        let pixelsPerPointY = Double(pixelHeight) / sampleRect.height
+        return OrbCircularMask(
+            centerX: (regionFrame.midX - sampleRect.minX) * pixelsPerPointX,
+            centerY: (sampleRect.maxY - regionFrame.midY) * pixelsPerPointY,
+            radius: min(regionFrame.width, regionFrame.height) / 2
+                * min(pixelsPerPointX, pixelsPerPointY)
+        )
+    }
+}
+
+enum ScreenContentPixelConverter {
+    static func pixelFrame(from image: CGImage) -> OrbContentPixelFrame? {
+        let bytesPerRow = image.width * 4
+        var bytes = Array(repeating: UInt8(0), count: bytesPerRow * image.height)
+        guard let context = CGContext(
+            data: &bytes,
+            width: image.width,
+            height: image.height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        context.draw(
+            image,
+            in: CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        )
+        return OrbContentPixelFrame(
+            width: image.width,
+            height: image.height,
+            bytesPerRow: bytesPerRow,
+            rgbaBytes: bytes
+        )
     }
 }
 
@@ -53,12 +138,72 @@ actor ScreenContentSampler {
     private var cachedContentDate = Date.distantPast
 
     func observe(target: ScreenContentCaptureTarget) async throws -> ScreenContentObservation {
+        let capture = try await capture(target: target)
+        return ScreenContentObservation(
+            sourceRect: capture.sourceRect,
+            pixelWidth: capture.image.width,
+            pixelHeight: capture.image.height,
+            durationMilliseconds: capture.durationMilliseconds
+        )
+    }
+
+    func analyze(
+        target: ScreenContentCaptureTarget,
+        regions: [ScreenContentAnalysisRegion]
+    ) async throws -> ScreenContentAnalysisObservation {
+        let capture = try await capture(target: target)
+        guard let frame = ScreenContentPixelConverter.pixelFrame(from: capture.image) else {
+            throw ScreenContentSamplerError.pixelConversionFailed
+        }
+
+        let analyses = regions.map { region -> ScreenContentRegionAnalysis in
+            guard let mask = ScreenContentAnalysisGeometry.mask(
+                for: region.frame,
+                in: target.sampleRect,
+                pixelWidth: frame.width,
+                pixelHeight: frame.height
+            ) else {
+                return ScreenContentRegionAnalysis(
+                    identifier: region.identifier,
+                    analysis: .unknown(.emptyMask)
+                )
+            }
+            return ScreenContentRegionAnalysis(
+                identifier: region.identifier,
+                analysis: OrbContentRiskAnalyzer.analyze(
+                    frame: frame,
+                    mask: mask,
+                    previousSignature: region.previousSignature
+                )
+            )
+        }
+
+        return ScreenContentAnalysisObservation(
+            sourceRect: capture.sourceRect,
+            pixelWidth: capture.image.width,
+            pixelHeight: capture.image.height,
+            durationMilliseconds: capture.durationMilliseconds,
+            regions: analyses
+        )
+    }
+
+    func invalidateCache() {
+        cachedContent = nil
+        cachedContentDate = .distantPast
+    }
+
+    private func capture(
+        target: ScreenContentCaptureTarget
+    ) async throws -> (sourceRect: CGRect, image: CGImage, durationMilliseconds: Int) {
         guard ScreenCapturePermissionStatus.current == .authorized else {
             throw ScreenContentSamplerError.permissionDenied
         }
         guard let sourceRect = DetachedOrbObservationGeometry.sourceRect(
             for: target.sampleRect,
             in: target.screenFrame
+        ), let outputSize = ScreenContentAnalysisGeometry.outputPixelSize(
+            for: sourceRect,
+            maximumDimension: outputSize
         ) else {
             throw ScreenContentSamplerError.invalidSourceRect
         }
@@ -90,8 +235,8 @@ actor ScreenContentSampler {
 
         let configuration = SCStreamConfiguration()
         configuration.sourceRect = sourceRect
-        configuration.width = outputSize
-        configuration.height = outputSize
+        configuration.width = Int(outputSize.width)
+        configuration.height = Int(outputSize.height)
         configuration.showsCursor = false
         configuration.capturesAudio = false
         configuration.preservesAspectRatio = false
@@ -102,18 +247,11 @@ actor ScreenContentSampler {
             configuration: configuration
         )
         let elapsed = max(0, Date().timeIntervalSince(startedAt))
-
-        return ScreenContentObservation(
-            sourceRect: sourceRect,
-            pixelWidth: image.width,
-            pixelHeight: image.height,
-            durationMilliseconds: Int((elapsed * 1_000).rounded())
+        return (
+            sourceRect,
+            image,
+            Int((elapsed * 1_000).rounded())
         )
-    }
-
-    func invalidateCache() {
-        cachedContent = nil
-        cachedContentDate = .distantPast
     }
 
     private func shareableContent() async throws -> SCShareableContent {
@@ -130,4 +268,5 @@ actor ScreenContentSampler {
         cachedContentDate = Date()
         return content
     }
+
 }
