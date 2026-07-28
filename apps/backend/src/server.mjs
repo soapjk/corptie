@@ -84,6 +84,12 @@ const choiceGenerations = new Map();
 const store = new CorptieStore();
 const collaborationCore = new CollaborationCore(store);
 const collaborationMcpServerPath = fileURLToPath(new URL("./mcp/collaborationMcpServer.mjs", import.meta.url));
+const bundledAgentsPath = fileURLToPath(new URL(
+  environmentName === "development"
+    ? "../resources/codex/global-instructions.development.md"
+    : "../resources/codex/global-instructions.production.md",
+  import.meta.url
+));
 const bundledCollaborationSkillPath = fileURLToPath(new URL("../resources/codex/skills/corptie-collaboration/SKILL.md", import.meta.url));
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const collaborationDispatcher = new CollaborationDeliveryDispatcher({
@@ -4274,6 +4280,7 @@ for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
 storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
 const corptieCodexRuntime = await ensureCorptieCodexRuntime({
   environmentName,
+  bundledAgentsPath,
   bundledSkillPath: bundledCollaborationSkillPath,
   collaborationMcpServerPath,
   legacyThreadIds: storedSessionsAtStartup
@@ -4284,7 +4291,7 @@ const corptieCodexRuntime = await ensureCorptieCodexRuntime({
 // launched independently from Terminal continues to use the user's native
 // ~/.codex home.
 process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
-console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
+console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
 if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
   const rebuilt = await codexClient.listThreads({
     limit: Math.max(100, corptieCodexRuntime.threadMigration.rolloutCount + 20),

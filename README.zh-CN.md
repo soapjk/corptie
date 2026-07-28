@@ -133,7 +133,7 @@ Corptie 为每个受管 Codex 会话分配稳定 Agent 身份，并提供本地 
 
 两个环境不共享后端配置、SQLite 数据、前端 `UserDefaults`、透明度设置和窗口尺寸记忆。
 
-Corptie 管理的 Codex 也使用独立运行时目录：正式版位于 `~/.corptie/runtimes/codex/`，开发版位于 `~/.corptie/development/runtimes/codex/`。它们不会修改原生 Codex 的 `~/.codex/`。首次初始化会在本机一次性复制现有认证和 Corptie 已管理的线程状态；之后各环境独立演进。每次后端启动都会校验并修复 Corptie 内置 Skill，同时为每个新建或恢复的 Agent 动态配置协作 MCP。
+Corptie 管理的 Codex 也使用独立运行时目录：正式版位于 `~/.corptie/runtimes/codex/`，开发版位于 `~/.corptie/development/runtimes/codex/`。它们不会修改原生 Codex 的 `~/.codex/`。首次初始化会在本机一次性复制现有认证和 Corptie 已管理的线程状态，并在缺失时从对应环境的内置模板创建全局 `AGENTS.md`；该文件会标明当前环境和实际解析后的 `CODEX_HOME`，用户之后对它的修改不会被升级覆盖。之后各环境独立演进。每次后端启动都会校验并修复 Corptie 内置 Skill，同时为每个新建或恢复的 Agent 动态配置协作 MCP。
 
 ## 🛠️ 开发
 

@@ -109,7 +109,7 @@ Every new collaboration request is shown to the user as a confirmation card befo
 
 The two environments do not share backend config, SQLite data, frontend `UserDefaults`, transparency settings, or remembered window sizes.
 
-Corptie-managed Codex processes also use isolated runtime homes: production uses `~/.corptie/runtimes/codex/`, while development uses `~/.corptie/development/runtimes/codex/`. Neither modifies the native Codex home at `~/.codex/`. On first initialization, Corptie locally copies the existing authentication and the thread state it already manages; the homes diverge after that one-time bootstrap. Every backend startup verifies and repairs Corptie's built-in Skill, and every new or resumed Agent receives the collaboration MCP configuration dynamically.
+Corptie-managed Codex processes also use isolated runtime homes: production uses `~/.corptie/runtimes/codex/`, while development uses `~/.corptie/development/runtimes/codex/`. Neither modifies the native Codex home at `~/.codex/`. On first initialization, Corptie locally copies the existing authentication and the thread state it already manages, and creates the global `AGENTS.md` from the matching environment template when it is missing. That file identifies the environment and the resolved `CODEX_HOME`; later user edits are never overwritten by upgrades. The homes diverge after that one-time bootstrap. Every backend startup verifies and repairs Corptie's built-in Skill, and every new or resumed Agent receives the collaboration MCP configuration dynamically.
 
 ## 🛠️ Develop
 
