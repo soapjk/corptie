@@ -7,6 +7,16 @@ struct DetachedOrbBatchPriority: Equatable, Sendable {
 }
 
 enum DetachedOrbBatchCoordinatorLogic {
+    static func canCommitBatch(
+        evaluatedCount: Int,
+        expectedCount: Int,
+        hasIncompleteEvaluation: Bool
+    ) -> Bool {
+        !hasIncompleteEvaluation
+            && expectedCount > 0
+            && evaluatedCount == expectedCount
+    }
+
     static func sharedCaptureMaximumDimension(
         sharedSampleRect: CGRect,
         individualSampleRects: [CGRect],

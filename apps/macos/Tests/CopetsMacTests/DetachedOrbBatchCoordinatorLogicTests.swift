@@ -53,4 +53,28 @@ final class DetachedOrbBatchCoordinatorLogicTests: XCTestCase {
             1_024
         )
     }
+
+    func testBatchCommitsOnlyWhenEveryRequestedOrbHasAnEvaluation() {
+        XCTAssertTrue(
+            DetachedOrbBatchCoordinatorLogic.canCommitBatch(
+                evaluatedCount: 3,
+                expectedCount: 3,
+                hasIncompleteEvaluation: false
+            )
+        )
+        XCTAssertFalse(
+            DetachedOrbBatchCoordinatorLogic.canCommitBatch(
+                evaluatedCount: 2,
+                expectedCount: 3,
+                hasIncompleteEvaluation: true
+            )
+        )
+        XCTAssertFalse(
+            DetachedOrbBatchCoordinatorLogic.canCommitBatch(
+                evaluatedCount: 0,
+                expectedCount: 0,
+                hasIncompleteEvaluation: false
+            )
+        )
+    }
 }

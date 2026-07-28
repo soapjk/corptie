@@ -17,7 +17,6 @@ struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
     var safeRisk = 0.18
     var minimumImprovement = 0.08
     var minimumCaptureConfidence = 0.8
-    var confirmationTolerance: CGFloat = 8
     var recentPositionExclusionRadius: CGFloat = 16
     var safestRiskTolerance = 0.025
     var anchorSeparationWeight = 0.18
@@ -35,7 +34,6 @@ struct OrbPlacementPlanningInput: Equatable, Sendable {
     let currentCaptureConfidence: Double
     let candidates: [OrbPlacementCandidate]
     let recentAutomaticOrigins: [CGPoint]
-    let pendingCandidateOrigin: CGPoint?
     let interactionFrozen: Bool
     let cooldownActive: Bool
 }
@@ -47,7 +45,6 @@ enum OrbPlacementHoldReason: Equatable, Sendable {
     case currentPositionIsSafe
     case noSafeCandidate
     case insufficientImprovement
-    case awaitingConfirmation
 }
 
 struct OrbPlacementProposal: Equatable, Sendable {
@@ -63,7 +60,6 @@ enum OrbPlacementAction: Equatable, Sendable {
 
 struct OrbPlacementPlan: Equatable, Sendable {
     let action: OrbPlacementAction
-    let pendingCandidateOrigin: CGPoint?
     let userAnchor: CGPoint
 }
 
@@ -188,28 +184,6 @@ enum OrbPlacementPlanner {
             }
             : mostPersistentCandidates
 
-        if let pendingOrigin = input.pendingCandidateOrigin,
-           let confirmed = bestCoveredCandidates.first(where: {
-               distance($0.origin, pendingOrigin) <= configuration.confirmationTolerance
-                   && input.currentRisk - $0.contentRisk >= configuration.minimumImprovement
-           }) {
-            return OrbPlacementPlan(
-                action: .move(
-                    OrbPlacementProposal(
-                        origin: confirmed.origin,
-                        contentRisk: confirmed.contentRisk,
-                        placementCost: placementCost(
-                            candidate: confirmed,
-                            input: input,
-                            configuration: configuration
-                        )
-                    )
-                ),
-                pendingCandidateOrigin: nil,
-                userAnchor: input.userAnchor
-            )
-        }
-
         let minimumRisk = bestCoveredCandidates.map(\.contentRisk).min() ?? 0
         let safestCandidates = bestCoveredCandidates.filter {
             $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
@@ -238,8 +212,7 @@ enum OrbPlacementPlanner {
             )
         )
         return OrbPlacementPlan(
-            action: .hold(.awaitingConfirmation),
-            pendingCandidateOrigin: proposal.origin,
+            action: .move(proposal),
             userAnchor: input.userAnchor
         )
     }
@@ -250,7 +223,6 @@ enum OrbPlacementPlanner {
     ) -> OrbPlacementPlan {
         OrbPlacementPlan(
             action: .hold(reason),
-            pendingCandidateOrigin: nil,
             userAnchor: input.userAnchor
         )
     }

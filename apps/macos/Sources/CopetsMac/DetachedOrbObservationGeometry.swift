@@ -1,6 +1,19 @@
 import CoreGraphics
 
 enum DetachedOrbObservationGeometry {
+    static func analysisOrigins(
+        currentOrigin: CGPoint,
+        candidateOrigins: [CGPoint],
+        tolerance: CGFloat = 0.5
+    ) -> [CGPoint] {
+        guard !candidateOrigins.contains(where: {
+            hypot($0.x - currentOrigin.x, $0.y - currentOrigin.y) <= tolerance
+        }) else {
+            return candidateOrigins
+        }
+        return [currentOrigin] + candidateOrigins
+    }
+
     static func searchRect(
         around orbFrame: CGRect,
         visibleFrame: CGRect,
