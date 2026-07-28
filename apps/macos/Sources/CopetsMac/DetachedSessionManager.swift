@@ -11,6 +11,8 @@ final class DetachedSessionManager: ObservableObject {
     private let showMain: () -> Void
     private let isMainVisible: () -> Bool
     private var controllers: [String: DetachedSessionWindowController] = [:]
+    private var avoidanceLoopTask: Task<Void, Never>?
+    private let avoidanceInterval: TimeInterval = 5
 
     init(
         client: BackendClient,
@@ -58,10 +60,15 @@ final class DetachedSessionManager: ObservableObject {
             },
             close: { [weak self] sessionId in
                 self?.controllers[sessionId] = nil
+                self?.stopAvoidanceLoopIfIdle()
+            },
+            requestBatchObservation: { [weak self] in
+                self?.ensureAvoidanceLoop()
             }
         )
         controllers[id] = controller
         controller.show()
+        ensureAvoidanceLoop()
     }
 
     func floatForMainWindowCloseIfNeeded(session: TaskSession) {
@@ -77,6 +84,7 @@ final class DetachedSessionManager: ObservableObject {
     func close(sessionId: String) {
         controllers[sessionId]?.close()
         controllers[sessionId] = nil
+        stopAvoidanceLoopIfIdle()
     }
 
     func closeAll() {
@@ -84,6 +92,151 @@ final class DetachedSessionManager: ObservableObject {
             controller.close()
         }
         controllers.removeAll()
+        avoidanceLoopTask?.cancel()
+        avoidanceLoopTask = nil
+    }
+
+    private func ensureAvoidanceLoop() {
+        guard avoidanceLoopTask == nil, !controllers.isEmpty else {
+            return
+        }
+        avoidanceLoopTask = Task { [weak self] in
+            guard let self else {
+                return
+            }
+            var delay = self.avoidanceInterval
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                    try Task.checkCancellation()
+                } catch {
+                    return
+                }
+                let batchStartedAt = Date()
+                await self.runAvoidanceBatch()
+                delay = DetachedOrbBatchCoordinatorLogic.nextDelay(
+                    interval: self.avoidanceInterval,
+                    batchDuration: Date().timeIntervalSince(batchStartedAt)
+                )
+            }
+        }
+    }
+
+    private func stopAvoidanceLoopIfIdle() {
+        guard controllers.isEmpty else {
+            return
+        }
+        avoidanceLoopTask?.cancel()
+        avoidanceLoopTask = nil
+    }
+
+    private func runAvoidanceBatch() async {
+        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture else {
+            return
+        }
+        let batchControllers = controllers
+            .sorted { $0.key < $1.key }
+            .map(\.value)
+        guard !batchControllers.isEmpty else {
+            return
+        }
+        logDevelopment("[orb-avoidance] batch_started orbs=\(batchControllers.count)")
+
+        var evaluations: [DetachedOrbBatchEvaluation] = []
+        evaluations.reserveCapacity(batchControllers.count)
+        for controller in batchControllers {
+            guard controllers[controller.sessionId] === controller,
+                  let request = controller.makeBatchObservationRequest() else {
+                continue
+            }
+            do {
+                let observation = try await ScreenContentSampler.shared.analyze(
+                    target: request.target,
+                    regions: request.regions
+                )
+                try Task.checkCancellation()
+                guard controllers[controller.sessionId] === controller,
+                      let evaluation = controller.evaluateBatchObservation(
+                        observation,
+                        request: request
+                      ) else {
+                    continue
+                }
+                evaluations.append(evaluation)
+            } catch is CancellationError {
+                return
+            } catch {
+                controller.noteBatchAnalysisFailure(error)
+            }
+        }
+
+        var reservedDestinationFrames: [CGRect] = []
+        var moves: [DetachedOrbBatchMove] = []
+        let evaluationsByIdentifier = Dictionary(
+            uniqueKeysWithValues: evaluations.map { ($0.controller.sessionId, $0) }
+        )
+        let orderedIdentifiers = DetachedOrbBatchCoordinatorLogic.orderedIdentifiers(
+            evaluations.map {
+                DetachedOrbBatchPriority(
+                    identifier: $0.controller.sessionId,
+                    currentRisk: $0.currentRisk
+                )
+            }
+        )
+        for identifier in orderedIdentifiers {
+            guard let evaluation = evaluationsByIdentifier[identifier] else {
+                continue
+            }
+            let plan = evaluation.controller.planBatchMove(
+                evaluation,
+                additionalOccupiedFrames: reservedDestinationFrames
+            )
+            if let move = evaluation.controller.acceptBatchPlan(
+                plan,
+                evaluation: evaluation
+            ) {
+                reservedDestinationFrames.append(move.destinationFrame)
+                moves.append(move)
+            }
+        }
+        logDevelopment(
+            "[orb-avoidance] batch_planned evaluated=\(evaluations.count) moves=\(moves.count)"
+        )
+        moveTogether(moves)
+    }
+
+    private func moveTogether(_ moves: [DetachedOrbBatchMove]) {
+        guard !moves.isEmpty else {
+            return
+        }
+        for move in moves {
+            move.controller.prepareBatchMove(move)
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.22
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            for move in moves {
+                move.controller.applyBatchMove(move)
+            }
+        } completionHandler: {
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+                for move in moves where self.controllers[move.controller.sessionId]
+                    === move.controller {
+                    move.controller.finishBatchMove(move)
+                }
+            }
+        }
+    }
+
+    private func logDevelopment(_ message: @autoclosure () -> String) {
+        guard CorptieAppEnvironment.isDevelopment else {
+            return
+        }
+        print(message())
+        fflush(stdout)
     }
 }
 
@@ -374,14 +527,38 @@ private struct DetachedOrbRecentAutomaticPosition {
 }
 
 @MainActor
+private struct DetachedOrbBatchEvaluation {
+    let controller: DetachedSessionWindowController
+    let request: DetachedOrbObservationRequest
+    let currentRisk: Double
+    let currentCaptureConfidence: Double
+    let candidates: [OrbPlacementCandidate]
+    let recentAutomaticOrigins: [CGPoint]
+    let pendingCandidateOrigin: CGPoint?
+    let cooldownActive: Bool
+    let bestCandidateRisk: Double?
+}
+
+@MainActor
+private struct DetachedOrbBatchMove {
+    let controller: DetachedSessionWindowController
+    let origin: CGPoint
+    let previousOrigin: CGPoint
+    let destinationFrame: CGRect
+    let currentRisk: Double
+    let candidateRisk: Double
+}
+
+@MainActor
 private final class DetachedSessionWindowController: NSObject, NSWindowDelegate {
-    private let sessionId: String
+    let sessionId: String
     private let client: BackendClient
     private let occupiedFrames: (String) -> [CGRect]
     private let showMain: () -> Void
     private let isMainVisible: () -> Bool
     private let openSession: (TaskSession) -> Void
     private let closeHandler: (String) -> Void
+    private let requestBatchObservation: () -> Void
     private let panel: NSPanel
     private let previewState = DetachedReplyPreviewState()
     private lazy var accessoryController = DetachedAccessoryWindowController(
@@ -408,13 +585,11 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
-    private var observationTask: Task<Void, Never>?
     private var userAnchor: CGPoint
     private var pendingCandidateOrigin: CGPoint?
     private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
     private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
     private var safeRegionHistory = OrbSafeRegionHistory()
-    private var observationCadence = DetachedOrbObservationCadence()
     private var cooldownUntil = Date.distantPast
     private var captureFailureCount = 0
     private var isPointerDown = false
@@ -424,9 +599,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
-    private let automaticMoveDuration: TimeInterval = 0.22
     private let automaticMoveCooldown: TimeInterval = 2.5
-    private let idleObservationInterval: TimeInterval = 2
     private let placementConfiguration = OrbPlacementPlannerConfiguration()
 
     var frame: NSRect {
@@ -441,7 +614,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         showMain: @escaping () -> Void,
         isMainVisible: @escaping () -> Bool,
         openSession: @escaping (TaskSession) -> Void,
-        close: @escaping (String) -> Void
+        close: @escaping (String) -> Void,
+        requestBatchObservation: @escaping () -> Void
     ) {
         self.sessionId = sessionId
         self.client = client
@@ -450,6 +624,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         self.isMainVisible = isMainVisible
         self.openSession = openSession
         self.closeHandler = close
+        self.requestBatchObservation = requestBatchObservation
         self.userAnchor = initialOrigin
 
         let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
@@ -541,7 +716,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 } else {
                     self.cancelObservation()
                     self.safeRegionHistory.reset()
-                    self.observationCadence.reset()
                 }
             }
             .store(in: &cancellables)
@@ -651,58 +825,17 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func scheduleObservationIfNeeded(delay: TimeInterval) {
-        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture,
-              observationTask == nil,
-              !isClosing else {
+        guard !isClosing else {
             return
         }
-        observationTask = Task { [weak self] in
-            guard let self else {
-                return
-            }
-            do {
-                try await Task.sleep(for: .seconds(max(0, delay)))
-                try Task.checkCancellation()
-                guard let request = self.makeObservationRequest() else {
-                    self.observationTask = nil
-                    self.scheduleObservationIfNeeded(delay: self.idleObservationInterval)
-                    return
-                }
-                let observation = try await ScreenContentSampler.shared.analyze(
-                    target: request.target,
-                    regions: request.regions
-                )
-                try Task.checkCancellation()
-                self.observationTask = nil
-                self.captureFailureCount = 0
-                self.handleObservation(observation, request: request)
-            } catch is CancellationError {
-                return
-            } catch {
-                self.observationTask = nil
-                self.captureFailureCount += 1
-                let category = (error as? ScreenContentSamplerError)?.description
-                    ?? String(describing: type(of: error))
-                let retryDelay = min(
-                    60,
-                    pow(2, Double(min(self.captureFailureCount, 5)))
-                )
-                print(
-                    "[orb-avoidance] analysis_failed session=\(self.sessionId) " +
-                    "category=\(category) retry_s=\(Int(retryDelay))"
-                )
-                self.scheduleObservationIfNeeded(delay: retryDelay)
-            }
-        }
+        requestBatchObservation()
     }
 
     private func cancelObservation() {
-        observationTask?.cancel()
-        observationTask = nil
         pendingCandidateOrigin = nil
     }
 
-    private func makeObservationRequest() -> DetachedOrbObservationRequest? {
+    func makeBatchObservationRequest() -> DetachedOrbObservationRequest? {
         let reconciledInteraction = DetachedOrbInteractionRecovery.reconcile(
             reportedPointerDown: isPointerDown,
             reportedPointerHovering: isPointerHovering,
@@ -769,16 +902,16 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         )
     }
 
-    private func handleObservation(
+    func evaluateBatchObservation(
         _ observation: ScreenContentAnalysisObservation,
         request: DetachedOrbObservationRequest
-    ) {
+    ) -> DetachedOrbBatchEvaluation? {
         guard DetachedOrbSmartAvoidancePreferences.shared.canCapture,
               !isClosing,
               Self.distance(panel.frame.origin, request.currentOrigin) <= 0.5,
               panel.screen?.visibleFrame == request.visibleFrame else {
-            invalidatePlacementAndReschedule(delay: 1)
-            return
+            invalidatePlacementAndReschedule(delay: 5)
+            return nil
         }
 
         var analysesByIdentifier: [String: OrbContentAnalysis] = [:]
@@ -792,9 +925,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         let currentIdentifier = Self.originIdentifier(request.currentOrigin)
         guard case let .known(currentRisk, _)? = analysesByIdentifier[currentIdentifier] else {
             pendingCandidateOrigin = nil
-            observationCadence.reset()
-            scheduleObservationIfNeeded(delay: idleObservationInterval)
-            return
+            return nil
         }
 
         let observationDate = Date()
@@ -831,99 +962,127 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 historicalCoverage: historicalMatch.coverage
             )
         }
-        let plan = OrbPlacementPlanner.plan(
-            input: OrbPlacementPlanningInput(
-                currentOrigin: request.currentOrigin,
-                userAnchor: request.userAnchor,
-                windowSize: panel.frame.size,
-                visibleFrame: request.visibleFrame,
-                occupiedFrames: occupiedFrames(sessionId),
-                excludedFrames: accessoryController.visibleFrame.map { [$0] } ?? [],
-                currentRisk: currentRisk.totalRisk,
-                currentCaptureConfidence: currentRisk.captureConfidence,
-                candidates: candidates,
-                recentAutomaticOrigins: recentAutomaticPositions.compactMap {
-                    Date().timeIntervalSince($0.date) <= 15 ? $0.origin : nil
-                },
-                pendingCandidateOrigin: pendingCandidateOrigin,
-                interactionFrozen: isInteractionFrozen,
-                cooldownActive: Date() < cooldownUntil
-            ),
-            configuration: placementConfiguration
-        )
+        captureFailureCount = 0
         let bestCandidateRisk = candidates
             .filter { Self.distance($0.origin, request.currentOrigin) > 0.5 }
             .map(\.contentRisk)
             .min()
+        return DetachedOrbBatchEvaluation(
+            controller: self,
+            request: request,
+            currentRisk: currentRisk.totalRisk,
+            currentCaptureConfidence: currentRisk.captureConfidence,
+            candidates: candidates,
+            recentAutomaticOrigins: recentAutomaticPositions.compactMap {
+                Date().timeIntervalSince($0.date) <= 15 ? $0.origin : nil
+            },
+            pendingCandidateOrigin: pendingCandidateOrigin,
+            cooldownActive: Date() < cooldownUntil,
+            bestCandidateRisk: bestCandidateRisk
+        )
+    }
 
+    func planBatchMove(
+        _ evaluation: DetachedOrbBatchEvaluation,
+        additionalOccupiedFrames: [CGRect]
+    ) -> OrbPlacementPlan {
+        OrbPlacementPlanner.plan(
+            input: OrbPlacementPlanningInput(
+                currentOrigin: evaluation.request.currentOrigin,
+                userAnchor: evaluation.request.userAnchor,
+                windowSize: panel.frame.size,
+                visibleFrame: evaluation.request.visibleFrame,
+                occupiedFrames: evaluation.request.occupiedFrames + additionalOccupiedFrames,
+                excludedFrames: evaluation.request.excludedFrames,
+                currentRisk: evaluation.currentRisk,
+                currentCaptureConfidence: evaluation.currentCaptureConfidence,
+                candidates: evaluation.candidates,
+                recentAutomaticOrigins: evaluation.recentAutomaticOrigins,
+                pendingCandidateOrigin: evaluation.pendingCandidateOrigin,
+                interactionFrozen: isInteractionFrozen,
+                cooldownActive: evaluation.cooldownActive
+            ),
+            configuration: placementConfiguration
+        )
+    }
+
+    func acceptBatchPlan(
+        _ plan: OrbPlacementPlan,
+        evaluation: DetachedOrbBatchEvaluation
+    ) -> DetachedOrbBatchMove? {
         switch plan.action {
         case let .hold(reason):
             pendingCandidateOrigin = plan.pendingCandidateOrigin
-            let nextDelay = observationCadence.nextDelay(after: reason)
-            let bestScoreDescription = bestCandidateRisk.map(Self.logScore) ?? "unknown"
+            let bestScoreDescription =
+                evaluation.bestCandidateRisk.map(Self.logScore) ?? "unknown"
             logDevelopment(
                 "[orb-avoidance] evaluated session=\(sessionId) " +
-                "risk=\(Self.logScore(currentRisk.totalRisk)) " +
+                "risk=\(Self.logScore(evaluation.currentRisk)) " +
                 "best=\(bestScoreDescription) " +
                 "decision=\(reason)"
             )
-            scheduleObservationIfNeeded(delay: nextDelay)
+            return nil
         case let .move(proposal):
+            guard !isInteractionFrozen,
+                  Self.distance(panel.frame.origin, evaluation.request.currentOrigin) <= 0.5 else {
+                pendingCandidateOrigin = nil
+                return nil
+            }
             pendingCandidateOrigin = nil
-            observationCadence.reset()
-            moveAutomatically(
-                to: proposal.origin,
-                currentRisk: currentRisk.totalRisk,
+            let previousOrigin = panel.frame.origin
+            return DetachedOrbBatchMove(
+                controller: self,
+                origin: proposal.origin,
+                previousOrigin: previousOrigin,
+                destinationFrame: CGRect(
+                    origin: proposal.origin,
+                    size: panel.frame.size
+                ),
+                currentRisk: evaluation.currentRisk,
                 candidateRisk: proposal.contentRisk
             )
         }
     }
 
-    private func moveAutomatically(
-        to origin: CGPoint,
-        currentRisk: Double,
-        candidateRisk: Double
-    ) {
-        guard !isInteractionFrozen else {
-            scheduleObservationIfNeeded(delay: 1)
-            return
-        }
-        let previousOrigin = panel.frame.origin
+    func prepareBatchMove(_ move: DetachedOrbBatchMove) {
         recentAutomaticPositions.append(
-            DetachedOrbRecentAutomaticPosition(origin: previousOrigin, date: Date())
+            DetachedOrbRecentAutomaticPosition(origin: move.previousOrigin, date: Date())
         )
         recentAutomaticPositions = Array(recentAutomaticPositions.suffix(4))
         isMovingAutomatically = true
+    }
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = automaticMoveDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().setFrame(
-                NSRect(origin: origin, size: panel.frame.size),
-                display: true
-            )
-        } completionHandler: { [weak self] in
-            Task { @MainActor in
-                guard let self else {
-                    return
-                }
-                self.isMovingAutomatically = false
-                self.cooldownUntil = Date().addingTimeInterval(self.automaticMoveCooldown)
-                self.updateAccessory(for: self.currentSession)
-                self.logDevelopment(
-                    "[orb-avoidance] moved session=\(self.sessionId) " +
-                    "from=\(Self.logPoint(previousOrigin)) to=\(Self.logPoint(origin)) " +
-                    "actual=\(Self.logPoint(self.panel.frame.origin)) " +
-                    "risk=\(Self.logScore(currentRisk))->\(Self.logScore(candidateRisk))"
-                )
-                self.scheduleObservationIfNeeded(delay: self.automaticMoveCooldown)
-            }
-        }
+    func applyBatchMove(_ move: DetachedOrbBatchMove) {
+        panel.animator().setFrame(
+            NSRect(origin: move.origin, size: panel.frame.size),
+            display: true
+        )
+    }
+
+    func finishBatchMove(_ move: DetachedOrbBatchMove) {
+        isMovingAutomatically = false
+        cooldownUntil = Date().addingTimeInterval(automaticMoveCooldown)
+        updateAccessory(for: currentSession)
+        logDevelopment(
+            "[orb-avoidance] batch_moved session=\(sessionId) " +
+            "from=\(Self.logPoint(move.previousOrigin)) to=\(Self.logPoint(move.origin)) " +
+            "actual=\(Self.logPoint(panel.frame.origin)) " +
+            "risk=\(Self.logScore(move.currentRisk))->\(Self.logScore(move.candidateRisk))"
+        )
+    }
+
+    func noteBatchAnalysisFailure(_ error: Error) {
+        captureFailureCount += 1
+        let category = (error as? ScreenContentSamplerError)?.description
+            ?? String(describing: type(of: error))
+        logDevelopment(
+            "[orb-avoidance] batch_analysis_failed session=\(sessionId) " +
+            "category=\(category) failures=\(captureFailureCount)"
+        )
     }
 
     private func handlePointerInteractionBegan() {
         isPointerDown = true
-        observationCadence.reset()
         cancelObservation()
     }
 
@@ -937,7 +1096,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         recentAutomaticPositions.removeAll()
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
-        observationCadence.reset()
         pendingCandidateOrigin = nil
         cooldownUntil = Date().addingTimeInterval(0.8)
         scheduleObservationIfNeeded(delay: 0.85)
@@ -956,7 +1114,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         cancelObservation()
         luminanceSignatures.removeAll()
         safeRegionHistory.reset()
-        observationCadence.reset()
         scheduleObservationIfNeeded(delay: delay)
     }
 
