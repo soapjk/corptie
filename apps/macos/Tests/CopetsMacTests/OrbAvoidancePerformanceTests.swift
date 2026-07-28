@@ -20,13 +20,13 @@ final class OrbAvoidancePerformanceTests: XCTestCase {
             height: size,
             rgbaBytes: bytes
         )
-        let masks = (0..<84).map { index in
-            let column = index % 12
-            let row = index / 12
+        let masks = (0..<112).map { index in
+            let column = index % 16
+            let row = index / 16
             return OrbCircularMask(
-                centerX: 18 + Double(column) * 20,
+                centerX: 12 + Double(column) * 15,
                 centerY: 18 + Double(row) * 34,
-                radius: 16
+                radius: 11
             )
         }
 
@@ -41,7 +41,7 @@ final class OrbAvoidancePerformanceTests: XCTestCase {
         XCTAssertLessThan(
             elapsed,
             2,
-            "84-candidate analysis took \(elapsed)s; it runs off the main actor but should remain bounded"
+            "112-candidate analysis took \(elapsed)s; it runs off the main actor but should remain bounded"
         )
     }
 }

@@ -4,7 +4,7 @@ enum DetachedOrbObservationGeometry {
     static func searchRect(
         around orbFrame: CGRect,
         visibleFrame: CGRect,
-        radius: CGFloat = 180
+        radius: CGFloat = 360
     ) -> CGRect? {
         clippedRect(
             orbFrame.insetBy(dx: -radius, dy: -radius),

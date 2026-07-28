@@ -8,16 +8,17 @@ struct OrbPlacementCandidate: Equatable, Sendable {
 }
 
 struct OrbPlacementPlannerConfiguration: Equatable, Sendable {
-    var searchRadii: [CGFloat] = [24, 48, 72, 96, 128, 160, 180]
-    var directionsPerRing = 12
-    var maximumRadius: CGFloat = 180
+    var searchRadii: [CGFloat] = [48, 96, 144, 192, 256, 320, 360]
+    var directionsPerRing = 16
+    var maximumRadius: CGFloat = 360
     var triggerRisk = 0.26
     var safeRisk = 0.18
     var minimumImprovement = 0.08
     var minimumCaptureConfidence = 0.8
     var confirmationTolerance: CGFloat = 8
     var recentPositionExclusionRadius: CGFloat = 16
-    var distanceWeight = 0.18
+    var safestRiskTolerance = 0.025
+    var anchorSeparationWeight = 0.18
     var edgePreferenceWeight = 0.03
 }
 
@@ -195,22 +196,18 @@ enum OrbPlacementPlanner {
             )
         }
 
-        let nearestDistance = eligible.map {
-            distance($0.origin, input.currentOrigin)
-        }.min() ?? 0
-        let nearestCandidates = eligible.filter {
-            abs(distance($0.origin, input.currentOrigin) - nearestDistance) <= 0.5
+        let minimumRisk = eligible.map(\.contentRisk).min() ?? 0
+        let safestCandidates = eligible.filter {
+            $0.contentRisk <= minimumRisk + configuration.safestRiskTolerance
         }
-        let selected = nearestCandidates.min { lhs, rhs in
-            placementCost(
-                candidate: lhs,
-                input: input,
-                configuration: configuration
-            ) < placementCost(
-                candidate: rhs,
-                input: input,
-                configuration: configuration
-            )
+        let selected = safestCandidates.min { lhs, rhs in
+            let lhsSeparation = distance(lhs.origin, input.userAnchor)
+            let rhsSeparation = distance(rhs.origin, input.userAnchor)
+            if abs(lhsSeparation - rhsSeparation) > 0.5 {
+                return lhsSeparation > rhsSeparation
+            }
+            return placementCost(candidate: lhs, input: input, configuration: configuration)
+                < placementCost(candidate: rhs, input: input, configuration: configuration)
         }!
 
         guard input.currentRisk - selected.contentRisk >= configuration.minimumImprovement else {
@@ -262,9 +259,9 @@ enum OrbPlacementPlanner {
         input: OrbPlacementPlanningInput,
         configuration: OrbPlacementPlannerConfiguration
     ) -> Double {
-        let normalizedDistance = min(
+        let normalizedAnchorSeparation = min(
             1,
-            Double(distance(candidate.origin, input.currentOrigin) / configuration.maximumRadius)
+            Double(distance(candidate.origin, input.userAnchor) / configuration.maximumRadius)
         )
         let frame = CGRect(origin: candidate.origin, size: input.windowSize)
         let edgeDistance = min(
@@ -278,7 +275,7 @@ enum OrbPlacementPlanner {
             max(0, Double(edgeDistance / max(1, configuration.maximumRadius)))
         )
         return candidate.contentRisk
-            + configuration.distanceWeight * normalizedDistance
+            - configuration.anchorSeparationWeight * normalizedAnchorSeparation
             + configuration.edgePreferenceWeight * normalizedEdgeDistance
     }
 

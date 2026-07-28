@@ -9,7 +9,7 @@ final class DetachedOrbObservationGeometryTests: XCTestCase {
                 around: CGRect(x: 1_336, y: 796, width: 88, height: 88),
                 visibleFrame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
             ),
-            CGRect(x: 1_156, y: 616, width: 284, height: 284)
+            CGRect(x: 976, y: 436, width: 464, height: 464)
         )
     }
 
