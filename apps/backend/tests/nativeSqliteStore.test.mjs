@@ -52,3 +52,61 @@ test("initialization refuses a corrupt database instead of replacing it", async 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("Git workspace snapshots persist stable repository and worktree identities", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-git-registry-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const store = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+  const snapshot = {
+    repository: {
+      id: "repository:abc",
+      commonGitDirCanonicalPath: "/repo/.git",
+      discoveredAt: "2026-07-28T00:00:00.000Z",
+      lastValidatedAt: "2026-07-28T00:00:00.000Z"
+    },
+    inventoryVersion: "inventory-v1",
+    observedAt: "2026-07-28T00:00:00.000Z",
+    worktrees: [{
+      worktreeId: "worktree:main",
+      path: "/repo",
+      canonicalPath: "/repo",
+      gitDirCanonicalPath: "/repo/.git",
+      isMain: true,
+      availability: "available",
+      headOid: "abc123",
+      branchRef: "refs/heads/main",
+      branchName: "main",
+      isDetached: false,
+      isLocked: false,
+      lockReason: null,
+      isPrunable: false,
+      pruneReason: null
+    }]
+  };
+
+  try {
+    await store.initialize();
+    const persisted = store.upsertGitWorkspaceSnapshot(snapshot);
+    assert.deepEqual(store.getGitRepository("repository:abc"), snapshot.repository);
+    assert.equal(persisted.length, 1);
+    assert.equal(persisted[0].worktreeId, "worktree:main");
+    assert.equal(persisted[0].branchName, "main");
+
+    const nextSnapshot = {
+      ...snapshot,
+      inventoryVersion: "inventory-v2",
+      observedAt: "2026-07-28T00:01:00.000Z",
+      repository: {
+        ...snapshot.repository,
+        lastValidatedAt: "2026-07-28T00:01:00.000Z"
+      },
+      worktrees: []
+    };
+    const missing = store.upsertGitWorkspaceSnapshot(nextSnapshot);
+    assert.equal(missing[0].availability, "missing");
+    assert.equal(missing[0].inventoryVersion, "inventory-v2");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -567,6 +567,42 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_collaboration_events_task
       ON collaboration_events(task_id, sequence ASC);
+
+      CREATE TABLE IF NOT EXISTS git_repositories (
+        repository_id TEXT PRIMARY KEY,
+        common_git_dir TEXT NOT NULL UNIQUE,
+        discovered_at TEXT NOT NULL,
+        last_validated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS git_worktrees (
+        worktree_id TEXT PRIMARY KEY,
+        repository_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        canonical_path TEXT,
+        git_dir TEXT,
+        is_main INTEGER NOT NULL DEFAULT 0,
+        availability TEXT NOT NULL
+          CHECK (availability IN ('available', 'missing', 'invalid', 'permissionDenied')),
+        head_oid TEXT,
+        branch_ref TEXT,
+        branch_name TEXT,
+        detached INTEGER NOT NULL DEFAULT 0,
+        locked INTEGER NOT NULL DEFAULT 0,
+        lock_reason TEXT,
+        prunable INTEGER NOT NULL DEFAULT 0,
+        prune_reason TEXT,
+        inventory_version TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        raw_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_git_worktrees_repository
+      ON git_worktrees(repository_id, availability, path);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_git_worktrees_git_dir
+      ON git_worktrees(repository_id, git_dir) WHERE git_dir IS NOT NULL;
     `);
 
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -661,6 +697,132 @@ export class CorptieStore {
     await this.save();
     this.db.close();
     this.db = null;
+  }
+
+  upsertGitWorkspaceSnapshot(snapshot) {
+    const repository = snapshot?.repository;
+    if (!repository?.id || !repository.commonGitDirCanonicalPath) {
+      throw new Error("A valid Git repository snapshot is required.");
+    }
+    const observedAt = snapshot.observedAt || new Date().toISOString();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `INSERT INTO git_repositories (
+          repository_id, common_git_dir, discovered_at, last_validated_at
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(repository_id) DO UPDATE SET
+          common_git_dir=excluded.common_git_dir,
+          last_validated_at=excluded.last_validated_at`,
+        [
+          repository.id,
+          repository.commonGitDirCanonicalPath,
+          repository.discoveredAt || observedAt,
+          repository.lastValidatedAt || observedAt
+        ]
+      );
+      this.db.run(
+        `UPDATE git_worktrees
+         SET availability = 'missing', observed_at = ?, inventory_version = ?
+         WHERE repository_id = ?`,
+        [observedAt, snapshot.inventoryVersion, repository.id]
+      );
+      for (const worktree of snapshot.worktrees ?? []) {
+        const prior = worktree.gitDirCanonicalPath ? null : this.selectOne(
+          "SELECT worktree_id FROM git_worktrees WHERE repository_id = ? AND path = ?",
+          [repository.id, worktree.path]
+        );
+        const worktreeId = prior?.worktree_id ?? worktree.worktreeId;
+        this.db.run(
+          `INSERT INTO git_worktrees (
+            worktree_id, repository_id, path, canonical_path, git_dir, is_main,
+            availability, head_oid, branch_ref, branch_name, detached, locked,
+            lock_reason, prunable, prune_reason, inventory_version, observed_at, raw_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(worktree_id) DO UPDATE SET
+            path=excluded.path,
+            canonical_path=excluded.canonical_path,
+            git_dir=excluded.git_dir,
+            is_main=excluded.is_main,
+            availability=excluded.availability,
+            head_oid=excluded.head_oid,
+            branch_ref=excluded.branch_ref,
+            branch_name=excluded.branch_name,
+            detached=excluded.detached,
+            locked=excluded.locked,
+            lock_reason=excluded.lock_reason,
+            prunable=excluded.prunable,
+            prune_reason=excluded.prune_reason,
+            inventory_version=excluded.inventory_version,
+            observed_at=excluded.observed_at,
+            raw_json=excluded.raw_json`,
+          [
+            worktreeId,
+            repository.id,
+            worktree.path,
+            worktree.canonicalPath,
+            worktree.gitDirCanonicalPath,
+            worktree.isMain ? 1 : 0,
+            worktree.availability,
+            worktree.headOid,
+            worktree.branchRef,
+            worktree.branchName,
+            worktree.isDetached ? 1 : 0,
+            worktree.isLocked ? 1 : 0,
+            worktree.lockReason,
+            worktree.isPrunable ? 1 : 0,
+            worktree.pruneReason,
+            snapshot.inventoryVersion,
+            worktree.observedAt || observedAt,
+            JSON.stringify(worktree)
+          ]
+        );
+      }
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.listGitWorktrees(repository.id);
+  }
+
+  getGitRepository(repositoryId) {
+    const row = this.selectOne(
+      "SELECT * FROM git_repositories WHERE repository_id = ?",
+      [repositoryId]
+    );
+    return row ? {
+      id: row.repository_id,
+      commonGitDirCanonicalPath: row.common_git_dir,
+      discoveredAt: row.discovered_at,
+      lastValidatedAt: row.last_validated_at
+    } : null;
+  }
+
+  listGitWorktrees(repositoryId) {
+    return this.selectAll(
+      "SELECT * FROM git_worktrees WHERE repository_id = ? ORDER BY is_main DESC, path ASC",
+      [repositoryId]
+    ).map((row) => ({
+      worktreeId: row.worktree_id,
+      repositoryId: row.repository_id,
+      path: row.path,
+      canonicalPath: row.canonical_path,
+      gitDirCanonicalPath: row.git_dir,
+      isMain: Boolean(row.is_main),
+      availability: row.availability,
+      headOid: row.head_oid,
+      branchRef: row.branch_ref,
+      branchName: row.branch_name,
+      isDetached: Boolean(row.detached),
+      isLocked: Boolean(row.locked),
+      lockReason: row.lock_reason,
+      isPrunable: Boolean(row.prunable),
+      pruneReason: row.prune_reason,
+      inventoryVersion: row.inventory_version,
+      observedAt: row.observed_at
+    }));
   }
 
   upsertSession(session) {
