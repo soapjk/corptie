@@ -173,6 +173,17 @@ curl -X POST "http://127.0.0.1:47322/codex/pty-sessions" \
 scripts/package-macos-installer.sh
 ```
 
+需要让屏幕录制等 macOS 隐私授权在升级后保持稳定时，请使用固定的 Developer ID
+Application 身份构建：
+
+```sh
+CORPTIE_APP_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+  scripts/package-macos-installer.sh
+```
+
+未设置该变量时会生成仅适合本机开发/测试的 ad-hoc 签名 App；重新构建或升级后，macOS
+可能要求重新授予屏幕录制权限。
+
 从当前工作区构建正式版、确认没有未完成会话、安全停止旧版、安装并打开新版：
 
 ```sh

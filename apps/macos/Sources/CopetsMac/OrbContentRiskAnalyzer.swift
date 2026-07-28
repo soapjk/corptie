@@ -176,10 +176,17 @@ enum OrbContentRiskAnalyzer {
     ) -> [Sample] {
         let radiusSquared = mask.radius * mask.radius
         var result: [Sample] = []
-        result.reserveCapacity(frame.width * frame.height)
+        let minimumX = max(0, Int(floor(mask.centerX - mask.radius)))
+        let maximumX = min(frame.width, Int(ceil(mask.centerX + mask.radius)))
+        let minimumY = max(0, Int(floor(mask.centerY - mask.radius)))
+        let maximumY = min(frame.height, Int(ceil(mask.centerY + mask.radius)))
+        guard minimumX < maximumX, minimumY < maximumY else {
+            return []
+        }
+        result.reserveCapacity((maximumX - minimumX) * (maximumY - minimumY))
 
-        for y in 0..<frame.height {
-            for x in 0..<frame.width {
+        for y in minimumY..<maximumY {
+            for x in minimumX..<maximumX {
                 let dx = (Double(x) + 0.5) - mask.centerX
                 let dy = (Double(y) + 0.5) - mask.centerY
                 guard dx * dx + dy * dy <= radiusSquared else {

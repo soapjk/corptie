@@ -809,7 +809,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         case let .hold(reason):
             pendingCandidateOrigin = plan.pendingCandidateOrigin
             let nextDelay = reason == .awaitingConfirmation ? 0.65 : idleObservationInterval
-            print(
+            logDevelopment(
                 "[orb-avoidance] evaluated session=\(sessionId) " +
                 "risk=\(Self.logScore(currentRisk.totalRisk)) decision=\(reason)"
             )
@@ -852,7 +852,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 self.isMovingAutomatically = false
                 self.cooldownUntil = Date().addingTimeInterval(self.automaticMoveCooldown)
                 self.updateAccessory(for: self.currentSession)
-                print(
+                self.logDevelopment(
                     "[orb-avoidance] moved session=\(self.sessionId) " +
                     "from=\(Self.logPoint(previousOrigin)) to=\(Self.logPoint(origin)) " +
                     "risk=\(Self.logScore(currentRisk))->\(Self.logScore(candidateRisk))"
@@ -930,6 +930,13 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private static func logScore(_ score: Double) -> String {
         String(format: "%.3f", score)
+    }
+
+    private func logDevelopment(_ message: @autoclosure () -> String) {
+        guard CorptieAppEnvironment.isDevelopment else {
+            return
+        }
+        print(message())
     }
 
     private func updateReplyPreview(for session: TaskSession?) {

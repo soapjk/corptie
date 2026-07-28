@@ -181,6 +181,22 @@ PLIST
 
 xattr -cr "${STAGING_ROOT}" 2>/dev/null || true
 
+APP_SIGNING_IDENTITY="${CORPTIE_APP_SIGNING_IDENTITY:--}"
+if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
+  echo "Warning: building an ad-hoc signed app; macOS privacy permissions may need to be granted again after upgrades." >&2
+  codesign --force --deep --sign - "${APP_DIR}"
+else
+  echo "Signing Corptie.app with ${APP_SIGNING_IDENTITY}..."
+  codesign \
+    --force \
+    --deep \
+    --options runtime \
+    --timestamp \
+    --sign "${APP_SIGNING_IDENTITY}" \
+    "${APP_DIR}"
+fi
+codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+
 PKG_FILE="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
 pkgbuild \
   --root "${STAGING_ROOT}" \

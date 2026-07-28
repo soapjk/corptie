@@ -149,6 +149,18 @@ Build the production installer:
 scripts/package-macos-installer.sh
 ```
 
+To keep macOS privacy grants such as Screen Recording stable across upgrades,
+build with a consistent Developer ID Application identity:
+
+```sh
+CORPTIE_APP_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+  scripts/package-macos-installer.sh
+```
+
+Without this variable, the script creates an ad-hoc signed app intended only
+for local development and testing. macOS may ask for Screen Recording access
+again after a rebuild or upgrade.
+
 Build from the current checkout, verify that production has no unfinished sessions, safely stop it, install the new app, and reopen it:
 
 ```sh
