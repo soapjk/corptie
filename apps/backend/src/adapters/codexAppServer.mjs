@@ -108,6 +108,17 @@ export class CodexAppServerClient {
     return this.request("thread/name/set", { threadId, name });
   }
 
+  async deleteThread(threadId) {
+    await this.initialize();
+    const result = await this.request("thread/delete", { threadId });
+    this.liveItemsByThread.delete(threadId);
+    this.turnDiffsByThread.delete(threadId);
+    this.tokenUsageByThread.delete(threadId);
+    this.serverRequestsByThread.delete(threadId);
+    this.dynamicToolAgentsByThread.delete(threadId);
+    return result;
+  }
+
   async startThread(options = {}) {
     await this.initialize();
     const result = await this.request("thread/start", {

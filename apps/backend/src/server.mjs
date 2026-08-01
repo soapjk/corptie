@@ -1955,7 +1955,7 @@ async function getUnifiedSessionSnapshot(sessionId) {
     const id = normalizeSessionId(sessionId);
     detail = claudeAgents.has(id) ? claudeAgents.detail(id) : ptyAgents.detail(id);
   } else if (sessionId.startsWith("codex:")) {
-    const threadId = sessionId.slice("codex:".length);
+    const threadId = summary.external?.threadId ?? sessionId.slice("codex:".length);
     try {
       const result = await codexClient.readThread(threadId, { includeTurns: true });
       detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
