@@ -80,6 +80,92 @@ export class GitWorkspaceManager {
     });
   }
 
+  async sessionDeletionPlan(logicalSessionId) {
+    const logical = this.requireLogicalRoute(logicalSessionId);
+    const activeCwd = logical.activeBinding?.boundCwd;
+    if (!logical.repositoryId || !activeCwd || !logical.activeBinding?.worktreeId) {
+      return { requiresWorktreeMerge: false };
+    }
+
+    const snapshot = await createGitWorkspaceSnapshot(activeCwd);
+    if (snapshot.repository.id !== logical.repositoryId) {
+      throw new Error("The active workspace no longer belongs to the registered repository.");
+    }
+    this.store.upsertGitWorkspaceSnapshot(snapshot);
+    const source = snapshot.worktrees.find((worktree) => {
+      return worktree.worktreeId === logical.activeBinding.worktreeId;
+    });
+    if (!source || source.availability !== "available" || source.isMain) {
+      return { requiresWorktreeMerge: false };
+    }
+    const main = snapshot.worktrees.find((worktree) => worktree.isMain);
+    if (!main || main.availability !== "available") {
+      throw new Error("The repository's main worktree is unavailable.");
+    }
+    if (main.branchName !== "main") {
+      throw new Error(`The repository's main worktree is on ${main.branchName || "a detached HEAD"}, not main.`);
+    }
+
+    const status = await this.gitOutput(source.path, ["status", "--short"]);
+    const diffStat = await this.gitOutput(source.path, ["diff", "--stat", "HEAD"]);
+    return {
+      requiresWorktreeMerge: true,
+      repositoryId: snapshot.repository.id,
+      sourceWorktreeId: source.worktreeId,
+      sourcePath: source.path,
+      sourceBranch: source.branchName,
+      mainWorktreeId: main.worktreeId,
+      mainPath: main.path,
+      mainBranch: main.branchName,
+      hasUncommittedChanges: Boolean(status.trim()),
+      statusSummary: status.trim(),
+      diffStat: diffStat.trim()
+    };
+  }
+
+  async mergeSessionWorktreeIntoMain(input) {
+    const plan = await this.sessionDeletionPlan(input.logicalSessionId);
+    if (!plan.requiresWorktreeMerge) {
+      throw new Error("The Session is not bound to a non-main Git worktree.");
+    }
+    const mainStatus = await this.gitOutput(plan.mainPath, ["status", "--porcelain=v1"]);
+    if (mainStatus.trim()) {
+      throw new Error("The main worktree has uncommitted changes. Clean it before merging this Session's worktree.");
+    }
+
+    let committed = false;
+    let commitMessage = null;
+    if (plan.hasUncommittedChanges) {
+      commitMessage = requiredCommitMessage(input.commitMessage);
+      try {
+        await this.runGit(plan.sourcePath, ["add", "--all"]);
+        await this.runGit(plan.sourcePath, ["commit", "-m", commitMessage]);
+        committed = true;
+      } catch (error) {
+        throw new Error(safeGitError(error, "Could not commit the Session worktree changes"));
+      }
+    }
+
+    const sourceHead = (await this.gitOutput(plan.sourcePath, ["rev-parse", "--verify", "HEAD"])).trim();
+    try {
+      await this.runGit(plan.mainPath, ["merge", "--no-ff", "--no-edit", sourceHead]);
+    } catch (error) {
+      await this.runGit(plan.mainPath, ["merge", "--abort"]).catch(() => {});
+      throw new Error(safeGitError(error, "Could not merge the Session worktree into main"));
+    }
+    const mainHead = (await this.gitOutput(plan.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    return {
+      merged: true,
+      committed,
+      commitMessage,
+      sourceHead,
+      mainHead,
+      sourceBranch: plan.sourceBranch,
+      sourcePath: plan.sourcePath,
+      mainPath: plan.mainPath
+    };
+  }
+
   requireLogicalRoute(logicalSessionId) {
     const logical = this.store.getLogicalSession(logicalSessionId);
     if (!logical?.activeBinding) {
@@ -132,6 +218,22 @@ export class GitWorkspaceManager {
     }
     return ref;
   }
+
+  async runGit(cwd, arguments_) {
+    return this.execFile("git", ["-C", cwd, ...arguments_], {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024
+    });
+  }
+
+  async gitOutput(cwd, arguments_) {
+    try {
+      const result = await this.runGit(cwd, arguments_);
+      return String(result?.stdout ?? "");
+    } catch (error) {
+      throw new Error(safeGitError(error, `git ${arguments_[0]} failed`));
+    }
+  }
 }
 
 function absolutePath(value) {
@@ -155,6 +257,13 @@ function requiredBranch(value) {
     throw new Error("A branch name is required unless detach is enabled.");
   }
   return value.trim();
+}
+
+function requiredCommitMessage(value) {
+  const message = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+  if (!message) throw new Error("The Session did not generate a usable commit message.");
+  if (message.includes("\0")) throw new Error("The generated commit message is invalid.");
+  return message.slice(0, 120);
 }
 
 function safeGitError(error, fallback) {
