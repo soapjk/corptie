@@ -1606,11 +1606,30 @@ final class BackendClient: ObservableObject {
     func delete(session: TaskSession) {
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)"))
-                request.httpMethod = "DELETE"
-                let (_, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                let planURL = baseURL.appending(path: "sessions/\(session.id)/deletion-plan")
+                let (planData, planResponse) = try await URLSession.shared.data(from: planURL)
+                guard let planHTTPResponse = planResponse as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
+                }
+                guard (200..<300).contains(planHTTPResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: planData) ?? L10n("Could not inspect the session worktree."))
+                }
+                let plan = try JSONDecoder().decode(SessionDeletionPlan.self, from: planData)
+                var mergeWorktree = false
+                if plan.requiresWorktreeMerge {
+                    guard let decision = confirmWorktreeDeletion(plan: plan) else { return }
+                    mergeWorktree = decision
+                }
+
+                var deleteURL = baseURL.appending(path: "sessions/\(session.id)")
+                if mergeWorktree {
+                    deleteURL.append(queryItems: [URLQueryItem(name: "mergeWorktree", value: "true")])
+                }
+                var request = URLRequest(url: deleteURL)
+                request.httpMethod = "DELETE"
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not delete the session."))
                 }
                 if selectedSession?.id == session.id {
                     closeDetail()
@@ -1620,6 +1639,28 @@ final class BackendClient: ObservableObject {
             } catch {
                 lastError = error.localizedDescription
             }
+        }
+    }
+
+    private func confirmWorktreeDeletion(plan: SessionDeletionPlan) -> Bool? {
+        let branch = plan.sourceBranch ?? L10n("detached HEAD")
+        let path = plan.sourcePath ?? L10n("Unknown path")
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n("This session is bound to a Git worktree")
+        alert.informativeText = L10nFormat(
+            "Worktree “%@” at %@ can be merged locally into main before the session is deleted. If it has uncommitted changes, this session will generate the commit message. No remote push will be performed.",
+            branch,
+            path
+        )
+        alert.addButton(withTitle: L10n("Merge into main and Delete"))
+        alert.addButton(withTitle: L10n("Delete Only"))
+        alert.addButton(withTitle: L10n("Cancel"))
+        alert.buttons[1].hasDestructiveAction = true
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return true
+        case .alertSecondButtonReturn: return false
+        default: return nil
         }
     }
 

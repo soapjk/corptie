@@ -79,6 +79,15 @@ struct SessionWorkspace: Codable, Equatable, Sendable {
     var previousThreadId: String? = nil
 }
 
+struct SessionDeletionPlan: Decodable, Sendable {
+    let requiresWorktreeMerge: Bool
+    let sourcePath: String?
+    let sourceBranch: String?
+    let mainPath: String?
+    let mainBranch: String?
+    let hasUncommittedChanges: Bool?
+}
+
 struct SessionWorkspaceHistoryResponse: Decodable, Sendable {
     let history: [SessionWorkspaceHistory]
 }

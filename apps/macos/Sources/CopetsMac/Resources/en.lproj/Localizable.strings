@@ -68,3 +68,11 @@
 "Open Read Only" = "Open Read Only";
 "Active" = "Active";
 "A new Git worktree was detected. Ask the Agent to list workspaces or switch to it." = "A new Git worktree was detected. Ask the Agent to list workspaces or switch to it.";
+"Could not inspect the session worktree." = "Could not inspect the session worktree.";
+"Could not delete the session." = "Could not delete the session.";
+"detached HEAD" = "detached HEAD";
+"Unknown path" = "Unknown path";
+"This session is bound to a Git worktree" = "This session is bound to a Git worktree";
+"Worktree “%@” at %@ can be merged locally into main before the session is deleted. If it has uncommitted changes, this session will generate the commit message. No remote push will be performed." = "Worktree “%@” at %@ can be merged locally into main before the session is deleted. If it has uncommitted changes, this session will generate the commit message. No remote push will be performed.";
+"Merge into main and Delete" = "Merge into main and Delete";
+"Delete Only" = "Delete Only";
