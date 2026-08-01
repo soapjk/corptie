@@ -197,9 +197,13 @@ export class CodexWorkspaceTransitionManager {
         instructionSources: instructionValidation.instructionSources,
         permissionSnapshot
       });
+      const sourceThreadDeletion = await this.deleteSupersededThread(transition.sourceThreadId);
       const event = {
         logicalSessionId: switched.logicalSessionId,
         providerThreadId: switched.activeThreadId,
+        deletedProviderThreadId: transition.sourceThreadId,
+        sourceThreadDeleted: sourceThreadDeletion.deleted,
+        sourceThreadDeletionError: sourceThreadDeletion.error,
         worktreeId: switched.activeWorkspaceId,
         repositoryId: switched.repositoryId,
         cwd: targetCwd,
@@ -368,9 +372,13 @@ export class CodexWorkspaceTransitionManager {
         instructionSources: validation.instructionSources,
         permissionSnapshot: permissionSnapshotFromAppServerResponse(response)
       });
+      const sourceThreadDeletion = await this.deleteSupersededThread(transition.sourceThreadId);
       const event = {
         logicalSessionId: switched.logicalSessionId,
         providerThreadId: switched.activeThreadId,
+        deletedProviderThreadId: transition.sourceThreadId,
+        sourceThreadDeleted: sourceThreadDeletion.deleted,
+        sourceThreadDeletionError: sourceThreadDeletion.error,
         worktreeId: switched.activeWorkspaceId,
         repositoryId: switched.repositoryId,
         cwd: targetCwd,
@@ -411,6 +419,22 @@ export class CodexWorkspaceTransitionManager {
         error: { message: error.message, instructionValidation: validation }
       });
       throw error;
+    }
+  }
+
+  async deleteSupersededThread(threadId) {
+    if (!threadId || typeof this.codexClient.deleteThread !== "function") {
+      return {
+        deleted: false,
+        error: "Codex client does not support thread/delete."
+      };
+    }
+    try {
+      await this.codexClient.deleteThread(threadId);
+      return { deleted: true, error: null };
+    } catch (error) {
+      console.warn(`[workspace-transition] committed route but could not delete superseded thread=${threadId} error=${error.message}`);
+      return { deleted: false, error: error.message };
     }
   }
 

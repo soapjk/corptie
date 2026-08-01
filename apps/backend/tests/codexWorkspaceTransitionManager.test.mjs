@@ -36,6 +36,10 @@ test("workspace transition waits for an active turn then atomically routes a for
     async updateThreadSettings(threadId, options) {
       calls.push({ method: "settings", threadId, options });
       return {};
+    },
+    async deleteThread(threadId) {
+      calls.push({ method: "delete", threadId });
+      return {};
     }
   };
   const manager = new CodexWorkspaceTransitionManager({
@@ -79,8 +83,12 @@ test("workspace transition waits for an active turn then atomically routes a for
     assert.deepEqual(calls[0].options.runtimeWorkspaceRoots, [fixture.feature]);
     assert.equal(calls[1].method, "settings");
     assert.deepEqual(calls[1].options.sandboxPolicy.writableRoots, [fixture.feature]);
+    assert.equal(calls[2].method, "delete");
+    assert.equal(calls[2].threadId, "thread-source");
     assert.equal(events.length, 1);
     assert.equal(events[0].logicalSessionId, "logical:one");
+    assert.equal(events[0].sourceThreadDeleted, true);
+    assert.equal(events[0].deletedProviderThreadId, "thread-source");
     assert.match(events[0].transitionContext, new RegExp(fixture.feature.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   } finally {
     await fixture.close();
@@ -123,6 +131,51 @@ test("invalid fork instruction sources preserve the original route and retain an
     assert.equal(logical.transitionState, "failed");
     assert.equal(fixture.store.getWorkspaceTransition("transition:invalid").phase, "failed");
     assert.equal(fixture.store.getProviderThreadBinding("thread-invalid").state, "invalid");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a source-thread deletion failure does not roll back the committed workspace route", async () => {
+  const fixture = await createFixture("delete-failure");
+  const events = [];
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async forkThread() {
+        return {
+          thread: { id: "thread-feature", cwd: fixture.feature },
+          cwd: fixture.feature,
+          runtimeWorkspaceRoots: [fixture.feature],
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      },
+      async deleteThread() {
+        throw new Error("delete unavailable");
+      }
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ],
+    onRouteCommitted: async (event) => events.push(event)
+  });
+
+  try {
+    const result = await manager.switchWorkspace({
+      transitionId: "transition:delete-failure",
+      logicalSessionId: "logical:one",
+      targetWorktreeId: "worktree:feature",
+      lastCompletedTurnId: "turn-7"
+    });
+
+    assert.equal(result.status, "committed");
+    assert.equal(result.logicalSession.activeThreadId, "thread-feature");
+    assert.equal(result.transition.phase, "committed");
+    assert.equal(events[0].sourceThreadDeleted, false);
+    assert.equal(events[0].sourceThreadDeletionError, "delete unavailable");
   } finally {
     await fixture.close();
   }

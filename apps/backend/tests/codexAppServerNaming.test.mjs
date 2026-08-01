@@ -19,6 +19,33 @@ test("setThreadName uses the Codex app-server thread naming method", async () =>
   }]);
 });
 
+test("deleteThread permanently removes the Codex thread and clears local runtime state", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return {};
+  };
+  client.liveItemsByThread.set("thread-a", new Map());
+  client.turnDiffsByThread.set("thread-a", new Map());
+  client.tokenUsageByThread.set("thread-a", {});
+  client.serverRequestsByThread.set("thread-a", new Map());
+  client.dynamicToolAgentsByThread.set("thread-a", "agent-a");
+
+  await client.deleteThread("thread-a");
+
+  assert.deepEqual(calls, [{
+    method: "thread/delete",
+    params: { threadId: "thread-a" }
+  }]);
+  assert.equal(client.liveItemsByThread.has("thread-a"), false);
+  assert.equal(client.turnDiffsByThread.has("thread-a"), false);
+  assert.equal(client.tokenUsageByThread.has("thread-a"), false);
+  assert.equal(client.serverRequestsByThread.has("thread-a"), false);
+  assert.equal(client.dynamicToolAgentsByThread.has("thread-a"), false);
+});
+
 test("startThread installs host-owned collaboration tools and keeps the isolated MCP compatibility path", async () => {
   const calls = [];
   const client = new CodexAppServerClient();
