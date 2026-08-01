@@ -381,3 +381,11 @@
 "Open Read Only" = "只读打开";
 "Active" = "活动";
 "A new Git worktree was detected. Ask the Agent to list workspaces or switch to it." = "检测到新的 Git worktree。可以让 Agent 列出工作区或切换到该工作区。";
+"Could not inspect the session worktree." = "无法检查会话绑定的 Worktree。";
+"Could not delete the session." = "无法删除会话。";
+"detached HEAD" = "分离 HEAD";
+"Unknown path" = "未知路径";
+"This session is bound to a Git worktree" = "此会话绑定了一个 Git Worktree";
+"Worktree “%@” at %@ can be merged locally into main before the session is deleted. If it has uncommitted changes, this session will generate the commit message. No remote push will be performed." = "删除会话前，可以将 Worktree“%@”（路径：%@）在本地合并到 main。如果其中有未提交的修改，将由此会话生成提交信息。不会执行远程推送。";
+"Merge into main and Delete" = "合并到 main 并删除";
+"Delete Only" = "仅删除会话";

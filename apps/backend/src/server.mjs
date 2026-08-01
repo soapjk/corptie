@@ -72,6 +72,7 @@ import { CodexWorkspaceTransitionManager } from "./runtime/codexWorkspaceTransit
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
+import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
 import {
   resumeWorkAfterTransition,
   workspaceTransitionBlocksWork
@@ -2672,6 +2673,87 @@ function unifiedErrorStatus(error) {
   return 502;
 }
 
+async function sessionDeletionPlan(sessionId) {
+  if (!String(sessionId).startsWith("codex:")) return { requiresWorktreeMerge: false };
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical?.activeBinding) return { requiresWorktreeMerge: false };
+  return gitWorkspaces.sessionDeletionPlan(logical.logicalSessionId);
+}
+
+async function generateSessionCommitMessage(sessionId, plan) {
+  const session = listGatewaySessions().find((item) => item.id === sessionId)
+    ?? managedCodexSessions.get(sessionId)
+    ?? store.getSession(sessionId);
+  if (!session) throw new Error("Session not found.");
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  const threadId = logical?.activeThreadId ?? sessionId.slice("codex:".length);
+  const liveThread = await codexClient.readThread(threadId, { includeTurns: true });
+  if (sessionHasActiveRun(mapCodexThreadToSession(liveThread.thread))) {
+    const error = new Error("The Session is busy. Wait for its current turn before merging its worktree.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+  if (workspaceTransitionBlocksWork(logical)) {
+    const error = new Error("The Session is switching workspaces. Wait for the switch to finish before deleting it.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+  const activeRoute = await assertWorkspaceRouteUsable({
+    store,
+    logicalSession: logical,
+    providerThreadId: threadId
+  });
+  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
+  const cwd = activeRoute.cwd;
+  const collaborationAgent = collaborationCore.getAgentForSession(sessionId);
+  await codexClient.resumeThread(threadId, {
+    cwd,
+    runtimeWorkspaceRoots: [cwd],
+    ...collaborationThreadOptions(collaborationAgent?.agentId)
+  });
+  const started = await codexClient.startTurn(threadId, sessionCommitMessagePrompt(plan), {
+    cwd,
+    model: managed.external?.currentModel ?? undefined,
+    reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
+    ...codexTurnPermissionOptions(managed)
+  });
+  const turnId = started.turn?.id;
+  if (!turnId) throw new Error("The Session did not start the commit-message turn.");
+
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const result = await codexClient.readThread(threadId, { includeTurns: true });
+    const turn = result.thread?.turns?.find((item) => item.id === turnId);
+    const status = String(turn?.status ?? "").toLowerCase();
+    if (["completed", "failed", "cancelled", "canceled"].includes(status)) {
+      if (status !== "completed") {
+        throw new Error(`The Session could not generate a commit message (${turn?.status ?? "failed"}).`);
+      }
+      const detail = mapCodexThreadToDetail(result.thread);
+      const text = detail.items
+        .filter((item) => item.turnId === turnId && item.type === "agentMessage")
+        .at(-1)?.text;
+      const message = sanitizeSessionCommitMessage(text);
+      if (!message) throw new Error("The Session returned an empty commit message.");
+      return message;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  throw new Error("Timed out while waiting for the Session to generate a commit message.");
+}
+
+async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical?.activeBinding) throw new Error("The Session no longer has an active workspace route.");
+  const commitMessage = plan.hasUncommittedChanges
+    ? await generateSessionCommitMessage(sessionId, plan)
+    : null;
+  return gitWorkspaces.mergeSessionWorktreeIntoMain({
+    logicalSessionId: logical.logicalSessionId,
+    commitMessage
+  });
+}
+
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
@@ -3486,6 +3568,14 @@ function route(request, response) {
   }
 
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
+  const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
+  if (request.method === "GET" && sessionDeletionPlanMatch) {
+    const rawId = decodeURIComponent(sessionDeletionPlanMatch[1]);
+    sessionDeletionPlan(rawId)
+      .then((plan) => sendJson(response, 200, plan))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message }));
+    return;
+  }
   if (request.method === "PATCH" && sessionDeleteMatch) {
     readJson(request)
       .then(async (input) => {
@@ -3564,11 +3654,24 @@ function route(request, response) {
   if (request.method === "DELETE" && sessionDeleteMatch) {
     const rawId = decodeURIComponent(sessionDeleteMatch[1]);
     if (rawId.startsWith("codex:")) {
-      const existed = managedCodexSessions.delete(rawId);
-      collaborationCore.deactivateAgentForSession(rawId);
-      store.deleteSession(rawId);
-      emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
-      sendJson(response, 200, { ok: true, deleted: existed });
+      const mergeWorktree = url.searchParams.get("mergeWorktree") === "true";
+      Promise.resolve()
+        .then(async () => {
+          let merge = null;
+          if (mergeWorktree) {
+            const plan = await sessionDeletionPlan(rawId);
+            if (!plan.requiresWorktreeMerge) {
+              throw new Error("The Session is no longer bound to a mergeable worktree.");
+            }
+            merge = await mergeSessionWorktreeBeforeDeletion(rawId, plan);
+          }
+          const existed = managedCodexSessions.delete(rawId);
+          collaborationCore.deactivateAgentForSession(rawId);
+          store.deleteSession(rawId);
+          emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
+          sendJson(response, 200, { ok: true, deleted: existed, merge });
+        })
+        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message }));
       return;
     }
 
