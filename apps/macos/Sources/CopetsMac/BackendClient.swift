@@ -157,6 +157,8 @@ final class BackendClient: ObservableObject {
             "CodexThreadApprovalResponded",
             "CollaborationConfirmationRequested",
             "CollaborationConfirmationResolved",
+            "SessionWorkspaceSwitched",
+            "SessionWorkspaceSwitchFailed",
             "SessionArchived",
             "SessionUnarchived",
             "SessionDeleted",
