@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -136,12 +136,75 @@ test("a failed post-create transition preserves the worktree and retry does not 
   }
 });
 
-async function createFixture(label) {
+test("session deletion plan commits a dirty bound worktree and merges it into main", async () => {
+  const fixture = await createFixture("delete-merge", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.activeWorktree, "session-change.txt"), "made by the session\n");
+
+  try {
+    const plan = await manager.sessionDeletionPlan("logical:one");
+    assert.equal(plan.requiresWorktreeMerge, true);
+    assert.equal(plan.sourceBranch, "feature/session-worktree");
+    assert.equal(plan.mainBranch, "main");
+    assert.equal(plan.hasUncommittedChanges, true);
+
+    const result = await manager.mergeSessionWorktreeIntoMain({
+      logicalSessionId: "logical:one",
+      commitMessage: "Save session worktree changes"
+    });
+
+    assert.equal(result.merged, true);
+    assert.equal(result.committed, true);
+    assert.equal(result.commitMessage, "Save session worktree changes");
+    assert.equal(
+      (await gitOutput(["log", "-1", "--pretty=%s"], fixture.activeWorktree)).trim(),
+      "Save session worktree changes"
+    );
+    assert.equal(await readFile(join(fixture.repository, "session-change.txt"), "utf8"), "made by the session\n");
+    assert.equal((await gitOutput(["status", "--porcelain"], fixture.repository)).trim(), "");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("session deletion merge refuses to modify a dirty main worktree", async () => {
+  const fixture = await createFixture("dirty-main", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "main-change.txt"), "keep me\n");
+  await writeFile(join(fixture.activeWorktree, "source-change.txt"), "source\n");
+
+  try {
+    await assert.rejects(
+      () => manager.mergeSessionWorktreeIntoMain({
+        logicalSessionId: "logical:one",
+        commitMessage: "Should not be used"
+      }),
+      /main worktree has uncommitted changes/
+    );
+    assert.match(await gitOutput(["status", "--porcelain"], fixture.activeWorktree), /source-change\.txt/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, "main repo");
   await mkdir(repository);
   await git(["init", "-b", "main"], repository);
   await git(["commit", "--allow-empty", "-m", "initial"], repository);
+  const activeWorktree = options.activeFeatureWorktree
+    ? join(directory, "session worktree")
+    : repository;
+  if (options.activeFeatureWorktree) {
+    await git(["worktree", "add", "-b", "feature/session-worktree", activeWorktree, "HEAD"], repository);
+  }
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
     configPath: join(directory, "config.json")
@@ -149,7 +212,7 @@ async function createFixture(label) {
   await store.initialize();
   const snapshot = await createGitWorkspaceSnapshot(repository);
   store.upsertGitWorkspaceSnapshot(snapshot);
-  const identity = await inspectGitWorkspace(repository);
+  const identity = await inspectGitWorkspace(activeWorktree);
   store.createLogicalSessionRoute({
     logicalSessionId: "logical:one",
     providerThreadId: "thread-source",
@@ -160,6 +223,7 @@ async function createFixture(label) {
   return {
     directory,
     repository,
+    activeWorktree,
     store,
     async close() {
       await store.close();
@@ -178,4 +242,9 @@ async function git(arguments_, cwd) {
       GIT_COMMITTER_EMAIL: "tests@corptie.local"
     }
   });
+}
+
+async function gitOutput(arguments_, cwd) {
+  const result = await execFileAsync("git", ["-C", cwd, ...arguments_], { encoding: "utf8" });
+  return result.stdout;
 }
