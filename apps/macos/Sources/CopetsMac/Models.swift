@@ -422,6 +422,22 @@ struct SessionUsageEventPayload: Decodable {
     let context: CodexContextUsage
 }
 
+struct SessionWorkspaceSwitchedEventEnvelope: Decodable {
+    let payload: SessionWorkspaceSwitchedEventPayload
+}
+
+struct SessionWorkspaceSwitchedEventPayload: Decodable {
+    let session: TaskSession
+}
+
+struct SessionTransitionEventEnvelope: Decodable {
+    let payload: SessionTransitionEventPayload
+}
+
+struct SessionTransitionEventPayload: Decodable {
+    let sessionId: String?
+}
+
 struct CodexAccountUsage: Decodable, Equatable {
     let available: Bool?
     let provider: String?

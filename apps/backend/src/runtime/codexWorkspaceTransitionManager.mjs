@@ -34,6 +34,7 @@ export class CodexWorkspaceTransitionManager {
       transitionId: input.transitionId || `workspace-transition:${randomUUID()}`,
       logicalSessionId: input.logicalSessionId,
       targetWorktreeId: target.worktreeId,
+      targetCwd: target.canonicalPath || target.path,
       sourceRoutingVersion: logical.routingVersion,
       lastCompletedTurnId,
       strategy,
@@ -45,6 +46,32 @@ export class CodexWorkspaceTransitionManager {
         transition,
         activeTurnId
       };
+    }
+    return this.continueWorkspaceTransition(transition.transitionId, input);
+  }
+
+  async restartSession(input) {
+    const logical = this.store.getLogicalSession(input.logicalSessionId);
+    if (!logical?.activeBinding) {
+      throw new Error(`Logical session ${input.logicalSessionId} has no active route.`);
+    }
+    const activeTurnId = input.activeTurnId || null;
+    const lastCompletedTurnId = input.lastCompletedTurnId || null;
+    if (!activeTurnId && !lastCompletedTurnId) {
+      throw new Error("A completed source turn is required before restarting a session.");
+    }
+    const transition = this.store.beginWorkspaceTransition({
+      transitionId: input.transitionId || `session-restart:${randomUUID()}`,
+      logicalSessionId: input.logicalSessionId,
+      targetWorktreeId: logical.activeWorkspaceId,
+      targetCwd: logical.activeBinding.boundCwd,
+      sourceRoutingVersion: logical.routingVersion,
+      lastCompletedTurnId,
+      strategy: "fork",
+      phase: activeTurnId ? "waitingForTurn" : "preflighting"
+    });
+    if (activeTurnId) {
+      return { status: "waitingForTurn", transition, activeTurnId };
     }
     return this.continueWorkspaceTransition(transition.transitionId, input);
   }
@@ -75,7 +102,7 @@ export class CodexWorkspaceTransitionManager {
     if (!lastCompletedTurnId) {
       throw new Error("The active turn must complete before the workspace transition can continue.");
     }
-    const target = this.requireAvailableTarget(transition.targetWorktreeId);
+    const target = this.resolveTransitionTarget(transition);
     const targetCwd = target.canonicalPath || target.path;
     try {
       this.store.updateWorkspaceTransition(transitionId, {
@@ -298,7 +325,7 @@ export class CodexWorkspaceTransitionManager {
       throw new Error(`Workspace transition ${transitionId} has no recoverable forked thread.`);
     }
     const logical = this.store.getLogicalSession(transition.logicalSessionId);
-    const target = this.requireAvailableTarget(transition.targetWorktreeId);
+    const target = this.resolveTransitionTarget(transition);
     const targetCwd = target.canonicalPath || target.path;
     let response = null;
     let validation = null;
@@ -532,6 +559,22 @@ export class CodexWorkspaceTransitionManager {
       throw new Error(`Target worktree ${worktreeId} is not available.`);
     }
     return target;
+  }
+
+  resolveTransitionTarget(transition) {
+    if (transition.targetWorktreeId) {
+      return this.requireAvailableTarget(transition.targetWorktreeId);
+    }
+    if (!transition.targetCwd) {
+      throw new Error(`Workspace transition ${transition.transitionId} has no target cwd.`);
+    }
+    return {
+      worktreeId: null,
+      repositoryId: null,
+      path: transition.targetCwd,
+      canonicalPath: transition.targetCwd,
+      headOid: null
+    };
   }
 }
 

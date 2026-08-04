@@ -38,6 +38,40 @@ test("native SQLite persists committed writes immediately in WAL mode", async ()
   }
 });
 
+test("legacy workspace transition tables migrate to support regular directories", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-directory-transition-migration-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const legacy = new DatabaseSync(dbPath);
+  legacy.exec(`
+    CREATE TABLE workspace_transitions (
+      transition_id TEXT PRIMARY KEY,
+      logical_session_id TEXT NOT NULL,
+      source_thread_id TEXT NOT NULL,
+      target_worktree_id TEXT NOT NULL,
+      source_routing_version INTEGER NOT NULL,
+      last_completed_turn_id TEXT,
+      new_thread_id TEXT,
+      phase TEXT NOT NULL,
+      strategy TEXT NOT NULL DEFAULT 'fork',
+      error_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+  legacy.close();
+  const store = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+
+  try {
+    await store.initialize();
+    const columns = store.selectAll("PRAGMA table_info(workspace_transitions)");
+    assert.equal(columns.find((column) => column.name === "target_worktree_id")?.notnull, 0);
+    assert.equal(columns.find((column) => column.name === "target_cwd")?.notnull, 1);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("initialization refuses a corrupt database instead of replacing it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-corrupt-sqlite-"));
   const dbPath = join(directory, "corptie.sqlite");

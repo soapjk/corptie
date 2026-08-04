@@ -935,6 +935,15 @@ private struct SessionContextMenuContent: View {
             Label(L10n("Settings…"), systemImage: "gearshape")
         }
 
+        if session.external?.provider == "codex-app-server" {
+            Button {
+                backendClient.restart(session: session)
+            } label: {
+                Label(L10n("Restart Session"), systemImage: "arrow.clockwise")
+            }
+            .disabled(backendClient.restartingSessionIds.contains(session.id))
+        }
+
         Divider()
 
         Button {
@@ -2754,9 +2763,17 @@ private struct TaskCardView: View {
                     .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(1)
 
-                if let activityStatus = session.activityStatus,
-                   !activityStatus.isEmpty,
-                   session.status == .running {
+                if let restartActivity = backendClient.restartActivityBySessionId[session.id] {
+                    ActivityStatusText(
+                        text: restartActivity.text,
+                        isActive: restartActivity.isActive,
+                        fontSize: 11
+                    )
+                        .frame(height: 14)
+                        .layoutPriority(-1)
+                } else if let activityStatus = session.activityStatus,
+                          !activityStatus.isEmpty,
+                          session.status == .running {
                     ActivityStatusText(text: activityStatus, isActive: true, fontSize: 11)
                         .frame(height: 14)
                         .layoutPriority(-1)
@@ -4532,7 +4549,15 @@ private struct ThreadMetaView: View {
                 )
                 Text(detail.status.label)
                     .foregroundStyle(detail.status.color)
-                if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
+                if let sessionId = backendClient.selectedSession?.id,
+                   let restartActivity = backendClient.restartActivityBySessionId[sessionId] {
+                    ActivityStatusText(
+                        text: restartActivity.text,
+                        isActive: restartActivity.isActive,
+                        fontSize: 9
+                    )
+                        .layoutPriority(-1)
+                } else if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
                     ActivityStatusText(
                         text: activityStatus,
                         isActive: detail.status == .running,

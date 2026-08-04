@@ -4281,6 +4281,50 @@ function route(request, response) {
     return;
   }
 
+  const sessionRestartMatch = url.pathname.match(/^\/sessions\/([^/]+)\/restart$/);
+  if (request.method === "POST" && sessionRestartMatch) {
+    const sessionId = decodeURIComponent(sessionRestartMatch[1]);
+    Promise.resolve()
+      .then(async () => {
+        const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+        if (!session || session.external?.provider !== "codex-app-server") {
+          const error = new Error("Codex session not found.");
+          error.statusCode = 404;
+          throw error;
+        }
+        const logical = await ensureLogicalRouteForCodexSession(session);
+        const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+        const activeTurnId = session.external?.activeTurnId ?? null;
+        const agent = collaborationCore.getAgentForSession(sessionId);
+        const result = await codexWorkspaceTransitions.restartSession({
+          transitionId: `session-restart:${randomUUID()}`,
+          logicalSessionId: logical.logicalSessionId,
+          activeTurnId,
+          lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+          ...collaborationThreadOptions(agent?.agentId)
+        });
+        emitEvent(
+          result.status === "waitingForTurn"
+            ? "SessionRestartWaiting"
+            : "SessionRestartCompleted",
+          {
+            sessionId,
+            logicalSessionId: logical.logicalSessionId,
+            transition: result.transition
+          },
+          { sessionId }
+        );
+        sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
+      })
+      .catch((error) => {
+        sendJson(response, errorStatus(error, 400), {
+          error: error.message,
+          adapter: "codex-app-server"
+        });
+      });
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/codex/threads") {
     codexClient
       .listThreads({

@@ -2,6 +2,11 @@ import AppKit
 import Combine
 import Foundation
 
+struct SessionRestartActivity: Equatable {
+    let text: String
+    let isActive: Bool
+}
+
 @MainActor
 final class BackendClient: ObservableObject {
     static let shared = BackendClient()
@@ -31,6 +36,8 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isSwitchingModel = false
     @Published private(set) var isSwitchingReasoning = false
     @Published private(set) var connectionTransitionSessionIds = Set<String>()
+    @Published private(set) var restartingSessionIds = Set<String>()
+    @Published private(set) var restartActivityBySessionId: [String: SessionRestartActivity] = [:]
     @Published private(set) var undoneCodexTurnIds = Set<String>()
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var selectedSessionUsage: SessionUsageResponse?
@@ -48,6 +55,7 @@ final class BackendClient: ObservableObject {
     private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
     private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
     private var usageRefreshTask: Task<Void, Never>?
+    private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
     private var hasSyncedNewSessionDefaults = false
     private var isReorderingSessions = false
     private var sessionReorderRevision = 0
@@ -122,6 +130,24 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "SessionWorkspaceSwitched" {
+            if let payload = data.data(using: .utf8),
+               let event = try? JSONDecoder().decode(SessionWorkspaceSwitchedEventEnvelope.self, from: payload),
+               restartActivityBySessionId[event.payload.session.id] != nil {
+                completeRestartActivity(for: event.payload.session.id)
+                await refresh()
+            }
+            return
+        }
+        if eventName == "SessionWorkspaceSwitchFailed" {
+            if let payload = data.data(using: .utf8),
+               let event = try? JSONDecoder().decode(SessionTransitionEventEnvelope.self, from: payload),
+               let sessionId = event.payload.sessionId,
+               restartActivityBySessionId[sessionId] != nil {
+                failRestartActivity(for: sessionId)
+            }
+            return
+        }
         if eventName == "SessionUsageUpdated" {
             applyLiveUsageEvent(data)
             return
@@ -1448,6 +1474,85 @@ final class BackendClient: ObservableObject {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Reconnect failed: %@", error.localizedDescription)
             }
+        }
+    }
+
+    func restart(session: TaskSession) {
+        guard session.external?.provider == "codex-app-server",
+              !restartingSessionIds.contains(session.id) else {
+            return
+        }
+
+        Task {
+            restartingSessionIds.insert(session.id)
+            beginRestartActivity(for: session.id)
+            defer {
+                restartingSessionIds.remove(session.id)
+            }
+            do {
+                sendStatusMessage = L10n("Restarting session…")
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/restart"))
+                request.httpMethod = "POST"
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(
+                        Self.errorMessage(from: data) ?? L10n("Could not restart session.")
+                    )
+                }
+                sendStatusMessage = httpResponse.statusCode == 202
+                    ? L10n("Session will restart after the current run finishes")
+                    : L10n("Session restarted")
+                if httpResponse.statusCode != 202 {
+                    completeRestartActivity(for: session.id)
+                }
+                await refresh()
+                if selectedSession?.id == session.id,
+                   let refreshed = sessions.first(where: { $0.id == session.id }) {
+                    select(session: refreshed)
+                }
+            } catch {
+                failRestartActivity(for: session.id)
+                lastError = error.localizedDescription
+                sendStatusMessage = L10nFormat("Restart failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    private func beginRestartActivity(for sessionId: String) {
+        restartActivityClearTasks.removeValue(forKey: sessionId)?.cancel()
+        restartActivityBySessionId[sessionId] = SessionRestartActivity(
+            text: L10n("Restarting session…"),
+            isActive: true
+        )
+    }
+
+    private func completeRestartActivity(for sessionId: String) {
+        restartActivityClearTasks.removeValue(forKey: sessionId)?.cancel()
+        restartActivityBySessionId[sessionId] = SessionRestartActivity(
+            text: L10n("Session restarted"),
+            isActive: false
+        )
+        scheduleRestartActivityClear(for: sessionId, after: .seconds(2))
+    }
+
+    private func failRestartActivity(for sessionId: String) {
+        restartActivityClearTasks.removeValue(forKey: sessionId)?.cancel()
+        restartActivityBySessionId[sessionId] = SessionRestartActivity(
+            text: L10n("Restart failed"),
+            isActive: false
+        )
+        scheduleRestartActivityClear(for: sessionId, after: .seconds(4))
+    }
+
+    private func scheduleRestartActivityClear(for sessionId: String, after delay: Duration) {
+        restartActivityClearTasks[sessionId] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.restartActivityBySessionId.removeValue(forKey: sessionId)
+            self?.restartActivityClearTasks.removeValue(forKey: sessionId)
         }
     }
 
