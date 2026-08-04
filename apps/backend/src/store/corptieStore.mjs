@@ -662,7 +662,8 @@ export class CorptieStore {
         transition_id TEXT PRIMARY KEY,
         logical_session_id TEXT NOT NULL,
         source_thread_id TEXT NOT NULL,
-        target_worktree_id TEXT NOT NULL,
+        target_worktree_id TEXT,
+        target_cwd TEXT NOT NULL,
         source_routing_version INTEGER NOT NULL,
         last_completed_turn_id TEXT,
         new_thread_id TEXT,
@@ -691,6 +692,7 @@ export class CorptieStore {
     this.ensureColumn("sessions", "avatar_path", "TEXT");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
     this.ensureColumn("provider_thread_bindings", "routing_version", "INTEGER NOT NULL DEFAULT 1");
+    this.migrateWorkspaceTransitionsForDirectoryTargets();
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -1164,7 +1166,13 @@ export class CorptieStore {
   beginWorkspaceTransition(input) {
     const transitionId = requiredText(input?.transitionId, "transitionId");
     const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
-    const targetWorktreeId = requiredText(input?.targetWorktreeId, "targetWorktreeId");
+    const targetWorktreeId = typeof input?.targetWorktreeId === "string"
+      && input.targetWorktreeId.trim()
+      ? input.targetWorktreeId.trim()
+      : null;
+    let targetCwd = typeof input?.targetCwd === "string" && input.targetCwd.trim()
+      ? input.targetCwd.trim()
+      : null;
     const timestamp = input.createdAt || new Date().toISOString();
     const logicalSession = this.getLogicalSession(logicalSessionId);
     if (!logicalSession?.activeBinding) {
@@ -1174,13 +1182,20 @@ export class CorptieStore {
     if (sourceRoutingVersion !== logicalSession.routingVersion) {
       throw new Error(`Logical session routing version changed from ${sourceRoutingVersion} to ${logicalSession.routingVersion}.`);
     }
-    const target = this.selectOne(
-      "SELECT availability FROM git_worktrees WHERE worktree_id = ?",
-      [targetWorktreeId]
-    );
-    if (!target || target.availability !== "available") {
-      throw new Error(`Target worktree ${targetWorktreeId} is not available.`);
+    if (targetWorktreeId) {
+      const target = this.selectOne(
+        "SELECT availability, path, canonical_path FROM git_worktrees WHERE worktree_id = ?",
+        [targetWorktreeId]
+      );
+      if (!target || target.availability !== "available") {
+        throw new Error(`Target worktree ${targetWorktreeId} is not available.`);
+      }
+      targetCwd ??= target.canonical_path || target.path;
+      if (targetCwd !== (target.canonical_path || target.path)) {
+        throw new Error("The target cwd does not match the target worktree.");
+      }
     }
+    targetCwd = requiredText(targetCwd, "targetCwd");
     const unfinished = this.selectOne(
       `SELECT transition_id FROM workspace_transitions
        WHERE logical_session_id = ? AND phase NOT IN ('committed', 'failed')`,
@@ -1193,15 +1208,16 @@ export class CorptieStore {
     try {
       this.db.run(
         `INSERT INTO workspace_transitions (
-          transition_id, logical_session_id, source_thread_id, target_worktree_id,
+          transition_id, logical_session_id, source_thread_id, target_worktree_id, target_cwd,
           source_routing_version, last_completed_turn_id, phase, strategy,
           error_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
         [
           transitionId,
           logicalSessionId,
           logicalSession.activeThreadId,
           targetWorktreeId,
+          targetCwd,
           sourceRoutingVersion,
           input.lastCompletedTurnId || null,
           input.phase || "waitingForTurn",
@@ -1281,15 +1297,18 @@ export class CorptieStore {
     }
     const newThreadId = requiredText(binding?.providerThreadId, "providerThreadId");
     const boundCwd = requiredText(binding?.boundCwd, "boundCwd");
-    const target = this.selectOne(
-      "SELECT * FROM git_worktrees WHERE worktree_id = ?",
-      [transition.targetWorktreeId]
-    );
-    if (!target || target.availability !== "available") {
+    const target = transition.targetWorktreeId
+      ? this.selectOne(
+        "SELECT * FROM git_worktrees WHERE worktree_id = ?",
+        [transition.targetWorktreeId]
+      )
+      : null;
+    if (transition.targetWorktreeId && (!target || target.availability !== "available")) {
       throw new Error(`Target worktree ${transition.targetWorktreeId} is not available.`);
     }
-    if (boundCwd !== (target.canonical_path || target.path)) {
-      throw new Error("The new thread cwd does not match the target worktree.");
+    if (boundCwd !== transition.targetCwd
+      || (target && boundCwd !== (target.canonical_path || target.path))) {
+      throw new Error("The new thread cwd does not match the transition target.");
     }
     const timestamp = binding.createdAt || new Date().toISOString();
     this.db.run("BEGIN IMMEDIATE");
@@ -1348,7 +1367,7 @@ export class CorptieStore {
         [
           newThreadId,
           transition.targetWorktreeId,
-          target.repository_id,
+          target?.repository_id ?? null,
           timestamp,
           transition.logicalSessionId
         ]
@@ -2102,6 +2121,60 @@ export class CorptieStore {
     this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
+  migrateWorkspaceTransitionsForDirectoryTargets() {
+    const columns = this.selectAll("PRAGMA table_info(workspace_transitions)");
+    const targetWorktree = columns.find((column) => column.name === "target_worktree_id");
+    const targetCwd = columns.find((column) => column.name === "target_cwd");
+    if (targetCwd && Number(targetWorktree?.notnull) === 0) return;
+
+    this.db.run(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN IMMEDIATE;
+      CREATE TABLE workspace_transitions_next (
+        transition_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        source_thread_id TEXT NOT NULL,
+        target_worktree_id TEXT,
+        target_cwd TEXT NOT NULL,
+        source_routing_version INTEGER NOT NULL,
+        last_completed_turn_id TEXT,
+        new_thread_id TEXT,
+        phase TEXT NOT NULL CHECK (phase IN (
+          'waitingForTurn', 'preflighting', 'forking', 'validatingInstructions',
+          'committingRoute', 'committed', 'failed'
+        )),
+        strategy TEXT NOT NULL DEFAULT 'fork'
+          CHECK (strategy IN ('fork', 'handoff', 'settingsUpdate')),
+        error_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_thread_id) REFERENCES provider_thread_bindings(provider_thread_id) ON DELETE RESTRICT,
+        FOREIGN KEY (target_worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT
+      );
+      INSERT INTO workspace_transitions_next (
+        transition_id, logical_session_id, source_thread_id, target_worktree_id, target_cwd,
+        source_routing_version, last_completed_turn_id, new_thread_id, phase, strategy,
+        error_json, created_at, updated_at
+      )
+      SELECT transition_id, logical_session_id, source_thread_id, target_worktree_id,
+             COALESCE(
+               (SELECT canonical_path FROM git_worktrees WHERE worktree_id = target_worktree_id),
+               (SELECT path FROM git_worktrees WHERE worktree_id = target_worktree_id),
+               (SELECT bound_cwd FROM provider_thread_bindings WHERE provider_thread_id = source_thread_id)
+             ),
+             source_routing_version, last_completed_turn_id, new_thread_id, phase, strategy,
+             error_json, created_at, updated_at
+      FROM workspace_transitions;
+      DROP TABLE workspace_transitions;
+      ALTER TABLE workspace_transitions_next RENAME TO workspace_transitions;
+      CREATE INDEX idx_workspace_transitions_session
+      ON workspace_transitions(logical_session_id, created_at DESC);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+  }
+
   initializeSortOrder() {
     const rows = this.selectAll(
       "SELECT id FROM sessions WHERE sort_order IS NULL ORDER BY archived ASC, updated_at DESC"
@@ -2275,6 +2348,7 @@ function workspaceTransitionFromRow(row) {
     logicalSessionId: row.logical_session_id,
     sourceThreadId: row.source_thread_id,
     targetWorktreeId: row.target_worktree_id,
+    targetCwd: row.target_cwd,
     sourceRoutingVersion: Number(row.source_routing_version),
     lastCompletedTurnId: row.last_completed_turn_id,
     newThreadId: row.new_thread_id,

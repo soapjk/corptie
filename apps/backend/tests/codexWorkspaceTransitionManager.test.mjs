@@ -95,6 +95,88 @@ test("workspace transition waits for an active turn then atomically routes a for
   }
 });
 
+test("a Git workspace session restarts its thread while preserving context", async () => {
+  const fixture = await createFixture("restart");
+  const calls = [];
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async forkThread(threadId, options) {
+        calls.push({ threadId, options });
+        return {
+          thread: { id: "thread-restarted", cwd: fixture.main },
+          cwd: fixture.main,
+          runtimeWorkspaceRoots: [fixture.main],
+          instructionSources: [fixture.rootInstructions, fixture.sourceInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.main] }
+        };
+      }
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.sourceInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.restartSession({
+      transitionId: "transition:restart",
+      logicalSessionId: "logical:one",
+      lastCompletedTurnId: "turn-7"
+    });
+    assert.equal(result.status, "committed");
+    assert.equal(result.logicalSession.activeThreadId, "thread-restarted");
+    assert.equal(result.logicalSession.activeWorkspaceId, "worktree:main");
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].threadId, "thread-source");
+    assert.equal(calls[0].options.lastTurnId, "turn-7");
+    assert.equal(calls[0].options.cwd, fixture.main);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a session in a regular directory restarts without a Git worktree", async () => {
+  const fixture = await createDirectoryFixture("non-git-restart");
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async forkThread(threadId, options) {
+        assert.equal(threadId, "thread-source");
+        assert.equal(options.cwd, fixture.workspace);
+        assert.equal(options.lastTurnId, "turn-4");
+        return {
+          thread: { id: "thread-restarted", cwd: fixture.workspace },
+          cwd: fixture.workspace,
+          runtimeWorkspaceRoots: [fixture.workspace],
+          instructionSources: [fixture.instructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.workspace] }
+        };
+      }
+    },
+    requiredInstructionSources: async () => [fixture.instructions]
+  });
+
+  try {
+    const result = await manager.restartSession({
+      transitionId: "transition:non-git-restart",
+      logicalSessionId: "logical:directory",
+      lastCompletedTurnId: "turn-4"
+    });
+    assert.equal(result.status, "committed");
+    assert.equal(result.logicalSession.activeThreadId, "thread-restarted");
+    assert.equal(result.logicalSession.activeWorkspaceId, null);
+    assert.equal(result.logicalSession.repositoryId, null);
+    assert.equal(result.logicalSession.activeBinding.boundCwd, fixture.workspace);
+    assert.equal(result.transition.targetWorktreeId, null);
+    assert.equal(result.transition.targetCwd, fixture.workspace);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("invalid fork instruction sources preserve the original route and retain an invalid child binding", async () => {
   const fixture = await createFixture("invalid");
   const manager = new CodexWorkspaceTransitionManager({
@@ -606,6 +688,39 @@ async function createFixture(label) {
     rootInstructions,
     sourceInstructions,
     featureInstructions,
+    store,
+    async close() {
+      await store.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  };
+}
+
+async function createDirectoryFixture(label) {
+  const directory = await mkdtemp(join(tmpdir(), `corptie-transition-${label}-`));
+  const workspace = join(directory, "regular directory");
+  await mkdir(workspace);
+  const instructions = join(workspace, "AGENTS.md");
+  await writeFile(instructions, "directory instructions");
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  await store.initialize();
+  store.createLogicalSessionRoute({
+    logicalSessionId: "logical:directory",
+    providerThreadId: "thread-source",
+    boundCwd: workspace,
+    instructionSources: [instructions],
+    permissionSnapshot: {
+      approvalPolicy: "on-request",
+      sandboxPolicy: { type: "workspaceWrite", writableRoots: [workspace] }
+    }
+  });
+  return {
+    directory,
+    workspace,
+    instructions,
     store,
     async close() {
       await store.close();

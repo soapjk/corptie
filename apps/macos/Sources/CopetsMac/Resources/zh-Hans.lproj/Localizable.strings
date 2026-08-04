@@ -91,6 +91,13 @@
 "Register Service" = "注册服务";
 "Reload models" = "重新加载模型";
 "Rename" = "重命名";
+"Restart Session" = "重启会话";
+"Restarting session…" = "正在重启会话…";
+"Session will restart after the current run finishes" = "当前运行结束后将重启会话";
+"Session restarted" = "会话已重启";
+"Could not restart session." = "无法重启会话。";
+"Restart failed: %@" = "重启失败：%@";
+"Restart failed" = "重启失败";
 "Rename Task" = "重命名任务";
 "Restore" = "恢复";
 "Review" = "查看更改";
