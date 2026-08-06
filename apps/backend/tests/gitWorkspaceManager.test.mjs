@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -16,6 +16,13 @@ const execFileAsync = promisify(execFile);
 
 test("createWorktree uses parameterized Git arguments, validates identity, and schedules a switch", async () => {
   const fixture = await createFixture("create");
+  await mkdir(join(fixture.repository, ".corptie"));
+  await writeFile(join(fixture.repository, ".corptie", "private.json"), "{}\n");
+  await mkdir(join(fixture.repository, ".agents", "skills"), { recursive: true });
+  await writeFile(join(fixture.repository, ".agents", "skills", "local.md"), "private skill\n");
+  await writeFile(join(fixture.repository, "AGENTS.md"), "# Tracked instructions\n");
+  await git(["add", "AGENTS.md"], fixture.repository);
+  await git(["commit", "-m", "add tracked instructions"], fixture.repository);
   const switches = [];
   const manager = new GitWorkspaceManager({
     store: fixture.store,
@@ -44,6 +51,20 @@ test("createWorktree uses parameterized Git arguments, validates identity, and s
     assert.equal(switches.length, 1);
     assert.equal(switches[0].targetWorktreeId, result.worktree.worktreeId);
     assert.equal(switches[0].activeTurnId, "turn-active");
+    assert.deepEqual(result.sharedAgentConfiguration.linked.sort(), [".agents", ".corptie"]);
+    assert.equal(
+      await readlink(join(target, ".corptie")),
+      join(await realpath(fixture.repository), ".corptie")
+    );
+    assert.equal(
+      await readlink(join(target, ".agents")),
+      join(await realpath(fixture.repository), ".agents")
+    );
+    assert.equal((await lstat(join(target, "AGENTS.md"))).isSymbolicLink(), false);
+    assert.deepEqual(
+      (await gitOutput(["status", "--short"], target)).trim().split("\n").sort(),
+      ["?? .agents", "?? .corptie"]
+    );
     const identity = await inspectGitWorkspace(target);
     assert.equal(identity.repositoryId, result.repositoryId);
   } finally {
@@ -188,6 +209,273 @@ test("session deletion merge refuses to modify a dirty main worktree", async () 
       /main worktree has uncommitted changes/
     );
     assert.match(await gitOutput(["status", "--porcelain"], fixture.activeWorktree), /source-change\.txt/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("uncommitted changes in the main worktree can be committed explicitly", async () => {
+  const fixture = await createFixture("commit-main", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "main-change.txt"), "commit from manager\n");
+  try {
+    const project = await manager.projectStatus("logical:one");
+    const main = project.worktrees.find((worktree) => worktree.isMain);
+    const result = await manager.commitWorktreeChanges({
+      logicalSessionId: "logical:one",
+      sourceWorktreeId: main.worktreeId,
+      commitMessage: "Commit main worktree changes"
+    });
+    assert.equal(result.committed, true);
+    assert.equal(result.commitMessage, "Commit main worktree changes");
+    assert.equal((await gitOutput(["status", "--porcelain"], fixture.repository)).trim(), "");
+    assert.equal(
+      (await gitOutput(["log", "-1", "--pretty=%s"], fixture.repository)).trim(),
+      "Commit main worktree changes"
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("project status distinguishes working, pending, and synchronized worktrees", async () => {
+  const fixture = await createFixture("project-status", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    let project = await manager.projectStatus("logical:one");
+    let feature = project.worktrees.find((worktree) => !worktree.isMain);
+    assert.equal(project.pendingWorktreeCount, 0);
+    assert.equal(feature.state, "synced");
+    assert.equal(feature.synchronizedWithMain, true);
+
+    await writeFile(join(fixture.activeWorktree, "feature.txt"), "working\n");
+    project = await manager.projectStatus("logical:one");
+    feature = project.worktrees.find((worktree) => !worktree.isMain);
+    assert.equal(project.pendingWorktreeCount, 1);
+    assert.equal(feature.state, "working");
+    assert.equal(feature.dirty, true);
+    assert.equal(feature.synchronizedWithMain, false);
+
+    await git(["add", "feature.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "feature work"], fixture.activeWorktree);
+    project = await manager.projectStatus("logical:one");
+    feature = project.worktrees.find((worktree) => !worktree.isMain);
+    assert.equal(feature.state, "readyToMerge");
+    assert.equal(feature.aheadOfMain, 1);
+    assert.equal(feature.mergedIntoMain, false);
+    assert.equal(feature.synchronizedWithMain, false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("stage merge retains and synchronizes the source worktree", async () => {
+  const fixture = await createFixture("stage-merge", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.activeWorktree, "stage.txt"), "stage\n");
+  try {
+    const result = await manager.mergeWorktreeIntoMain({
+      logicalSessionId: "logical:one",
+      commitMessage: "Stage worktree progress",
+      synchronizeSource: true
+    });
+    assert.equal(result.merged, true);
+    assert.equal(result.committed, true);
+    assert.equal(result.sourceSynchronized, true);
+    assert.equal(await readFile(join(fixture.repository, "stage.txt"), "utf8"), "stage\n");
+    assert.equal(
+      (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim(),
+      (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim()
+    );
+    const project = await manager.projectStatus("logical:one");
+    const feature = project.worktrees.find((worktree) => !worktree.isMain);
+    assert.equal(feature.state, "synced");
+    assert.equal(feature.synchronizedWithMain, true);
+    assert.equal(project.pendingWorktreeCount, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a merged worktree can be synchronized with main as a separate operation", async () => {
+  const fixture = await createFixture("separate-sync", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.activeWorktree, "separate.txt"), "separate\n");
+  try {
+    await manager.mergeWorktreeIntoMain({
+      logicalSessionId: "logical:one",
+      commitMessage: "Merge before separate sync",
+      synchronizeSource: false
+    });
+    let project = await manager.projectStatus("logical:one");
+    let feature = project.worktrees.find((worktree) => !worktree.isMain);
+    assert.equal(feature.mergedIntoMain, true);
+    assert.equal(feature.synchronizedWithMain, false);
+
+    const result = await manager.synchronizeWorktreeWithMain({
+      logicalSessionId: "logical:one",
+      sourceWorktreeId: feature.worktreeId
+    });
+    assert.equal(result.synchronized, true);
+    project = await manager.projectStatus("logical:one");
+    feature = project.worktrees.find((worktree) => !worktree.isMain);
+    assert.equal(feature.synchronizedWithMain, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("completed merge removes the worktree and its merged branch", async () => {
+  const fixture = await createFixture("complete", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.activeWorktree, "complete.txt"), "complete\n");
+  try {
+    const merge = await manager.mergeWorktreeIntoMain({
+      logicalSessionId: "logical:one",
+      commitMessage: "Complete worktree"
+    });
+    const removed = await manager.removeMergedWorktree({
+      logicalSessionId: "logical:one",
+      sourceWorktreeId: merge.sourceWorktreeId,
+      ignoreLogicalSessionIds: ["logical:one"],
+      deleteBranch: true
+    });
+    assert.equal(removed.removed, true);
+    assert.equal(removed.branchDeleted, true);
+    await assert.rejects(() => inspectGitWorkspace(fixture.activeWorktree));
+    await assert.rejects(
+      () => gitOutput(["rev-parse", "--verify", "feature/session-worktree"], fixture.repository)
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("unmerged worktree deletion requires irreversible confirmation and the exact branch name", async () => {
+  const fixture = await createFixture("force-delete", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.activeWorktree, "first.txt"), "first\n");
+    await git(["add", "first.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "First unmerged change"], fixture.activeWorktree);
+    await writeFile(join(fixture.activeWorktree, "second.txt"), "second\n");
+    await git(["add", "second.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "Second unmerged change"], fixture.activeWorktree);
+    const sourceWorktreeId = (await inspectGitWorkspace(fixture.activeWorktree)).worktreeId;
+
+    await assert.rejects(
+      () => manager.removeMergedWorktree({
+        logicalSessionId: "logical:one",
+        sourceWorktreeId,
+        ignoreLogicalSessionIds: ["logical:one"],
+        deleteBranch: true
+      }),
+      /has 2 commits.*Confirm the full branch name/
+    );
+    await assert.rejects(
+      () => manager.removeMergedWorktree({
+        logicalSessionId: "logical:one",
+        sourceWorktreeId,
+        ignoreLogicalSessionIds: ["logical:one"],
+        deleteBranch: true,
+        forceDeleteUnmerged: true,
+        acknowledgeIrrecoverable: true,
+        confirmedBranchName: "feature/wrong-name"
+      }),
+      /Confirm the full branch name/
+    );
+
+    const removed = await manager.removeMergedWorktree({
+      logicalSessionId: "logical:one",
+      sourceWorktreeId,
+      ignoreLogicalSessionIds: ["logical:one"],
+      deleteBranch: true,
+      forceDeleteUnmerged: true,
+      acknowledgeIrrecoverable: true,
+      confirmedBranchName: "feature/session-worktree"
+    });
+    assert.equal(removed.removed, true);
+    assert.equal(removed.forced, true);
+    assert.equal(removed.discardedCommitCount, 2);
+    await assert.rejects(() => inspectGitWorkspace(fixture.activeWorktree));
+    await assert.rejects(
+      () => gitOutput(["rev-parse", "--verify", "feature/session-worktree"], fixture.repository)
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("confirmed permanent deletion also discards uncommitted worktree changes", async () => {
+  const fixture = await createFixture("force-delete-dirty", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.activeWorktree, "uncommitted.txt"), "discard me\n");
+    const sourceWorktreeId = (await inspectGitWorkspace(fixture.activeWorktree)).worktreeId;
+    await assert.rejects(
+      () => manager.removeMergedWorktree({
+        logicalSessionId: "logical:one",
+        sourceWorktreeId,
+        ignoreLogicalSessionIds: ["logical:one"],
+        deleteBranch: true
+      }),
+      /and uncommitted changes/
+    );
+    const removed = await manager.removeMergedWorktree({
+      logicalSessionId: "logical:one",
+      sourceWorktreeId,
+      ignoreLogicalSessionIds: ["logical:one"],
+      deleteBranch: true,
+      forceDeleteUnmerged: true,
+      acknowledgeIrrecoverable: true,
+      confirmedBranchName: "feature/session-worktree"
+    });
+    assert.equal(removed.forced, true);
+    assert.equal(removed.discardedCommitCount, 0);
+    await assert.rejects(() => inspectGitWorkspace(fixture.activeWorktree));
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a manually deleted worktree can be rebuilt from its surviving branch", async () => {
+  const fixture = await createFixture("restore-missing", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.activeWorktree, "preserved.txt"), "preserved by branch\n");
+    await git(["add", "preserved.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "Preserve branch content"], fixture.activeWorktree);
+    await rm(fixture.activeWorktree, { recursive: true, force: true });
+
+    const restored = await manager.restoreMissingWorktree({ logicalSessionId: "logical:one" });
+    assert.equal(restored.restored.branchName, "feature/session-worktree");
+    assert.equal(await readFile(join(fixture.activeWorktree, "preserved.txt"), "utf8"), "preserved by branch\n");
+    const identity = await inspectGitWorkspace(fixture.activeWorktree);
+    assert.equal(identity.worktreeId, restored.restored.worktreeId);
   } finally {
     await fixture.close();
   }

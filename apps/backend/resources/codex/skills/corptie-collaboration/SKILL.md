@@ -7,6 +7,8 @@ description: Coordinate structured, point-to-point work with independent Corptie
 
 Treat every Agent as an independent peer with its own identity, Session, context, and service responsibilities. Use Corptie as deterministic messaging infrastructure, not as a central manager.
 
+When Corptie explicitly creates a one-time project-toolset initialization or update turn, read and follow [the Corptie Scripts Tools Set protocol](references/project-tools-set.md). Never load or apply that low-frequency protocol during ordinary development or collaboration work.
+
 ## Establish identity and ownership
 
 1. Treat the authenticated Agent identity supplied by Corptie as fixed. Never claim another `agent_id`.

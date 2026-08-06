@@ -28,6 +28,13 @@ export function resolveCorptieRuntimePaths(options = {}) {
     skillsDir: join(codexHome, "skills"),
     collaborationSkillDir: join(codexHome, "skills", "corptie-collaboration"),
     collaborationSkillPath: join(codexHome, "skills", "corptie-collaboration", "SKILL.md"),
+    collaborationProjectToolsReferencePath: join(
+      codexHome,
+      "skills",
+      "corptie-collaboration",
+      "references",
+      "project-tools-set.md"
+    ),
     sourceAuthPath: resolve(options.sourceAuthPath ?? join(home, ".codex", "auth.json")),
     legacyCodexHome: resolve(options.legacyCodexHome ?? join(home, ".codex")),
     authBootstrapMarkerPath: join(codexHome, ".corptie-auth-bootstrap-v1.json"),
@@ -40,6 +47,9 @@ export async function ensureCorptieCodexRuntime(options = {}) {
   const bundledSkillPath = resolve(String(options.bundledSkillPath ?? ""));
   const bundledAgentsPath = resolve(String(options.bundledAgentsPath ?? ""));
   const collaborationMcpServerPath = resolve(String(options.collaborationMcpServerPath ?? ""));
+  const bundledProjectToolsReferencePath = options.bundledProjectToolsReferencePath
+    ? resolve(String(options.bundledProjectToolsReferencePath))
+    : null;
 
   if (!options.bundledAgentsPath || !await isFile(bundledAgentsPath)) {
     throw new Error(`Bundled Codex global AGENTS.md is missing: ${bundledAgentsPath}`);
@@ -50,15 +60,26 @@ export async function ensureCorptieCodexRuntime(options = {}) {
   if (!options.collaborationMcpServerPath || !await isFile(collaborationMcpServerPath)) {
     throw new Error(`Bundled Corptie collaboration MCP server is missing: ${collaborationMcpServerPath}`);
   }
+  if (bundledProjectToolsReferencePath && !await isFile(bundledProjectToolsReferencePath)) {
+    throw new Error(`Bundled Corptie project-tools reference is missing: ${bundledProjectToolsReferencePath}`);
+  }
 
   await mkdir(paths.codexHome, { recursive: true, mode: 0o700 });
   await chmod(paths.codexHome, 0o700);
   await mkdir(paths.collaborationSkillDir, { recursive: true, mode: 0o700 });
+  await mkdir(dirname(paths.collaborationProjectToolsReferencePath), { recursive: true, mode: 0o700 });
 
   const configChanged = await ensureRuntimeConfig(paths.configPath);
   const authCopied = await bootstrapAuthentication(paths);
   const agentsCreated = await installInitialAgentsFile(bundledAgentsPath, paths.agentsPath, paths.codexHome, 0o600);
   const skillChanged = await syncManagedFile(bundledSkillPath, paths.collaborationSkillPath, 0o600);
+  const projectToolsReferenceChanged = bundledProjectToolsReferencePath
+    ? await syncManagedFile(
+        bundledProjectToolsReferencePath,
+        paths.collaborationProjectToolsReferencePath,
+        0o600
+      )
+    : false;
   const threadMigration = await migrateLegacyThreads(paths, options.legacyThreadIds ?? []);
 
   return {
@@ -70,6 +91,7 @@ export async function ensureCorptieCodexRuntime(options = {}) {
     authCopied,
     agentsCreated,
     skillChanged,
+    projectToolsReferenceChanged,
     threadMigration,
     authAvailable: await isFile(paths.authPath),
     agentsAvailable: await isFile(paths.agentsPath),

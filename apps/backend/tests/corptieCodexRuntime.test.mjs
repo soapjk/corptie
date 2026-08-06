@@ -13,15 +13,17 @@ async function withFixture(run) {
   const sourceAuthPath = join(directory, "native-codex", "auth.json");
   const bundledAgentsPath = join(directory, "bundle", "global-instructions.production.md");
   const bundledSkillPath = join(directory, "bundle", "SKILL.md");
+  const bundledProjectToolsReferencePath = join(directory, "bundle", "project-tools-set.md");
   const collaborationMcpServerPath = join(directory, "bundle", "collaborationMcpServer.mjs");
   await mkdir(join(directory, "native-codex"), { recursive: true });
   await mkdir(join(directory, "bundle"), { recursive: true });
   await writeFile(sourceAuthPath, '{"token":"local-test-token"}\n');
   await writeFile(bundledAgentsPath, "# Corptie global instructions\n\nCODEX_HOME: `{{CODEX_HOME}}`\n");
   await writeFile(bundledSkillPath, "---\nname: corptie-collaboration\ndescription: test\n---\n\n# Test\n");
+  await writeFile(bundledProjectToolsReferencePath, "# Project tools protocol\n");
   await writeFile(collaborationMcpServerPath, "export {};\n");
   try {
-    await run({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath });
+    await run({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, bundledProjectToolsReferencePath, collaborationMcpServerPath });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -39,12 +41,13 @@ test("resolves isolated production and development Codex homes", () => {
 });
 
 test("initialization copies authentication and installs required runtime files", async () => {
-  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, bundledProjectToolsReferencePath, collaborationMcpServerPath }) => {
     const result = await ensureCorptieCodexRuntime({
       corptieHome: join(directory, ".corptie"),
       sourceAuthPath,
       bundledAgentsPath,
       bundledSkillPath,
+      bundledProjectToolsReferencePath,
       collaborationMcpServerPath
     });
 
@@ -61,6 +64,10 @@ test("initialization copies authentication and installs required runtime files",
     assert.match(agents, new RegExp(`CODEX_HOME: \\\`${escapeRegExp(result.codexHome)}\\\``));
     assert.doesNotMatch(agents, /\{\{CODEX_HOME\}\}/);
     assert.equal(await readFile(result.collaborationSkillPath, "utf8"), await readFile(bundledSkillPath, "utf8"));
+    assert.equal(
+      await readFile(result.collaborationProjectToolsReferencePath, "utf8"),
+      await readFile(bundledProjectToolsReferencePath, "utf8")
+    );
     assert.equal((await stat(result.codexHome)).mode & 0o777, 0o700);
     assert.equal((await stat(result.authPath)).mode & 0o777, 0o600);
     assert.equal((await stat(result.agentsPath)).mode & 0o777, 0o600);

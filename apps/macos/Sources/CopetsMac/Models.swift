@@ -79,13 +79,32 @@ struct SessionWorkspace: Codable, Equatable, Sendable {
     var previousThreadId: String? = nil
 }
 
+struct WorkspaceRecoveryStatus: Decodable, Equatable, Sendable {
+    let orphaned: Bool
+    let originalPath: String?
+    let originalBranchName: String?
+    let canRebuild: Bool?
+    let worktrees: [WorkspaceRecoveryWorktree]
+}
+
+struct WorkspaceRecoveryWorktree: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { worktreeId }
+    let worktreeId: String
+    let path: String
+    let branchName: String?
+    let isMain: Bool
+    let availability: String
+}
+
 struct SessionDeletionPlan: Decodable, Sendable {
     let requiresWorktreeMerge: Bool
+    let workspaceUnavailable: Bool?
     let sourcePath: String?
     let sourceBranch: String?
     let mainPath: String?
     let mainBranch: String?
     let hasUncommittedChanges: Bool?
+    let unavailableReason: String?
 }
 
 struct SessionWorkspaceHistoryResponse: Decodable, Sendable {
@@ -118,6 +137,123 @@ struct SessionWorkspaceHistory: Identifiable, Decodable, Equatable, Sendable {
     let availability: String?
     let createdAt: String
     let updatedAt: String
+}
+
+struct ProjectWorktreeStatusResponse: Decodable, Equatable, Sendable {
+    let project: ProjectGitStatus
+    let toolset: ProjectToolsetStatus
+    let service: ProjectServiceStatus
+}
+
+struct ProjectGitStatus: Decodable, Equatable, Sendable {
+    let repositoryId: String
+    let mainWorktreeId: String
+    let mainPath: String
+    let mainBranch: String
+    let mainHeadOid: String
+    let pendingWorktreeCount: Int
+    let worktrees: [ProjectWorktreeStatus]
+}
+
+struct ProjectWorktreeStatus: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { worktreeId }
+    let worktreeId: String
+    let path: String
+    let isMain: Bool
+    let availability: String
+    let headOid: String?
+    let branchName: String?
+    let state: String
+    let dirty: Bool?
+    let mergedIntoMain: Bool?
+    let synchronizedWithMain: Bool?
+    let serviceContainsChanges: Bool?
+    let aheadOfMain: Int?
+    let behindMain: Int?
+    let pendingIntegration: Bool
+    let sessions: [ProjectWorktreeSession]
+}
+
+struct ProjectWorktreeSession: Decodable, Equatable, Sendable {
+    let logicalSessionId: String
+    let sessionId: String?
+    let title: String?
+    let active: Bool
+}
+
+struct ProjectToolsetStatus: Decodable, Equatable, Sendable {
+    let installed: Bool
+    let configured: Bool
+    let schemaVersion: Int?
+    let mainPath: String
+    let toolsetPath: String
+}
+
+struct ProjectServiceStatus: Decodable, Equatable, Sendable {
+    let state: String
+    let configurationError: String?
+    let freshness: String
+    let running: Bool?
+    let healthy: Bool?
+    let mainHeadOid: String?
+    let runningRevision: String?
+    let dirty: Bool?
+    let startedAt: String?
+    let worktreePath: String?
+}
+
+struct ProjectWorktreeActionResponse: Decodable, Sendable {
+    let deletedSessionIds: [String]?
+}
+
+struct GitCommitProtectionStatus: Decodable, Equatable, Sendable {
+    let repositoryRoot: String
+    let protectedPaths: [String]
+    let suggestedIgnorePatterns: [String]
+    let warningEnabled: Bool
+    let requiresDecision: Bool
+}
+
+struct ProtectedWorktreeCommitPrompt: Identifiable, Equatable, Sendable {
+    var id: String { worktree.worktreeId }
+    let worktree: ProjectWorktreeStatus
+    let protection: GitCommitProtectionStatus
+}
+
+struct GitHubPushPreparation: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { confirmationToken }
+    let confirmationToken: String
+    let expiresAt: String
+    let repository: String
+    let destinationService: String
+    let remoteName: String
+    let remoteUrl: String
+    let destinationUrl: String
+    let branch: String
+    let includesSourceCode: Bool
+    let visibility: String
+    let retention: String
+    let action: String
+    let dirty: Bool
+    let changedFiles: [String]
+    let filesToPush: [String]
+    let commitsToPush: [GitHubPushCommit]
+    let statusSummary: String
+    let commitProtection: GitCommitProtectionStatus?
+}
+
+struct GitHubPushCommit: Decodable, Equatable, Sendable {
+    let oid: String
+    let subject: String
+}
+
+struct GitHubPushResult: Decodable, Sendable {
+    let pushed: Bool
+    let committed: Bool
+    let commitMessage: String?
+    let headOid: String
+    let branch: String
+    let destinationUrl: String
 }
 
 struct SessionCapabilities: Codable, Equatable, Sendable {

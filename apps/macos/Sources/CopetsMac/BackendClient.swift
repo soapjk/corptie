@@ -41,6 +41,16 @@ final class BackendClient: ObservableObject {
     @Published private(set) var undoneCodexTurnIds = Set<String>()
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var selectedSessionUsage: SessionUsageResponse?
+    @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
+    @Published private(set) var isLoadingProjectWorktrees = false
+    @Published private(set) var projectWorktreeActionIds = Set<String>()
+    @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
+    @Published private(set) var gitHubPushError: String?
+    @Published private(set) var isPreparingGitHubPush = false
+    @Published private(set) var isPushingGitHub = false
+    @Published private(set) var workspaceRecoveryStatus: WorkspaceRecoveryStatus?
+    @Published private(set) var isRecoveringWorkspace = false
+    @Published private(set) var protectedWorktreeCommitPrompt: ProtectedWorktreeCommitPrompt?
     let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
@@ -55,10 +65,16 @@ final class BackendClient: ObservableObject {
     private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
     private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
     private var usageRefreshTask: Task<Void, Never>?
+    private var projectStatusRefreshTask: Task<Void, Never>?
     private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
     private var hasSyncedNewSessionDefaults = false
     private var isReorderingSessions = false
     private var sessionReorderRevision = 0
+    private var pendingProtectedWorktreeAction: (
+        worktree: ProjectWorktreeStatus,
+        action: String,
+        body: [String: Any]
+    )?
 
     func start() {
         pollingTask?.cancel()
@@ -87,6 +103,8 @@ final class BackendClient: ObservableObject {
         detailStreamTask = nil
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
+        projectStatusRefreshTask?.cancel()
+        projectStatusRefreshTask = nil
     }
 
     private func startEventStream() {
@@ -1013,6 +1031,17 @@ final class BackendClient: ObservableObject {
                 try? await Task.sleep(for: .seconds(30))
             }
         }
+        selectedProjectWorktreeStatus = nil
+        workspaceRecoveryStatus = nil
+        projectStatusRefreshTask?.cancel()
+        if session.external?.provider == "codex-app-server" {
+            projectStatusRefreshTask = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.loadProjectWorktreeStatus(for: session)
+                    try? await Task.sleep(for: .seconds(5))
+                }
+            }
+        }
         Task {
             await Task.yield()
             guard selectedSession?.id == session.id else {
@@ -1027,13 +1056,404 @@ final class BackendClient: ObservableObject {
     func closeDetail() {
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
+        projectStatusRefreshTask?.cancel()
+        projectStatusRefreshTask = nil
         detailStreamTask?.cancel()
         detailStreamTask = nil
         selectedSession = nil
         selectedDetail = nil
         viewingHistoricalThreadId = nil
         selectedSessionUsage = nil
+        selectedProjectWorktreeStatus = nil
+        workspaceRecoveryStatus = nil
+        gitHubPushPreparation = nil
+        gitHubPushError = nil
+        protectedWorktreeCommitPrompt = nil
         isLoadingDetail = false
+    }
+
+    func refreshSelectedProjectWorktrees() async {
+        guard let selectedSession else { return }
+        await loadProjectWorktreeStatus(for: selectedSession)
+    }
+
+    func prepareGitHubPush() {
+        guard let session = selectedSession, !isPreparingGitHubPush, !isPushingGitHub else { return }
+        Task {
+            isPreparingGitHubPush = true
+            gitHubPushError = nil
+            defer { isPreparingGitHubPush = false }
+            do {
+                var request = URLRequest(
+                    url: baseURL.appending(path: "sessions/\(session.id)/github-push/prepare")
+                )
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = Data("{}".utf8)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not prepare GitHub push."))
+                }
+                guard selectedSession?.id == session.id else { return }
+                gitHubPushPreparation = try JSONDecoder().decode(GitHubPushPreparation.self, from: data)
+            } catch {
+                gitHubPushError = error.localizedDescription
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func cancelGitHubPush() {
+        guard !isPushingGitHub else { return }
+        gitHubPushPreparation = nil
+        gitHubPushError = nil
+    }
+
+    func confirmGitHubPush(privateFilesDecision: String? = nil, neverRemindPrivateFiles: Bool = false) {
+        guard let session = selectedSession,
+              let preparation = gitHubPushPreparation,
+              !isPushingGitHub else { return }
+        Task {
+            isPushingGitHub = true
+            gitHubPushError = nil
+            defer { isPushingGitHub = false }
+            do {
+                var request = URLRequest(
+                    url: baseURL.appending(path: "sessions/\(session.id)/github-push/confirm")
+                )
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                var body: [String: Any] = ["confirmationToken": preparation.confirmationToken]
+                if let privateFilesDecision {
+                    body["privateFilesDecision"] = privateFilesDecision
+                    body["neverRemindPrivateFiles"] = neverRemindPrivateFiles
+                }
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("GitHub push failed."))
+                }
+                let result = try JSONDecoder().decode(GitHubPushResult.self, from: data)
+                gitHubPushPreparation = nil
+                sendStatusMessage = result.committed
+                    ? L10n("Changes committed and pushed to GitHub")
+                    : L10n("Branch pushed to GitHub")
+                await refresh()
+                if selectedSession?.id == session.id {
+                    await loadProjectWorktreeStatus(for: session)
+                }
+            } catch {
+                gitHubPushError = error.localizedDescription
+            }
+        }
+    }
+
+    private func loadProjectWorktreeStatus(for session: TaskSession) async {
+        guard selectedSession?.id == session.id else { return }
+        do {
+            let url = baseURL.appending(path: "sessions/\(session.id)/project-worktrees")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                await loadWorkspaceRecoveryStatus(for: session)
+                return
+            }
+            let status = try JSONDecoder().decode(ProjectWorktreeStatusResponse.self, from: data)
+            guard selectedSession?.id == session.id else { return }
+            selectedProjectWorktreeStatus = status
+            workspaceRecoveryStatus = nil
+        } catch {
+            await loadWorkspaceRecoveryStatus(for: session)
+        }
+    }
+
+    private func loadWorkspaceRecoveryStatus(for session: TaskSession) async {
+        guard selectedSession?.id == session.id else { return }
+        do {
+            let url = baseURL.appending(path: "sessions/\(session.id)/workspace/recovery")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else { return }
+            let status = try JSONDecoder().decode(WorkspaceRecoveryStatus.self, from: data)
+            guard selectedSession?.id == session.id else { return }
+            workspaceRecoveryStatus = status.orphaned ? status : nil
+        } catch {
+            // Recovery is supplementary and must not hide the existing session history.
+        }
+    }
+
+    func recoverSelectedWorkspace(action: String, targetWorktreeId: String? = nil) {
+        guard let session = selectedSession, !isRecoveringWorkspace else { return }
+        Task {
+            isRecoveringWorkspace = true
+            lastError = nil
+            defer { isRecoveringWorkspace = false }
+            do {
+                var body: [String: Any] = ["action": action]
+                if let targetWorktreeId { body["targetWorktreeId"] = targetWorktreeId }
+                var request = URLRequest(
+                    url: baseURL.appending(path: "sessions/\(session.id)/workspace/recovery")
+                )
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Workspace recovery failed."))
+                }
+                workspaceRecoveryStatus = nil
+                sendStatusMessage = action == "rebuild"
+                    ? L10n("Original Worktree rebuilt")
+                    : L10n("Session switched to an available Worktree")
+                await refresh()
+                if let refreshed = sessions.first(where: { $0.id == session.id }) {
+                    selectedSession = refreshed
+                    await loadProjectWorktreeStatus(for: refreshed)
+                    await loadDetail(for: refreshed, showLoading: false)
+                }
+            } catch {
+                lastError = error.localizedDescription
+                await loadWorkspaceRecoveryStatus(for: session)
+            }
+        }
+    }
+
+    func initializeProjectToolset(update: Bool = false) {
+        guard let session = selectedSession else { return }
+        let action = update ? "update" : "initialize"
+        Task {
+            isLoadingProjectWorktrees = true
+            defer { isLoadingProjectWorktrees = false }
+            do {
+                var request = URLRequest(
+                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/\(action)")
+                )
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = Data("{}".utf8)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not initialize project tools."))
+                }
+                sendStatusMessage = update
+                    ? L10n("Project tools update started")
+                    : L10n("Project tools initialization started")
+                try? await Task.sleep(for: .seconds(1))
+                await loadProjectWorktreeStatus(for: session)
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func runProjectServiceAction(_ action: String) {
+        guard let session = selectedSession else { return }
+        let actionId = "service:\(action)"
+        Task {
+            projectWorktreeActionIds.insert(actionId)
+            defer { projectWorktreeActionIds.remove(actionId) }
+            do {
+                var request = URLRequest(
+                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/\(action)")
+                )
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = Data("{}".utf8)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Project service action failed."))
+                }
+                await loadProjectWorktreeStatus(for: session)
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func mergeProjectWorktree(_ worktree: ProjectWorktreeStatus, restartService: Bool) {
+        performProtectedProjectWorktreeAction(
+            worktree,
+            action: "merge",
+            body: ["restartService": restartService]
+        )
+    }
+
+    func restartProjectService(from worktree: ProjectWorktreeStatus) {
+        performProjectWorktreeAction(
+            worktree,
+            action: "restart",
+            body: [:]
+        )
+    }
+
+    func commitProjectWorktreeChanges(_ worktree: ProjectWorktreeStatus) {
+        performProtectedProjectWorktreeAction(worktree, action: "commit", body: [:])
+    }
+
+    private func performProtectedProjectWorktreeAction(
+        _ worktree: ProjectWorktreeStatus,
+        action: String,
+        body: [String: Any]
+    ) {
+        let actionMayCommit = action == "commit"
+            || action == "merge"
+            || action == "complete"
+            || (action == "operate" && body["mergeIntoMain"] as? Bool == true)
+        guard worktree.dirty == true, actionMayCommit else {
+            performProjectWorktreeAction(worktree, action: action, body: body)
+            return
+        }
+        guard let session = selectedSession else { return }
+        Task {
+            lastError = nil
+            projectWorktreeActionIds.insert(worktree.worktreeId)
+            defer { projectWorktreeActionIds.remove(worktree.worktreeId) }
+            do {
+                var request = URLRequest(url: baseURL.appending(
+                    path: "sessions/\(session.id)/project-worktrees/\(worktree.worktreeId)/commit-prepare"
+                ))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = Data("{}".utf8)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not inspect commit contents."))
+                }
+                let protection = try JSONDecoder().decode(GitCommitProtectionStatus.self, from: data)
+                if protection.requiresDecision {
+                    pendingProtectedWorktreeAction = (worktree, action, body)
+                    protectedWorktreeCommitPrompt = ProtectedWorktreeCommitPrompt(
+                        worktree: worktree,
+                        protection: protection
+                    )
+                } else {
+                    performProjectWorktreeAction(worktree, action: action, body: body)
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func confirmProtectedWorktreeCommit(
+        decision: String,
+        neverRemindPrivateFiles: Bool
+    ) {
+        guard protectedWorktreeCommitPrompt != nil,
+              let pending = pendingProtectedWorktreeAction else { return }
+        protectedWorktreeCommitPrompt = nil
+        pendingProtectedWorktreeAction = nil
+        var body = pending.body
+        body["privateFilesDecision"] = decision
+        body["neverRemindPrivateFiles"] = neverRemindPrivateFiles
+        performProjectWorktreeAction(
+            pending.worktree,
+            action: pending.action,
+            body: body
+        )
+    }
+
+    func cancelProtectedWorktreeCommit() {
+        protectedWorktreeCommitPrompt = nil
+        pendingProtectedWorktreeAction = nil
+    }
+
+    func operateProjectWorktree(
+        _ worktree: ProjectWorktreeStatus,
+        mergeIntoMain: Bool,
+        synchronizeWithMain: Bool,
+        deleteWorktree: Bool,
+        deleteSessions: Bool,
+        restartService: Bool,
+        forceDeleteUnmerged: Bool = false,
+        confirmedBranchName: String? = nil
+    ) {
+        var body: [String: Any] = [
+            "mergeIntoMain": mergeIntoMain,
+            "synchronizeWithMain": synchronizeWithMain,
+            "deleteWorktree": deleteWorktree,
+            "deleteSessions": deleteSessions,
+            "restartService": restartService
+        ]
+        if forceDeleteUnmerged, let confirmedBranchName {
+            body["forceDeleteUnmerged"] = true
+            body["acknowledgeIrrecoverable"] = true
+            body["confirmedBranchName"] = confirmedBranchName
+        }
+        performProtectedProjectWorktreeAction(
+            worktree,
+            action: "operate",
+            body: body
+        )
+    }
+
+    func synchronizeProjectWorktree(_ worktree: ProjectWorktreeStatus) {
+        let needsMerge = worktree.dirty == true || worktree.mergedIntoMain != true
+        operateProjectWorktree(
+            worktree,
+            mergeIntoMain: needsMerge,
+            synchronizeWithMain: true,
+            deleteWorktree: false,
+            deleteSessions: false,
+            restartService: false
+        )
+    }
+
+    func completeProjectWorktree(_ worktree: ProjectWorktreeStatus, restartService: Bool = true) {
+        performProtectedProjectWorktreeAction(
+            worktree,
+            action: "complete",
+            body: [
+                "restartService": restartService,
+                "deleteSessions": true,
+                "deleteBranch": true
+            ]
+        )
+    }
+
+    private func performProjectWorktreeAction(
+        _ worktree: ProjectWorktreeStatus,
+        action: String,
+        body: [String: Any]
+    ) {
+        guard let session = selectedSession else { return }
+        Task {
+            lastError = nil
+            projectWorktreeActionIds.insert(worktree.worktreeId)
+            defer { projectWorktreeActionIds.remove(worktree.worktreeId) }
+            do {
+                var request = URLRequest(url: baseURL.appending(
+                    path: "sessions/\(session.id)/project-worktrees/\(worktree.worktreeId)/\(action)"
+                ))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Worktree action failed."))
+                }
+                let result = try? JSONDecoder().decode(ProjectWorktreeActionResponse.self, from: data)
+                if action == "commit" {
+                    sendStatusMessage = L10n("Worktree changes committed")
+                }
+                if result?.deletedSessionIds?.contains(session.id) == true {
+                    closeDetail()
+                }
+                await refresh()
+                if selectedSession?.id == session.id {
+                    await loadProjectWorktreeStatus(for: session)
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
     }
 
     private func loadUsage(for session: TaskSession) async {
@@ -1723,7 +2143,9 @@ final class BackendClient: ObservableObject {
                 }
                 let plan = try JSONDecoder().decode(SessionDeletionPlan.self, from: planData)
                 var mergeWorktree = false
-                if plan.requiresWorktreeMerge {
+                if plan.workspaceUnavailable == true {
+                    guard confirmOrphanedSessionDeletion(plan: plan) else { return }
+                } else if plan.requiresWorktreeMerge {
                     guard let decision = confirmWorktreeDeletion(plan: plan) else { return }
                     mergeWorktree = decision
                 }
@@ -1769,6 +2191,19 @@ final class BackendClient: ObservableObject {
         case .alertSecondButtonReturn: return false
         default: return nil
         }
+    }
+
+    private func confirmOrphanedSessionDeletion(plan: SessionDeletionPlan) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n("This session's workspace is missing")
+        alert.informativeText = L10nFormat(
+            "The workspace at %@ is unavailable. Corptie can delete only the session and its local conversation record; no Worktree files or Git branches will be changed.",
+            plan.sourcePath ?? L10n("Unknown path")
+        )
+        alert.addButton(withTitle: L10n("Delete Session Only"))
+        alert.addButton(withTitle: L10n("Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     func interruptSelectedSession() {

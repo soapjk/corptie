@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "rules": [
+    { "path": ".corptie", "kind": "directory" },
+    { "path": ".codex", "kind": "directory" },
+    { "path": ".agents", "kind": "directory" },
+    { "path": ".agent", "kind": "directory" },
+    { "path": ".claude", "kind": "directory" },
+    { "path": ".cursor", "kind": "directory" },
+    { "path": ".gemini", "kind": "directory" },
+    { "path": ".mcp.json", "kind": "file" },
+    { "path": "AGENT.md", "kind": "file" },
+    { "path": "AGENT.local.md", "kind": "file" },
+    { "path": "AGENTS.local.md", "kind": "file" },
+    { "path": "CLAUDE.local.md", "kind": "file" },
+    { "path": "AGENTS.md", "kind": "file", "onlyWhenSymlink": true },
+    { "path": "CLAUDE.md", "kind": "file", "onlyWhenSymlink": true }
+  ]
+}
