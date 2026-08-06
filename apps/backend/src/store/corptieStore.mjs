@@ -667,6 +667,7 @@ export class CorptieStore {
         source_routing_version INTEGER NOT NULL,
         last_completed_turn_id TEXT,
         new_thread_id TEXT,
+        resume_goal_after_transition INTEGER NOT NULL DEFAULT 0,
         phase TEXT NOT NULL
           CHECK (phase IN (
             'waitingForTurn', 'preflighting', 'forking', 'validatingInstructions',
@@ -693,6 +694,7 @@ export class CorptieStore {
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
     this.ensureColumn("provider_thread_bindings", "routing_version", "INTEGER NOT NULL DEFAULT 1");
     this.migrateWorkspaceTransitionsForDirectoryTargets();
+    this.ensureColumn("workspace_transitions", "resume_goal_after_transition", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -1039,6 +1041,17 @@ export class CorptieStore {
     return row ? this.getLogicalSession(row.logical_session_id) : null;
   }
 
+  deleteLogicalSessionByLegacySessionId(legacySessionId) {
+    const row = this.selectOne(
+      "SELECT logical_session_id FROM logical_sessions WHERE legacy_session_id = ?",
+      [legacySessionId]
+    );
+    if (!row) return false;
+    this.db.run("DELETE FROM logical_sessions WHERE logical_session_id = ?", [row.logical_session_id]);
+    this.scheduleSave();
+    return true;
+  }
+
   listLogicalSessionsByWorkspaceId(worktreeId) {
     return this.selectAll(
       "SELECT logical_session_id FROM logical_sessions WHERE active_workspace_id = ?",
@@ -1209,9 +1222,9 @@ export class CorptieStore {
       this.db.run(
         `INSERT INTO workspace_transitions (
           transition_id, logical_session_id, source_thread_id, target_worktree_id, target_cwd,
-          source_routing_version, last_completed_turn_id, phase, strategy,
+          source_routing_version, last_completed_turn_id, resume_goal_after_transition, phase, strategy,
           error_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
         [
           transitionId,
           logicalSessionId,
@@ -1220,6 +1233,7 @@ export class CorptieStore {
           targetCwd,
           sourceRoutingVersion,
           input.lastCompletedTurnId || null,
+          input.resumeGoalAfterTransition ? 1 : 0,
           input.phase || "waitingForTurn",
           input.strategy || "fork",
           timestamp,
@@ -2139,6 +2153,7 @@ export class CorptieStore {
         source_routing_version INTEGER NOT NULL,
         last_completed_turn_id TEXT,
         new_thread_id TEXT,
+        resume_goal_after_transition INTEGER NOT NULL DEFAULT 0,
         phase TEXT NOT NULL CHECK (phase IN (
           'waitingForTurn', 'preflighting', 'forking', 'validatingInstructions',
           'committingRoute', 'committed', 'failed'
@@ -2154,7 +2169,8 @@ export class CorptieStore {
       );
       INSERT INTO workspace_transitions_next (
         transition_id, logical_session_id, source_thread_id, target_worktree_id, target_cwd,
-        source_routing_version, last_completed_turn_id, new_thread_id, phase, strategy,
+        source_routing_version, last_completed_turn_id, new_thread_id,
+        resume_goal_after_transition, phase, strategy,
         error_json, created_at, updated_at
       )
       SELECT transition_id, logical_session_id, source_thread_id, target_worktree_id,
@@ -2163,7 +2179,7 @@ export class CorptieStore {
                (SELECT path FROM git_worktrees WHERE worktree_id = target_worktree_id),
                (SELECT bound_cwd FROM provider_thread_bindings WHERE provider_thread_id = source_thread_id)
              ),
-             source_routing_version, last_completed_turn_id, new_thread_id, phase, strategy,
+             source_routing_version, last_completed_turn_id, new_thread_id, 0, phase, strategy,
              error_json, created_at, updated_at
       FROM workspace_transitions;
       DROP TABLE workspace_transitions;
@@ -2352,6 +2368,7 @@ function workspaceTransitionFromRow(row) {
     sourceRoutingVersion: Number(row.source_routing_version),
     lastCompletedTurnId: row.last_completed_turn_id,
     newThreadId: row.new_thread_id,
+    resumeGoalAfterTransition: Boolean(row.resume_goal_after_transition),
     phase: row.phase,
     strategy: row.strategy,
     error: parseJson(row.error_json, null),

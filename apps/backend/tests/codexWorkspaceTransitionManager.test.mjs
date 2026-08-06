@@ -80,6 +80,8 @@ test("workspace transition waits for an active turn then atomically routes a for
     assert.equal(result.logicalSession.routingVersion, 2);
     assert.equal(calls[0].method, "fork");
     assert.equal(calls[0].options.lastTurnId, "turn-7");
+    assert.equal(calls[0].options.deferGoalContinuation, false);
+    assert.equal(result.transition.resumeGoalAfterTransition, true);
     assert.deepEqual(calls[0].options.runtimeWorkspaceRoots, [fixture.feature]);
     assert.equal(calls[1].method, "settings");
     assert.deepEqual(calls[1].options.sandboxPolicy.writableRoots, [fixture.feature]);
@@ -132,6 +134,8 @@ test("a Git workspace session restarts its thread while preserving context", asy
     assert.equal(calls[0].threadId, "thread-source");
     assert.equal(calls[0].options.lastTurnId, "turn-7");
     assert.equal(calls[0].options.cwd, fixture.main);
+    assert.equal(calls[0].options.deferGoalContinuation, true);
+    assert.equal(result.transition.resumeGoalAfterTransition, false);
   } finally {
     await fixture.close();
   }
@@ -488,6 +492,58 @@ test("workspace path rewriting changes only the moved workspace prefix", () => {
     writableRoots: ["/new/worktree", "/new/worktree/generated", "/other"],
     nested: { cwd: "/new/worktree" }
   });
+});
+
+test("restart recovery preserves automatic goal continuation for an in-turn workspace switch", async () => {
+  const fixture = await createFixture("recover-waiting-goal");
+  fixture.store.beginWorkspaceTransition({
+    transitionId: "transition:recover-waiting-goal",
+    logicalSessionId: "logical:one",
+    targetWorktreeId: "worktree:feature",
+    sourceRoutingVersion: 1,
+    lastCompletedTurnId: "turn-6",
+    resumeGoalAfterTransition: true,
+    phase: "waitingForTurn"
+  });
+  const manager = new CodexWorkspaceTransitionManager({
+    store: fixture.store,
+    codexClient: {
+      async readThread() {
+        return {
+          thread: {
+            id: "thread-source",
+            turns: [{ id: "turn-7", status: "completed" }]
+          }
+        };
+      },
+      async forkThread(threadId, options) {
+        assert.equal(threadId, "thread-source");
+        assert.equal(options.lastTurnId, "turn-7");
+        assert.equal(options.deferGoalContinuation, false);
+        return {
+          thread: { id: "thread-recovered-goal", cwd: fixture.feature },
+          cwd: fixture.feature,
+          runtimeWorkspaceRoots: [fixture.feature],
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      }
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.recoverWorkspaceTransition("transition:recover-waiting-goal");
+    assert.equal(result.status, "committed");
+    assert.equal(result.transition.resumeGoalAfterTransition, true);
+    assert.equal(result.logicalSession.activeThreadId, "thread-recovered-goal");
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("restart recovery resumes a validated fork and commits the stored transition", async () => {

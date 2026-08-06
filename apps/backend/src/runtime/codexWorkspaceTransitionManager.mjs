@@ -37,6 +37,7 @@ export class CodexWorkspaceTransitionManager {
       targetCwd: target.canonicalPath || target.path,
       sourceRoutingVersion: logical.routingVersion,
       lastCompletedTurnId,
+      resumeGoalAfterTransition: Boolean(activeTurnId),
       strategy,
       phase: activeTurnId ? "waitingForTurn" : "preflighting"
     });
@@ -67,6 +68,7 @@ export class CodexWorkspaceTransitionManager {
       targetCwd: logical.activeBinding.boundCwd,
       sourceRoutingVersion: logical.routingVersion,
       lastCompletedTurnId,
+      resumeGoalAfterTransition: Boolean(activeTurnId),
       strategy: "fork",
       phase: activeTurnId ? "waitingForTurn" : "preflighting"
     });
@@ -139,7 +141,7 @@ export class CodexWorkspaceTransitionManager {
           candidateResponse = await this.codexClient.forkThread(transition.sourceThreadId, {
             ...threadOptions,
             lastTurnId: lastCompletedTurnId,
-            deferGoalContinuation: true
+            deferGoalContinuation: !transition.resumeGoalAfterTransition
           });
         } catch (error) {
           if (!isForkUnsupported(error) || input.allowHandoffFallback === false) throw error;

@@ -87,7 +87,10 @@ BACKEND_DEST="${APP_DIR}/Contents/Resources/backend"
 mkdir -p "${BACKEND_DEST}"
 cp -R "${BACKEND_SOURCE}/package.json" "${BACKEND_SOURCE}/package-lock.json" "${BACKEND_SOURCE}/src" "${BACKEND_SOURCE}/scripts" "${BACKEND_SOURCE}/resources" "${BACKEND_DEST}/"
 if [ -d "${BACKEND_SOURCE}/node_modules" ]; then
-  cp -R "${BACKEND_SOURCE}/node_modules" "${BACKEND_DEST}/"
+  # Feature worktrees may share the repository's installed dependencies through
+  # a symlink. App bundles cannot be signed when that link points outside the
+  # bundle, so materialize dependencies (including npm's .bin links) here.
+  cp -RL "${BACKEND_SOURCE}/node_modules" "${BACKEND_DEST}/"
 fi
 
 cat > "${APP_DIR}/Contents/Resources/corptie-backend-launch.sh" <<'LAUNCHER'

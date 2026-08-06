@@ -3302,6 +3302,11 @@ private struct DetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             DetailHeaderView()
 
+            if let recovery = backendClient.workspaceRecoveryStatus,
+               recovery.orphaned {
+                OrphanedWorkspaceRecoveryView(status: recovery)
+            }
+
             if backendClient.isLoadingDetail && backendClient.selectedDetail == nil {
                 VStack(spacing: 10) {
                     ProgressView()
@@ -3932,6 +3937,87 @@ private struct DetailView: View {
     }
 }
 
+private struct OrphanedWorkspaceRecoveryView: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    let status: WorkspaceRecoveryStatus
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "folder.badge.questionmark")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n("Workspace missing"))
+                        .font(.system(size: 13, weight: .bold))
+                    Text(L10n("This session is preserved, but Agent work is blocked until the workspace is restored or switched."))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    if let path = status.originalPath {
+                        Text(path)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(CorptiePalette.mutedText)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer()
+                if backendClient.isRecoveringWorkspace {
+                    ProgressView().controlSize(.small)
+                }
+            }
+
+            HStack(spacing: 8) {
+                if status.canRebuild == true {
+                    Button(L10n("Rebuild Original Worktree")) {
+                        backendClient.recoverSelectedWorkspace(action: "rebuild")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(backendClient.isRecoveringWorkspace)
+                }
+
+                Menu(L10n("Switch Workspace")) {
+                    ForEach(status.worktrees) { worktree in
+                        Button(worktree.isMain
+                            ? L10nFormat("Main — %@", worktree.path)
+                            : L10nFormat("%@ — %@", worktree.branchName ?? L10n("detached HEAD"), worktree.path)) {
+                            backendClient.recoverSelectedWorkspace(
+                                action: "switch",
+                                targetWorktreeId: worktree.worktreeId
+                            )
+                        }
+                    }
+                }
+                .controlSize(.small)
+                .disabled(status.worktrees.isEmpty || backendClient.isRecoveringWorkspace)
+
+                Spacer()
+
+                if let session = backendClient.selectedSession {
+                    Button(L10n("Delete Session Only"), role: .destructive) {
+                        backendClient.delete(session: session)
+                    }
+                    .controlSize(.small)
+                    .disabled(backendClient.isRecoveringWorkspace)
+                }
+            }
+
+            if let error = backendClient.lastError {
+                Text(error)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .background(Color.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.red.opacity(0.22), lineWidth: 0.75)
+        )
+    }
+}
+
 private struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
 
@@ -4383,6 +4469,46 @@ private struct DetailHeaderView: View {
 
             Spacer()
 
+            if let worktree = selectedSessionWorktree {
+                Button {
+                    backendClient.prepareGitHubPush()
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(gitHubButtonColor(worktree).opacity(0.13))
+                        if backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(gitHubButtonColor(worktree))
+                        }
+                    }
+                    .frame(width: 30, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(
+                    backendClient.viewingHistoricalThreadId != nil
+                        || backendClient.isPreparingGitHubPush
+                        || backendClient.isPushingGitHub
+                        || canInterruptCurrentRun
+                )
+                .help(worktree.dirty == true
+                    ? L10n("Uncommitted changes — review commit and GitHub push")
+                    : L10n("Review GitHub push"))
+            }
+
+            if let status = backendClient.selectedProjectWorktreeStatus {
+                Button {
+                    ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+                } label: {
+                    ProjectWorktreeStatusChip(status: status)
+                }
+                .buttonStyle(.plain)
+                .help(L10n("Manage project worktrees and service"))
+            }
+
             if backendClient.viewingHistoricalThreadId != nil {
                 Button {
                     backendClient.returnToActiveThread()
@@ -4421,6 +4547,34 @@ private struct DetailHeaderView: View {
         .task(id: workspaceRouteIdentity) {
             await refreshGitBranch()
         }
+        .sheet(item: Binding(
+            get: { backendClient.gitHubPushPreparation },
+            set: { value in
+                if value == nil { backendClient.cancelGitHubPush() }
+            }
+        )) { preparation in
+            GitHubPushConfirmationView(preparation: preparation)
+                .environmentObject(backendClient)
+        }
+    }
+
+    private var selectedSessionWorktree: ProjectWorktreeStatus? {
+        guard let sessionId = backendClient.selectedSession?.id,
+              let status = backendClient.selectedProjectWorktreeStatus else { return nil }
+        if let bound = status.project.worktrees.first(where: { worktree in
+            worktree.sessions.contains(where: { $0.sessionId == sessionId })
+        }) {
+            return bound
+        }
+        guard let workspacePath else { return nil }
+        let normalized = URL(fileURLWithPath: workspacePath).standardizedFileURL.path
+        return status.project.worktrees.first {
+            URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
+        }
+    }
+
+    private func gitHubButtonColor(_ worktree: ProjectWorktreeStatus) -> Color {
+        worktree.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
     }
 
     private var workspacePath: String? {
@@ -4486,6 +4640,937 @@ private struct DetailHeaderView: View {
                 didCopySessionName = false
             }
         }
+    }
+}
+
+private struct GitHubPushConfirmationView: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    let preparation: GitHubPushPreparation
+    @State private var privateFilesDecision = "ignore"
+    @State private var neverRemindPrivateFiles = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(preparation.dirty ? CorptiePalette.amber : CorptiePalette.connected)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n("Review GitHub Push"))
+                        .font(.system(size: 18, weight: .bold))
+                    Text(preparation.repository)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                disclosureRow(L10n("Destination"), value: preparation.remoteUrl)
+                disclosureRow(L10n("Branch"), value: preparation.branch)
+                disclosureRow(L10n("Source code"), value: L10n("Included"))
+                disclosureRow(
+                    L10n("Visibility"),
+                    value: L10n("Existing GitHub repository access settings; Corptie will not change visibility.")
+                )
+                disclosureRow(
+                    L10n("Remote storage"),
+                    value: L10n("Commits will remain in GitHub history until removed under repository and GitHub retention policies.")
+                )
+            }
+            .padding(12)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.75)
+            )
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    disclosureList(
+                        title: L10nFormat("Files sent to GitHub (%d)", disclosedFilesToPush.count),
+                        values: disclosedFilesToPush
+                    )
+                    if !preparation.changedFiles.isEmpty {
+                        disclosureList(
+                            title: L10nFormat("Currently uncommitted files (%d)", preparation.changedFiles.count),
+                            values: preparation.changedFiles
+                        )
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L10nFormat("Commits sent to GitHub (%d)", preparation.commitsToPush.count))
+                            .font(.system(size: 12, weight: .semibold))
+                        if preparation.commitsToPush.isEmpty {
+                            Text(L10n("No existing local commits are waiting to be pushed."))
+                                .font(.system(size: 11))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        } else {
+                            ForEach(preparation.commitsToPush, id: \.oid) { commit in
+                                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                                    Text(String(commit.oid.prefix(8)))
+                                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        .foregroundStyle(CorptiePalette.mutedText)
+                                    Text(commit.subject)
+                                        .font(.system(size: 11))
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 210)
+
+            if preparation.dirty {
+                Label(
+                    L10n("The associated Session will generate one commit subject. Corptie will then commit all listed uncommitted changes before pushing."),
+                    systemImage: "wand.and.stars"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(CorptiePalette.amber)
+            }
+
+            if preparation.commitProtection?.requiresDecision == true,
+               let protection = preparation.commitProtection {
+                PrivateAgentFilesDecisionView(
+                    protection: protection,
+                    decision: $privateFilesDecision,
+                    neverRemind: $neverRemindPrivateFiles
+                )
+            }
+
+            if let error = backendClient.gitHubPushError {
+                Text(error)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+
+            HStack {
+                Spacer()
+                Button(L10n("Cancel")) {
+                    backendClient.cancelGitHubPush()
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(backendClient.isPushingGitHub)
+
+                Button(preparation.dirty
+                    ? L10n("Commit and Push to GitHub")
+                    : L10n("Push to GitHub")) {
+                    backendClient.confirmGitHubPush(
+                        privateFilesDecision: preparation.commitProtection?.requiresDecision == true
+                            ? privateFilesDecision
+                            : nil,
+                        neverRemindPrivateFiles: neverRemindPrivateFiles
+                    )
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(backendClient.isPushingGitHub)
+            }
+        }
+        .padding(20)
+        .frame(width: 560, height: 590)
+        .interactiveDismissDisabled(backendClient.isPushingGitHub)
+    }
+
+    private func disclosureRow(_ title: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .frame(width: 94, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11, design: title == L10n("Destination") ? .monospaced : .default))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var disclosedFilesToPush: [String] {
+        guard privateFilesDecision == "ignore",
+              preparation.commitProtection?.requiresDecision == true,
+              let protectedPaths = preparation.commitProtection?.protectedPaths else {
+            return preparation.filesToPush
+        }
+        return Array(Set(
+            preparation.filesToPush.filter { !protectedPaths.contains($0) } + [".gitignore"]
+        )).sorted()
+    }
+
+    @ViewBuilder
+    private func disclosureList(title: String, values: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+            if values.isEmpty {
+                Text(L10n("None"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+            } else {
+                ForEach(values, id: \.self) { value in
+                    Text(value)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+        }
+    }
+}
+
+private struct ProjectWorktreeStatusChip: View {
+    let status: ProjectWorktreeStatusResponse
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 10, weight: .semibold))
+            Text("\(status.project.pendingWorktreeCount)")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+            Circle()
+                .fill(serviceColor)
+                .frame(width: 7, height: 7)
+        }
+        .foregroundStyle(status.project.pendingWorktreeCount > 0 ? CorptiePalette.amber : CorptiePalette.secondaryText)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color.white.opacity(0.06), in: Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
+    }
+
+    private var serviceColor: Color {
+        switch status.service.freshness {
+        case "current": CorptiePalette.connected
+        case "stale": CorptiePalette.amber
+        default: CorptiePalette.mutedText
+        }
+    }
+}
+
+@MainActor
+private final class ProjectWorktreeWindowManager {
+    static let shared = ProjectWorktreeWindowManager()
+    private var controller: ProjectWorktreeWindowController?
+
+    func show(backendClient: BackendClient) {
+        if let controller {
+            controller.show()
+            return
+        }
+        let controller = ProjectWorktreeWindowController(backendClient: backendClient) { [weak self] in
+            self?.controller = nil
+        }
+        self.controller = controller
+        controller.show()
+    }
+}
+
+@MainActor
+private final class ProjectWorktreeWindowController: NSObject, NSWindowDelegate {
+    private let panel: NSPanel
+    private let didClose: () -> Void
+
+    init(backendClient: BackendClient, didClose: @escaping () -> Void) {
+        self.didClose = didClose
+        let content = ProjectWorktreeManagerView()
+            .environmentObject(backendClient)
+        let hostingController = NSHostingController(rootView: content)
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 500),
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = L10n("Project Worktrees")
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.contentViewController = hostingController
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.minSize = NSSize(width: 600, height: 430)
+        panel.center()
+        self.panel = panel
+        super.init()
+        panel.delegate = self
+    }
+
+    func show() {
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        didClose()
+    }
+}
+
+private struct PendingWorktreeDeletion: Identifiable {
+    let id = UUID()
+    let worktree: ProjectWorktreeStatus
+    let deleteSessions: Bool
+    let restartService: Bool
+}
+
+private struct ProjectWorktreeManagerView: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    @State private var pendingOperation: ProjectWorktreeStatus?
+    @State private var pendingSynchronization: ProjectWorktreeStatus?
+    @State private var pendingDeletionWarning: PendingWorktreeDeletion?
+    @State private var pendingDeletionConfirmation: PendingWorktreeDeletion?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n("Project Worktrees"))
+                        .font(.system(size: 18, weight: .bold))
+                    if let status {
+                        Text(L10nFormat("%d worktrees are not merged into main", status.project.pendingWorktreeCount))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                }
+                Spacer()
+            }
+
+            if let error = backendClient.lastError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            }
+
+            if let status {
+                serviceCard(status)
+                Divider()
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(status.project.worktrees) { worktree in
+                            worktreeRow(worktree)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            } else {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text(L10n("Loading project worktrees"))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 600, idealWidth: 680, minHeight: 400, idealHeight: 500)
+        .task {
+            await backendClient.refreshSelectedProjectWorktrees()
+        }
+        .sheet(item: $pendingOperation) { worktree in
+            if let status {
+                ProjectWorktreeOperationView(
+                    worktree: worktree,
+                    status: status,
+                    onExecute: { merge, synchronize, deleteWorktree, deleteSessions, restart in
+                        pendingOperation = nil
+                        if deleteWorktree,
+                           worktree.mergedIntoMain != true || worktree.dirty == true {
+                            let deletion = PendingWorktreeDeletion(
+                                worktree: worktree,
+                                deleteSessions: deleteSessions,
+                                restartService: restart
+                            )
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(180))
+                                pendingDeletionWarning = deletion
+                            }
+                        } else {
+                            backendClient.operateProjectWorktree(
+                                worktree,
+                                mergeIntoMain: merge,
+                                synchronizeWithMain: synchronize,
+                                deleteWorktree: deleteWorktree,
+                                deleteSessions: deleteSessions,
+                                restartService: restart
+                            )
+                        }
+                    },
+                    onCancel: { pendingOperation = nil }
+                )
+            }
+        }
+        .sheet(item: Binding(
+            get: { backendClient.protectedWorktreeCommitPrompt },
+            set: { value in
+                if value == nil { backendClient.cancelProtectedWorktreeCommit() }
+            }
+        )) { prompt in
+            ProtectedWorktreeCommitView(prompt: prompt)
+                .environmentObject(backendClient)
+        }
+        .confirmationDialog(
+            L10nFormat(
+                "%d unmerged commits will be permanently deleted",
+                pendingDeletionWarning?.worktree.aheadOfMain ?? 0
+            ),
+            isPresented: Binding(
+                get: { pendingDeletionWarning != nil },
+                set: { if !$0 { pendingDeletionWarning = nil } }
+            ),
+            presenting: pendingDeletionWarning
+        ) { deletion in
+            Button(L10n("Continue to branch-name confirmation"), role: .destructive) {
+                pendingDeletionWarning = nil
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(140))
+                    pendingDeletionConfirmation = deletion
+                }
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                pendingDeletionWarning = nil
+            }
+        } message: { deletion in
+            Text(L10nFormat(
+                "Deleting this Worktree will permanently delete all changes on branch %@. This action cannot be undone.",
+                deletion.worktree.branchName ?? L10n("detached HEAD")
+            ))
+        }
+        .sheet(item: $pendingDeletionConfirmation) { deletion in
+            ForceDeleteWorktreeConfirmationView(
+                deletion: deletion,
+                onConfirm: { branchName in
+                    backendClient.operateProjectWorktree(
+                        deletion.worktree,
+                        mergeIntoMain: false,
+                        synchronizeWithMain: false,
+                        deleteWorktree: true,
+                        deleteSessions: deletion.deleteSessions,
+                        restartService: deletion.restartService,
+                        forceDeleteUnmerged: true,
+                        confirmedBranchName: branchName
+                    )
+                    pendingDeletionConfirmation = nil
+                },
+                onCancel: { pendingDeletionConfirmation = nil }
+            )
+        }
+        .confirmationDialog(
+            L10n("Synchronize this Worktree with main?"),
+            isPresented: Binding(
+                get: { pendingSynchronization != nil },
+                set: { if !$0 { pendingSynchronization = nil } }
+            ),
+            presenting: pendingSynchronization
+        ) { worktree in
+            Button(L10n("Synchronize with main")) {
+                backendClient.synchronizeProjectWorktree(worktree)
+                pendingSynchronization = nil
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                pendingSynchronization = nil
+            }
+        } message: { worktree in
+            if worktree.dirty == true || worktree.mergedIntoMain != true {
+                Text(L10n("This Worktree has changes not yet merged into main. Corptie will commit them if needed, merge them into main, and then synchronize the Worktree. No remote push is performed."))
+            } else {
+                Text(L10nFormat(
+                    "This fast-forwards the Worktree by %d commits to the current main revision. No remote push is performed.",
+                    worktree.behindMain ?? 0
+                ))
+            }
+        }
+    }
+
+    private var status: ProjectWorktreeStatusResponse? {
+        backendClient.selectedProjectWorktreeStatus
+    }
+
+    @ViewBuilder
+    private func serviceCard(_ status: ProjectWorktreeStatusResponse) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(L10n("Development Service"), systemImage: "server.rack")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Text(serviceLabel(status.service))
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(serviceColor(status.service))
+            }
+
+            if status.toolset.configured {
+                HStack(spacing: 8) {
+                    Button(L10n("Start")) { backendClient.runProjectServiceAction("start") }
+                    Button(L10n("Restart")) { backendClient.runProjectServiceAction("restart") }
+                    Button(L10n("Stop")) { backendClient.runProjectServiceAction("stop") }
+                    Spacer()
+                    Button(L10n("Update Corptie Scripts Tools Set")) {
+                        backendClient.initializeProjectToolset(update: true)
+                    }
+                }
+                .controlSize(.small)
+            } else {
+                HStack {
+                    Text(L10n("The Corptie Scripts Tools Set is being prepared or is not configured."))
+                        .font(.system(size: 11))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    Spacer()
+                    Button(L10n("Initialize Toolset")) {
+                        backendClient.initializeProjectToolset()
+                    }
+                    .disabled(backendClient.isLoadingProjectWorktrees)
+                }
+            }
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.75)
+        )
+    }
+
+    @ViewBuilder
+    private func worktreeRow(_ worktree: ProjectWorktreeStatus) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
+                    .foregroundStyle(worktreeStateColor(worktree))
+                Text(worktree.branchName ?? L10n("detached HEAD"))
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
+                Spacer()
+                if !worktree.isMain {
+                    if backendClient.projectWorktreeActionIds.contains(worktree.worktreeId) {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button(L10n("Restart from This Worktree")) {
+                            backendClient.restartProjectService(from: worktree)
+                        }
+                        .controlSize(.small)
+                        if worktree.pendingIntegration {
+                            Button(L10n("Merge and Restart")) {
+                                backendClient.mergeProjectWorktree(worktree, restartService: true)
+                            }
+                            .controlSize(.small)
+                        }
+                        Button(L10n("Actions…")) {
+                            pendingOperation = worktree
+                        }
+                        .controlSize(.small)
+                    }
+                }
+            }
+            Text(worktree.path)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(CorptiePalette.mutedText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(worktree.path)
+            HStack(spacing: 8) {
+                worktreeStatusBadge(
+                    worktreeStateLabel(worktree),
+                    color: worktreeStateColor(worktree)
+                )
+                if !worktree.isMain {
+                    worktreeStatusBadge(
+                        worktreeSyncLabel(worktree),
+                        color: worktreeSyncColor(worktree)
+                    )
+                }
+                if let ahead = worktree.aheadOfMain, ahead > 0 {
+                    Label(L10nFormat("%d ahead", ahead), systemImage: "arrow.up")
+                }
+                if let behind = worktree.behindMain, behind > 0 {
+                    Button {
+                        pendingSynchronization = worktree
+                    } label: {
+                        Label(L10nFormat("%d behind", behind), systemImage: "arrow.down")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(CorptiePalette.amber)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(CorptiePalette.amber.opacity(0.12), in: Capsule())
+                    .disabled(backendClient.projectWorktreeActionIds.contains(worktree.worktreeId))
+                    .help(L10n("Synchronize this Worktree with main"))
+                }
+                if worktree.dirty == true {
+                    Button {
+                        backendClient.commitProjectWorktreeChanges(worktree)
+                    } label: {
+                        Label(L10n("Uncommitted changes"), systemImage: "pencil.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(CorptiePalette.amber)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(CorptiePalette.amber.opacity(0.12), in: Capsule())
+                    .disabled(backendClient.projectWorktreeActionIds.contains(worktree.worktreeId))
+                    .help(L10n("Generate a commit message with the associated session and commit these changes"))
+                }
+                if !worktree.sessions.isEmpty {
+                    Label(L10nFormat("%d sessions", worktree.sessions.count), systemImage: "bubble.left.and.bubble.right")
+                }
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(CorptiePalette.secondaryText)
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.75)
+        )
+    }
+
+    private func worktreeStatusBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+
+    private func serviceLabel(_ service: ProjectServiceStatus) -> String {
+        switch service.freshness {
+        case "current": L10n("Running main latest")
+        case "stale": L10n("Restart required")
+        case "stopped": L10n("Stopped")
+        default:
+            switch service.state {
+            case "configuring": L10n("Configuring")
+            case "configurationFailed": L10n("Configuration failed")
+            case "notConfigured": L10n("Not configured")
+            default: L10n("Version unknown")
+            }
+        }
+    }
+
+    private func serviceColor(_ service: ProjectServiceStatus) -> Color {
+        switch service.freshness {
+        case "current": CorptiePalette.connected
+        case "stale": CorptiePalette.amber
+        default: CorptiePalette.secondaryText
+        }
+    }
+
+    private func worktreeStateLabel(_ worktree: ProjectWorktreeStatus) -> String {
+        switch worktree.state {
+        case "main": L10n("Main")
+        case "mainDirty": L10n("Main has changes")
+        case "working": L10n("In progress")
+        case "readyToMerge": L10n("Ready to merge")
+        case "diverged": L10n("Diverged")
+        case "synced": L10n("Merged")
+        default: L10n("Unavailable")
+        }
+    }
+
+    private func worktreeStateColor(_ worktree: ProjectWorktreeStatus) -> Color {
+        switch worktree.state {
+        case "main", "synced": CorptiePalette.connected
+        case "working", "readyToMerge": CorptiePalette.amber
+        case "diverged", "unavailable": .red
+        default: CorptiePalette.secondaryText
+        }
+    }
+
+    private func worktreeSyncLabel(_ worktree: ProjectWorktreeStatus) -> String {
+        switch worktree.synchronizedWithMain {
+        case true: L10n("In sync with main")
+        case false: L10n("Not in sync with main")
+        case nil: L10n("Sync unknown")
+        }
+    }
+
+    private func worktreeSyncColor(_ worktree: ProjectWorktreeStatus) -> Color {
+        switch worktree.synchronizedWithMain {
+        case true: CorptiePalette.connected
+        case false: CorptiePalette.amber
+        case nil: CorptiePalette.secondaryText
+        }
+    }
+}
+
+private struct ForceDeleteWorktreeConfirmationView: View {
+    let deletion: PendingWorktreeDeletion
+    let onConfirm: (String) -> Void
+    let onCancel: () -> Void
+    @State private var typedBranchName = ""
+
+    private var branchName: String {
+        deletion.worktree.branchName ?? ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "trash.slash.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n("Confirm permanent Worktree deletion"))
+                        .font(.system(size: 18, weight: .bold))
+                    Text(L10nFormat(
+                        "%d commits have not been merged into main.",
+                        deletion.worktree.aheadOfMain ?? 0
+                    ))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.red)
+                }
+            }
+
+            Text(L10n("This will permanently delete the Worktree directory, its branch, and all changes unique to that branch. This action cannot be undone."))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.red)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n("Type the full branch name exactly as shown to confirm:"))
+                    .font(.system(size: 11, weight: .medium))
+                Text(branchName.isEmpty ? L10n("detached HEAD") : branchName)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+                TextField(L10n("Full branch name"), text: $typedBranchName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+            }
+
+            HStack {
+                Spacer()
+                Button(L10n("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n("Permanently Delete Worktree"), role: .destructive) {
+                    onConfirm(typedBranchName)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(branchName.isEmpty || typedBranchName != branchName)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
+private struct ProtectedWorktreeCommitView: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    let prompt: ProtectedWorktreeCommitPrompt
+    @State private var decision = "ignore"
+    @State private var neverRemind = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(CorptiePalette.amber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n("Local Agent files detected"))
+                        .font(.system(size: 18, weight: .bold))
+                    Text(L10n("Choose how Corptie should handle them before committing."))
+                        .font(.system(size: 11))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+            }
+
+            PrivateAgentFilesDecisionView(
+                protection: prompt.protection,
+                decision: $decision,
+                neverRemind: $neverRemind
+            )
+
+            HStack {
+                Spacer()
+                Button(L10n("Cancel")) {
+                    backendClient.cancelProtectedWorktreeCommit()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(decision == "ignore"
+                    ? L10n("Update .gitignore and Commit")
+                    : L10n("Commit These Files")) {
+                    backendClient.confirmProtectedWorktreeCommit(
+                        decision: decision,
+                        neverRemindPrivateFiles: neverRemind
+                    )
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
+private struct PrivateAgentFilesDecisionView: View {
+    let protection: GitCommitProtectionStatus
+    @Binding var decision: String
+    @Binding var neverRemind: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L10n("These local Agent files would be included:"))
+                .font(.system(size: 12, weight: .semibold))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(protection.protectedPaths, id: \.self) { path in
+                        Text(path)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 105)
+
+            Picker("", selection: $decision) {
+                Text(L10n("Add matching paths to the project .gitignore")).tag("ignore")
+                Text(L10n("Include these files in the commit")).tag("include")
+            }
+            .pickerStyle(.radioGroup)
+            .labelsHidden()
+
+            Toggle(L10n("Do not remind me again for this project"), isOn: $neverRemind)
+                .font(.system(size: 11, weight: .medium))
+
+            if decision == "ignore" {
+                Text(L10n("Corptie will append only the matching root paths to the project .gitignore. Existing rules will be preserved."))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+            } else {
+                Text(L10n("These files may be stored in Git history and included in a GitHub push."))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(CorptiePalette.amber)
+            }
+        }
+        .padding(12)
+        .background(CorptiePalette.amber.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(CorptiePalette.amber.opacity(0.24), lineWidth: 0.75)
+        )
+    }
+}
+
+private struct ProjectWorktreeOperationView: View {
+    let worktree: ProjectWorktreeStatus
+    let status: ProjectWorktreeStatusResponse
+    let onExecute: (Bool, Bool, Bool, Bool, Bool) -> Void
+    let onCancel: () -> Void
+
+    @State private var mergeIntoMain: Bool
+    @State private var synchronizeWithMain: Bool
+    @State private var deleteWorktree = false
+    @State private var deleteSessions = false
+    @State private var restartService: Bool
+
+    init(
+        worktree: ProjectWorktreeStatus,
+        status: ProjectWorktreeStatusResponse,
+        onExecute: @escaping (Bool, Bool, Bool, Bool, Bool) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.worktree = worktree
+        self.status = status
+        self.onExecute = onExecute
+        self.onCancel = onCancel
+        let needsMerge = worktree.dirty == true || worktree.mergedIntoMain != true
+        _mergeIntoMain = State(initialValue: needsMerge)
+        _synchronizeWithMain = State(initialValue: worktree.synchronizedWithMain != true)
+        _restartService = State(initialValue: false)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n("Worktree Operations"))
+                    .font(.system(size: 17, weight: .bold))
+                Text(worktree.branchName ?? L10n("detached HEAD"))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(L10n("Merge into main"), isOn: $mergeIntoMain)
+                    .disabled(deleteWorktree || mergeIsUnnecessary)
+                Toggle(L10n("Synchronize with main"), isOn: $synchronizeWithMain)
+                    .disabled(deleteWorktree || worktree.synchronizedWithMain == true)
+                Toggle(L10n("Delete this Worktree"), isOn: $deleteWorktree)
+                Toggle(L10nFormat("Delete %d associated sessions", worktree.sessions.count), isOn: $deleteSessions)
+                    .disabled(worktree.sessions.isEmpty)
+                Toggle(L10n("Restart service"), isOn: $restartService)
+            }
+            .toggleStyle(.checkbox)
+
+            if deleteWorktree && !worktree.sessions.isEmpty && !deleteSessions {
+                Text(L10n("Deleting this Worktree also requires deleting its associated sessions."))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CorptiePalette.amber)
+            } else {
+                Text(L10n("Operations run in the displayed order. Service restart always runs last. No remote push is performed."))
+                    .font(.system(size: 11))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+            }
+
+            Spacer()
+            HStack {
+                Spacer()
+                Button(L10n("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n("Execute")) {
+                    onExecute(
+                        mergeIntoMain,
+                        synchronizeWithMain,
+                        deleteWorktree,
+                        deleteSessions,
+                        restartService
+                    )
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canExecute)
+            }
+        }
+        .padding(20)
+        .frame(width: 430, height: 350)
+        .onChange(of: deleteWorktree) { _, selected in
+            if selected {
+                mergeIntoMain = false
+                synchronizeWithMain = false
+            }
+        }
+        .onChange(of: mergeIntoMain) { _, selected in
+            if selected { deleteWorktree = false }
+        }
+        .onChange(of: synchronizeWithMain) { _, selected in
+            if selected {
+                deleteWorktree = false
+                if worktree.mergedIntoMain != true || worktree.dirty == true {
+                    mergeIntoMain = true
+                }
+            }
+        }
+    }
+
+    private var mergeIsUnnecessary: Bool {
+        worktree.mergedIntoMain == true && worktree.dirty != true
+    }
+
+    private var canExecute: Bool {
+        let hasSelection = mergeIntoMain
+            || synchronizeWithMain
+            || deleteWorktree
+            || deleteSessions
+            || restartService
+        let canDelete = !deleteWorktree || worktree.sessions.isEmpty || deleteSessions
+        return hasSelection && canDelete
     }
 }
 

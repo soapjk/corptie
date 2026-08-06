@@ -70,6 +70,10 @@ import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "./uti
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
 import { CodexWorkspaceTransitionManager } from "./runtime/codexWorkspaceTransitionManager.mjs";
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
+import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
+import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
+import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
+import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
 import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
@@ -102,6 +106,14 @@ const bundledAgentsPath = fileURLToPath(new URL(
   import.meta.url
 ));
 const bundledCollaborationSkillPath = fileURLToPath(new URL("../resources/codex/skills/corptie-collaboration/SKILL.md", import.meta.url));
+const bundledProjectToolsetReferencePath = fileURLToPath(new URL(
+  "../resources/codex/skills/corptie-collaboration/references/project-tools-set.md",
+  import.meta.url
+));
+const bundledGitCommitProtectionPath = fileURLToPath(new URL(
+  "../resources/git-commit-protection.json",
+  import.meta.url
+));
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   core: collaborationCore,
@@ -144,6 +156,16 @@ const codexWorkspaceTransitions = new CodexWorkspaceTransitionManager({
 const gitWorkspaces = new GitWorkspaceManager({
   store,
   transitions: codexWorkspaceTransitions
+});
+const projectToolsets = new ProjectToolsetManager();
+const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
+const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
+const projectToolsetInitializer = new ProjectToolsetInitializer({
+  manager: projectToolsets,
+  codexClient,
+  referencePath: bundledProjectToolsetReferencePath,
+  runtimeOptions: () => resolvedNewCodexRuntimeConfig(),
+  onEvent: (type, payload) => emitEvent(type, payload)
 });
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 const claudeAgents = new ClaudeAgentManager({ store });
@@ -1936,6 +1958,7 @@ async function createGatewaySession(input = {}) {
       session,
       source: { type: "feishu" }
     });
+    scheduleProjectToolsetInitialization(cwd);
     return session;
   } finally {
     releaseTitle();
@@ -2677,7 +2700,108 @@ async function sessionDeletionPlan(sessionId) {
   if (!String(sessionId).startsWith("codex:")) return { requiresWorktreeMerge: false };
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
   if (!logical?.activeBinding) return { requiresWorktreeMerge: false };
+  try {
+    await assertWorkspaceRouteUsable({
+      store,
+      logicalSession: logical,
+      providerThreadId: logical.activeThreadId
+    });
+  } catch (error) {
+    if (["WORKSPACE_UNAVAILABLE", "WORKSPACE_IDENTITY_CHANGED"].includes(error?.code)) {
+      const worktree = logical.activeWorkspaceId
+        ? store.getGitWorktree(logical.activeWorkspaceId)
+        : null;
+      return {
+        requiresWorktreeMerge: false,
+        workspaceUnavailable: true,
+        sourcePath: logical.activeBinding.boundCwd,
+        sourceBranch: worktree?.branchName ?? null,
+        unavailableReason: error.message
+      };
+    }
+    throw error;
+  }
   return gitWorkspaces.sessionDeletionPlan(logical.logicalSessionId);
+}
+
+async function sessionWorkspaceRecoveryStatus(sessionId) {
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!session || !logical?.activeBinding || !logical.repositoryId) {
+    const error = new Error("Session workspace route not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  try {
+    await assertWorkspaceRouteUsable({
+      store,
+      logicalSession: logical,
+      providerThreadId: logical.activeThreadId
+    });
+    return { orphaned: false, worktrees: [] };
+  } catch (error) {
+    if (!["WORKSPACE_UNAVAILABLE", "WORKSPACE_IDENTITY_CHANGED"].includes(error?.code)) throw error;
+  }
+  const original = logical.activeWorkspaceId ? store.getGitWorktree(logical.activeWorkspaceId) : null;
+  const knownMain = store.listGitWorktrees(logical.repositoryId).find((worktree) => {
+    return worktree.isMain && worktree.availability === "available";
+  });
+  let available = store.listGitWorktrees(logical.repositoryId).filter((worktree) => {
+    return worktree.availability === "available" && worktree.worktreeId !== logical.activeWorkspaceId;
+  });
+  if (knownMain?.path) {
+    try {
+      const snapshot = await createGitWorkspaceSnapshot(knownMain.path);
+      store.upsertGitWorkspaceSnapshot(snapshot);
+      available = snapshot.worktrees.filter((worktree) => {
+        return worktree.availability === "available" && worktree.worktreeId !== logical.activeWorkspaceId;
+      });
+    } catch {
+      // Preserve the last known inventory; route validation still prevents unsafe use.
+    }
+  }
+  return {
+    orphaned: true,
+    originalPath: logical.activeBinding.boundCwd,
+    originalBranchName: original?.branchName ?? null,
+    canRebuild: Boolean(original?.branchName && !original?.isMain),
+    worktrees: available.map((worktree) => ({
+      worktreeId: worktree.worktreeId,
+      path: worktree.canonicalPath || worktree.path,
+      branchName: worktree.branchName,
+      isMain: worktree.isMain,
+      availability: worktree.availability
+    }))
+  };
+}
+
+async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined) {
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!session || session.external?.provider !== "codex-app-server") {
+    const error = new Error("Codex session not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  const logical = await ensureLogicalRouteForCodexSession(session);
+  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+  const activeTurnId = session.external?.activeTurnId ?? null;
+  const agent = collaborationCore.getAgentForSession(sessionId);
+  const result = await codexWorkspaceTransitions.switchWorkspace({
+    transitionId,
+    logicalSessionId: logical.logicalSessionId,
+    targetWorktreeId,
+    activeTurnId,
+    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+    ...collaborationThreadOptions(agent?.agentId)
+  });
+  emitEvent(
+    result.status === "waitingForTurn"
+      ? "SessionWorkspaceSwitchWaiting"
+      : "SessionWorkspaceSwitchCompleted",
+    { sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
+    { sessionId }
+  );
+  return result;
 }
 
 async function generateSessionCommitMessage(sessionId, plan) {
@@ -2752,6 +2876,425 @@ async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
     logicalSessionId: logical.logicalSessionId,
     commitMessage
   });
+}
+
+function projectWorkingDirectoryForSession(sessionId) {
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  const cwd = logical?.activeBinding?.boundCwd ?? session?.external?.cwd ?? session?.cwd;
+  if (!cwd) {
+    const error = new Error("The Session is not attached to a local project directory.");
+    error.statusCode = 404;
+    throw error;
+  }
+  return cwd;
+}
+
+function scheduleProjectToolsetInitialization(cwd) {
+  inspectGitWorkspace(cwd)
+    .then(() => projectToolsetInitializer.schedule(cwd))
+    .catch(() => {});
+}
+
+async function projectToolsetStatus(sessionId) {
+  const cwd = projectWorkingDirectoryForSession(sessionId);
+  const toolset = await projectToolsets.inspect(cwd);
+  if (!toolset.configured) {
+    await projectToolsetInitializer.recoverOnce(cwd);
+    const initialization = projectToolsetInitializer.status(toolset.repositoryId);
+    return {
+      toolset,
+      service: {
+        state: initialization.state,
+        configurationError: initialization.error,
+        freshness: "unknown",
+        running: null,
+        mainHeadOid: toolset.mainHeadOid
+      }
+    };
+  }
+  const [status, health, version] = await Promise.all([
+    projectToolsets.run(cwd, "status", { timeoutMs: 5_000 }),
+    projectToolsets.run(cwd, "health", { timeoutMs: 5_000 }),
+    projectToolsets.run(cwd, "version", { timeoutMs: 5_000 })
+  ]);
+  const running = status.payload?.running === true;
+  const runningRevision = version.payload?.revision ?? null;
+  const dirty = version.payload?.dirty === true;
+  const freshness = !running
+    ? "stopped"
+    : (!version.ok || !runningRevision
+        ? "unknown"
+        : (runningRevision === toolset.mainHeadOid && !dirty ? "current" : "stale"));
+  return {
+    toolset,
+    service: {
+      state: running ? "running" : "stopped",
+      freshness,
+      running,
+      healthy: health.payload?.healthy === true,
+      mainHeadOid: toolset.mainHeadOid,
+      runningRevision,
+      dirty,
+      startedAt: version.payload?.startedAt ?? null,
+      worktreePath: version.payload?.worktreePath ?? null,
+      status,
+      health,
+      version
+    }
+  };
+}
+
+async function projectWorktreeStatus(sessionId) {
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!session) {
+    const error = new Error("Session not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId)
+    ?? await ensureLogicalRouteForCodexSession(session);
+  const [project, runtime] = await Promise.all([
+    gitWorkspaces.projectStatus(logical.logicalSessionId),
+    projectToolsetStatus(sessionId)
+  ]);
+  project.worktrees = await Promise.all(project.worktrees.map(async (worktree) => {
+    if (worktree.availability !== "available" || runtime.service.running !== true) {
+      return { ...worktree, serviceContainsChanges: false };
+    }
+    const containsCommittedChanges = await gitWorkspaces.revisionContains(
+      worktree.path,
+      worktree.headOid,
+      runtime.service.runningRevision
+    );
+    const sameWorktree = runtime.service.worktreePath
+      && resolve(runtime.service.worktreePath) === resolve(worktree.path);
+    const containsWorkingChanges = worktree.dirty !== true
+      || (sameWorktree && runtime.service.dirty === true);
+    return {
+      ...worktree,
+      serviceContainsChanges: containsCommittedChanges && containsWorkingChanges
+    };
+  }));
+  return { project, ...runtime };
+}
+
+async function commitMessageForProjectWorktree(worktree, requestedMessage) {
+  const provided = sanitizeSessionCommitMessage(requestedMessage);
+  if (provided) return provided;
+  if (!worktree.dirty) return null;
+  const sourceSessionId = worktree.sessions.find((item) => item.sessionId)?.sessionId;
+  if (!sourceSessionId) {
+    throw new Error("A commit message is required because no active Session owns this dirty worktree.");
+  }
+  return generateSessionCommitMessage(sourceSessionId, {
+    sourceBranch: worktree.branchName,
+    sourcePath: worktree.path,
+    statusSummary: worktree.statusSummary,
+    diffStat: worktree.diffStat
+  });
+}
+
+async function resolveProjectCommitProtection(worktree, input = {}) {
+  if (!worktree.dirty) return null;
+  return gitCommitProtection.resolve(worktree.path, {
+    decision: input.privateFilesDecision,
+    neverRemind: input.neverRemindPrivateFiles === true
+  });
+}
+
+async function mergeProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.isMain) throw new Error("The selected project worktree is not mergeable.");
+  if (input.restartService === true) {
+    const toolset = await projectToolsets.inspect(logical.activeBinding.boundCwd);
+    if (!toolset.configured) {
+      throw new Error("Configure the Corptie Scripts Tools Set before requesting merge and restart.");
+    }
+  }
+  await resolveProjectCommitProtection(source, input);
+  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+  const merge = await gitWorkspaces.mergeWorktreeIntoMain({
+    logicalSessionId: logical.logicalSessionId,
+    sourceWorktreeId,
+    commitMessage,
+    synchronizeSource: true
+  });
+  let restart = null;
+  if (input.restartService === true) {
+    restart = await projectToolsets.run(logical.activeBinding.boundCwd, "restart");
+  }
+  const current = await projectWorktreeStatus(sessionId);
+  return { merge, restart, ...current };
+}
+
+async function restartProjectWorktree(sessionId, sourceWorktreeId) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.availability !== "available") {
+    throw new Error("The selected project worktree is unavailable.");
+  }
+  const toolset = await projectToolsets.inspect(source.path);
+  if (!toolset.configured) {
+    throw new Error("Configure the Corptie Scripts Tools Set before restarting from this worktree.");
+  }
+  const restart = await projectToolsets.run(source.path, "restart", {
+    executionRoot: source.path
+  });
+  const current = await projectWorktreeStatus(sessionId);
+  return { restart, ...current };
+}
+
+async function commitProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.availability !== "available") {
+    throw new Error("The selected project worktree is unavailable.");
+  }
+  if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
+  await resolveProjectCommitProtection(source, input);
+  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+  const commit = await gitWorkspaces.commitWorktreeChanges({
+    logicalSessionId: logical.logicalSessionId,
+    sourceWorktreeId,
+    commitMessage
+  });
+  const current = await projectWorktreeStatus(sessionId);
+  return { commit, ...current };
+}
+
+async function prepareProjectWorktreeCommit(sessionId, sourceWorktreeId) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.availability !== "available") {
+    throw new Error("The selected project worktree is unavailable.");
+  }
+  if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
+  return gitCommitProtection.inspect(source.path);
+}
+
+async function prepareGitHubPush(sessionId) {
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  if (!session) {
+    const error = new Error("Session not found.");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (!String(sessionId).startsWith("codex:")) {
+    throw new Error("Automatic commit-message generation is currently available only for Codex Sessions.");
+  }
+  return gitHubPushes.prepare({
+    sessionId,
+    workingDirectory: projectWorkingDirectoryForSession(sessionId)
+  });
+}
+
+async function confirmGitHubPush(sessionId, input = {}) {
+  const confirmationToken = String(input.confirmationToken ?? "").trim();
+  if (!confirmationToken) throw new Error("A GitHub push confirmation token is required.");
+  const result = await gitHubPushes.confirm({
+    sessionId,
+    confirmationToken,
+    privateFilesDecision: input.privateFilesDecision,
+    neverRemindPrivateFiles: input.neverRemindPrivateFiles === true,
+    generateCommitMessage: (plan) => generateSessionCommitMessage(sessionId, plan)
+  });
+  emitEvent("GitHubPushCompleted", {
+    sessionId,
+    branch: result.branch,
+    destinationUrl: result.destinationUrl,
+    headOid: result.headOid,
+    committed: result.committed
+  }, { sessionId });
+  return result;
+}
+
+async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.isMain) throw new Error("The selected project worktree cannot be completed.");
+  if (input.deleteSessions !== true && source.sessions.length > 0) {
+    throw new Error("Completing this worktree requires confirmation to delete its associated Sessions.");
+  }
+  for (const binding of source.sessions) {
+    const session = binding.sessionId
+      ? managedCodexSessions.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+      : null;
+    if (sessionHasActiveRun(session)) {
+      const error = new Error(`Session ${session.title || binding.sessionId} is busy. Wait for it before completing the worktree.`);
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+  }
+  const toolset = await projectToolsets.inspect(logical.activeBinding.boundCwd);
+  if (input.restartService !== false && !toolset.configured) {
+    throw new Error("Configure the Corptie Scripts Tools Set before completing and restarting this worktree.");
+  }
+  await resolveProjectCommitProtection(source, input);
+  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+  const merge = await gitWorkspaces.mergeWorktreeIntoMain({
+    logicalSessionId: logical.logicalSessionId,
+    sourceWorktreeId,
+    commitMessage,
+    synchronizeSource: false
+  });
+  const logicalSessionIds = source.sessions.map((item) => item.logicalSessionId);
+  const cleanup = await gitWorkspaces.removeMergedWorktree({
+    logicalSessionId: logical.logicalSessionId,
+    sourceWorktreeId,
+    ignoreLogicalSessionIds: logicalSessionIds,
+    deleteBranch: input.deleteBranch !== false
+  });
+  const deletedSessionIds = [];
+  for (const binding of source.sessions) {
+    if (!binding.sessionId) continue;
+    managedCodexSessions.delete(binding.sessionId);
+    collaborationCore.deactivateAgentForSession(binding.sessionId);
+    store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
+    store.deleteSession(binding.sessionId);
+    deletedSessionIds.push(binding.sessionId);
+    emitEvent("SessionDeleted", {
+      sessionId: binding.sessionId,
+      provider: "codex-app-server",
+      reason: "worktreeCompleted"
+    });
+  }
+  let restart = null;
+  if (input.restartService !== false) {
+    restart = await projectToolsets.run(before.mainPath, "restart");
+  }
+  emitEvent("ProjectWorktreeCompleted", {
+    repositoryId: before.repositoryId,
+    sourceWorktreeId,
+    merge,
+    cleanup,
+    deletedSessionIds,
+    restart
+  });
+  return { merge, cleanup, deletedSessionIds, restart };
+}
+
+async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const operations = {
+    mergeIntoMain: input.mergeIntoMain === true,
+    synchronizeWithMain: input.synchronizeWithMain === true,
+    deleteWorktree: input.deleteWorktree === true,
+    deleteSessions: input.deleteSessions === true,
+    restartService: input.restartService === true
+  };
+  if (!Object.values(operations).some(Boolean)) {
+    throw new Error("Select at least one worktree operation.");
+  }
+  if (operations.deleteWorktree && (operations.mergeIntoMain || operations.synchronizeWithMain)) {
+    throw new Error("Deleting a worktree cannot be combined with merging or synchronizing it.");
+  }
+
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.isMain || source.availability !== "available") {
+    throw new Error("The selected project worktree is unavailable.");
+  }
+  if (operations.deleteWorktree && source.sessions.length > 0 && !operations.deleteSessions) {
+    throw new Error("Delete the associated Sessions before deleting this worktree.");
+  }
+  if (operations.deleteSessions) {
+    for (const binding of source.sessions) {
+      const session = binding.sessionId
+        ? managedCodexSessions.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+        : null;
+      if (sessionHasActiveRun(session)) {
+        const error = new Error(`Session ${session?.title || binding.sessionId} is busy. Wait for it before deleting associated Sessions.`);
+        error.code = "SESSION_BUSY";
+        throw error;
+      }
+    }
+  }
+  if (operations.restartService) {
+    const toolset = await projectToolsets.inspect(before.mainPath);
+    if (!toolset.configured) {
+      throw new Error("Configure the Corptie Scripts Tools Set before restarting the service.");
+    }
+  }
+
+  let merge = null;
+  if (operations.mergeIntoMain) {
+    await resolveProjectCommitProtection(source, input);
+    const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+    merge = await gitWorkspaces.mergeWorktreeIntoMain({
+      logicalSessionId: logical.logicalSessionId,
+      sourceWorktreeId,
+      commitMessage,
+      synchronizeSource: false
+    });
+  }
+
+  let synchronization = null;
+  if (operations.synchronizeWithMain) {
+    synchronization = await gitWorkspaces.synchronizeWorktreeWithMain({
+      logicalSessionId: logical.logicalSessionId,
+      sourceWorktreeId
+    });
+  }
+
+  const logicalSessionIds = source.sessions.map((item) => item.logicalSessionId);
+  let cleanup = null;
+  if (operations.deleteWorktree) {
+    cleanup = await gitWorkspaces.removeMergedWorktree({
+      logicalSessionId: logical.logicalSessionId,
+      sourceWorktreeId,
+      ignoreLogicalSessionIds: operations.deleteSessions ? logicalSessionIds : [],
+      deleteBranch: true,
+      forceDeleteUnmerged: input.forceDeleteUnmerged === true,
+      acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
+      confirmedBranchName: input.confirmedBranchName
+    });
+  }
+
+  const deletedSessionIds = [];
+  if (operations.deleteSessions) {
+    for (const binding of source.sessions) {
+      if (!binding.sessionId) continue;
+      managedCodexSessions.delete(binding.sessionId);
+      collaborationCore.deactivateAgentForSession(binding.sessionId);
+      store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
+      store.deleteSession(binding.sessionId);
+      deletedSessionIds.push(binding.sessionId);
+      emitEvent("SessionDeleted", {
+        sessionId: binding.sessionId,
+        provider: "codex-app-server",
+        reason: "worktreeOperation"
+      });
+    }
+  }
+
+  let restart = null;
+  if (operations.restartService) {
+    restart = await projectToolsets.run(before.mainPath, "restart");
+  }
+  emitEvent("ProjectWorktreeOperated", {
+    repositoryId: before.repositoryId,
+    sourceWorktreeId,
+    operations,
+    merge,
+    synchronization,
+    cleanup,
+    deletedSessionIds,
+    restart
+  });
+  return { operations, merge, synchronization, cleanup, deletedSessionIds, restart };
 }
 
 function route(request, response) {
@@ -3569,6 +4112,80 @@ function route(request, response) {
 
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
   const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
+  const sessionProjectToolsetMatch = url.pathname.match(
+    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|start|restart|stop))?$/
+  );
+  const sessionGitHubPushMatch = url.pathname.match(
+    /^\/sessions\/([^/]+)\/github-push\/(prepare|confirm)$/
+  );
+  const sessionProjectWorktreesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/project-worktrees$/);
+  const sessionProjectWorktreeActionMatch = url.pathname.match(
+    /^\/sessions\/([^/]+)\/project-worktrees\/([^/]+)\/(merge|complete|restart|operate|commit|commit-prepare)$/
+  );
+  if (request.method === "POST" && sessionGitHubPushMatch) {
+    const sessionId = decodeURIComponent(sessionGitHubPushMatch[1]);
+    const action = sessionGitHubPushMatch[2];
+    readJson(request)
+      .then((input) => action === "prepare"
+        ? prepareGitHubPush(sessionId)
+        : confirmGitHubPush(sessionId, input))
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
+  if (request.method === "GET" && sessionProjectWorktreesMatch) {
+    const sessionId = decodeURIComponent(sessionProjectWorktreesMatch[1]);
+    projectWorktreeStatus(sessionId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
+  if (request.method === "POST" && sessionProjectWorktreeActionMatch) {
+    const sessionId = decodeURIComponent(sessionProjectWorktreeActionMatch[1]);
+    const sourceWorktreeId = decodeURIComponent(sessionProjectWorktreeActionMatch[2]);
+    const action = sessionProjectWorktreeActionMatch[3];
+    readJson(request)
+      .then((input) => action === "merge"
+        ? mergeProjectWorktree(sessionId, sourceWorktreeId, input)
+        : action === "commit-prepare"
+          ? prepareProjectWorktreeCommit(sessionId, sourceWorktreeId)
+        : action === "commit"
+          ? commitProjectWorktree(sessionId, sourceWorktreeId, input)
+        : action === "complete"
+          ? completeProjectWorktree(sessionId, sourceWorktreeId, input)
+          : action === "operate"
+            ? operateProjectWorktree(sessionId, sourceWorktreeId, input)
+            : restartProjectWorktree(sessionId, sourceWorktreeId))
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
+  if (request.method === "GET" && sessionProjectToolsetMatch && !sessionProjectToolsetMatch[2]) {
+    const sessionId = decodeURIComponent(sessionProjectToolsetMatch[1]);
+    projectToolsetStatus(sessionId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
+  if (request.method === "POST" && sessionProjectToolsetMatch) {
+    const sessionId = decodeURIComponent(sessionProjectToolsetMatch[1]);
+    const action = sessionProjectToolsetMatch[2];
+    Promise.resolve()
+      .then(async () => {
+        const cwd = projectWorkingDirectoryForSession(sessionId);
+        if (action === "initialize" || action === "update") {
+          projectToolsetInitializer.schedule(cwd, { force: action === "update" });
+          sendJson(response, 202, { scheduled: true, action });
+          return;
+        }
+        const result = await projectToolsets.run(cwd, action);
+        const status = await projectToolsetStatus(sessionId);
+        emitEvent("ProjectServiceChanged", { sessionId, action, result, ...status }, { sessionId });
+        sendJson(response, result.ok ? 200 : 409, { action: result, ...status });
+      })
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
   if (request.method === "GET" && sessionDeletionPlanMatch) {
     const rawId = decodeURIComponent(sessionDeletionPlanMatch[1]);
     sessionDeletionPlan(rawId)
@@ -3664,9 +4281,28 @@ function route(request, response) {
               throw new Error("The Session is no longer bound to a mergeable worktree.");
             }
             merge = await mergeSessionWorktreeBeforeDeletion(rawId, plan);
+            const logical = store.getLogicalSessionByLegacySessionId(rawId);
+            if (logical && merge?.sourceWorktreeId) {
+              const otherBindings = store.listLogicalSessionsByWorkspaceId(merge.sourceWorktreeId).filter((item) => {
+                return item.logicalSessionId !== logical.logicalSessionId;
+              });
+              merge.cleanup = otherBindings.length > 0
+                ? {
+                    removed: false,
+                    reason: "sharedWorktree",
+                    remainingSessionCount: otherBindings.length
+                  }
+                : await gitWorkspaces.removeMergedWorktree({
+                    logicalSessionId: logical.logicalSessionId,
+                    sourceWorktreeId: merge.sourceWorktreeId,
+                    ignoreLogicalSessionIds: [logical.logicalSessionId],
+                    deleteBranch: true
+                  });
+            }
           }
           const existed = managedCodexSessions.delete(rawId);
           collaborationCore.deactivateAgentForSession(rawId);
+          store.deleteLogicalSessionByLegacySessionId(rawId);
           store.deleteSession(rawId);
           emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
           sendJson(response, 200, { ok: true, deleted: existed, merge });
@@ -4237,39 +4873,48 @@ function route(request, response) {
   }
 
   const sessionWorkspaceSwitchMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/switch$/);
+  const sessionWorkspaceRecoveryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/recovery$/);
+  if (sessionWorkspaceRecoveryMatch && request.method === "GET") {
+    const sessionId = decodeURIComponent(sessionWorkspaceRecoveryMatch[1]);
+    sessionWorkspaceRecoveryStatus(sessionId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
+  if (sessionWorkspaceRecoveryMatch && request.method === "POST") {
+    const sessionId = decodeURIComponent(sessionWorkspaceRecoveryMatch[1]);
+    readJson(request)
+      .then(async (input) => {
+        const status = await sessionWorkspaceRecoveryStatus(sessionId);
+        if (!status.orphaned) throw new Error("The session workspace is available and does not need recovery.");
+        if (input.action === "switch") {
+          if (!status.worktrees.some((item) => item.worktreeId === input.targetWorktreeId)) {
+            throw new Error("Select an available Worktree from this repository.");
+          }
+          return switchSessionWorkspace(sessionId, input.targetWorktreeId);
+        }
+        if (input.action === "rebuild") {
+          const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+          const rebuilt = await gitWorkspaces.restoreMissingWorktree({
+            logicalSessionId: logical.logicalSessionId
+          });
+          if (rebuilt.restored.worktreeId !== logical.activeWorkspaceId) {
+            rebuilt.transition = await switchSessionWorkspace(sessionId, rebuilt.restored.worktreeId);
+          }
+          emitEvent("SessionWorkspaceRebuilt", { sessionId, rebuilt }, { sessionId });
+          return rebuilt;
+        }
+        throw new Error("Unsupported workspace recovery action.");
+      })
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
   if (request.method === "POST" && sessionWorkspaceSwitchMatch) {
     const sessionId = decodeURIComponent(sessionWorkspaceSwitchMatch[1]);
     readJson(request)
       .then(async (input) => {
-        const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-        if (!session || session.external?.provider !== "codex-app-server") {
-          const error = new Error("Codex session not found.");
-          error.statusCode = 404;
-          throw error;
-        }
-        const logical = await ensureLogicalRouteForCodexSession(session);
-        const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
-        const activeTurnId = session.external?.activeTurnId ?? null;
-        const agent = collaborationCore.getAgentForSession(sessionId);
-        const result = await codexWorkspaceTransitions.switchWorkspace({
-          transitionId: input.transitionId,
-          logicalSessionId: logical.logicalSessionId,
-          targetWorktreeId: input.targetWorktreeId,
-          activeTurnId,
-          lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-          ...collaborationThreadOptions(agent?.agentId)
-        });
-        emitEvent(
-          result.status === "waitingForTurn"
-            ? "SessionWorkspaceSwitchWaiting"
-            : "SessionWorkspaceSwitchCompleted",
-          {
-            sessionId,
-            logicalSessionId: logical.logicalSessionId,
-            transition: result.transition
-          },
-          { sessionId }
-        );
+        const result = await switchSessionWorkspace(sessionId, input.targetWorktreeId, input.transitionId);
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
       .catch((error) => {
@@ -4440,6 +5085,7 @@ function route(request, response) {
         upsertManagedCodexSession(session, collaborationAgentId);
 
         emitEvent("CodexThreadCreated", { threadId, session, turn: turn.turn });
+        scheduleProjectToolsetInitialization(cwd);
         console.log(`[codex] created request=${creationId} thread=${threadId} turn=${turn.turn?.id ?? "unknown"} durationMs=${Date.now() - startedAt}`);
 
         sendJson(response, 201, {
@@ -4959,6 +5605,7 @@ const corptieCodexRuntime = await ensureCorptieCodexRuntime({
   environmentName,
   bundledAgentsPath,
   bundledSkillPath: bundledCollaborationSkillPath,
+  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
   collaborationMcpServerPath,
   legacyThreadIds: storedSessionsAtStartup
     .map((session) => session.id)
