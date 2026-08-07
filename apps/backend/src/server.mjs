@@ -407,12 +407,9 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
     ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
     : null;
   if (!transition || transition.phase !== "waitingForTurn") return null;
-  const agent = logical.legacySessionId
-    ? collaborationCore.getAgentForSession(logical.legacySessionId)
-    : null;
   return codexWorkspaceTransitions.continueWorkspaceTransition(transition.transitionId, {
     lastCompletedTurnId,
-    ...collaborationThreadOptions(agent?.agentId)
+    ...collaborationThreadOptionsForSession(logical.legacySessionId)
   }).catch((error) => {
     console.error(`[workspace-transition] failed transition=${transition.transitionId} error=${error.message}`);
     emitEvent("SessionWorkspaceSwitchFailed", {
@@ -487,13 +484,10 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
         }
       }
       reconcilingWorkspacePaths.add(logical.logicalSessionId);
-      const agent = logical.legacySessionId
-        ? collaborationCore.getAgentForSession(logical.legacySessionId)
-        : null;
       try {
         await codexWorkspaceTransitions.reconcileActiveWorkspacePath(
           logical.logicalSessionId,
-          collaborationThreadOptions(agent?.agentId)
+          collaborationThreadOptionsForSession(logical.legacySessionId)
         );
       } catch (error) {
         console.warn(`[workspace-route] path rebind failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
@@ -1130,6 +1124,68 @@ function collaborationThreadOptions(agentId) {
   };
 }
 
+function collaborationThreadOptionsForSession(sessionId) {
+  if (!sessionId) return {};
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const agent = collaborationCore.getAgentForSession(sessionId)
+    ?? ensureCollaborationAgentForSession(session);
+  return collaborationThreadOptions(agent?.agentId);
+}
+
+function workspaceInventory(logical) {
+  return {
+    logicalSessionId: logical.logicalSessionId,
+    activeWorktreeId: logical.activeWorkspaceId,
+    activeRepositoryId: logical.repositoryId,
+    workspaces: store.listAllGitWorktrees().map((worktree) => ({
+      id: worktree.worktreeId,
+      repositoryId: worktree.repositoryId,
+      path: worktree.canonicalPath || worktree.path,
+      availability: worktree.availability,
+      branchName: worktree.branchName,
+      headOid: worktree.headOid,
+      detached: worktree.isDetached,
+      isMain: worktree.isMain
+    }))
+  };
+}
+
+function requireAgentLogicalSession(agentId) {
+  const agent = collaborationCore.getAgent(agentId);
+  const sessionId = agent?.currentSessionId;
+  const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
+  if (!sessionId || !logical?.activeBinding) {
+    const error = new Error("The Corptie Agent is not bound to an active logical Session.");
+    error.code = "SESSION_NOT_FOUND";
+    error.statusCode = 404;
+    throw error;
+  }
+  return { agent, sessionId, logical };
+}
+
+async function createAgentWorktree(agentId, input = {}) {
+  const { sessionId, logical } = requireAgentLogicalSession(agentId);
+  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
+  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+  const runtimeOptions = collaborationThreadOptions(agentId);
+  return gitWorkspaces.createWorktree({
+    logicalSessionId: logical.logicalSessionId,
+    targetPath: input.target_path,
+    branch: input.branch,
+    baseRef: input.base_ref,
+    createBranch: input.create_branch,
+    detach: input.detach,
+    switchAfterCreate: input.switch_after_create,
+    inventoryVersion: input.inventory_version,
+    activeTurnId: session?.external?.activeTurnId ?? runningWork?.targetTurnId ?? null,
+    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+    dynamicToolAgentId: agentId,
+    config: runtimeOptions.config,
+    developerInstructions: runtimeOptions.developerInstructions
+  });
+}
+
 async function callWorkspaceDynamicTool(params) {
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId) {
@@ -1137,21 +1193,7 @@ async function callWorkspaceDynamicTool(params) {
   }
   const runtimeOptions = collaborationThreadOptions(params.agentId);
   if (params.tool === "corptie_list_workspaces") {
-    return {
-      logicalSessionId: logical.logicalSessionId,
-      activeWorktreeId: logical.activeWorkspaceId,
-      activeRepositoryId: logical.repositoryId,
-      workspaces: store.listAllGitWorktrees().map((worktree) => ({
-        id: worktree.worktreeId,
-        repositoryId: worktree.repositoryId,
-        path: worktree.canonicalPath || worktree.path,
-        availability: worktree.availability,
-        branchName: worktree.branchName,
-        headOid: worktree.headOid,
-        detached: worktree.isDetached,
-        isMain: worktree.isMain
-      }))
-    };
+    return workspaceInventory(logical);
   }
   if (params.tool === "corptie_create_worktree") {
     const input = params.arguments ?? {};
@@ -1190,7 +1232,7 @@ function collaborationRuntimeInstructions(agentId) {
     "For a new peer request, resolve the user-provided alias with corptie_agents_discover, then call corptie_collaboration_request immediately with the final recipient and task fields. The tool stages a structured confirmation card; do not write your own confirmation message and do not call the tool a second time after confirmation.",
     "Every new user instruction to a peer is a new collaboration task, even if it resembles a previous failed request. Reuse an existing task only when the user explicitly names that task and continues the exact same objective and acceptance criteria. Never call collaboration.reply for a new user instruction.",
     "After collaboration.request stages confirmation, end the current turn immediately. Corptie handles confirm or reject programmatically and pushes any peer response into this Agent's unified queue as a later turn; do not poll or wait.",
-    "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. A switch requested during a turn is applied only after that turn completes."
+    "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. These operations may appear as host tools or as tools from the local Corptie MCP server; use the available form. Never treat changing a command workdir or running cd as a logical workspace switch. A switch requested during a turn is applied only after that turn completes."
   ].join(" ");
 }
 
@@ -2197,7 +2239,6 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       logicalRoute
     ));
     const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
-    const collaborationAgent = collaborationCore.getAgentForSession(sessionId);
     const startingSession = {
       ...managed,
       status: "running",
@@ -2216,7 +2257,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       await codexClient.resumeThread(threadId, {
         cwd: activeCwd,
         runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
-        ...collaborationThreadOptions(collaborationAgent?.agentId)
+        ...collaborationThreadOptionsForSession(sessionId)
       });
       result = await codexClient.startTurn(threadId, value, {
         cwd: activeCwd,
@@ -2292,7 +2333,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     cwd,
     ...permissions,
     model,
-    ...collaborationThreadOptions(previousAgent?.agentId)
+    ...collaborationThreadOptionsForSession(sessionId)
   });
   await codexClient.setThreadName(started.thread.id, title).catch((error) => {
     console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
@@ -2560,10 +2601,9 @@ async function inspectCollaborationSession(sessionId) {
 
 async function resumeCollaborationSession(sessionId) {
   if (!String(sessionId).startsWith("codex:")) throw new Error("Only Codex Sessions can be resumed for collaboration.");
-  const agent = collaborationCore.getAgentForSession(sessionId);
   await codexClient.resumeThread(
     sessionId.slice("codex:".length),
-    collaborationThreadOptions(agent?.agentId)
+    collaborationThreadOptionsForSession(sessionId)
   );
 }
 
@@ -2790,14 +2830,13 @@ async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId 
   const logical = await ensureLogicalRouteForCodexSession(session);
   const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
   const activeTurnId = session.external?.activeTurnId ?? null;
-  const agent = collaborationCore.getAgentForSession(sessionId);
   const result = await codexWorkspaceTransitions.switchWorkspace({
     transitionId,
     logicalSessionId: logical.logicalSessionId,
     targetWorktreeId,
     activeTurnId,
     lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-    ...collaborationThreadOptions(agent?.agentId)
+    ...collaborationThreadOptionsForSession(sessionId)
   });
   emitEvent(
     result.status === "waitingForTurn"
@@ -3321,7 +3360,16 @@ function route(request, response) {
         confirmation
       }, { sessionId: confirmation.sourceSessionId });
     },
-    onConfirmationResolved: resolveCollaborationConfirmation
+    onConfirmationResolved: resolveCollaborationConfirmation,
+    onListWorkspaces: async (agentId) => {
+      const { logical } = requireAgentLogicalSession(agentId);
+      return workspaceInventory(logical);
+    },
+    onCreateWorktree: createAgentWorktree,
+    onSwitchWorkspace: async (agentId, input) => {
+      const { sessionId } = requireAgentLogicalSession(agentId);
+      return switchSessionWorkspace(sessionId, input.target_worktree_id);
+    }
   })) {
     return;
   }
@@ -4950,13 +4998,12 @@ function route(request, response) {
         const logical = await ensureLogicalRouteForCodexSession(session);
         const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
         const activeTurnId = session.external?.activeTurnId ?? null;
-        const agent = collaborationCore.getAgentForSession(sessionId);
         const result = await codexWorkspaceTransitions.restartSession({
           transitionId: `session-restart:${randomUUID()}`,
           logicalSessionId: logical.logicalSessionId,
           activeTurnId,
           lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-          ...collaborationThreadOptions(agent?.agentId)
+          ...collaborationThreadOptionsForSession(sessionId)
         });
         emitEvent(
           result.status === "waitingForTurn"
@@ -5354,8 +5401,7 @@ function route(request, response) {
         }
 
         try {
-          const collaborationAgent = collaborationCore.getAgentForSession(sessionId);
-          await codexClient.resumeThread(threadId, collaborationThreadOptions(collaborationAgent?.agentId));
+          await codexClient.resumeThread(threadId, collaborationThreadOptionsForSession(sessionId));
           const managedSession = managedCodexSessions.get(`codex:${threadId}`);
           const result = await codexClient.startTurn(threadId, text, {
             model: managedSession?.external?.currentModel ?? input.model ?? undefined,
@@ -5654,13 +5700,10 @@ for (const storedSession of storedSessionsAtStartup) {
 }
 for (const transition of store.listPendingWorkspaceTransitions()) {
   const logical = store.getLogicalSession(transition.logicalSessionId);
-  const agent = logical?.legacySessionId
-    ? collaborationCore.getAgentForSession(logical.legacySessionId)
-    : null;
   try {
     const recovered = await codexWorkspaceTransitions.recoverWorkspaceTransition(
       transition.transitionId,
-      collaborationThreadOptions(agent?.agentId)
+      collaborationThreadOptionsForSession(logical?.legacySessionId)
     );
     console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
   } catch (error) {

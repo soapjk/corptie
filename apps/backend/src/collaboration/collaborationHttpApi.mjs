@@ -1,4 +1,14 @@
-export function handleCollaborationHttpRequest({ request, response, url, core, onConfirmationStaged, onConfirmationResolved }) {
+export function handleCollaborationHttpRequest({
+  request,
+  response,
+  url,
+  core,
+  onConfirmationStaged,
+  onConfirmationResolved,
+  onListWorkspaces,
+  onCreateWorktree,
+  onSwitchWorkspace
+}) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
     || url.pathname.startsWith("/collaboration/tasks/")
@@ -14,6 +24,21 @@ export function handleCollaborationHttpRequest({ request, response, url, core, o
         return handleProductRequest({ request, response, url, core, onConfirmationResolved });
       }
       const actorAgentId = requiredActor(request, core);
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/workspaces") {
+        if (!onListWorkspaces) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
+        return sendJson(response, 200, await onListWorkspaces(actorAgentId));
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/worktrees") {
+        if (!onCreateWorktree) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
+        return sendJson(response, 201, await onCreateWorktree(actorAgentId, await readJson(request)));
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/workspaces/switch") {
+        if (!onSwitchWorkspace) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
+        return sendJson(response, 202, await onSwitchWorkspace(actorAgentId, await readJson(request)));
+      }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/agents") {
         const requestedStatus = url.searchParams.get("status") || undefined;
