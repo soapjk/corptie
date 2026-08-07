@@ -46,6 +46,72 @@ test("deleteThread permanently removes the Codex thread and clears local runtime
   assert.equal(client.dynamicToolAgentsByThread.has("thread-a"), false);
 });
 
+test("runEphemeralPrompt isolates background generation and deletes its temporary thread", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/start") return { thread: { id: "thread-background" } };
+    if (method === "turn/start") {
+      client.liveItemsByThread.set("thread-background", new Map([[
+        "message-a",
+        {
+          id: "message-a",
+          turnId: "turn-background",
+          type: "agentMessage",
+          text: "Generate concise commit subject"
+        }
+      ]]));
+      client.notifications.push({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-background",
+          turn: { id: "turn-background", status: "completed" }
+        }
+      });
+      return { turn: { id: "turn-background" } };
+    }
+    return {};
+  };
+
+  const result = await client.runEphemeralPrompt({
+    cwd: "/repo/feature",
+    prompt: "Generate a commit subject",
+    model: "gpt-test",
+    reasoningEffort: "medium"
+  });
+
+  assert.equal(result.text, "Generate concise commit subject");
+  assert.deepEqual(calls.map((call) => call.method), ["thread/start", "turn/start", "thread/delete"]);
+  assert.equal(calls[0].params.ephemeral, true);
+  assert.equal(calls[0].params.approvalPolicy, "never");
+  assert.equal(calls[0].params.sandbox, "read-only");
+  assert.deepEqual(calls[0].params.runtimeWorkspaceRoots, ["/repo/feature"]);
+  assert.equal(calls[1].params.threadId, "thread-background");
+  assert.equal(calls[1].params.effort, "medium");
+  assert.deepEqual(calls[1].params.sandboxPolicy, { type: "readOnly" });
+  assert.equal(client.liveItemsByThread.has("thread-background"), false);
+});
+
+test("runEphemeralPrompt deletes its temporary thread when generation fails", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/start") return { thread: { id: "thread-background" } };
+    if (method === "turn/start") throw new Error("generation failed");
+    return {};
+  };
+
+  await assert.rejects(
+    () => client.runEphemeralPrompt({ cwd: "/repo/feature", prompt: "Generate" }),
+    /generation failed/
+  );
+  assert.deepEqual(calls.map((call) => call.method), ["thread/start", "turn/start", "thread/delete"]);
+});
+
 test("startThread installs host-owned collaboration tools and keeps the isolated MCP compatibility path", async () => {
   const calls = [];
   const client = new CodexAppServerClient();

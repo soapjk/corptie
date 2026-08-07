@@ -110,13 +110,15 @@ export class CodexAppServerClient {
 
   async deleteThread(threadId) {
     await this.initialize();
-    const result = await this.request("thread/delete", { threadId });
-    this.liveItemsByThread.delete(threadId);
-    this.turnDiffsByThread.delete(threadId);
-    this.tokenUsageByThread.delete(threadId);
-    this.serverRequestsByThread.delete(threadId);
-    this.dynamicToolAgentsByThread.delete(threadId);
-    return result;
+    try {
+      return await this.request("thread/delete", { threadId });
+    } finally {
+      this.liveItemsByThread.delete(threadId);
+      this.turnDiffsByThread.delete(threadId);
+      this.tokenUsageByThread.delete(threadId);
+      this.serverRequestsByThread.delete(threadId);
+      this.dynamicToolAgentsByThread.delete(threadId);
+    }
   }
 
   async startThread(options = {}) {
@@ -299,6 +301,62 @@ export class CodexAppServerClient {
       notificationCount: this.notifications.length - notificationStart,
       liveThreadCount: this.liveItemsByThread.size - liveStart
     };
+  }
+
+  async runEphemeralPrompt(options = {}) {
+    const timeoutMs = options.timeoutMs ?? 120000;
+    const prompt = options.prompt ?? "";
+    const cwd = options.cwd ?? defaultWorkspacePath();
+    const notificationStart = this.notifications.length;
+    const startedAt = Date.now();
+    let threadId = null;
+    try {
+      const started = await this.startThread({
+        cwd,
+        runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? [cwd],
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        model: options.model,
+        ephemeral: true
+      });
+      threadId = started?.thread?.id ?? null;
+      if (!threadId) throw new Error("Codex thread/start returned no ephemeral thread id.");
+      const turn = await this.startTurn(threadId, prompt, {
+        cwd,
+        approvalPolicy: "never",
+        sandboxPolicy: { type: "readOnly" },
+        model: options.model,
+        reasoningEffort: options.reasoningEffort
+      });
+      const turnId = turn?.turn?.id ?? null;
+      if (!turnId) throw new Error("Codex turn/start returned no ephemeral turn id.");
+      while (Date.now() - startedAt < timeoutMs) {
+        const completed = this.notifications.slice(notificationStart).find((message) => {
+          return message.method === "turn/completed"
+            && message.params?.threadId === threadId
+            && message.params?.turn?.id === turnId;
+        });
+        if (completed) {
+          const status = String(completed.params?.turn?.status ?? "completed").toLowerCase();
+          if (status !== "completed") {
+            const detail = completed.params?.turn?.error?.message || status || "failed";
+            throw new Error(`Codex ephemeral turn failed (${detail}).`);
+          }
+          return {
+            text: this.latestAgentMessageText(threadId, turnId),
+            threadId,
+            turnId,
+            durationMs: Date.now() - startedAt
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      throw new Error("Timed out while waiting for the Codex ephemeral turn.");
+    } finally {
+      if (threadId) {
+        await this.deleteThread(threadId).catch(() => {});
+      }
+    }
   }
 
   latestAgentMessageText(threadId, turnId) {

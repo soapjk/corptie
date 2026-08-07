@@ -2829,41 +2829,17 @@ async function generateSessionCommitMessage(sessionId, plan) {
   });
   const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
   const cwd = activeRoute.cwd;
-  const collaborationAgent = collaborationCore.getAgentForSession(sessionId);
-  await codexClient.resumeThread(threadId, {
+  const result = await codexClient.runEphemeralPrompt({
     cwd,
     runtimeWorkspaceRoots: [cwd],
-    ...collaborationThreadOptions(collaborationAgent?.agentId)
-  });
-  const started = await codexClient.startTurn(threadId, sessionCommitMessagePrompt(plan), {
-    cwd,
+    prompt: sessionCommitMessagePrompt(plan),
     model: managed.external?.currentModel ?? undefined,
     reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
-    ...codexTurnPermissionOptions(managed)
+    timeoutMs: 120_000
   });
-  const turnId = started.turn?.id;
-  if (!turnId) throw new Error("The Session did not start the commit-message turn.");
-
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    const result = await codexClient.readThread(threadId, { includeTurns: true });
-    const turn = result.thread?.turns?.find((item) => item.id === turnId);
-    const status = String(turn?.status ?? "").toLowerCase();
-    if (["completed", "failed", "cancelled", "canceled"].includes(status)) {
-      if (status !== "completed") {
-        throw new Error(`The Session could not generate a commit message (${turn?.status ?? "failed"}).`);
-      }
-      const detail = mapCodexThreadToDetail(result.thread);
-      const text = detail.items
-        .filter((item) => item.turnId === turnId && item.type === "agentMessage")
-        .at(-1)?.text;
-      const message = sanitizeSessionCommitMessage(text);
-      if (!message) throw new Error("The Session returned an empty commit message.");
-      return message;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 400));
-  }
-  throw new Error("Timed out while waiting for the Session to generate a commit message.");
+  const message = sanitizeSessionCommitMessage(result.text);
+  if (!message) throw new Error("The background operation returned an empty commit message.");
+  return message;
 }
 
 async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
