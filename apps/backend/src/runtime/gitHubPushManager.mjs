@@ -19,6 +19,9 @@ export class GitHubPushManager {
   async prepare(input) {
     this.pruneExpired();
     const inspection = await this.inspect(input.workingDirectory);
+    if (!inspection.dirty && inspection.commitsToPush.length === 0) {
+      throw new Error("There are no changes or commits to push to GitHub.");
+    }
     const commitProtection = inspection.dirty && this.commitProtection
       ? await this.commitProtection.inspect(inspection.identity.canonicalPath)
       : null;
@@ -53,6 +56,31 @@ export class GitHubPushManager {
       statusSummary: inspection.statusSummary,
       commitProtection
     };
+  }
+
+  async status(input) {
+    try {
+      const inspection = await this.inspect(input.workingDirectory);
+      return {
+        available: true,
+        pending: inspection.dirty || inspection.commitsToPush.length > 0,
+        dirty: inspection.dirty,
+        unpushedCommitCount: inspection.commitsToPush.length,
+        branch: inspection.branch,
+        destinationUrl: inspection.destination.url,
+        error: null
+      };
+    } catch (error) {
+      return {
+        available: false,
+        pending: false,
+        dirty: false,
+        unpushedCommitCount: 0,
+        branch: null,
+        destinationUrl: null,
+        error: error.message
+      };
+    }
   }
 
   async confirm(input) {

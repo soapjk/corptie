@@ -128,6 +128,42 @@ export class ProjectToolsetManager {
     }
   }
 
+  async revisionDetails(workingDirectory, revision, worktreePath) {
+    if (!/^[0-9a-f]{40}$/i.test(String(revision ?? ""))) return null;
+    const layout = await this.layout(workingDirectory);
+    let sourcePath = layout.mainPath;
+    let branch = null;
+    if (worktreePath) {
+      try {
+        const identity = await inspectGitWorkspace(worktreePath);
+        if (identity.repositoryId === layout.repositoryId) {
+          sourcePath = identity.canonicalPath;
+        }
+      } catch {
+        // A deleted source Worktree still has a verifiable commit in the main repository.
+      }
+    }
+    const commit = await this.execFile(
+      "git",
+      ["-C", layout.mainPath, "show", "-s", "--format=%cI", revision],
+      { encoding: "utf8", maxBuffer: 1024 * 1024 }
+    );
+    try {
+      const result = await this.execFile(
+        "git",
+        ["-C", sourcePath, "symbolic-ref", "--quiet", "--short", "HEAD"],
+        { encoding: "utf8", maxBuffer: 1024 * 1024 }
+      );
+      branch = String(result?.stdout ?? "").trim() || null;
+    } catch {
+      branch = null;
+    }
+    return {
+      commitTime: String(commit?.stdout ?? "").trim() || null,
+      branch
+    };
+  }
+
   async layout(workingDirectory) {
     const identity = await inspectGitWorkspace(workingDirectory);
     const snapshot = await createGitWorkspaceSnapshot(workingDirectory);

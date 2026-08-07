@@ -71,6 +71,7 @@ struct ExternalSession: Codable, Equatable, Sendable {
 struct SessionWorkspace: Codable, Equatable, Sendable {
     let id: String?
     let repositoryId: String?
+    let projectPath: String?
     let path: String?
     let availability: String?
     let branchName: String?
@@ -143,6 +144,17 @@ struct ProjectWorktreeStatusResponse: Decodable, Equatable, Sendable {
     let project: ProjectGitStatus
     let toolset: ProjectToolsetStatus
     let service: ProjectServiceStatus
+    let gitHubPush: GitHubPushStatus?
+}
+
+struct GitHubPushStatus: Decodable, Equatable, Sendable {
+    let available: Bool
+    let pending: Bool
+    let dirty: Bool
+    let unpushedCommitCount: Int
+    let branch: String?
+    let destinationUrl: String?
+    let error: String?
 }
 
 struct ProjectGitStatus: Decodable, Equatable, Sendable {
@@ -197,6 +209,8 @@ struct ProjectServiceStatus: Decodable, Equatable, Sendable {
     let healthy: Bool?
     let mainHeadOid: String?
     let runningRevision: String?
+    let runningBranch: String?
+    let runningCommitTime: String?
     let dirty: Bool?
     let startedAt: String?
     let worktreePath: String?

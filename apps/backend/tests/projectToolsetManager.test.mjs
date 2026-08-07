@@ -96,6 +96,19 @@ test("run can restart the service from a selected worktree", async () => {
   }
 });
 
+test("revision details report the verified commit time and source Worktree branch", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const revision = (await gitOutput(["rev-parse", "HEAD"], fixture.featurePath)).trim();
+    const details = await manager.revisionDetails(fixture.mainPath, revision, fixture.featurePath);
+    assert.equal(details.branch, "feature/test");
+    assert.match(details.commitTime, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("scaffold refuses a repository that already tracks .corptie content", async () => {
   const fixture = await createFixture();
   const manager = new ProjectToolsetManager();

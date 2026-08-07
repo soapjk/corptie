@@ -466,17 +466,28 @@ struct FloatingRootView: View {
 
     private var sessionGroups: [SessionProjectGroup] {
         guard groupsSessionsByProject else {
-            return [SessionProjectGroup(path: "", sessions: filteredSessions)]
+            return [SessionProjectGroup(id: "all", path: "", sessions: filteredSessions)]
         }
         var order: [String] = []
         var grouped: [String: [TaskSession]] = [:]
+        var paths: [String: String] = [:]
         for session in filteredSessions {
-            let path = session.external?.cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let key = (path?.isEmpty == false ? path! : "No Project")
+            let workspace = session.external?.workspace
+            let repositoryId = workspace?.repositoryId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let currentPath = workspace?.path ?? session.external?.cwd
+            let projectPath = workspace?.projectPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackPath = currentPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let path = projectPath?.isEmpty == false ? projectPath! : (fallbackPath?.isEmpty == false ? fallbackPath! : "No Project")
+            let key = repositoryId?.isEmpty == false ? "repository:\(repositoryId!)" : "path:\(path)"
             if grouped[key] == nil { order.append(key) }
             grouped[key, default: []].append(session)
+            if paths[key] == nil || projectPath?.isEmpty == false {
+                paths[key] = path
+            }
         }
-        return order.map { SessionProjectGroup(path: $0, sessions: grouped[$0] ?? []) }
+        return order.map {
+            SessionProjectGroup(id: $0, path: paths[$0] ?? "No Project", sessions: grouped[$0] ?? [])
+        }
     }
 
     private var sessionSearchBar: some View {
@@ -837,9 +848,9 @@ private enum SessionDisplayMode: String {
 }
 
 private struct SessionProjectGroup: Identifiable {
+    let id: String
     let path: String
     let sessions: [TaskSession]
-    var id: String { path }
 }
 
 private struct ProjectGroupHeader: View {
@@ -1460,13 +1471,17 @@ private final class NewSessionPanelController: NSObject, ObservableObject, NSWin
     @Published var isPresented = false
     private var panel: NSPanel?
 
-    func show(backendClient: BackendClient) {
+    func show(backendClient: BackendClient, workspacePath: String? = nil) {
         if let panel {
-            panel.makeKeyAndOrderFront(nil)
-            panel.orderFrontRegardless()
-            NSApp.activate(ignoringOtherApps: true)
-            isPresented = true
-            return
+            if workspacePath != nil {
+                close()
+            } else {
+                panel.makeKeyAndOrderFront(nil)
+                panel.orderFrontRegardless()
+                NSApp.activate(ignoringOtherApps: true)
+                isPresented = true
+                return
+            }
         }
 
         let parentFrame = NSApp.keyWindow?.frame ?? NSRect(x: 960, y: 560, width: 420, height: 360)
@@ -1491,9 +1506,10 @@ private final class NewSessionPanelController: NSObject, ObservableObject, NSWin
         nextPanel.isMovableByWindowBackground = false
         nextPanel.delegate = self
 
-        let rootView = NewPtyAgentTaskSheet { [weak self] in
-            self?.close()
-        }
+        let rootView = NewPtyAgentTaskSheet(
+            initialWorkspacePath: workspacePath,
+            close: { [weak self] in self?.close() }
+        )
         .environmentObject(backendClient)
         .padding(18)
         .frame(width: size.width, height: size.height)
@@ -1889,6 +1905,11 @@ private struct NewPtyAgentTaskSheet: View {
     @State private var isShowingAdvanced = false
     @State private var suggestedSessionTitle: String?
     let close: () -> Void
+
+    init(initialWorkspacePath: String? = nil, close: @escaping () -> Void) {
+        _cwd = State(initialValue: initialWorkspacePath ?? "")
+        self.close = close
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -4394,6 +4415,7 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 private struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var didCopySessionName = false
+    @State private var didCopyWorkspacePath = false
     @State private var gitHeadState: GitHeadState?
 
     var body: some View {
@@ -4434,10 +4456,6 @@ private struct DetailHeaderView: View {
                     .help(L10n("Copy session name"))
                     .accessibilityLabel(L10n("Copy session name"))
 
-                    if let gitHeadState,
-                       gitHeadState.stampText != nil {
-                        GitBranchStamp(headState: gitHeadState)
-                    }
                     if backendClient.viewingHistoricalThreadId != nil {
                         Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
                             .font(.system(size: 9, weight: .bold))
@@ -4449,16 +4467,37 @@ private struct DetailHeaderView: View {
                     }
                 }
                 if let cwd = workspacePath, !cwd.isEmpty {
-                    Button {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: cwd, isDirectory: true))
-                    } label: {
-                        Text(cwd)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Button(action: copyWorkspacePath) {
+                            HStack(spacing: 4) {
+                                Text(projectName ?? URL(fileURLWithPath: cwd).lastPathComponent)
+                                    .lineLimit(1)
+                                if didCopyWorkspacePath {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(CorptiePalette.connected)
+                                        .transition(.opacity.combined(with: .scale))
+                                }
+                            }
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(CorptiePalette.secondaryText)
-                            .lineLimit(1)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(L10nFormat("Copy full workspace path: %@", cwd))
+
+                        if let gitHeadState,
+                           gitHeadState.stampText != nil {
+                            Button {
+                                ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+                            } label: {
+                                GitBranchStamp(headState: gitHeadState)
+                            }
+                            .buttonStyle(.plain)
+                            .help(L10n("Manage project worktrees and service"))
+                            .accessibilityLabel(L10n("Manage project worktrees and service"))
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .help(L10n("Open folder in Finder"))
                 } else {
                     Text(backendClient.selectedSession?.summary ?? "")
                         .font(.system(size: 11, weight: .medium))
@@ -4469,79 +4508,16 @@ private struct DetailHeaderView: View {
 
             Spacer()
 
-            if let worktree = selectedSessionWorktree {
-                Button {
-                    backendClient.prepareGitHubPush()
-                } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(gitHubButtonColor(worktree).opacity(0.13))
-                        if backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(gitHubButtonColor(worktree))
-                        }
+            if let action = primaryHeaderAction {
+                headerActionButton(action)
+                    .contextMenu {
+                        headerActionMenu
                     }
-                    .frame(width: 30, height: 28)
-                }
-                .buttonStyle(.plain)
-                .disabled(
-                    backendClient.viewingHistoricalThreadId != nil
-                        || backendClient.isPreparingGitHubPush
-                        || backendClient.isPushingGitHub
-                        || canInterruptCurrentRun
-                )
-                .help(worktree.dirty == true
-                    ? L10n("Uncommitted changes — review commit and GitHub push")
-                    : L10n("Review GitHub push"))
             }
 
             if let status = backendClient.selectedProjectWorktreeStatus {
-                Button {
-                    ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
-                } label: {
-                    ProjectWorktreeStatusChip(status: status)
-                }
-                .buttonStyle(.plain)
-                .help(L10n("Manage project worktrees and service"))
-            }
-
-            if backendClient.viewingHistoricalThreadId != nil {
-                Button {
-                    backendClient.returnToActiveThread()
-                } label: {
-                    Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help(L10n("Return to the active workspace thread"))
-            }
-
-            if backendClient.selectedSession?.capabilities?.canReconnect == true
-                && backendClient.selectedSession?.isConnected == false {
-                Button {
-                    backendClient.reconnectSelectedSession()
-                } label: {
-                    Image(systemName: "link")
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(IconButtonStyle())
-                .help(L10n("Reconnect session"))
-            } else if canInterruptCurrentRun {
-                Button {
-                    backendClient.interruptSelectedSession()
-                } label: {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(IconButtonStyle())
-                .help(L10n("Stop current run"))
+                ProjectServiceStatusDot(status: status.service)
+                    .help(projectServiceStatusHelp(status))
             }
         }
         .task(id: workspaceRouteIdentity) {
@@ -4573,8 +4549,187 @@ private struct DetailHeaderView: View {
         }
     }
 
+    private enum HeaderAction {
+        case returnToActiveThread
+        case reconnect
+        case gitHubPush
+        case manageWorktrees
+    }
+
+    private var primaryHeaderAction: HeaderAction? {
+        if backendClient.viewingHistoricalThreadId != nil {
+            return .returnToActiveThread
+        }
+        if canReconnectSelectedSession {
+            return .reconnect
+        }
+        if gitHubPushHasPendingChanges, selectedSessionWorktree != nil {
+            return .gitHubPush
+        }
+        if shouldSuggestWorktreeManagement {
+            return .manageWorktrees
+        }
+        return nil
+    }
+
+    private var canReconnectSelectedSession: Bool {
+        backendClient.selectedSession?.capabilities?.canReconnect == true
+            && backendClient.selectedSession?.isConnected == false
+    }
+
+    private var shouldSuggestWorktreeManagement: Bool {
+        guard let project = backendClient.selectedProjectWorktreeStatus?.project else { return false }
+        return project.pendingWorktreeCount > 0 || project.worktrees.contains { worktree in
+            worktree.availability != "available"
+                || worktree.dirty == true
+                || worktree.pendingIntegration
+                || (worktree.behindMain ?? 0) > 0
+        }
+    }
+
+    @ViewBuilder
+    private func headerActionButton(_ action: HeaderAction) -> some View {
+        switch action {
+        case .returnToActiveThread:
+            Button {
+                backendClient.returnToActiveThread()
+            } label: {
+                Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(L10n("Return to the active workspace thread"))
+        case .reconnect:
+            Button {
+                backendClient.reconnectSelectedSession()
+            } label: {
+                Image(systemName: "link")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(IconButtonStyle())
+            .help(L10n("Reconnect session"))
+        case .gitHubPush:
+            if let worktree = selectedSessionWorktree {
+                Button {
+                    backendClient.prepareGitHubPush()
+                } label: {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(gitHubButtonColor(worktree).opacity(0.13))
+                        if backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(gitHubButtonColor(worktree))
+                        }
+                    }
+                    .frame(width: 30, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub)
+                .help(gitHubPushButtonHelp(worktree))
+            }
+        case .manageWorktrees:
+            if let status = backendClient.selectedProjectWorktreeStatus {
+                Button {
+                    ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+                } label: {
+                    ProjectWorktreeStatusChip(status: status)
+                }
+                .buttonStyle(.plain)
+                .help(L10n("Manage project worktrees and service"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var headerActionMenu: some View {
+        if backendClient.viewingHistoricalThreadId != nil {
+            Button {
+                backendClient.returnToActiveThread()
+            } label: {
+                Label(L10n("Active thread"), systemImage: "arrow.forward.circle")
+            }
+        }
+
+        if canReconnectSelectedSession {
+            Button {
+                backendClient.reconnectSelectedSession()
+            } label: {
+                Label(L10n("Reconnect session"), systemImage: "link")
+            }
+        }
+
+        Button {
+            backendClient.prepareGitHubPush()
+        } label: {
+            Label(L10n("Commit and Push to GitHub"), systemImage: "arrow.up.circle.fill")
+        }
+        .disabled(
+            backendClient.viewingHistoricalThreadId != nil
+                || backendClient.isPreparingGitHubPush
+                || backendClient.isPushingGitHub
+                || !gitHubPushHasPendingChanges
+        )
+
+        Button {
+            ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+        } label: {
+            Label(L10n("Manage project worktrees and service"), systemImage: "arrow.triangle.branch")
+        }
+        .disabled(backendClient.selectedProjectWorktreeStatus == nil)
+
+        Divider()
+
+        Button(action: openWorkspaceInVSCode) {
+            Label(L10n("Open in Visual Studio Code"), systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+        .disabled(workspacePath == nil)
+
+        Button(action: openWorkspaceInFinder) {
+            Label(L10n("Open in Finder"), systemImage: "folder")
+        }
+        .disabled(workspacePath == nil)
+    }
+
     private func gitHubButtonColor(_ worktree: ProjectWorktreeStatus) -> Color {
-        worktree.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
+        guard gitHubPushHasPendingChanges else { return CorptiePalette.mutedText }
+        return worktree.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
+    }
+
+    private var gitHubPushHasPendingChanges: Bool {
+        guard let push = backendClient.selectedProjectWorktreeStatus?.gitHubPush else { return false }
+        return push.available && push.pending
+    }
+
+    private func gitHubPushButtonHelp(_ worktree: ProjectWorktreeStatus) -> String {
+        guard let push = backendClient.selectedProjectWorktreeStatus?.gitHubPush else {
+            return L10n("Checking for changes to push")
+        }
+        if !push.available {
+            return push.error ?? L10n("GitHub push is unavailable")
+        }
+        if !push.pending {
+            return L10n("No changes or commits to push")
+        }
+        return worktree.dirty == true
+            ? L10n("Uncommitted changes — review commit and GitHub push")
+            : L10nFormat("%d commit(s) ready to push", push.unpushedCommitCount)
+    }
+
+    private func projectServiceStatusHelp(_ status: ProjectWorktreeStatusResponse) -> String {
+        let service: String
+        switch status.service.freshness {
+        case "current": service = L10n("Service is running the latest code")
+        case "stale": service = L10n("Service is running older or modified code")
+        case "stopped": service = L10n("Service is stopped")
+        default: service = L10n("Service version is unknown")
+        }
+        return service
     }
 
     private var workspacePath: String? {
@@ -4598,6 +4753,14 @@ private struct DetailHeaderView: View {
         let sessionPath = backendClient.selectedSession?.external?.cwd?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return sessionPath?.isEmpty == false ? sessionPath : nil
+    }
+
+    private var projectName: String? {
+        let projectPath = backendClient.selectedSession?.external?.workspace?.projectPath?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = projectPath?.isEmpty == false ? projectPath : workspacePath
+        guard let path, !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
     }
 
     private var workspaceRouteIdentity: String {
@@ -4639,6 +4802,44 @@ private struct DetailHeaderView: View {
             withAnimation(.easeOut(duration: 0.12)) {
                 didCopySessionName = false
             }
+        }
+    }
+
+    private func copyWorkspacePath() {
+        guard copySessionNameToPasteboard(workspacePath) else { return }
+        withAnimation(.easeOut(duration: 0.12)) {
+            didCopyWorkspacePath = true
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            withAnimation(.easeOut(duration: 0.12)) {
+                didCopyWorkspacePath = false
+            }
+        }
+    }
+
+    private func openWorkspaceInFinder() {
+        guard let workspacePath else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: workspacePath, isDirectory: true))
+    }
+
+    private func openWorkspaceInVSCode() {
+        guard let workspacePath else { return }
+        let workspaceURL = URL(fileURLWithPath: workspacePath, isDirectory: true)
+        if let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") {
+            NSWorkspace.shared.open(
+                [workspaceURL],
+                withApplicationAt: applicationURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+            return
+        }
+        var components = URLComponents()
+        components.scheme = "vscode"
+        components.host = "file"
+        components.path = workspaceURL.path
+        if let url = components.url {
+            NSWorkspace.shared.open(url)
         }
     }
 }
@@ -4825,9 +5026,6 @@ private struct ProjectWorktreeStatusChip: View {
                 .font(.system(size: 10, weight: .semibold))
             Text("\(status.project.pendingWorktreeCount)")
                 .font(.system(size: 10, weight: .bold, design: .rounded))
-            Circle()
-                .fill(serviceColor)
-                .frame(width: 7, height: 7)
         }
         .foregroundStyle(status.project.pendingWorktreeCount > 0 ? CorptiePalette.amber : CorptiePalette.secondaryText)
         .padding(.horizontal, 8)
@@ -4836,11 +5034,33 @@ private struct ProjectWorktreeStatusChip: View {
         .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.75))
     }
 
+}
+
+private struct ProjectServiceStatusDot: View {
+    let status: ProjectServiceStatus
+
+    var body: some View {
+        Circle()
+            .fill(serviceColor)
+            .frame(width: 7, height: 7)
+            .frame(width: 16, height: 28)
+            .accessibilityLabel(accessibilityText)
+    }
+
     private var serviceColor: Color {
-        switch status.service.freshness {
+        switch status.freshness {
         case "current": CorptiePalette.connected
         case "stale": CorptiePalette.amber
         default: CorptiePalette.mutedText
+        }
+    }
+
+    private var accessibilityText: String {
+        switch status.freshness {
+        case "current": return L10n("Service is running the latest code")
+        case "stale": return L10n("Service is running older or modified code")
+        case "stopped": return L10n("Service is stopped")
+        default: return L10n("Service version is unknown")
         }
     }
 }
@@ -4860,6 +5080,10 @@ private final class ProjectWorktreeWindowManager {
         }
         self.controller = controller
         controller.show()
+    }
+
+    func close() {
+        controller?.close()
     }
 }
 
@@ -4901,6 +5125,10 @@ private final class ProjectWorktreeWindowController: NSObject, NSWindowDelegate 
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func close() {
+        panel.close()
+    }
+
     func windowWillClose(_ notification: Notification) {
         didClose()
     }
@@ -4915,8 +5143,10 @@ private struct PendingWorktreeDeletion: Identifiable {
 
 private struct ProjectWorktreeManagerView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @StateObject private var newSessionPanel = NewSessionPanelController()
     @State private var pendingOperation: ProjectWorktreeStatus?
     @State private var pendingSynchronization: ProjectWorktreeStatus?
+    @State private var pendingCommit: ProjectWorktreeStatus?
     @State private var pendingDeletionWarning: PendingWorktreeDeletion?
     @State private var pendingDeletionConfirmation: PendingWorktreeDeletion?
 
@@ -5083,6 +5313,27 @@ private struct ProjectWorktreeManagerView: View {
                 ))
             }
         }
+        .confirmationDialog(
+            L10n("Commit changes in this Worktree?"),
+            isPresented: Binding(
+                get: { pendingCommit != nil },
+                set: { if !$0 { pendingCommit = nil } }
+            ),
+            presenting: pendingCommit
+        ) { worktree in
+            Button(L10n("Commit changes")) {
+                backendClient.commitProjectWorktreeChanges(worktree)
+                pendingCommit = nil
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                pendingCommit = nil
+            }
+        } message: { worktree in
+            Text(L10nFormat(
+                "Corptie will generate a commit message using the associated session and commit the uncommitted changes on %@. No remote push is performed.",
+                worktree.branchName ?? L10n("detached HEAD")
+            ))
+        }
     }
 
     private var status: ProjectWorktreeStatusResponse? {
@@ -5096,22 +5347,36 @@ private struct ProjectWorktreeManagerView: View {
                 Label(L10n("Development Service"), systemImage: "server.rack")
                     .font(.system(size: 13, weight: .semibold))
                 Spacer()
-                Text(serviceLabel(status.service))
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(serviceColor(status.service))
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(serviceLabel(status.service))
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(serviceColor(status.service))
+                    if status.service.freshness == "stale",
+                       let detail = staleServiceDetail(status.service) {
+                        Text(detail)
+                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                            .lineLimit(1)
+                            .help(detail)
+                    }
+                }
             }
 
             if status.toolset.configured {
                 HStack(spacing: 8) {
-                    Button(L10n("Start")) { backendClient.runProjectServiceAction("start") }
-                    Button(L10n("Restart")) { backendClient.runProjectServiceAction("restart") }
-                    Button(L10n("Stop")) { backendClient.runProjectServiceAction("stop") }
+                    if status.service.running == true {
+                        Button(L10n("Restart")) { backendClient.runProjectServiceAction("restart") }
+                        Button(L10n("Stop")) { backendClient.runProjectServiceAction("stop") }
+                    } else {
+                        Button(L10n("Start")) { backendClient.runProjectServiceAction("start") }
+                    }
                     Spacer()
                     Button(L10n("Update Corptie Scripts Tools Set")) {
                         backendClient.initializeProjectToolset(update: true)
                     }
                 }
                 .controlSize(.small)
+                .disabled(isServiceActionRunning)
             } else {
                 HStack {
                     Text(L10n("The Corptie Scripts Tools Set is being prepared or is not configured."))
@@ -5149,16 +5414,6 @@ private struct ProjectWorktreeManagerView: View {
                     if backendClient.projectWorktreeActionIds.contains(worktree.worktreeId) {
                         ProgressView().controlSize(.small)
                     } else {
-                        Button(L10n("Restart from This Worktree")) {
-                            backendClient.restartProjectService(from: worktree)
-                        }
-                        .controlSize(.small)
-                        if worktree.pendingIntegration {
-                            Button(L10n("Merge and Restart")) {
-                                backendClient.mergeProjectWorktree(worktree, restartService: true)
-                            }
-                            .controlSize(.small)
-                        }
                         Button(L10n("Actions…")) {
                             pendingOperation = worktree
                         }
@@ -5173,18 +5428,18 @@ private struct ProjectWorktreeManagerView: View {
                 .truncationMode(.middle)
                 .help(worktree.path)
             HStack(spacing: 8) {
-                worktreeStatusBadge(
-                    worktreeStateLabel(worktree),
-                    color: worktreeStateColor(worktree)
-                )
+                worktreeStateBadge(worktree)
                 if !worktree.isMain {
-                    worktreeStatusBadge(
-                        worktreeSyncLabel(worktree),
-                        color: worktreeSyncColor(worktree)
-                    )
+                    worktreeSyncBadge(worktree)
                 }
                 if let ahead = worktree.aheadOfMain, ahead > 0 {
-                    Label(L10nFormat("%d ahead", ahead), systemImage: "arrow.up")
+                    Button {
+                        pendingOperation = worktree
+                    } label: {
+                        Label(L10nFormat("%d ahead", ahead), systemImage: "arrow.up")
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("Open Worktree operations"))
                 }
                 if let behind = worktree.behindMain, behind > 0 {
                     Button {
@@ -5202,7 +5457,7 @@ private struct ProjectWorktreeManagerView: View {
                 }
                 if worktree.dirty == true {
                     Button {
-                        backendClient.commitProjectWorktreeChanges(worktree)
+                        pendingCommit = worktree
                     } label: {
                         Label(L10n("Uncommitted changes"), systemImage: "pencil.circle")
                     }
@@ -5214,9 +5469,7 @@ private struct ProjectWorktreeManagerView: View {
                     .disabled(backendClient.projectWorktreeActionIds.contains(worktree.worktreeId))
                     .help(L10n("Generate a commit message with the associated session and commit these changes"))
                 }
-                if !worktree.sessions.isEmpty {
-                    Label(L10nFormat("%d sessions", worktree.sessions.count), systemImage: "bubble.left.and.bubble.right")
-                }
+                worktreeSessionsBadge(worktree)
             }
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(CorptiePalette.secondaryText)
@@ -5238,6 +5491,83 @@ private struct ProjectWorktreeManagerView: View {
             .background(color.opacity(0.12), in: Capsule())
     }
 
+    @ViewBuilder
+    private func worktreeStateBadge(_ worktree: ProjectWorktreeStatus) -> some View {
+        if worktree.isMain && worktree.dirty != true {
+            worktreeStatusBadge(worktreeStateLabel(worktree), color: worktreeStateColor(worktree))
+        } else {
+            Button {
+                if worktree.isMain {
+                    pendingCommit = worktree
+                } else {
+                    pendingOperation = worktree
+                }
+            } label: {
+                worktreeStatusBadge(worktreeStateLabel(worktree), color: worktreeStateColor(worktree))
+            }
+            .buttonStyle(.plain)
+            .help(worktree.isMain ? L10n("Commit uncommitted changes") : L10n("Open Worktree operations"))
+        }
+    }
+
+    @ViewBuilder
+    private func worktreeSyncBadge(_ worktree: ProjectWorktreeStatus) -> some View {
+        if worktree.synchronizedWithMain == false {
+            Button {
+                pendingSynchronization = worktree
+            } label: {
+                worktreeStatusBadge(worktreeSyncLabel(worktree), color: worktreeSyncColor(worktree))
+            }
+            .buttonStyle(.plain)
+            .disabled(backendClient.projectWorktreeActionIds.contains(worktree.worktreeId))
+            .help(L10n("Synchronize this Worktree with main"))
+        } else {
+            worktreeStatusBadge(worktreeSyncLabel(worktree), color: worktreeSyncColor(worktree))
+        }
+    }
+
+    @ViewBuilder
+    private func worktreeSessionsBadge(_ worktree: ProjectWorktreeStatus) -> some View {
+        if worktree.sessions.isEmpty {
+            Button {
+                newSessionPanel.show(backendClient: backendClient, workspacePath: worktree.path)
+            } label: {
+                Label(L10n("No associated sessions"), systemImage: "plus.bubble")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CorptiePalette.amber)
+            .help(L10n("Create a session in this Worktree"))
+        } else if worktree.sessions.count == 1, let association = worktree.sessions.first {
+            Button {
+                openSession(association)
+            } label: {
+                Label(L10nFormat("%d sessions", worktree.sessions.count), systemImage: "bubble.left.and.bubble.right")
+            }
+            .buttonStyle(.plain)
+            .help(association.title ?? L10n("Open associated session"))
+        } else {
+            Menu {
+                ForEach(worktree.sessions, id: \.logicalSessionId) { association in
+                    Button(association.title ?? association.sessionId ?? association.logicalSessionId) {
+                        openSession(association)
+                    }
+                }
+            } label: {
+                Label(L10nFormat("%d sessions", worktree.sessions.count), systemImage: "bubble.left.and.bubble.right")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help(L10n("Open associated session"))
+        }
+    }
+
+    private func openSession(_ association: ProjectWorktreeSession) {
+        guard let sessionId = association.sessionId,
+              let session = backendClient.sessions.first(where: { $0.id == sessionId }) else { return }
+        backendClient.select(session: session)
+        ProjectWorktreeWindowManager.shared.close()
+    }
+
     private func serviceLabel(_ service: ProjectServiceStatus) -> String {
         switch service.freshness {
         case "current": L10n("Running main latest")
@@ -5253,12 +5583,31 @@ private struct ProjectWorktreeManagerView: View {
         }
     }
 
+    private var isServiceActionRunning: Bool {
+        backendClient.projectWorktreeActionIds.contains { $0.hasPrefix("service:") }
+    }
+
     private func serviceColor(_ service: ProjectServiceStatus) -> Color {
         switch service.freshness {
         case "current": CorptiePalette.connected
         case "stale": CorptiePalette.amber
         default: CorptiePalette.secondaryText
         }
+    }
+
+    private func staleServiceDetail(_ service: ProjectServiceStatus) -> String? {
+        guard let revision = service.runningRevision, !revision.isEmpty else { return nil }
+        let shortRevision = String(revision.prefix(5))
+        let branch = service.runningBranch ?? L10n("unknown branch")
+        let commitTime = service.runningCommitTime.flatMap { value -> String? in
+            guard let date = ISO8601DateFormatter.corptieThreadItemDate(from: value) else { return nil }
+            let formatter = DateFormatter()
+            formatter.locale = Locale.current
+            formatter.timeZone = .current
+            formatter.dateFormat = "yyyy-MM-dd HH:mm"
+            return formatter.string(from: date)
+        } ?? L10n("unknown time")
+        return L10nFormat("Commit %@ · %@ · branch %@", shortRevision, commitTime, branch)
     }
 
     private func worktreeStateLabel(_ worktree: ProjectWorktreeStatus) -> String {
@@ -6977,20 +7326,25 @@ private struct MessageComposer: View {
                     }
                     .disabled(false)
 
-                Button {
-                    if isRunningTurn {
+                if isRunningTurn {
+                    Button {
                         backendClient.interruptSelectedSession()
-                    } else {
-                        sendCurrentDraft()
+                    } label: {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 10, weight: .bold))
+                            .frame(width: 28, height: 28)
                     }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                    .help(L10n("Stop current run"))
+                }
+
+                Button {
+                    sendCurrentDraft()
                 } label: {
                     if backendClient.isSendingMessage {
                         ProgressView()
                             .controlSize(.small)
-                            .frame(width: 28, height: 28)
-                    } else if isRunningTurn {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 10, weight: .bold))
                             .frame(width: 28, height: 28)
                     } else {
                         Image(systemName: "paperplane.fill")
@@ -7001,7 +7355,7 @@ private struct MessageComposer: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(isSendDisabled)
-                .help(isRunningTurn ? L10n("Stop current run") : L10n("Send instruction"))
+                .help(L10n("Send instruction"))
                 .padding(.trailing, 6)
             }
             .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
@@ -7057,9 +7411,6 @@ private struct MessageComposer: View {
     }
 
     private var isSendDisabled: Bool {
-        if isRunningTurn {
-            return backendClient.isSendingMessage
-        }
         return !hasSendableText
             || backendClient.isSendingMessage
             || backendClient.selectedDetail?.canSend == false
