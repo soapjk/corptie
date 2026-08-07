@@ -38,6 +38,10 @@ test("confirmed push commits dirty changes and pushes only after explicit confir
   const manager = localPushManager();
   try {
     await writeFile(join(fixture.repository, "feature.txt"), "ready to push\n");
+    const pending = await manager.status({ workingDirectory: fixture.repository });
+    assert.equal(pending.available, true);
+    assert.equal(pending.pending, true);
+    assert.equal(pending.dirty, true);
     const prepared = await manager.prepare({
       sessionId: "codex:test",
       workingDirectory: fixture.repository
@@ -58,6 +62,26 @@ test("confirmed push commits dirty changes and pushes only after explicit confir
     assert.equal(
       (await gitOutput(["log", "-1", "--pretty=%s", "main"], fixture.remote)).trim(),
       "Add pushed feature"
+    );
+    const current = await manager.status({ workingDirectory: fixture.repository });
+    assert.equal(current.pending, false);
+    assert.equal(current.dirty, false);
+    assert.equal(current.unpushedCommitCount, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("prepare refuses to open a confirmation when there is nothing to push", async () => {
+  const fixture = await createFixture();
+  const manager = localPushManager();
+  try {
+    await assert.rejects(
+      () => manager.prepare({
+        sessionId: "codex:test",
+        workingDirectory: fixture.repository
+      }),
+      /no changes or commits to push/
     );
   } finally {
     await fixture.close();

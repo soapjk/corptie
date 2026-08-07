@@ -299,6 +299,9 @@ function sessionWithLogicalWorkspace(session, logical) {
   const worktree = logical.activeWorkspaceId
     ? store.getGitWorktree(logical.activeWorkspaceId)
     : null;
+  const mainWorktree = logical.repositoryId
+    ? store.listGitWorktrees(logical.repositoryId).find((candidate) => candidate.isMain)
+    : null;
   const cwd = worktree?.canonicalPath || worktree?.path || logical.activeBinding?.boundCwd || session.external?.cwd;
   const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
   return {
@@ -311,6 +314,7 @@ function sessionWithLogicalWorkspace(session, logical) {
       workspace: {
         id: logical.activeWorkspaceId,
         repositoryId: logical.repositoryId,
+        projectPath: mainWorktree?.canonicalPath || mainWorktree?.path || null,
         path: cwd,
         availability: worktree?.availability ?? "available",
         branchName: worktree?.branchName ?? null,
@@ -2897,6 +2901,18 @@ async function projectToolsetStatus(sessionId) {
   const running = status.payload?.running === true;
   const runningRevision = version.payload?.revision ?? null;
   const dirty = version.payload?.dirty === true;
+  let revisionDetails = null;
+  if (runningRevision) {
+    try {
+      revisionDetails = await projectToolsets.revisionDetails(
+        cwd,
+        runningRevision,
+        version.payload?.worktreePath
+      );
+    } catch {
+      revisionDetails = null;
+    }
+  }
   const freshness = !running
     ? "stopped"
     : (!version.ok || !runningRevision
@@ -2911,6 +2927,8 @@ async function projectToolsetStatus(sessionId) {
       healthy: health.payload?.healthy === true,
       mainHeadOid: toolset.mainHeadOid,
       runningRevision,
+      runningBranch: revisionDetails?.branch ?? null,
+      runningCommitTime: revisionDetails?.commitTime ?? null,
       dirty,
       startedAt: version.payload?.startedAt ?? null,
       worktreePath: version.payload?.worktreePath ?? null,
@@ -2930,9 +2948,10 @@ async function projectWorktreeStatus(sessionId) {
   }
   const logical = store.getLogicalSessionByLegacySessionId(sessionId)
     ?? await ensureLogicalRouteForCodexSession(session);
-  const [project, runtime] = await Promise.all([
+  const [project, runtime, gitHubPush] = await Promise.all([
     gitWorkspaces.projectStatus(logical.logicalSessionId),
-    projectToolsetStatus(sessionId)
+    projectToolsetStatus(sessionId),
+    gitHubPushes.status({ workingDirectory: projectWorkingDirectoryForSession(sessionId) })
   ]);
   project.worktrees = await Promise.all(project.worktrees.map(async (worktree) => {
     if (worktree.availability !== "available" || runtime.service.running !== true) {
@@ -2952,7 +2971,7 @@ async function projectWorktreeStatus(sessionId) {
       serviceContainsChanges: containsCommittedChanges && containsWorkingChanges
     };
   }));
-  return { project, ...runtime };
+  return { project, ...runtime, gitHubPush };
 }
 
 async function commitMessageForProjectWorktree(worktree, requestedMessage) {

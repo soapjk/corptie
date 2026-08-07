@@ -66,6 +66,7 @@ final class BackendClient: ObservableObject {
     private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
     private var usageRefreshTask: Task<Void, Never>?
     private var projectStatusRefreshTask: Task<Void, Never>?
+    private var projectStatusRequestSequence = 0
     private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
     private var hasSyncedNewSessionDefaults = false
     private var isReorderingSessions = false
@@ -1032,6 +1033,7 @@ final class BackendClient: ObservableObject {
             }
         }
         selectedProjectWorktreeStatus = nil
+        projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         projectStatusRefreshTask?.cancel()
         if session.external?.provider == "codex-app-server" {
@@ -1065,6 +1067,7 @@ final class BackendClient: ObservableObject {
         viewingHistoricalThreadId = nil
         selectedSessionUsage = nil
         selectedProjectWorktreeStatus = nil
+        projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         gitHubPushPreparation = nil
         gitHubPushError = nil
@@ -1152,6 +1155,8 @@ final class BackendClient: ObservableObject {
 
     private func loadProjectWorktreeStatus(for session: TaskSession) async {
         guard selectedSession?.id == session.id else { return }
+        projectStatusRequestSequence &+= 1
+        let requestSequence = projectStatusRequestSequence
         do {
             let url = baseURL.appending(path: "sessions/\(session.id)/project-worktrees")
             let (data, response) = try await URLSession.shared.data(from: url)
@@ -1161,7 +1166,8 @@ final class BackendClient: ObservableObject {
                 return
             }
             let status = try JSONDecoder().decode(ProjectWorktreeStatusResponse.self, from: data)
-            guard selectedSession?.id == session.id else { return }
+            guard selectedSession?.id == session.id,
+                  requestSequence == projectStatusRequestSequence else { return }
             selectedProjectWorktreeStatus = status
             workspaceRecoveryStatus = nil
         } catch {
