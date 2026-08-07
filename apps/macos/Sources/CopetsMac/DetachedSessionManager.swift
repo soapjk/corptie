@@ -694,6 +694,7 @@ private struct DetachedOrbObservationRequest {
     let currentOrigin: CGPoint
     let userAnchor: CGPoint
     let visibleFrame: CGRect
+    let placementFrame: CGRect
     let candidateOrigins: [CGPoint]
     let occupiedFrames: [CGRect]
     let excludedFrames: [CGRect]
@@ -781,6 +782,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var automaticMoveDestination: CGPoint?
     private var automaticMoveDidTeleport = false
     private var isClosing = false
+    private var userSelectedLeftRegion = false
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
@@ -819,6 +821,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         )
 
         super.init()
+
+        if let initialVisibleFrame = panel.screen?.visibleFrame
+            ?? NSScreen.screens.first(where: { $0.visibleFrame.intersects(panel.frame) })?.visibleFrame {
+            userSelectedLeftRegion = !DetachedOrbPlacementRegion.isFullyInRightThird(
+                windowFrame: panel.frame,
+                visibleFrame: initialVisibleFrame
+            )
+        }
 
         panel.isFloatingPanel = true
         panel.level = .floating
@@ -1033,13 +1043,17 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         // Persistent user anchoring is intentionally disabled. Every batch searches
         // from the orb's current position, including after a manual drag.
         let searchOrigin = currentOrigin
+        let placementFrame = DetachedOrbPlacementRegion.automaticPlacementFrame(
+            in: screen.visibleFrame,
+            userSelectedLeftRegion: userSelectedLeftRegion
+        )
         let occupied = occupiedFrames(sessionId)
         let excluded = accessoryController.visibleFrame.map { [$0] } ?? []
         let candidates = OrbPlacementPlanner.candidateOrigins(
             currentOrigin: currentOrigin,
             userAnchor: searchOrigin,
             windowSize: panel.frame.size,
-            visibleFrame: screen.visibleFrame,
+            visibleFrame: placementFrame,
             occupiedFrames: occupied,
             excludedFrames: excluded
         )
@@ -1079,6 +1093,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             currentOrigin: currentOrigin,
             userAnchor: searchOrigin,
             visibleFrame: screen.visibleFrame,
+            placementFrame: placementFrame,
             candidateOrigins: candidates,
             occupiedFrames: occupied,
             excludedFrames: excluded
@@ -1189,7 +1204,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             currentOrigin: evaluation.request.currentOrigin,
             userAnchor: evaluation.request.userAnchor,
             windowSize: panel.frame.size,
-            visibleFrame: evaluation.request.visibleFrame,
+            visibleFrame: evaluation.request.placementFrame,
             occupiedFrames: evaluation.request.occupiedFrames + additionalOccupiedFrames,
             excludedFrames: evaluation.request.excludedFrames,
             currentRisk: evaluation.currentRisk,
@@ -1370,6 +1385,12 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             return
         }
         recentAutomaticPositions.removeAll()
+        if let visibleFrame = panel.screen?.visibleFrame {
+            userSelectedLeftRegion = !DetachedOrbPlacementRegion.isFullyInRightThird(
+                windowFrame: panel.frame,
+                visibleFrame: visibleFrame
+            )
+        }
         cooldownUntil = Date().addingTimeInterval(0.8)
         scheduleObservationIfNeeded(delay: 0.85)
     }
