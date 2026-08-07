@@ -9,9 +9,11 @@
 
 When Git work requires a task branch, use one dedicated branch and worktree per task; never create or switch task branches in a shared primary checkout.
 
-- Default development on the current branch. Only use another worktree or branch when the user clearly asks to.
+- Decide whether a development task needs a dedicated branch and worktree; the user does not need to explicitly request one.
 - Before branch or worktree operations, inspect `git status`, the current branch, and `git worktree list`; preserve all worktrees and uncommitted changes.
-- Create and use a clearly named task worktree before editing when isolation is warranted. If already in a dedicated worktree, use it without nesting another.
+- When starting development from `main` or another shared primary branch, prefer creating and using a clearly named task worktree before editing.
+- If already in a dedicated worktree, prefer continuing in that worktree without nesting another.
+- After creating a worktree, switch the Corptie workspace to that worktree before continuing development.
 - Never switch, checkout, rebase, reset, or merge in another agent's worktree.
 - Read-only work and tasks needing no new branch require no worktree.
 - Ask if the base, location, or ownership of relevant changes is materially ambiguous.
