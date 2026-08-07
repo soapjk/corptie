@@ -1,5 +1,42 @@
 import CoreGraphics
 
+enum DetachedOrbPlacementRegion {
+    static func rightThird(of visibleFrame: CGRect) -> CGRect {
+        let width = max(0, visibleFrame.width / 3)
+        return CGRect(
+            x: visibleFrame.maxX - width,
+            y: visibleFrame.minY,
+            width: width,
+            height: visibleFrame.height
+        )
+    }
+
+    static func leftTwoThirds(of visibleFrame: CGRect) -> CGRect {
+        CGRect(
+            x: visibleFrame.minX,
+            y: visibleFrame.minY,
+            width: max(0, visibleFrame.width * 2 / 3),
+            height: visibleFrame.height
+        )
+    }
+
+    static func automaticPlacementFrame(
+        in visibleFrame: CGRect,
+        userSelectedLeftRegion: Bool
+    ) -> CGRect {
+        userSelectedLeftRegion
+            ? leftTwoThirds(of: visibleFrame)
+            : rightThird(of: visibleFrame)
+    }
+
+    static func isFullyInRightThird(
+        windowFrame: CGRect,
+        visibleFrame: CGRect
+    ) -> Bool {
+        rightThird(of: visibleFrame).contains(windowFrame)
+    }
+}
+
 enum DetachedOrbPlacementGeometry {
     static func origin(
         visibleFrame: CGRect,
@@ -8,8 +45,9 @@ enum DetachedOrbPlacementGeometry {
         margin: CGFloat = 16,
         spacing: CGFloat = 12
     ) -> CGPoint {
-        let usableWidth = max(0, visibleFrame.width - margin * 2)
-        let usableHeight = max(0, visibleFrame.height - margin * 2)
+        let placementFrame = DetachedOrbPlacementRegion.rightThird(of: visibleFrame)
+        let usableWidth = max(0, placementFrame.width - margin * 2)
+        let usableHeight = max(0, placementFrame.height - margin * 2)
         let columnStep = windowSize.width + spacing
         let rowStep = windowSize.height + spacing
         let columnCount = max(1, Int((usableWidth + spacing) / columnStep))
@@ -19,8 +57,8 @@ enum DetachedOrbPlacementGeometry {
             for row in 0..<rowCount {
                 let candidate = CGRect(
                     origin: CGPoint(
-                        x: visibleFrame.maxX - margin - windowSize.width - CGFloat(column) * columnStep,
-                        y: visibleFrame.maxY - margin - windowSize.height - CGFloat(row) * rowStep
+                        x: placementFrame.maxX - margin - windowSize.width - CGFloat(column) * columnStep,
+                        y: placementFrame.maxY - margin - windowSize.height - CGFloat(row) * rowStep
                     ),
                     size: windowSize
                 )
@@ -31,8 +69,8 @@ enum DetachedOrbPlacementGeometry {
         }
 
         return CGPoint(
-            x: visibleFrame.maxX - margin - windowSize.width,
-            y: visibleFrame.maxY - margin - windowSize.height
+            x: placementFrame.maxX - margin - windowSize.width,
+            y: placementFrame.maxY - margin - windowSize.height
         )
     }
 }

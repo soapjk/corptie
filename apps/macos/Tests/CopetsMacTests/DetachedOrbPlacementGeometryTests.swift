@@ -69,4 +69,53 @@ final class DetachedOrbPlacementGeometryTests: XCTestCase {
             CGPoint(x: -104, y: 1_096)
         )
     }
+
+    func testAutomaticPlacementNeverLeavesTheRightThird() {
+        let occupied = (0..<31).map { index in
+            let column = index / 8
+            let row = index % 8
+            return CGRect(
+                x: 1_336 - CGFloat(column) * 100,
+                y: 796 - CGFloat(row) * 100,
+                width: 88,
+                height: 88
+            )
+        }
+        let origin = DetachedOrbPlacementGeometry.origin(
+            visibleFrame: screen,
+            windowSize: orb,
+            occupiedFrames: occupied
+        )
+
+        XCTAssertTrue(
+            DetachedOrbPlacementRegion.rightThird(of: screen)
+                .contains(CGRect(origin: origin, size: orb))
+        )
+    }
+
+    func testManualLeftPlacementSelectsTheLeftTwoThirdsForAvoidance() {
+        let right = DetachedOrbPlacementRegion.automaticPlacementFrame(
+            in: screen,
+            userSelectedLeftRegion: false
+        )
+        let left = DetachedOrbPlacementRegion.automaticPlacementFrame(
+            in: screen,
+            userSelectedLeftRegion: true
+        )
+
+        XCTAssertEqual(right, CGRect(x: 960, y: 0, width: 480, height: 900))
+        XCTAssertEqual(left, CGRect(x: 0, y: 0, width: 960, height: 900))
+        XCTAssertTrue(
+            DetachedOrbPlacementRegion.isFullyInRightThird(
+                windowFrame: CGRect(x: 1_000, y: 600, width: 88, height: 88),
+                visibleFrame: screen
+            )
+        )
+        XCTAssertFalse(
+            DetachedOrbPlacementRegion.isFullyInRightThird(
+                windowFrame: CGRect(x: 800, y: 600, width: 88, height: 88),
+                visibleFrame: screen
+            )
+        )
+    }
 }

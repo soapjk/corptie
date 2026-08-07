@@ -29,6 +29,22 @@ final class OrbPlacementPlannerTests: XCTestCase {
         )
     }
 
+    func testAutomaticCandidatesStayInsideTheRightThirdPlacementFrame() {
+        let placementFrame = DetachedOrbPlacementRegion.rightThird(of: screen)
+        let candidates = OrbPlacementPlanner.candidateOrigins(
+            currentOrigin: current,
+            userAnchor: current,
+            windowSize: orbSize,
+            visibleFrame: placementFrame
+        )
+
+        XCTAssertFalse(candidates.isEmpty)
+        XCTAssertTrue(candidates.allSatisfy {
+            placementFrame.contains(CGRect(origin: $0, size: orbSize))
+        })
+        XCTAssertTrue(candidates.allSatisfy { $0.x >= placementFrame.minX })
+    }
+
     func testGenerationFiltersOccupiedAndAccessoryFrames() {
         let occupied = CGRect(x: 1_020, y: 580, width: 120, height: 120)
         let accessory = CGRect(x: 880, y: 570, width: 100, height: 180)
