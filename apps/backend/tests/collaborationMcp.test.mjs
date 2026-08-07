@@ -17,6 +17,9 @@ const expectedTools = [
   "corptie.agents.get",
   "corptie.services.list",
   "corptie.services.describe",
+  "corptie_list_workspaces",
+  "corptie_create_worktree",
+  "corptie_switch_workspace",
   "corptie.collaboration.request",
   "corptie.collaboration.accept",
   "corptie.collaboration.reject",
@@ -56,6 +59,36 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), expectedTools);
     assert.equal(tools.tools.find((tool) => tool.name === "corptie.agents.discover").annotations.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === "corptie_list_workspaces").annotations.readOnlyHint, true);
+
+    await client.callTool({ name: "corptie_list_workspaces", arguments: {} });
+    await client.callTool({
+      name: "corptie_create_worktree",
+      arguments: {
+        target_path: "/repo/feature",
+        branch: "feature",
+        switch_after_create: false
+      }
+    });
+    await client.callTool({
+      name: "corptie_switch_workspace",
+      arguments: { target_worktree_id: "worktree:feature" }
+    });
+    assert.deepEqual(reads[0], {
+      path: "/internal/collaboration/workspaces",
+      search: undefined
+    });
+    assert.deepEqual(calls.slice(0, 2), [{
+      path: "/internal/collaboration/worktrees",
+      body: {
+        target_path: "/repo/feature",
+        branch: "feature",
+        switch_after_create: false
+      }
+    }, {
+      path: "/internal/collaboration/workspaces/switch",
+      body: { target_worktree_id: "worktree:feature" }
+    }]);
 
     const result = await client.callTool({
       name: "corptie.collaboration.request",
@@ -78,7 +111,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
       nextAction: "end_current_turn",
       note: "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
     });
-    assert.deepEqual(calls, [{
+    assert.deepEqual(calls.slice(2), [{
       path: "/internal/collaboration/task-confirmations",
       body: {
         recipientAgentId: "journal-agent",
@@ -100,7 +133,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
       name: "corptie.collaboration.get_task",
       arguments: { task_id: "task-1", include_history: true }
     });
-    assert.deepEqual(reads, [
+    assert.deepEqual(reads.slice(1), [
       { path: "/internal/collaboration/tasks/task-1", search: { includeHistory: undefined } },
       { path: "/internal/collaboration/tasks/task-1", search: { includeHistory: "true" } }
     ]);
@@ -127,6 +160,61 @@ test("MCP tool failures are returned as tool errors instead of crashing the serv
     assert.match(result.content[0].text, /ACTOR_NOT_AUTHORIZED/);
   } finally {
     await client.close();
+  }
+});
+
+test("authenticated MCP workspace routes preserve the calling Agent identity", async () => {
+  const directory = await mkdtemp(join(os.tmpdir(), "corptie-workspace-mcp-http-test-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  let server;
+  try {
+    await store.initialize();
+    const core = new CollaborationCore(store);
+    core.registerAgent({ agentId: "research-agent", name: "Research Agent" });
+    const calls = [];
+    server = http.createServer((request, response) => {
+      const url = new URL(request.url, `http://${request.headers.host}`);
+      if (!handleCollaborationHttpRequest({
+        request,
+        response,
+        url,
+        core,
+        onListWorkspaces: async (agentId) => {
+          calls.push({ operation: "list", agentId });
+          return { activeWorktreeId: "worktree:main", workspaces: [] };
+        },
+        onCreateWorktree: async (agentId, input) => {
+          calls.push({ operation: "create", agentId, input });
+          return { worktree: { id: "worktree:feature" } };
+        },
+        onSwitchWorkspace: async (agentId, input) => {
+          calls.push({ operation: "switch", agentId, input });
+          return { status: "waitingForTurn" };
+        }
+      })) response.writeHead(404).end();
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = new CollaborationHttpClient({
+      baseUrl: `http://127.0.0.1:${server.address().port}`,
+      agentId: "research-agent"
+    });
+
+    await client.get("/internal/collaboration/workspaces");
+    await client.post("/internal/collaboration/worktrees", { target_path: "/repo/feature" });
+    await client.post("/internal/collaboration/workspaces/switch", { target_worktree_id: "worktree:feature" });
+
+    assert.deepEqual(calls, [
+      { operation: "list", agentId: "research-agent" },
+      { operation: "create", agentId: "research-agent", input: { target_path: "/repo/feature" } },
+      { operation: "switch", agentId: "research-agent", input: { target_worktree_id: "worktree:feature" } }
+    ]);
+  } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });
 
