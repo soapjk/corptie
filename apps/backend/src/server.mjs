@@ -74,6 +74,7 @@ import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
 import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
+import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
@@ -2846,6 +2847,26 @@ async function generateSessionCommitMessage(sessionId, plan) {
   return message;
 }
 
+async function generateUnownedWorktreeCommitMessage(requestingSessionId, cwd, plan) {
+  const session = listGatewaySessions().find((item) => item.id === requestingSessionId)
+    ?? managedCodexSessions.get(requestingSessionId)
+    ?? store.getSession(requestingSessionId);
+  if (!session) throw new Error("The requesting Session no longer exists.");
+  const logical = store.getLogicalSessionByLegacySessionId(requestingSessionId);
+  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
+  const result = await codexClient.runEphemeralPrompt({
+    cwd,
+    runtimeWorkspaceRoots: [cwd],
+    prompt: sessionCommitMessagePrompt(plan),
+    model: managed.external?.currentModel ?? undefined,
+    reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
+    timeoutMs: 120_000
+  });
+  const message = sanitizeSessionCommitMessage(result.text);
+  if (!message) throw new Error("The background operation returned an empty commit message.");
+  return message;
+}
+
 async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
   if (!logical?.activeBinding) throw new Error("The Session no longer has an active workspace route.");
@@ -2974,19 +2995,13 @@ async function projectWorktreeStatus(sessionId) {
   return { project, ...runtime, gitHubPush };
 }
 
-async function commitMessageForProjectWorktree(worktree, requestedMessage) {
-  const provided = sanitizeSessionCommitMessage(requestedMessage);
-  if (provided) return provided;
-  if (!worktree.dirty) return null;
-  const sourceSessionId = worktree.sessions.find((item) => item.sessionId)?.sessionId;
-  if (!sourceSessionId) {
-    throw new Error("A commit message is required because no active Session owns this dirty worktree.");
-  }
-  return generateSessionCommitMessage(sourceSessionId, {
-    sourceBranch: worktree.branchName,
-    sourcePath: worktree.path,
-    statusSummary: worktree.statusSummary,
-    diffStat: worktree.diffStat
+async function commitMessageForProjectWorktree(worktree, requestedMessage, requestingSessionId) {
+  return resolveProjectWorktreeCommitMessage({
+    worktree,
+    requestedMessage,
+    requestingSessionId,
+    generateForSession: generateSessionCommitMessage,
+    generateForUnownedWorktree: generateUnownedWorktreeCommitMessage
   });
 }
 
@@ -3011,7 +3026,7 @@ async function mergeProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
     }
   }
   await resolveProjectCommitProtection(source, input);
-  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
   const merge = await gitWorkspaces.mergeWorktreeIntoMain({
     logicalSessionId: logical.logicalSessionId,
     sourceWorktreeId,
@@ -3055,7 +3070,7 @@ async function commitProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   }
   if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
   await resolveProjectCommitProtection(source, input);
-  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
   const commit = await gitWorkspaces.commitWorktreeChanges({
     logicalSessionId: logical.logicalSessionId,
     sourceWorktreeId,
@@ -3137,7 +3152,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
     throw new Error("Configure the Corptie Scripts Tools Set before completing and restarting this worktree.");
   }
   await resolveProjectCommitProtection(source, input);
-  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+  const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
   const merge = await gitWorkspaces.mergeWorktreeIntoMain({
     logicalSessionId: logical.logicalSessionId,
     sourceWorktreeId,
@@ -3227,7 +3242,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   let merge = null;
   if (operations.mergeIntoMain) {
     await resolveProjectCommitProtection(source, input);
-    const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage);
+    const commitMessage = await commitMessageForProjectWorktree(source, input.commitMessage, sessionId);
     merge = await gitWorkspaces.mergeWorktreeIntoMain({
       logicalSessionId: logical.logicalSessionId,
       sourceWorktreeId,
