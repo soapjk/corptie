@@ -75,3 +75,5 @@ development-docs/
 **/.github/copilot-instructions.md
 **/.github/instructions/
 docs/
+# Corptie local Agent configuration
+/.corptie/
