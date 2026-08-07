@@ -4467,7 +4467,7 @@ private struct DetailHeaderView: View {
                     }
                 }
                 if let cwd = workspacePath, !cwd.isEmpty {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    HStack(alignment: .center, spacing: 6) {
                         Button(action: copyWorkspacePath) {
                             HStack(spacing: 4) {
                                 Text(projectName ?? URL(fileURLWithPath: cwd).lastPathComponent)
@@ -5945,7 +5945,6 @@ private struct GitBranchStamp: View {
                         lineWidth: 0.75
                     )
             }
-            .offset(y: -4)
             .help(headState.helpText ?? "")
             .accessibilityLabel(headState.helpText ?? "")
     }
