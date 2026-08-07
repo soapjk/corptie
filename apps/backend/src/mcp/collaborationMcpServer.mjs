@@ -64,6 +64,35 @@ export function createCollaborationMcpServer(options) {
     handler: ({ service_id }) => client.get(`/internal/collaboration/services/${encodeURIComponent(service_id)}`)
   });
 
+  register(server, "corptie_list_workspaces", {
+    description: "List Corptie's registered local Git worktrees, including opaque ids accepted by corptie_switch_workspace.",
+    inputSchema: {},
+    readOnly: true,
+    handler: () => client.get("/internal/collaboration/workspaces")
+  });
+
+  register(server, "corptie_create_worktree", {
+    description: "Create a validated Git worktree for the active repository. By default, Corptie schedules the logical Session to switch after the current turn completes.",
+    inputSchema: {
+      target_path: z.string().min(1).describe("Absolute local filesystem path for the new worktree."),
+      branch: z.string().min(1).optional(),
+      base_ref: z.string().min(1).optional(),
+      create_branch: z.boolean().optional(),
+      detach: z.boolean().optional(),
+      switch_after_create: z.boolean().optional(),
+      inventory_version: z.string().min(1).optional()
+    },
+    handler: (input) => client.post("/internal/collaboration/worktrees", input)
+  });
+
+  register(server, "corptie_switch_workspace", {
+    description: "Schedule the active logical Session to switch to an existing registered worktree after the current turn completes.",
+    inputSchema: {
+      target_worktree_id: z.string().min(1).describe("Opaque worktree id from corptie_list_workspaces.")
+    },
+    handler: (input) => client.post("/internal/collaboration/workspaces/switch", input)
+  });
+
   register(server, "corptie.collaboration.request", {
     description: "Stage a point-to-point question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn. The authenticated Agent is always the initiator.",
     inputSchema: {
