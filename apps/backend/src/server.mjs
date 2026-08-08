@@ -3270,14 +3270,13 @@ async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId 
 }
 
 async function generateSessionCommitMessage(sessionId, plan) {
-  const session = listGatewaySessions().find((item) => item.id === sessionId)
-    ?? managedCodexSessions.get(sessionId)
-    ?? store.getSession(sessionId);
-  if (!session) throw new Error("Session not found.");
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  const threadId = logical?.activeThreadId ?? sessionId.slice("codex:".length);
-  const liveThread = await codexClient.readThread(threadId, { includeTurns: true });
-  if (sessionHasActiveRun(mapCodexThreadToSession(liveThread.thread))) {
+  const reference = await sessionApplicationService.referenceFor(sessionId);
+  const session = await sessionApplicationService.readSession(sessionId);
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  if (!logical?.activeBinding) throw new Error("The Session no longer has an active workspace route.");
+  if (sessionHasActiveRun(session)) {
     const error = new Error("The Session is busy. Wait for its current turn before merging its worktree.");
     error.code = "SESSION_BUSY";
     throw error;
@@ -3290,18 +3289,17 @@ async function generateSessionCommitMessage(sessionId, plan) {
   const activeRoute = await assertWorkspaceRouteUsable({
     store,
     logicalSession: logical,
-    providerThreadId: threadId
+    providerThreadId: reference.providerSessionId
   });
-  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
   const cwd = activeRoute.cwd;
   const result = await backgroundAgentService.run({
     purpose: "commit-message",
     cwd,
     allowedRoots: [cwd],
     prompt: sessionCommitMessagePrompt(plan),
-    preferredProviderId: requireSessionReference(sessionId).providerId,
-    preferredModel: managed.external?.currentModel ?? undefined,
-    preferredReasoning: managed.external?.currentReasoningLevel ?? undefined,
+    preferredProviderId: reference.providerId,
+    preferredModel: session.external?.currentModel ?? undefined,
+    preferredReasoning: session.external?.currentReasoningLevel ?? undefined,
     timeoutMs: 120_000
   });
   const message = sanitizeSessionCommitMessage(result.text);
@@ -3312,18 +3310,14 @@ async function generateSessionCommitMessage(sessionId, plan) {
 async function generateUnownedWorktreeCommitMessage(requestingSessionId, cwd, plan) {
   const reference = requestingSessionId ? sessionBindingRepository.resolve(requestingSessionId) : null;
   const session = reference?.metadata?.session ?? null;
-  const logical = requestingSessionId ? store.getLogicalSessionByLegacySessionId(requestingSessionId) : null;
-  const managed = session
-    ? await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical))
-    : null;
   const result = await backgroundAgentService.run({
     purpose: "commit-message",
     cwd,
     allowedRoots: [cwd],
     prompt: sessionCommitMessagePrompt(plan),
     preferredProviderId: reference?.providerId,
-    preferredModel: managed?.external?.currentModel ?? undefined,
-    preferredReasoning: managed?.external?.currentReasoningLevel ?? undefined,
+    preferredModel: session?.external?.currentModel ?? undefined,
+    preferredReasoning: session?.external?.currentReasoningLevel ?? undefined,
     timeoutMs: 120_000
   });
   const message = sanitizeSessionCommitMessage(result.text);
@@ -3637,15 +3631,7 @@ async function prepareProjectWorktreeCommit(sessionId, sourceWorktreeId) {
 }
 
 async function prepareGitHubPush(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-  if (!session) {
-    const error = new Error("Session not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  if (!String(sessionId).startsWith("codex:")) {
-    throw new Error("Automatic commit-message generation is currently available only for Codex Sessions.");
-  }
+  await sessionApplicationService.referenceFor(sessionId);
   return gitHubPushes.prepare({
     sessionId,
     workingDirectory: projectWorkingDirectoryForSession(sessionId)

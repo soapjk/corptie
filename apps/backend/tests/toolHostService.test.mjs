@@ -7,6 +7,7 @@ import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs
 import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { codexToolHostAttachment } from "../src/agent-provider/providers/codexAppServerProvider.mjs";
+import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
@@ -75,4 +76,39 @@ test("Codex Provider maps the common attachment to its native dynamic-tool optio
   assert.equal(mapped.dynamicToolAgentId, "agent-one");
   assert.equal(mapped.dynamicTools[0].name, "corptie_agents_discover");
   assert.equal(mapped.developerInstructions, "Provider runtime instructions");
+});
+
+test("Session creation passes a prepared Tool Host attachment without knowing Provider mechanics", async () => {
+  const calls = [];
+  const capabilities = [
+    AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+    AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+  ];
+  const registry = new AgentProviderRegistry([provider("hosted", capabilities, {
+    attachTools(attachment) {
+      return { nativeIdentity: attachment.actorId };
+    },
+    createSession(input) {
+      calls.push(input);
+      return { id: "native-session", title: "Created" };
+    }
+  })]);
+  const toolHostService = new ToolHostService({
+    registry,
+    catalog: new HostToolCatalog([{
+      id: "workspace",
+      tools: [{ name: "corptie_list_workspaces" }],
+      execute: () => ({})
+    }])
+  });
+  const sessions = new SessionApplicationService({
+    registry,
+    toolHostService,
+    resolveSessionReference: () => null
+  });
+
+  await sessions.createSession("hosted", { cwd: "/repo" });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].toolHost.actorId, /^agent-/);
+  assert.equal(calls[0].toolHost.providerAttachment.nativeIdentity, calls[0].toolHost.actorId);
 });
