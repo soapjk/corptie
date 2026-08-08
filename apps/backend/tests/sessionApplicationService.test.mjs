@@ -15,6 +15,7 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+  AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
@@ -64,6 +65,10 @@ function fixture(capabilities = [
       return { models: [{ id: "fake-model" }] };
     },
     send: async (...args) => calls.push(["send", ...args]),
+    clearConversation: async (...args) => {
+      calls.push(["clearConversation", ...args]);
+      return { id: "legacy-a", title: "Cleared" };
+    },
     interrupt: async (...args) => calls.push(["interrupt", ...args]),
     respondToApproval: async (...args) => calls.push(["respondToApproval", ...args]),
     switchModel: async (...args) => calls.push(["switchModel", ...args]),
@@ -177,6 +182,10 @@ test("Session application service exposes the same operations for every Provider
   assert.equal(detail.actions.send.available, true);
   assert.equal(detail.actions.interrupt.reason, "NO_ACTIVE_TURN");
   await service.interrupt("logical-a", { source: "desktop" });
+  assert.deepEqual(await service.clearConversation("logical-a", { source: "desktop" }), {
+    id: "legacy-a",
+    title: "Cleared"
+  });
   await service.respondToApproval("logical-a", { approved: true });
   await service.switchModel("logical-a", "fake-model");
   await service.switchReasoning("logical-a", "high");
@@ -184,6 +193,7 @@ test("Session application service exposes the same operations for every Provider
   await service.manageTurnChanges("logical-a", "turn-a", "review", { source: "desktop" });
   assert.deepEqual(calls.map((call) => call[0]), [
     "interrupt",
+    "clearConversation",
     "respondToApproval",
     "switchModel",
     "switchReasoning",

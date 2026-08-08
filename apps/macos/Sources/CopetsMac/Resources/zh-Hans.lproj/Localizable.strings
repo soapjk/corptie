@@ -408,6 +408,7 @@
 "Project Worktrees" = "项目 Worktree";
 "%d worktrees are not merged into main" = "还有 %d 个 Worktree 未合入 main";
 "Loading project worktrees" = "正在载入项目 Worktree";
+"Could not load project worktrees" = "无法载入项目 Worktree";
 "Complete and remove this worktree?" = "完成并删除这个 Worktree？";
 "Merge, Delete Sessions and Worktree, then Restart" = "合并、删除会话和 Worktree，然后重启";
 "This merges %@ into main, deletes the worktree and its merged local branch, and deletes %d associated sessions. No remote push is performed." = "这会将 %@ 合入 main，删除 Worktree 及已合并的本地分支，并删除 %d 个关联会话。不会执行远程推送。";

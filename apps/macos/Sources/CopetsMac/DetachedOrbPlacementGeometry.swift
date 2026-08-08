@@ -11,29 +11,8 @@ enum DetachedOrbPlacementRegion {
         )
     }
 
-    static func leftTwoThirds(of visibleFrame: CGRect) -> CGRect {
-        CGRect(
-            x: visibleFrame.minX,
-            y: visibleFrame.minY,
-            width: max(0, visibleFrame.width * 2 / 3),
-            height: visibleFrame.height
-        )
-    }
-
-    static func automaticPlacementFrame(
-        in visibleFrame: CGRect,
-        userSelectedLeftRegion: Bool
-    ) -> CGRect {
-        userSelectedLeftRegion
-            ? leftTwoThirds(of: visibleFrame)
-            : rightThird(of: visibleFrame)
-    }
-
-    static func isFullyInRightThird(
-        windowFrame: CGRect,
-        visibleFrame: CGRect
-    ) -> Bool {
-        rightThird(of: visibleFrame).contains(windowFrame)
+    static func automaticPlacementFrame(in visibleFrame: CGRect) -> CGRect {
+        rightThird(of: visibleFrame)
     }
 }
 

@@ -17,10 +17,12 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
       AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
       ...(typeof options.listModels === "function" ? [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST] : []),
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   }, {
@@ -32,10 +34,12 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     updateAvatar: (reference, avatarPath) => manager.updateAvatar(reference.providerSessionId, avatarPath),
     send: (reference, message) => manager.send(reference.providerSessionId, message),
+    clearConversation: (reference) => manager.clear(reference.providerSessionId),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),
     ...(typeof options.listModels === "function" ? { listModels: options.listModels } : {}),
     switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
+    updatePermissions: (reference, permissions) => manager.updatePermissions(reference.providerSessionId, permissions),
     runBackgroundPrompt: (input) => manager.runBackgroundPrompt(input)
   });
 }

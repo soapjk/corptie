@@ -110,10 +110,6 @@ export class GitWorkspaceManager {
     if (!main || main.availability !== "available") {
       throw new Error("The repository's main worktree is unavailable.");
     }
-    if (main.branchName !== "main") {
-      throw new Error(`The repository's main worktree is on ${main.branchName || "a detached HEAD"}, not main.`);
-    }
-
     const worktrees = [];
     for (const worktree of snapshot.worktrees) {
       const sessions = this.store.listLogicalSessionsByWorkspaceId(worktree.worktreeId).map((session) => ({
@@ -229,8 +225,8 @@ export class GitWorkspaceManager {
     if (!source || source.availability !== "available" || source.isMain) {
       throw new Error("The selected worktree is not an available non-main worktree.");
     }
-    if (!main || main.availability !== "available" || main.branchName !== "main") {
-      throw new Error("The repository's main worktree is unavailable or not on main.");
+    if (!main || main.availability !== "available") {
+      throw new Error("The repository's main worktree is unavailable.");
     }
     const mainStatus = await this.gitOutput(main.path, ["status", "--porcelain=v1"]);
     if (mainStatus.trim()) {
@@ -317,8 +313,8 @@ export class GitWorkspaceManager {
     if (!source || source.availability !== "available" || source.isMain || !source.branchName) {
       throw new Error("The selected worktree is not an available branch worktree.");
     }
-    if (!main || main.availability !== "available" || main.branchName !== "main") {
-      throw new Error("The repository's main worktree is unavailable or not on main.");
+    if (!main || main.availability !== "available") {
+      throw new Error("The repository's main worktree is unavailable.");
     }
     const [sourceStatus, mainStatus] = await Promise.all([
       this.gitOutput(source.path, ["status", "--porcelain=v1"]),
@@ -557,10 +553,6 @@ export class GitWorkspaceManager {
     if (!main || main.availability !== "available") {
       throw new Error("The repository's main worktree is unavailable.");
     }
-    if (main.branchName !== "main") {
-      throw new Error(`The repository's main worktree is on ${main.branchName || "a detached HEAD"}, not main.`);
-    }
-
     const status = await this.gitOutput(source.path, ["status", "--short"]);
     const diffStat = await this.gitOutput(source.path, ["diff", "--stat", "HEAD"]);
     return {

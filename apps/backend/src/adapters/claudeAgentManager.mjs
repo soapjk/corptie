@@ -202,6 +202,37 @@ export class ClaudeAgentManager {
     return this.toSessionSummary(session);
   }
 
+  async updatePermissions(id, permissions = {}) {
+    const session = await this.sessionForOperation(id);
+    const sandbox = String(permissions.sandbox ?? "").trim();
+    const approvalPolicy = String(permissions.approvalPolicy ?? "").trim();
+    if (!["workspace-write", "danger-full-access", "read-only"].includes(sandbox)) {
+      throw new Error("Unsupported sandbox mode");
+    }
+    if (!["on-request", "ask-risky", "never", "on-failure"].includes(approvalPolicy)) {
+      throw new Error("Unsupported approval policy");
+    }
+
+    const permissionMode = claudePermissionMode(sandbox, approvalPolicy);
+    if (session.turnState === "idle") {
+      // An idle Query can be recreated cheaply, ensuring all launch-time
+      // permission flags match before the next instruction.
+      await this.closeIdleQuery(session);
+    } else {
+      if (!session.query) {
+        throw new Error("Claude session is not connected");
+      }
+      await session.query.setPermissionMode(permissionMode);
+      this.applyPermissionModeToPendingChoices(session, permissionMode);
+    }
+    session.sandbox = sandbox;
+    session.approvalPolicy = approvalPolicy;
+    session.permissionMode = permissionMode;
+    session.updatedAt = new Date().toISOString();
+    this.persistSession(session);
+    return this.toSessionSummary(session);
+  }
+
   async interrupt(id) {
     const session = this.get(id);
     if (!session) {
@@ -227,6 +258,88 @@ export class ClaudeAgentManager {
     });
     this.persistSession(session);
     return this.toSessionSummary(session);
+  }
+
+  async clear(id) {
+    const session = await this.sessionForOperation(id);
+    if (session.turnState === "running") {
+      const error = new Error("The current task is still running. Stop it before using /clear.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+
+    this.resolveAllPendingChoices(session, "Conversation cleared in Corptie.");
+    await this.closeIdleQuery(session);
+
+    const clearedAt = new Date().toISOString();
+    session.agentSessionId = null;
+    session.initialPrompt = "";
+    session.status = "complete";
+    session.phase = "ready";
+    session.turnState = "idle";
+    session.currentTurnId = null;
+    session.items = [];
+    session.nextItemSeq = 1;
+    session.nextTurnSeq = 1;
+    session.pendingChoice = null;
+    session.pendingDecision = null;
+    session.pendingChoices.clear();
+    session.query = null;
+    session.queryTask = null;
+    session.queryClosed = false;
+    session.interruptRequested = false;
+    session.lastInputAt = null;
+    session.lastOutputAt = null;
+    session.updatedAt = clearedAt;
+    this.store?.clearItems?.(session.id);
+    this.persistSession(session);
+    return this.toSessionSummary(session);
+  }
+
+  async sessionForOperation(id) {
+    let session = this.get(id);
+    if (!session) {
+      await this.reconnect(id);
+      session = this.get(id);
+    }
+    if (!session) throw new Error("Claude session not found");
+    return session;
+  }
+
+  async closeIdleQuery(session) {
+    session.queryClosed = true;
+    session.inputQueue = [];
+    for (const resolve of session.inputResolvers.splice(0)) resolve(null);
+    const query = session.query;
+    const queryTask = session.queryTask;
+    if (query) await query.close();
+    if (queryTask) await queryTask.catch(() => {});
+    session.query = null;
+    session.queryTask = null;
+    session.queryClosed = false;
+  }
+
+  applyPermissionModeToPendingChoices(session, permissionMode) {
+    if (!hasPendingChoices(session) || !["bypassPermissions", "dontAsk"].includes(permissionMode)) {
+      return;
+    }
+    const allow = permissionMode === "bypassPermissions";
+    const decisions = new Set(session.pendingChoices.values());
+    if (session.pendingDecision) decisions.add(session.pendingDecision);
+    for (const pendingDecision of decisions) {
+      pendingDecision.resolve(allow
+        ? { behavior: "allow" }
+        : { behavior: "deny", message: "The updated Claude permission mode does not allow this pending action." });
+    }
+    session.pendingChoices.clear();
+    session.pendingChoice = null;
+    session.pendingDecision = null;
+    session.items = session.items.map((item) => item.type === "choice" && item.status === "pending"
+      ? { ...item, status: allow ? "allowed" : "denied" }
+      : item);
+    session.turnState = "running";
+    session.phase = "working";
+    session.status = "running";
   }
 
   terminate(id) {
@@ -273,9 +386,6 @@ export class ClaudeAgentManager {
     }
     const raw = stored.rawStatus ?? {};
     const agentSessionId = stored.external?.agentSessionId ?? raw.agentSessionId ?? null;
-    if (!agentSessionId) {
-      throw new Error("Claude session does not have a resumable Claude Code session id");
-    }
     const session = {
       id,
       title: stored.title || "Claude Code",
@@ -299,7 +409,7 @@ export class ClaudeAgentManager {
       currentModel: stored.external?.currentModel ?? raw.currentModel ?? null,
       currentReasoningLevel: null,
       initialPrompt: raw.initialPrompt ?? "",
-      phase: "reconnecting",
+      phase: agentSessionId ? "reconnecting" : "ready",
       connectionReady: true,
       lastInputAt: raw.lastInputAt ?? null,
       lastOutputAt: raw.lastOutputAt ?? null,
@@ -318,15 +428,15 @@ export class ClaudeAgentManager {
       inputQueue: [],
       inputResolvers: []
     };
-    const transcriptItems = await this.loadTranscriptItems(session);
+    const transcriptItems = agentSessionId ? await this.loadTranscriptItems(session) : [];
     session.items = transcriptItems.length > 0
       ? transcriptItems.slice(-this.maxItems)
       : this.store?.getItems(id, this.maxItems, "claude-sdk") ?? [];
     session.nextItemSeq = Math.max(session.nextItemSeq, nextSeqFromItems(session.items));
     session.nextTurnSeq = Math.max(session.nextTurnSeq, nextTurnSeqFromItems(session.id, session.items));
     this.sessions.set(id, session);
-    console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId}`);
-    void this.ensureQueryStarted(session);
+    console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId ?? "fresh"}`);
+    if (agentSessionId) void this.ensureQueryStarted(session);
     this.persistSession(session);
     return this.toSessionSummary(session);
   }
@@ -338,31 +448,7 @@ export class ClaudeAgentManager {
         limit: this.maxItems,
         includeSystemMessages: false
       });
-      const items = [];
-      let currentTurnId = null;
-      let nextItemSeq = 1;
-      let nextTurnSeq = 1;
-      for (const message of messages ?? []) {
-        if (message.type === "user") {
-          currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
-          const text = userMessageText(message.message);
-          if (text) {
-            items.push(transcriptItem(session, nextItemSeq++, currentTurnId, "userMessage", "User", text, message.timestamp, "sent"));
-          }
-          continue;
-        }
-        if (message.type === "assistant") {
-          const text = assistantText(message.message);
-          if (!text) {
-            continue;
-          }
-          if (!currentTurnId) {
-            currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
-          }
-          items.push(transcriptItem(session, nextItemSeq++, currentTurnId, "agentMessage", "Claude Code", text, message.timestamp, null));
-        }
-      }
-      return items;
+      return claudeTranscriptItems(session, messages ?? []);
     } catch (error) {
       console.error(`[claude-sdk] transcript load failed id=${session.id}: ${error?.message || String(error)}`);
       return [];
@@ -419,9 +505,7 @@ export class ClaudeAgentManager {
         persistSession: true,
         model: session.currentModel || undefined,
         ...permissionOptions,
-        ...(permissionOptions.permissionMode === "bypassPermissions"
-          ? {}
-          : { canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options) })
+        canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
       }
     });
     session.queryTask = this.consumeQuery(session);
@@ -549,14 +633,10 @@ export class ClaudeAgentManager {
     }
 
     if (message?.type === "assistant") {
-      const text = assistantText(message.message);
-      if (text) {
+      const items = claudeAssistantContentItems(message.message);
+      if (items.length > 0) {
         session.lastOutputAt = session.updatedAt;
-        this.appendItem(session, {
-          type: "agentMessage",
-          title: "Claude Code",
-          text
-        });
+        for (const item of items) this.appendItem(session, item);
       }
       this.persistSession(session);
       return;
@@ -572,6 +652,11 @@ export class ClaudeAgentManager {
       session.interruptRequested = false;
       session.phase = message.subtype === "success" || wasInterrupted ? "ready" : "failed";
       session.status = message.subtype === "success" || wasInterrupted ? "complete" : "failed";
+      finalizeClaudeTurnItems(
+        session,
+        session.currentTurnId,
+        message.subtype === "success" || wasInterrupted ? "complete" : "failed"
+      );
       if (text && message.subtype !== "success" && !wasInterrupted) {
         session.lastOutputAt = session.updatedAt;
         this.appendItem(session, {
@@ -605,9 +690,10 @@ export class ClaudeAgentManager {
       const text = taskMessageText(message);
       if (text) {
         this.appendItem(session, {
-          type: "system",
-          title: "Claude Code",
-          text
+          type: "mcpToolCall",
+          title: message?.label || "Claude task",
+          text,
+          status: message?.type === "task_complete" ? "completed" : "running"
         });
       }
       this.persistSession(session);
@@ -618,7 +704,7 @@ export class ClaudeAgentManager {
       const text = message.message || message.content || message.permission_denial_reason || "";
       if (text) {
         this.appendItem(session, {
-          type: "system",
+          type: message?.type === "permission_denied" ? "warning" : "mcpToolCall",
           title: "Claude Code",
           text: String(text)
         });
@@ -796,7 +882,9 @@ export class ClaudeAgentManager {
       text: item.text,
       options: item.options ?? null,
       status: item.status ?? null,
-      createdAt
+      createdAt,
+      presentationRole: item.presentationRole ?? null,
+      presentationText: item.presentationText ?? null
     });
     session.nextItemSeq += 1;
     if (session.items.length > this.maxItems) {
@@ -869,6 +957,140 @@ function makeUserMessage(text) {
   };
 }
 
+export function claudeTranscriptItems(session, messages = []) {
+  const items = [];
+  let currentTurnId = null;
+  let nextItemSeq = 1;
+  let nextTurnSeq = 1;
+  const turnIds = new Set();
+
+  for (const message of messages) {
+    if (message?.type === "user") {
+      // Claude's SDK also represents tool results as user-role messages. Only
+      // an actual text message starts a new conversation turn.
+      const text = userMessageText(message.message);
+      if (!text) continue;
+      currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
+      turnIds.add(currentTurnId);
+      items.push(transcriptItem(
+        session,
+        nextItemSeq++,
+        currentTurnId,
+        "userMessage",
+        "User",
+        text,
+        message.timestamp,
+        "sent"
+      ));
+      continue;
+    }
+
+    if (message?.type !== "assistant") continue;
+    if (!currentTurnId) {
+      currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
+      turnIds.add(currentTurnId);
+    }
+    for (const contentItem of claudeAssistantContentItems(message.message)) {
+      items.push(transcriptItem(
+        session,
+        nextItemSeq++,
+        currentTurnId,
+        contentItem.type,
+        contentItem.title,
+        contentItem.text,
+        message.timestamp,
+        contentItem.status ?? null,
+        contentItem
+      ));
+    }
+  }
+
+  const transcript = { items };
+  for (const turnId of turnIds) finalizeClaudeTurnItems(transcript, turnId, "complete");
+  return transcript.items;
+}
+
+function claudeAssistantContentItems(message) {
+  const blocks = Array.isArray(message?.content) ? message.content : [];
+  const items = [];
+  for (const block of blocks) {
+    if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+      items.push({
+        type: "agentMessage",
+        title: "Claude Code",
+        text: block.text.trim(),
+        presentationRole: "commentary"
+      });
+      continue;
+    }
+    if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim()) {
+      items.push({
+        type: "reasoning",
+        title: "Thinking",
+        text: block.thinking.trim()
+      });
+      continue;
+    }
+    if (block?.type === "tool_use") {
+      const toolName = String(block.name ?? "Claude tool").trim() || "Claude tool";
+      items.push({
+        type: claudeToolItemType(toolName),
+        title: toolName,
+        text: claudeToolInputText(toolName, block.input),
+        status: "running"
+      });
+    }
+  }
+  return items;
+}
+
+function claudeToolItemType(toolName) {
+  const normalized = toolName.toLowerCase();
+  if (normalized === "bash" || normalized.includes("shell") || normalized.includes("command")) {
+    return "commandExecution";
+  }
+  if (["write", "edit", "multiedit", "notebookedit"].some((name) => normalized.includes(name))) {
+    return "fileChange";
+  }
+  if (normalized.includes("websearch") || normalized.includes("webfetch") || normalized.includes("browser")) {
+    return "webSearch";
+  }
+  return "mcpToolCall";
+}
+
+function claudeToolInputText(toolName, input) {
+  const normalized = toolName.toLowerCase();
+  if (normalized === "bash" && typeof input?.command === "string") return input.command.trim();
+  if (normalized.includes("websearch") && typeof input?.query === "string") return input.query.trim();
+  if (normalized.includes("webfetch") && typeof input?.url === "string") return input.url.trim();
+  if (typeof input?.file_path === "string") return input.file_path.trim();
+  if (!input || typeof input !== "object") return "";
+  const serialized = JSON.stringify(input, null, 2);
+  return serialized.length > 800 ? `${serialized.slice(0, 797)}...` : serialized;
+}
+
+function finalizeClaudeTurnItems(session, turnId, turnStatus) {
+  if (!turnId || !Array.isArray(session?.items)) return;
+  const agentIndexes = [];
+  let lastContentIndex = null;
+  session.items = session.items.map((item, index) => {
+    if (item.turnId !== turnId) return item;
+    if (item.type === "agentMessage") agentIndexes.push(index);
+    if (item.type !== "userMessage") lastContentIndex = index;
+    return { ...item, turnStatus };
+  });
+  const lastAgentIndex = agentIndexes.at(-1);
+  const finalAgentIndex = lastAgentIndex === lastContentIndex ? lastAgentIndex : null;
+  if (finalAgentIndex == null) return;
+  session.items = session.items.map((item, index) => {
+    if (item.turnId !== turnId || item.type !== "agentMessage") return item;
+    return {
+      ...item,
+      presentationRole: index === finalAgentIndex ? "final_answer" : "commentary"
+    };
+  });
+}
+
 function assistantText(message) {
   const blocks = Array.isArray(message?.content) ? message.content : [];
   return blocks
@@ -893,7 +1115,7 @@ function userMessageText(message) {
     .trim();
 }
 
-function transcriptItem(session, seq, turnId, type, title, text, timestamp, status) {
+function transcriptItem(session, seq, turnId, type, title, text, timestamp, status, metadata = {}) {
   return {
     id: `${session.id}:transcript:${seq}`,
     turnId,
@@ -903,7 +1125,9 @@ function transcriptItem(session, seq, turnId, type, title, text, timestamp, stat
     text,
     options: null,
     status,
-    createdAt: createdAtFromOrNow(timestamp)
+    createdAt: createdAtFromOrNow(timestamp),
+    presentationRole: metadata.presentationRole ?? null,
+    presentationText: metadata.presentationText ?? null
   };
 }
 
@@ -1090,13 +1314,12 @@ function claudePermissionMode(sandbox = "workspace-write", approvalPolicy = "on-
 
 function claudePermissionOptions(session) {
   const permissionMode = session.permissionMode ?? claudePermissionMode(session.sandbox, session.approvalPolicy);
-  if (permissionMode === "bypassPermissions") {
-    return {
-      permissionMode,
-      allowDangerouslySkipPermissions: true
-    };
-  }
-  return { permissionMode };
+  return {
+    permissionMode,
+    // This flag only permits a later explicit switch to bypass mode; the
+    // active permissionMode remains authoritative and is not widened by it.
+    allowDangerouslySkipPermissions: true
+  };
 }
 
 function lastMeaningfulText(items = []) {

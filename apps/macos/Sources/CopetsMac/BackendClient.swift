@@ -42,6 +42,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var selectedSessionUsage: SessionUsageResponse?
     @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
+    @Published private(set) var projectWorktreeLoadError: String?
     @Published private(set) var isLoadingProjectWorktrees = false
     @Published private(set) var projectWorktreeActionIds = Set<String>()
     @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
@@ -1039,6 +1040,7 @@ final class BackendClient: ObservableObject {
             }
         }
         selectedProjectWorktreeStatus = nil
+        projectWorktreeLoadError = nil
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         projectStatusRefreshTask?.cancel()
@@ -1073,6 +1075,7 @@ final class BackendClient: ObservableObject {
         viewingHistoricalThreadId = nil
         selectedSessionUsage = nil
         selectedProjectWorktreeStatus = nil
+        projectWorktreeLoadError = nil
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         gitHubPushPreparation = nil
@@ -1220,15 +1223,24 @@ final class BackendClient: ObservableObject {
     }
 
     private func loadProjectWorktreeStatus(for session: TaskSession) async {
-        guard selectedSession?.id == session.id,
-              let projectId = projectId(for: session) else { return }
+        guard selectedSession?.id == session.id else { return }
         projectStatusRequestSequence &+= 1
         let requestSequence = projectStatusRequestSequence
+        if selectedProjectWorktreeStatus == nil {
+            projectWorktreeLoadError = nil
+        }
         do {
-            let url = baseURL.appending(path: "projects/\(projectId)/workspaces")
+            let path = projectId(for: session).map { "projects/\($0)/workspaces" }
+                ?? "sessions/\(session.id)/project-worktrees"
+            let url = baseURL.appending(path: path)
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
+                if selectedSession?.id == session.id,
+                   requestSequence == projectStatusRequestSequence {
+                    projectWorktreeLoadError = Self.errorMessage(from: data)
+                        ?? L10n("Could not load project worktrees")
+                }
                 await loadWorkspaceRecoveryStatus(for: session)
                 return
             }
@@ -1236,8 +1248,13 @@ final class BackendClient: ObservableObject {
             guard selectedSession?.id == session.id,
                   requestSequence == projectStatusRequestSequence else { return }
             selectedProjectWorktreeStatus = status
+            projectWorktreeLoadError = nil
             workspaceRecoveryStatus = nil
         } catch {
+            if selectedSession?.id == session.id,
+               requestSequence == projectStatusRequestSequence {
+                projectWorktreeLoadError = error.localizedDescription
+            }
             await loadWorkspaceRecoveryStatus(for: session)
         }
     }
