@@ -16,6 +16,7 @@ export class SessionApplicationService {
     this.resolveSessionBinding = options.resolveSessionBinding ?? null;
     this.bindCreatedSession = options.bindCreatedSession ?? null;
     this.removeSessionBinding = options.removeSessionBinding ?? null;
+    this.toolHostService = options.toolHostService ?? null;
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionApplicationService requires resolveSessionReference().");
@@ -35,10 +36,13 @@ export class SessionApplicationService {
   }
 
   async createSession(providerId, input = {}, context = {}) {
+    const toolHost = this.toolHostService
+      ? await this.toolHostService.prepareSession(providerId, { purpose: "session", ...context })
+      : null;
     const session = await this.registry.invoke(
       providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
-      input,
+      toolHost ? { ...input, toolHost } : input,
       context
     );
     const reference = this.bindCreatedSession
