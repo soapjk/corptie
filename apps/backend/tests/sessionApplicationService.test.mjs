@@ -10,6 +10,7 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
   AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
@@ -42,6 +43,10 @@ function fixture(capabilities = [
     restartSession: async (...args) => {
       calls.push(["restartSession", ...args]);
       return { status: "completed" };
+    },
+    disconnectSession: async (...args) => {
+      calls.push(["disconnectSession", ...args]);
+      return { status: "disconnected" };
     },
     listModels: async (...args) => {
       calls.push(["listModels", ...args]);
@@ -121,6 +126,7 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   const resumed = await service.resumeSession("logical-a", { source: "desktop" });
   assert.equal(resumed.title, "Resumed");
   assert.deepEqual(await service.restartSession("logical-a"), { status: "completed" });
+  assert.deepEqual(await service.disconnectSession("logical-a"), { status: "disconnected" });
   const deleted = await service.deleteSession("logical-a", { source: "desktop" });
   assert.deepEqual(deleted, {
     ok: true,
@@ -134,6 +140,7 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
     "bindCreatedSession",
     "resumeSession",
     "restartSession",
+    "disconnectSession",
     "deleteSession",
     "removeSessionBinding"
   ]);

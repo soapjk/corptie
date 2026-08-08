@@ -12,6 +12,7 @@ export function createPtyAgentProvider(manager, options = {}) {
     AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
     AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
     AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+    AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
     AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
     AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
     AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
@@ -34,6 +35,7 @@ export function createPtyAgentProvider(manager, options = {}) {
     createSession: (input) => manager.start({ ...input, provider: providerId }),
     resumeSession: (reference) => manager.reconnect(reference.providerSessionId),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
+    disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     send: (reference, message, context = {}) => {
       manager.write(reference.providerSessionId, message, { submit: context.submit !== false });
       return manager.detail(reference.providerSessionId, { flush: false });

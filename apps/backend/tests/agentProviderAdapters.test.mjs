@@ -14,6 +14,7 @@ function recordingManager(provider = "claude-sdk") {
     start: (input) => calls.push(["start", input]),
     reconnect: (id) => calls.push(["reconnect", id]),
     delete: (id) => calls.push(["delete", id]),
+    disconnect: (id) => calls.push(["disconnect", id]),
     send: (id, message) => calls.push(["send", id, message]),
     write: (id, message, options) => calls.push(["write", id, message, options]),
     interrupt: (id) => calls.push(["interrupt", id]),
@@ -66,8 +67,14 @@ test("Codex PTY protocol differences remain inside its Provider adapter", async 
     reference,
     "high"
   );
+  await registry.invoke(
+    CODEX_PTY_PROVIDER_ID,
+    AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
+    reference
+  );
   assert.deepEqual(manager.calls, [
     ["approval", "pty-native-a", { itemType: "approval", approved: true }],
-    ["reasoning", "pty-native-a", "high"]
+    ["reasoning", "pty-native-a", "high"],
+    ["disconnect", "pty-native-a"]
   ]);
 });

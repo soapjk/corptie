@@ -764,11 +764,11 @@ final class BackendClient: ObservableObject {
 
             do {
                 let usesAppServer = settings?.codexBackend?.mode != "pty" && trimmedExistingSessionId.isEmpty
-                var request = URLRequest(url: baseURL.appending(path: usesAppServer ? "sessions" : "codex/pty-sessions"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = [
-                    "providerId": "codex-app-server",
+                    "providerId": usesAppServer ? "codex-app-server" : "codex-pty",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": trimmedPrompt.isEmpty ? "Reply exactly: Ready" : trimmedPrompt,
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
@@ -1909,8 +1909,7 @@ final class BackendClient: ObservableObject {
     }
 
     func togglePtyConnection(for session: TaskSession) {
-        guard session.usesManualConnection,
-              let threadId = session.external?.threadId else {
+        guard session.usesManualConnection else {
             return
         }
 
@@ -1921,7 +1920,7 @@ final class BackendClient: ObservableObject {
             }
             do {
                 let action = session.isConnected ? "disconnect" : "reconnect"
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/\(action)"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/\(action)"))
                 request.httpMethod = "POST"
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
