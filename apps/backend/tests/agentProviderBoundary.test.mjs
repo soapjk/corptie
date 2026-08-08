@@ -1,0 +1,77 @@
+import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const backendRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const backendSourceRoot = join(backendRoot, "src");
+const macosSourceRoot = join(backendRoot, "..", "macos", "Sources", "CopetsMac");
+
+const backendDebtBaseline = Object.freeze({});
+
+const frontendDebtBaseline = Object.freeze({});
+
+test("supported concrete backend Provider dependencies cannot spread beyond the migration baseline", async () => {
+  const files = await sourceFiles(backendSourceRoot, ".mjs");
+  const actual = {};
+  // PTY is intentionally outside this migration boundary because the product is removing it.
+  const pattern = /\b(?:codexClient|claudeAgents)\b/g;
+  for (const file of files) {
+    if (file.includes("/adapters/") || file.includes("/agent-provider/providers/")) continue;
+    const count = ((await readFile(file, "utf8")).match(pattern) ?? []).length;
+    if (count > 0) actual[relative(backendSourceRoot, file)] = count;
+  }
+  assert.deepEqual(Object.keys(actual).sort(), Object.keys(backendDebtBaseline).sort());
+  for (const [file, count] of Object.entries(actual)) {
+    assert.ok(
+      count <= backendDebtBaseline[file],
+      `${file} increased concrete Provider dependencies from ${backendDebtBaseline[file]} to ${count}`
+    );
+  }
+});
+
+test("frontend Provider-name branching cannot spread beyond the migration baseline", async () => {
+  const files = await sourceFiles(macosSourceRoot, ".swift");
+  const actual = {};
+  const pattern = /provider\s*[!=]=\s*"(?:codex-app-server|codex-pty|claude-sdk|pty)"|isPtyProvider/g;
+  for (const file of files) {
+    const count = ((await readFile(file, "utf8")).match(pattern) ?? []).length;
+    if (count > 0) actual[relative(macosSourceRoot, file)] = count;
+  }
+  assert.deepEqual(Object.keys(actual).sort(), Object.keys(frontendDebtBaseline).sort());
+  for (const [file, count] of Object.entries(actual)) {
+    assert.ok(
+      count <= frontendDebtBaseline[file],
+      `${file} increased Provider-name branching from ${frontendDebtBaseline[file]} to ${count}`
+    );
+  }
+});
+
+test("supported Providers expose only unified product HTTP routes", async () => {
+  const serverSource = await readFile(join(backendSourceRoot, "server.mjs"), "utf8");
+  const supportedProviderRoutes = [...serverSource.matchAll(/["'`]\/(?:codex|claude)\/[^"'`\s]*/g)]
+    .map((match) => match[0].slice(1))
+    .filter((route) => route !== "/codex/pty-sessions");
+  assert.deepEqual(supportedProviderRoutes, []);
+
+  const frontendFiles = await sourceFiles(macosSourceRoot, ".swift");
+  for (const file of frontendFiles) {
+    const source = await readFile(file, "utf8");
+    assert.equal(
+      /(?:codex|claude)\/(?:threads|sessions|models)/.test(source),
+      false,
+      `${relative(macosSourceRoot, file)} uses a Provider-specific HTTP route`
+    );
+  }
+});
+
+async function sourceFiles(root, extension) {
+  const results = [];
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) results.push(...await sourceFiles(path, extension));
+    else if (entry.isFile() && entry.name.endsWith(extension)) results.push(path);
+  }
+  return results;
+}

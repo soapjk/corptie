@@ -186,7 +186,7 @@ private struct SessionSettingsView: View {
                 SessionCompletionSoundManager.setSelectedSoundId(soundId, for: session.id)
             }
 
-            if session.external?.provider == "codex-app-server" {
+            if supportsWorkspaceHistory {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -248,7 +248,7 @@ private struct SessionSettingsView: View {
         .padding(20)
         .frame(width: 470, height: 480)
         .task {
-            guard session.external?.provider == "codex-app-server" else { return }
+            guard supportsWorkspaceHistory else { return }
             isLoadingWorkspaceHistory = true
             workspaceHistory = await backendClient.workspaceHistory(for: session)
             isLoadingWorkspaceHistory = false
@@ -260,7 +260,11 @@ private struct SessionSettingsView: View {
     }
 
     private var supportsPermissionChanges: Bool {
-        session.external?.provider == "codex-app-server"
+        session.actions?.updatePermissions?.available == true
+    }
+
+    private var supportsWorkspaceHistory: Bool {
+        session.external?.logicalSessionId != nil
     }
 
     @ViewBuilder

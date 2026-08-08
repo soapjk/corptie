@@ -93,4 +93,60 @@ final class BackendResponseDecoderTests: XCTestCase {
         XCTAssertEqual(event.payload.newlyDiscoveredWorkspaces.first?.worktreeId, "worktree:new")
         XCTAssertEqual(event.payload.newlyDiscoveredWorkspaces.first?.path, "/repo/feature worktree")
     }
+
+    func testSessionActionsDriveBehaviorRegardlessOfProviderBrand() async throws {
+        let data = Data(
+            """
+            {
+              "sessions": [
+                {
+                  "id": "logical:codex",
+                  "title": "Codex",
+                  "agent": "Codex",
+                  "status": "running",
+                  "progress": 0.5,
+                  "summary": "Working",
+                  "updatedAt": "2026-08-08T00:00:00.000Z",
+                  "accent": "cyan",
+                  "capabilities": { "canSend": false, "canInterrupt": false },
+                  "actions": {
+                    "send": { "available": true },
+                    "interrupt": { "available": true },
+                    "approve": { "available": false, "reason": "NO_PENDING_APPROVAL" },
+                    "switchModel": { "available": true },
+                    "switchReasoning": { "available": false, "reason": "CAPABILITY_UNSUPPORTED" },
+                    "switchWorkspace": { "available": false, "reason": "TURN_RUNNING", "retryable": true }
+                  },
+                  "external": { "provider": "codex-app-server" }
+                },
+                {
+                  "id": "logical:claude",
+                  "title": "Claude",
+                  "agent": "Claude",
+                  "status": "running",
+                  "progress": 0.5,
+                  "summary": "Working",
+                  "updatedAt": "2026-08-08T00:00:00.000Z",
+                  "accent": "mint",
+                  "capabilities": { "canSend": false, "canInterrupt": false },
+                  "actions": {
+                    "send": { "available": true },
+                    "interrupt": { "available": true },
+                    "approve": { "available": false, "reason": "NO_PENDING_APPROVAL" },
+                    "switchModel": { "available": true },
+                    "switchReasoning": { "available": false, "reason": "CAPABILITY_UNSUPPORTED" },
+                    "switchWorkspace": { "available": false, "reason": "TURN_RUNNING", "retryable": true }
+                  },
+                  "external": { "provider": "claude-sdk" }
+                }
+              ]
+            }
+            """.utf8
+        )
+
+        let sessions = try await BackendResponseDecoder.sessions(from: data)
+        XCTAssertEqual(sessions.map(\.canSendNow), [true, true])
+        XCTAssertEqual(sessions.map(\.canInterruptNow), [true, true])
+        XCTAssertEqual(sessions.map(\.canSwitchModelNow), [true, true])
+    }
 }

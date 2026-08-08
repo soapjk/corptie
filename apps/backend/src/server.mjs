@@ -9,14 +9,25 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
 import {
-  CodexAppServerClient,
   mapCodexThreadToDetail,
   mapCodexThreadToSession,
   readCodexRolloutDetail,
   readCodexRolloutTokenUsage
 } from "./adapters/codexAppServer.mjs";
-import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
+import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
+import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
+import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
+import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
+import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
+import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { ToolHostService } from "./application/toolHostService.mjs";
+import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
+import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
+import {
+  codexToolHostAttachment,
+  createAgentProviderRuntimeRegistry
+} from "./agent-provider/bootstrap/agentProviderBootstrap.mjs";
 import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishuGatewayManager.mjs";
 import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
@@ -27,7 +38,6 @@ import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
-  composeStoredSessionList,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
@@ -68,14 +78,14 @@ import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "./utils/agentWorkQueue.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
-import { CodexWorkspaceTransitionManager } from "./runtime/codexWorkspaceTransitionManager.mjs";
+import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTransitionManager.mjs";
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
 import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
-import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
+import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
 import {
@@ -87,7 +97,7 @@ const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
-const managedCodexSessions = new Map();
+const sessionPresentationCache = new Map();
 const eventLog = [];
 const sseClients = new Set();
 const sessionEventListeners = new Set();
@@ -125,8 +135,27 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   },
   onEvent: (type, payload) => emitEvent(type, payload)
 });
+const hostToolCatalog = new HostToolCatalog([
+  {
+    id: "workspace",
+    tools: workspaceDynamicTools,
+    execute: (input) => callWorkspaceDynamicTool(input)
+  },
+  {
+    id: "collaboration",
+    tools: collaborationDynamicTools,
+    execute: (input) => {
+      const client = new CollaborationHttpClient({
+        agentId: input.actorId,
+        baseUrl: `http://127.0.0.1:${port}`
+      });
+      return callCollaborationDynamicTool(client, input.tool, input.arguments);
+    }
+  }
+]);
+let toolHostService = null;
 const codexAppServerCommand = resolveCodexCommand();
-const codexClient = new CodexAppServerClient({
+const codexRuntime = createCodexProviderRuntime({
   command: codexAppServerCommand,
   env: () => ({
     ...environmentForCommand(codexAppServerCommand),
@@ -136,40 +165,134 @@ const codexClient = new CodexAppServerClient({
   onNotification: (message) => {
     handleCodexAppServerNotification(message);
   },
-  onDynamicToolCall: (params) => {
-    if (isWorkspaceDynamicTool(params.tool)) {
-      return callWorkspaceDynamicTool(params);
-    }
-    const client = new CollaborationHttpClient({
-      agentId: params.agentId,
-      baseUrl: `http://127.0.0.1:${port}`
-    });
-    return callCollaborationDynamicTool(client, params.tool, params.arguments);
-  }
+  onDynamicToolCall: (params) => toolHostService.execute({
+    ...params,
+    actorId: params.agentId
+  })
 });
-const codexWorkspaceTransitions = new CodexWorkspaceTransitionManager({
+const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   store,
-  codexClient,
+  providerPort: codexRuntime,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
   onRouteCommitted: (event) => commitManagedCodexWorkspaceRoute(event)
 });
 const gitWorkspaces = new GitWorkspaceManager({
   store,
-  transitions: codexWorkspaceTransitions
+  transitions: workspaceTransitionManager
 });
 const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
+const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
+const agentProviderRegistry = createAgentProviderRuntimeRegistry({
+  claudeProvider: createClaudeProviderRuntime({ store, listModels: loadClaudeModels }),
+  ptyManager: ptyAgents,
+  listCodexModels: loadCodexModels,
+  codexOperations: {
+    listSessions: listCodexProviderSessions,
+    readSession: readCodexProviderSession,
+    createSession: createCodexProviderSession,
+    resumeSession: resumeCodexProviderSession,
+    deleteSession: deleteCodexProviderSession,
+    restartSession: restartCodexProviderSession,
+    renameSession: renameCodexProviderSession,
+    updateAvatar: updateCodexProviderAvatar,
+    listModels: loadCodexModels,
+    send: sendCodexProviderMessage,
+    clearConversation: (reference, context = {}) => clearCodexAppServerSession(
+      reference.sessionId,
+      reference.metadata.session,
+      context.source
+    ),
+    interrupt: interruptCodexProviderSession,
+    respondToApproval: respondCodexProviderApproval,
+    manageTurnChanges: manageCodexTurnChanges,
+    switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
+    switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
+    updatePermissions: updateCodexProviderPermissions,
+    prepareWorkspaceTransition: switchCodexProviderWorkspace,
+    attachTools: (attachment) => codexToolHostAttachment(
+      attachment,
+      collaborationProviderRuntimeOptions(attachment.actorId)
+    ),
+    runBackgroundPrompt: (input) => codexRuntime.runEphemeralPrompt({
+      cwd: input.cwd,
+      runtimeWorkspaceRoots: input.allowedRoots,
+      prompt: input.prompt,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      timeoutMs: input.timeoutMs,
+      permissionProfile: input.permissionProfile,
+      developerInstructions: input.developerInstructions,
+      threadSource: input.purpose
+    })
+  },
+  codexMetadata: {
+    backgroundPermissionProfiles: ["read-only", "workspace-write"]
+  }
+});
+toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
+const sessionBindingRepository = new SessionBindingRepository({
+  store,
+  findSession: (sessionId) => listGatewaySessions().find((session) => session.id === sessionId),
+  normalizeLegacySessionId: normalizeSessionId
+});
+const sessionApplicationService = new SessionApplicationService({
+  registry: agentProviderRegistry,
+  toolHostService,
+  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
+  bindCreatedSession: async ({ providerId, session, input }) => {
+    const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
+      instructionSources: input.instructionSources,
+      runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
+      approvalPolicy: input.approvalPolicy,
+      sandbox: input.sandbox
+    });
+    return logical ? {
+      sessionId: logical.legacySessionId,
+      logicalSessionId: logical.logicalSessionId,
+      providerId,
+      providerSessionId: logical.activeBinding?.providerSessionId ?? null,
+      session: sessionWithLogicalWorkspace(session, logical)
+    } : null;
+  },
+  removeSessionBinding: async ({ reference }) => {
+    collaborationCore.deactivateAgentForSession(reference.sessionId);
+    collaborationCore.deactivateAgentForSession(reference.providerSessionId);
+    store.deleteLogicalSessionByLegacySessionId(reference.sessionId);
+    store.deleteSession(reference.sessionId);
+    emitEvent("SessionDeleted", {
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId,
+      provider: reference.providerId
+    });
+  }
+});
+const backgroundAgentService = new BackgroundAgentService({
+  registry: agentProviderRegistry,
+  defaultProviderId: "codex-app-server",
+  onOperationEvent: (type, payload) => emitEvent(type, payload)
+});
 const projectToolsetInitializer = new ProjectToolsetInitializer({
   manager: projectToolsets,
-  codexClient,
+  backgroundAgent: backgroundAgentService,
   referencePath: bundledProjectToolsetReferencePath,
-  runtimeOptions: () => resolvedNewCodexRuntimeConfig(),
   onEvent: (type, payload) => emitEvent(type, payload)
 });
-const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
-const claudeAgents = new ClaudeAgentManager({ store });
+const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
+  registry: agentProviderRegistry,
+  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
+});
+const projectApplicationService = new ProjectApplicationService({
+  resolveProject: resolveProjectContext,
+  inspectWorkspaces: (project) => gitWorkspaces.projectStatusForPath(project.mainPath, project.id),
+  inspectDevelopmentService: (project) => projectToolsetStatusForPath(project.mainPath),
+  performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
+  performWorkspaceAction: performProjectWorkspaceAction
+});
 const feishuGateway = new FeishuGatewayManager({
   store,
   listSessions: listGatewaySessions,
@@ -250,11 +373,11 @@ function knownSessionsForTitleValidation() {
   return Array.from(byId.values());
 }
 
-async function ensureLogicalRouteForCodexSession(session, appServerResponse = null) {
-  if (!session?.id || !session.id.startsWith("codex:")) return null;
+async function ensureLogicalRouteForProviderSession(session, providerId, options = {}) {
+  if (!session?.id || !providerId) return null;
   const existing = store.getLogicalSessionByLegacySessionId(session.id);
   if (existing) return existing;
-  const cwd = await realpath(session.external?.cwd || defaultWorkspacePath());
+  const cwd = await realpath(session.external?.cwd || session.cwd || defaultWorkspacePath());
   let repositoryId = null;
   let worktreeId = null;
   try {
@@ -266,23 +389,33 @@ async function ensureLogicalRouteForCodexSession(session, appServerResponse = nu
   } catch {
     // Non-Git workspaces keep a generic route with no repository/worktree identity.
   }
-  const providerThreadId = session.external?.threadId || session.id.slice("codex:".length);
-  const permissions = codexPermissionsForSession(session);
+  const providerThreadId = session.external?.threadId
+    || session.external?.sessionId
+    || normalizeSessionId(session.id);
+  const permissions = providerId === "codex-app-server"
+    ? codexPermissionsForSession(session)
+    : {
+        approvalPolicy: session.external?.approvalPolicy ?? options.approvalPolicy ?? null,
+        sandbox: session.external?.sandbox ?? options.sandbox ?? null
+      };
   try {
     return store.createLogicalSessionRoute({
       logicalSessionId: `logical:${randomUUID()}`,
       legacySessionId: session.id,
       providerThreadId,
+      providerId,
+      providerSessionId: providerThreadId,
       repositoryId,
       worktreeId,
       boundCwd: cwd,
-      instructionSources: appServerResponse?.instructionSources ?? [],
+      instructionSources: options.instructionSources ?? [],
       permissionSnapshot: {
         cwd,
-        runtimeWorkspaceRoots: appServerResponse?.runtimeWorkspaceRoots ?? [cwd],
-        approvalPolicy: appServerResponse?.approvalPolicy ?? permissions.approvalPolicy,
-        sandboxPolicy: appServerResponse?.sandbox ?? { type: permissions.sandbox }
+        runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? [cwd],
+        approvalPolicy: options.approvalPolicy ?? permissions.approvalPolicy,
+        sandboxPolicy: options.sandboxPolicy ?? (permissions.sandbox ? { type: permissions.sandbox } : null)
       },
+      providerMetadata: options.providerMetadata ?? {},
       title: session.title,
       pinned: session.pinned,
       avatarPath: session.avatarPath,
@@ -293,6 +426,11 @@ async function ensureLogicalRouteForCodexSession(session, appServerResponse = nu
     if (raced) return raced;
     throw error;
   }
+}
+
+async function ensureLogicalRouteForCodexSession(session, appServerResponse = null) {
+  if (!session?.id || !session.id.startsWith("codex:")) return null;
+  return ensureLogicalRouteForProviderSession(session, "codex-app-server", appServerResponse ?? {});
 }
 
 function sessionWithLogicalWorkspace(session, logical) {
@@ -307,6 +445,9 @@ function sessionWithLogicalWorkspace(session, logical) {
   const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
   return {
     ...session,
+    sessionId: logical.legacySessionId ?? session.id,
+    logicalSessionId: logical.logicalSessionId,
+    publicSessionId: logical.logicalSessionId,
     external: {
       ...(session.external ?? {}),
       threadId: logical.activeThreadId,
@@ -379,7 +520,7 @@ async function commitManagedCodexWorkspaceRoute(event) {
   const logical = store.getLogicalSession(event.logicalSessionId);
   const legacySessionId = logical?.legacySessionId;
   if (!legacySessionId) return;
-  const previous = managedCodexSessions.get(legacySessionId) ?? store.getSession(legacySessionId);
+  const previous = sessionPresentationCache.get(legacySessionId) ?? store.getSession(legacySessionId);
   if (!previous) return;
   const session = sessionWithLogicalWorkspace({
     ...previous,
@@ -407,7 +548,7 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
     ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
     : null;
   if (!transition || transition.phase !== "waitingForTurn") return null;
-  return codexWorkspaceTransitions.continueWorkspaceTransition(transition.transitionId, {
+  return workspaceTransitionManager.continueWorkspaceTransition(transition.transitionId, {
     lastCompletedTurnId,
     ...collaborationThreadOptionsForSession(logical.legacySessionId)
   }).catch((error) => {
@@ -457,7 +598,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       if (!targetCwd || logical.activeBinding?.boundCwd === targetCwd) continue;
       if (reconcilingWorkspacePaths.has(logical.logicalSessionId)) continue;
       const session = logical.legacySessionId
-        ? managedCodexSessions.get(logical.legacySessionId) ?? store.getSession(logical.legacySessionId)
+        ? sessionPresentationCache.get(logical.legacySessionId) ?? store.getSession(logical.legacySessionId)
         : null;
       if (sessionHasActiveRun(session)) {
         emitEvent("SessionWorkspacePathRebindDeferred", {
@@ -473,7 +614,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       }
       if (options.verifyProviderIdle) {
         try {
-          const response = await codexClient.readThread(logical.activeThreadId, {
+          const response = await codexRuntime.readThread(logical.activeThreadId, {
             includeTurns: true
           });
           const latest = (response.thread?.turns ?? response.turns ?? []).at(-1);
@@ -485,7 +626,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       }
       reconcilingWorkspacePaths.add(logical.logicalSessionId);
       try {
-        await codexWorkspaceTransitions.reconcileActiveWorkspacePath(
+        await workspaceTransitionManager.reconcileActiveWorkspacePath(
           logical.logicalSessionId,
           collaborationThreadOptionsForSession(logical.legacySessionId)
         );
@@ -584,7 +725,7 @@ function normalizeRelativeDiffPath(value, cwd) {
 }
 
 function turnDiffFor(threadId, turnId, changes) {
-  const liveDiff = codexClient.turnDiffsForThread(threadId).get(turnId);
+  const liveDiff = codexRuntime.turnDiffsForThread(threadId).get(turnId);
   return liveDiff || changes.map(unifiedDiffForChange).filter(Boolean).join("\n");
 }
 
@@ -838,6 +979,60 @@ function sessionIdFromEventPayload(payload = {}) {
   return null;
 }
 
+function streamCanonicalSessionSnapshots(request, response, requestedSessionId) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive"
+  });
+  response.flushHeaders?.();
+  let closed = false;
+  let reading = false;
+  let previousSignature = null;
+  let sequence = 0;
+
+  const publish = async () => {
+    if (closed || reading) return;
+    reading = true;
+    try {
+      const session = await sessionApplicationService.readSession(requestedSessionId);
+      // Provider diagnostics may contain clocks such as idleSeconds that change
+      // on every read without changing the Canonical Session visible to clients.
+      const { rawStatus: _rawStatus, ...canonicalSession } = session;
+      const signature = JSON.stringify(canonicalSession);
+      if (signature !== previousSignature) {
+        previousSignature = signature;
+        sequence += 1;
+        response.write(`id: ${sequence}\nevent: snapshot\ndata: ${JSON.stringify({ session })}\n\n`);
+      }
+    } catch (error) {
+      sequence += 1;
+      response.write(`id: ${sequence}\nevent: error\ndata: ${JSON.stringify({
+        error: error.message,
+        code: error.code ?? null
+      })}\n\n`);
+    } finally {
+      reading = false;
+    }
+  };
+
+  const snapshotTimer = setInterval(() => void publish(), 400);
+  const heartbeatTimer = setInterval(() => {
+    if (!closed) response.write(`: heartbeat ${Date.now()}\n\n`);
+  }, 15_000);
+  snapshotTimer.unref?.();
+  heartbeatTimer.unref?.();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(snapshotTimer);
+    clearInterval(heartbeatTimer);
+  };
+  request.once("close", close);
+  response.once("close", close);
+  void publish();
+}
+
 function updateMockProgress() {
   for (const session of sessions.values()) {
     if (session.status !== "running") {
@@ -1008,7 +1203,7 @@ function scheduleCodexChoiceParseForText(threadId, text) {
 
 function syncManagedCodexSessionFromDetail(threadId, detail) {
   const sessionId = sessionIdForProviderThread(threadId);
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   if (!session || !detail) {
     return null;
   }
@@ -1038,7 +1233,7 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
 
 function applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
   const sessionId = sessionIdForProviderThread(threadId);
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   if (!session) {
     return null;
   }
@@ -1069,7 +1264,7 @@ function applyCodexChoiceOptionsToManagedSession(threadId, text, options, genera
 }
 
 function upsertManagedCodexSession(session, preferredAgentId = null) {
-  managedCodexSessions.set(session.id, session);
+  sessionPresentationCache.set(session.id, session);
   store.upsertSession({
     ...session,
     provider: session.external?.provider ?? "codex-app-server",
@@ -1099,9 +1294,14 @@ function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
 
 function collaborationThreadOptions(agentId) {
   if (!agentId) return {};
+  return codexToolHostAttachment({
+    actorId: agentId,
+    tools: hostToolCatalog.definitions()
+  }, collaborationProviderRuntimeOptions(agentId));
+}
+
+function collaborationProviderRuntimeOptions(agentId) {
   return {
-    dynamicTools: [...collaborationDynamicTools, ...workspaceDynamicTools],
-    dynamicToolAgentId: agentId,
     config: {
       features: {
         multi_agent: false
@@ -1126,7 +1326,7 @@ function collaborationThreadOptions(agentId) {
 
 function collaborationThreadOptionsForSession(sessionId) {
   if (!sessionId) return {};
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const agent = collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(session);
   return collaborationThreadOptions(agent?.agentId);
@@ -1165,9 +1365,9 @@ function requireAgentLogicalSession(agentId) {
 
 async function createAgentWorktree(agentId, input = {}) {
   const { sessionId, logical } = requireAgentLogicalSession(agentId);
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
-  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
   const runtimeOptions = collaborationThreadOptions(agentId);
   return gitWorkspaces.createWorktree({
     logicalSessionId: logical.logicalSessionId,
@@ -1187,11 +1387,12 @@ async function createAgentWorktree(agentId, input = {}) {
 }
 
 async function callWorkspaceDynamicTool(params) {
+  const actorId = params.actorId ?? params.agentId;
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId) {
     throw new Error("Workspace operations are only available from the active logical Session thread.");
   }
-  const runtimeOptions = collaborationThreadOptions(params.agentId);
+  const runtimeOptions = collaborationThreadOptions(actorId);
   if (params.tool === "corptie_list_workspaces") {
     return workspaceInventory(logical);
   }
@@ -1207,7 +1408,7 @@ async function callWorkspaceDynamicTool(params) {
       switchAfterCreate: input.switch_after_create,
       inventoryVersion: input.inventory_version,
       activeTurnId: params.turnId,
-      dynamicToolAgentId: params.agentId,
+      dynamicToolAgentId: actorId,
       config: runtimeOptions.config,
       developerInstructions: runtimeOptions.developerInstructions
     });
@@ -1217,7 +1418,7 @@ async function callWorkspaceDynamicTool(params) {
       logicalSessionId: logical.logicalSessionId,
       targetWorktreeId: params.arguments?.target_worktree_id,
       activeTurnId: params.turnId,
-      dynamicToolAgentId: params.agentId,
+      dynamicToolAgentId: actorId,
       config: runtimeOptions.config,
       developerInstructions: runtimeOptions.developerInstructions
     });
@@ -1286,7 +1487,7 @@ function handleCodexAppServerNotification(message) {
     }, { sessionId, source: { type: "codex-app-server" } });
     return;
   }
-  const managedSession = managedCodexSessions.get(sessionId);
+  const managedSession = sessionPresentationCache.get(sessionId);
   if (method === "thread/name/updated") {
     const title = typeof params.threadName === "string" ? params.threadName.trim() : "";
     const current = managedSession ?? store.getSession(sessionId);
@@ -1310,7 +1511,7 @@ function handleCodexAppServerNotification(message) {
   }
 
   if (method === "thread/tokenUsage/updated") {
-    const context = codexClient.tokenUsageForThread(threadId);
+    const context = codexRuntime.tokenUsageForThread(threadId);
     if (context) {
       emitEvent("SessionUsageUpdated", {
         sessionId,
@@ -1324,7 +1525,7 @@ function handleCodexAppServerNotification(message) {
     return;
   }
 
-  const liveItems = codexClient.liveItemsForThread(threadId);
+  const liveItems = codexRuntime.liveItemsForThread(threadId);
   const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
   const nowIso = now();
 
@@ -1712,9 +1913,12 @@ async function loadClaudeModels(options = {}) {
 
   try {
     const models = await warm.query((async function* () {})()).supportedModels();
-    const activeSession = Array.from(claudeAgents.sessions?.values?.() ?? []).find((session) => session.currentModel);
+    const activeSession = [
+      ...store.listSessions({ archived: false }),
+      ...store.listSessions({ archived: true })
+    ].find((session) => session.external?.provider === "claude-sdk" && session.external?.currentModel);
     const payload = {
-      currentModel: activeSession?.currentModel ?? null,
+      currentModel: activeSession?.external?.currentModel ?? null,
       currentReasoningLevel: null,
       models: (Array.isArray(models) ? models : [])
         .map((model) => ({
@@ -1761,6 +1965,20 @@ async function resolvedNewCodexRuntimeConfig(input = {}) {
 
 function normalizeSessionId(id) {
   return id.startsWith("pty:") ? id.slice(4) : id;
+}
+
+function requestedProviderId(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  const aliases = {
+    "": "codex-app-server",
+    codex: "codex-app-server",
+    "codex-app-server": "codex-app-server",
+    claude: "claude-sdk",
+    "claude-sdk": "claude-sdk",
+    pty: "pty",
+    "codex-pty": "codex-pty"
+  };
+  return aliases[normalized] ?? normalized;
 }
 
 function titleFromPrompt(prompt) {
@@ -1872,23 +2090,30 @@ async function assertDirectory(path) {
   }
 }
 
-function listGatewaySessions() {
-  const storedSessions = ptyAgents.list({ archived: false });
-  const ptySessions = storedSessions
-    .filter((session) => session.external?.provider !== "codex-app-server")
-    .filter((session) => session.external?.provider !== "claude-sdk");
+function listGatewaySessions(options = {}) {
+  return agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).map((session) => {
+    const logical = store.getLogicalSessionByLegacySessionId(session.id);
+    return logical ? sessionWithLogicalWorkspace(session, logical) : session;
+  });
+}
+
+function listCodexProviderSessions(options = {}) {
+  const archived = options.archived === true;
+  const storedSessions = ptyAgents.list({ archived });
   const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
-  const claudeSessions = claudeAgents.list({ archived: false });
-  const listedIds = new Set([...ptySessions, ...claudeSessions].map((session) => session.id));
-  const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
+  const managedById = new Map(
+    Array.from(sessionPresentationCache.values())
+      .filter((session) => Boolean(session.archived) === archived)
+      .map((session) => [session.id, session])
+  );
   const codexSessions = [
     ...storedCodexSessions.map((stored) => {
       const managed = managedById.get(stored.id);
       return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
     }),
     ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
-  ].filter((session) => !listedIds.has(session.id));
-  return sortSessionsForList([...ptySessions, ...claudeSessions, ...codexSessions]);
+  ];
+  return sortSessionsForList(codexSessions);
 }
 
 function listGatewayWorkspaces() {
@@ -1927,50 +2152,90 @@ function listGatewayWorkspaces() {
 }
 
 async function createGatewaySession(input = {}) {
-  const cwd = resolve(String(input.cwd || ""));
+  const providerId = input.agent === "claude" ? "claude-sdk" : "codex-app-server";
+  return createSessionThroughApplication(providerId, input, { source: "feishu" });
+}
+
+async function createSessionThroughApplication(providerId, input = {}, context = {}) {
+  const cwd = sessionWorkspacePath(input.cwd);
   await assertDirectory(cwd);
   const title = sessionTitleForWorkspace(input.title, cwd);
-  const agent = input.agent === "claude" ? "claude" : "codex";
   const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
-  const permissions = {
-    sandbox: defaults.sandbox,
-    approvalPolicy: defaults.approvalPolicy
+  const prepared = {
+    ...input,
+    cwd,
+    title,
+    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
+    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy)
   };
+  if (providerId === "claude-sdk") {
+    prepared.model = typeof input.model === "string" && input.model.trim()
+      ? input.model.trim()
+      : defaults.claudeModel;
+    prepared.prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
+  }
   const releaseTitle = reserveSessionTitle(title);
-
   try {
-    if (agent === "claude") {
-      const session = claudeAgents.start({
-        title,
-        prompt: "",
-        cwd,
-        model: defaults.claudeModel,
-        ...permissions
+    const session = await sessionApplicationService.createSession(providerId, prepared, context);
+    emitEvent("SessionStarted", {
+      session,
+      provider: providerId,
+      source: { type: context.source ?? "application" }
+    });
+    const legacyEvent = {
+      "codex-app-server": "CodexThreadCreated",
+      "claude-sdk": "ClaudeSessionStarted",
+      "codex-pty": "CodexPtySessionStarted",
+      pty: "PtySessionStarted"
+    }[providerId];
+    if (legacyEvent) {
+      emitEvent(legacyEvent, {
+        session,
+        threadId: session.external?.threadId ?? null,
+        source: { type: context.source ?? "application" }
       });
-      emitEvent("ClaudeSessionStarted", { session, source: { type: "feishu" } });
-      return session;
     }
+    if (providerId === "codex-app-server") scheduleProjectToolsetInitialization(cwd);
+    return session;
+  } finally {
+    releaseTitle();
+  }
+}
 
-    const collaborationAgentId = `agent-${randomUUID()}`;
+async function createCodexProviderSession(input = {}) {
+  if (activeCodexThreadCreation) {
+    const error = new Error("Another Codex session is already being created. Wait for it to finish before trying again.");
+    error.code = "SESSION_CREATION_IN_PROGRESS";
+    throw error;
+  }
+  const creationId = randomUUID();
+  activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
+  try {
+    const collaborationAgentId = input.toolHost?.actorId ?? `agent-${randomUUID()}`;
+    const runtime = await resolvedNewCodexRuntimeConfig(input);
+    const permissions = {
+      sandbox: normalizeCodexSandbox(input.sandbox),
+      approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
+    };
+    const started = await codexRuntime.startThread({
+      cwd: input.cwd,
+      ...permissions,
+      model: runtime.model,
+      modelProvider: input.modelProvider,
+      ...(input.toolHost?.providerAttachment ?? collaborationThreadOptions(collaborationAgentId))
+    });
     collaborationCore.registerAgent({
       agentId: collaborationAgentId,
-      name: title,
-      description: `Independent Corptie Agent for ${cwd}.`,
-      // Keep an unbound identity inactive until Codex has actually created and
-      // persisted its thread. A failed thread/start must not leave a discoverable
-      // Agent that can never receive work.
+      name: input.title,
+      description: `Independent Corptie Agent for ${input.cwd}.`,
       status: "inactive",
       capabilities: ["codex-session", "corptie-collaboration"]
     });
-    const runtime = await resolvedNewCodexRuntimeConfig();
-    const started = await codexClient.startThread({
-      cwd,
-      ...permissions,
-      model: runtime.model,
-      ...collaborationThreadOptions(collaborationAgentId)
-    });
-    const turn = await codexClient.startTurn(started.thread.id, "Reply exactly: Ready", {
-      cwd,
+    const prompt = typeof input.prompt === "string" && input.prompt.trim()
+      ? input.prompt.trim()
+      : "Reply exactly: Ready";
+    const turn = await codexRuntime.startTurn(started.thread.id, prompt, {
+      cwd: input.cwd,
       ...codexTurnPermissionOptions({ external: permissions }),
       model: runtime.model,
       reasoningEffort: runtime.reasoningLevel
@@ -1978,9 +2243,9 @@ async function createGatewaySession(input = {}) {
     const session = withCodexSessionPermissions({
       ...mapCodexThreadToSession({
         ...started.thread,
-        preview: title,
-        name: title,
-        cwd,
+        preview: input.title,
+        name: input.title,
+        cwd: input.cwd,
         updatedAt: Date.now() / 1000,
         status: "running",
         source: "corptie",
@@ -1988,7 +2253,7 @@ async function createGatewaySession(input = {}) {
         currentReasoningLevel: runtime.reasoningLevel ?? started.reasoningEffort ?? null,
         activeTurnId: turn.turn?.id ?? null
       }),
-      title,
+      title: input.title,
       status: "running",
       progress: 0.5,
       summary: "Initializing Codex session…",
@@ -1999,61 +2264,330 @@ async function createGatewaySession(input = {}) {
       }
     }, permissions);
     upsertManagedCodexSession(session, collaborationAgentId);
-    emitEvent("CodexThreadCreated", {
-      threadId: started.thread.id,
-      turn: turn.turn,
-      session,
-      source: { type: "feishu" }
-    });
-    scheduleProjectToolsetInitialization(cwd);
     return session;
   } finally {
-    releaseTitle();
+    if (activeCodexThreadCreation?.creationId === creationId) activeCodexThreadCreation = null;
   }
 }
 
-async function getUnifiedSessionSnapshot(sessionId) {
-  const summary = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+async function resumeCodexProviderSession(reference) {
+  const previous = reference.metadata?.session
+    ?? sessionPresentationCache.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) throw new Error("Session not found.");
+  const result = await codexRuntime.resumeThread(
+    reference.providerSessionId,
+    collaborationThreadOptionsForSession(reference.sessionId)
+  );
+  const session = mergeStoredSessionPresentation(
+    mapCodexThreadToSession(result.thread ?? result),
+    previous
+  );
+  upsertManagedCodexSession(session);
+  return session;
+}
 
-  let detail = null;
-  if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    detail = claudeAgents.has(id) ? claudeAgents.detail(id) : ptyAgents.detail(id);
-  } else if (sessionId.startsWith("codex:")) {
-    const threadId = summary.external?.threadId ?? sessionId.slice("codex:".length);
-    try {
-      const result = await codexClient.readThread(threadId, { includeTurns: true });
-      detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
-        result.thread,
-        codexClient.liveItemsForThread(threadId),
-        codexClient.turnDiffsForThread(threadId)
-      ));
-      syncManagedCodexSessionFromDetail(threadId, detail);
-    } catch (error) {
-      const managed = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-      detail = managed
-        ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
-        : store.getDetail(sessionId);
-    }
-  }
+async function deleteCodexProviderSession(reference) {
+  await codexRuntime.deleteThread(reference.providerSessionId);
+  const existed = sessionPresentationCache.delete(reference.sessionId);
+  store.deleteSession(reference.sessionId);
+  return existed;
+}
+
+async function renameCodexProviderSession(reference, title) {
+  const previous = reference.metadata?.session
+    ?? sessionPresentationCache.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) throw new Error("Session not found.");
+  await codexRuntime.setThreadName(reference.providerSessionId, title);
+  const session = { ...previous, title, updatedAt: new Date().toISOString() };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+function updateCodexProviderAvatar(reference, avatarPath) {
+  const previous = reference.metadata?.session
+    ?? sessionPresentationCache.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) throw new Error("Session not found.");
+  const session = { ...previous, avatarPath, updatedAt: new Date().toISOString() };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+async function getUnifiedSessionSnapshot(sessionId) {
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
+
+  const detail = await sessionApplicationService.readSession(sessionId);
+  const publicSessionId = reference.logicalSessionId ?? reference.sessionId;
 
   return {
     ...summary,
     ...(detail ?? {}),
-    id: sessionId,
-    sessionId,
+    id: reference.sessionId,
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    publicSessionId,
     title: preferredSessionTitle(summary, detail),
     cwd: preferredSessionCwd(summary, detail),
     status: detail?.status || summary.status,
     activityStatus: detail?.activityStatus ?? summary.activityStatus ?? null,
-    items: agentWorkQueueItemsForSnapshot(sessionId, detail?.items ?? []),
-    lastEventSequence: store.lastSessionEventSequence(sessionId)
+    items: agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []),
+    lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
   };
+}
+
+function requireSessionReference(sessionId) {
+  const reference = sessionBindingRepository.resolve(sessionId);
+  if (reference?.metadata?.session) return reference;
+  const error = new Error("Session not found.");
+  error.code = "SESSION_NOT_FOUND";
+  throw error;
+}
+
+async function readCodexProviderSession(reference) {
+  const sessionId = reference.sessionId;
+  const threadId = reference.providerSessionId;
+  try {
+    const result = await codexRuntime.readThread(threadId, { includeTurns: true });
+    const detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
+      result.thread,
+      codexRuntime.liveItemsForThread(threadId),
+      codexRuntime.turnDiffsForThread(threadId)
+    ));
+    syncManagedCodexSessionFromDetail(threadId, detail);
+    return detail;
+  } catch (error) {
+    if (reference.metadata?.historical) throw error;
+    const managed = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+    return managed
+      ? createManagedCodexDetail(managed, codexRuntime.liveItemsForThread(threadId), error)
+      : store.getDetail(sessionId);
+  }
+}
+
+async function interruptCodexProviderSession(reference, context = {}) {
+  const summary = context.summary ?? reference.metadata?.session;
+  const activeTurnId = summary?.external?.activeTurnId ?? summary?.rawStatus?.activeTurnId ?? null;
+  if (!activeTurnId) {
+    const error = new Error("Session does not have an active turn to interrupt.");
+    error.code = "NO_ACTIVE_RUN";
+    throw error;
+  }
+  await codexRuntime.interruptTurn(reference.providerSessionId, activeTurnId);
+  const session = {
+    ...summary,
+    status: "cancelled",
+    progress: 1,
+    activityStatus: null,
+    updatedAt: now(),
+    capabilities: { ...(summary?.capabilities ?? {}), canInterrupt: false },
+    external: { ...summary?.external, activeTurnId: null, rawStatus: "cancelled" }
+  };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+function updateCodexProviderConfiguration(reference, updates) {
+  const sessionId = reference.sessionId;
+  const threadId = reference.providerSessionId;
+  const previous = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+  const timestamp = now();
+  const session = previous ?? {
+    id: sessionId,
+    title: `Codex ${threadId.slice(0, 8)}`,
+    agent: "Codex",
+    status: "complete",
+    progress: 1,
+    summary: "Corptie-managed Codex task",
+    capabilities: codexAppServerSessionCapabilities({ canInterrupt: false }),
+    updatedAt: timestamp,
+    accent: "cyan",
+    external: { provider: "codex-app-server", threadId, source: "corptie" }
+  };
+  const nextSession = {
+    ...session,
+    updatedAt: timestamp,
+    capabilities: {
+      ...(session.capabilities ?? {}),
+      canSwitchModel: true,
+      canSwitchReasoning: true
+    },
+    external: {
+      ...session.external,
+      provider: "codex-app-server",
+      threadId,
+      ...updates
+    }
+  };
+  upsertManagedCodexSession(nextSession);
+  return nextSession;
+}
+
+function updateCodexProviderPermissions(reference, permissions) {
+  const previous = reference.metadata?.session
+    ?? sessionPresentationCache.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  const session = withCodexSessionPermissions({
+    ...previous,
+    updatedAt: now()
+  }, permissions);
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+async function respondCodexProviderApproval(reference, input = {}, context = {}) {
+  const summary = context.summary ?? reference.metadata?.session;
+  const approved = input.approved === true;
+  await codexRuntime.respondToApproval(reference.providerSessionId, {
+    approved,
+    optionId: input.optionId
+  });
+  store.clearActiveChoicePrompt(reference.sessionId);
+  const session = {
+    ...summary,
+    status: summary?.status === "blocked" ? "running" : summary?.status,
+    suggestedOptions: null,
+    suggestedPrompt: null,
+    activityStatus: approved ? "Approval sent" : "Approval denied",
+    updatedAt: now()
+  };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+async function manageCodexTurnChanges(reference, turnId, action) {
+  if (action !== "review" && action !== "undo") {
+    throw new Error(`Unsupported turn changes action: ${action}`);
+  }
+  const threadId = reference.providerSessionId;
+  const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
+  const activeRoute = logicalRoute
+    ? await assertWorkspaceRouteUsable({
+        store,
+        logicalSession: logicalRoute,
+        providerThreadId: threadId,
+        allowHistorical: action === "review"
+      })
+    : null;
+  const result = await codexRuntime.readThread(threadId, { includeTurns: true });
+  const cwd = activeRoute?.cwd
+    || result.thread.cwd
+    || sessionPresentationCache.get(`codex:${threadId}`)?.external?.cwd;
+  if (!cwd) throw new Error("The task working directory is unavailable.");
+
+  const changes = safeTurnFileChanges(result.thread, turnId, cwd);
+  const diff = turnDiffFor(threadId, turnId, changes);
+  if (action === "review") {
+    const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
+    const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
+    emitEvent("SessionTurnChangesReviewOpened", {
+      sessionId: reference.sessionId,
+      providerSessionId: threadId,
+      turnId,
+      tool,
+      logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
+      worktreeId: activeRoute?.worktreeId ?? null,
+      routingVersion: activeRoute?.routingVersion ?? null
+    }, { sessionId: reference.sessionId });
+    return {
+      ok: true,
+      tool,
+      logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
+      providerSessionId: threadId,
+      worktreeId: activeRoute?.worktreeId ?? null,
+      routingVersion: activeRoute?.routingVersion ?? null,
+      historical: activeRoute?.historical === true
+    };
+  }
+
+  const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
+  await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
+  await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
+  emitEvent("SessionTurnChangesUndone", {
+    sessionId: reference.sessionId,
+    providerSessionId: threadId,
+    turnId,
+    files: changes.map((change) => change.path),
+    logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
+    worktreeId: activeRoute?.worktreeId ?? null,
+    routingVersion: activeRoute?.routingVersion ?? null
+  }, { sessionId: reference.sessionId });
+  return { ok: true, files: changes.map((change) => change.path) };
+}
+
+async function sendCodexProviderMessage(reference, value, context = {}) {
+  const before = context.before ?? reference.metadata?.session;
+  const options = context.options ?? context;
+  const sessionId = reference.sessionId;
+  const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (workspaceTransitionBlocksWork(logicalRoute)) {
+    const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+  const threadId = logicalRoute?.activeThreadId ?? reference.providerSessionId;
+  const activeRoute = logicalRoute
+    ? await assertWorkspaceRouteUsable({
+        store,
+        logicalSession: logicalRoute,
+        providerThreadId: threadId
+      })
+    : null;
+  bumpChoiceGeneration(sessionId);
+  store.clearActiveChoicePrompt(sessionId);
+  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
+    sessionPresentationCache.get(sessionId) ?? before,
+    logicalRoute
+  ));
+  const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
+  const startingSession = {
+    ...managed,
+    status: "running",
+    progress: 0.5,
+    suggestedOptions: null,
+    activityStatus: "Starting",
+    updatedAt: now(),
+    capabilities: {
+      ...(managed.capabilities ?? {}),
+      canInterrupt: true
+    }
+  };
+  upsertManagedCodexSession(startingSession);
+  emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
+  try {
+    await codexRuntime.resumeThread(threadId, {
+      cwd: activeCwd,
+      runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
+      ...collaborationThreadOptionsForSession(sessionId)
+    });
+    const result = await codexRuntime.startTurn(threadId, value, {
+      cwd: activeCwd,
+      model: managed?.external?.currentModel ?? options.model ?? undefined,
+      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
+      ...codexTurnPermissionOptions(managed)
+    });
+    upsertManagedCodexSession({
+      ...startingSession,
+      activityStatus: "Working",
+      updatedAt: now(),
+      external: {
+        ...managed.external,
+        activeTurnId: result.turn?.id ?? managed.external?.activeTurnId ?? null
+      }
+    });
+    return result;
+  } catch (error) {
+    upsertManagedCodexSession(managed);
+    emitEvent("CodexThreadProgressChanged", { session: managed, threadId, method: "turn/start-failed" });
+    throw error;
+  }
 }
 
 function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
@@ -2152,7 +2686,7 @@ async function getGatewayUsage(sessionId = null) {
     };
   }
 
-  const usage = await codexClient.readAccountRateLimits();
+  const usage = await codexRuntime.readAccountRateLimits();
   return {
     available: true,
     provider: "codex",
@@ -2168,16 +2702,14 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     error.code = "INVALID_MESSAGE";
     throw error;
   }
-  const before = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!before) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+  const reference = requireSessionReference(sessionId);
+  const routedSessionId = reference.sessionId;
+  const publicSessionId = reference.logicalSessionId ?? routedSessionId;
+  const before = reference.metadata.session;
 
   const confirmationReply = collaborationConfirmationReply(value);
   const pendingConfirmation = confirmationReply
-    ? collaborationCore.pendingTaskConfirmationForSession(sessionId)
+    ? collaborationCore.pendingTaskConfirmationForSession(routedSessionId)
     : null;
   if (pendingConfirmation) {
     const confirmation = await resolveCollaborationConfirmation(
@@ -2185,108 +2717,55 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       confirmationReply === "confirm",
       source
     );
-    return { accepted: true, mode: "collaboration-confirmation", sessionId, collaborationConfirmation: confirmation };
+    return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
   }
 
-  if (isClearCommand(value) && sessionId.startsWith("codex:")) {
-    return clearCodexAppServerSession(sessionId, before, source);
-  }
   if (isClearCommand(value) && before.external?.provider !== "codex-pty") {
-    const error = new Error("/clear is only available for Codex sessions.");
-    error.code = "UNSUPPORTED_COMMAND";
-    throw error;
+    const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
+    if (result?.cleared === true) return result;
+    const session = {
+      ...result,
+      id: routedSessionId
+    };
+    emitEvent("SessionCleared", {
+      previousSessionId: routedSessionId,
+      session,
+      source
+    }, { sessionId: routedSessionId, source });
+    return {
+      accepted: true,
+      cleared: true,
+      previousSessionId: routedSessionId,
+      sessionId: publicSessionId,
+      legacySessionId: routedSessionId,
+      session
+    };
   }
 
-  if (sessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
+  if (routedSessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
     return enqueueUserAgentWork(before, value, source);
   }
-  if (sessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
+  if (routedSessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
     const error = new Error("Target Session became busy before queued work started.");
     error.code = "SESSION_BUSY";
     throw error;
   }
 
-  let result;
-  if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    bumpChoiceGeneration(sessionId);
+  if (routedSessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(routedSessionId);
+    bumpChoiceGeneration(routedSessionId);
     store.clearActiveChoicePrompt(id);
-    if (claudeAgents.has(id)) {
-      result = await claudeAgents.send(id, value);
-    } else {
-      ptyAgents.write(id, value, { submit: options.submit !== false });
-      result = ptyAgents.get(id) ? ptyAgents.detail(id, { flush: false }) : store.getDetail(id);
-    }
-  } else if (sessionId.startsWith("codex:")) {
-    const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
-    if (workspaceTransitionBlocksWork(logicalRoute)) {
-      const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
-      error.code = "SESSION_BUSY";
-      throw error;
-    }
-    const threadId = logicalRoute?.activeThreadId ?? sessionId.slice("codex:".length);
-    const activeRoute = logicalRoute
-      ? await assertWorkspaceRouteUsable({
-          store,
-          logicalSession: logicalRoute,
-          providerThreadId: threadId
-        })
-      : null;
-    bumpChoiceGeneration(sessionId);
-    store.clearActiveChoicePrompt(sessionId);
-    const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-      managedCodexSessions.get(sessionId) ?? before,
-      logicalRoute
-    ));
-    const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
-    const startingSession = {
-      ...managed,
-      status: "running",
-      progress: 0.5,
-      suggestedOptions: null,
-      activityStatus: "Starting",
-      updatedAt: now(),
-      capabilities: {
-        ...(managed.capabilities ?? {}),
-        canInterrupt: true
-      }
-    };
-    upsertManagedCodexSession(startingSession);
-    emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
-    try {
-      await codexClient.resumeThread(threadId, {
-        cwd: activeCwd,
-        runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
-        ...collaborationThreadOptionsForSession(sessionId)
-      });
-      result = await codexClient.startTurn(threadId, value, {
-        cwd: activeCwd,
-        model: managed?.external?.currentModel ?? options.model ?? undefined,
-        reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
-        ...codexTurnPermissionOptions(managed)
-      });
-      upsertManagedCodexSession({
-        ...startingSession,
-        activityStatus: "Working",
-        updatedAt: now(),
-        external: {
-          ...managed.external,
-          activeTurnId: result.turn?.id ?? managed.external?.activeTurnId ?? null
-        }
-      });
-    } catch (error) {
-      upsertManagedCodexSession(managed);
-      emitEvent("CodexThreadProgressChanged", { session: managed, threadId, method: "turn/start-failed" });
-      throw error;
-    }
-  } else {
-    const error = new Error("Session provider does not support messages.");
-    error.code = "UNSUPPORTED_SESSION";
-    throw error;
   }
+  const result = await sessionApplicationService.sendMessage(sessionId, value, {
+    before,
+    options,
+    source,
+    submit: options.submit
+  });
 
   emitEvent("SessionUserMessageCreated", {
-    sessionId,
+    sessionId: routedSessionId,
+    logicalSessionId: reference.logicalSessionId,
     message: {
       id: source.messageId || randomUUID(),
       type: "userMessage",
@@ -2295,12 +2774,17 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       createdAt: now()
     },
     source
-  }, { sessionId, source });
-  emitEvent("SessionRunStarted", { sessionId, source }, { sessionId, source });
+  }, { sessionId: routedSessionId, source });
+  emitEvent("SessionRunStarted", {
+    sessionId: routedSessionId,
+    logicalSessionId: reference.logicalSessionId,
+    source
+  }, { sessionId: routedSessionId, source });
   return {
     accepted: true,
     cleared: isClearCommand(value) && before.external?.provider === "codex-pty",
-    sessionId,
+    sessionId: publicSessionId,
+    legacySessionId: routedSessionId,
     session: isClearCommand(value) && before.external?.provider === "codex-pty" ? before : undefined,
     result
   };
@@ -2329,13 +2813,13 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   const title = session.title || "Codex";
   const releaseTitle = reserveSessionTitle(title, sessionId);
   try {
-  const started = await codexClient.startThread({
+  const started = await codexRuntime.startThread({
     cwd,
     ...permissions,
     model,
     ...collaborationThreadOptionsForSession(sessionId)
   });
-  await codexClient.setThreadName(started.thread.id, title).catch((error) => {
+  await codexRuntime.setThreadName(started.thread.id, title).catch((error) => {
     console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
   });
 
@@ -2370,7 +2854,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
       activeTurnId: null
     }
   }, permissions);
-  managedCodexSessions.delete(sessionId);
+  sessionPresentationCache.delete(sessionId);
   store.deleteSession(sessionId);
   const logicalRoute = await ensureLogicalRouteForCodexSession(replacement, started);
   replacement = sessionWithLogicalWorkspace(replacement, logicalRoute);
@@ -2561,7 +3045,7 @@ async function inspectCollaborationSession(sessionId) {
   if (!String(sessionId).startsWith("codex:")) return "missing";
   const threadId = sessionId.slice("codex:".length);
   let session = listGatewaySessions().find((item) => item.id === sessionId)
-    ?? managedCodexSessions.get(sessionId)
+    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
 
   // A process restart can leave the persisted presentation at `running` even
@@ -2569,7 +3053,7 @@ async function inspectCollaborationSession(sessionId) {
   // against App Server before deciding that a durable collaboration Delivery
   // must remain queued.
   try {
-    const result = await codexClient.readThread(threadId, { includeTurns: true });
+    const result = await codexRuntime.readThread(threadId, { includeTurns: true });
     const live = mapCodexThreadToSession(result.thread);
     const presentation = session
       ? {
@@ -2601,7 +3085,7 @@ async function inspectCollaborationSession(sessionId) {
 
 async function resumeCollaborationSession(sessionId) {
   if (!String(sessionId).startsWith("codex:")) throw new Error("Only Codex Sessions can be resumed for collaboration.");
-  await codexClient.resumeThread(
+  await codexRuntime.resumeThread(
     sessionId.slice("codex:".length),
     collaborationThreadOptionsForSession(sessionId)
   );
@@ -2624,98 +3108,32 @@ async function startCollaborationTurn(sessionId, text, metadata = {}) {
 }
 
 async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
-  const summary = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  let session;
-  if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    session = claudeAgents.has(id) ? await claudeAgents.interrupt(id) : ptyAgents.interrupt(id);
-  } else if (sessionId.startsWith("codex:")) {
-    const threadId = sessionId.slice("codex:".length);
-    const activeTurnId = summary.external?.activeTurnId ?? summary.rawStatus?.activeTurnId ?? null;
-    if (!activeTurnId) {
-      const error = new Error("Session does not have an active turn to interrupt.");
-      error.code = "NO_ACTIVE_RUN";
-      throw error;
-    }
-    await codexClient.interruptTurn(threadId, activeTurnId);
-    session = {
-      ...summary,
-      status: "cancelled",
-      progress: 1,
-      activityStatus: null,
-      updatedAt: now(),
-      capabilities: { ...(summary.capabilities ?? {}), canInterrupt: false },
-      external: { ...summary.external, activeTurnId: null, rawStatus: "cancelled" }
-    };
-    upsertManagedCodexSession(session);
-  } else {
-    const error = new Error("Session provider does not support interruption.");
-    error.code = "UNSUPPORTED_SESSION";
-    throw error;
-  }
-  emitEvent("SessionRunInterrupted", { sessionId, session, source }, { sessionId, source });
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
+  const session = await sessionApplicationService.interrupt(sessionId, { summary, source });
+  emitEvent("SessionRunInterrupted", {
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    session,
+    source
+  }, { sessionId: reference.sessionId, source });
   return session;
 }
 
 async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
-  const summary = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
 
   const approved = input.approved === true;
-  let session;
-  if (sessionId.startsWith("codex:")) {
-    const threadId = sessionId.slice("codex:".length);
-    await codexClient.respondToApproval(threadId, {
-      approved,
-      optionId: input.optionId
-    });
-    store.clearActiveChoicePrompt(sessionId);
-    session = {
-      ...summary,
-      status: summary.status === "blocked" ? "running" : summary.status,
-      suggestedOptions: null,
-      suggestedPrompt: null,
-      activityStatus: approved ? "Approval sent" : "Approval denied",
-      updatedAt: now()
-    };
-    upsertManagedCodexSession(session);
-  } else if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    const isClaude = claudeAgents.has(id) || summary.external?.provider === "claude-sdk";
-    if (isClaude) {
-      session = claudeAgents.respondToChoice(id, {
-        choiceId: input.choiceId,
-        optionId: input.optionId,
-        optionIndex: input.optionIndex
-      });
-    } else if (input.itemType === "approval") {
-      session = ptyAgents.respondToCodexApproval(id, {
-        approved,
-        optionId: input.optionId,
-        optionIndex: input.optionIndex
-      });
-    } else {
-      session = ptyAgents.respondToPtyChoice(id, {
-        optionId: input.optionId,
-        optionIndex: input.optionIndex
-      });
-    }
-  } else {
-    const error = new Error("Session provider does not support approvals.");
-    error.code = "UNSUPPORTED_SESSION";
-    throw error;
-  }
+  const session = await sessionApplicationService.respondToApproval(sessionId, input, { summary, source });
 
-  emitEvent("SessionApprovalResponded", { sessionId, approved, session, source }, { sessionId, source });
+  emitEvent("SessionApprovalResponded", {
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    approved,
+    session,
+    source
+  }, { sessionId: reference.sessionId, source });
   return session;
 }
 
@@ -2735,10 +3153,106 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
 }
 
 function unifiedErrorStatus(error) {
-  if (error.code === "SESSION_NOT_FOUND") return 404;
-  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND"].includes(error.code)) return 409;
+  if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND"].includes(error.code)) return 404;
+  if (error.code === "INVALID_PROJECT_ACTION") return 400;
+  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
+}
+
+function resolveProjectContext(projectId) {
+  const repository = store.getGitRepository(projectId);
+  if (!repository) return null;
+  const worktrees = store.listGitWorktrees(projectId);
+  const main = worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+  if (!main?.path) return null;
+  return {
+    id: repository.id,
+    mainPath: main.canonicalPath || main.path,
+    mainWorkspaceId: main.worktreeId
+  };
+}
+
+async function performProjectDevelopmentServiceAction(project, action, input = {}) {
+  if (!["initialize", "update", "profile", "start", "restart", "stop"].includes(action)) {
+    const error = new Error(`Unsupported development service action: ${action}`);
+    error.code = "INVALID_PROJECT_ACTION";
+    throw error;
+  }
+  if (action === "initialize" || action === "update") {
+    projectToolsetInitializer.schedule(project.mainPath, { force: action === "update" });
+    return { scheduled: true };
+  }
+  if (action === "profile") {
+    const profileId = String(input.profileId ?? "").trim();
+    if (!profileId) throw new Error("A Corptie service profile is required.");
+    return projectToolsets.selectProfile(project.mainPath, profileId);
+  }
+  if (action === "start" || action === "restart") {
+    return rebuildAndRestartProjectService(project.mainPath);
+  }
+  return projectToolsets.run(project.mainPath, "stop");
+}
+
+async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
+  if (!["commit-message", "commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
+    const error = new Error(`Unsupported workspace action: ${action}`);
+    error.code = "INVALID_PROJECT_ACTION";
+    throw error;
+  }
+  const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
+  const workspace = status.worktrees.find((candidate) => candidate.worktreeId === workspaceId);
+  if (!workspace || workspace.availability !== "available") {
+    const error = new Error("The selected workspace is unavailable or does not belong to this Project.");
+    error.code = "WORKSPACE_NOT_FOUND";
+    throw error;
+  }
+  if (action === "commit-message") {
+    if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
+    const commitMessage = await generateUnownedWorktreeCommitMessage(null, workspace.path, workspace);
+    return { commitMessage };
+  }
+  if (action === "restart") {
+    const toolset = await projectToolsets.inspect(workspace.path);
+    if (!toolset.configured) {
+      throw new Error("Configure the Corptie Scripts Tools Set before restarting from this workspace.");
+    }
+    return rebuildAndRestartProjectService(workspace.path, workspace.path);
+  }
+  if (action === "synchronize") {
+    return gitWorkspaces.synchronizeWorktreeWithMainForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      sourceWorktreeId: workspaceId
+    });
+  }
+  if (action === "delete") {
+    return gitWorkspaces.removeWorktreeForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      sourceWorktreeId: workspaceId,
+      deleteBranch: input.deleteBranch !== false,
+      forceDeleteUnmerged: input.forceDeleteUnmerged === true,
+      acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
+      confirmedBranchName: input.confirmedBranchName
+    });
+  }
+  await resolveProjectCommitProtection(workspace, input);
+  if (action === "commit") {
+    return gitWorkspaces.commitWorktreeChangesForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      sourceWorktreeId: workspaceId,
+      commitMessage: input.commitMessage
+    });
+  }
+  return gitWorkspaces.mergeWorktreeIntoMainForProject({
+    repositoryId: project.id,
+    workingDirectory: project.mainPath,
+    sourceWorktreeId: workspaceId,
+    commitMessage: input.commitMessage,
+    synchronizeSource: input.synchronizeSource === true
+  });
 }
 
 async function sessionDeletionPlan(sessionId) {
@@ -2770,7 +3284,7 @@ async function sessionDeletionPlan(sessionId) {
 }
 
 async function sessionWorkspaceRecoveryStatus(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
   if (!session || !logical?.activeBinding || !logical.repositoryId) {
     const error = new Error("Session workspace route not found.");
@@ -2820,20 +3334,21 @@ async function sessionWorkspaceRecoveryStatus(sessionId) {
   };
 }
 
-async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-  if (!session || session.external?.provider !== "codex-app-server") {
-    const error = new Error("Codex session not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  const logical = await ensureLogicalRouteForCodexSession(session);
-  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+async function switchCodexProviderWorkspace(reference, input = {}) {
+  const sessionId = reference.sessionId;
+  const session = reference.metadata?.session
+    ?? sessionPresentationCache.get(sessionId)
+    ?? store.getSession(sessionId);
+  if (!session) throw new Error("Session not found.");
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? await ensureLogicalRouteForCodexSession(session);
+  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
   const activeTurnId = session.external?.activeTurnId ?? null;
-  const result = await codexWorkspaceTransitions.switchWorkspace({
-    transitionId,
+  const result = await workspaceTransitionManager.switchWorkspace({
+    transitionId: input.transitionId,
     logicalSessionId: logical.logicalSessionId,
-    targetWorktreeId,
+    targetWorktreeId: input.targetWorkspaceId,
     activeTurnId,
     lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
     ...collaborationThreadOptionsForSession(sessionId)
@@ -2848,15 +3363,46 @@ async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId 
   return result;
 }
 
-async function generateSessionCommitMessage(sessionId, plan) {
-  const session = listGatewaySessions().find((item) => item.id === sessionId)
-    ?? managedCodexSessions.get(sessionId)
+async function restartCodexProviderSession(reference) {
+  const sessionId = reference.sessionId;
+  const session = reference.metadata?.session
+    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
   if (!session) throw new Error("Session not found.");
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  const threadId = logical?.activeThreadId ?? sessionId.slice("codex:".length);
-  const liveThread = await codexClient.readThread(threadId, { includeTurns: true });
-  if (sessionHasActiveRun(mapCodexThreadToSession(liveThread.thread))) {
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? await ensureLogicalRouteForCodexSession(session);
+  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
+  const result = await workspaceTransitionManager.restartSession({
+    transitionId: `session-restart:${randomUUID()}`,
+    logicalSessionId: logical.logicalSessionId,
+    activeTurnId: session.external?.activeTurnId ?? null,
+    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+    ...collaborationThreadOptionsForSession(sessionId)
+  });
+  emitEvent(
+    result.status === "waitingForTurn" ? "SessionRestartWaiting" : "SessionRestartCompleted",
+    { sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
+    { sessionId }
+  );
+  return result;
+}
+
+async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined) {
+  return sessionWorkspaceCoordinator.switchWorkspace(sessionId, {
+    targetWorkspaceId: targetWorktreeId,
+    transitionId
+  });
+}
+
+async function generateSessionCommitMessage(sessionId, plan) {
+  const reference = await sessionApplicationService.referenceFor(sessionId);
+  const session = await sessionApplicationService.readSession(sessionId);
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  if (!logical?.activeBinding) throw new Error("The Session no longer has an active workspace route.");
+  if (sessionHasActiveRun(session)) {
     const error = new Error("The Session is busy. Wait for its current turn before merging its worktree.");
     error.code = "SESSION_BUSY";
     throw error;
@@ -2869,16 +3415,17 @@ async function generateSessionCommitMessage(sessionId, plan) {
   const activeRoute = await assertWorkspaceRouteUsable({
     store,
     logicalSession: logical,
-    providerThreadId: threadId
+    providerThreadId: reference.providerSessionId
   });
-  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
   const cwd = activeRoute.cwd;
-  const result = await codexClient.runEphemeralPrompt({
+  const result = await backgroundAgentService.run({
+    purpose: "commit-message",
     cwd,
-    runtimeWorkspaceRoots: [cwd],
+    allowedRoots: [cwd],
     prompt: sessionCommitMessagePrompt(plan),
-    model: managed.external?.currentModel ?? undefined,
-    reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
+    preferredProviderId: reference.providerId,
+    preferredModel: session.external?.currentModel ?? undefined,
+    preferredReasoning: session.external?.currentReasoningLevel ?? undefined,
     timeoutMs: 120_000
   });
   const message = sanitizeSessionCommitMessage(result.text);
@@ -2887,18 +3434,16 @@ async function generateSessionCommitMessage(sessionId, plan) {
 }
 
 async function generateUnownedWorktreeCommitMessage(requestingSessionId, cwd, plan) {
-  const session = listGatewaySessions().find((item) => item.id === requestingSessionId)
-    ?? managedCodexSessions.get(requestingSessionId)
-    ?? store.getSession(requestingSessionId);
-  if (!session) throw new Error("The requesting Session no longer exists.");
-  const logical = store.getLogicalSessionByLegacySessionId(requestingSessionId);
-  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
-  const result = await codexClient.runEphemeralPrompt({
+  const reference = requestingSessionId ? sessionBindingRepository.resolve(requestingSessionId) : null;
+  const session = reference?.metadata?.session ?? null;
+  const result = await backgroundAgentService.run({
+    purpose: "commit-message",
     cwd,
-    runtimeWorkspaceRoots: [cwd],
+    allowedRoots: [cwd],
     prompt: sessionCommitMessagePrompt(plan),
-    model: managed.external?.currentModel ?? undefined,
-    reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
+    preferredProviderId: reference?.providerId,
+    preferredModel: session?.external?.currentModel ?? undefined,
+    preferredReasoning: session?.external?.currentReasoningLevel ?? undefined,
     timeoutMs: 120_000
   });
   const message = sanitizeSessionCommitMessage(result.text);
@@ -2919,8 +3464,11 @@ async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
 }
 
 function projectWorkingDirectoryForSession(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  const reference = requireSessionReference(sessionId);
+  const session = reference.metadata.session;
+  const logical = reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
   const cwd = logical?.activeBinding?.boundCwd ?? session?.external?.cwd ?? session?.cwd;
   if (!cwd) {
     const error = new Error("The Session is not attached to a local project directory.");
@@ -2938,6 +3486,10 @@ function scheduleProjectToolsetInitialization(cwd) {
 
 async function projectToolsetStatus(sessionId) {
   const cwd = projectWorkingDirectoryForSession(sessionId);
+  return projectToolsetStatusForPath(cwd);
+}
+
+async function projectToolsetStatusForPath(cwd) {
   const toolset = await projectToolsets.inspect(cwd);
   if (toolset.requiresUpdate && toolset.manifestConfigured) {
     const legacySource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
@@ -3076,14 +3628,11 @@ async function rebuildAndRestartProjectService(workingDirectory, executionRoot =
 }
 
 async function projectWorktreeStatus(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-  if (!session) {
-    const error = new Error("Session not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId)
-    ?? await ensureLogicalRouteForCodexSession(session);
+  const reference = requireSessionReference(sessionId);
+  const session = reference.metadata.session;
+  const logical = (reference.logicalSessionId ? store.getLogicalSession(reference.logicalSessionId) : null)
+    ?? store.getLogicalSessionByLegacySessionId(reference.sessionId)
+    ?? await ensureLogicalRouteForProviderSession(session, reference.providerId);
   const [project, runtime, gitHubPush] = await Promise.all([
     gitWorkspaces.projectStatus(logical.logicalSessionId),
     projectToolsetStatus(sessionId),
@@ -3208,15 +3757,7 @@ async function prepareProjectWorktreeCommit(sessionId, sourceWorktreeId) {
 }
 
 async function prepareGitHubPush(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-  if (!session) {
-    const error = new Error("Session not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  if (!String(sessionId).startsWith("codex:")) {
-    throw new Error("Automatic commit-message generation is currently available only for Codex Sessions.");
-  }
+  await sessionApplicationService.referenceFor(sessionId);
   return gitHubPushes.prepare({
     sessionId,
     workingDirectory: projectWorkingDirectoryForSession(sessionId)
@@ -3266,7 +3807,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   }
   for (const binding of source.sessions) {
     const session = binding.sessionId
-      ? managedCodexSessions.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+      ? sessionPresentationCache.get(binding.sessionId) ?? store.getSession(binding.sessionId)
       : null;
     if (sessionHasActiveRun(session)) {
       const error = new Error(`Session ${session.title || binding.sessionId} is busy. Wait for it before completing the worktree.`);
@@ -3296,7 +3837,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   const deletedSessionIds = [];
   for (const binding of source.sessions) {
     if (!binding.sessionId) continue;
-    managedCodexSessions.delete(binding.sessionId);
+    sessionPresentationCache.delete(binding.sessionId);
     collaborationCore.deactivateAgentForSession(binding.sessionId);
     store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
     store.deleteSession(binding.sessionId);
@@ -3350,7 +3891,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   if (operations.deleteSessions) {
     for (const binding of source.sessions) {
       const session = binding.sessionId
-        ? managedCodexSessions.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+        ? sessionPresentationCache.get(binding.sessionId) ?? store.getSession(binding.sessionId)
         : null;
       if (sessionHasActiveRun(session)) {
         const error = new Error(`Session ${session?.title || binding.sessionId} is busy. Wait for it before deleting associated Sessions.`);
@@ -3404,7 +3945,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   if (operations.deleteSessions) {
     for (const binding of source.sessions) {
       if (!binding.sessionId) continue;
-      managedCodexSessions.delete(binding.sessionId);
+      sessionPresentationCache.delete(binding.sessionId);
       collaborationCore.deactivateAgentForSession(binding.sessionId);
       store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
       store.deleteSession(binding.sessionId);
@@ -3477,47 +4018,17 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/codex/models") {
-    loadCodexModels({ refresh: url.searchParams.get("refresh") === "true" })
-      .then((models) => {
-        sendJson(response, 200, models);
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "codex-cli" });
-      });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/claude/models") {
-    loadClaudeModels({ refresh: url.searchParams.get("refresh") === "true" })
-      .then((models) => {
-        sendJson(response, 200, models);
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-      });
-    return;
-  }
-
-  const codexSessionMatch = url.pathname.match(/^\/codex\/sessions\/([^/]+)$/);
-  if (request.method === "GET" && codexSessionMatch) {
-    const sessionId = decodeURIComponent(codexSessionMatch[1]).trim();
-    findCodexRolloutBySessionId(sessionId)
-      .then((match) => {
-        if (!match) {
-          sendJson(response, 404, { error: "Codex session not found" });
-          return;
-        }
-        sendJson(response, 200, {
-          id: match.id,
-          cwd: match.cwd ?? null,
-          rolloutPath: match.path,
-          timestampMs: match.timestampMs
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "codex-rollout" });
-      });
+  const providerModelsMatch = url.pathname.match(/^\/providers\/([^/]+)\/models$/);
+  if (request.method === "GET" && providerModelsMatch) {
+    const providerId = decodeURIComponent(providerModelsMatch[1]);
+    Promise.resolve(sessionApplicationService.listModels(providerId, {
+      refresh: url.searchParams.get("refresh") === "true"
+    }))
+      .then((models) => sendJson(response, 200, models))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
@@ -3535,7 +4046,7 @@ function route(request, response) {
         const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
         const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
         if (codexBackendChanged || codexProxyChanged) {
-          await codexClient.close();
+          await codexRuntime.close();
         }
         return settings;
       })
@@ -3724,13 +4235,27 @@ function route(request, response) {
   const sessionEventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && sessionEventsMatch) {
     const sessionId = decodeURIComponent(sessionEventsMatch[1]);
-    const after = Number(url.searchParams.get("after") || 0);
-    const limit = Number(url.searchParams.get("limit") || 200);
-    sendJson(response, 200, {
-      sessionId,
-      events: store.listSessionEvents(sessionId, after, limit),
-      lastEventSequence: store.lastSessionEventSequence(sessionId)
-    });
+    const acceptsStream = String(request.headers.accept ?? "").includes("text/event-stream")
+      || url.searchParams.get("stream") === "true";
+    sessionApplicationService.referenceFor(sessionId)
+      .then((reference) => {
+        if (acceptsStream) {
+          streamCanonicalSessionSnapshots(request, response, sessionId);
+          return;
+        }
+        const after = Number(url.searchParams.get("after") || 0);
+        const limit = Number(url.searchParams.get("limit") || 200);
+        sendJson(response, 200, {
+          sessionId: reference.logicalSessionId ?? reference.sessionId,
+          legacySessionId: reference.sessionId,
+          events: store.listSessionEvents(reference.sessionId, after, limit),
+          lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
+        });
+      })
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
@@ -3763,83 +4288,44 @@ function route(request, response) {
     return;
   }
 
+  const sessionApprovalMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/approve$/);
+  if (request.method === "POST" && sessionApprovalMatch) {
+    const sessionId = decodeURIComponent(sessionApprovalMatch[1]);
+    readJson(request)
+      .then((input) => respondUnifiedSessionApproval(
+        sessionId,
+        input,
+        input.source && typeof input.source === "object" ? input.source : { type: "desktop" }
+      ))
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionModelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/model$/);
   if (request.method === "POST" && sessionModelMatch) {
     const sessionId = decodeURIComponent(sessionModelMatch[1]);
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const model = typeof input.model === "string" ? input.model.trim() : "";
         if (!model) {
           sendJson(response, 400, { error: "Model is required" });
           return;
         }
-
-        if (sessionId.startsWith("pty:")) {
-          const normalizedId = normalizeSessionId(sessionId);
-          if (claudeAgents.has(normalizedId)) {
-            claudeAgents.switchModel(normalizedId, model)
-              .then((session) => {
-                emitEvent("ClaudeSessionModelChanged", { sessionId, model });
-                sendJson(response, 202, { session, model });
-              })
-              .catch((error) => {
-                sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-              });
-            return;
-          }
-          const session = ptyAgents.switchModel(normalizedId, model);
-          emitEvent("PtySessionModelChanged", { sessionId, model });
-          sendJson(response, 202, { session, model });
-          return;
-        }
-
-        if (sessionId.startsWith("codex:")) {
-          const threadId = sessionId.slice("codex:".length);
-          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-          const now = new Date().toISOString();
-          const session = previous ?? {
-            id: sessionId,
-            title: `Codex ${threadId.slice(0, 8)}`,
-            agent: "Codex",
-            status: "complete",
-            progress: 1,
-            summary: "Corptie-managed Codex task",
-            capabilities: {
-              ...codexAppServerSessionCapabilities({ canInterrupt: false })
-            },
-            updatedAt: now,
-            accent: "cyan",
-            external: {
-              provider: "codex-app-server",
-              threadId,
-              source: "corptie"
-            }
-          };
-          const nextSession = {
-            ...session,
-            updatedAt: now,
-            capabilities: {
-              ...(session.capabilities ?? {}),
-              canSwitchModel: true,
-              canSwitchReasoning: true
-            },
-            external: {
-              ...session.external,
-              provider: "codex-app-server",
-              threadId,
-              currentModel: model
-            }
-          };
-          upsertManagedCodexSession(nextSession);
-          emitEvent("CodexThreadModelChanged", { threadId, model });
-          sendJson(response, 202, { session: nextSession, model });
-          return;
-        }
-
-        sendJson(response, 404, { error: "Session does not support model switching" });
+        const reference = requireSessionReference(sessionId);
+        const session = await sessionApplicationService.switchModel(sessionId, model);
+        emitEvent("SessionModelChanged", {
+          sessionId: reference.sessionId,
+          logicalSessionId: reference.logicalSessionId,
+          model
+        }, { sessionId: reference.sessionId });
+        sendJson(response, 202, { session, model });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message });
+        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code });
       });
     return;
   }
@@ -3848,68 +4334,24 @@ function route(request, response) {
   if (request.method === "POST" && sessionReasoningMatch) {
     const sessionId = decodeURIComponent(sessionReasoningMatch[1]);
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const reasoningLevel = typeof input.reasoningLevel === "string" ? input.reasoningLevel.trim() : "";
         if (!reasoningLevel) {
           sendJson(response, 400, { error: "Reasoning level is required" });
           return;
         }
 
-        if (sessionId.startsWith("pty:")) {
-          const normalizedId = normalizeSessionId(sessionId);
-          const session = ptyAgents.switchReasoning(normalizedId, reasoningLevel);
-          emitEvent("PtySessionReasoningChanged", { sessionId, reasoningLevel });
-          sendJson(response, 202, { session, reasoningLevel });
-          return;
-        }
-
-        if (sessionId.startsWith("codex:")) {
-          const threadId = sessionId.slice("codex:".length);
-          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-          const now = new Date().toISOString();
-          const session = previous ?? {
-            id: sessionId,
-            title: `Codex ${threadId.slice(0, 8)}`,
-            agent: "Codex",
-            status: "complete",
-            progress: 1,
-            summary: "Corptie-managed Codex task",
-            capabilities: {
-              ...codexAppServerSessionCapabilities({ canInterrupt: false })
-            },
-            updatedAt: now,
-            accent: "cyan",
-            external: {
-              provider: "codex-app-server",
-              threadId,
-              source: "corptie"
-            }
-          };
-          const nextSession = {
-            ...session,
-            updatedAt: now,
-            capabilities: {
-              ...(session.capabilities ?? {}),
-              canSwitchModel: true,
-              canSwitchReasoning: true
-            },
-            external: {
-              ...session.external,
-              provider: "codex-app-server",
-              threadId,
-              currentReasoningLevel: reasoningLevel
-            }
-          };
-          upsertManagedCodexSession(nextSession);
-          emitEvent("CodexThreadReasoningChanged", { threadId, reasoningLevel });
-          sendJson(response, 202, { session: nextSession, reasoningLevel });
-          return;
-        }
-
-        sendJson(response, 404, { error: "Session does not support reasoning switching" });
+        const reference = requireSessionReference(sessionId);
+        const session = await sessionApplicationService.switchReasoning(sessionId, reasoningLevel);
+        emitEvent("SessionReasoningChanged", {
+          sessionId: reference.sessionId,
+          logicalSessionId: reference.logicalSessionId,
+          reasoningLevel
+        }, { sessionId: reference.sessionId });
+        sendJson(response, 202, { session, reasoningLevel });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message });
+        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code });
       });
     return;
   }
@@ -3918,7 +4360,7 @@ function route(request, response) {
   if (request.method === "POST" && sessionPermissionsMatch) {
     const sessionId = decodeURIComponent(sessionPermissionsMatch[1]);
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const sandbox = normalizeCodexSandbox(input.sandbox, "");
         const approvalPolicy = normalizeCodexApprovalPolicy(input.approvalPolicy, "");
         if (!["workspace-write", "danger-full-access", "read-only"].includes(input.sandbox)) {
@@ -3930,33 +4372,22 @@ function route(request, response) {
           return;
         }
 
-        if (sessionId.startsWith("codex:")) {
-          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-          if (!previous || previous.external?.provider !== "codex-app-server") {
-            sendJson(response, 404, { error: "Session does not support permission changes" });
-            return;
-          }
-          const nextSession = withCodexSessionPermissions({
-            ...previous,
-            updatedAt: now()
-          }, { sandbox, approvalPolicy });
-          upsertManagedCodexSession(nextSession);
-          emitEvent("CodexThreadPermissionsChanged", {
-            sessionId,
-            threadId: nextSession.external?.threadId,
-            sandbox,
-            approvalPolicy
-          });
-          sendJson(response, 202, { session: nextSession, sandbox, approvalPolicy });
-          return;
-        }
-
-        sendJson(response, 409, {
-          error: "This session's permissions are fixed by its launch command and cannot be changed while it exists."
-        });
+        const reference = await sessionApplicationService.referenceFor(sessionId);
+        const session = await sessionApplicationService.updatePermissions(
+          sessionId,
+          { sandbox, approvalPolicy },
+          { source: { type: "desktop" } }
+        );
+        emitEvent("SessionPermissionsChanged", {
+          sessionId: reference.sessionId,
+          logicalSessionId: reference.logicalSessionId,
+          sandbox,
+          approvalPolicy
+        }, { sessionId: reference.sessionId });
+        sendJson(response, 202, { session, sandbox, approvalPolicy });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message });
+        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null });
       });
     return;
   }
@@ -4010,158 +4441,112 @@ function route(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/providers") {
+    sendJson(response, 200, { providers: agentProviderRegistry.descriptors() });
+    return;
+  }
+
+  const projectWorkspacesMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspaces$/);
+  const projectWorkspaceActionMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
+  );
+  const projectDevelopmentServiceMatch = url.pathname.match(/^\/projects\/([^/]+)\/development-service$/);
+  const projectDevelopmentServiceActionMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/development-service\/actions\/([^/]+)$/
+  );
+  const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+  if (request.method === "GET" && projectWorkspacesMatch) {
+    const projectId = decodeURIComponent(projectWorkspacesMatch[1]);
+    projectApplicationService.listWorkspaces(projectId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+  if (request.method === "POST" && projectWorkspaceActionMatch) {
+    const projectId = decodeURIComponent(projectWorkspaceActionMatch[1]);
+    const workspaceId = decodeURIComponent(projectWorkspaceActionMatch[2]);
+    const action = decodeURIComponent(projectWorkspaceActionMatch[3]);
+    readJson(request)
+      .then((input) => projectApplicationService.runWorkspaceAction(projectId, workspaceId, action, input))
+      .then((result) => {
+        emitEvent("ProjectWorkspaceChanged", { projectId, workspaceId, action, result });
+        sendJson(response, 200, result);
+      })
+      .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
+        error: error.message,
+        code: error.code,
+        unmergedCommitCount: error.unmergedCommitCount,
+        branchName: error.branchName
+      }));
+    return;
+  }
+  if (request.method === "GET" && projectDevelopmentServiceMatch) {
+    const projectId = decodeURIComponent(projectDevelopmentServiceMatch[1]);
+    projectApplicationService.readDevelopmentService(projectId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+  if (request.method === "POST" && projectDevelopmentServiceActionMatch) {
+    const projectId = decodeURIComponent(projectDevelopmentServiceActionMatch[1]);
+    const action = decodeURIComponent(projectDevelopmentServiceActionMatch[2]);
+    readJson(request)
+      .then((input) => projectApplicationService.runDevelopmentServiceAction(projectId, action, input))
+      .then((result) => {
+        emitEvent("ProjectDevelopmentServiceChanged", { projectId, action, result });
+        sendJson(response, action === "initialize" || action === "update" ? 202 : 200, result);
+      })
+      .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
+        error: error.message,
+        code: error.code
+      }));
+    return;
+  }
+  if (request.method === "GET" && projectMatch) {
+    const projectId = decodeURIComponent(projectMatch[1]);
+    projectApplicationService.readProject(projectId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/sessions") {
     const includeMock = url.searchParams.get("includeMock") === "true";
-    const includeCodexHistory = url.searchParams.get("includeCodexHistory") === "true";
     const archived = url.searchParams.get("archived") === "true";
-
-    if (!includeCodexHistory) {
-      const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-      const storedSessions = ptyAgents.list({ archived });
-      const ptySessions = storedSessions
-        .filter((session) => session.external?.provider !== "codex-app-server")
-        .filter((session) => session.external?.provider !== "claude-sdk");
-      const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
-      const claudeSessions = claudeAgents.list({ archived });
-      if (claudeSessions.length > 0) {
-        console.log(`[claude-sdk] sessions list count=${claudeSessions.length} ids=${claudeSessions.map((session) => session.id).join(",")}`);
+    const mockSessions = includeMock ? Array.from(sessions.values()) : [];
+    const providerSessions = listGatewaySessions({ archived });
+    const providerCounts = providerSessions.reduce((counts, session) => {
+      const providerId = session.external?.provider ?? "unknown";
+      counts[providerId] = (counts[providerId] ?? 0) + 1;
+      return counts;
+    }, {});
+    sendJson(response, 200, {
+      sessions: sortSessionsForList(withPendingCollaborationConfirmations([
+        ...providerSessions,
+        ...(archived ? [] : mockSessions)
+      ])),
+      sources: Object.fromEntries(agentProviderRegistry.descriptors().map((provider) => [
+        provider.id,
+        { ok: true, count: providerCounts[provider.id] ?? 0 }
+      ])),
+      mock: {
+        ok: true,
+        count: archived ? 0 : mockSessions.length,
+        included: includeMock && !archived
       }
-      const listedIds = new Set(ptySessions.map((session) => session.id));
-      claudeSessions.forEach((session) => listedIds.add(session.id));
-      const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
-      const codexSessions = [
-        ...storedCodexSessions.map((stored) => {
-          const managed = managedById.get(stored.id);
-          return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
-        }),
-        ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
-      ].filter((session) => !listedIds.has(session.id));
-      sendJson(response, 200, {
-        sessions: sortSessionsForList(withPendingCollaborationConfirmations(composeStoredSessionList({
-          archived,
-          ptySessions,
-          claudeSessions,
-          codexSessions,
-          mockSessions
-        }))),
-        sources: {
-          pty: {
-            ok: true,
-            count: ptySessions.length
-          },
-          claude: {
-            ok: true,
-            count: claudeSessions.length
-          },
-          codex: {
-            ok: true,
-            count: codexSessions.length,
-            historyIncluded: false
-          },
-          mock: {
-            ok: true,
-            count: archived ? 0 : mockSessions.length,
-            included: includeMock && !archived
-          }
-        }
-      });
-      return;
-    }
+    });
+    return;
+  }
 
-    codexClient
-      .listThreads({
-        limit: Number(url.searchParams.get("codexLimit") ?? 8),
-        archived: false,
-        sortKey: "updated_at",
-        sortDirection: "desc"
-      })
-      .then((result) => {
-        const claudeSessions = claudeAgents.list({ archived });
-        const codexSessions = result.data.map((thread) => {
-          const session = mapCodexThreadToSession(thread);
-          const managedSession = managedCodexSessions.get(session.id);
-          const stored = store.getSession(session.id);
-          if (!managedSession) {
-            return mergeStoredSessionPresentation(session, stored);
-          }
-          return mergeStoredSessionPresentation({
-            ...session,
-            status: managedSession.status ?? session.status,
-            progress: managedSession.progress ?? session.progress,
-            summary: managedSession.summary || session.summary,
-            suggestedOptions: managedSession.suggestedOptions ?? session.suggestedOptions ?? null,
-            capabilities: managedSession.capabilities ?? session.capabilities,
-            external: {
-              ...session.external,
-              currentModel: managedSession.external?.currentModel ?? session.external?.currentModel ?? null,
-              currentReasoningLevel: managedSession.external?.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null,
-              sandbox: managedSession.external?.sandbox ?? session.external?.sandbox,
-              approvalPolicy: managedSession.external?.approvalPolicy ?? session.external?.approvalPolicy
-            }
-          }, stored);
-        });
-        const knownIds = new Set(codexSessions.map((session) => session.id));
-        const managedSessions = Array.from(managedCodexSessions.values())
-          .filter((session) => !knownIds.has(session.id));
-        const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-        const ptySessions = ptyAgents.list({ archived })
-          .filter((session) => session.external?.provider !== "codex-app-server")
-          .filter((session) => session.external?.provider !== "claude-sdk")
-          .filter((session) => !knownIds.has(session.id));
-
-        sendJson(response, 200, {
-          sessions: sortSessionsForList(withPendingCollaborationConfirmations([
-            ...ptySessions,
-            ...claudeSessions,
-            ...(archived ? [] : managedSessions),
-            ...(archived ? [] : codexSessions),
-            ...(archived ? [] : mockSessions)
-          ])),
-          sources: {
-            pty: {
-              ok: true,
-              count: ptySessions.length
-            },
-            claude: {
-              ok: true,
-              count: claudeSessions.length
-            },
-            codex: {
-              ok: true,
-              count: result.data.length,
-              managedCount: managedSessions.length
-            },
-            mock: {
-              ok: true,
-              count: mockSessions.length,
-              included: includeMock
-            }
-          }
-        });
+  if (request.method === "POST" && url.pathname === "/sessions") {
+    readJson(request)
+      .then(async (input) => {
+        const providerId = requestedProviderId(input.providerId ?? input.agent);
+        const session = await createSessionThroughApplication(providerId, input, { source: "http" });
+        sendJson(response, 201, { session });
       })
       .catch((error) => {
-        const mockSessions = Array.from(sessions.values());
-        const ptySessions = ptyAgents.list({ archived });
-
-        sendJson(response, 200, {
-          sessions: [...ptySessions, ...(archived ? [] : mockSessions)],
-          sources: {
-            pty: {
-              ok: true,
-              count: ptySessions.length
-            },
-            codex: {
-              ok: false,
-              error: error.message
-            },
-            mock: {
-              ok: true,
-              count: mockSessions.length,
-              included: true,
-              fallback: true
-            }
-          }
-        });
+        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), sessionTitleErrorPayload(error));
       });
     return;
   }
@@ -4174,7 +4559,7 @@ function route(request, response) {
         const rawId = decodeURIComponent(sessionArchiveMatch[1]);
         const archived = input.archived !== false;
         if (rawId.startsWith("codex:")) {
-          const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
+          const session = sessionPresentationCache.get(rawId) ?? store.getSession(rawId);
           if (!session) {
             sendJson(response, 404, { error: "Session not found" });
             return;
@@ -4185,7 +4570,7 @@ function route(request, response) {
             updatedAt: new Date().toISOString()
           };
           if (archived) {
-            managedCodexSessions.delete(rawId);
+            sessionPresentationCache.delete(rawId);
             store.archiveSession(rawId, true);
           } else {
             upsertManagedCodexSession(nextSession);
@@ -4219,9 +4604,9 @@ function route(request, response) {
           sendJson(response, 404, { error: "Session not found" });
           return;
         }
-        if (managedCodexSessions.has(id)) {
-          const managed = managedCodexSessions.get(id);
-          managedCodexSessions.set(id, {
+        if (sessionPresentationCache.has(id)) {
+          const managed = sessionPresentationCache.get(id);
+          sessionPresentationCache.set(id, {
             ...managed,
             pinned,
             sortOrder: session.sortOrder ?? managed.sortOrder,
@@ -4240,9 +4625,9 @@ function route(request, response) {
         const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => normalizeSessionId(String(id))) : [];
         const sessions = ptyAgents.reorder(sessionIds);
         sessionIds.forEach((id, index) => {
-          if (managedCodexSessions.has(id)) {
-            managedCodexSessions.set(id, {
-              ...managedCodexSessions.get(id),
+          if (sessionPresentationCache.has(id)) {
+            sessionPresentationCache.set(id, {
+              ...sessionPresentationCache.get(id),
               sortOrder: index
             });
           }
@@ -4357,48 +4742,8 @@ function route(request, response) {
     readJson(request)
       .then(async (input) => {
         const rawId = decodeURIComponent(sessionDeleteMatch[1]);
-        if (rawId.startsWith("codex:")) {
-          const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
-          if (!session) {
-            sendJson(response, 404, { error: "Session not found" });
-            return;
-          }
-          if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-            const nextSession = { ...session, avatarPath: input.avatarPath ?? null };
-            upsertManagedCodexSession(nextSession);
-            emitEvent("SessionAvatarUpdated", { session: nextSession });
-            sendJson(response, 200, { session: nextSession });
-            return;
-          }
-          const title = typeof input.title === "string" ? input.title.trim() : "";
-          if (!title) {
-            sendJson(response, 400, { error: "Title is required" });
-            return;
-          }
-          const releaseTitle = reserveSessionTitle(title, rawId);
-          try {
-            await codexClient.setThreadName(rawId.slice("codex:".length), title);
-            const nextSession = { ...session, title, updatedAt: new Date().toISOString() };
-            upsertManagedCodexSession(nextSession);
-            emitEvent("SessionRenamed", { session: nextSession });
-            sendJson(response, 200, { session: nextSession });
-          } finally {
-            releaseTitle();
-          }
-          return;
-        }
-
-        const id = normalizeSessionId(rawId);
-        const storedSession = store.getSession(id);
-        const isClaudeSession = claudeAgents.has(id) || storedSession?.external?.provider === "claude-sdk";
         if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-          const session = isClaudeSession
-            ? claudeAgents.updateAvatar(id, input.avatarPath)
-            : ptyAgents.updateAvatar(id, input.avatarPath);
-          if (!session) {
-            sendJson(response, 404, { error: "Session not found" });
-            return;
-          }
+          const session = await sessionApplicationService.updateAvatar(rawId, input.avatarPath, { source: "http" });
           emitEvent("SessionAvatarUpdated", { session });
           sendJson(response, 200, { session });
           return;
@@ -4409,18 +4754,13 @@ function route(request, response) {
           return;
         }
         const releaseTitle = reserveSessionTitle(title, rawId);
-        let session;
         try {
-          session = isClaudeSession ? claudeAgents.rename(id, title) : ptyAgents.rename(id, title);
+          const session = await sessionApplicationService.renameSession(rawId, title, { source: "http" });
+          emitEvent("SessionRenamed", { session });
+          sendJson(response, 200, { session });
         } finally {
           releaseTitle();
         }
-        if (!session) {
-          sendJson(response, 404, { error: "Session not found" });
-          return;
-        }
-        emitEvent("SessionRenamed", { session });
-        sendJson(response, 200, { session });
       })
       .catch((error) => {
         sendJson(response, errorStatus(error), sessionTitleErrorPayload(error));
@@ -4430,122 +4770,71 @@ function route(request, response) {
 
   if (request.method === "DELETE" && sessionDeleteMatch) {
     const rawId = decodeURIComponent(sessionDeleteMatch[1]);
-    if (rawId.startsWith("codex:")) {
-      const mergeWorktree = url.searchParams.get("mergeWorktree") === "true";
-      Promise.resolve()
-        .then(async () => {
-          let merge = null;
-          if (mergeWorktree) {
-            const plan = await sessionDeletionPlan(rawId);
-            if (!plan.requiresWorktreeMerge) {
-              throw new Error("The Session is no longer bound to a mergeable worktree.");
-            }
-            merge = await mergeSessionWorktreeBeforeDeletion(rawId, plan);
-            const logical = store.getLogicalSessionByLegacySessionId(rawId);
-            if (logical && merge?.sourceWorktreeId) {
-              const otherBindings = store.listLogicalSessionsByWorkspaceId(merge.sourceWorktreeId).filter((item) => {
-                return item.logicalSessionId !== logical.logicalSessionId;
-              });
-              merge.cleanup = otherBindings.length > 0
-                ? {
-                    removed: false,
-                    reason: "sharedWorktree",
-                    remainingSessionCount: otherBindings.length
-                  }
-                : await gitWorkspaces.removeMergedWorktree({
-                    logicalSessionId: logical.logicalSessionId,
-                    sourceWorktreeId: merge.sourceWorktreeId,
-                    ignoreLogicalSessionIds: [logical.logicalSessionId],
-                    deleteBranch: true
-                  });
-            }
+    Promise.resolve()
+      .then(async () => {
+        const reference = await sessionApplicationService.referenceFor(rawId);
+        let merge = null;
+        if (url.searchParams.get("mergeWorktree") === "true") {
+          if (reference.providerId !== "codex-app-server") {
+            const error = new Error("Worktree merge before deletion is unavailable for this Agent Provider.");
+            error.code = "CAPABILITY_UNSUPPORTED";
+            throw error;
           }
-          const existed = managedCodexSessions.delete(rawId);
-          collaborationCore.deactivateAgentForSession(rawId);
-          store.deleteLogicalSessionByLegacySessionId(rawId);
-          store.deleteSession(rawId);
-          emitEvent("SessionDeleted", { sessionId: rawId, provider: "codex-app-server", existed });
-          sendJson(response, 200, { ok: true, deleted: existed, merge });
-        })
-        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message }));
-      return;
-    }
+          const plan = await sessionDeletionPlan(reference.sessionId);
+          if (!plan.requiresWorktreeMerge) {
+            throw new Error("The Session is no longer bound to a mergeable worktree.");
+          }
+          merge = await mergeSessionWorktreeBeforeDeletion(reference.sessionId, plan);
+          const logical = store.getLogicalSessionByLegacySessionId(reference.sessionId);
+          if (logical && merge?.sourceWorktreeId) {
+            const otherBindings = store.listLogicalSessionsByWorkspaceId(merge.sourceWorktreeId)
+              .filter((item) => item.logicalSessionId !== logical.logicalSessionId);
+            merge.cleanup = otherBindings.length > 0
+              ? { removed: false, reason: "sharedWorktree", remainingSessionCount: otherBindings.length }
+              : await gitWorkspaces.removeMergedWorktree({
+                  logicalSessionId: logical.logicalSessionId,
+                  sourceWorktreeId: merge.sourceWorktreeId,
+                  ignoreLogicalSessionIds: [logical.logicalSessionId],
+                  deleteBranch: true
+                });
+          }
+        }
+        const result = await sessionApplicationService.deleteSession(rawId, { source: "http" });
+        sendJson(response, 200, { ...result, merge });
+      })
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null }));
+    return;
+  }
 
-    const id = normalizeSessionId(rawId);
-    collaborationCore.deactivateAgentForSession(id);
-    if (claudeAgents.has(id)) {
-      claudeAgents.delete(id);
-      emitEvent("SessionDeleted", { sessionId: id, provider: "claude-sdk" });
-      sendJson(response, 200, { ok: true });
-      return;
-    }
-    ptyAgents.delete(id);
-    emitEvent("SessionDeleted", { sessionId: id });
-    sendJson(response, 200, { ok: true });
+  const sessionResumeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/resume$/);
+  if (request.method === "POST" && sessionResumeMatch) {
+    const rawId = decodeURIComponent(sessionResumeMatch[1]);
+    sessionApplicationService.resumeSession(rawId, { source: "http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null }));
+    return;
+  }
+
+  const sessionDisconnectMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/disconnect$/);
+  if (request.method === "POST" && sessionDisconnectMatch) {
+    const rawId = decodeURIComponent(sessionDisconnectMatch[1]);
+    sessionApplicationService.disconnectSession(rawId, { source: "http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/pty/sessions") {
     readJson(request)
-      .then((input) => {
-        const cwd = sessionWorkspacePath(input.cwd);
-        return assertDirectory(cwd).then(() => ({ input, cwd }));
-      })
-      .then(({ input, cwd }) => {
-        const title = sessionTitleForWorkspace(input.title, cwd);
-        const releaseTitle = reserveSessionTitle(title);
-        let session;
-        try {
-          session = ptyAgents.start({
-            title,
-            command: input.command,
-            args: input.args,
-            cwd,
-            initialInput: input.initialInput,
-            cols: input.cols,
-            rows: input.rows
-          });
-        } finally {
-          releaseTitle();
-        }
-        emitEvent("PtySessionStarted", { session });
+      .then((input) => createSessionThroughApplication("pty", input, { source: "legacy-http" }))
+      .then((session) => {
         sendJson(response, 201, { session });
       })
       .catch((error) => {
         sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "pty" }));
-      });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/claude/sessions") {
-    readJson(request)
-      .then((input) => {
-        const cwd = sessionWorkspacePath(input.cwd);
-        return assertDirectory(cwd).then(() => ({ input, cwd }));
-      })
-      .then(({ input, cwd }) => {
-        const title = sessionTitleForWorkspace(input.title, cwd);
-        const releaseTitle = reserveSessionTitle(title);
-        let session;
-        try {
-          const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
-          const requestedModel = typeof input.model === "string" ? input.model.trim() : "";
-          session = claudeAgents.start({
-            title,
-            prompt: typeof input.prompt === "string" ? input.prompt.trim() : "",
-            cwd,
-            model: requestedModel || defaults.claudeModel,
-            sandbox: normalizeCodexSandbox(input.sandbox),
-            approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
-          });
-        } finally {
-          releaseTitle();
-        }
-        emitEvent("ClaudeSessionStarted", { session });
-        sendJson(response, 201, { session });
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "claude-sdk" }));
       });
     return;
   }
@@ -4626,8 +4915,13 @@ function route(request, response) {
             connectionReady: false,
             canResume: true
           });
-          emitEvent("CodexPtySessionStarted", { session });
-          sendJson(response, 201, { session });
+          const logical = await ensureLogicalRouteForProviderSession(session, "codex-pty", {
+            approvalPolicy: approvalMode,
+            sandbox
+          });
+          const routedSession = sessionWithLogicalWorkspace(session, logical);
+          emitEvent("CodexPtySessionStarted", { session: routedSession });
+          sendJson(response, 201, { session: routedSession });
           return;
         }
         if (launchPrompt) {
@@ -4669,8 +4963,13 @@ function route(request, response) {
 
         const boundSession = ptyAgents.get(session.external.sessionId);
         const responseSession = boundSession ? ptyAgents.toSessionSummary(boundSession) : session;
-        emitEvent("CodexPtySessionStarted", { session: responseSession });
-        sendJson(response, 201, { session: responseSession });
+        const logical = await ensureLogicalRouteForProviderSession(responseSession, "codex-pty", {
+          approvalPolicy: approvalMode,
+          sandbox
+        });
+        const routedSession = sessionWithLogicalWorkspace(responseSession, logical);
+        emitEvent("CodexPtySessionStarted", { session: routedSession });
+        sendJson(response, 201, { session: routedSession });
         } finally {
           releaseTitle();
         }
@@ -4684,12 +4983,6 @@ function route(request, response) {
   const ptyEventsMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && ptyEventsMatch) {
     const sessionId = decodeURIComponent(ptyEventsMatch[1]);
-    if (claudeAgents.has(sessionId)) {
-      if (!claudeAgents.subscribeDetail(sessionId, response)) {
-        sendJson(response, 404, { error: "Claude session not found", adapter: "claude-sdk" });
-      }
-      return;
-    }
     if (!ptyAgents.subscribeDetail(sessionId, response)) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
     }
@@ -4699,9 +4992,7 @@ function route(request, response) {
   const ptySessionMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)$/);
   if (request.method === "GET" && ptySessionMatch) {
     const sessionId = decodeURIComponent(ptySessionMatch[1]);
-    const detail = claudeAgents.has(sessionId)
-      ? claudeAgents.detail(sessionId)
-      : ptyAgents.detail(sessionId);
+    const detail = ptyAgents.detail(sessionId);
     if (!detail) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
       return;
@@ -4719,22 +5010,6 @@ function route(request, response) {
         if (!text.trim()) {
           sendJson(response, 400, { error: "Input text is required", adapter: "pty" });
           return;
-        }
-        if (isClearCommand(text) && claudeAgents.has(sessionId)) {
-          const error = new Error("/clear is only available for Codex sessions.");
-          error.code = "UNSUPPORTED_COMMAND";
-          throw error;
-        }
-        if (claudeAgents.has(sessionId)) {
-          store.clearActiveChoicePrompt(sessionId);
-          return claudeAgents.send(sessionId, text).then((session) => {
-            emitEvent("ClaudeSessionInputSent", { sessionId });
-            sendJson(response, 202, {
-              mode: "claude-sdk",
-              visibleInCodexDesktop: false,
-              session
-            });
-          });
         }
         const session = ptyAgents.get(sessionId);
         if (isClearCommand(text) && session?.provider !== "codex-pty") {
@@ -4826,24 +5101,19 @@ function route(request, response) {
   const ptyDisconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/disconnect$/);
   if (request.method === "POST" && ptyDisconnectMatch) {
     const sessionId = decodeURIComponent(ptyDisconnectMatch[1]);
-    try {
-      const session = ptyAgents.disconnect(sessionId);
-      if (!session) {
-        sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
-        return;
-      }
-      emitEvent("PtySessionDisconnected", { sessionId });
-      sendJson(response, 200, { session });
-    } catch (error) {
-      sendJson(response, 400, { error: error.message, adapter: "pty" });
-    }
+    sessionApplicationService.disconnectSession(sessionId, { source: "legacy-http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
   const ptyTerminateMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/terminate$/);
   if (request.method === "POST" && ptyTerminateMatch) {
     const sessionId = decodeURIComponent(ptyTerminateMatch[1]);
-    const session = ptyAgents.terminate(sessionId) ?? (claudeAgents.has(sessionId) ? claudeAgents.terminate(sessionId) : null);
+    const session = ptyAgents.terminate(sessionId);
     if (!session) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
       return;
@@ -4856,17 +5126,6 @@ function route(request, response) {
   const ptyInterruptMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/interrupt$/);
   if (request.method === "POST" && ptyInterruptMatch) {
     const sessionId = decodeURIComponent(ptyInterruptMatch[1]);
-    if (claudeAgents.has(sessionId) && !ptyAgents.get(sessionId)) {
-      claudeAgents.interrupt(sessionId)
-        .then((session) => {
-          emitEvent("ClaudeSessionInterrupted", { session });
-          sendJson(response, 200, { session });
-        })
-        .catch((error) => {
-          sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-        });
-      return;
-    }
     try {
       const session = ptyAgents.interrupt(sessionId);
       emitEvent("PtySessionInterrupted", { session });
@@ -4880,41 +5139,12 @@ function route(request, response) {
   const ptyReconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/reconnect$/);
   if (request.method === "POST" && ptyReconnectMatch) {
     const sessionId = decodeURIComponent(ptyReconnectMatch[1]);
-    const storedSession = store.getSession(sessionId);
-    if (claudeAgents.has(sessionId) || storedSession?.external?.provider === "claude-sdk") {
-      claudeAgents.reconnect(sessionId)
-        .then((session) => {
-        if (!session) {
-          sendJson(response, 404, { error: "Claude session cannot be reconnected", adapter: "claude-sdk" });
-          return;
-        }
-        emitEvent("ClaudeSessionReconnected", { session });
-        sendJson(response, 200, { session });
-        })
-        .catch((error) => {
-          sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-        });
-      return;
-    }
-    const session = ptyAgents.reconnect(sessionId);
-    if (!session) {
-      sendJson(response, 404, { error: "PTY session cannot be reconnected", adapter: "pty" });
-      return;
-    }
-    ptyAgents.waitForConnectionReady(sessionId)
-      .then((isReady) => {
-        const readySession = ptyAgents.get(sessionId);
-        if (!isReady || !readySession) {
-          sendJson(response, 504, { error: "PTY session did not become ready in time", adapter: "pty" });
-          return;
-        }
-        const summary = ptyAgents.toSessionSummary(readySession);
-        emitEvent("PtySessionReconnected", { session: summary });
-        sendJson(response, 200, { session: summary });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
+    sessionApplicationService.resumeSession(sessionId, { source: "legacy-http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
@@ -4962,13 +5192,7 @@ function route(request, response) {
     const sessionId = decodeURIComponent(ptyChoiceMatch[1]);
     readJson(request)
       .then((input) => {
-        const session = claudeAgents.has(sessionId)
-          ? claudeAgents.respondToChoice(sessionId, {
-            choiceId: input.choiceId,
-            optionId: input.optionId,
-            optionIndex: input.optionIndex
-          })
-          : ptyAgents.respondToPtyChoice(sessionId, {
+        const session = ptyAgents.respondToPtyChoice(sessionId, {
           optionId: input.optionId,
           optionIndex: input.optionIndex
         });
@@ -4986,13 +5210,16 @@ function route(request, response) {
     const sessionId = decodeURIComponent(sessionWorkspacesMatch[1]);
     Promise.resolve()
       .then(async () => {
-        const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-        if (!session || session.external?.provider !== "codex-app-server") {
-          const error = new Error("Codex session not found.");
-          error.statusCode = 404;
+        const reference = await sessionApplicationService.referenceFor(sessionId);
+        const session = reference.metadata.session;
+        let logical = reference.logicalSessionId
+          ? store.getLogicalSession(reference.logicalSessionId)
+          : await ensureLogicalRouteForProviderSession(session, reference.providerId);
+        if (!logical) {
+          const error = new Error("Session workspace route not found.");
+          error.code = "SESSION_NOT_FOUND";
           throw error;
         }
-        let logical = await ensureLogicalRouteForCodexSession(session);
         if (logical.activeBinding?.boundCwd) {
           try {
             const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
@@ -5013,6 +5240,8 @@ function route(request, response) {
               ? store.getGitWorktree(binding.worktreeId)
               : null;
             return {
+              bindingId: binding.bindingId,
+              providerId: binding.providerId,
               providerThreadId: binding.providerThreadId,
               state: binding.state,
               readOnly: binding.state !== "active",
@@ -5032,7 +5261,23 @@ function route(request, response) {
     return;
   }
 
+  const sessionBindingSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/bindings\/([^/]+)\/snapshot$/);
+  if (request.method === "GET" && sessionBindingSnapshotMatch) {
+    const sessionId = decodeURIComponent(sessionBindingSnapshotMatch[1]);
+    const bindingId = decodeURIComponent(sessionBindingSnapshotMatch[2]);
+    sessionApplicationService.readSessionBinding(sessionId, bindingId)
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionWorkspaceSwitchMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/switch$/);
+  const unifiedSessionWorkspaceSwitchMatch = url.pathname.match(
+    /^\/sessions\/([^/]+)\/actions\/switch-workspace$/
+  );
   const sessionWorkspaceRecoveryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/recovery$/);
   if (sessionWorkspaceRecoveryMatch && request.method === "GET") {
     const sessionId = decodeURIComponent(sessionWorkspaceRecoveryMatch[1]);
@@ -5070,17 +5315,18 @@ function route(request, response) {
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
     return;
   }
-  if (request.method === "POST" && sessionWorkspaceSwitchMatch) {
-    const sessionId = decodeURIComponent(sessionWorkspaceSwitchMatch[1]);
+  if (request.method === "POST" && (sessionWorkspaceSwitchMatch || unifiedSessionWorkspaceSwitchMatch)) {
+    const sessionId = decodeURIComponent((sessionWorkspaceSwitchMatch || unifiedSessionWorkspaceSwitchMatch)[1]);
     readJson(request)
       .then(async (input) => {
-        const result = await switchSessionWorkspace(sessionId, input.targetWorktreeId, input.transitionId);
+        const targetWorkspaceId = input.targetWorkspaceId ?? input.targetWorktreeId;
+        const result = await switchSessionWorkspace(sessionId, targetWorkspaceId, input.transitionId);
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
       .catch((error) => {
-        sendJson(response, errorStatus(error, 400), {
+        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
           error: error.message,
-          adapter: "codex-app-server"
+          code: error.code
         });
       });
     return;
@@ -5091,532 +5337,29 @@ function route(request, response) {
     const sessionId = decodeURIComponent(sessionRestartMatch[1]);
     Promise.resolve()
       .then(async () => {
-        const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-        if (!session || session.external?.provider !== "codex-app-server") {
-          const error = new Error("Codex session not found.");
-          error.statusCode = 404;
-          throw error;
-        }
-        const logical = await ensureLogicalRouteForCodexSession(session);
-        const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
-        const activeTurnId = session.external?.activeTurnId ?? null;
-        const result = await codexWorkspaceTransitions.restartSession({
-          transitionId: `session-restart:${randomUUID()}`,
-          logicalSessionId: logical.logicalSessionId,
-          activeTurnId,
-          lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-          ...collaborationThreadOptionsForSession(sessionId)
+        const result = await sessionApplicationService.restartSession(sessionId, {
+          source: "compatibility-route"
         });
-        emitEvent(
-          result.status === "waitingForTurn"
-            ? "SessionRestartWaiting"
-            : "SessionRestartCompleted",
-          {
-            sessionId,
-            logicalSessionId: logical.logicalSessionId,
-            transition: result.transition
-          },
-          { sessionId }
-        );
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
       .catch((error) => {
         sendJson(response, errorStatus(error, 400), {
           error: error.message,
-          adapter: "codex-app-server"
+          code: error.code
         });
       });
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/codex/threads") {
-    codexClient
-      .listThreads({
-        limit: Number(url.searchParams.get("limit") ?? 12),
-        archived: url.searchParams.get("archived") === "true",
-        cwd: url.searchParams.get("cwd") ?? undefined,
-        searchTerm: url.searchParams.get("search") ?? undefined,
-        sortKey: "updated_at",
-        sortDirection: "desc"
-      })
-      .then((result) => {
-        sendJson(response, 200, {
-          threads: result.data,
-          sessions: result.data.map(mapCodexThreadToSession),
-          nextCursor: result.nextCursor,
-          backwardsCursor: result.backwardsCursor
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 502, {
-          error: error.message,
-          adapter: "codex-app-server"
-        });
-      });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/codex/notifications") {
-    sendJson(response, 200, {
-      notifications: codexClient.notifications.slice(-Number(url.searchParams.get("limit") ?? 80))
-    });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/codex/threads") {
-    readJson(request)
-      .then(async (input) => {
-        const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-        const cwd = sessionWorkspacePath(input.cwd);
-        const title = sessionTitleForWorkspace(input.title, cwd);
-
-        if (!prompt) {
-          sendJson(response, 400, { error: "Prompt is required" });
-          return;
-        }
-        if (activeCodexThreadCreation) {
-          sendJson(response, 409, {
-            error: "Another Codex session is already being created. Wait for it to finish before trying again.",
-            code: "SESSION_CREATION_IN_PROGRESS"
-          });
-          return;
-        }
-        const releaseTitle = reserveSessionTitle(title);
-        const creationId = randomUUID();
-        const startedAt = Date.now();
-        activeCodexThreadCreation = { creationId, title, startedAt };
-        try {
-
-        console.log(`[codex] create thread request=${creationId} cwd=${cwd} chars=${prompt.length}`);
-
-        const collaborationAgentId = `agent-${randomUUID()}`;
-        const permissions = {
-          sandbox: normalizeCodexSandbox(input.sandbox),
-          approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
-        };
-        const runtime = await resolvedNewCodexRuntimeConfig(input);
-        const started = await codexClient.startThread({
-          cwd,
-          ...permissions,
-          model: runtime.model,
-          modelProvider: input.modelProvider,
-          ...collaborationThreadOptions(collaborationAgentId)
-        });
-
-        collaborationCore.registerAgent({
-          agentId: collaborationAgentId,
-          name: title,
-          description: `Independent Corptie Agent for ${cwd}.`,
-          status: "inactive",
-          capabilities: ["codex-session", "corptie-collaboration"]
-        });
-
-        const threadId = started.thread.id;
-        const turn = await codexClient.startTurn(threadId, prompt, {
-          cwd,
-          ...codexTurnPermissionOptions({ external: permissions }),
-          model: runtime.model,
-          reasoningEffort: runtime.reasoningLevel
-        });
-
-        let session = withCodexSessionPermissions({
-          ...mapCodexThreadToSession({
-            ...started.thread,
-            preview: title,
-            name: title,
-            cwd,
-            updatedAt: Date.now() / 1000,
-            status: "running",
-            source: "corptie",
-          currentModel: runtime.model ?? started.model ?? null,
-          currentReasoningLevel: runtime.reasoningLevel ?? started.reasoningEffort ?? null,
-          activeTurnId: turn.turn?.id ?? null
-        }),
-        title,
-        summary: `Corptie-managed Codex task in ${cwd}`,
-        capabilities: {
-          ...codexAppServerSessionCapabilities(),
-          canInterrupt: true
-        }
-      }, permissions);
-        const logicalRoute = await ensureLogicalRouteForCodexSession(session, started);
-        session = sessionWithLogicalWorkspace(session, logicalRoute);
-        upsertManagedCodexSession(session, collaborationAgentId);
-
-        emitEvent("CodexThreadCreated", { threadId, session, turn: turn.turn });
-        scheduleProjectToolsetInitialization(cwd);
-        console.log(`[codex] created request=${creationId} thread=${threadId} turn=${turn.turn?.id ?? "unknown"} durationMs=${Date.now() - startedAt}`);
-
-        sendJson(response, 201, {
-          thread: started.thread,
-          turn: turn.turn,
-          session,
-          mode: "app-server-stdio",
-          visibleInCodexDesktop: false,
-          warning: "Started through Corptie' app-server connection. Codex Desktop may not show this thread immediately."
-        });
-        } catch (error) {
-          console.error(`[codex] create failed request=${creationId} durationMs=${Date.now() - startedAt} error=${error.message}`);
-          throw error;
-        } finally {
-          if (activeCodexThreadCreation?.creationId === creationId) {
-            activeCodexThreadCreation = null;
-          }
-          releaseTitle();
-        }
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, 502), sessionTitleErrorPayload(error, {
-          adapter: "codex-app-server"
-        }));
-      });
-    return;
-  }
-
-  const codexTurnDiffMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/turns\/([^/]+)\/diff\/(review|undo)$/);
-  if (request.method === "POST" && codexTurnDiffMatch) {
-    const threadId = decodeURIComponent(codexTurnDiffMatch[1]);
-    const turnId = decodeURIComponent(codexTurnDiffMatch[2]);
-    const action = codexTurnDiffMatch[3];
-    const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
-    Promise.resolve(logicalRoute
-      ? assertWorkspaceRouteUsable({
-          store,
-          logicalSession: logicalRoute,
-          providerThreadId: threadId,
-          allowHistorical: action === "review"
-        })
-      : null)
-      .then((activeRoute) => Promise.all([
-        codexClient.readThread(threadId, { includeTurns: true }),
-        activeRoute
-      ]))
-      .then(async ([result, activeRoute]) => {
-        const cwd = activeRoute?.cwd
-          || result.thread.cwd
-          || managedCodexSessions.get(`codex:${threadId}`)?.external?.cwd;
-        if (!cwd) {
-          throw new Error("The task working directory is unavailable.");
-        }
-        const changes = safeTurnFileChanges(result.thread, turnId, cwd);
-        const diff = turnDiffFor(threadId, turnId, changes);
-
-        if (action === "review") {
-          const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
-          const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
-          emitEvent("CodexTurnDiffReviewOpened", {
-            threadId,
-            turnId,
-            tool,
-            logicalSessionId: activeRoute?.logicalSessionId ?? null,
-            worktreeId: activeRoute?.worktreeId ?? null,
-            routingVersion: activeRoute?.routingVersion ?? null
-          });
-          return {
-            ok: true,
-            tool,
-            logicalSessionId: activeRoute?.logicalSessionId ?? null,
-            providerThreadId: threadId,
-            worktreeId: activeRoute?.worktreeId ?? null,
-            routingVersion: activeRoute?.routingVersion ?? null,
-            historical: activeRoute?.historical === true
-          };
-        }
-
-        const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
-        await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
-        await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
-        emitEvent("CodexTurnChangesUndone", {
-          threadId,
-          turnId,
-          files: changes.map((change) => change.path),
-          logicalSessionId: activeRoute?.logicalSessionId ?? null,
-          worktreeId: activeRoute?.worktreeId ?? null,
-          routingVersion: activeRoute?.routingVersion ?? null
-        });
-        return { ok: true, files: changes.map((change) => change.path) };
-      })
+  const sessionTurnChangesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/turns\/([^/]+)\/changes\/(review|undo)$/);
+  if (request.method === "POST" && sessionTurnChangesMatch) {
+    const sessionId = decodeURIComponent(sessionTurnChangesMatch[1]);
+    const turnId = decodeURIComponent(sessionTurnChangesMatch[2]);
+    const action = sessionTurnChangesMatch[3];
+    sessionApplicationService.manageTurnChanges(sessionId, turnId, action, { source: "http" })
       .then((payload) => sendJson(response, 200, payload))
       .catch((error) => {
-        sendJson(response, 409, { error: error.stderr || error.message, adapter: "codex-app-server" });
-      });
-    return;
-  }
-
-  const codexThreadMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)$/);
-  if (request.method === "GET" && codexThreadMatch) {
-    const threadId = decodeURIComponent(codexThreadMatch[1]);
-    codexClient
-      .readThread(threadId, { includeTurns: true })
-      .then(async (result) => {
-        const sessionId = `codex:${threadId}`;
-        const managedSession = await ensureCodexSessionPermissions(
-          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
-        );
-        const detail = mapCodexThreadToDetail(
-          result.thread,
-          codexClient.liveItemsForThread(threadId),
-          codexClient.turnDiffsForThread(threadId)
-        );
-        const binding = store.getProviderThreadBinding(threadId);
-        const enrichedDetail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, {
-          ...detail,
-          activityStatus: managedSession?.activityStatus ?? detail.activityStatus ?? null,
-          currentModel: managedSession?.external?.currentModel ?? detail.currentModel ?? null,
-          currentReasoningLevel: managedSession?.external?.currentReasoningLevel ?? detail.currentReasoningLevel ?? null
-        }));
-        const detailWithQueue = {
-          ...enrichedDetail,
-          items: [...(enrichedDetail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
-        };
-        if (binding?.state !== "superseded" && binding?.state !== "invalid" && binding?.state !== "orphaned") {
-          syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
-        }
-        sendJson(response, 200, {
-          thread: detailWithQueue
-        });
-      })
-      .catch(async (error) => {
-        const sessionId = `codex:${threadId}`;
-        const binding = store.getProviderThreadBinding(threadId);
-        const managedSession = await ensureCodexSessionPermissions(
-          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
-        );
-        if (managedSession) {
-          const detail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, createManagedCodexDetail(
-            managedSession,
-            codexClient.liveItemsForThread(threadId),
-            error
-          )));
-          const detailWithQueue = {
-            ...detail,
-            items: [...(detail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
-          };
-          if (!binding || binding.state === "active") {
-            syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
-          }
-          sendJson(response, 200, {
-            thread: detailWithQueue,
-            liveFallback: true
-          });
-          return;
-        }
-
-        try {
-          const threads = await codexClient.listThreads({ limit: 100, archived: false });
-          const thread = threads.data.find((item) => item.id === threadId);
-          if (!thread) {
-            sendJson(response, 502, {
-              error: error.message,
-              adapter: "codex-app-server"
-            });
-            return;
-          }
-
-          const detail = historicalDetailProjection(
-            binding,
-            await readCodexRolloutDetail(thread, error)
-          );
-          sendJson(response, 200, {
-            thread: detail,
-            fallback: true
-          });
-        } catch (fallbackError) {
-          sendJson(response, 502, {
-            error: fallbackError.message,
-            originalError: error.message,
-            adapter: "codex-app-server"
-          });
-        }
-      });
-    return;
-  }
-
-  const codexApprovalMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/approval$/);
-  if (request.method === "POST" && codexApprovalMatch) {
-    const threadId = decodeURIComponent(codexApprovalMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const approved = input.approved === true;
-        return codexClient.respondToApproval(threadId, {
-          approved,
-          optionId: input.optionId
-        }).then(() => {
-          const sessionId = `codex:${threadId}`;
-          const previousSession = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId) ?? null;
-          store.clearActiveChoicePrompt(sessionId);
-          const session = previousSession ? {
-            ...previousSession,
-            status: previousSession.status === "blocked" ? "running" : previousSession.status,
-            suggestedOptions: null,
-            suggestedPrompt: null,
-            activityStatus: approved ? "Approval sent" : "Approval denied",
-            updatedAt: now()
-          } : null;
-          if (session) {
-            upsertManagedCodexSession(session);
-          }
-          emitEvent("CodexThreadApprovalResponded", { threadId, approved, session });
-          sendJson(response, 202, { mode: "codex-app-server-approval", approved, session });
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "codex-app-server" });
-      });
-    return;
-  }
-
-  const codexMessageMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/messages$/);
-  if (request.method === "POST" && codexMessageMatch) {
-    const threadId = decodeURIComponent(codexMessageMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const text = typeof input.text === "string" ? input.text.trim() : "";
-        const allowBackgroundFallback = input.allowBackgroundFallback === true;
-        if (!text) {
-          sendJson(response, 400, { error: "Message text is required" });
-          return;
-        }
-
-        console.log(`[codex] send requested thread=${threadId} chars=${text.length}`);
-        const sessionId = `codex:${threadId}`;
-        const managedSessionBeforeSend = await ensureCodexSessionPermissions(
-          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
-        );
-        if (!managedSessionBeforeSend) {
-          sendJson(response, 404, { error: "Session not found", code: "SESSION_NOT_FOUND" });
-          return;
-        }
-        if (isClearCommand(text)) {
-          const result = await clearCodexAppServerSession(sessionId, managedSessionBeforeSend, { type: "desktop" });
-          sendJson(response, 202, result);
-          return;
-        }
-        bumpChoiceGeneration(sessionId);
-        store.clearActiveChoicePrompt(sessionId);
-        if (managedSessionBeforeSend) {
-          upsertManagedCodexSession({
-            ...managedSessionBeforeSend,
-            suggestedOptions: null,
-            updatedAt: new Date().toISOString()
-          });
-        }
-
-        try {
-          await codexClient.resumeThread(threadId, collaborationThreadOptionsForSession(sessionId));
-          const managedSession = managedCodexSessions.get(`codex:${threadId}`);
-          const result = await codexClient.startTurn(threadId, text, {
-            model: managedSession?.external?.currentModel ?? input.model ?? undefined,
-            reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined,
-            ...codexTurnPermissionOptions(managedSession ?? managedSessionBeforeSend)
-          });
-          if (managedSession) {
-            upsertManagedCodexSession({
-              ...managedSession,
-              status: "running",
-              progress: 0.5,
-              suggestedOptions: null,
-              activityStatus: "Working",
-              updatedAt: new Date().toISOString(),
-              capabilities: {
-                ...(managedSession.capabilities ?? {}),
-                canInterrupt: true
-              },
-              external: {
-                ...managedSession.external,
-                activeTurnId: result.turn?.id ?? managedSession.external?.activeTurnId ?? null
-              }
-            });
-          }
-          emitEvent("CodexTurnStarted", { threadId, turn: result.turn, mode: "app-server" });
-          console.log(`[codex] send accepted by app-server thread=${threadId} turn=${result.turn?.id ?? "unknown"}`);
-          sendJson(response, 202, {
-            turn: result.turn,
-            mode: "app-server-stdio",
-            visibleInCodexDesktop: false,
-            warning: "Sent through Corptie' stdio app-server connection. Codex Desktop may not refresh this thread."
-          });
-        } catch (appServerError) {
-          console.log(`[codex] app-server send failed thread=${threadId} error=${appServerError.message}`);
-          if (!allowBackgroundFallback) {
-            sendJson(response, 502, {
-              error: "Codex app-server could not resume this thread, so the message was not sent.",
-              rawError: appServerError.message,
-              adapter: "codex-app-server",
-              visibleInCodexDesktop: false,
-              hint: "This thread is read-only in Corptie until we connect to the Codex Desktop control socket or find a supported resume path."
-            });
-            return;
-          }
-
-          const result = await codexClient.execResumeThread(threadId, text);
-          emitEvent("CodexTurnStarted", { threadId, mode: result.mode, pid: result.pid });
-          sendJson(response, 202, {
-            ...result,
-            fallback: true,
-            visibleInCodexDesktop: false,
-            appServerError: appServerError.message
-          });
-        }
-      })
-      .catch((error) => {
-        sendJson(response, unifiedErrorStatus(error), {
-          error: error.message,
-          code: error.code,
-          adapter: "codex-app-server"
-        });
-      });
-    return;
-  }
-
-  const codexModelMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/model$/);
-  if (request.method === "POST" && codexModelMatch) {
-    const threadId = decodeURIComponent(codexModelMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const model = typeof input.model === "string" ? input.model.trim() : "";
-        if (!model) {
-          sendJson(response, 400, { error: "Model is required" });
-          return;
-        }
-
-        const sessionId = `codex:${threadId}`;
-        const previous = managedCodexSessions.get(sessionId);
-        const now = new Date().toISOString();
-        const session = previous ?? {
-          id: sessionId,
-          title: `Codex ${threadId.slice(0, 8)}`,
-          agent: "Codex",
-          status: "complete",
-          progress: 1,
-          summary: "Corptie-managed Codex task",
-          updatedAt: now,
-          accent: "cyan",
-          external: {
-            provider: "codex-app-server",
-            threadId,
-            source: "corptie"
-          }
-        };
-        const nextSession = {
-          ...session,
-          updatedAt: now,
-          external: {
-            ...session.external,
-            provider: "codex-app-server",
-            threadId,
-            currentModel: model
-          }
-        };
-        upsertManagedCodexSession(nextSession);
-        emitEvent("CodexThreadModelChanged", { threadId, model });
-        sendJson(response, 202, { session: nextSession, model });
-      })
-      .catch((error) => {
-        sendJson(response, 502, {
-          error: error.message,
-          adapter: "codex-app-server"
-        });
+        sendJson(response, unifiedErrorStatus(error), { error: error.stderr || error.message, code: error.code ?? null });
       });
     return;
   }
@@ -5666,7 +5409,7 @@ function route(request, response) {
     }
 
     if (taskId.startsWith("codex:")) {
-      const previous = managedCodexSessions.get(taskId) ?? store.getSession(taskId);
+      const previous = sessionPresentationCache.get(taskId) ?? store.getSession(taskId);
       if (!previous) {
         sendJson(response, 404, { error: "Codex session not found" });
         return;
@@ -5679,7 +5422,7 @@ function route(request, response) {
         sendJson(response, 409, { error: "Codex session does not have an active turn to interrupt" });
         return;
       }
-      codexClient
+      codexRuntime
         .interruptTurn(threadId, activeTurnId)
         .then(() => {
           const session = {
@@ -5731,7 +5474,7 @@ async function resolveSessionContextUsage(session) {
   if (session.external?.provider !== "codex-app-server") return null;
   const threadId = session.external?.threadId;
   if (!threadId) return null;
-  const live = codexClient.tokenUsageForThread(threadId);
+  const live = codexRuntime.tokenUsageForThread(threadId);
   if (live) return live;
   const rollout = await findCodexRolloutBySessionId(threadId);
   return readCodexRolloutTokenUsage(rollout?.path);
@@ -5775,7 +5518,7 @@ const corptieCodexRuntime = await ensureCorptieCodexRuntime({
 process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
 if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
-  const rebuilt = await codexClient.listThreads({
+  const rebuilt = await codexRuntime.listThreads({
     limit: Math.max(100, corptieCodexRuntime.threadMigration.rolloutCount + 20),
     useStateDbOnly: false,
     requestTimeoutMs: 30000
@@ -5803,7 +5546,7 @@ for (const storedSession of storedSessionsAtStartup) {
 for (const transition of store.listPendingWorkspaceTransitions()) {
   const logical = store.getLogicalSession(transition.logicalSessionId);
   try {
-    const recovered = await codexWorkspaceTransitions.recoverWorkspaceTransition(
+    const recovered = await workspaceTransitionManager.recoverWorkspaceTransition(
       transition.transitionId,
       collaborationThreadOptionsForSession(logical?.legacySessionId)
     );
@@ -5853,7 +5596,7 @@ function shutdown() {
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
     await feishuGateway.close();
-    await codexClient.close();
+    await codexRuntime.close();
     await store.close();
     process.exit(0);
   })();

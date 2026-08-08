@@ -93,29 +93,10 @@ final class DetachedOrbPlacementGeometryTests: XCTestCase {
         )
     }
 
-    func testManualLeftPlacementSelectsTheLeftTwoThirdsForAvoidance() {
-        let right = DetachedOrbPlacementRegion.automaticPlacementFrame(
-            in: screen,
-            userSelectedLeftRegion: false
-        )
-        let left = DetachedOrbPlacementRegion.automaticPlacementFrame(
-            in: screen,
-            userSelectedLeftRegion: true
-        )
-
-        XCTAssertEqual(right, CGRect(x: 960, y: 0, width: 480, height: 900))
-        XCTAssertEqual(left, CGRect(x: 0, y: 0, width: 960, height: 900))
-        XCTAssertTrue(
-            DetachedOrbPlacementRegion.isFullyInRightThird(
-                windowFrame: CGRect(x: 1_000, y: 600, width: 88, height: 88),
-                visibleFrame: screen
-            )
-        )
-        XCTAssertFalse(
-            DetachedOrbPlacementRegion.isFullyInRightThird(
-                windowFrame: CGRect(x: 800, y: 600, width: 88, height: 88),
-                visibleFrame: screen
-            )
+    func testAutomaticAvoidanceAlwaysUsesTheRightThird() {
+        XCTAssertEqual(
+            DetachedOrbPlacementRegion.automaticPlacementFrame(in: screen),
+            CGRect(x: 960, y: 0, width: 480, height: 900)
         )
     }
 }

@@ -112,6 +112,42 @@ test("runEphemeralPrompt deletes its temporary thread when generation fails", as
   assert.deepEqual(calls.map((call) => call.method), ["thread/start", "turn/start", "thread/delete"]);
 });
 
+test("runEphemeralPrompt confines workspace-write background work to declared roots", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/start") return { thread: { id: "thread-writer" } };
+    if (method === "turn/start") {
+      client.notifications.push({
+        method: "turn/completed",
+        params: { threadId: "thread-writer", turn: { id: "turn-writer", status: "completed" } }
+      });
+      return { turn: { id: "turn-writer" } };
+    }
+    return {};
+  };
+
+  await client.runEphemeralPrompt({
+    cwd: "/repo/.corptie",
+    runtimeWorkspaceRoots: ["/repo/.corptie"],
+    permissionProfile: "workspace-write",
+    developerInstructions: "Only edit the toolset.",
+    threadSource: "project-toolset-initialization",
+    prompt: "Configure"
+  });
+
+  assert.equal(calls[0].params.sandbox, "workspace-write");
+  assert.equal(calls[0].params.developerInstructions, "Only edit the toolset.");
+  assert.equal(calls[0].params.threadSource, "project-toolset-initialization");
+  assert.deepEqual(calls[1].params.sandboxPolicy, {
+    type: "workspaceWrite",
+    writableRoots: ["/repo/.corptie"],
+    networkAccess: false
+  });
+});
+
 test("startThread installs host-owned collaboration tools and keeps the isolated MCP compatibility path", async () => {
   const calls = [];
   const client = new CodexAppServerClient();

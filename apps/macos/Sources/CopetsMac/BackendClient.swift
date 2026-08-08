@@ -42,6 +42,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var selectedSessionUsage: SessionUsageResponse?
     @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
+    @Published private(set) var projectWorktreeLoadError: String?
     @Published private(set) var isLoadingProjectWorktrees = false
     @Published private(set) var projectWorktreeActionIds = Set<String>()
     @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
@@ -200,6 +201,7 @@ final class BackendClient: ObservableObject {
             return
         }
         let refreshEvents: Set<String> = [
+            "SessionStarted",
             "CodexThreadCreated",
             "CodexTurnStarted",
             "CodexThreadProgressChanged",
@@ -219,6 +221,7 @@ final class BackendClient: ObservableObject {
             "SessionRenamed",
             "SessionAvatarUpdated",
             "PtySessionStarted",
+            "ClaudeSessionStarted",
             "PtySessionInputSent",
             "PtySessionTerminated",
             "PtySessionInterrupted",
@@ -581,8 +584,7 @@ final class BackendClient: ObservableObject {
         defer { isLoadingCodexModels = false }
 
         do {
-            let path = provider == "claude-sdk" ? "claude/models" : "codex/models"
-            var components = URLComponents(url: baseURL.appending(path: path), resolvingAgainstBaseURL: false)!
+            var components = URLComponents(url: baseURL.appending(path: "providers/\(provider)/models"), resolvingAgainstBaseURL: false)!
             if forceRefresh {
                 components.queryItems = [URLQueryItem(name: "refresh", value: "true")]
             }
@@ -700,10 +702,11 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "providerId": "pty",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "command": trimmedCommand,
                     "args": arguments,
@@ -762,10 +765,11 @@ final class BackendClient: ObservableObject {
 
             do {
                 let usesAppServer = settings?.codexBackend?.mode != "pty" && trimmedExistingSessionId.isEmpty
-                var request = URLRequest(url: baseURL.appending(path: usesAppServer ? "codex/threads" : "codex/pty-sessions"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = [
+                    "providerId": usesAppServer ? "codex-app-server" : "codex-pty",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": trimmedPrompt.isEmpty ? "Reply exactly: Ready" : trimmedPrompt,
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
@@ -829,10 +833,11 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "claude/sessions"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = [
+                    "providerId": "claude-sdk",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Reply exactly: Ready" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
@@ -879,12 +884,6 @@ final class BackendClient: ObservableObject {
     }
 
     func respondToCodexApproval(option: CodexApprovalOption, to session: TaskSession) {
-        guard let provider = session.external?.provider,
-              let threadId = session.external?.threadId else {
-            sendStatusMessage = L10n("No Codex approval is active.")
-            return
-        }
-
         clearSuggestedOptions(for: session)
         Task {
             isSendingMessage = true
@@ -892,15 +891,13 @@ final class BackendClient: ObservableObject {
             defer { isSendingMessage = false }
 
             do {
-                let path = isPtyProvider(provider)
-                    ? "pty/sessions/\(threadId)/codex-approval"
-                    : "codex/threads/\(threadId)/approval"
-                var request = URLRequest(url: baseURL.appending(path: path))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/approve"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
                     "optionId": option.id,
                     "optionIndex": option.index ?? 0,
+                    "itemType": "approval",
                     "approved": option.role?.localizedCaseInsensitiveContains("deny") != true
                 ])
 
@@ -936,9 +933,7 @@ final class BackendClient: ObservableObject {
     }
 
     func respondToPtyChoice(option: CodexApprovalOption, choiceId: String? = nil) {
-        guard let session = selectedSession,
-              isPtyProvider(session.external?.provider),
-              let threadId = session.external?.threadId else {
+        guard let session = selectedSession else {
             sendStatusMessage = L10n("No terminal choice is active.")
             return
         }
@@ -949,12 +944,14 @@ final class BackendClient: ObservableObject {
             defer { isSendingMessage = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/choice"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/approve"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = [
                     "optionId": option.id,
-                    "optionIndex": option.index ?? 0
+                    "optionIndex": option.index ?? 0,
+                    "itemType": "choice",
+                    "approved": true
                 ]
                 if let choiceId, !choiceId.isEmpty {
                     body["choiceId"] = choiceId
@@ -996,10 +993,11 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "codex/threads"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "providerId": "codex-app-server",
                     "prompt": trimmedPrompt,
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
                 ])
@@ -1042,10 +1040,11 @@ final class BackendClient: ObservableObject {
             }
         }
         selectedProjectWorktreeStatus = nil
+        projectWorktreeLoadError = nil
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         projectStatusRefreshTask?.cancel()
-        if session.external?.provider == "codex-app-server" {
+        if projectId(for: session) != nil {
             projectStatusRefreshTask = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.loadProjectWorktreeStatus(for: session)
@@ -1076,6 +1075,7 @@ final class BackendClient: ObservableObject {
         viewingHistoricalThreadId = nil
         selectedSessionUsage = nil
         selectedProjectWorktreeStatus = nil
+        projectWorktreeLoadError = nil
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         gitHubPushPreparation = nil
@@ -1226,11 +1226,21 @@ final class BackendClient: ObservableObject {
         guard selectedSession?.id == session.id else { return }
         projectStatusRequestSequence &+= 1
         let requestSequence = projectStatusRequestSequence
+        if selectedProjectWorktreeStatus == nil {
+            projectWorktreeLoadError = nil
+        }
         do {
-            let url = baseURL.appending(path: "sessions/\(session.id)/project-worktrees")
+            let path = projectId(for: session).map { "projects/\($0)/workspaces" }
+                ?? "sessions/\(session.id)/project-worktrees"
+            let url = baseURL.appending(path: path)
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
+                if selectedSession?.id == session.id,
+                   requestSequence == projectStatusRequestSequence {
+                    projectWorktreeLoadError = Self.errorMessage(from: data)
+                        ?? L10n("Could not load project worktrees")
+                }
                 await loadWorkspaceRecoveryStatus(for: session)
                 return
             }
@@ -1238,8 +1248,13 @@ final class BackendClient: ObservableObject {
             guard selectedSession?.id == session.id,
                   requestSequence == projectStatusRequestSequence else { return }
             selectedProjectWorktreeStatus = status
+            projectWorktreeLoadError = nil
             workspaceRecoveryStatus = nil
         } catch {
+            if selectedSession?.id == session.id,
+               requestSequence == projectStatusRequestSequence {
+                projectWorktreeLoadError = error.localizedDescription
+            }
             await loadWorkspaceRecoveryStatus(for: session)
         }
     }
@@ -1297,14 +1312,15 @@ final class BackendClient: ObservableObject {
     }
 
     func initializeProjectToolset(update: Bool = false) {
-        guard let session = selectedSession else { return }
+        guard let session = selectedSession,
+              let projectId = projectId(for: session) else { return }
         let action = update ? "update" : "initialize"
         Task {
             isLoadingProjectWorktrees = true
             defer { isLoadingProjectWorktrees = false }
             do {
                 var request = URLRequest(
-                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/\(action)")
+                    url: baseURL.appending(path: "projects/\(projectId)/development-service/actions/\(action)")
                 )
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1326,14 +1342,15 @@ final class BackendClient: ObservableObject {
     }
 
     func runProjectServiceAction(_ action: String) {
-        guard let session = selectedSession else { return }
+        guard let session = selectedSession,
+              let projectId = projectId(for: session) else { return }
         let actionId = "service:\(action)"
         Task {
             projectWorktreeActionIds.insert(actionId)
             defer { projectWorktreeActionIds.remove(actionId) }
             do {
                 var request = URLRequest(
-                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/\(action)")
+                    url: baseURL.appending(path: "projects/\(projectId)/development-service/actions/\(action)")
                 )
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1351,14 +1368,15 @@ final class BackendClient: ObservableObject {
     }
 
     func selectProjectServiceProfile(_ profileId: String) {
-        guard let session = selectedSession else { return }
+        guard let session = selectedSession,
+              let projectId = projectId(for: session) else { return }
         let actionId = "service:profile"
         Task {
             projectWorktreeActionIds.insert(actionId)
             defer { projectWorktreeActionIds.remove(actionId) }
             do {
                 var request = URLRequest(
-                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/profile")
+                    url: baseURL.appending(path: "projects/\(projectId)/development-service/actions/profile")
                 )
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1530,8 +1548,14 @@ final class BackendClient: ObservableObject {
             projectWorktreeActionIds.insert(worktree.worktreeId)
             defer { projectWorktreeActionIds.remove(worktree.worktreeId) }
             do {
+                let path: String
+                if action == "restart", let projectId = projectId(for: session) {
+                    path = "projects/\(projectId)/workspaces/\(worktree.worktreeId)/actions/restart"
+                } else {
+                    path = "sessions/\(session.id)/project-worktrees/\(worktree.worktreeId)/\(action)"
+                }
                 var request = URLRequest(url: baseURL.appending(
-                    path: "sessions/\(session.id)/project-worktrees/\(worktree.worktreeId)/\(action)"
+                    path: path
                 ))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1556,6 +1580,12 @@ final class BackendClient: ObservableObject {
                 lastError = error.localizedDescription
             }
         }
+    }
+
+    private func projectId(for session: TaskSession) -> String? {
+        let projectId = session.external?.workspace?.repositoryId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return projectId?.isEmpty == false ? projectId : nil
     }
 
     private func loadUsage(for session: TaskSession) async {
@@ -1655,12 +1685,12 @@ final class BackendClient: ObservableObject {
         sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, isChoiceSelection: isChoiceSelection, onSuccess: onSuccess)
     }
 
-    func reviewCodexChanges(threadId: String, turnId: String) async -> Result<String, Error> {
-        await performCodexDiffAction("review", threadId: threadId, turnId: turnId)
+    func reviewTurnChanges(sessionId: String, turnId: String) async -> Result<String, Error> {
+        await performTurnChangesAction("review", sessionId: sessionId, turnId: turnId)
     }
 
-    func undoCodexChanges(threadId: String, turnId: String) async -> Result<String, Error> {
-        let result = await performCodexDiffAction("undo", threadId: threadId, turnId: turnId)
+    func undoTurnChanges(sessionId: String, turnId: String) async -> Result<String, Error> {
+        let result = await performTurnChangesAction("undo", sessionId: sessionId, turnId: turnId)
         if case .success = result {
             undoneCodexTurnIds.insert(turnId)
             await refreshSelectedDetailFromPolling()
@@ -1668,9 +1698,9 @@ final class BackendClient: ObservableObject {
         return result
     }
 
-    private func performCodexDiffAction(_ action: String, threadId: String, turnId: String) async -> Result<String, Error> {
+    private func performTurnChangesAction(_ action: String, sessionId: String, turnId: String) async -> Result<String, Error> {
         do {
-            var request = URLRequest(url: baseURL.appending(path: "codex/threads/\(threadId)/turns/\(turnId)/diff/\(action)"))
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionId)/turns/\(turnId)/changes/\(action)"))
             request.httpMethod = "POST"
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -1688,12 +1718,6 @@ final class BackendClient: ObservableObject {
     }
 
     private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, isChoiceSelection: Bool, onSuccess: @escaping () -> Void) {
-        guard let threadId = session.external?.threadId else {
-            lastError = L10n("This task does not expose a Codex thread id.")
-            sendStatusMessage = lastError
-            return
-        }
-
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             return
@@ -1709,14 +1733,11 @@ final class BackendClient: ObservableObject {
 
         Task {
             isSendingMessage = true
-            sendStatusMessage = isPtyProvider(session.external?.provider) ? L10n("Sending to terminal agent...") : L10n("Sending to Codex...")
+            sendStatusMessage = L10n("Sending...")
             defer { isSendingMessage = false }
 
             do {
-                let path = isPtyProvider(session.external?.provider)
-                    ? "pty/sessions/\(threadId)/input"
-                    : "sessions/\(session.id)/messages"
-                var request = URLRequest(url: baseURL.appending(path: path))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/messages"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -1755,8 +1776,6 @@ final class BackendClient: ObservableObject {
                     return
                 } else if decoded?.mode == "collaboration-confirmation" {
                     sendStatusMessage = L10n("Collaboration confirmation resolved")
-                } else if isPtyProvider(session.external?.provider) {
-                    sendStatusMessage = session.external?.provider == "codex-pty" ? L10n("Sent to Codex CLI") : L10n("Sent to PTY agent")
                 } else if decoded?.queued == true {
                     let position = decoded?.queuePosition.map { " #\($0)" } ?? ""
                     sendStatusMessage = L10nFormat("Queued%@", position)
@@ -1884,39 +1903,17 @@ final class BackendClient: ObservableObject {
         )
     }
 
-    func cancel(session: TaskSession) {
-        Task {
-            do {
-                let path = isPtyProvider(session.external?.provider)
-                    ? "pty/sessions/\(session.external?.threadId ?? session.id)/terminate"
-                    : "tasks/\(session.id)/cancel"
-                var request = URLRequest(url: baseURL.appending(path: path))
-                request.httpMethod = "POST"
-                _ = try await URLSession.shared.data(for: request)
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-            }
-        }
-    }
-
     func interrupt(session: TaskSession) {
-        if session.external?.provider == "codex-app-server" {
-            cancel(session: session)
-            return
-        }
-
-        guard let threadId = session.external?.threadId, isPtyProvider(session.external?.provider) else {
-            cancel(session: session)
-            return
-        }
-
         Task {
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/interrupt"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/interrupt"))
                 request.httpMethod = "POST"
-                _ = try await URLSession.shared.data(for: request)
-                sendStatusMessage = session.external?.provider == "codex-pty" ? L10n("Interrupted Codex CLI") : L10n("Interrupted PTY agent")
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(Self.errorMessage(from: data) ?? "Interrupt failed")
+                }
+                sendStatusMessage = L10n("Interrupted")
                 await refresh()
                 if selectedSession?.id == session.id {
                     await loadDetail(for: session)
@@ -1929,8 +1926,7 @@ final class BackendClient: ObservableObject {
     }
 
     func togglePtyConnection(for session: TaskSession) {
-        guard session.external?.provider == "codex-pty",
-              let threadId = session.external?.threadId else {
+        guard session.usesManualConnection else {
             return
         }
 
@@ -1941,7 +1937,7 @@ final class BackendClient: ObservableObject {
             }
             do {
                 let action = session.isConnected ? "disconnect" : "reconnect"
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/\(action)"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/\(action)"))
                 request.httpMethod = "POST"
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -1966,10 +1962,6 @@ final class BackendClient: ObservableObject {
     }
 
     func reconnect(session: TaskSession) {
-        guard let threadId = session.external?.threadId else {
-            return
-        }
-
         Task {
             connectionTransitionSessionIds.insert(session.id)
             defer {
@@ -1977,7 +1969,7 @@ final class BackendClient: ObservableObject {
             }
             do {
                 sendStatusMessage = L10n("Reconnecting...")
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reconnect"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/resume"))
                 request.httpMethod = "POST"
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -2000,7 +1992,7 @@ final class BackendClient: ObservableObject {
     }
 
     func restart(session: TaskSession) {
-        guard session.external?.provider == "codex-app-server",
+        guard session.actions?.restart?.available == true,
               !restartingSessionIds.contains(session.id) else {
             return
         }
@@ -2312,30 +2304,12 @@ final class BackendClient: ObservableObject {
         guard let selectedSession else {
             return
         }
-
-        guard let threadId = selectedSession.external?.threadId, isPtyProvider(selectedSession.external?.provider) else {
-            cancel(session: selectedSession)
-            return
-        }
-
-        Task {
-            do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/interrupt"))
-                request.httpMethod = "POST"
-                _ = try await URLSession.shared.data(for: request)
-                sendStatusMessage = selectedSession.external?.provider == "codex-pty" ? L10n("Interrupted Codex CLI") : L10n("Interrupted PTY agent")
-                await loadDetail(for: selectedSession)
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-                sendStatusMessage = L10nFormat("Interrupt failed: %@", error.localizedDescription)
-            }
-        }
+        interrupt(session: selectedSession)
     }
 
     func switchSelectedCodexModel(to model: CodexModel) {
         guard let selectedSession,
-              selectedSession.capabilities?.canSwitchModel == true else {
+              selectedSession.canSwitchModelNow else {
             sendStatusMessage = L10n("Model switching is not available for this session.")
             return
         }
@@ -2357,8 +2331,7 @@ final class BackendClient: ObservableObject {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
                 }
-                let provider = selectedSession.external?.provider == "claude-sdk" ? "Claude" : "Codex"
-                sendStatusMessage = L10nFormat("Switching %@ model to %@", provider, model.name)
+                sendStatusMessage = L10nFormat("Switching model to %@", model.name)
                 await loadDetail(for: selectedSession)
                 await refresh()
             } catch {
@@ -2476,7 +2449,7 @@ final class BackendClient: ObservableObject {
             return true
         }
         do {
-            let url = baseURL.appending(path: "codex/threads/\(history.providerThreadId)")
+            let url = baseURL.appending(path: "sessions/\(session.id)/bindings/\(history.bindingId)/snapshot")
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
@@ -2484,7 +2457,6 @@ final class BackendClient: ObservableObject {
             }
             let detail = try await BackendResponseDecoder.detail(
                 from: data,
-                isPtyProvider: false,
                 threadId: history.providerThreadId,
                 authoritativeCwd: history.boundCwd,
                 workspacePath: history.boundCwd
@@ -2507,15 +2479,10 @@ final class BackendClient: ObservableObject {
     }
 
     func fetchDetail(for session: TaskSession) async -> CodexThreadDetail? {
-        guard let threadId = session.external?.threadId else {
-            return nil
-        }
+        let threadId = session.external?.threadId ?? session.id
 
         do {
-            let path = isPtyProvider(session.external?.provider)
-                ? "pty/sessions/\(threadId)"
-                : "sessions/\(session.id)/snapshot"
-            let url = baseURL.appending(path: path)
+            let url = baseURL.appending(path: "sessions/\(session.id)/snapshot")
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
@@ -2539,17 +2506,13 @@ final class BackendClient: ObservableObject {
 
     private func startDetailStream(for session: TaskSession) {
         detailStreamTask?.cancel()
-        guard let threadId = session.external?.threadId,
-              isPtyProvider(session.external?.provider) else {
-            detailStreamTask = nil
-            return
-        }
+        let threadId = session.external?.threadId ?? session.id
 
         detailStreamTask = Task { [weak self] in
             guard let self else {
                 return
             }
-            var request = URLRequest(url: self.baseURL.appending(path: "pty/sessions/\(threadId)/events"))
+            var request = URLRequest(url: self.baseURL.appending(path: "sessions/\(session.id)/events"))
             request.setValue("text/event-stream", forHTTPHeaderField: "accept")
 
             do {
@@ -2568,6 +2531,7 @@ final class BackendClient: ObservableObject {
                         await self.handleDetailStreamEvent(
                             eventName: eventName,
                             data: dataLines.joined(separator: "\n"),
+                            expectedSession: session,
                             expectedThreadId: threadId
                         )
                         eventName = ""
@@ -2586,15 +2550,20 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private func handleDetailStreamEvent(eventName: String, data: String, expectedThreadId: String) async {
-        guard eventName.isEmpty || eventName == "detail",
+    private func handleDetailStreamEvent(eventName: String, data: String, expectedSession: TaskSession, expectedThreadId: String) async {
+        guard eventName == "snapshot",
               !data.isEmpty,
-              selectedSession?.external?.threadId == expectedThreadId,
+              selectedSession?.id == expectedSession.id,
               let payload = data.data(using: .utf8) else {
             return
         }
         do {
-            let decodedDetail = try await BackendResponseDecoder.streamedDetail(from: payload)
+            let decodedDetail = try await BackendResponseDecoder.detail(
+                from: payload,
+                threadId: expectedThreadId,
+                authoritativeCwd: expectedSession.external?.cwd,
+                workspacePath: expectedSession.external?.workspace?.path
+            )
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decodedDetail)))
             publishSelectedDetailIfSafe(mergedDetail)
             if let selectedSession {
@@ -2610,10 +2579,7 @@ final class BackendClient: ObservableObject {
     }
 
     private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
-        guard let threadId = session.external?.threadId else {
-            lastError = L10n("No Codex detail is available for this task.")
-            return
-        }
+        let threadId = session.external?.threadId ?? session.id
 
         if showLoading {
             isLoadingDetail = true
@@ -2625,10 +2591,7 @@ final class BackendClient: ObservableObject {
         }
 
         do {
-            let path = isPtyProvider(session.external?.provider)
-                ? "pty/sessions/\(threadId)"
-                : "sessions/\(session.id)/snapshot"
-            let url = baseURL.appending(path: path)
+            let url = baseURL.appending(path: "sessions/\(session.id)/snapshot")
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw URLError(.badServerResponse)
@@ -2653,7 +2616,6 @@ final class BackendClient: ObservableObject {
     private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) async throws -> CodexThreadDetail {
         try await BackendResponseDecoder.detail(
             from: data,
-            isPtyProvider: isPtyProvider(session.external?.provider),
             threadId: threadId,
             authoritativeCwd: session.external?.cwd,
             workspacePath: session.external?.workspace?.path
@@ -2950,10 +2912,6 @@ final class BackendClient: ObservableObject {
         }
         return String(data: data, encoding: .utf8)
     }
-}
-
-private func isPtyProvider(_ provider: String?) -> Bool {
-    provider == "pty" || provider == "codex-pty" || provider == "claude-sdk"
 }
 
 private func normalizedMessageText(_ text: String) -> String {

@@ -5,10 +5,11 @@ import {
   workspaceTransitionContext
 } from "../utils/workspaceTransitionValidation.mjs";
 
-export class CodexWorkspaceTransitionManager {
+export class ForkingWorkspaceTransitionManager {
   constructor(options) {
     this.store = options.store;
-    this.codexClient = options.codexClient;
+    this.providerPort = options.providerPort;
+    if (!this.providerPort) throw new TypeError("Workspace transition manager requires a Provider session port.");
     this.requiredInstructionSources = options.requiredInstructionSources
       ?? (async () => []);
     this.globalInstructionSources = options.globalInstructionSources
@@ -138,7 +139,7 @@ export class CodexWorkspaceTransitionManager {
       let strategy = transition.strategy;
       if (strategy === "fork") {
         try {
-          candidateResponse = await this.codexClient.forkThread(transition.sourceThreadId, {
+          candidateResponse = await this.providerPort.forkThread(transition.sourceThreadId, {
             ...threadOptions,
             lastTurnId: lastCompletedTurnId,
             deferGoalContinuation: !transition.resumeGoalAfterTransition
@@ -153,7 +154,7 @@ export class CodexWorkspaceTransitionManager {
         }
       }
       if (strategy === "handoff") {
-        candidateResponse = await this.codexClient.startThread(threadOptions);
+        candidateResponse = await this.providerPort.startThread(threadOptions);
       }
       const newThreadId = candidateResponse?.thread?.id;
       if (!newThreadId) {
@@ -177,7 +178,7 @@ export class CodexWorkspaceTransitionManager {
         throw new Error(`The ${strategy === "handoff" ? "new" : "forked"} Codex thread loaded invalid workspace instruction sources.`);
       }
       if (input.sandboxPolicy) {
-        await this.codexClient.updateThreadSettings(newThreadId, {
+        await this.providerPort.updateThreadSettings(newThreadId, {
           cwd: targetCwd,
           approvalPolicy: input.approvalPolicy
             ?? candidateResponse.approvalPolicy
@@ -186,7 +187,7 @@ export class CodexWorkspaceTransitionManager {
         });
       }
       if (strategy === "handoff") {
-        const sourceResponse = await this.codexClient.readThread(transition.sourceThreadId, {
+        const sourceResponse = await this.providerPort.readThread(transition.sourceThreadId, {
           includeTurns: true
         });
         const handoff = workspaceHandoffPrompt(sourceResponse.thread ?? sourceResponse, {
@@ -198,7 +199,7 @@ export class CodexWorkspaceTransitionManager {
           targetWorktreeId: target.worktreeId,
           targetHeadOid: target.headOid
         });
-        const started = await this.codexClient.startTurn(newThreadId, handoff, {
+        const started = await this.providerPort.startTurn(newThreadId, handoff, {
           cwd: targetCwd,
           approvalPolicy: input.approvalPolicy
             ?? candidateResponse.approvalPolicy
@@ -295,7 +296,7 @@ export class CodexWorkspaceTransitionManager {
       return { status: "failed", transition };
     }
     if (["waitingForTurn", "preflighting"].includes(transition.phase)) {
-      const source = await this.codexClient.readThread(transition.sourceThreadId, {
+      const source = await this.providerPort.readThread(transition.sourceThreadId, {
         includeTurns: true
       });
       const thread = source.thread ?? source;
@@ -333,7 +334,7 @@ export class CodexWorkspaceTransitionManager {
     let validation = null;
     let handoffTurnId = null;
     try {
-      response = await this.codexClient.resumeThread(transition.newThreadId, {
+      response = await this.providerPort.resumeThread(transition.newThreadId, {
         cwd: targetCwd,
         runtimeWorkspaceRoots: [targetCwd],
         dynamicToolAgentId: input.dynamicToolAgentId,
@@ -358,13 +359,13 @@ export class CodexWorkspaceTransitionManager {
         throw new Error("The recovered Codex thread loaded invalid workspace instruction sources.");
       }
       if (transition.strategy === "handoff") {
-        const targetThreadResponse = await this.codexClient.readThread(transition.newThreadId, {
+        const targetThreadResponse = await this.providerPort.readThread(transition.newThreadId, {
           includeTurns: true
         });
         const targetThread = targetThreadResponse.thread ?? targetThreadResponse;
         handoffTurnId = (targetThread.turns ?? []).at(-1)?.id ?? null;
         if (!handoffTurnId) {
-          const sourceResponse = await this.codexClient.readThread(transition.sourceThreadId, {
+          const sourceResponse = await this.providerPort.readThread(transition.sourceThreadId, {
             includeTurns: true
           });
           const handoff = workspaceHandoffPrompt(sourceResponse.thread ?? sourceResponse, {
@@ -377,7 +378,7 @@ export class CodexWorkspaceTransitionManager {
             targetHeadOid: target.headOid
           });
           const permission = logical.activeBinding.permissionSnapshot ?? {};
-          const started = await this.codexClient.startTurn(transition.newThreadId, handoff, {
+          const started = await this.providerPort.startTurn(transition.newThreadId, handoff, {
             cwd: targetCwd,
             approvalPolicy: response.approvalPolicy
               ?? permission.approvalPolicy
@@ -452,14 +453,14 @@ export class CodexWorkspaceTransitionManager {
   }
 
   async deleteSupersededThread(threadId) {
-    if (!threadId || typeof this.codexClient.deleteThread !== "function") {
+    if (!threadId || typeof this.providerPort.deleteThread !== "function") {
       return {
         deleted: false,
         error: "Codex client does not support thread/delete."
       };
     }
     try {
-      await this.codexClient.deleteThread(threadId);
+      await this.providerPort.deleteThread(threadId);
       return { deleted: true, error: null };
     } catch (error) {
       console.warn(`[workspace-transition] committed route but could not delete superseded thread=${threadId} error=${error.message}`);
@@ -488,13 +489,13 @@ export class CodexWorkspaceTransitionManager {
       sourceCwd,
       targetCwd
     );
-    await this.codexClient.updateThreadSettings(logical.activeThreadId, {
+    await this.providerPort.updateThreadSettings(logical.activeThreadId, {
       cwd: targetCwd,
       approvalPolicy: input.approvalPolicy ?? permission.approvalPolicy,
       sandboxPolicy,
       permissions: input.permissions
     });
-    const response = await this.codexClient.resumeThread(logical.activeThreadId, {
+    const response = await this.providerPort.resumeThread(logical.activeThreadId, {
       cwd: targetCwd,
       runtimeWorkspaceRoots: [targetCwd],
       approvalPolicy: input.approvalPolicy ?? permission.approvalPolicy,

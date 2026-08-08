@@ -10,9 +10,9 @@ test("initializer skips a configured toolset during ordinary session creation", 
         return { repositoryId: "repository:one", configured: true };
       }
     },
-    codexClient: {
-      async startThread() {
-        calls.push("startThread");
+    backgroundAgent: {
+      async run() {
+        calls.push("run");
       }
     },
     referencePath: new URL("../resources/codex/skills/corptie-collaboration/references/project-tools-set.md", import.meta.url)
@@ -44,34 +44,17 @@ test("initializer runs one isolated ephemeral Agent per repository", async () =>
       };
     }
   };
-  const codexClient = {
-    notifications: [],
-    async startThread(options) {
-      calls.push(["startThread", options]);
-      return { thread: { id: "thread:init" } };
-    },
-    async startTurn(threadId, prompt, options) {
-      calls.push(["startTurn", { threadId, prompt, options }]);
+  const backgroundAgent = {
+    async run(input) {
+      calls.push(input);
       configured = true;
-      this.notifications.push({
-        method: "turn/completed",
-        params: { threadId, turn: { id: "turn:init", status: "completed" } }
-      });
-      return { turn: { id: "turn:init" } };
-    },
-    async readThread() {
-      assert.fail("ephemeral initialization must not read turns");
-    },
-    async deleteThread(threadId) {
-      calls.push(["deleteThread", { threadId }]);
+      return { operationId: "background:init", providerId: "fake-writer" };
     }
   };
   const initializer = new ProjectToolsetInitializer({
     manager,
-    codexClient,
+    backgroundAgent,
     referencePath: new URL("../resources/codex/skills/corptie-collaboration/references/project-tools-set.md", import.meta.url),
-    runtimeOptions: async () => ({ model: "test-model", reasoningLevel: "medium" }),
-    pollIntervalMs: 1
   });
 
   const [first, second] = await Promise.all([
@@ -80,19 +63,18 @@ test("initializer runs one isolated ephemeral Agent per repository", async () =>
   ]);
   assert.equal(first.status, "ready");
   assert.equal(second.status, "ready");
-  assert.equal(calls.filter(([name]) => name === "startThread").length, 1);
-  const threadOptions = calls.find(([name]) => name === "startThread")[1];
-  assert.equal(threadOptions.ephemeral, true);
-  assert.deepEqual(threadOptions.runtimeWorkspaceRoots, ["/repo/.corptie"]);
-  assert.equal(threadOptions.approvalPolicy, "never");
-  const turnOptions = calls.find(([name]) => name === "startTurn")[1].options;
-  assert.deepEqual(turnOptions.sandboxPolicy.writableRoots, ["/repo/.corptie"]);
-  assert.equal(turnOptions.sandboxPolicy.networkAccess, false);
-  assert.equal(calls.filter(([name]) => name === "deleteThread").length, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].purpose, "project-toolset-initialization");
+  assert.equal(calls[0].permissionProfile, "workspace-write");
+  assert.equal(calls[0].cwd, "/repo/.corptie");
+  assert.deepEqual(calls[0].allowedRoots, ["/repo/.corptie"]);
+  assert.match(calls[0].developerInstructions, /write only inside \/repo\/\.corptie/);
+  assert.match(calls[0].prompt, /Project root \(read-only\): \/repo/);
+  assert.equal(first.operationId, "background:init");
+  assert.equal(first.providerId, "fake-writer");
 });
 
-test("a timed-out initializer interrupts and deletes its ephemeral Agent", async () => {
-  const calls = [];
+test("initializer propagates background Agent failures without marking the toolset configured", async () => {
   const manager = {
     async inspect() {
       return {
@@ -106,34 +88,21 @@ test("a timed-out initializer interrupts and deletes its ephemeral Agent", async
       return this.inspect();
     }
   };
-  const codexClient = {
-    notifications: [],
-    async startThread() {
-      return { thread: { id: "thread:timeout" } };
-    },
-    async startTurn() {
-      return { turn: { id: "turn:timeout" } };
-    },
-    async interruptTurn(threadId, turnId) {
-      calls.push(["interrupt", threadId, turnId]);
-    },
-    async deleteThread(threadId) {
-      calls.push(["delete", threadId]);
+  const backgroundAgent = {
+    async run(input) {
+      assert.equal(input.timeoutMs, 5);
+      throw new Error("background Agent timed out");
     }
   };
   const initializer = new ProjectToolsetInitializer({
     manager,
-    codexClient,
+    backgroundAgent,
     referencePath: new URL("../resources/codex/skills/corptie-collaboration/references/project-tools-set.md", import.meta.url),
-    timeoutMs: 5,
-    pollIntervalMs: 1
+    timeoutMs: 5
   });
 
-  await assert.rejects(() => initializer.initialize("/repo"), /Timed out/);
-  assert.deepEqual(calls, [
-    ["interrupt", "thread:timeout", "turn:timeout"],
-    ["delete", "thread:timeout"]
-  ]);
+  await assert.rejects(() => initializer.initialize("/repo"), /background Agent timed out/);
+  assert.equal((await manager.inspect()).configured, false);
 });
 
 test("recovery retries an interrupted scaffold only once per backend process", async () => {
@@ -153,7 +122,7 @@ test("recovery retries an interrupted scaffold only once per backend process", a
   };
   const initializer = new ProjectToolsetInitializer({
     manager,
-    codexClient: {},
+    backgroundAgent: {},
     referencePath: new URL("../resources/codex/skills/corptie-collaboration/references/project-tools-set.md", import.meta.url),
     onEvent(type, payload) {
       calls.push([type, payload]);
