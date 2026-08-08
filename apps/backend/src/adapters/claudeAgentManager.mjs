@@ -470,6 +470,39 @@ export class ClaudeAgentManager {
     }
   }
 
+  async runBackgroundPrompt(input = {}) {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), input.timeoutMs ?? 120_000);
+    let latestText = "";
+    try {
+      const operation = query({
+        prompt: input.prompt,
+        options: {
+          cwd: input.cwd,
+          persistSession: false,
+          model: input.model || undefined,
+          permissionMode: "plan",
+          maxTurns: 1,
+          abortController
+        }
+      });
+      for await (const message of operation) {
+        if (message?.type === "assistant") {
+          latestText = assistantText(message.message) || latestText;
+        }
+        if (message?.type === "result") {
+          if (message.subtype !== "success") {
+            throw new Error(typeof message.result === "string" ? message.result : "Claude background prompt failed.");
+          }
+          latestText = (typeof message.result === "string" ? message.result.trim() : "") || latestText;
+        }
+      }
+      return { text: latestText };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async handleToolRequest(session, toolName, input, options = {}) {
     console.log(`[claude-sdk] tool request id=${session.id} tool=${toolName} requestId=${options.requestId ?? ""} toolUseID=${options.toolUseID ?? ""} suggestions=${Array.isArray(options?.suggestions) ? options.suggestions.length : 0}`);
     const choice = buildToolChoice(toolName, input, options);
