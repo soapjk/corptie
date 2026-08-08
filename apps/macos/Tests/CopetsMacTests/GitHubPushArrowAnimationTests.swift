@@ -19,12 +19,8 @@ struct GitHubPushArrowAnimationTests {
         #expect(GitHubPushButtonAppearance.arrowOpacity == 1)
     }
 
-    @Test func pushingShellMatchesTheNormalButtonGeometry() {
-        #expect(GitHubPushButtonAppearance.width == 30)
-        #expect(GitHubPushButtonAppearance.height == 28)
-        #expect(GitHubPushButtonAppearance.cornerRadius == 8)
-        #expect(GitHubPushButtonAppearance.backgroundOpacity == 0.13)
-        #expect(GitHubPushButtonAppearance.solidCircleDiameter == 16)
+    @Test func pushButtonUsesFixedCircularGeometryWithoutAnInnerSolidCircle() {
+        #expect(GitHubPushButtonAppearance.diameter == 30)
         #expect(GitHubPushButtonAppearance.arrowFontSize == 9)
     }
 
