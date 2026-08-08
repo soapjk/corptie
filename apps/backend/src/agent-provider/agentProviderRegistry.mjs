@@ -6,6 +6,7 @@ import {
   providerSupports,
   validateAgentProvider
 } from "./contracts.mjs";
+import { withSessionActions } from "./sessionActions.mjs";
 
 export class AgentProviderRegistry {
   constructor(providers = []) {
@@ -66,9 +67,16 @@ export class AgentProviderRegistry {
     return provider[method](...args);
   }
 
+  decorateSession(providerId, session) {
+    return withSessionActions(session, this.get(providerId).descriptor);
+  }
+
   async listSessions(options = {}) {
     const results = await Promise.all(
-      Array.from(this.providers.values()).map((provider) => provider.listSessions(options))
+      Array.from(this.providers.values()).map(async (provider) => {
+        const sessions = await provider.listSessions(options);
+        return sessions.map((session) => withSessionActions(session, provider.descriptor));
+      })
     );
     return sortedSessions(results.flat());
   }
@@ -84,7 +92,7 @@ export class AgentProviderRegistry {
           { providerId: provider.descriptor.id, method: "listSessions" }
         );
       }
-      return sessions;
+      return sessions.map((session) => withSessionActions(session, provider.descriptor));
     });
     return sortedSessions(results.flat());
   }

@@ -20,6 +20,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let avatarPath: String?
     let capabilities: SessionCapabilities?
     let external: ExternalSession?
+    var actions: SessionActions? = nil
     var pendingCollaborationConfirmation: PendingCollaborationConfirmation? = nil
 
     var isConnected: Bool {
@@ -28,6 +29,22 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
 
     var isConnecting: Bool {
         isConnectingStatus(external?.connectionStatus, provider: external?.provider)
+    }
+
+    var canSendNow: Bool {
+        actions?.send.available ?? capabilities?.canSend ?? false
+    }
+
+    var canInterruptNow: Bool {
+        actions?.interrupt.available ?? capabilities?.canInterrupt ?? false
+    }
+
+    var canSwitchModelNow: Bool {
+        actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
+    }
+
+    var canSwitchReasoningNow: Bool {
+        actions?.switchReasoning.available ?? capabilities?.canSwitchReasoning ?? false
     }
 
     var isUnboundCodexSession: Bool {
@@ -297,6 +314,21 @@ struct SessionCapabilities: Codable, Equatable, Sendable {
     let canSwitchReasoning: Bool?
     let canInterrupt: Bool?
     let canReconnect: Bool?
+}
+
+struct SessionActionAvailability: Codable, Equatable, Sendable {
+    let available: Bool
+    let reason: String?
+    let retryable: Bool?
+}
+
+struct SessionActions: Codable, Equatable, Sendable {
+    let send: SessionActionAvailability
+    let interrupt: SessionActionAvailability
+    let approve: SessionActionAvailability
+    let switchModel: SessionActionAvailability
+    let switchReasoning: SessionActionAvailability
+    let switchWorkspace: SessionActionAvailability
 }
 
 enum TaskStatus: String, Codable, Sendable {
@@ -654,6 +686,7 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
+    var actions: SessionActions? = nil
 
     var isConnected: Bool {
         isConnectedStatus(connectionStatus, provider: source)
@@ -661,6 +694,18 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
 
     var isConnecting: Bool {
         isConnectingStatus(connectionStatus, provider: source)
+    }
+
+    var canInterruptNow: Bool {
+        actions?.interrupt.available ?? capabilities?.canInterrupt ?? false
+    }
+
+    var canSwitchModelNow: Bool {
+        actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
+    }
+
+    var canSwitchReasoningNow: Bool {
+        actions?.switchReasoning.available ?? capabilities?.canSwitchReasoning ?? false
     }
 
     var connectionColor: Color {

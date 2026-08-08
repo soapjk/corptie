@@ -38,7 +38,6 @@ import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
-  composeStoredSessionList,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
@@ -190,12 +189,16 @@ const agentProviderRegistry = new AgentProviderRegistry([
     readSession: readCodexProviderSession,
     send: sendCodexProviderMessage,
     interrupt: interruptCodexProviderSession,
-    respondToApproval: respondCodexProviderApproval
+    respondToApproval: respondCodexProviderApproval,
+    switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
+    switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel })
   }, {
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+      AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH
     ]
   })
 ]);
@@ -2129,6 +2132,42 @@ async function interruptCodexProviderSession(reference, context = {}) {
   return session;
 }
 
+function updateCodexProviderConfiguration(reference, updates) {
+  const sessionId = reference.sessionId;
+  const threadId = reference.providerSessionId;
+  const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const timestamp = now();
+  const session = previous ?? {
+    id: sessionId,
+    title: `Codex ${threadId.slice(0, 8)}`,
+    agent: "Codex",
+    status: "complete",
+    progress: 1,
+    summary: "Corptie-managed Codex task",
+    capabilities: codexAppServerSessionCapabilities({ canInterrupt: false }),
+    updatedAt: timestamp,
+    accent: "cyan",
+    external: { provider: "codex-app-server", threadId, source: "corptie" }
+  };
+  const nextSession = {
+    ...session,
+    updatedAt: timestamp,
+    capabilities: {
+      ...(session.capabilities ?? {}),
+      canSwitchModel: true,
+      canSwitchReasoning: true
+    },
+    external: {
+      ...session.external,
+      provider: "codex-app-server",
+      threadId,
+      ...updates
+    }
+  };
+  upsertManagedCodexSession(nextSession);
+  return nextSession;
+}
+
 async function respondCodexProviderApproval(reference, input = {}, context = {}) {
   const summary = context.summary ?? reference.metadata?.session;
   const approved = input.approved === true;
@@ -2768,7 +2807,7 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
 
 function unifiedErrorStatus(error) {
   if (error.code === "SESSION_NOT_FOUND") return 404;
-  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND"].includes(error.code)) return 409;
+  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
 }
@@ -3799,79 +3838,23 @@ function route(request, response) {
   if (request.method === "POST" && sessionModelMatch) {
     const sessionId = decodeURIComponent(sessionModelMatch[1]);
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const model = typeof input.model === "string" ? input.model.trim() : "";
         if (!model) {
           sendJson(response, 400, { error: "Model is required" });
           return;
         }
-
-        if (sessionId.startsWith("pty:")) {
-          const normalizedId = normalizeSessionId(sessionId);
-          if (claudeAgents.has(normalizedId)) {
-            claudeAgents.switchModel(normalizedId, model)
-              .then((session) => {
-                emitEvent("ClaudeSessionModelChanged", { sessionId, model });
-                sendJson(response, 202, { session, model });
-              })
-              .catch((error) => {
-                sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-              });
-            return;
-          }
-          const session = ptyAgents.switchModel(normalizedId, model);
-          emitEvent("PtySessionModelChanged", { sessionId, model });
-          sendJson(response, 202, { session, model });
-          return;
-        }
-
-        if (sessionId.startsWith("codex:")) {
-          const threadId = sessionId.slice("codex:".length);
-          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-          const now = new Date().toISOString();
-          const session = previous ?? {
-            id: sessionId,
-            title: `Codex ${threadId.slice(0, 8)}`,
-            agent: "Codex",
-            status: "complete",
-            progress: 1,
-            summary: "Corptie-managed Codex task",
-            capabilities: {
-              ...codexAppServerSessionCapabilities({ canInterrupt: false })
-            },
-            updatedAt: now,
-            accent: "cyan",
-            external: {
-              provider: "codex-app-server",
-              threadId,
-              source: "corptie"
-            }
-          };
-          const nextSession = {
-            ...session,
-            updatedAt: now,
-            capabilities: {
-              ...(session.capabilities ?? {}),
-              canSwitchModel: true,
-              canSwitchReasoning: true
-            },
-            external: {
-              ...session.external,
-              provider: "codex-app-server",
-              threadId,
-              currentModel: model
-            }
-          };
-          upsertManagedCodexSession(nextSession);
-          emitEvent("CodexThreadModelChanged", { threadId, model });
-          sendJson(response, 202, { session: nextSession, model });
-          return;
-        }
-
-        sendJson(response, 404, { error: "Session does not support model switching" });
+        const reference = requireSessionReference(sessionId);
+        const session = await sessionApplicationService.switchModel(sessionId, model);
+        emitEvent("SessionModelChanged", {
+          sessionId: reference.sessionId,
+          logicalSessionId: reference.logicalSessionId,
+          model
+        }, { sessionId: reference.sessionId });
+        sendJson(response, 202, { session, model });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message });
+        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code });
       });
     return;
   }
@@ -3880,68 +3863,24 @@ function route(request, response) {
   if (request.method === "POST" && sessionReasoningMatch) {
     const sessionId = decodeURIComponent(sessionReasoningMatch[1]);
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const reasoningLevel = typeof input.reasoningLevel === "string" ? input.reasoningLevel.trim() : "";
         if (!reasoningLevel) {
           sendJson(response, 400, { error: "Reasoning level is required" });
           return;
         }
 
-        if (sessionId.startsWith("pty:")) {
-          const normalizedId = normalizeSessionId(sessionId);
-          const session = ptyAgents.switchReasoning(normalizedId, reasoningLevel);
-          emitEvent("PtySessionReasoningChanged", { sessionId, reasoningLevel });
-          sendJson(response, 202, { session, reasoningLevel });
-          return;
-        }
-
-        if (sessionId.startsWith("codex:")) {
-          const threadId = sessionId.slice("codex:".length);
-          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-          const now = new Date().toISOString();
-          const session = previous ?? {
-            id: sessionId,
-            title: `Codex ${threadId.slice(0, 8)}`,
-            agent: "Codex",
-            status: "complete",
-            progress: 1,
-            summary: "Corptie-managed Codex task",
-            capabilities: {
-              ...codexAppServerSessionCapabilities({ canInterrupt: false })
-            },
-            updatedAt: now,
-            accent: "cyan",
-            external: {
-              provider: "codex-app-server",
-              threadId,
-              source: "corptie"
-            }
-          };
-          const nextSession = {
-            ...session,
-            updatedAt: now,
-            capabilities: {
-              ...(session.capabilities ?? {}),
-              canSwitchModel: true,
-              canSwitchReasoning: true
-            },
-            external: {
-              ...session.external,
-              provider: "codex-app-server",
-              threadId,
-              currentReasoningLevel: reasoningLevel
-            }
-          };
-          upsertManagedCodexSession(nextSession);
-          emitEvent("CodexThreadReasoningChanged", { threadId, reasoningLevel });
-          sendJson(response, 202, { session: nextSession, reasoningLevel });
-          return;
-        }
-
-        sendJson(response, 404, { error: "Session does not support reasoning switching" });
+        const reference = requireSessionReference(sessionId);
+        const session = await sessionApplicationService.switchReasoning(sessionId, reasoningLevel);
+        emitEvent("SessionReasoningChanged", {
+          sessionId: reference.sessionId,
+          logicalSessionId: reference.logicalSessionId,
+          reasoningLevel
+        }, { sessionId: reference.sessionId });
+        sendJson(response, 202, { session, reasoningLevel });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message });
+        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code });
       });
     return;
   }
@@ -4054,52 +3993,25 @@ function route(request, response) {
 
     if (!includeCodexHistory) {
       const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-      const storedSessions = ptyAgents.list({ archived });
-      const ptySessions = storedSessions
-        .filter((session) => session.external?.provider !== "codex-app-server")
-        .filter((session) => session.external?.provider !== "claude-sdk");
-      const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
-      const claudeSessions = claudeAgents.list({ archived });
-      if (claudeSessions.length > 0) {
-        console.log(`[claude-sdk] sessions list count=${claudeSessions.length} ids=${claudeSessions.map((session) => session.id).join(",")}`);
-      }
-      const listedIds = new Set(ptySessions.map((session) => session.id));
-      claudeSessions.forEach((session) => listedIds.add(session.id));
-      const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
-      const codexSessions = [
-        ...storedCodexSessions.map((stored) => {
-          const managed = managedById.get(stored.id);
-          return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
-        }),
-        ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
-      ].filter((session) => !listedIds.has(session.id));
+      const providerSessions = listGatewaySessions({ archived });
+      const providerCounts = providerSessions.reduce((counts, session) => {
+        const providerId = session.external?.provider ?? "unknown";
+        counts[providerId] = (counts[providerId] ?? 0) + 1;
+        return counts;
+      }, {});
       sendJson(response, 200, {
-        sessions: sortSessionsForList(withPendingCollaborationConfirmations(composeStoredSessionList({
-          archived,
-          ptySessions,
-          claudeSessions,
-          codexSessions,
-          mockSessions
-        }))),
-        sources: {
-          pty: {
-            ok: true,
-            count: ptySessions.length
-          },
-          claude: {
-            ok: true,
-            count: claudeSessions.length
-          },
-          codex: {
-            ok: true,
-            count: codexSessions.length,
-            historyIncluded: false
-          },
-          mock: {
-            ok: true,
-            count: archived ? 0 : mockSessions.length,
-            included: includeMock && !archived
-          }
+        sessions: sortSessionsForList(withPendingCollaborationConfirmations([
+          ...providerSessions,
+          ...(archived ? [] : mockSessions)
+        ])),
+        sources: Object.fromEntries(agentProviderRegistry.descriptors().map((provider) => [
+          provider.id,
+          { ok: true, count: providerCounts[provider.id] ?? 0 }
+        ])),
+        mock: {
+          ok: true,
+          count: archived ? 0 : mockSessions.length,
+          included: includeMock && !archived
         }
       });
       return;

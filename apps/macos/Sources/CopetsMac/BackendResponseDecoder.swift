@@ -40,7 +40,8 @@ enum BackendResponseDecoder {
                 sendUnavailableReason: snapshot.sendUnavailableReason,
                 capabilities: snapshot.capabilities,
                 turnCount: snapshot.turnCount,
-                items: snapshot.items
+                items: snapshot.items,
+                actions: snapshot.actions
             )
         }.value
     }
