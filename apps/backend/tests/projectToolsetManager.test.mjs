@@ -96,6 +96,119 @@ test("run can restart the service from a selected worktree", async () => {
   }
 });
 
+test("an older configured toolset requires an explicit update and can only be probed", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    await writeFile(state.manifestPath, `${JSON.stringify({
+      ...state.manifest,
+      schemaVersion: 1,
+      configured: true
+    }, null, 2)}\n`);
+    await writeFile(
+      state.scripts.status.path,
+      "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":1,\"action\":\"status\",\"ok\":true,\"running\":true}'\n"
+    );
+    await chmod(state.scripts.status.path, 0o700);
+
+    const inspected = await manager.inspect(fixture.mainPath);
+    assert.equal(inspected.configured, false);
+    assert.equal(inspected.manifestConfigured, true);
+    assert.equal(inspected.requiresUpdate, true);
+    await assert.rejects(() => manager.run(fixture.mainPath, "restart"), /not configured/);
+    const probe = await manager.run(fixture.mainPath, "status", { allowIncompatible: true });
+    assert.equal(probe.payload.running, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("service profiles are selected locally and passed to every toolset action", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    await writeFile(state.manifestPath, `${JSON.stringify({
+      ...state.manifest,
+      profiles: [
+        { id: "local", label: "Local", description: "Local mode" },
+        { id: "gateway", label: "Gateway", description: "Gateway OAuth mode" }
+      ],
+      selectedProfile: "local"
+    }, null, 2)}\n`);
+    await manager.markConfigured(fixture.mainPath);
+    const selected = await manager.selectProfile(fixture.mainPath, "gateway");
+    assert.equal(selected.selectedProfile, "gateway");
+    await writeFile(
+      selected.scripts.status.path,
+      "#!/bin/sh\nprintf '{\"schemaVersion\":2,\"action\":\"status\",\"ok\":true,\"profile\":\"%s\"}\\n' \"$CORPTIE_SERVICE_PROFILE\"\n"
+    );
+    await chmod(selected.scripts.status.path, 0o700);
+    const result = await manager.run(fixture.mainPath, "status");
+    assert.equal(result.payload.profile, "gateway");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("activation builds before restart and verifies the exact artifact, source, and profile", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    const scripts = {
+      build: "#!/bin/sh\nprintf 'build\\n' >> \"$CORPTIE_TOOLSET_ROOT/runtime/order\"\nprintf '{\"schemaVersion\":2,\"action\":\"build\",\"ok\":true,\"revision\":\"%s\",\"sourceFingerprint\":\"%s\",\"profile\":\"%s\",\"artifactId\":\"artifact-%s\"}\\n' \"$CORPTIE_SOURCE_REVISION\" \"$CORPTIE_SOURCE_FINGERPRINT\" \"$CORPTIE_SERVICE_PROFILE\" \"$CORPTIE_SOURCE_FINGERPRINT\"\n",
+      restart: "#!/bin/sh\nprintf 'restart\\n' >> \"$CORPTIE_TOOLSET_ROOT/runtime/order\"\nprintf '%s\\n' '{\"schemaVersion\":2,\"action\":\"restart\",\"ok\":true}'\n",
+      status: "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":2,\"action\":\"status\",\"ok\":true,\"running\":true}'\n",
+      health: "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":2,\"action\":\"health\",\"ok\":true,\"healthy\":true}'\n",
+      verify: "#!/bin/sh\nprintf '{\"schemaVersion\":2,\"action\":\"verify\",\"ok\":true,\"verified\":true,\"profile\":\"%s\"}\\n' \"$CORPTIE_SERVICE_PROFILE\"\n",
+      version: "#!/bin/sh\nprintf '{\"schemaVersion\":2,\"action\":\"version\",\"ok\":true,\"verified\":true,\"revision\":\"%s\",\"sourceFingerprint\":\"%s\",\"profile\":\"%s\",\"artifactId\":\"artifact-%s\"}\\n' \"$CORPTIE_SOURCE_REVISION\" \"$CORPTIE_SOURCE_FINGERPRINT\" \"$CORPTIE_SERVICE_PROFILE\" \"$CORPTIE_SOURCE_FINGERPRINT\"\n"
+    };
+    for (const [action, contents] of Object.entries(scripts)) {
+      await writeFile(state.scripts[action].path, contents);
+      await chmod(state.scripts[action].path, 0o700);
+    }
+    await manager.markConfigured(fixture.mainPath);
+
+    const result = await manager.activateLatest(fixture.mainPath);
+    assert.equal(result.ok, true);
+    assert.equal(result.stage, "complete");
+    assert.deepEqual(
+      (await readFile(join(state.runtimePath, "order"), "utf8")).trim().split("\n"),
+      ["build", "restart"]
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a failed build never restarts the existing service", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    const state = await manager.scaffold(fixture.mainPath);
+    await writeFile(
+      state.scripts.build.path,
+      "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":2,\"action\":\"build\",\"ok\":false,\"error\":\"build failed\"}'\nexit 1\n"
+    );
+    await writeFile(
+      state.scripts.restart.path,
+      "#!/bin/sh\ntouch \"$CORPTIE_TOOLSET_ROOT/runtime/restarted\"\nprintf '%s\\n' '{\"schemaVersion\":2,\"action\":\"restart\",\"ok\":true}'\n"
+    );
+    await chmod(state.scripts.build.path, 0o700);
+    await chmod(state.scripts.restart.path, 0o700);
+    await manager.markConfigured(fixture.mainPath);
+
+    const result = await manager.activateLatest(fixture.mainPath);
+    assert.equal(result.ok, false);
+    assert.equal(result.stage, "build");
+    await assert.rejects(() => readFile(join(state.runtimePath, "restarted")), /ENOENT/);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("revision details report the verified commit time and source Worktree branch", async () => {
   const fixture = await createFixture();
   const manager = new ProjectToolsetManager();

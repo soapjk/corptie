@@ -2939,6 +2939,39 @@ function scheduleProjectToolsetInitialization(cwd) {
 async function projectToolsetStatus(sessionId) {
   const cwd = projectWorkingDirectoryForSession(sessionId);
   const toolset = await projectToolsets.inspect(cwd);
+  if (toolset.requiresUpdate && toolset.manifestConfigured) {
+    const legacySource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
+    const [status, health, version] = await Promise.all([
+      projectToolsets.run(cwd, "status", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
+      projectToolsets.run(cwd, "health", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource }),
+      projectToolsets.run(cwd, "version", { timeoutMs: 5_000, allowIncompatible: true, sourceIdentity: legacySource })
+    ]);
+    const running = status.payload?.running === true;
+    return {
+      toolset,
+      service: {
+        state: running ? "running" : "stopped",
+        configurationError: null,
+        freshness: running ? "toolsetUpdateRequired" : "stopped",
+        running,
+        healthy: health.payload?.healthy === true,
+        mainHeadOid: toolset.mainHeadOid,
+        runningRevision: version.payload?.revision ?? null,
+        dirty: version.payload?.dirty === true,
+        startedAt: version.payload?.startedAt ?? null,
+        worktreePath: version.payload?.worktreePath ?? null,
+        desiredProfile: toolset.selectedProfile,
+        runningProfile: null,
+        artifactId: null,
+        sourceFingerprint: null,
+        verified: false,
+        verificationDetail: "Update the Corptie Scripts Tools Set to verify build artifacts and service profiles.",
+        status,
+        health,
+        version
+      }
+    };
+  }
   if (!toolset.configured) {
     await projectToolsetInitializer.recoverOnce(cwd);
     const initialization = projectToolsetInitializer.status(toolset.repositoryId);
@@ -2949,18 +2982,27 @@ async function projectToolsetStatus(sessionId) {
         configurationError: initialization.error,
         freshness: "unknown",
         running: null,
-        mainHeadOid: toolset.mainHeadOid
+        mainHeadOid: toolset.mainHeadOid,
+        desiredProfile: toolset.selectedProfile,
+        verified: false
       }
     };
   }
-  const [status, health, version] = await Promise.all([
-    projectToolsets.run(cwd, "status", { timeoutMs: 5_000 }),
-    projectToolsets.run(cwd, "health", { timeoutMs: 5_000 }),
-    projectToolsets.run(cwd, "version", { timeoutMs: 5_000 })
+  const desiredSource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
+  const [status, health, verify, version] = await Promise.all([
+    projectToolsets.run(cwd, "status", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
+    projectToolsets.run(cwd, "health", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
+    projectToolsets.run(cwd, "verify", { timeoutMs: 10_000, sourceIdentity: desiredSource }),
+    projectToolsets.run(cwd, "version", { timeoutMs: 5_000, sourceIdentity: desiredSource })
   ]);
   const running = status.payload?.running === true;
   const runningRevision = version.payload?.revision ?? null;
   const dirty = version.payload?.dirty === true;
+  const verified = version.ok
+    && version.payload?.verified === true
+    && Boolean(version.payload?.artifactId)
+    && verify.ok
+    && verify.payload?.verified === true;
   let revisionDetails = null;
   if (runningRevision) {
     try {
@@ -2973,11 +3015,22 @@ async function projectToolsetStatus(sessionId) {
       revisionDetails = null;
     }
   }
-  const freshness = !running
-    ? "stopped"
-    : (!version.ok || !runningRevision
-        ? "unknown"
-        : (runningRevision === toolset.mainHeadOid && !dirty ? "current" : "stale"));
+  let freshness = "unknown";
+  if (!running) {
+    freshness = "stopped";
+  } else if (!verified || !runningRevision) {
+    freshness = "unverifiedBuild";
+  } else if (version.payload?.profile !== toolset.selectedProfile
+    || verify.payload?.profile !== toolset.selectedProfile) {
+    freshness = "configurationMismatch";
+  } else if (runningRevision !== desiredSource.revision
+    || version.payload?.sourceFingerprint !== desiredSource.fingerprint) {
+    freshness = "stale";
+  } else if (health.payload?.healthy !== true) {
+    freshness = "unhealthy";
+  } else {
+    freshness = "current";
+  }
   return {
     toolset,
     service: {
@@ -2992,11 +3045,34 @@ async function projectToolsetStatus(sessionId) {
       dirty,
       startedAt: version.payload?.startedAt ?? null,
       worktreePath: version.payload?.worktreePath ?? null,
+      desiredProfile: toolset.selectedProfile,
+      runningProfile: version.payload?.profile ?? null,
+      artifactId: version.payload?.artifactId ?? null,
+      sourceFingerprint: version.payload?.sourceFingerprint ?? null,
+      verified,
+      verificationDetail: verify.payload?.detail ?? null,
       status,
       health,
+      verify,
       version
     }
   };
+}
+
+async function rebuildAndRestartProjectService(workingDirectory, executionRoot = undefined) {
+  const result = await projectToolsets.activateLatest(workingDirectory, { executionRoot });
+  if (!result.ok) {
+    const stageResult = result[result.stage];
+    const detail = result.error
+      || stageResult?.payload?.error
+      || stageResult?.stderr
+      || `Project service ${result.stage || "activation"} failed.`;
+    const error = new Error(detail);
+    error.code = "PROJECT_SERVICE_ACTIVATION_FAILED";
+    error.activation = result;
+    throw error;
+  }
+  return result;
 }
 
 async function projectWorktreeStatus(sessionId) {
@@ -3014,7 +3090,9 @@ async function projectWorktreeStatus(sessionId) {
     gitHubPushes.status({ workingDirectory: projectWorkingDirectoryForSession(sessionId) })
   ]);
   project.worktrees = await Promise.all(project.worktrees.map(async (worktree) => {
-    if (worktree.availability !== "available" || runtime.service.running !== true) {
+    if (worktree.availability !== "available"
+      || runtime.service.running !== true
+      || runtime.service.verified !== true) {
       return { ...worktree, serviceContainsChanges: false };
     }
     const containsCommittedChanges = await gitWorkspaces.revisionContains(
@@ -3074,7 +3152,7 @@ async function mergeProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   });
   let restart = null;
   if (input.restartService === true) {
-    restart = await projectToolsets.run(logical.activeBinding.boundCwd, "restart");
+    restart = await rebuildAndRestartProjectService(logical.activeBinding.boundCwd);
   }
   const current = await projectWorktreeStatus(sessionId);
   return { merge, restart, ...current };
@@ -3092,9 +3170,7 @@ async function restartProjectWorktree(sessionId, sourceWorktreeId) {
   if (!toolset.configured) {
     throw new Error("Configure the Corptie Scripts Tools Set before restarting from this worktree.");
   }
-  const restart = await projectToolsets.run(source.path, "restart", {
-    executionRoot: source.path
-  });
+  const restart = await rebuildAndRestartProjectService(source.path, source.path);
   const current = await projectWorktreeStatus(sessionId);
   return { restart, ...current };
 }
@@ -3233,7 +3309,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   }
   let restart = null;
   if (input.restartService !== false) {
-    restart = await projectToolsets.run(before.mainPath, "restart");
+    restart = await rebuildAndRestartProjectService(before.mainPath);
   }
   emitEvent("ProjectWorktreeCompleted", {
     repositoryId: before.repositoryId,
@@ -3343,7 +3419,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
 
   let restart = null;
   if (operations.restartService) {
-    restart = await projectToolsets.run(before.mainPath, "restart");
+    restart = await rebuildAndRestartProjectService(before.mainPath);
   }
   emitEvent("ProjectWorktreeOperated", {
     repositoryId: before.repositoryId,
@@ -4183,7 +4259,7 @@ function route(request, response) {
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
   const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
   const sessionProjectToolsetMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|start|restart|stop))?$/
+    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|profile|start|restart|stop))?$/
   );
   const sessionGitHubPushMatch = url.pathname.match(
     /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
@@ -4250,7 +4326,19 @@ function route(request, response) {
           sendJson(response, 202, { scheduled: true, action });
           return;
         }
-        const result = await projectToolsets.run(cwd, action);
+        if (action === "profile") {
+          const input = await readJson(request);
+          const profileId = String(input.profileId ?? "").trim();
+          if (!profileId) throw new Error("A Corptie service profile is required.");
+          const toolset = await projectToolsets.selectProfile(cwd, profileId);
+          const status = await projectToolsetStatus(sessionId);
+          emitEvent("ProjectServiceProfileChanged", { sessionId, profileId, toolset, ...status }, { sessionId });
+          sendJson(response, 200, status);
+          return;
+        }
+        const result = action === "start" || action === "restart"
+          ? await rebuildAndRestartProjectService(cwd)
+          : await projectToolsets.run(cwd, action);
         const status = await projectToolsetStatus(sessionId);
         emitEvent("ProjectServiceChanged", { sessionId, action, result, ...status }, { sessionId });
         sendJson(response, result.ok ? 200 : 409, { action: result, ...status });

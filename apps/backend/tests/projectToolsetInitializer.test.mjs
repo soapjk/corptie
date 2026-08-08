@@ -61,6 +61,9 @@ test("initializer runs one isolated ephemeral Agent per repository", async () =>
     },
     async readThread() {
       assert.fail("ephemeral initialization must not read turns");
+    },
+    async deleteThread(threadId) {
+      calls.push(["deleteThread", { threadId }]);
     }
   };
   const initializer = new ProjectToolsetInitializer({
@@ -85,6 +88,52 @@ test("initializer runs one isolated ephemeral Agent per repository", async () =>
   const turnOptions = calls.find(([name]) => name === "startTurn")[1].options;
   assert.deepEqual(turnOptions.sandboxPolicy.writableRoots, ["/repo/.corptie"]);
   assert.equal(turnOptions.sandboxPolicy.networkAccess, false);
+  assert.equal(calls.filter(([name]) => name === "deleteThread").length, 1);
+});
+
+test("a timed-out initializer interrupts and deletes its ephemeral Agent", async () => {
+  const calls = [];
+  const manager = {
+    async inspect() {
+      return {
+        repositoryId: "repository:timeout",
+        configured: false,
+        mainPath: "/repo",
+        toolsetPath: "/repo/.corptie"
+      };
+    },
+    async scaffold() {
+      return this.inspect();
+    }
+  };
+  const codexClient = {
+    notifications: [],
+    async startThread() {
+      return { thread: { id: "thread:timeout" } };
+    },
+    async startTurn() {
+      return { turn: { id: "turn:timeout" } };
+    },
+    async interruptTurn(threadId, turnId) {
+      calls.push(["interrupt", threadId, turnId]);
+    },
+    async deleteThread(threadId) {
+      calls.push(["delete", threadId]);
+    }
+  };
+  const initializer = new ProjectToolsetInitializer({
+    manager,
+    codexClient,
+    referencePath: new URL("../resources/codex/skills/corptie-collaboration/references/project-tools-set.md", import.meta.url),
+    timeoutMs: 5,
+    pollIntervalMs: 1
+  });
+
+  await assert.rejects(() => initializer.initialize("/repo"), /Timed out/);
+  assert.deepEqual(calls, [
+    ["interrupt", "thread:timeout", "turn:timeout"],
+    ["delete", "thread:timeout"]
+  ]);
 });
 
 test("recovery retries an interrupted scaffold only once per backend process", async () => {
