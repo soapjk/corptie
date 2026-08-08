@@ -79,7 +79,9 @@ export class SessionApplicationService {
       throw new SessionNotFoundError(normalizedSessionId);
     }
     return Object.freeze({
-      sessionId: normalizedSessionId,
+      sessionId: reference.sessionId ?? normalizedSessionId,
+      requestedSessionId: reference.requestedSessionId ?? normalizedSessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
       bindingId: reference.bindingId ?? null,
       providerId: reference.providerId,
       providerSessionId: reference.providerSessionId,

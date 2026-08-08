@@ -20,6 +20,7 @@ import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRunti
 import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
+import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createCodexAppServerProvider } from "./agent-provider/providers/codexAppServerProvider.mjs";
 import {
@@ -198,9 +199,14 @@ const agentProviderRegistry = new AgentProviderRegistry([
     ]
   })
 ]);
+const sessionBindingRepository = new SessionBindingRepository({
+  store,
+  findSession: (sessionId) => listGatewaySessions().find((session) => session.id === sessionId),
+  normalizeLegacySessionId: normalizeSessionId
+});
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
-  resolveSessionReference: resolveExistingSessionReference
+  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId)
 });
 const feishuGateway = new FeishuGatewayManager({
   store,
@@ -305,6 +311,8 @@ async function ensureLogicalRouteForCodexSession(session, appServerResponse = nu
       logicalSessionId: `logical:${randomUUID()}`,
       legacySessionId: session.id,
       providerThreadId,
+      providerId: "codex-app-server",
+      providerSessionId: providerThreadId,
       repositoryId,
       worktreeId,
       boundCwd: cwd,
@@ -2049,53 +2057,34 @@ async function createGatewaySession(input = {}) {
 }
 
 async function getUnifiedSessionSnapshot(sessionId) {
-  const summary = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
 
   const detail = await sessionApplicationService.readSession(sessionId);
+  const publicSessionId = reference.logicalSessionId ?? reference.sessionId;
 
   return {
     ...summary,
     ...(detail ?? {}),
-    id: sessionId,
-    sessionId,
+    id: reference.sessionId,
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    publicSessionId,
     title: preferredSessionTitle(summary, detail),
     cwd: preferredSessionCwd(summary, detail),
     status: detail?.status || summary.status,
     activityStatus: detail?.activityStatus ?? summary.activityStatus ?? null,
-    items: agentWorkQueueItemsForSnapshot(sessionId, detail?.items ?? []),
-    lastEventSequence: store.lastSessionEventSequence(sessionId)
+    items: agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []),
+    lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
   };
 }
 
-function resolveExistingSessionReference(sessionId) {
-  const session = listGatewaySessions().find((candidate) => candidate.id === sessionId);
-  if (!session) return null;
-  const externalProvider = session.external?.provider;
-  const providerId = externalProvider === "claude-sdk"
-    ? "claude-sdk"
-    : externalProvider === "codex-app-server"
-      ? "codex-app-server"
-      : externalProvider === CODEX_PTY_PROVIDER_ID
-        ? CODEX_PTY_PROVIDER_ID
-        : GENERIC_PTY_PROVIDER_ID;
-  const logical = providerId === "codex-app-server"
-    ? store.getLogicalSessionByLegacySessionId(sessionId)
-    : null;
-  return {
-    bindingId: null,
-    providerId,
-    providerSessionId: logical?.activeThreadId
-      ?? session.external?.threadId
-      ?? session.external?.sessionId
-      ?? normalizeSessionId(sessionId),
-    routingVersion: logical?.routingVersion ?? null,
-    metadata: { session }
-  };
+function requireSessionReference(sessionId) {
+  const reference = sessionBindingRepository.resolve(sessionId);
+  if (reference?.metadata?.session) return reference;
+  const error = new Error("Session not found.");
+  error.code = "SESSION_NOT_FOUND";
+  throw error;
 }
 
 async function readCodexProviderSession(reference) {
@@ -2340,16 +2329,14 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     error.code = "INVALID_MESSAGE";
     throw error;
   }
-  const before = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!before) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+  const reference = requireSessionReference(sessionId);
+  const routedSessionId = reference.sessionId;
+  const publicSessionId = reference.logicalSessionId ?? routedSessionId;
+  const before = reference.metadata.session;
 
   const confirmationReply = collaborationConfirmationReply(value);
   const pendingConfirmation = confirmationReply
-    ? collaborationCore.pendingTaskConfirmationForSession(sessionId)
+    ? collaborationCore.pendingTaskConfirmationForSession(routedSessionId)
     : null;
   if (pendingConfirmation) {
     const confirmation = await resolveCollaborationConfirmation(
@@ -2357,11 +2344,11 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       confirmationReply === "confirm",
       source
     );
-    return { accepted: true, mode: "collaboration-confirmation", sessionId, collaborationConfirmation: confirmation };
+    return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
   }
 
-  if (isClearCommand(value) && sessionId.startsWith("codex:")) {
-    return clearCodexAppServerSession(sessionId, before, source);
+  if (isClearCommand(value) && routedSessionId.startsWith("codex:")) {
+    return clearCodexAppServerSession(routedSessionId, before, source);
   }
   if (isClearCommand(value) && before.external?.provider !== "codex-pty") {
     const error = new Error("/clear is only available for Codex sessions.");
@@ -2369,18 +2356,18 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
 
-  if (sessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
+  if (routedSessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
     return enqueueUserAgentWork(before, value, source);
   }
-  if (sessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
+  if (routedSessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
     const error = new Error("Target Session became busy before queued work started.");
     error.code = "SESSION_BUSY";
     throw error;
   }
 
-  if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    bumpChoiceGeneration(sessionId);
+  if (routedSessionId.startsWith("pty:")) {
+    const id = normalizeSessionId(routedSessionId);
+    bumpChoiceGeneration(routedSessionId);
     store.clearActiveChoicePrompt(id);
   }
   const result = await sessionApplicationService.sendMessage(sessionId, value, {
@@ -2391,7 +2378,8 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   });
 
   emitEvent("SessionUserMessageCreated", {
-    sessionId,
+    sessionId: routedSessionId,
+    logicalSessionId: reference.logicalSessionId,
     message: {
       id: source.messageId || randomUUID(),
       type: "userMessage",
@@ -2400,12 +2388,17 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       createdAt: now()
     },
     source
-  }, { sessionId, source });
-  emitEvent("SessionRunStarted", { sessionId, source }, { sessionId, source });
+  }, { sessionId: routedSessionId, source });
+  emitEvent("SessionRunStarted", {
+    sessionId: routedSessionId,
+    logicalSessionId: reference.logicalSessionId,
+    source
+  }, { sessionId: routedSessionId, source });
   return {
     accepted: true,
     cleared: isClearCommand(value) && before.external?.provider === "codex-pty",
-    sessionId,
+    sessionId: publicSessionId,
+    legacySessionId: routedSessionId,
     session: isClearCommand(value) && before.external?.provider === "codex-pty" ? before : undefined,
     result
   };
@@ -2729,29 +2722,32 @@ async function startCollaborationTurn(sessionId, text, metadata = {}) {
 }
 
 async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
-  const summary = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
   const session = await sessionApplicationService.interrupt(sessionId, { summary, source });
-  emitEvent("SessionRunInterrupted", { sessionId, session, source }, { sessionId, source });
+  emitEvent("SessionRunInterrupted", {
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    session,
+    source
+  }, { sessionId: reference.sessionId, source });
   return session;
 }
 
 async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
-  const summary = listGatewaySessions().find((session) => session.id === sessionId);
-  if (!summary) {
-    const error = new Error("Session not found.");
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
 
   const approved = input.approved === true;
   const session = await sessionApplicationService.respondToApproval(sessionId, input, { summary, source });
 
-  emitEvent("SessionApprovalResponded", { sessionId, approved, session, source }, { sessionId, source });
+  emitEvent("SessionApprovalResponded", {
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    approved,
+    session,
+    source
+  }, { sessionId: reference.sessionId, source });
   return session;
 }
 

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import os from "node:os";
@@ -624,13 +625,18 @@ export class CorptieStore {
 
       CREATE TABLE IF NOT EXISTS provider_thread_bindings (
         provider_thread_id TEXT PRIMARY KEY,
+        binding_id TEXT,
+        provider_id TEXT,
+        provider_session_id TEXT,
         logical_session_id TEXT NOT NULL,
         worktree_id TEXT,
         bound_cwd TEXT NOT NULL,
         parent_thread_id TEXT,
+        parent_binding_id TEXT,
         forked_at_turn_id TEXT,
         instruction_sources_json TEXT NOT NULL DEFAULT '[]',
         permission_snapshot_json TEXT NOT NULL DEFAULT '{}',
+        provider_metadata_json TEXT NOT NULL DEFAULT '{}',
         routing_version INTEGER NOT NULL DEFAULT 1,
         state TEXT NOT NULL
           CHECK (state IN ('active', 'superseded', 'invalid', 'orphaned')),
@@ -693,6 +699,12 @@ export class CorptieStore {
     this.ensureColumn("sessions", "avatar_path", "TEXT");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
     this.ensureColumn("provider_thread_bindings", "routing_version", "INTEGER NOT NULL DEFAULT 1");
+    this.ensureColumn("provider_thread_bindings", "binding_id", "TEXT");
+    this.ensureColumn("provider_thread_bindings", "provider_id", "TEXT");
+    this.ensureColumn("provider_thread_bindings", "provider_session_id", "TEXT");
+    this.ensureColumn("provider_thread_bindings", "parent_binding_id", "TEXT");
+    this.ensureColumn("provider_thread_bindings", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.migrateAgentProviderBindings();
     this.migrateWorkspaceTransitionsForDirectoryTargets();
     this.ensureColumn("workspace_transitions", "resume_goal_after_transition", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("session_items", "options_json", "TEXT");
@@ -945,6 +957,12 @@ export class CorptieStore {
   createLogicalSessionRoute(input) {
     const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
     const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
+    const providerId = requiredText(input?.providerId ?? "codex-app-server", "providerId");
+    const providerSessionId = requiredText(input?.providerSessionId ?? providerThreadId, "providerSessionId");
+    const bindingId = requiredText(input?.bindingId ?? `binding:${randomUUID()}`, "bindingId");
+    if (providerSessionId !== providerThreadId) {
+      throw new Error("providerSessionId must match providerThreadId during the compatibility migration.");
+    }
     const boundCwd = requiredText(input?.boundCwd, "boundCwd");
     const timestamp = input.createdAt || new Date().toISOString();
     this.db.run("BEGIN IMMEDIATE");
@@ -970,17 +988,23 @@ export class CorptieStore {
       );
       this.db.run(
         `INSERT INTO provider_thread_bindings (
-          provider_thread_id, logical_session_id, worktree_id, bound_cwd,
-          parent_thread_id, forked_at_turn_id, instruction_sources_json,
-          permission_snapshot_json, routing_version, state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, 1, 'active', ?, ?)`,
+          provider_thread_id, binding_id, provider_id, provider_session_id,
+          logical_session_id, worktree_id, bound_cwd,
+          parent_thread_id, parent_binding_id, forked_at_turn_id, instruction_sources_json,
+          permission_snapshot_json, provider_metadata_json,
+          routing_version, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, 1, 'active', ?, ?)`,
         [
           providerThreadId,
+          bindingId,
+          providerId,
+          providerSessionId,
           logicalSessionId,
           input.worktreeId || null,
           boundCwd,
           JSON.stringify(input.instructionSources ?? []),
           JSON.stringify(input.permissionSnapshot ?? {}),
+          JSON.stringify(input.providerMetadata ?? {}),
           timestamp,
           timestamp
         ]
@@ -1128,6 +1152,23 @@ export class CorptieStore {
     return row ? providerThreadBindingFromRow(row) : null;
   }
 
+  getAgentSessionBinding(bindingId) {
+    const row = this.selectOne(
+      "SELECT * FROM provider_thread_bindings WHERE binding_id = ?",
+      [bindingId]
+    );
+    return row ? providerThreadBindingFromRow(row) : null;
+  }
+
+  getAgentSessionBindingByProviderSession(providerId, providerSessionId) {
+    const row = this.selectOne(
+      `SELECT * FROM provider_thread_bindings
+       WHERE provider_id = ? AND provider_session_id = ?`,
+      [providerId, providerSessionId]
+    );
+    return row ? providerThreadBindingFromRow(row) : null;
+  }
+
   listProviderThreadBindings(logicalSessionId) {
     return this.selectAll(
       `SELECT * FROM provider_thread_bindings
@@ -1139,6 +1180,12 @@ export class CorptieStore {
 
   recordProviderThreadBinding(input) {
     const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
+    const providerId = requiredText(input?.providerId ?? "codex-app-server", "providerId");
+    const providerSessionId = requiredText(input?.providerSessionId ?? providerThreadId, "providerSessionId");
+    const bindingId = requiredText(input?.bindingId ?? `binding:${randomUUID()}`, "bindingId");
+    if (providerSessionId !== providerThreadId) {
+      throw new Error("providerSessionId must match providerThreadId during the compatibility migration.");
+    }
     const logicalSessionId = requiredText(input?.logicalSessionId, "logicalSessionId");
     const boundCwd = requiredText(input?.boundCwd, "boundCwd");
     const state = input.state || "orphaned";
@@ -1148,24 +1195,34 @@ export class CorptieStore {
     const timestamp = input.createdAt || new Date().toISOString();
     this.db.run(
       `INSERT INTO provider_thread_bindings (
-        provider_thread_id, logical_session_id, worktree_id, bound_cwd,
-        parent_thread_id, forked_at_turn_id, instruction_sources_json,
-        permission_snapshot_json, routing_version, state, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        provider_thread_id, binding_id, provider_id, provider_session_id,
+        logical_session_id, worktree_id, bound_cwd,
+        parent_thread_id, parent_binding_id, forked_at_turn_id, instruction_sources_json,
+        permission_snapshot_json, provider_metadata_json,
+        routing_version, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(provider_thread_id) DO UPDATE SET
+        provider_id=excluded.provider_id,
+        provider_session_id=excluded.provider_session_id,
         instruction_sources_json=excluded.instruction_sources_json,
         permission_snapshot_json=excluded.permission_snapshot_json,
+        provider_metadata_json=excluded.provider_metadata_json,
         state=excluded.state,
         updated_at=excluded.updated_at`,
       [
         providerThreadId,
+        bindingId,
+        providerId,
+        providerSessionId,
         logicalSessionId,
         input.worktreeId || null,
         boundCwd,
         input.parentThreadId || null,
+        input.parentBindingId || null,
         input.forkedAtTurnId || null,
         JSON.stringify(input.instructionSources ?? []),
         JSON.stringify(input.permissionSnapshot ?? {}),
+        JSON.stringify(input.providerMetadata ?? {}),
         Number(input.routingVersion) || 1,
         state,
         timestamp,
@@ -1310,6 +1367,13 @@ export class CorptieStore {
       throw new Error(`Committed workspace transition ${transitionId} has an inconsistent route.`);
     }
     const newThreadId = requiredText(binding?.providerThreadId, "providerThreadId");
+    const sourceBinding = this.getProviderThreadBinding(transition.sourceThreadId);
+    const providerId = requiredText(binding?.providerId ?? sourceBinding?.providerId ?? "codex-app-server", "providerId");
+    const providerSessionId = requiredText(binding?.providerSessionId ?? newThreadId, "providerSessionId");
+    const bindingId = requiredText(binding?.bindingId ?? `binding:${randomUUID()}`, "bindingId");
+    if (providerSessionId !== newThreadId) {
+      throw new Error("providerSessionId must match providerThreadId during the compatibility migration.");
+    }
     const boundCwd = requiredText(binding?.boundCwd, "boundCwd");
     const target = transition.targetWorktreeId
       ? this.selectOne(
@@ -1343,19 +1407,26 @@ export class CorptieStore {
       );
       this.db.run(
         `INSERT INTO provider_thread_bindings (
-          provider_thread_id, logical_session_id, worktree_id, bound_cwd,
-          parent_thread_id, forked_at_turn_id, instruction_sources_json,
-          permission_snapshot_json, routing_version, state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          provider_thread_id, binding_id, provider_id, provider_session_id,
+          logical_session_id, worktree_id, bound_cwd,
+          parent_thread_id, parent_binding_id, forked_at_turn_id, instruction_sources_json,
+          permission_snapshot_json, provider_metadata_json,
+          routing_version, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
         [
           newThreadId,
+          bindingId,
+          providerId,
+          providerSessionId,
           transition.logicalSessionId,
           transition.targetWorktreeId,
           boundCwd,
           transition.sourceThreadId,
+          sourceBinding?.bindingId ?? null,
           binding.forkedAtTurnId || transition.lastCompletedTurnId,
           JSON.stringify(binding.instructionSources ?? []),
           JSON.stringify(binding.permissionSnapshot ?? {}),
+          JSON.stringify(binding.providerMetadata ?? {}),
           Number(logical.routing_version) + 1,
           timestamp,
           timestamp
@@ -2135,6 +2206,45 @@ export class CorptieStore {
     this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
+  migrateAgentProviderBindings() {
+    this.db.run(
+      `UPDATE provider_thread_bindings
+       SET binding_id = COALESCE(binding_id, 'binding:' || lower(hex(randomblob(16)))),
+           provider_session_id = COALESCE(provider_session_id, provider_thread_id),
+           provider_id = COALESCE(
+             provider_id,
+             (
+               SELECT sessions.provider
+               FROM logical_sessions
+               JOIN sessions ON sessions.id = logical_sessions.legacy_session_id
+               WHERE logical_sessions.logical_session_id = provider_thread_bindings.logical_session_id
+             ),
+             'codex-app-server'
+           ),
+           provider_metadata_json = COALESCE(provider_metadata_json, '{}')
+       WHERE binding_id IS NULL
+          OR provider_session_id IS NULL
+          OR provider_id IS NULL
+          OR provider_metadata_json IS NULL`
+    );
+    this.db.run(
+      `UPDATE provider_thread_bindings
+       SET parent_binding_id = (
+         SELECT parent.binding_id
+         FROM provider_thread_bindings AS parent
+         WHERE parent.provider_thread_id = provider_thread_bindings.parent_thread_id
+       )
+       WHERE parent_thread_id IS NOT NULL AND parent_binding_id IS NULL`
+    );
+    this.db.run(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_thread_bindings_binding_id ON provider_thread_bindings(binding_id)"
+    );
+    this.db.run(
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_thread_bindings_provider_session
+       ON provider_thread_bindings(provider_id, provider_session_id)`
+    );
+  }
+
   migrateWorkspaceTransitionsForDirectoryTargets() {
     const columns = this.selectAll("PRAGMA table_info(workspace_transitions)");
     const targetWorktree = columns.find((column) => column.name === "target_worktree_id");
@@ -2343,14 +2453,19 @@ function normalizeSqliteBindings(params) {
 
 function providerThreadBindingFromRow(row) {
   return {
+    bindingId: row.binding_id,
+    providerId: row.provider_id,
+    providerSessionId: row.provider_session_id ?? row.provider_thread_id,
     providerThreadId: row.provider_thread_id,
     logicalSessionId: row.logical_session_id,
     worktreeId: row.worktree_id,
     boundCwd: row.bound_cwd,
     parentThreadId: row.parent_thread_id,
+    parentBindingId: row.parent_binding_id,
     forkedAtTurnId: row.forked_at_turn_id,
     instructionSources: parseJson(row.instruction_sources_json, []),
     permissionSnapshot: parseJson(row.permission_snapshot_json, {}),
+    providerMetadata: parseJson(row.provider_metadata_json, {}),
     routingVersion: Number(row.routing_version ?? 1),
     state: row.state,
     createdAt: row.created_at,
