@@ -14,6 +14,8 @@ function recordingManager(provider = "claude-sdk") {
     start: (input) => calls.push(["start", input]),
     reconnect: (id) => calls.push(["reconnect", id]),
     delete: (id) => calls.push(["delete", id]),
+    rename: (id, title) => calls.push(["rename", id, title]),
+    updateAvatar: (id, avatarPath) => calls.push(["avatar", id, avatarPath]),
     disconnect: (id) => calls.push(["disconnect", id]),
     send: (id, message) => calls.push(["send", id, message]),
     write: (id, message, options) => calls.push(["write", id, message, options]),
@@ -44,9 +46,23 @@ test("Claude manager is isolated behind the common Agent Provider contract", asy
     reference,
     "claude-model"
   );
+  await registry.invoke(
+    "claude-sdk",
+    AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
+    reference,
+    "Renamed"
+  );
+  await registry.invoke(
+    "claude-sdk",
+    AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
+    reference,
+    "/tmp/avatar.png"
+  );
   assert.deepEqual(manager.calls, [
     ["send", "claude-native-a", "hello"],
-    ["model", "claude-native-a", "claude-model"]
+    ["model", "claude-native-a", "claude-model"],
+    ["rename", "claude-native-a", "Renamed"],
+    ["avatar", "claude-native-a", "/tmp/avatar.png"]
   ]);
 });
 

@@ -102,6 +102,28 @@ export class SessionApplicationService {
     );
   }
 
+  async renameSession(sessionId, title, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
+      reference,
+      requiredText(title, "title"),
+      context
+    );
+  }
+
+  async updateAvatar(sessionId, avatarPath, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
+      reference,
+      typeof avatarPath === "string" && avatarPath.trim() ? avatarPath.trim() : null,
+      context
+    );
+  }
+
   async readSession(sessionId) {
     const reference = await this.referenceFor(sessionId);
     const session = await this.registry.get(reference.providerId).readSession(reference);
@@ -216,4 +238,10 @@ export class SessionApplicationService {
       publicSessionId: logicalSessionId ?? legacySessionId
     };
   }
+}
+
+function requiredText(value, field) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized) throw new TypeError(`${field} is required.`);
+  return normalized;
 }

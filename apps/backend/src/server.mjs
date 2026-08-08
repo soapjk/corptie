@@ -204,6 +204,8 @@ const agentProviderRegistry = new AgentProviderRegistry([
     createSession: createCodexProviderSession,
     deleteSession: deleteCodexProviderSession,
     restartSession: restartCodexProviderSession,
+    renameSession: renameCodexProviderSession,
+    updateAvatar: updateCodexProviderAvatar,
     listModels: loadCodexModels,
     send: sendCodexProviderMessage,
     interrupt: interruptCodexProviderSession,
@@ -236,6 +238,8 @@ const agentProviderRegistry = new AgentProviderRegistry([
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
@@ -1929,9 +1933,12 @@ async function loadClaudeModels(options = {}) {
 
   try {
     const models = await warm.query((async function* () {})()).supportedModels();
-    const activeSession = Array.from(claudeAgents.sessions?.values?.() ?? []).find((session) => session.currentModel);
+    const activeSession = [
+      ...store.listSessions({ archived: false }),
+      ...store.listSessions({ archived: true })
+    ].find((session) => session.external?.provider === "claude-sdk" && session.external?.currentModel);
     const payload = {
-      currentModel: activeSession?.currentModel ?? null,
+      currentModel: activeSession?.external?.currentModel ?? null,
       currentReasoningLevel: null,
       models: (Array.isArray(models) ? models : [])
         .map((model) => ({
@@ -2287,6 +2294,27 @@ function deleteCodexProviderSession(reference) {
   const existed = managedCodexSessions.delete(reference.sessionId);
   store.deleteSession(reference.sessionId);
   return existed;
+}
+
+async function renameCodexProviderSession(reference, title) {
+  const previous = reference.metadata?.session
+    ?? managedCodexSessions.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) throw new Error("Session not found.");
+  await codexClient.setThreadName(reference.providerSessionId, title);
+  const session = { ...previous, title, updatedAt: new Date().toISOString() };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+function updateCodexProviderAvatar(reference, avatarPath) {
+  const previous = reference.metadata?.session
+    ?? managedCodexSessions.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) throw new Error("Session not found.");
+  const session = { ...previous, avatarPath, updatedAt: new Date().toISOString() };
+  upsertManagedCodexSession(session);
+  return session;
 }
 
 async function getUnifiedSessionSnapshot(sessionId) {
@@ -4687,48 +4715,8 @@ function route(request, response) {
     readJson(request)
       .then(async (input) => {
         const rawId = decodeURIComponent(sessionDeleteMatch[1]);
-        if (rawId.startsWith("codex:")) {
-          const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
-          if (!session) {
-            sendJson(response, 404, { error: "Session not found" });
-            return;
-          }
-          if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-            const nextSession = { ...session, avatarPath: input.avatarPath ?? null };
-            upsertManagedCodexSession(nextSession);
-            emitEvent("SessionAvatarUpdated", { session: nextSession });
-            sendJson(response, 200, { session: nextSession });
-            return;
-          }
-          const title = typeof input.title === "string" ? input.title.trim() : "";
-          if (!title) {
-            sendJson(response, 400, { error: "Title is required" });
-            return;
-          }
-          const releaseTitle = reserveSessionTitle(title, rawId);
-          try {
-            await codexClient.setThreadName(rawId.slice("codex:".length), title);
-            const nextSession = { ...session, title, updatedAt: new Date().toISOString() };
-            upsertManagedCodexSession(nextSession);
-            emitEvent("SessionRenamed", { session: nextSession });
-            sendJson(response, 200, { session: nextSession });
-          } finally {
-            releaseTitle();
-          }
-          return;
-        }
-
-        const id = normalizeSessionId(rawId);
-        const storedSession = store.getSession(id);
-        const isClaudeSession = claudeAgents.has(id) || storedSession?.external?.provider === "claude-sdk";
         if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-          const session = isClaudeSession
-            ? claudeAgents.updateAvatar(id, input.avatarPath)
-            : ptyAgents.updateAvatar(id, input.avatarPath);
-          if (!session) {
-            sendJson(response, 404, { error: "Session not found" });
-            return;
-          }
+          const session = await sessionApplicationService.updateAvatar(rawId, input.avatarPath, { source: "http" });
           emitEvent("SessionAvatarUpdated", { session });
           sendJson(response, 200, { session });
           return;
@@ -4739,18 +4727,13 @@ function route(request, response) {
           return;
         }
         const releaseTitle = reserveSessionTitle(title, rawId);
-        let session;
         try {
-          session = isClaudeSession ? claudeAgents.rename(id, title) : ptyAgents.rename(id, title);
+          const session = await sessionApplicationService.renameSession(rawId, title, { source: "http" });
+          emitEvent("SessionRenamed", { session });
+          sendJson(response, 200, { session });
         } finally {
           releaseTitle();
         }
-        if (!session) {
-          sendJson(response, 404, { error: "Session not found" });
-          return;
-        }
-        emitEvent("SessionRenamed", { session });
-        sendJson(response, 200, { session });
       })
       .catch((error) => {
         sendJson(response, errorStatus(error), sessionTitleErrorPayload(error));
@@ -4985,12 +4968,6 @@ function route(request, response) {
   const ptyEventsMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && ptyEventsMatch) {
     const sessionId = decodeURIComponent(ptyEventsMatch[1]);
-    if (claudeAgents.has(sessionId)) {
-      if (!claudeAgents.subscribeDetail(sessionId, response)) {
-        sendJson(response, 404, { error: "Claude session not found", adapter: "claude-sdk" });
-      }
-      return;
-    }
     if (!ptyAgents.subscribeDetail(sessionId, response)) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
     }
@@ -5000,9 +4977,7 @@ function route(request, response) {
   const ptySessionMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)$/);
   if (request.method === "GET" && ptySessionMatch) {
     const sessionId = decodeURIComponent(ptySessionMatch[1]);
-    const detail = claudeAgents.has(sessionId)
-      ? claudeAgents.detail(sessionId)
-      : ptyAgents.detail(sessionId);
+    const detail = ptyAgents.detail(sessionId);
     if (!detail) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
       return;
@@ -5020,22 +4995,6 @@ function route(request, response) {
         if (!text.trim()) {
           sendJson(response, 400, { error: "Input text is required", adapter: "pty" });
           return;
-        }
-        if (isClearCommand(text) && claudeAgents.has(sessionId)) {
-          const error = new Error("/clear is only available for Codex sessions.");
-          error.code = "UNSUPPORTED_COMMAND";
-          throw error;
-        }
-        if (claudeAgents.has(sessionId)) {
-          store.clearActiveChoicePrompt(sessionId);
-          return claudeAgents.send(sessionId, text).then((session) => {
-            emitEvent("ClaudeSessionInputSent", { sessionId });
-            sendJson(response, 202, {
-              mode: "claude-sdk",
-              visibleInCodexDesktop: false,
-              session
-            });
-          });
         }
         const session = ptyAgents.get(sessionId);
         if (isClearCommand(text) && session?.provider !== "codex-pty") {
@@ -5139,7 +5098,7 @@ function route(request, response) {
   const ptyTerminateMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/terminate$/);
   if (request.method === "POST" && ptyTerminateMatch) {
     const sessionId = decodeURIComponent(ptyTerminateMatch[1]);
-    const session = ptyAgents.terminate(sessionId) ?? (claudeAgents.has(sessionId) ? claudeAgents.terminate(sessionId) : null);
+    const session = ptyAgents.terminate(sessionId);
     if (!session) {
       sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
       return;
@@ -5152,17 +5111,6 @@ function route(request, response) {
   const ptyInterruptMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/interrupt$/);
   if (request.method === "POST" && ptyInterruptMatch) {
     const sessionId = decodeURIComponent(ptyInterruptMatch[1]);
-    if (claudeAgents.has(sessionId) && !ptyAgents.get(sessionId)) {
-      claudeAgents.interrupt(sessionId)
-        .then((session) => {
-          emitEvent("ClaudeSessionInterrupted", { session });
-          sendJson(response, 200, { session });
-        })
-        .catch((error) => {
-          sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-        });
-      return;
-    }
     try {
       const session = ptyAgents.interrupt(sessionId);
       emitEvent("PtySessionInterrupted", { session });
@@ -5229,13 +5177,7 @@ function route(request, response) {
     const sessionId = decodeURIComponent(ptyChoiceMatch[1]);
     readJson(request)
       .then((input) => {
-        const session = claudeAgents.has(sessionId)
-          ? claudeAgents.respondToChoice(sessionId, {
-            choiceId: input.choiceId,
-            optionId: input.optionId,
-            optionIndex: input.optionIndex
-          })
-          : ptyAgents.respondToPtyChoice(sessionId, {
+        const session = ptyAgents.respondToPtyChoice(sessionId, {
           optionId: input.optionId,
           optionIndex: input.optionIndex
         });
