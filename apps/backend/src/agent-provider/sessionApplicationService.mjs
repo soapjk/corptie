@@ -153,6 +153,16 @@ export class SessionApplicationService {
     );
   }
 
+  async clearConversation(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
+      reference,
+      context
+    );
+  }
+
   async interrupt(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
     return this.registry.invoke(

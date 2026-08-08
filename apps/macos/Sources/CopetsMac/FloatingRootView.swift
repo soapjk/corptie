@@ -5391,6 +5391,22 @@ private struct ProjectWorktreeManagerView: View {
                     }
                     .padding(.vertical, 2)
                 }
+            } else if let loadError = backendClient.projectWorktreeLoadError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(.orange)
+                    Text(loadError)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                    Button(L10n("Retry")) {
+                        Task { await backendClient.refreshSelectedProjectWorktrees() }
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 10) {
                     ProgressView()
@@ -7572,7 +7588,7 @@ private struct MessageComposer: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 6) {
+            HStack(spacing: 2) {
                 ComposerInputTextView(
                     controller: editorController,
                     placeholder: "Send a instruction",
@@ -7598,8 +7614,11 @@ private struct MessageComposer: View {
                         backendClient.interruptSelectedSession()
                     } label: {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 24, height: 24)
+                            .background { ComposerGlassActionBackground(tint: .red) }
                             .frame(width: 28, height: 28)
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
@@ -7609,21 +7628,25 @@ private struct MessageComposer: View {
                 Button {
                     sendCurrentDraft()
                 } label: {
-                    if backendClient.isSendingMessage {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 28, height: 28)
-                    } else {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .frame(width: 28, height: 28)
+                    Group {
+                        if backendClient.isSendingMessage {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 10, weight: .bold))
+                        }
                     }
+                    .frame(width: 24, height: 24)
+                    .background { ComposerGlassActionBackground(tint: CorptiePalette.softBlue) }
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(isSendDisabled)
                 .help(L10n("Send instruction"))
-                .padding(.trailing, 6)
+                .padding(.trailing, 4)
             }
             .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay(
@@ -7696,6 +7719,37 @@ private struct MessageComposer: View {
             return 74
         }
         return max(54, min(74, composerWidth / 6))
+    }
+}
+
+private struct ComposerGlassActionBackground: View {
+    let tint: Color
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            Circle()
+                .fill(.clear)
+                .glassEffect(.clear.tint(tint.opacity(0.11)), in: .circle)
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
+                }
+        } else {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Circle()
+                        .fill(tint.opacity(0.07))
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
+                }
+        }
     }
 }
 

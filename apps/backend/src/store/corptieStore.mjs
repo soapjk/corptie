@@ -1608,6 +1608,11 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  clearItems(sessionId) {
+    this.db.run("DELETE FROM session_items WHERE session_id = ?", [sessionId]);
+    this.scheduleSave();
+  }
+
   getQueuedItems(sessionId) {
     return this.selectAll(
       `SELECT * FROM session_items

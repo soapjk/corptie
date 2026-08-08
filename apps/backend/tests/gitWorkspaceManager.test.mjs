@@ -291,6 +291,32 @@ test("project status can be inspected by repository path without an Agent Sessio
   }
 });
 
+test("the primary worktree branch is not required to be named main", async () => {
+  const fixture = await createFixture("custom-primary-branch", {
+    activeFeatureWorktree: true,
+    mainBranch: "dev_nau"
+  });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const project = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId);
+    assert.equal(project.mainBranch, "dev_nau");
+    assert.equal(project.worktrees.length, 2);
+
+    await writeFile(join(fixture.activeWorktree, "custom-primary.txt"), "custom primary\n");
+    const merged = await manager.mergeWorktreeIntoMain({
+      logicalSessionId: "logical:one",
+      commitMessage: "Merge into custom primary branch"
+    });
+    assert.equal(merged.merged, true);
+    assert.equal(await readFile(join(fixture.repository, "custom-primary.txt"), "utf8"), "custom primary\n");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("project workspace changes can be committed without a logical Session id", async () => {
   const fixture = await createFixture("project-commit-without-session", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
@@ -528,7 +554,7 @@ async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, "main repo");
   await mkdir(repository);
-  await git(["init", "-b", "main"], repository);
+  await git(["init", "-b", options.mainBranch ?? "main"], repository);
   await git(["commit", "--allow-empty", "-m", "initial"], repository);
   const activeWorktree = options.activeFeatureWorktree
     ? join(directory, "session worktree")

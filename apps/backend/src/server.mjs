@@ -200,6 +200,11 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     updateAvatar: updateCodexProviderAvatar,
     listModels: loadCodexModels,
     send: sendCodexProviderMessage,
+    clearConversation: (reference, context = {}) => clearCodexAppServerSession(
+      reference.sessionId,
+      reference.metadata.session,
+      context.source
+    ),
     interrupt: interruptCodexProviderSession,
     respondToApproval: respondCodexProviderApproval,
     manageTurnChanges: manageCodexTurnChanges,
@@ -2715,13 +2720,26 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
   }
 
-  if (isClearCommand(value) && routedSessionId.startsWith("codex:")) {
-    return clearCodexAppServerSession(routedSessionId, before, source);
-  }
   if (isClearCommand(value) && before.external?.provider !== "codex-pty") {
-    const error = new Error("/clear is only available for Codex sessions.");
-    error.code = "UNSUPPORTED_COMMAND";
-    throw error;
+    const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
+    if (result?.cleared === true) return result;
+    const session = {
+      ...result,
+      id: routedSessionId
+    };
+    emitEvent("SessionCleared", {
+      previousSessionId: routedSessionId,
+      session,
+      source
+    }, { sessionId: routedSessionId, source });
+    return {
+      accepted: true,
+      cleared: true,
+      previousSessionId: routedSessionId,
+      sessionId: publicSessionId,
+      legacySessionId: routedSessionId,
+      session
+    };
   }
 
   if (routedSessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
@@ -3446,8 +3464,11 @@ async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
 }
 
 function projectWorkingDirectoryForSession(sessionId) {
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  const reference = requireSessionReference(sessionId);
+  const session = reference.metadata.session;
+  const logical = reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
   const cwd = logical?.activeBinding?.boundCwd ?? session?.external?.cwd ?? session?.cwd;
   if (!cwd) {
     const error = new Error("The Session is not attached to a local project directory.");
@@ -3607,14 +3628,11 @@ async function rebuildAndRestartProjectService(workingDirectory, executionRoot =
 }
 
 async function projectWorktreeStatus(sessionId) {
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-  if (!session) {
-    const error = new Error("Session not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  const logical = store.getLogicalSessionByLegacySessionId(sessionId)
-    ?? await ensureLogicalRouteForCodexSession(session);
+  const reference = requireSessionReference(sessionId);
+  const session = reference.metadata.session;
+  const logical = (reference.logicalSessionId ? store.getLogicalSession(reference.logicalSessionId) : null)
+    ?? store.getLogicalSessionByLegacySessionId(reference.sessionId)
+    ?? await ensureLogicalRouteForProviderSession(session, reference.providerId);
   const [project, runtime, gitHubPush] = await Promise.all([
     gitWorkspaces.projectStatus(logical.logicalSessionId),
     projectToolsetStatus(sessionId),
