@@ -4867,9 +4867,9 @@ private struct DetailHeaderView: View {
 }
 
 struct GitHubPushArrowAnimation {
-    static let duration = 1.1
+    static let duration = 1.4
     static let progressSymbolName = "arrow.up"
-    static let travelExtent = 22.0
+    static let travelExtent = 20.0
 
     static func progress(at time: TimeInterval) -> Double {
         let remainder = time.truncatingRemainder(dividingBy: duration)
@@ -4894,7 +4894,7 @@ struct GitHubPushArrowAnimation {
 }
 
 struct GitHubPushButtonAppearance {
-    static let diameter = 30.0
+    static let diameter = 28.0
     static let arrowFontSize = 12.0
     static let arrowOpacity = 1.0
 }
