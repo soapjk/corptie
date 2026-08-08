@@ -16,7 +16,8 @@ export function createClaudeAgentSdkProvider(manager) {
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
-      AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH
+      AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   }, {
     listSessions: (options) => manager.list(options),
@@ -27,6 +28,7 @@ export function createClaudeAgentSdkProvider(manager) {
     send: (reference, message) => manager.send(reference.providerSessionId, message),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),
-    switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId)
+    switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
+    runBackgroundPrompt: (input) => manager.runBackgroundPrompt(input)
   });
 }

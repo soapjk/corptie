@@ -21,6 +21,7 @@ import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mj
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
+import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createCodexAppServerProvider } from "./agent-provider/providers/codexAppServerProvider.mjs";
@@ -192,14 +193,23 @@ const agentProviderRegistry = new AgentProviderRegistry([
     interrupt: interruptCodexProviderSession,
     respondToApproval: respondCodexProviderApproval,
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
-    switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel })
+    switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
+    runBackgroundPrompt: (input) => codexClient.runEphemeralPrompt({
+      cwd: input.cwd,
+      runtimeWorkspaceRoots: input.allowedRoots,
+      prompt: input.prompt,
+      model: input.model,
+      reasoningEffort: input.reasoningEffort,
+      timeoutMs: input.timeoutMs
+    })
   }, {
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
-      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH
+      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   })
 ]);
@@ -211,6 +221,11 @@ const sessionBindingRepository = new SessionBindingRepository({
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId)
+});
+const backgroundAgentService = new BackgroundAgentService({
+  registry: agentProviderRegistry,
+  defaultProviderId: "codex-app-server",
+  onOperationEvent: (type, payload) => emitEvent(type, payload)
 });
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
@@ -2856,7 +2871,7 @@ async function performProjectDevelopmentServiceAction(project, action, input = {
 }
 
 async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
-  if (!["commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
+  if (!["commit-message", "commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
     const error = new Error(`Unsupported workspace action: ${action}`);
     error.code = "INVALID_PROJECT_ACTION";
     throw error;
@@ -2867,6 +2882,11 @@ async function performProjectWorkspaceAction(project, workspaceId, action, input
     const error = new Error("The selected workspace is unavailable or does not belong to this Project.");
     error.code = "WORKSPACE_NOT_FOUND";
     throw error;
+  }
+  if (action === "commit-message") {
+    if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
+    const commitMessage = await generateUnownedWorktreeCommitMessage(null, workspace.path, workspace);
+    return { commitMessage };
   }
   if (action === "restart") {
     const toolset = await projectToolsets.inspect(workspace.path);
@@ -3043,12 +3063,14 @@ async function generateSessionCommitMessage(sessionId, plan) {
   });
   const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
   const cwd = activeRoute.cwd;
-  const result = await codexClient.runEphemeralPrompt({
+  const result = await backgroundAgentService.run({
+    purpose: "commit-message",
     cwd,
-    runtimeWorkspaceRoots: [cwd],
+    allowedRoots: [cwd],
     prompt: sessionCommitMessagePrompt(plan),
-    model: managed.external?.currentModel ?? undefined,
-    reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
+    preferredProviderId: requireSessionReference(sessionId).providerId,
+    preferredModel: managed.external?.currentModel ?? undefined,
+    preferredReasoning: managed.external?.currentReasoningLevel ?? undefined,
     timeoutMs: 120_000
   });
   const message = sanitizeSessionCommitMessage(result.text);
@@ -3057,18 +3079,20 @@ async function generateSessionCommitMessage(sessionId, plan) {
 }
 
 async function generateUnownedWorktreeCommitMessage(requestingSessionId, cwd, plan) {
-  const session = listGatewaySessions().find((item) => item.id === requestingSessionId)
-    ?? managedCodexSessions.get(requestingSessionId)
-    ?? store.getSession(requestingSessionId);
-  if (!session) throw new Error("The requesting Session no longer exists.");
-  const logical = store.getLogicalSessionByLegacySessionId(requestingSessionId);
-  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical));
-  const result = await codexClient.runEphemeralPrompt({
+  const reference = requestingSessionId ? sessionBindingRepository.resolve(requestingSessionId) : null;
+  const session = reference?.metadata?.session ?? null;
+  const logical = requestingSessionId ? store.getLogicalSessionByLegacySessionId(requestingSessionId) : null;
+  const managed = session
+    ? await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(session, logical))
+    : null;
+  const result = await backgroundAgentService.run({
+    purpose: "commit-message",
     cwd,
-    runtimeWorkspaceRoots: [cwd],
+    allowedRoots: [cwd],
     prompt: sessionCommitMessagePrompt(plan),
-    model: managed.external?.currentModel ?? undefined,
-    reasoningEffort: managed.external?.currentReasoningLevel ?? undefined,
+    preferredProviderId: reference?.providerId,
+    preferredModel: managed?.external?.currentModel ?? undefined,
+    preferredReasoning: managed?.external?.currentReasoningLevel ?? undefined,
     timeoutMs: 120_000
   });
   const message = sanitizeSessionCommitMessage(result.text);
