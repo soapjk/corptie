@@ -196,9 +196,20 @@ struct ProjectWorktreeSession: Decodable, Equatable, Sendable {
 struct ProjectToolsetStatus: Decodable, Equatable, Sendable {
     let installed: Bool
     let configured: Bool
+    let manifestConfigured: Bool
+    let compatible: Bool
+    let requiresUpdate: Bool
     let schemaVersion: Int?
     let mainPath: String
     let toolsetPath: String
+    let profiles: [ProjectServiceProfile]
+    let selectedProfile: String
+}
+
+struct ProjectServiceProfile: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let label: String
+    let description: String
 }
 
 struct ProjectServiceStatus: Decodable, Equatable, Sendable {
@@ -214,6 +225,12 @@ struct ProjectServiceStatus: Decodable, Equatable, Sendable {
     let dirty: Bool?
     let startedAt: String?
     let worktreePath: String?
+    let desiredProfile: String?
+    let runningProfile: String?
+    let artifactId: String?
+    let sourceFingerprint: String?
+    let verified: Bool?
+    let verificationDetail: String?
 }
 
 struct ProjectWorktreeActionResponse: Decodable, Sendable {

@@ -4743,6 +4743,10 @@ private struct DetailHeaderView: View {
         switch status.service.freshness {
         case "current": service = L10n("Service is running the latest code")
         case "stale": service = L10n("Service is running older or modified code")
+        case "configurationMismatch": service = L10n("Service profile does not match the selected profile")
+        case "unverifiedBuild": service = L10n("Running build cannot be verified")
+        case "toolsetUpdateRequired": service = L10n("Update the project toolset to verify this service")
+        case "unhealthy": service = L10n("Service is running but unhealthy")
         case "stopped": service = L10n("Service is stopped")
         default: service = L10n("Service version is unknown")
         }
@@ -5247,7 +5251,7 @@ private struct ProjectServiceStatusDot: View {
     private var serviceColor: Color {
         switch status.freshness {
         case "current": CorptiePalette.connected
-        case "stale": CorptiePalette.amber
+        case "stale", "configurationMismatch", "unverifiedBuild", "toolsetUpdateRequired", "unhealthy": CorptiePalette.amber
         default: CorptiePalette.mutedText
         }
     }
@@ -5256,6 +5260,10 @@ private struct ProjectServiceStatusDot: View {
         switch status.freshness {
         case "current": return L10n("Service is running the latest code")
         case "stale": return L10n("Service is running older or modified code")
+        case "configurationMismatch": return L10n("Service profile does not match the selected profile")
+        case "unverifiedBuild": return L10n("Running build cannot be verified")
+        case "toolsetUpdateRequired": return L10n("Update the project toolset to verify this service")
+        case "unhealthy": return L10n("Service is running but unhealthy")
         case "stopped": return L10n("Service is stopped")
         default: return L10n("Service version is unknown")
         }
@@ -5548,8 +5556,7 @@ private struct ProjectWorktreeManagerView: View {
                     Text(serviceLabel(status.service))
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(serviceColor(status.service))
-                    if status.service.freshness == "stale",
-                       let detail = staleServiceDetail(status.service) {
+                    if let detail = serviceIdentityDetail(status.service) {
                         Text(detail)
                             .font(.system(size: 9.5, weight: .medium, design: .monospaced))
                             .foregroundStyle(CorptiePalette.secondaryText)
@@ -5560,12 +5567,36 @@ private struct ProjectWorktreeManagerView: View {
             }
 
             if status.toolset.configured {
+                if !status.toolset.profiles.isEmpty {
+                    HStack(spacing: 8) {
+                        Text(L10n("Service profile"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                        Picker("", selection: Binding(
+                            get: { status.toolset.selectedProfile },
+                            set: { backendClient.selectProjectServiceProfile($0) }
+                        )) {
+                            ForEach(status.toolset.profiles) { profile in
+                                Text(profile.label).tag(profile.id)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 220)
+                        .help(status.toolset.profiles.first(where: {
+                            $0.id == status.toolset.selectedProfile
+                        })?.description ?? "")
+                        Spacer()
+                    }
+                    .controlSize(.small)
+                    .disabled(isServiceActionRunning)
+                }
+
                 HStack(spacing: 8) {
                     if status.service.running == true {
-                        Button(L10n("Restart")) { backendClient.runProjectServiceAction("restart") }
+                        Button(L10n("Rebuild and Restart")) { backendClient.runProjectServiceAction("restart") }
                         Button(L10n("Stop")) { backendClient.runProjectServiceAction("stop") }
                     } else {
-                        Button(L10n("Start")) { backendClient.runProjectServiceAction("start") }
+                        Button(L10n("Build and Start")) { backendClient.runProjectServiceAction("start") }
                     }
                     Spacer()
                     Button(L10n("Update Corptie Scripts Tools Set")) {
@@ -5574,6 +5605,21 @@ private struct ProjectWorktreeManagerView: View {
                 }
                 .controlSize(.small)
                 .disabled(isServiceActionRunning)
+            } else if status.toolset.requiresUpdate {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(L10n("This project uses an older Corptie toolset."))
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(L10n("Update it before rebuilding or claiming that the running service is current."))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                    Spacer()
+                    Button(L10n("Update Corptie Scripts Tools Set")) {
+                        backendClient.initializeProjectToolset(update: true)
+                    }
+                    .disabled(backendClient.isLoadingProjectWorktrees)
+                }
             } else {
                 HStack {
                     Text(L10n("The Corptie Scripts Tools Set is being prepared or is not configured."))
@@ -5769,6 +5815,10 @@ private struct ProjectWorktreeManagerView: View {
         switch service.freshness {
         case "current": L10n("Running main latest")
         case "stale": L10n("Restart required")
+        case "configurationMismatch": L10n("Service profile mismatch")
+        case "unverifiedBuild": L10n("Build version unverified")
+        case "toolsetUpdateRequired": L10n("Toolset update required")
+        case "unhealthy": L10n("Service unhealthy")
         case "stopped": L10n("Stopped")
         default:
             switch service.state {
@@ -5787,13 +5837,15 @@ private struct ProjectWorktreeManagerView: View {
     private func serviceColor(_ service: ProjectServiceStatus) -> Color {
         switch service.freshness {
         case "current": CorptiePalette.connected
-        case "stale": CorptiePalette.amber
+        case "stale", "configurationMismatch", "unverifiedBuild", "toolsetUpdateRequired", "unhealthy": CorptiePalette.amber
         default: CorptiePalette.secondaryText
         }
     }
 
-    private func staleServiceDetail(_ service: ProjectServiceStatus) -> String? {
-        guard let revision = service.runningRevision, !revision.isEmpty else { return nil }
+    private func serviceIdentityDetail(_ service: ProjectServiceStatus) -> String? {
+        guard let revision = service.runningRevision, !revision.isEmpty else {
+            return service.verificationDetail
+        }
         let shortRevision = String(revision.prefix(5))
         let branch = service.runningBranch ?? L10n("unknown branch")
         let commitTime = service.runningCommitTime.flatMap { value -> String? in
@@ -5804,7 +5856,12 @@ private struct ProjectWorktreeManagerView: View {
             formatter.dateFormat = "yyyy-MM-dd HH:mm"
             return formatter.string(from: date)
         } ?? L10n("unknown time")
-        return L10nFormat("Commit %@ · %@ · branch %@", shortRevision, commitTime, branch)
+        let profile = service.runningProfile ?? service.desiredProfile
+        let base = L10nFormat("Commit %@ · %@ · branch %@", shortRevision, commitTime, branch)
+        if let profile, !profile.isEmpty {
+            return "\(base) · \(L10n("profile")) \(profile)"
+        }
+        return base
     }
 
     private func worktreeStateLabel(_ worktree: ProjectWorktreeStatus) -> String {

@@ -1350,6 +1350,33 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func selectProjectServiceProfile(_ profileId: String) {
+        guard let session = selectedSession else { return }
+        let actionId = "service:profile"
+        Task {
+            projectWorktreeActionIds.insert(actionId)
+            defer { projectWorktreeActionIds.remove(actionId) }
+            do {
+                var request = URLRequest(
+                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/profile")
+                )
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: ["profileId": profileId])
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(
+                        Self.errorMessage(from: data) ?? L10n("Could not update the service profile.")
+                    )
+                }
+                await loadProjectWorktreeStatus(for: session)
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
     func mergeProjectWorktree(_ worktree: ProjectWorktreeStatus, restartService: Bool) {
         performProtectedProjectWorktreeAction(
             worktree,
