@@ -180,6 +180,14 @@ test("logical session route commits switch the active thread and workspace atomi
     assert.equal(created.activeThreadId, "thread-source");
     assert.equal(created.activeWorkspaceId, "worktree:main");
     assert.equal(created.routingVersion, 1);
+    assert.match(created.activeBinding.bindingId, /^binding:/);
+    assert.equal(created.activeBinding.providerId, "codex-app-server");
+    assert.equal(created.activeBinding.providerSessionId, "thread-source");
+    assert.deepEqual(created.activeBinding.providerMetadata, {});
+    assert.deepEqual(
+      store.getAgentSessionBindingByProviderSession("codex-app-server", "thread-source"),
+      created.activeBinding
+    );
     assert.equal(store.assertLogicalSessionRoute("logical:one"), true);
 
     store.beginWorkspaceTransition({
@@ -218,6 +226,10 @@ test("logical session route commits switch the active thread and workspace atomi
 
     const bindings = store.listProviderThreadBindings("logical:one");
     assert.deepEqual(bindings.map((binding) => binding.state), ["superseded", "active"]);
+    assert.notEqual(bindings[0].bindingId, bindings[1].bindingId);
+    assert.equal(bindings[1].providerId, "codex-app-server");
+    assert.equal(bindings[1].providerSessionId, "thread-feature");
+    assert.equal(bindings[1].parentBindingId, bindings[0].bindingId);
     assert.equal(bindings[1].parentThreadId, "thread-source");
     assert.equal(bindings[1].forkedAtTurnId, "turn-7");
     assert.deepEqual(bindings[1].instructionSources, ["/repo/feature worktree/AGENTS.md"]);
@@ -268,6 +280,59 @@ test("logical session transitions reject stale routing versions without changing
     assert.equal(logical.transitionState, null);
   } finally {
     await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Agent Provider binding migration backfills legacy thread identities idempotently", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-binding-migration-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const first = new CorptieStore({ dbPath, configPath });
+  try {
+    await first.initialize();
+    first.upsertSession({
+      id: "codex:legacy-thread",
+      title: "Legacy Provider Binding",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    first.createLogicalSessionRoute({
+      logicalSessionId: "logical:legacy-provider",
+      legacySessionId: "codex:legacy-thread",
+      providerThreadId: "legacy-thread",
+      boundCwd: "/repo/legacy"
+    });
+    first.db.run(
+      `UPDATE provider_thread_bindings
+       SET binding_id = NULL, provider_id = NULL, provider_session_id = NULL
+       WHERE provider_thread_id = 'legacy-thread'`
+    );
+  } finally {
+    await first.close();
+  }
+
+  const second = new CorptieStore({ dbPath, configPath });
+  try {
+    await second.initialize();
+    const migrated = second.getProviderThreadBinding("legacy-thread");
+    assert.match(migrated.bindingId, /^binding:/);
+    assert.equal(migrated.providerId, "codex-app-server");
+    assert.equal(migrated.providerSessionId, "legacy-thread");
+    assert.deepEqual(migrated.providerMetadata, {});
+    const stableBindingId = migrated.bindingId;
+    await second.close();
+
+    const third = new CorptieStore({ dbPath, configPath });
+    await third.initialize();
+    try {
+      assert.equal(third.getProviderThreadBinding("legacy-thread").bindingId, stableBindingId);
+    } finally {
+      await third.close();
+    }
+  } finally {
+    if (second.db) await second.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

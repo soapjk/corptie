@@ -47,6 +47,8 @@ test("Session application service resolves stable logical ids before Provider ca
     "send",
     {
       sessionId: "logical-a",
+      requestedSessionId: "logical-a",
+      logicalSessionId: null,
       bindingId: "binding-a",
       providerId: "fake.provider",
       providerSessionId: "native-a",
