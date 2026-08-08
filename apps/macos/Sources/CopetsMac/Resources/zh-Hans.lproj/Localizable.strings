@@ -503,6 +503,9 @@
 "Remote storage" = "远程存储";
 "Commits will remain in GitHub history until removed under repository and GitHub retention policies." = "提交将保存在 GitHub 仓库历史中，直到依照仓库设置和 GitHub 保留策略被移除。";
 "Files sent to GitHub (%d)" = "将发送到 GitHub 的文件（%d）";
+"Added files (%d)" = "新增文件（%d）";
+"Modified files (%d)" = "修改文件（%d）";
+"Deleted files (%d)" = "删除文件（%d）";
 "Currently uncommitted files (%d)" = "当前未提交文件（%d）";
 "Commits sent to GitHub (%d)" = "将发送到 GitHub 的提交（%d）";
 "No existing local commits are waiting to be pushed." = "当前没有等待推送的本地提交。";
