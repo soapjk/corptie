@@ -16,7 +16,18 @@ function fixture() {
         mainPath: project.mainPath,
         mainBranch: "main",
         pendingWorktreeCount: 1,
-        worktrees: [{ worktreeId: "worktree:main" }, { worktreeId: "worktree:feature" }]
+        worktrees: [
+          { worktreeId: "worktree:main", availability: "available" },
+          { worktreeId: "worktree:feature", availability: "available" }
+        ]
+      };
+    },
+    inspectWorkspacePushStatus: async (_project, workspace) => {
+      calls.push(["pushStatus", workspace.worktreeId]);
+      return {
+        available: true,
+        pending: workspace.worktreeId === "worktree:main",
+        unpushedCommitCount: workspace.worktreeId === "worktree:main" ? 2 : 0
       };
     },
     inspectDevelopmentService: async (project) => {
@@ -38,18 +49,24 @@ function fixture() {
 test("Project APIs operate without constructing an Agent Session", async () => {
   const { calls, service } = fixture();
   const project = await service.readProject("project:one");
-  const workspaces = await service.listWorkspaces("project:one");
+  const workspaces = await service.listWorkspaces("project:one", {
+    activeWorkspaceId: "worktree:feature"
+  });
   const development = await service.runDevelopmentServiceAction("project:one", "restart", { profileId: "dev" });
   const workspace = await service.runWorkspaceAction("project:one", "worktree:feature", "commit", { commitMessage: "Save" });
 
   assert.equal(project.project.pendingWorkspaceCount, 1);
   assert.equal(workspaces.project.worktrees.length, 2);
+  assert.equal(workspaces.project.worktrees[0].gitHubPush.pending, true);
+  assert.equal(workspaces.project.worktrees[1].gitHubPush.pending, false);
   assert.equal(development.service.state, "running");
   assert.equal(workspace.result.committed, true);
   assert.deepEqual(calls, [
     ["workspaces", "project:one"],
     ["workspaces", "project:one"],
     ["service", "project:one"],
+    ["pushStatus", "worktree:main"],
+    ["pushStatus", "worktree:feature"],
     ["action", "project:one", "restart", { profileId: "dev" }],
     ["service", "project:one"],
     ["workspaceAction", "project:one", "worktree:feature", "commit", { commitMessage: "Save" }],
@@ -62,5 +79,17 @@ test("unknown Project ids fail before a product operation runs", async () => {
   await assert.rejects(
     () => service.readProject("missing"),
     (error) => error instanceof ProjectNotFoundError && error.code === "PROJECT_NOT_FOUND"
+  );
+});
+
+test("workspace listing inspects only main and the active workspace for push status", async () => {
+  const { calls, service } = fixture();
+  const workspaces = await service.listWorkspaces("project:one");
+
+  assert.equal(workspaces.project.worktrees[0].gitHubPush.pending, true);
+  assert.equal(workspaces.project.worktrees[1].gitHubPush, null);
+  assert.deepEqual(
+    calls.filter(([kind]) => kind === "pushStatus"),
+    [["pushStatus", "worktree:main"]]
   );
 });

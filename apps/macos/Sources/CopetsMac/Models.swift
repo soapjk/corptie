@@ -214,6 +214,7 @@ struct ProjectWorktreeStatus: Identifiable, Decodable, Equatable, Sendable {
     let behindMain: Int?
     let pendingIntegration: Bool
     let sessions: [ProjectWorktreeSession]
+    let gitHubPush: GitHubPushStatus?
 }
 
 struct ProjectWorktreeSession: Decodable, Equatable, Sendable {
