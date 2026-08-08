@@ -63,6 +63,8 @@ Corptie intentionally avoids fake percentage progress. It shows the real state o
 
 ## 🧩 Architecture
 
+Agent integrations use one Provider contract, stable logical Session identities, and capability-driven UI. Adding a Provider must not require changes to product services or common UI; see the [Agent Provider development guide](docs/agent-provider-development.md).
+
 ```text
 apps/macos
   Native SwiftUI + AppKit frontend

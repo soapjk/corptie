@@ -9,16 +9,11 @@ enum BackendResponseDecoder {
 
     static func detail(
         from data: Data,
-        isPtyProvider: Bool,
         threadId: String,
         authoritativeCwd: String?,
         workspacePath: String? = nil
     ) async throws -> CodexThreadDetail {
         try await Task.detached(priority: .userInitiated) {
-            if isPtyProvider {
-                return try JSONDecoder().decode(CodexThreadDetailResponse.self, from: data).thread
-            }
-
             let snapshot = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: data).session
             return CodexThreadDetail(
                 id: threadId,
@@ -40,7 +35,8 @@ enum BackendResponseDecoder {
                 sendUnavailableReason: snapshot.sendUnavailableReason,
                 capabilities: snapshot.capabilities,
                 turnCount: snapshot.turnCount,
-                items: snapshot.items
+                items: snapshot.items,
+                actions: snapshot.actions
             )
         }.value
     }

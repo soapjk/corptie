@@ -20,6 +20,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let avatarPath: String?
     let capabilities: SessionCapabilities?
     let external: ExternalSession?
+    var actions: SessionActions? = nil
     var pendingCollaborationConfirmation: PendingCollaborationConfirmation? = nil
 
     var isConnected: Bool {
@@ -30,12 +31,39 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         isConnectingStatus(external?.connectionStatus, provider: external?.provider)
     }
 
-    var isUnboundCodexSession: Bool {
-        external?.provider == "codex-pty" && (external?.agentSessionId?.isEmpty ?? true)
+    var canSendNow: Bool {
+        actions?.send.available ?? capabilities?.canSend ?? false
+    }
+
+    var canInterruptNow: Bool {
+        actions?.interrupt.available ?? capabilities?.canInterrupt ?? false
+    }
+
+    var canResumeNow: Bool {
+        actions?.resume?.available ?? capabilities?.canReconnect ?? false
+    }
+
+    var canSwitchModelNow: Bool {
+        actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
+    }
+
+    var canSwitchReasoningNow: Bool {
+        actions?.switchReasoning.available ?? capabilities?.canSwitchReasoning ?? false
+    }
+
+    var usesManualConnection: Bool {
+        if let disconnect = actions?.disconnect {
+            return disconnect.available || disconnect.reason != "CAPABILITY_UNSUPPORTED"
+        }
+        return external?.connectionStatus?.localizedCaseInsensitiveContains("pty") == true
+    }
+
+    var isUnboundSession: Bool {
+        usesManualConnection && (external?.agentSessionId?.isEmpty ?? true)
     }
 
     var connectionColor: Color {
-        if isUnboundCodexSession {
+        if isUnboundSession {
             return CorptiePalette.unboundDot
         }
         return isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
@@ -126,7 +154,9 @@ struct GitWorkspaceEventItem: Decodable, Sendable {
 }
 
 struct SessionWorkspaceHistory: Identifiable, Decodable, Equatable, Sendable {
-    var id: String { providerThreadId }
+    var id: String { bindingId }
+    let bindingId: String
+    let providerId: String
     let providerThreadId: String
     let state: String
     let readOnly: Bool
@@ -297,6 +327,26 @@ struct SessionCapabilities: Codable, Equatable, Sendable {
     let canSwitchReasoning: Bool?
     let canInterrupt: Bool?
     let canReconnect: Bool?
+}
+
+struct SessionActionAvailability: Codable, Equatable, Sendable {
+    let available: Bool
+    let reason: String?
+    let retryable: Bool?
+}
+
+struct SessionActions: Codable, Equatable, Sendable {
+    let resume: SessionActionAvailability?
+    let delete: SessionActionAvailability?
+    let restart: SessionActionAvailability?
+    let disconnect: SessionActionAvailability?
+    let send: SessionActionAvailability
+    let interrupt: SessionActionAvailability
+    let approve: SessionActionAvailability
+    let switchModel: SessionActionAvailability
+    let switchReasoning: SessionActionAvailability
+    let updatePermissions: SessionActionAvailability?
+    let switchWorkspace: SessionActionAvailability
 }
 
 enum TaskStatus: String, Codable, Sendable {
@@ -654,6 +704,7 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
+    var actions: SessionActions? = nil
 
     var isConnected: Bool {
         isConnectedStatus(connectionStatus, provider: source)
@@ -661,6 +712,18 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
 
     var isConnecting: Bool {
         isConnectingStatus(connectionStatus, provider: source)
+    }
+
+    var canInterruptNow: Bool {
+        actions?.interrupt.available ?? capabilities?.canInterrupt ?? false
+    }
+
+    var canSwitchModelNow: Bool {
+        actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
+    }
+
+    var canSwitchReasoningNow: Bool {
+        actions?.switchReasoning.available ?? capabilities?.canSwitchReasoning ?? false
     }
 
     var connectionColor: Color {
@@ -674,10 +737,7 @@ struct CodexModelsResponse: Decodable {
     let models: [CodexModel]
 }
 
-private func isConnectedStatus(_ status: String?, provider: String?) -> Bool {
-    if provider == "codex-app-server" {
-        return true
-    }
+private func isConnectedStatus(_ status: String?, provider _: String?) -> Bool {
     guard let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
           !normalized.isEmpty else {
         return false
@@ -687,10 +747,7 @@ private func isConnectedStatus(_ status: String?, provider: String?) -> Bool {
         && !normalized.contains("connecting")
 }
 
-private func isConnectingStatus(_ status: String?, provider: String?) -> Bool {
-    if provider == "codex-app-server" {
-        return false
-    }
+private func isConnectingStatus(_ status: String?, provider _: String?) -> Bool {
     return status?.localizedCaseInsensitiveContains("connecting") == true
 }
 

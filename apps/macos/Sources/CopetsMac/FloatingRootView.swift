@@ -946,7 +946,7 @@ private struct SessionContextMenuContent: View {
             Label(L10n("Settings…"), systemImage: "gearshape")
         }
 
-        if session.external?.provider == "codex-app-server" {
+        if session.actions?.restart?.available == true {
             Button {
                 backendClient.restart(session: session)
             } label: {
@@ -2808,7 +2808,7 @@ private struct TaskCardView: View {
                 if session.status == .running {
                     Spacer()
 
-                    if session.capabilities?.canInterrupt != false {
+                    if session.canInterruptNow {
                         Button {
                             backendClient.interrupt(session: session)
                         } label: {
@@ -2873,7 +2873,7 @@ private struct TaskCardView: View {
     }
 
     private var canQuickReply: Bool {
-        session.capabilities?.canSend == true
+        session.canSendNow
     }
 
     private var visibleSuggestedOptions: [CodexApprovalOption] {
@@ -2904,13 +2904,13 @@ private struct TaskCardView: View {
     }
 
     private var connectionIndicatorHelp: String {
-        if session.isUnboundCodexSession {
+        if session.isUnboundSession {
             return L10n("Session is not bound yet")
         }
-        if session.capabilities?.canReconnect == true && !session.isConnected {
+        if session.canResumeNow && !session.isConnected {
             return L10n("Reconnect session")
         }
-        if session.external?.provider != "codex-pty" {
+        if !session.usesManualConnection {
             return L10n("Session is available")
         }
         if session.isConnecting || backendClient.connectionTransitionSessionIds.contains(session.id) {
@@ -2920,13 +2920,13 @@ private struct TaskCardView: View {
     }
 
     private var connectionIndicatorPopoverText: String {
-        if session.isUnboundCodexSession {
+        if session.isUnboundSession {
             return L10n("尚未发送消息的会话，无法切换状态。")
         }
-        if session.capabilities?.canReconnect == true && !session.isConnected {
+        if session.canResumeNow && !session.isConnected {
             return L10n("点击重新连接这个会话。")
         }
-        if session.external?.provider != "codex-pty" {
+        if !session.usesManualConnection {
             return L10n("这个会话无需手动连接，当前可用。")
         }
         return L10n("正在切换连接状态。")
@@ -2938,11 +2938,11 @@ private struct TaskCardView: View {
             guard !backendClient.connectionTransitionSessionIds.contains(session.id) else {
                 return
             }
-            if session.isUnboundCodexSession {
+            if session.isUnboundSession {
                 isShowingUnboundHint = true
-            } else if session.capabilities?.canReconnect == true && !session.isConnected {
+            } else if session.canResumeNow && !session.isConnected {
                 backendClient.reconnect(session: session)
-            } else if session.external?.provider == "codex-pty" {
+            } else if session.usesManualConnection {
                 backendClient.togglePtyConnection(for: session)
             } else {
                 isShowingUnboundHint = true
@@ -3372,7 +3372,7 @@ private struct DetailView: View {
             }
 
             if backendClient.selectedDetail?.canSend == false
-                && backendClient.selectedDetail?.capabilities?.canInterrupt != true {
+                && backendClient.selectedDetail?.canInterruptNow != true {
                 ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
             } else {
                 MessageComposer(
@@ -4577,7 +4577,7 @@ private struct DetailHeaderView: View {
     }
 
     private var canReconnectSelectedSession: Bool {
-        backendClient.selectedSession?.capabilities?.canReconnect == true
+        backendClient.selectedSession?.canResumeNow == true
             && backendClient.selectedSession?.isConnected == false
     }
 
@@ -4808,7 +4808,7 @@ private struct DetailHeaderView: View {
 
     private var canInterruptCurrentRun: Bool {
         backendClient.selectedDetail?.status == .running
-            && backendClient.selectedDetail?.capabilities?.canInterrupt == true
+            && backendClient.selectedDetail?.canInterruptNow == true
     }
 
     private func copySelectedSessionName() {
@@ -5391,6 +5391,22 @@ private struct ProjectWorktreeManagerView: View {
                     }
                     .padding(.vertical, 2)
                 }
+            } else if let loadError = backendClient.projectWorktreeLoadError {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(.orange)
+                    Text(loadError)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                    Button(L10n("Retry")) {
+                        Task { await backendClient.refreshSelectedProjectWorktrees() }
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 VStack(spacing: 10) {
                     ProgressView()
@@ -7206,22 +7222,22 @@ private struct ThreadItemView: View {
     }
 
     private func reviewChanges() {
-        guard let threadId = backendClient.selectedDetail?.id else { return }
+        guard let sessionId = backendClient.selectedDetail?.id else { return }
         isDiffActionRunning = true
         Task {
             defer { isDiffActionRunning = false }
-            if case .failure(let error) = await backendClient.reviewCodexChanges(threadId: threadId, turnId: item.turnId) {
+            if case .failure(let error) = await backendClient.reviewTurnChanges(sessionId: sessionId, turnId: item.turnId) {
                 diffActionError = error.localizedDescription
             }
         }
     }
 
     private func undoChanges() {
-        guard let threadId = backendClient.selectedDetail?.id else { return }
+        guard let sessionId = backendClient.selectedDetail?.id else { return }
         isDiffActionRunning = true
         Task {
             defer { isDiffActionRunning = false }
-            if case .failure(let error) = await backendClient.undoCodexChanges(threadId: threadId, turnId: item.turnId) {
+            if case .failure(let error) = await backendClient.undoTurnChanges(sessionId: sessionId, turnId: item.turnId) {
                 diffActionError = error.localizedDescription
             }
         }
@@ -7572,7 +7588,7 @@ private struct MessageComposer: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 6) {
+            HStack(spacing: 2) {
                 ComposerInputTextView(
                     controller: editorController,
                     placeholder: "Send a instruction",
@@ -7598,8 +7614,11 @@ private struct MessageComposer: View {
                         backendClient.interruptSelectedSession()
                     } label: {
                         Image(systemName: "stop.fill")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 24, height: 24)
+                            .background { ComposerGlassActionBackground(tint: .red) }
                             .frame(width: 28, height: 28)
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
@@ -7609,21 +7628,25 @@ private struct MessageComposer: View {
                 Button {
                     sendCurrentDraft()
                 } label: {
-                    if backendClient.isSendingMessage {
-                        ProgressView()
-                            .controlSize(.small)
-                            .frame(width: 28, height: 28)
-                    } else {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 11, weight: .bold))
-                            .frame(width: 28, height: 28)
+                    Group {
+                        if backendClient.isSendingMessage {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 10, weight: .bold))
+                        }
                     }
+                    .frame(width: 24, height: 24)
+                    .background { ComposerGlassActionBackground(tint: CorptiePalette.softBlue) }
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(isSendDisabled)
                 .help(L10n("Send instruction"))
-                .padding(.trailing, 6)
+                .padding(.trailing, 4)
             }
             .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay(
@@ -7674,7 +7697,7 @@ private struct MessageComposer: View {
 
     private var isRunningTurn: Bool {
         backendClient.selectedDetail?.canSend == false
-            && backendClient.selectedDetail?.capabilities?.canInterrupt == true
+            && backendClient.selectedDetail?.canInterruptNow == true
     }
 
     private var isSendDisabled: Bool {
@@ -7684,7 +7707,9 @@ private struct MessageComposer: View {
     }
 
     private var canSwitchModel: Bool {
-        backendClient.selectedDetail?.capabilities?.canSwitchModel
+        backendClient.selectedDetail?.actions?.switchModel.available
+            ?? backendClient.selectedSession?.actions?.switchModel.available
+            ?? backendClient.selectedDetail?.capabilities?.canSwitchModel
             ?? backendClient.selectedSession?.capabilities?.canSwitchModel
             ?? (backendClient.selectedSession?.agent == "Codex" ? true : false)
     }
@@ -7694,6 +7719,37 @@ private struct MessageComposer: View {
             return 74
         }
         return max(54, min(74, composerWidth / 6))
+    }
+}
+
+private struct ComposerGlassActionBackground: View {
+    let tint: Color
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            Circle()
+                .fill(.clear)
+                .glassEffect(.clear.tint(tint.opacity(0.11)), in: .circle)
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
+                }
+        } else {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Circle()
+                        .fill(tint.opacity(0.07))
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(tint.opacity(0.2), lineWidth: 0.6)
+                }
+        }
     }
 }
 
@@ -7846,7 +7902,9 @@ private struct CodexModelMenu: View {
     }
 
     private var supportsReasoningSwitch: Bool {
-        backendClient.selectedDetail?.capabilities?.canSwitchReasoning
+        backendClient.selectedDetail?.actions?.switchReasoning.available
+            ?? backendClient.selectedSession?.actions?.switchReasoning.available
+            ?? backendClient.selectedDetail?.capabilities?.canSwitchReasoning
             ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
             ?? false
     }

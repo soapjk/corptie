@@ -88,6 +88,7 @@
 "Project Worktrees" = "Project Worktrees";
 "%d worktrees are not merged into main" = "%d worktrees are not merged into main";
 "Loading project worktrees" = "Loading project worktrees";
+"Could not load project worktrees" = "Could not load project worktrees";
 "Complete and remove this worktree?" = "Complete and remove this worktree?";
 "Merge, Delete Sessions and Worktree, then Restart" = "Merge, Delete Sessions and Worktree, then Restart";
 "This merges %@ into main, deletes the worktree and its merged local branch, and deletes %d associated sessions. No remote push is performed." = "This merges %@ into main, deletes the worktree and its merged local branch, and deletes %d associated sessions. No remote push is performed.";

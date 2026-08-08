@@ -1,0 +1,70 @@
+import { AGENT_PROVIDER_CAPABILITIES, providerSupports } from "./contracts.mjs";
+
+const ACTION_CAPABILITIES = Object.freeze({
+  resume: AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  delete: AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+  restart: AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
+  disconnect: AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
+  send: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+  interrupt: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
+  approve: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+  switchModel: AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+  switchReasoning: AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+  updatePermissions: AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
+  switchWorkspace: AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION
+});
+
+export function withSessionActions(session, providerOrDescriptor) {
+  if (!session || typeof session !== "object") return session;
+  const actions = Object.fromEntries(
+    Object.entries(ACTION_CAPABILITIES).map(([action, capability]) => [
+      action,
+      sessionActionAvailability(action, session, providerOrDescriptor, capability)
+    ])
+  );
+  return { ...session, actions };
+}
+
+export function sessionActionAvailability(action, session, providerOrDescriptor, capability = ACTION_CAPABILITIES[action]) {
+  if (!capability || !providerSupports(providerOrDescriptor, capability)) {
+    return unavailable("CAPABILITY_UNSUPPORTED", false);
+  }
+
+  const legacy = session.capabilities ?? {};
+  if (action === "resume") {
+    return legacy.canReconnect === false
+      ? unavailable("SESSION_ALREADY_CONNECTED", true)
+      : available();
+  }
+  if (action === "send") {
+    if (session.canSend === false || legacy.canSend === false) {
+      return unavailable(session.sendUnavailableReason ? "PROVIDER_UNAVAILABLE" : "SESSION_NOT_READY", true);
+    }
+    return available();
+  }
+  if (action === "interrupt") {
+    return legacy.canInterrupt === true
+      ? available()
+      : unavailable("NO_ACTIVE_TURN", true);
+  }
+  if (action === "approve") {
+    const hasApproval = session.status === "blocked"
+      || (Array.isArray(session.suggestedOptions) && session.suggestedOptions.length > 0);
+    return hasApproval ? available() : unavailable("NO_PENDING_APPROVAL", true);
+  }
+  if (action === "switchModel" && legacy.canSwitchModel === false) {
+    return unavailable("SESSION_CONFIGURATION_LOCKED", true);
+  }
+  if (action === "switchReasoning" && legacy.canSwitchReasoning === false) {
+    return unavailable("SESSION_CONFIGURATION_LOCKED", true);
+  }
+  return available();
+}
+
+function available() {
+  return { available: true, reason: null, retryable: false };
+}
+
+function unavailable(reason, retryable) {
+  return { available: false, reason, retryable };
+}

@@ -87,6 +87,8 @@ Corptie 提倡更少占用注意力的 Agent 交互方式，让所有 Agent 成�
 
 ## 🧩 架构
 
+Agent 接入遵循统一 Provider 合约、逻辑 Session 身份和 capability 驱动 UI；新增 Provider 不应修改产品服务或通用界面。开发约束见 [Agent Provider 开发指南](docs/agent-provider-development.md)。
+
 ```text
 apps/macos
   SwiftUI + AppKit 原生桌面前端

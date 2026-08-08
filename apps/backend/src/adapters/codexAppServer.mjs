@@ -310,13 +310,26 @@ export class CodexAppServerClient {
     const notificationStart = this.notifications.length;
     const startedAt = Date.now();
     let threadId = null;
+    const permissionProfile = options.permissionProfile ?? "read-only";
+    if (!["read-only", "workspace-write"].includes(permissionProfile)) {
+      const error = new Error(`Unsupported background permission profile: ${permissionProfile}`);
+      error.code = "CAPABILITY_UNSUPPORTED";
+      throw error;
+    }
+    const writableRoots = options.runtimeWorkspaceRoots ?? [cwd];
+    const sandbox = permissionProfile === "workspace-write" ? "workspace-write" : "read-only";
+    const sandboxPolicy = permissionProfile === "workspace-write"
+      ? { type: "workspaceWrite", writableRoots, networkAccess: false }
+      : { type: "readOnly" };
     try {
       const started = await this.startThread({
         cwd,
-        runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? [cwd],
+        runtimeWorkspaceRoots: writableRoots,
         approvalPolicy: "never",
-        sandbox: "read-only",
+        sandbox,
         model: options.model,
+        developerInstructions: options.developerInstructions,
+        threadSource: options.threadSource,
         ephemeral: true
       });
       threadId = started?.thread?.id ?? null;
@@ -324,7 +337,7 @@ export class CodexAppServerClient {
       const turn = await this.startTurn(threadId, prompt, {
         cwd,
         approvalPolicy: "never",
-        sandboxPolicy: { type: "readOnly" },
+        sandboxPolicy,
         model: options.model,
         reasoningEffort: options.reasoningEffort
       });

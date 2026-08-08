@@ -45,6 +45,22 @@ final class OrbPlacementPlannerTests: XCTestCase {
         XCTAssertTrue(candidates.allSatisfy { $0.x >= placementFrame.minX })
     }
 
+    func testAutomaticCandidatesReturnToTheRightThirdAfterManualLeftPlacement() {
+        let manualLeftOrigin = CGPoint(x: 240, y: 600)
+        let placementFrame = DetachedOrbPlacementRegion.automaticPlacementFrame(in: screen)
+        let candidates = OrbPlacementPlanner.candidateOrigins(
+            currentOrigin: manualLeftOrigin,
+            userAnchor: manualLeftOrigin,
+            windowSize: orbSize,
+            visibleFrame: placementFrame
+        )
+
+        XCTAssertFalse(candidates.isEmpty)
+        XCTAssertTrue(candidates.allSatisfy {
+            placementFrame.contains(CGRect(origin: $0, size: orbSize))
+        })
+    }
+
     func testGenerationFiltersOccupiedAndAccessoryFrames() {
         let occupied = CGRect(x: 1_020, y: 580, width: 120, height: 120)
         let accessory = CGRect(x: 880, y: 570, width: 100, height: 180)
