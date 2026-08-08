@@ -270,6 +270,10 @@ struct GitHubPushResult: Decodable, Sendable {
     let destinationUrl: String
 }
 
+struct GitHubCommitMessageSuggestion: Decodable, Sendable {
+    let commitMessage: String
+}
+
 struct SessionCapabilities: Codable, Equatable, Sendable {
     let canSend: Bool?
     let canSwitchModel: Bool?

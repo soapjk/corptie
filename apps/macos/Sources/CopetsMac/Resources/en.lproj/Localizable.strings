@@ -124,11 +124,13 @@
 "Review GitHub push" = "Review GitHub push";
 "Could not prepare GitHub push." = "Could not prepare GitHub push.";
 "GitHub push failed." = "GitHub push failed.";
+"GitHub push failed: %@" = "GitHub push failed: %@";
+"Pushing to GitHub…" = "Pushing to GitHub…";
 "Changes committed and pushed to GitHub" = "Changes committed and pushed to GitHub";
 "Branch pushed to GitHub" = "Branch pushed to GitHub";
 "Local Agent files detected" = "Local Agent files detected";
 "Choose how Corptie should handle them before committing." = "Choose how Corptie should handle them before committing.";
-"These local Agent files would be included:" = "These local Agent files would be included:";
+"Detected these local Agent files:" = "Detected these local Agent files:";
 "Add matching paths to the project .gitignore" = "Add matching paths to the project .gitignore";
 "Include these files in the commit" = "Include these files in the commit";
 "Do not remind me again for this project" = "Do not remind me again for this project";
@@ -212,3 +214,9 @@
 "Copy full workspace path: %@" = "Copy full workspace path: %@";
 "Open in Visual Studio Code" = "Open in Visual Studio Code";
 "Open in Finder" = "Open in Finder";
+"Commit message" = "Commit message";
+"Generate with Agent" = "Generate with Agent";
+"Generating…" = "Generating…";
+"Enter a commit message" = "Enter a commit message";
+"Enter your own message or generate one with Agent, then edit it before pushing." = "Enter your own message or generate one with Agent, then edit it before pushing.";
+"Could not generate commit message." = "Could not generate commit message.";

@@ -47,7 +47,8 @@ final class BackendClient: ObservableObject {
     @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
     @Published private(set) var gitHubPushError: String?
     @Published private(set) var isPreparingGitHubPush = false
-    @Published private(set) var isPushingGitHub = false
+    @Published private(set) var isGeneratingGitHubCommitMessage = false
+    @Published private(set) var gitHubPushingSessionId: String?
     @Published private(set) var workspaceRecoveryStatus: WorkspaceRecoveryStatus?
     @Published private(set) var isRecoveringWorkspace = false
     @Published private(set) var protectedWorktreeCommitPrompt: ProtectedWorktreeCommitPrompt?
@@ -68,6 +69,14 @@ final class BackendClient: ObservableObject {
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
     private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
+
+    var isPushingGitHub: Bool {
+        gitHubPushingSessionId != nil
+    }
+
+    var isSelectedSessionPushingGitHub: Bool {
+        gitHubPushingSessionId == selectedSession?.id
+    }
     private var hasSyncedNewSessionDefaults = false
     private var isReorderingSessions = false
     private var sessionReorderRevision = 0
@@ -1113,14 +1122,68 @@ final class BackendClient: ObservableObject {
         gitHubPushError = nil
     }
 
-    func confirmGitHubPush(privateFilesDecision: String? = nil, neverRemindPrivateFiles: Bool = false) {
+    func generateGitHubCommitMessage() async -> String? {
         guard let session = selectedSession,
               let preparation = gitHubPushPreparation,
-              !isPushingGitHub else { return }
+              preparation.dirty,
+              !isGeneratingGitHubCommitMessage,
+              !isPushingGitHub else { return nil }
+        isGeneratingGitHubCommitMessage = true
+        gitHubPushError = nil
+        defer { isGeneratingGitHubCommitMessage = false }
+        do {
+            var request = URLRequest(
+                url: baseURL.appending(path: "sessions/\(session.id)/github-push/commit-message")
+            )
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "confirmationToken": preparation.confirmationToken
+            ])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(
+                    Self.errorMessage(from: data) ?? L10n("Could not generate commit message.")
+                )
+            }
+            let result = try JSONDecoder().decode(GitHubCommitMessageSuggestion.self, from: data)
+            guard selectedSession?.id == session.id,
+                  gitHubPushPreparation?.confirmationToken == preparation.confirmationToken else {
+                return nil
+            }
+            return result.commitMessage
+        } catch {
+            if gitHubPushPreparation?.confirmationToken == preparation.confirmationToken {
+                gitHubPushError = error.localizedDescription
+            }
+            return nil
+        }
+    }
+
+    func confirmGitHubPush(
+        commitMessage: String? = nil,
+        privateFilesDecision: String? = nil,
+        neverRemindPrivateFiles: Bool = false
+    ) {
+        guard let session = selectedSession,
+              let preparation = gitHubPushPreparation,
+              !isPushingGitHub,
+              !isGeneratingGitHubCommitMessage else { return }
+
+        // Confirmation ends the modal interaction. The potentially slow commit and
+        // network push continue independently and are represented in the header.
+        gitHubPushingSessionId = session.id
+        gitHubPushPreparation = nil
+        gitHubPushError = nil
+        sendStatusMessage = L10n("Pushing to GitHub…")
+
         Task {
-            isPushingGitHub = true
-            gitHubPushError = nil
-            defer { isPushingGitHub = false }
+            defer {
+                if gitHubPushingSessionId == session.id {
+                    gitHubPushingSessionId = nil
+                }
+            }
             do {
                 var request = URLRequest(
                     url: baseURL.appending(path: "sessions/\(session.id)/github-push/confirm")
@@ -1128,6 +1191,9 @@ final class BackendClient: ObservableObject {
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = ["confirmationToken": preparation.confirmationToken]
+                if let commitMessage {
+                    body["commitMessage"] = commitMessage
+                }
                 if let privateFilesDecision {
                     body["privateFilesDecision"] = privateFilesDecision
                     body["neverRemindPrivateFiles"] = neverRemindPrivateFiles
@@ -1143,12 +1209,15 @@ final class BackendClient: ObservableObject {
                 sendStatusMessage = result.committed
                     ? L10n("Changes committed and pushed to GitHub")
                     : L10n("Branch pushed to GitHub")
+                SessionCompletionSoundManager.playGitHubPushSuccess()
                 await refresh()
                 if selectedSession?.id == session.id {
                     await loadProjectWorktreeStatus(for: session)
                 }
             } catch {
                 gitHubPushError = error.localizedDescription
+                lastError = error.localizedDescription
+                sendStatusMessage = L10nFormat("GitHub push failed: %@", error.localizedDescription)
             }
         }
     }

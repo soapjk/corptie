@@ -3147,6 +3147,17 @@ async function prepareGitHubPush(sessionId) {
   });
 }
 
+async function generateGitHubPushCommitMessage(sessionId, input = {}) {
+  const confirmationToken = String(input.confirmationToken ?? "").trim();
+  if (!confirmationToken) throw new Error("A GitHub push confirmation token is required.");
+  const commitMessage = await gitHubPushes.generateCommitMessage({
+    sessionId,
+    confirmationToken,
+    generateCommitMessage: (plan) => generateSessionCommitMessage(sessionId, plan)
+  });
+  return { commitMessage };
+}
+
 async function confirmGitHubPush(sessionId, input = {}) {
   const confirmationToken = String(input.confirmationToken ?? "").trim();
   if (!confirmationToken) throw new Error("A GitHub push confirmation token is required.");
@@ -3155,6 +3166,7 @@ async function confirmGitHubPush(sessionId, input = {}) {
     confirmationToken,
     privateFilesDecision: input.privateFilesDecision,
     neverRemindPrivateFiles: input.neverRemindPrivateFiles === true,
+    commitMessage: input.commitMessage,
     generateCommitMessage: (plan) => generateSessionCommitMessage(sessionId, plan)
   });
   emitEvent("GitHubPushCompleted", {
@@ -4174,7 +4186,7 @@ function route(request, response) {
     /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|start|restart|stop))?$/
   );
   const sessionGitHubPushMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/github-push\/(prepare|confirm)$/
+    /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
   );
   const sessionProjectWorktreesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/project-worktrees$/);
   const sessionProjectWorktreeActionMatch = url.pathname.match(
@@ -4186,7 +4198,9 @@ function route(request, response) {
     readJson(request)
       .then((input) => action === "prepare"
         ? prepareGitHubPush(sessionId)
-        : confirmGitHubPush(sessionId, input))
+        : action === "commit-message"
+          ? generateGitHubPushCommitMessage(sessionId, input)
+          : confirmGitHubPush(sessionId, input))
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
     return;
