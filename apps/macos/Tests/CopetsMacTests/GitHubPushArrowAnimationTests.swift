@@ -8,14 +8,14 @@ struct GitHubPushArrowAnimationTests {
 
     @Test func phaseRepeatsAtTheConfiguredDuration() {
         #expect(GitHubPushArrowAnimation.progress(at: 0) == 0)
-        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.55) - 0.5) < 0.000_001)
-        #expect(abs(GitHubPushArrowAnimation.progress(at: 1.1)) < 0.000_001)
+        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.7) - 0.5) < 0.000_001)
+        #expect(abs(GitHubPushArrowAnimation.progress(at: 1.4)) < 0.000_001)
     }
 
     @Test func arrowTravelsCompletelyThroughTheCircularButton() {
-        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0) == 22)
+        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0) == 20)
         #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0.5) == 0)
-        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 1) == -22)
+        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 1) == -20)
         #expect(GitHubPushButtonAppearance.arrowOpacity == 1)
     }
 
@@ -28,7 +28,7 @@ struct GitHubPushArrowAnimationTests {
     }
 
     @Test func pushButtonUsesFixedCircularGeometryWithoutAnInnerSolidCircle() {
-        #expect(GitHubPushButtonAppearance.diameter == 30)
+        #expect(GitHubPushButtonAppearance.diameter == 28)
         #expect(GitHubPushButtonAppearance.arrowFontSize == 12)
     }
 
