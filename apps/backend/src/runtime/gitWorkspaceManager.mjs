@@ -97,8 +97,12 @@ export class GitWorkspaceManager {
     if (!logical.repositoryId || !logical.activeBinding?.boundCwd) {
       throw new Error("The active session is not attached to a Git repository.");
     }
-    const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-    if (snapshot.repository.id !== logical.repositoryId) {
+    return this.projectStatusForPath(logical.activeBinding.boundCwd, logical.repositoryId);
+  }
+
+  async projectStatusForPath(workingDirectory, expectedRepositoryId = null) {
+    const snapshot = await createGitWorkspaceSnapshot(absolutePath(workingDirectory));
+    if (expectedRepositoryId && snapshot.repository.id !== expectedRepositoryId) {
       throw new Error("The active workspace no longer belongs to the registered repository.");
     }
     this.store.upsertGitWorkspaceSnapshot(snapshot);
@@ -202,12 +206,21 @@ export class GitWorkspaceManager {
 
   async mergeWorktreeIntoMain(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
-    const sourceWorktreeId = input.sourceWorktreeId || logical.activeBinding?.worktreeId;
-    if (!logical.repositoryId || !logical.activeBinding?.boundCwd || !sourceWorktreeId) {
+    return this.mergeWorktreeIntoMainForProject({
+      ...input,
+      repositoryId: logical.repositoryId,
+      workingDirectory: logical.activeBinding?.boundCwd,
+      sourceWorktreeId: input.sourceWorktreeId || logical.activeBinding?.worktreeId
+    });
+  }
+
+  async mergeWorktreeIntoMainForProject(input) {
+    const sourceWorktreeId = input.sourceWorktreeId;
+    if (!input.repositoryId || !input.workingDirectory || !sourceWorktreeId) {
       throw new Error("The Session is not attached to a mergeable Git worktree.");
     }
-    const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-    if (snapshot.repository.id !== logical.repositoryId) {
+    const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
+    if (snapshot.repository.id !== input.repositoryId) {
       throw new Error("The active workspace no longer belongs to the registered repository.");
     }
     this.store.upsertGitWorkspaceSnapshot(snapshot);
@@ -282,12 +295,21 @@ export class GitWorkspaceManager {
 
   async synchronizeWorktreeWithMain(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
-    const sourceWorktreeId = input.sourceWorktreeId || logical.activeBinding?.worktreeId;
-    if (!logical.repositoryId || !logical.activeBinding?.boundCwd || !sourceWorktreeId) {
+    return this.synchronizeWorktreeWithMainForProject({
+      ...input,
+      repositoryId: logical.repositoryId,
+      workingDirectory: logical.activeBinding?.boundCwd,
+      sourceWorktreeId: input.sourceWorktreeId || logical.activeBinding?.worktreeId
+    });
+  }
+
+  async synchronizeWorktreeWithMainForProject(input) {
+    const sourceWorktreeId = input.sourceWorktreeId;
+    if (!input.repositoryId || !input.workingDirectory || !sourceWorktreeId) {
       throw new Error("The Session is not attached to a synchronizable Git worktree.");
     }
-    const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-    if (snapshot.repository.id !== logical.repositoryId) {
+    const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
+    if (snapshot.repository.id !== input.repositoryId) {
       throw new Error("The active workspace no longer belongs to the registered repository.");
     }
     const source = snapshot.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
@@ -332,11 +354,19 @@ export class GitWorkspaceManager {
 
   async commitWorktreeChanges(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
-    if (!logical.repositoryId || !logical.activeBinding?.boundCwd || !input.sourceWorktreeId) {
+    return this.commitWorktreeChangesForProject({
+      ...input,
+      repositoryId: logical.repositoryId,
+      workingDirectory: logical.activeBinding?.boundCwd
+    });
+  }
+
+  async commitWorktreeChangesForProject(input) {
+    if (!input.repositoryId || !input.workingDirectory || !input.sourceWorktreeId) {
       throw new Error("The Session is not attached to a committable Git repository.");
     }
-    const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
-    if (snapshot.repository.id !== logical.repositoryId) {
+    const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
+    if (snapshot.repository.id !== input.repositoryId) {
       throw new Error("The active workspace no longer belongs to the registered repository.");
     }
     const source = snapshot.worktrees.find((worktree) => worktree.worktreeId === input.sourceWorktreeId);
@@ -374,9 +404,17 @@ export class GitWorkspaceManager {
 
   async removeMergedWorktree(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
+    return this.removeWorktreeForProject({
+      ...input,
+      repositoryId: logical.repositoryId,
+      workingDirectory: logical.activeBinding?.boundCwd
+    });
+  }
+
+  async removeWorktreeForProject(input) {
     const sourceWorktreeId = input.sourceWorktreeId;
     const source = this.store.getGitWorktree(sourceWorktreeId);
-    if (!source || source.repositoryId !== logical.repositoryId || source.isMain) {
+    if (!source || source.repositoryId !== input.repositoryId || source.isMain) {
       throw new Error("The selected worktree does not belong to this project.");
     }
     const ignoredLogicalSessionIds = new Set(input.ignoreLogicalSessionIds ?? []);
@@ -386,7 +424,7 @@ export class GitWorkspaceManager {
     if (boundSessions.length > 0) {
       throw new Error("The worktree still has active Sessions. Switch or delete them before removing it.");
     }
-    const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
+    const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
     const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
     if (!main) throw new Error("The repository's main worktree is unavailable.");
     const currentSource = snapshot.worktrees.find((worktree) => {

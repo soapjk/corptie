@@ -275,6 +275,49 @@ test("project status distinguishes working, pending, and synchronized worktrees"
   }
 });
 
+test("project status can be inspected by repository path without an Agent Session", async () => {
+  const fixture = await createFixture("project-status-without-session", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const project = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId);
+    assert.equal(project.repositoryId, fixture.repositoryId);
+    assert.equal(project.mainPath, await realpath(fixture.repository));
+    assert.equal(project.worktrees.length, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("project workspace changes can be committed without a logical Session id", async () => {
+  const fixture = await createFixture("project-commit-without-session", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.activeWorktree, "project-api.txt"), "project owned\n");
+  try {
+    const status = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId);
+    const feature = status.worktrees.find((worktree) => !worktree.isMain);
+    const commit = await manager.commitWorktreeChangesForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      sourceWorktreeId: feature.worktreeId,
+      commitMessage: "Commit through Project API"
+    });
+    assert.equal(commit.committed, true);
+    assert.equal(commit.sourceWorktreeId, feature.worktreeId);
+    assert.equal(
+      (await gitOutput(["log", "-1", "--pretty=%s"], fixture.activeWorktree)).trim(),
+      "Commit through Project API"
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("stage merge retains and synchronizes the source worktree", async () => {
   const fixture = await createFixture("stage-merge", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
@@ -511,6 +554,7 @@ async function createFixture(label, options = {}) {
   return {
     directory,
     repository,
+    repositoryId: identity.repositoryId,
     activeWorktree,
     store,
     async close() {
