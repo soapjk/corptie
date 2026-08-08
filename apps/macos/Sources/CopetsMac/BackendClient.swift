@@ -1231,9 +1231,22 @@ final class BackendClient: ObservableObject {
             projectWorktreeLoadError = nil
         }
         do {
-            let path = projectId(for: session).map { "projects/\($0)/workspaces" }
-                ?? "sessions/\(session.id)/project-worktrees"
-            let url = baseURL.appending(path: path)
+            let url: URL
+            if let projectId = projectId(for: session) {
+                let base = baseURL.appending(path: "projects/\(projectId)/workspaces")
+                if let activeWorkspaceId = session.external?.workspace?.id,
+                   !activeWorkspaceId.isEmpty,
+                   var components = URLComponents(url: base, resolvingAgainstBaseURL: false) {
+                    components.queryItems = [
+                        URLQueryItem(name: "activeWorkspaceId", value: activeWorkspaceId)
+                    ]
+                    url = components.url ?? base
+                } else {
+                    url = base
+                }
+            } else {
+                url = baseURL.appending(path: "sessions/\(session.id)/project-worktrees")
+            }
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {

@@ -4713,8 +4713,15 @@ private struct DetailHeaderView: View {
     }
 
     private var gitHubPushHasPendingChanges: Bool {
-        guard let push = backendClient.selectedProjectWorktreeStatus?.gitHubPush else { return false }
+        guard let push = selectedGitHubPushStatus else { return false }
         return push.available && push.pending
+    }
+
+    private var selectedGitHubPushStatus: GitHubPushStatus? {
+        ProjectGitHubPushSelection.status(
+            for: selectedSessionWorktree,
+            fallback: backendClient.selectedProjectWorktreeStatus?.gitHubPush
+        )
     }
 
     private func gitHubPushButtonHelp(_ worktree: ProjectWorktreeStatus?) -> String {
@@ -4724,7 +4731,7 @@ private struct DetailHeaderView: View {
         if let error = backendClient.gitHubPushError {
             return error
         }
-        guard let push = backendClient.selectedProjectWorktreeStatus?.gitHubPush else {
+        guard let push = selectedGitHubPushStatus else {
             return L10n("Checking for changes to push")
         }
         if !push.available {
@@ -5358,6 +5365,15 @@ enum ProjectWorktreeCleanupPolicy {
     }
 }
 
+enum ProjectGitHubPushSelection {
+    static func status(
+        for worktree: ProjectWorktreeStatus?,
+        fallback: GitHubPushStatus?
+    ) -> GitHubPushStatus? {
+        worktree?.gitHubPush ?? fallback
+    }
+}
+
 private struct ProjectWorktreeManagerView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @StateObject private var newSessionPanel = NewSessionPanelController()
@@ -5781,6 +5797,12 @@ private struct ProjectWorktreeManagerView: View {
                     .disabled(backendClient.projectWorktreeActionIds.contains(worktree.worktreeId))
                     .help(L10n("Generate a commit message with the associated session and commit these changes"))
                 }
+                if worktree.isMain,
+                   let push = worktree.gitHubPush,
+                   push.available,
+                   push.pending {
+                    mainPushBadge(worktree, push: push)
+                }
                 worktreeSessionsBadge(worktree)
             }
             .font(.system(size: 10, weight: .medium))
@@ -5792,6 +5814,49 @@ private struct ProjectWorktreeManagerView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.75)
         )
+    }
+
+    @ViewBuilder
+    private func mainPushBadge(_ worktree: ProjectWorktreeStatus, push: GitHubPushStatus) -> some View {
+        let label = push.unpushedCommitCount > 0
+            ? L10nFormat("%d commit(s) pending push", push.unpushedCommitCount)
+            : L10n("Pending GitHub push")
+        if selectedSessionWorktreeId == worktree.worktreeId {
+            Button {
+                backendClient.prepareGitHubPush()
+            } label: {
+                Label(label, systemImage: "arrow.up.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(CorptiePalette.connected)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(CorptiePalette.connected.opacity(0.12), in: Capsule())
+            .disabled(backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub)
+            .help(L10n("Review and push the current main branch to GitHub"))
+        } else {
+            Label(label, systemImage: "arrow.up.circle.fill")
+                .foregroundStyle(CorptiePalette.connected)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(CorptiePalette.connected.opacity(0.12), in: Capsule())
+                .help(L10n("Open a Session on main to review and push these commits"))
+        }
+    }
+
+    private var selectedSessionWorktreeId: String? {
+        guard let session = backendClient.selectedSession,
+              let status else { return nil }
+        if let associated = status.project.worktrees.first(where: { worktree in
+            worktree.sessions.contains(where: { $0.sessionId == session.id })
+        }) {
+            return associated.worktreeId
+        }
+        guard let path = session.external?.workspace?.path else { return nil }
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        return status.project.worktrees.first(where: {
+            URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
+        })?.worktreeId
     }
 
     private func worktreeStatusBadge(_ text: String, color: Color) -> some View {
