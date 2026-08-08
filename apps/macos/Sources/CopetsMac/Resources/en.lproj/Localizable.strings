@@ -81,6 +81,10 @@
 "GitHub push is unavailable" = "GitHub push is unavailable";
 "No changes or commits to push" = "No changes or commits to push";
 "%d commit(s) ready to push" = "%d commit(s) ready to push";
+"%d commit(s) pending push" = "%d commit(s) pending push";
+"Pending GitHub push" = "Pending GitHub push";
+"Review and push the current main branch to GitHub" = "Review and push the current main branch to GitHub";
+"Open a Session on main to review and push these commits" = "Open a Session on main to review and push these commits";
 "Service is running the latest code" = "Service is running the latest code";
 "Service is running older or modified code" = "Service is running older or modified code";
 "Service is stopped" = "Service is stopped";

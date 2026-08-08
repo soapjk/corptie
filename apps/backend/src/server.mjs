@@ -289,6 +289,9 @@ const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
   inspectWorkspaces: (project) => gitWorkspaces.projectStatusForPath(project.mainPath, project.id),
+  inspectWorkspacePushStatus: (_project, workspace) => gitHubPushes.status({
+    workingDirectory: workspace.path
+  }),
   inspectDevelopmentService: (project) => projectToolsetStatusForPath(project.mainPath),
   performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
   performWorkspaceAction: performProjectWorkspaceAction
@@ -3638,11 +3641,17 @@ async function projectWorktreeStatus(sessionId) {
     projectToolsetStatus(sessionId),
     gitHubPushes.status({ workingDirectory: projectWorkingDirectoryForSession(sessionId) })
   ]);
+  const activeWorkspacePath = resolve(projectWorkingDirectoryForSession(sessionId));
   project.worktrees = await Promise.all(project.worktrees.map(async (worktree) => {
+    const isActiveWorkspace = worktree.availability === "available"
+      && resolve(worktree.path) === activeWorkspacePath;
+    const workspaceWithPushStatus = isActiveWorkspace
+      ? { ...worktree, gitHubPush }
+      : worktree;
     if (worktree.availability !== "available"
       || runtime.service.running !== true
       || runtime.service.verified !== true) {
-      return { ...worktree, serviceContainsChanges: false };
+      return { ...workspaceWithPushStatus, serviceContainsChanges: false };
     }
     const containsCommittedChanges = await gitWorkspaces.revisionContains(
       worktree.path,
@@ -3654,7 +3663,7 @@ async function projectWorktreeStatus(sessionId) {
     const containsWorkingChanges = worktree.dirty !== true
       || (sameWorktree && runtime.service.dirty === true);
     return {
-      ...worktree,
+      ...workspaceWithPushStatus,
       serviceContainsChanges: containsCommittedChanges && containsWorkingChanges
     };
   }));
@@ -4457,7 +4466,9 @@ function route(request, response) {
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   if (request.method === "GET" && projectWorkspacesMatch) {
     const projectId = decodeURIComponent(projectWorkspacesMatch[1]);
-    projectApplicationService.listWorkspaces(projectId)
+    projectApplicationService.listWorkspaces(projectId, {
+      activeWorkspaceId: url.searchParams.get("activeWorkspaceId")
+    })
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
