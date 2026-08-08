@@ -15,11 +15,10 @@ const backendDebtBaseline = Object.freeze({
 });
 
 const frontendDebtBaseline = Object.freeze({
-  "BackendClient.swift": 27,
+  "BackendClient.swift": 5,
   "BackendResponseDecoder.swift": 2,
   "FloatingRootView.swift": 4,
-  "Models.swift": 3,
-  "SessionSettingsWindow.swift": 3
+  "Models.swift": 1
 });
 
 test("concrete backend Provider dependencies cannot spread beyond the migration baseline", async () => {

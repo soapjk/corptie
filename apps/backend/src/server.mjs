@@ -184,19 +184,21 @@ const projectToolsetInitializer = new ProjectToolsetInitializer({
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 const claudeAgents = new ClaudeAgentManager({ store });
 const agentProviderRegistry = new AgentProviderRegistry([
-  createClaudeAgentSdkProvider(claudeAgents),
+  createClaudeAgentSdkProvider(claudeAgents, { listModels: loadClaudeModels }),
   createPtyAgentProvider(ptyAgents, { providerId: GENERIC_PTY_PROVIDER_ID }),
-  createPtyAgentProvider(ptyAgents, { providerId: CODEX_PTY_PROVIDER_ID }),
+  createPtyAgentProvider(ptyAgents, { providerId: CODEX_PTY_PROVIDER_ID, listModels: loadCodexModels }),
   createCodexAppServerProvider({
     listSessions: listCodexProviderSessions,
     readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
     deleteSession: deleteCodexProviderSession,
+    listModels: loadCodexModels,
     send: sendCodexProviderMessage,
     interrupt: interruptCodexProviderSession,
     respondToApproval: respondCodexProviderApproval,
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
+    updatePermissions: updateCodexProviderPermissions,
     prepareWorkspaceTransition: switchCodexProviderWorkspace,
     runBackgroundPrompt: (input) => codexClient.runEphemeralPrompt({
       cwd: input.cwd,
@@ -211,10 +213,12 @@ const agentProviderRegistry = new AgentProviderRegistry([
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+      AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
@@ -228,6 +232,7 @@ const sessionBindingRepository = new SessionBindingRepository({
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   bindCreatedSession: async ({ providerId, session, input }) => {
     const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
       instructionSources: input.instructionSources,
@@ -424,6 +429,9 @@ function sessionWithLogicalWorkspace(session, logical) {
   const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
   return {
     ...session,
+    sessionId: logical.legacySessionId ?? session.id,
+    logicalSessionId: logical.logicalSessionId,
+    publicSessionId: logical.logicalSessionId,
     external: {
       ...(session.external ?? {}),
       threadId: logical.activeThreadId,
@@ -953,6 +961,60 @@ function sessionIdFromEventPayload(payload = {}) {
     return `codex:${payload.threadId}`;
   }
   return null;
+}
+
+function streamCanonicalSessionSnapshots(request, response, requestedSessionId) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache, no-transform",
+    connection: "keep-alive"
+  });
+  response.flushHeaders?.();
+  let closed = false;
+  let reading = false;
+  let previousSignature = null;
+  let sequence = 0;
+
+  const publish = async () => {
+    if (closed || reading) return;
+    reading = true;
+    try {
+      const session = await sessionApplicationService.readSession(requestedSessionId);
+      // Provider diagnostics may contain clocks such as idleSeconds that change
+      // on every read without changing the Canonical Session visible to clients.
+      const { rawStatus: _rawStatus, ...canonicalSession } = session;
+      const signature = JSON.stringify(canonicalSession);
+      if (signature !== previousSignature) {
+        previousSignature = signature;
+        sequence += 1;
+        response.write(`id: ${sequence}\nevent: snapshot\ndata: ${JSON.stringify({ session })}\n\n`);
+      }
+    } catch (error) {
+      sequence += 1;
+      response.write(`id: ${sequence}\nevent: error\ndata: ${JSON.stringify({
+        error: error.message,
+        code: error.code ?? null
+      })}\n\n`);
+    } finally {
+      reading = false;
+    }
+  };
+
+  const snapshotTimer = setInterval(() => void publish(), 400);
+  const heartbeatTimer = setInterval(() => {
+    if (!closed) response.write(`: heartbeat ${Date.now()}\n\n`);
+  }, 15_000);
+  snapshotTimer.unref?.();
+  heartbeatTimer.unref?.();
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(snapshotTimer);
+    clearInterval(heartbeatTimer);
+  };
+  request.once("close", close);
+  response.once("close", close);
+  void publish();
 }
 
 function updateMockProgress() {
@@ -2004,7 +2066,10 @@ async function assertDirectory(path) {
 }
 
 function listGatewaySessions(options = {}) {
-  return agentProviderRegistry.listSessionsSync({ archived: options.archived === true });
+  return agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).map((session) => {
+    const logical = store.getLogicalSessionByLegacySessionId(session.id);
+    return logical ? sessionWithLogicalWorkspace(session, logical) : session;
+  });
 }
 
 function listCodexProviderSessions(options = {}) {
@@ -2230,6 +2295,7 @@ async function readCodexProviderSession(reference) {
     syncManagedCodexSessionFromDetail(threadId, detail);
     return detail;
   } catch (error) {
+    if (reference.metadata?.historical) throw error;
     const managed = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
     return managed
       ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
@@ -2293,6 +2359,23 @@ function updateCodexProviderConfiguration(reference, updates) {
   };
   upsertManagedCodexSession(nextSession);
   return nextSession;
+}
+
+function updateCodexProviderPermissions(reference, permissions) {
+  const previous = reference.metadata?.session
+    ?? managedCodexSessions.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  const session = withCodexSessionPermissions({
+    ...previous,
+    updatedAt: now()
+  }, permissions);
+  upsertManagedCodexSession(session);
+  return session;
 }
 
 async function respondCodexProviderApproval(reference, input = {}, context = {}) {
@@ -3787,6 +3870,20 @@ function route(request, response) {
     return;
   }
 
+  const providerModelsMatch = url.pathname.match(/^\/providers\/([^/]+)\/models$/);
+  if (request.method === "GET" && providerModelsMatch) {
+    const providerId = decodeURIComponent(providerModelsMatch[1]);
+    Promise.resolve(sessionApplicationService.listModels(providerId, {
+      refresh: url.searchParams.get("refresh") === "true"
+    }))
+      .then((models) => sendJson(response, 200, models))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/codex/models") {
     loadCodexModels({ refresh: url.searchParams.get("refresh") === "true" })
       .then((models) => {
@@ -4034,13 +4131,27 @@ function route(request, response) {
   const sessionEventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && sessionEventsMatch) {
     const sessionId = decodeURIComponent(sessionEventsMatch[1]);
-    const after = Number(url.searchParams.get("after") || 0);
-    const limit = Number(url.searchParams.get("limit") || 200);
-    sendJson(response, 200, {
-      sessionId,
-      events: store.listSessionEvents(sessionId, after, limit),
-      lastEventSequence: store.lastSessionEventSequence(sessionId)
-    });
+    const acceptsStream = String(request.headers.accept ?? "").includes("text/event-stream")
+      || url.searchParams.get("stream") === "true";
+    sessionApplicationService.referenceFor(sessionId)
+      .then((reference) => {
+        if (acceptsStream) {
+          streamCanonicalSessionSnapshots(request, response, sessionId);
+          return;
+        }
+        const after = Number(url.searchParams.get("after") || 0);
+        const limit = Number(url.searchParams.get("limit") || 200);
+        sendJson(response, 200, {
+          sessionId: reference.logicalSessionId ?? reference.sessionId,
+          legacySessionId: reference.sessionId,
+          events: store.listSessionEvents(reference.sessionId, after, limit),
+          lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
+        });
+      })
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
@@ -4070,6 +4181,23 @@ function route(request, response) {
       ))
       .then((session) => sendJson(response, 200, { session }))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+
+  const sessionApprovalMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/approve$/);
+  if (request.method === "POST" && sessionApprovalMatch) {
+    const sessionId = decodeURIComponent(sessionApprovalMatch[1]);
+    readJson(request)
+      .then((input) => respondUnifiedSessionApproval(
+        sessionId,
+        input,
+        input.source && typeof input.source === "object" ? input.source : { type: "desktop" }
+      ))
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
@@ -4128,7 +4256,7 @@ function route(request, response) {
   if (request.method === "POST" && sessionPermissionsMatch) {
     const sessionId = decodeURIComponent(sessionPermissionsMatch[1]);
     readJson(request)
-      .then((input) => {
+      .then(async (input) => {
         const sandbox = normalizeCodexSandbox(input.sandbox, "");
         const approvalPolicy = normalizeCodexApprovalPolicy(input.approvalPolicy, "");
         if (!["workspace-write", "danger-full-access", "read-only"].includes(input.sandbox)) {
@@ -4140,33 +4268,22 @@ function route(request, response) {
           return;
         }
 
-        if (sessionId.startsWith("codex:")) {
-          const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-          if (!previous || previous.external?.provider !== "codex-app-server") {
-            sendJson(response, 404, { error: "Session does not support permission changes" });
-            return;
-          }
-          const nextSession = withCodexSessionPermissions({
-            ...previous,
-            updatedAt: now()
-          }, { sandbox, approvalPolicy });
-          upsertManagedCodexSession(nextSession);
-          emitEvent("CodexThreadPermissionsChanged", {
-            sessionId,
-            threadId: nextSession.external?.threadId,
-            sandbox,
-            approvalPolicy
-          });
-          sendJson(response, 202, { session: nextSession, sandbox, approvalPolicy });
-          return;
-        }
-
-        sendJson(response, 409, {
-          error: "This session's permissions are fixed by its launch command and cannot be changed while it exists."
-        });
+        const reference = await sessionApplicationService.referenceFor(sessionId);
+        const session = await sessionApplicationService.updatePermissions(
+          sessionId,
+          { sandbox, approvalPolicy },
+          { source: { type: "desktop" } }
+        );
+        emitEvent("SessionPermissionsChanged", {
+          sessionId: reference.sessionId,
+          logicalSessionId: reference.logicalSessionId,
+          sandbox,
+          approvalPolicy
+        }, { sessionId: reference.sessionId });
+        sendJson(response, 202, { session, sandbox, approvalPolicy });
       })
       .catch((error) => {
-        sendJson(response, 502, { error: error.message });
+        sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null });
       });
     return;
   }
@@ -5210,13 +5327,16 @@ function route(request, response) {
     const sessionId = decodeURIComponent(sessionWorkspacesMatch[1]);
     Promise.resolve()
       .then(async () => {
-        const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-        if (!session || session.external?.provider !== "codex-app-server") {
-          const error = new Error("Codex session not found.");
-          error.statusCode = 404;
+        const reference = await sessionApplicationService.referenceFor(sessionId);
+        const session = reference.metadata.session;
+        let logical = reference.logicalSessionId
+          ? store.getLogicalSession(reference.logicalSessionId)
+          : await ensureLogicalRouteForProviderSession(session, reference.providerId);
+        if (!logical) {
+          const error = new Error("Session workspace route not found.");
+          error.code = "SESSION_NOT_FOUND";
           throw error;
         }
-        let logical = await ensureLogicalRouteForCodexSession(session);
         if (logical.activeBinding?.boundCwd) {
           try {
             const snapshot = await createGitWorkspaceSnapshot(logical.activeBinding.boundCwd);
@@ -5237,6 +5357,8 @@ function route(request, response) {
               ? store.getGitWorktree(binding.worktreeId)
               : null;
             return {
+              bindingId: binding.bindingId,
+              providerId: binding.providerId,
               providerThreadId: binding.providerThreadId,
               state: binding.state,
               readOnly: binding.state !== "active",
@@ -5253,6 +5375,19 @@ function route(request, response) {
         });
       })
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
+    return;
+  }
+
+  const sessionBindingSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/bindings\/([^/]+)\/snapshot$/);
+  if (request.method === "GET" && sessionBindingSnapshotMatch) {
+    const sessionId = decodeURIComponent(sessionBindingSnapshotMatch[1]);
+    const bindingId = decodeURIComponent(sessionBindingSnapshotMatch[2]);
+    sessionApplicationService.readSessionBinding(sessionId, bindingId)
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 

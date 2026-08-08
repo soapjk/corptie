@@ -39,6 +39,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         actions?.interrupt.available ?? capabilities?.canInterrupt ?? false
     }
 
+    var canResumeNow: Bool {
+        actions?.resume?.available ?? capabilities?.canReconnect ?? false
+    }
+
     var canSwitchModelNow: Bool {
         actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
     }
@@ -143,7 +147,9 @@ struct GitWorkspaceEventItem: Decodable, Sendable {
 }
 
 struct SessionWorkspaceHistory: Identifiable, Decodable, Equatable, Sendable {
-    var id: String { providerThreadId }
+    var id: String { bindingId }
+    let bindingId: String
+    let providerId: String
     let providerThreadId: String
     let state: String
     let readOnly: Bool
@@ -323,11 +329,14 @@ struct SessionActionAvailability: Codable, Equatable, Sendable {
 }
 
 struct SessionActions: Codable, Equatable, Sendable {
+    let resume: SessionActionAvailability?
+    let delete: SessionActionAvailability?
     let send: SessionActionAvailability
     let interrupt: SessionActionAvailability
     let approve: SessionActionAvailability
     let switchModel: SessionActionAvailability
     let switchReasoning: SessionActionAvailability
+    let updatePermissions: SessionActionAvailability?
     let switchWorkspace: SessionActionAvailability
 }
 
@@ -719,10 +728,7 @@ struct CodexModelsResponse: Decodable {
     let models: [CodexModel]
 }
 
-private func isConnectedStatus(_ status: String?, provider: String?) -> Bool {
-    if provider == "codex-app-server" {
-        return true
-    }
+private func isConnectedStatus(_ status: String?, provider _: String?) -> Bool {
     guard let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
           !normalized.isEmpty else {
         return false
@@ -732,10 +738,7 @@ private func isConnectedStatus(_ status: String?, provider: String?) -> Bool {
         && !normalized.contains("connecting")
 }
 
-private func isConnectingStatus(_ status: String?, provider: String?) -> Bool {
-    if provider == "codex-app-server" {
-        return false
-    }
+private func isConnectingStatus(_ status: String?, provider _: String?) -> Bool {
     return status?.localizedCaseInsensitiveContains("connecting") == true
 }
 

@@ -2907,7 +2907,7 @@ private struct TaskCardView: View {
         if session.isUnboundCodexSession {
             return L10n("Session is not bound yet")
         }
-        if session.capabilities?.canReconnect == true && !session.isConnected {
+        if session.canResumeNow && !session.isConnected {
             return L10n("Reconnect session")
         }
         if session.external?.provider != "codex-pty" {
@@ -2923,7 +2923,7 @@ private struct TaskCardView: View {
         if session.isUnboundCodexSession {
             return L10n("尚未发送消息的会话，无法切换状态。")
         }
-        if session.capabilities?.canReconnect == true && !session.isConnected {
+        if session.canResumeNow && !session.isConnected {
             return L10n("点击重新连接这个会话。")
         }
         if session.external?.provider != "codex-pty" {
@@ -2940,7 +2940,7 @@ private struct TaskCardView: View {
             }
             if session.isUnboundCodexSession {
                 isShowingUnboundHint = true
-            } else if session.capabilities?.canReconnect == true && !session.isConnected {
+            } else if session.canResumeNow && !session.isConnected {
                 backendClient.reconnect(session: session)
             } else if session.external?.provider == "codex-pty" {
                 backendClient.togglePtyConnection(for: session)
@@ -4577,7 +4577,7 @@ private struct DetailHeaderView: View {
     }
 
     private var canReconnectSelectedSession: Bool {
-        backendClient.selectedSession?.capabilities?.canReconnect == true
+        backendClient.selectedSession?.canResumeNow == true
             && backendClient.selectedSession?.isConnected == false
     }
 
