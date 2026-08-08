@@ -4882,7 +4882,7 @@ struct GitHubPushArrowAnimation {
 
 struct GitHubPushButtonAppearance {
     static let diameter = 30.0
-    static let arrowFontSize = 9.0
+    static let arrowFontSize = 12.0
     static let arrowOpacity = 1.0
 }
 
@@ -4903,7 +4903,7 @@ private struct GitHubPushButtonVisual: View {
                 Image(systemName: GitHubPushArrowAnimation.progressSymbolName)
                     .font(.system(
                         size: GitHubPushButtonAppearance.arrowFontSize,
-                        weight: .bold
+                        weight: .heavy
                     ))
                     .symbolRenderingMode(.monochrome)
                     .foregroundColor(color)
@@ -5003,7 +5003,7 @@ private struct GitHubPushProgressIcon: View {
             Image(systemName: GitHubPushArrowAnimation.progressSymbolName)
                 .font(.system(
                     size: GitHubPushButtonAppearance.arrowFontSize,
-                    weight: .bold
+                    weight: .heavy
                 ))
                 .symbolRenderingMode(.monochrome)
                 .foregroundColor(color)
