@@ -8,24 +8,28 @@ struct GitHubPushArrowAnimationTests {
 
     @Test func phaseRepeatsAtTheConfiguredDuration() {
         #expect(GitHubPushArrowAnimation.progress(at: 0) == 0)
-        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.45) - 0.5) < 0.000_001)
-        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.9)) < 0.000_001)
+        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.7) - 0.5) < 0.000_001)
+        #expect(abs(GitHubPushArrowAnimation.progress(at: 1.4)) < 0.000_001)
     }
 
-    @Test func arrowTravelsUpWhileRemainingFullyOpaque() {
-        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0) == 8)
+    @Test func arrowTravelsCompletelyThroughTheCircularButton() {
+        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0) == 20)
         #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0.5) == 0)
-        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 1) == -8)
+        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 1) == -20)
         #expect(GitHubPushButtonAppearance.arrowOpacity == 1)
     }
 
-    @Test func pushingShellMatchesTheNormalButtonGeometry() {
-        #expect(GitHubPushButtonAppearance.width == 30)
-        #expect(GitHubPushButtonAppearance.height == 28)
-        #expect(GitHubPushButtonAppearance.cornerRadius == 8)
-        #expect(GitHubPushButtonAppearance.backgroundOpacity == 0.13)
-        #expect(GitHubPushButtonAppearance.solidCircleDiameter == 16)
-        #expect(GitHubPushButtonAppearance.arrowFontSize == 9)
+    @Test func arrowFadesInFromBelowAndOutAtTheTopBeforeLooping() {
+        #expect(GitHubPushArrowAnimation.opacity(progress: 0) == 0)
+        #expect(abs(GitHubPushArrowAnimation.opacity(progress: 0.125) - 0.5) < 0.000_001)
+        #expect(GitHubPushArrowAnimation.opacity(progress: 0.4) == 1)
+        #expect(abs(GitHubPushArrowAnimation.opacity(progress: 0.775) - 0.5) < 0.000_001)
+        #expect(GitHubPushArrowAnimation.opacity(progress: 1) == 0)
+    }
+
+    @Test func pushButtonUsesFixedCircularGeometryWithoutAnInnerSolidCircle() {
+        #expect(GitHubPushButtonAppearance.diameter == 28)
+        #expect(GitHubPushButtonAppearance.arrowFontSize == 12)
     }
 
     @Test func ignoredAgentDirectoryIsRemovedFromDisclosedPushFiles() {
