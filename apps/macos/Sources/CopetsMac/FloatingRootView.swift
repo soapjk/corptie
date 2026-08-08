@@ -2808,7 +2808,7 @@ private struct TaskCardView: View {
                 if session.status == .running {
                     Spacer()
 
-                    if session.capabilities?.canInterrupt != false {
+                    if session.canInterruptNow {
                         Button {
                             backendClient.interrupt(session: session)
                         } label: {
@@ -2873,7 +2873,7 @@ private struct TaskCardView: View {
     }
 
     private var canQuickReply: Bool {
-        session.capabilities?.canSend == true
+        session.canSendNow
     }
 
     private var visibleSuggestedOptions: [CodexApprovalOption] {
@@ -3372,7 +3372,7 @@ private struct DetailView: View {
             }
 
             if backendClient.selectedDetail?.canSend == false
-                && backendClient.selectedDetail?.capabilities?.canInterrupt != true {
+                && backendClient.selectedDetail?.canInterruptNow != true {
                 ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
             } else {
                 MessageComposer(
@@ -4808,7 +4808,7 @@ private struct DetailHeaderView: View {
 
     private var canInterruptCurrentRun: Bool {
         backendClient.selectedDetail?.status == .running
-            && backendClient.selectedDetail?.capabilities?.canInterrupt == true
+            && backendClient.selectedDetail?.canInterruptNow == true
     }
 
     private func copySelectedSessionName() {
@@ -7674,7 +7674,7 @@ private struct MessageComposer: View {
 
     private var isRunningTurn: Bool {
         backendClient.selectedDetail?.canSend == false
-            && backendClient.selectedDetail?.capabilities?.canInterrupt == true
+            && backendClient.selectedDetail?.canInterruptNow == true
     }
 
     private var isSendDisabled: Bool {
@@ -7684,7 +7684,9 @@ private struct MessageComposer: View {
     }
 
     private var canSwitchModel: Bool {
-        backendClient.selectedDetail?.capabilities?.canSwitchModel
+        backendClient.selectedDetail?.actions?.switchModel.available
+            ?? backendClient.selectedSession?.actions?.switchModel.available
+            ?? backendClient.selectedDetail?.capabilities?.canSwitchModel
             ?? backendClient.selectedSession?.capabilities?.canSwitchModel
             ?? (backendClient.selectedSession?.agent == "Codex" ? true : false)
     }
@@ -7846,7 +7848,9 @@ private struct CodexModelMenu: View {
     }
 
     private var supportsReasoningSwitch: Bool {
-        backendClient.selectedDetail?.capabilities?.canSwitchReasoning
+        backendClient.selectedDetail?.actions?.switchReasoning.available
+            ?? backendClient.selectedSession?.actions?.switchReasoning.available
+            ?? backendClient.selectedDetail?.capabilities?.canSwitchReasoning
             ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
             ?? false
     }

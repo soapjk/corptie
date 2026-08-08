@@ -2335,7 +2335,7 @@ final class BackendClient: ObservableObject {
 
     func switchSelectedCodexModel(to model: CodexModel) {
         guard let selectedSession,
-              selectedSession.capabilities?.canSwitchModel == true else {
+              selectedSession.canSwitchModelNow else {
             sendStatusMessage = L10n("Model switching is not available for this session.")
             return
         }

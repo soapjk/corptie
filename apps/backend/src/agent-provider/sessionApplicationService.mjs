@@ -25,7 +25,8 @@ export class SessionApplicationService {
 
   async readSession(sessionId) {
     const reference = await this.referenceFor(sessionId);
-    return this.registry.get(reference.providerId).readSession(reference);
+    const session = await this.registry.get(reference.providerId).readSession(reference);
+    return this.registry.decorateSession(reference.providerId, session);
   }
 
   async sendMessage(sessionId, message, context = {}) {
@@ -67,6 +68,17 @@ export class SessionApplicationService {
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       reference,
       modelId,
+      context
+    );
+  }
+
+  async switchReasoning(sessionId, level, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+      reference,
+      level,
       context
     );
   }

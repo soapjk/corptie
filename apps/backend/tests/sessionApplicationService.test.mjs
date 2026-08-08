@@ -9,7 +9,8 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
-  AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH
+  AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+  AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH
 ]) {
   const calls = [];
   const provider = new CallbackAgentProvider({
@@ -23,7 +24,8 @@ function fixture(capabilities = [
     send: async (...args) => calls.push(["send", ...args]),
     interrupt: async (...args) => calls.push(["interrupt", ...args]),
     respondToApproval: async (...args) => calls.push(["respondToApproval", ...args]),
-    switchModel: async (...args) => calls.push(["switchModel", ...args])
+    switchModel: async (...args) => calls.push(["switchModel", ...args]),
+    switchReasoning: async (...args) => calls.push(["switchReasoning", ...args])
   });
   const registry = new AgentProviderRegistry([provider]);
   const service = new SessionApplicationService({
@@ -62,11 +64,16 @@ test("Session application service resolves stable logical ids before Provider ca
 
 test("Session application service exposes the same operations for every Provider", async () => {
   const { calls, service } = fixture();
-  assert.deepEqual(await service.readSession("logical-a"), { id: "logical-a", source: "fake.provider" });
+  const detail = await service.readSession("logical-a");
+  assert.equal(detail.id, "logical-a");
+  assert.equal(detail.source, "fake.provider");
+  assert.equal(detail.actions.send.available, true);
+  assert.equal(detail.actions.interrupt.reason, "NO_ACTIVE_TURN");
   await service.interrupt("logical-a", { source: "desktop" });
   await service.respondToApproval("logical-a", { approved: true });
   await service.switchModel("logical-a", "fake-model");
-  assert.deepEqual(calls.map((call) => call[0]), ["interrupt", "respondToApproval", "switchModel"]);
+  await service.switchReasoning("logical-a", "high");
+  assert.deepEqual(calls.map((call) => call[0]), ["interrupt", "respondToApproval", "switchModel", "switchReasoning"]);
 });
 
 test("Session application service preserves structured unsupported-capability errors", async () => {
