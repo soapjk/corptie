@@ -13,12 +13,7 @@ const backendDebtBaseline = Object.freeze({
   "server.mjs": 146
 });
 
-const frontendDebtBaseline = Object.freeze({
-  "BackendClient.swift": 5,
-  "BackendResponseDecoder.swift": 2,
-  "FloatingRootView.swift": 4,
-  "Models.swift": 1
-});
+const frontendDebtBaseline = Object.freeze({});
 
 test("concrete backend Provider dependencies cannot spread beyond the migration baseline", async () => {
   const files = await sourceFiles(backendSourceRoot, ".mjs");

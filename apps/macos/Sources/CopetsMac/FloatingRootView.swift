@@ -946,7 +946,7 @@ private struct SessionContextMenuContent: View {
             Label(L10n("Settings…"), systemImage: "gearshape")
         }
 
-        if session.external?.provider == "codex-app-server" {
+        if session.actions?.restart?.available == true {
             Button {
                 backendClient.restart(session: session)
             } label: {
@@ -2904,13 +2904,13 @@ private struct TaskCardView: View {
     }
 
     private var connectionIndicatorHelp: String {
-        if session.isUnboundCodexSession {
+        if session.isUnboundSession {
             return L10n("Session is not bound yet")
         }
         if session.canResumeNow && !session.isConnected {
             return L10n("Reconnect session")
         }
-        if session.external?.provider != "codex-pty" {
+        if !session.usesManualConnection {
             return L10n("Session is available")
         }
         if session.isConnecting || backendClient.connectionTransitionSessionIds.contains(session.id) {
@@ -2920,13 +2920,13 @@ private struct TaskCardView: View {
     }
 
     private var connectionIndicatorPopoverText: String {
-        if session.isUnboundCodexSession {
+        if session.isUnboundSession {
             return L10n("尚未发送消息的会话，无法切换状态。")
         }
         if session.canResumeNow && !session.isConnected {
             return L10n("点击重新连接这个会话。")
         }
-        if session.external?.provider != "codex-pty" {
+        if !session.usesManualConnection {
             return L10n("这个会话无需手动连接，当前可用。")
         }
         return L10n("正在切换连接状态。")
@@ -2938,11 +2938,11 @@ private struct TaskCardView: View {
             guard !backendClient.connectionTransitionSessionIds.contains(session.id) else {
                 return
             }
-            if session.isUnboundCodexSession {
+            if session.isUnboundSession {
                 isShowingUnboundHint = true
             } else if session.canResumeNow && !session.isConnected {
                 backendClient.reconnect(session: session)
-            } else if session.external?.provider == "codex-pty" {
+            } else if session.usesManualConnection {
                 backendClient.togglePtyConnection(for: session)
             } else {
                 isShowingUnboundHint = true

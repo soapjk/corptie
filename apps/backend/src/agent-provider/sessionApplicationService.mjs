@@ -82,6 +82,16 @@ export class SessionApplicationService {
     };
   }
 
+  async restartSession(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
+      reference,
+      context
+    );
+  }
+
   async readSession(sessionId) {
     const reference = await this.referenceFor(sessionId);
     const session = await this.registry.get(reference.providerId).readSession(reference);

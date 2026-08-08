@@ -203,6 +203,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
     readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
     deleteSession: deleteCodexProviderSession,
+    restartSession: restartCodexProviderSession,
     listModels: loadCodexModels,
     send: sendCodexProviderMessage,
     interrupt: interruptCodexProviderSession,
@@ -234,6 +235,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
       AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
@@ -3262,6 +3264,31 @@ async function switchCodexProviderWorkspace(reference, input = {}) {
   return result;
 }
 
+async function restartCodexProviderSession(reference) {
+  const sessionId = reference.sessionId;
+  const session = reference.metadata?.session
+    ?? managedCodexSessions.get(sessionId)
+    ?? store.getSession(sessionId);
+  if (!session) throw new Error("Session not found.");
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? await ensureLogicalRouteForCodexSession(session);
+  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+  const result = await codexWorkspaceTransitions.restartSession({
+    transitionId: `session-restart:${randomUUID()}`,
+    logicalSessionId: logical.logicalSessionId,
+    activeTurnId: session.external?.activeTurnId ?? null,
+    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+    ...collaborationThreadOptionsForSession(sessionId)
+  });
+  emitEvent(
+    result.status === "waitingForTurn" ? "SessionRestartWaiting" : "SessionRestartCompleted",
+    { sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
+    { sessionId }
+  );
+  return result;
+}
+
 async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined) {
   return sessionWorkspaceCoordinator.switchWorkspace(sessionId, {
     targetWorkspaceId: targetWorktreeId,
@@ -5476,39 +5503,15 @@ function route(request, response) {
     const sessionId = decodeURIComponent(sessionRestartMatch[1]);
     Promise.resolve()
       .then(async () => {
-        const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-        if (!session || session.external?.provider !== "codex-app-server") {
-          const error = new Error("Codex session not found.");
-          error.statusCode = 404;
-          throw error;
-        }
-        const logical = await ensureLogicalRouteForCodexSession(session);
-        const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
-        const activeTurnId = session.external?.activeTurnId ?? null;
-        const result = await codexWorkspaceTransitions.restartSession({
-          transitionId: `session-restart:${randomUUID()}`,
-          logicalSessionId: logical.logicalSessionId,
-          activeTurnId,
-          lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-          ...collaborationThreadOptionsForSession(sessionId)
+        const result = await sessionApplicationService.restartSession(sessionId, {
+          source: "compatibility-route"
         });
-        emitEvent(
-          result.status === "waitingForTurn"
-            ? "SessionRestartWaiting"
-            : "SessionRestartCompleted",
-          {
-            sessionId,
-            logicalSessionId: logical.logicalSessionId,
-            transition: result.transition
-          },
-          { sessionId }
-        );
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
       .catch((error) => {
         sendJson(response, errorStatus(error, 400), {
           error: error.message,
-          adapter: "codex-app-server"
+          code: error.code
         });
       });
     return;

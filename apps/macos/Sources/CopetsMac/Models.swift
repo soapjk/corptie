@@ -51,12 +51,16 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         actions?.switchReasoning.available ?? capabilities?.canSwitchReasoning ?? false
     }
 
-    var isUnboundCodexSession: Bool {
-        external?.provider == "codex-pty" && (external?.agentSessionId?.isEmpty ?? true)
+    var usesManualConnection: Bool {
+        external?.connectionStatus?.localizedCaseInsensitiveContains("pty") == true
+    }
+
+    var isUnboundSession: Bool {
+        usesManualConnection && (external?.agentSessionId?.isEmpty ?? true)
     }
 
     var connectionColor: Color {
-        if isUnboundCodexSession {
+        if isUnboundSession {
             return CorptiePalette.unboundDot
         }
         return isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
@@ -331,6 +335,7 @@ struct SessionActionAvailability: Codable, Equatable, Sendable {
 struct SessionActions: Codable, Equatable, Sendable {
     let resume: SessionActionAvailability?
     let delete: SessionActionAvailability?
+    let restart: SessionActionAvailability?
     let send: SessionActionAvailability
     let interrupt: SessionActionAvailability
     let approve: SessionActionAvailability
