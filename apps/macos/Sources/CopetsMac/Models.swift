@@ -276,10 +276,18 @@ struct GitCommitProtectionStatus: Decodable, Equatable, Sendable {
     let requiresDecision: Bool
 }
 
-struct ProtectedWorktreeCommitPrompt: Identifiable, Equatable, Sendable {
+enum WorktreeCommitReviewOperation: String, Equatable, Sendable {
+    case commit
+    case merge
+    case complete
+    case operate
+}
+
+struct WorktreeCommitReviewPrompt: Identifiable, Equatable, Sendable {
     var id: String { worktree.worktreeId }
     let worktree: ProjectWorktreeStatus
     let protection: GitCommitProtectionStatus
+    let operation: WorktreeCommitReviewOperation
 }
 
 struct GitHubPushPreparation: Identifiable, Decodable, Equatable, Sendable {

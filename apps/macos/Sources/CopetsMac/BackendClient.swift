@@ -53,7 +53,8 @@ final class BackendClient: ObservableObject {
     @Published private(set) var gitHubPushingSessionId: String?
     @Published private(set) var workspaceRecoveryStatus: WorkspaceRecoveryStatus?
     @Published private(set) var isRecoveringWorkspace = false
-    @Published private(set) var protectedWorktreeCommitPrompt: ProtectedWorktreeCommitPrompt?
+    @Published private(set) var worktreeCommitReviewPrompt: WorktreeCommitReviewPrompt?
+    @Published private(set) var isGeneratingWorktreeCommitMessage = false
     let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
@@ -1081,7 +1082,7 @@ final class BackendClient: ObservableObject {
         workspaceRecoveryStatus = nil
         gitHubPushPreparation = nil
         gitHubPushError = nil
-        protectedWorktreeCommitPrompt = nil
+        worktreeCommitReviewPrompt = nil
         isLoadingDetail = false
     }
 
@@ -1460,15 +1461,12 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not inspect commit contents."))
                 }
                 let protection = try JSONDecoder().decode(GitCommitProtectionStatus.self, from: data)
-                if protection.requiresDecision {
-                    pendingProtectedWorktreeAction = (worktree, action, body)
-                    protectedWorktreeCommitPrompt = ProtectedWorktreeCommitPrompt(
-                        worktree: worktree,
-                        protection: protection
-                    )
-                } else {
-                    performProjectWorktreeAction(worktree, action: action, body: body)
-                }
+                pendingProtectedWorktreeAction = (worktree, action, body)
+                worktreeCommitReviewPrompt = WorktreeCommitReviewPrompt(
+                    worktree: worktree,
+                    protection: protection,
+                    operation: Self.commitReviewOperation(for: action)
+                )
             } catch {
                 lastError = error.localizedDescription
             }
@@ -1476,14 +1474,16 @@ final class BackendClient: ObservableObject {
     }
 
     func confirmProtectedWorktreeCommit(
+        commitMessage: String,
         decision: String,
         neverRemindPrivateFiles: Bool
     ) {
-        guard protectedWorktreeCommitPrompt != nil,
+        guard worktreeCommitReviewPrompt != nil,
               let pending = pendingProtectedWorktreeAction else { return }
-        protectedWorktreeCommitPrompt = nil
+        worktreeCommitReviewPrompt = nil
         pendingProtectedWorktreeAction = nil
         var body = pending.body
+        body["commitMessage"] = commitMessage
         body["privateFilesDecision"] = decision
         body["neverRemindPrivateFiles"] = neverRemindPrivateFiles
         performProjectWorktreeAction(
@@ -1494,8 +1494,47 @@ final class BackendClient: ObservableObject {
     }
 
     func cancelProtectedWorktreeCommit() {
-        protectedWorktreeCommitPrompt = nil
+        worktreeCommitReviewPrompt = nil
         pendingProtectedWorktreeAction = nil
+    }
+
+    func generateWorktreeCommitMessage() async -> String? {
+        guard let session = selectedSession,
+              let prompt = worktreeCommitReviewPrompt,
+              !isGeneratingWorktreeCommitMessage else { return nil }
+        isGeneratingWorktreeCommitMessage = true
+        lastError = nil
+        defer { isGeneratingWorktreeCommitMessage = false }
+        do {
+            var request = URLRequest(url: baseURL.appending(
+                path: "sessions/\(session.id)/project-worktrees/\(prompt.worktree.worktreeId)/commit-message"
+            ))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = Data("{}".utf8)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(
+                    Self.errorMessage(from: data) ?? L10n("Could not generate commit message.")
+                )
+            }
+            let result = try JSONDecoder().decode(GitHubCommitMessageSuggestion.self, from: data)
+            guard worktreeCommitReviewPrompt?.id == prompt.id else { return nil }
+            return result.commitMessage
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private static func commitReviewOperation(for action: String) -> WorktreeCommitReviewOperation {
+        switch action {
+        case "commit": .commit
+        case "merge": .merge
+        case "complete": .complete
+        default: .operate
+        }
     }
 
     func operateProjectWorktree(

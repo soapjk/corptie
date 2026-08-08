@@ -568,3 +568,12 @@
 "Service unhealthy" = "服务不健康";
 "profile" = "Profile";
 "Could not update the service profile." = "无法更新服务 Profile。";
+"Review Commit" = "检查提交";
+"Enter your own message or generate one with Agent, then edit it before continuing." = "可以自行输入提交信息，或使用 Agent 生成后再编辑，然后继续操作。";
+"The changes will be committed to this Worktree only. No remote push is performed." = "修改只会提交到此 Worktree，不会执行远程推送。";
+"The changes will be committed and then merged into main. No remote push is performed." = "修改将先提交，然后合并到 main；不会执行远程推送。";
+"The changes will be committed before completing the Worktree operation. No remote push is performed." = "完成 Worktree 操作前会先提交修改；不会执行远程推送。";
+"The changes will be committed before running the selected Worktree operations. No remote push is performed." = "执行所选 Worktree 操作前会先提交修改；不会执行远程推送。";
+"Commit Changes" = "提交修改";
+"Commit and Merge" = "提交并合并";
+"Commit and Continue" = "提交并继续";

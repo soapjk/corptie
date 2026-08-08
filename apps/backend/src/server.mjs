@@ -3765,6 +3765,20 @@ async function prepareProjectWorktreeCommit(sessionId, sourceWorktreeId) {
   return gitCommitProtection.inspect(source.path);
 }
 
+async function generateProjectWorktreeCommitMessage(sessionId, sourceWorktreeId) {
+  const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) throw new Error("The Session no longer has an active workspace route.");
+  const before = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  const source = before.worktrees.find((worktree) => worktree.worktreeId === sourceWorktreeId);
+  if (!source || source.availability !== "available") {
+    throw new Error("The selected project worktree is unavailable.");
+  }
+  if (!source.dirty) throw new Error("The selected worktree has no uncommitted changes.");
+  return {
+    commitMessage: await commitMessageForProjectWorktree(source, null, sessionId)
+  };
+}
+
 async function prepareGitHubPush(sessionId) {
   await sessionApplicationService.referenceFor(sessionId);
   return gitHubPushes.prepare({
@@ -4662,7 +4676,7 @@ function route(request, response) {
   );
   const sessionProjectWorktreesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/project-worktrees$/);
   const sessionProjectWorktreeActionMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/project-worktrees\/([^/]+)\/(merge|complete|restart|operate|commit|commit-prepare)$/
+    /^\/sessions\/([^/]+)\/project-worktrees\/([^/]+)\/(merge|complete|restart|operate|commit|commit-prepare|commit-message)$/
   );
   if (request.method === "POST" && sessionGitHubPushMatch) {
     const sessionId = decodeURIComponent(sessionGitHubPushMatch[1]);
@@ -4693,6 +4707,8 @@ function route(request, response) {
         ? mergeProjectWorktree(sessionId, sourceWorktreeId, input)
         : action === "commit-prepare"
           ? prepareProjectWorktreeCommit(sessionId, sourceWorktreeId)
+        : action === "commit-message"
+          ? generateProjectWorktreeCommitMessage(sessionId, sourceWorktreeId)
         : action === "commit"
           ? commitProjectWorktree(sessionId, sourceWorktreeId, input)
         : action === "complete"
