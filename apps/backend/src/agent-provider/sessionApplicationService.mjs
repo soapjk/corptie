@@ -174,6 +174,18 @@ export class SessionApplicationService {
     );
   }
 
+  async manageTurnChanges(sessionId, turnId, action, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE,
+      reference,
+      requiredText(turnId, "turnId"),
+      requiredText(action, "action"),
+      context
+    );
+  }
+
   async switchModel(sessionId, modelId, context = {}) {
     const reference = await this.referenceFor(sessionId);
     return this.registry.invoke(

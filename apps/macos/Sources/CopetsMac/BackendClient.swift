@@ -1668,12 +1668,12 @@ final class BackendClient: ObservableObject {
         sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, isChoiceSelection: isChoiceSelection, onSuccess: onSuccess)
     }
 
-    func reviewCodexChanges(threadId: String, turnId: String) async -> Result<String, Error> {
-        await performCodexDiffAction("review", threadId: threadId, turnId: turnId)
+    func reviewTurnChanges(sessionId: String, turnId: String) async -> Result<String, Error> {
+        await performTurnChangesAction("review", sessionId: sessionId, turnId: turnId)
     }
 
-    func undoCodexChanges(threadId: String, turnId: String) async -> Result<String, Error> {
-        let result = await performCodexDiffAction("undo", threadId: threadId, turnId: turnId)
+    func undoTurnChanges(sessionId: String, turnId: String) async -> Result<String, Error> {
+        let result = await performTurnChangesAction("undo", sessionId: sessionId, turnId: turnId)
         if case .success = result {
             undoneCodexTurnIds.insert(turnId)
             await refreshSelectedDetailFromPolling()
@@ -1681,9 +1681,9 @@ final class BackendClient: ObservableObject {
         return result
     }
 
-    private func performCodexDiffAction(_ action: String, threadId: String, turnId: String) async -> Result<String, Error> {
+    private func performTurnChangesAction(_ action: String, sessionId: String, turnId: String) async -> Result<String, Error> {
         do {
-            var request = URLRequest(url: baseURL.appending(path: "codex/threads/\(threadId)/turns/\(turnId)/diff/\(action)"))
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionId)/turns/\(turnId)/changes/\(action)"))
             request.httpMethod = "POST"
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {

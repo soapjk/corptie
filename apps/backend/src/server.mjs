@@ -16,8 +16,6 @@ import {
 } from "./adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
-import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mjs";
-import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
@@ -28,13 +26,8 @@ import { SessionBindingRepository } from "./agent-provider/sessionBindingReposit
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import {
   codexToolHostAttachment,
-  createCodexAppServerProvider
-} from "./agent-provider/providers/codexAppServerProvider.mjs";
-import {
-  CODEX_PTY_PROVIDER_ID,
-  createPtyAgentProvider,
-  GENERIC_PTY_PROVIDER_ID
-} from "./agent-provider/providers/ptyAgentProvider.mjs";
+  createAgentProviderRuntimeRegistry
+} from "./agent-provider/bootstrap/agentProviderBootstrap.mjs";
 import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishuGatewayManager.mjs";
 import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
@@ -192,11 +185,11 @@ const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
-const agentProviderRegistry = new AgentProviderRegistry([
-  createClaudeProviderRuntime({ store, listModels: loadClaudeModels }),
-  createPtyAgentProvider(ptyAgents, { providerId: GENERIC_PTY_PROVIDER_ID }),
-  createPtyAgentProvider(ptyAgents, { providerId: CODEX_PTY_PROVIDER_ID, listModels: loadCodexModels }),
-  createCodexAppServerProvider({
+const agentProviderRegistry = createAgentProviderRuntimeRegistry({
+  claudeProvider: createClaudeProviderRuntime({ store, listModels: loadClaudeModels }),
+  ptyManager: ptyAgents,
+  listCodexModels: loadCodexModels,
+  codexOperations: {
     listSessions: listCodexProviderSessions,
     readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
@@ -209,6 +202,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
     send: sendCodexProviderMessage,
     interrupt: interruptCodexProviderSession,
     respondToApproval: respondCodexProviderApproval,
+    manageTurnChanges: manageCodexTurnChanges,
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
     updatePermissions: updateCodexProviderPermissions,
@@ -228,30 +222,11 @@ const agentProviderRegistry = new AgentProviderRegistry([
       developerInstructions: input.developerInstructions,
       threadSource: input.purpose
     })
-  }, {
-    metadata: {
-      backgroundPermissionProfiles: ["read-only", "workspace-write"]
-    },
-    capabilities: [
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
-      AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
-      AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
-      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
-      AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
-      AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
-      AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT,
-      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
-    ]
-  })
-]);
+  },
+  codexMetadata: {
+    backgroundPermissionProfiles: ["read-only", "workspace-write"]
+  }
+});
 toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
 const sessionBindingRepository = new SessionBindingRepository({
   store,
@@ -2482,6 +2457,66 @@ async function respondCodexProviderApproval(reference, input = {}, context = {})
   return session;
 }
 
+async function manageCodexTurnChanges(reference, turnId, action) {
+  if (action !== "review" && action !== "undo") {
+    throw new Error(`Unsupported turn changes action: ${action}`);
+  }
+  const threadId = reference.providerSessionId;
+  const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
+  const activeRoute = logicalRoute
+    ? await assertWorkspaceRouteUsable({
+        store,
+        logicalSession: logicalRoute,
+        providerThreadId: threadId,
+        allowHistorical: action === "review"
+      })
+    : null;
+  const result = await codexRuntime.readThread(threadId, { includeTurns: true });
+  const cwd = activeRoute?.cwd
+    || result.thread.cwd
+    || sessionPresentationCache.get(`codex:${threadId}`)?.external?.cwd;
+  if (!cwd) throw new Error("The task working directory is unavailable.");
+
+  const changes = safeTurnFileChanges(result.thread, turnId, cwd);
+  const diff = turnDiffFor(threadId, turnId, changes);
+  if (action === "review") {
+    const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
+    const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
+    emitEvent("SessionTurnChangesReviewOpened", {
+      sessionId: reference.sessionId,
+      providerSessionId: threadId,
+      turnId,
+      tool,
+      logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
+      worktreeId: activeRoute?.worktreeId ?? null,
+      routingVersion: activeRoute?.routingVersion ?? null
+    }, { sessionId: reference.sessionId });
+    return {
+      ok: true,
+      tool,
+      logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
+      providerSessionId: threadId,
+      worktreeId: activeRoute?.worktreeId ?? null,
+      routingVersion: activeRoute?.routingVersion ?? null,
+      historical: activeRoute?.historical === true
+    };
+  }
+
+  const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
+  await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
+  await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
+  emitEvent("SessionTurnChangesUndone", {
+    sessionId: reference.sessionId,
+    providerSessionId: threadId,
+    turnId,
+    files: changes.map((change) => change.path),
+    logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
+    worktreeId: activeRoute?.worktreeId ?? null,
+    routingVersion: activeRoute?.routingVersion ?? null
+  }, { sessionId: reference.sessionId });
+  return { ok: true, files: changes.map((change) => change.path) };
+}
+
 async function sendCodexProviderMessage(reference, value, context = {}) {
   const before = context.before ?? reference.metadata?.session;
   const options = context.options ?? context;
@@ -3979,50 +4014,6 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/codex/models") {
-    loadCodexModels({ refresh: url.searchParams.get("refresh") === "true" })
-      .then((models) => {
-        sendJson(response, 200, models);
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "codex-cli" });
-      });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/claude/models") {
-    loadClaudeModels({ refresh: url.searchParams.get("refresh") === "true" })
-      .then((models) => {
-        sendJson(response, 200, models);
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-      });
-    return;
-  }
-
-  const codexSessionMatch = url.pathname.match(/^\/codex\/sessions\/([^/]+)$/);
-  if (request.method === "GET" && codexSessionMatch) {
-    const sessionId = decodeURIComponent(codexSessionMatch[1]).trim();
-    findCodexRolloutBySessionId(sessionId)
-      .then((match) => {
-        if (!match) {
-          sendJson(response, 404, { error: "Codex session not found" });
-          return;
-        }
-        sendJson(response, 200, {
-          id: match.id,
-          cwd: match.cwd ?? null,
-          rolloutPath: match.path,
-          timestampMs: match.timestampMs
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "codex-rollout" });
-      });
-    return;
-  }
-
   if (request.method === "PATCH" && url.pathname === "/settings") {
     readJson(request)
       .then(async (input) => {
@@ -4830,18 +4821,6 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "POST" && url.pathname === "/claude/sessions") {
-    readJson(request)
-      .then((input) => createSessionThroughApplication("claude-sdk", input, { source: "legacy-http" }))
-      .then((session) => {
-        sendJson(response, 201, { session });
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "claude-sdk" }));
-      });
-    return;
-  }
-
   if (request.method === "POST" && url.pathname === "/codex/pty-sessions") {
     readJson(request)
       .then((input) => {
@@ -5354,413 +5333,15 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/codex/threads") {
-    codexRuntime
-      .listThreads({
-        limit: Number(url.searchParams.get("limit") ?? 12),
-        archived: url.searchParams.get("archived") === "true",
-        cwd: url.searchParams.get("cwd") ?? undefined,
-        searchTerm: url.searchParams.get("search") ?? undefined,
-        sortKey: "updated_at",
-        sortDirection: "desc"
-      })
-      .then((result) => {
-        sendJson(response, 200, {
-          threads: result.data,
-          sessions: result.data.map(mapCodexThreadToSession),
-          nextCursor: result.nextCursor,
-          backwardsCursor: result.backwardsCursor
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 502, {
-          error: error.message,
-          adapter: "codex-app-server"
-        });
-      });
-    return;
-  }
-
-  if (request.method === "GET" && url.pathname === "/codex/notifications") {
-    sendJson(response, 200, {
-      notifications: codexRuntime.notifications.slice(-Number(url.searchParams.get("limit") ?? 80))
-    });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/codex/threads") {
-    readJson(request)
-      .then(async (input) => {
-        const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-        if (!prompt) {
-          sendJson(response, 400, { error: "Prompt is required" });
-          return;
-        }
-        const session = await createSessionThroughApplication("codex-app-server", { ...input, prompt }, {
-          source: "legacy-http"
-        });
-        const threadId = session.external?.threadId;
-        sendJson(response, 201, {
-          thread: { id: threadId },
-          turn: session.external?.activeTurnId ? { id: session.external.activeTurnId } : null,
-          session,
-          mode: "app-server-stdio",
-          visibleInCodexDesktop: false,
-          warning: "Started through Corptie' app-server connection. Codex Desktop may not show this thread immediately."
-        });
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error, 502), sessionTitleErrorPayload(error, {
-          adapter: "codex-app-server"
-        }));
-      });
-    return;
-  }
-
-  const codexTurnDiffMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/turns\/([^/]+)\/diff\/(review|undo)$/);
-  if (request.method === "POST" && codexTurnDiffMatch) {
-    const threadId = decodeURIComponent(codexTurnDiffMatch[1]);
-    const turnId = decodeURIComponent(codexTurnDiffMatch[2]);
-    const action = codexTurnDiffMatch[3];
-    const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
-    Promise.resolve(logicalRoute
-      ? assertWorkspaceRouteUsable({
-          store,
-          logicalSession: logicalRoute,
-          providerThreadId: threadId,
-          allowHistorical: action === "review"
-        })
-      : null)
-      .then((activeRoute) => Promise.all([
-        codexRuntime.readThread(threadId, { includeTurns: true }),
-        activeRoute
-      ]))
-      .then(async ([result, activeRoute]) => {
-        const cwd = activeRoute?.cwd
-          || result.thread.cwd
-          || sessionPresentationCache.get(`codex:${threadId}`)?.external?.cwd;
-        if (!cwd) {
-          throw new Error("The task working directory is unavailable.");
-        }
-        const changes = safeTurnFileChanges(result.thread, turnId, cwd);
-        const diff = turnDiffFor(threadId, turnId, changes);
-
-        if (action === "review") {
-          const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
-          const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
-          emitEvent("CodexTurnDiffReviewOpened", {
-            threadId,
-            turnId,
-            tool,
-            logicalSessionId: activeRoute?.logicalSessionId ?? null,
-            worktreeId: activeRoute?.worktreeId ?? null,
-            routingVersion: activeRoute?.routingVersion ?? null
-          });
-          return {
-            ok: true,
-            tool,
-            logicalSessionId: activeRoute?.logicalSessionId ?? null,
-            providerThreadId: threadId,
-            worktreeId: activeRoute?.worktreeId ?? null,
-            routingVersion: activeRoute?.routingVersion ?? null,
-            historical: activeRoute?.historical === true
-          };
-        }
-
-        const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
-        await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
-        await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
-        emitEvent("CodexTurnChangesUndone", {
-          threadId,
-          turnId,
-          files: changes.map((change) => change.path),
-          logicalSessionId: activeRoute?.logicalSessionId ?? null,
-          worktreeId: activeRoute?.worktreeId ?? null,
-          routingVersion: activeRoute?.routingVersion ?? null
-        });
-        return { ok: true, files: changes.map((change) => change.path) };
-      })
+  const sessionTurnChangesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/turns\/([^/]+)\/changes\/(review|undo)$/);
+  if (request.method === "POST" && sessionTurnChangesMatch) {
+    const sessionId = decodeURIComponent(sessionTurnChangesMatch[1]);
+    const turnId = decodeURIComponent(sessionTurnChangesMatch[2]);
+    const action = sessionTurnChangesMatch[3];
+    sessionApplicationService.manageTurnChanges(sessionId, turnId, action, { source: "http" })
       .then((payload) => sendJson(response, 200, payload))
       .catch((error) => {
-        sendJson(response, 409, { error: error.stderr || error.message, adapter: "codex-app-server" });
-      });
-    return;
-  }
-
-  const codexThreadMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)$/);
-  if (request.method === "GET" && codexThreadMatch) {
-    const threadId = decodeURIComponent(codexThreadMatch[1]);
-    codexRuntime
-      .readThread(threadId, { includeTurns: true })
-      .then(async (result) => {
-        const sessionId = `codex:${threadId}`;
-        const managedSession = await ensureCodexSessionPermissions(
-          sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
-        );
-        const detail = mapCodexThreadToDetail(
-          result.thread,
-          codexRuntime.liveItemsForThread(threadId),
-          codexRuntime.turnDiffsForThread(threadId)
-        );
-        const binding = store.getProviderThreadBinding(threadId);
-        const enrichedDetail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, {
-          ...detail,
-          activityStatus: managedSession?.activityStatus ?? detail.activityStatus ?? null,
-          currentModel: managedSession?.external?.currentModel ?? detail.currentModel ?? null,
-          currentReasoningLevel: managedSession?.external?.currentReasoningLevel ?? detail.currentReasoningLevel ?? null
-        }));
-        const detailWithQueue = {
-          ...enrichedDetail,
-          items: [...(enrichedDetail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
-        };
-        if (binding?.state !== "superseded" && binding?.state !== "invalid" && binding?.state !== "orphaned") {
-          syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
-        }
-        sendJson(response, 200, {
-          thread: detailWithQueue
-        });
-      })
-      .catch(async (error) => {
-        const sessionId = `codex:${threadId}`;
-        const binding = store.getProviderThreadBinding(threadId);
-        const managedSession = await ensureCodexSessionPermissions(
-          sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
-        );
-        if (managedSession) {
-          const detail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, createManagedCodexDetail(
-            managedSession,
-            codexRuntime.liveItemsForThread(threadId),
-            error
-          )));
-          const detailWithQueue = {
-            ...detail,
-            items: [...(detail.items ?? []), ...store.getQueuedItems(`codex:${threadId}`)]
-          };
-          if (!binding || binding.state === "active") {
-            syncManagedCodexSessionFromDetail(threadId, detailWithQueue);
-          }
-          sendJson(response, 200, {
-            thread: detailWithQueue,
-            liveFallback: true
-          });
-          return;
-        }
-
-        try {
-          const threads = await codexRuntime.listThreads({ limit: 100, archived: false });
-          const thread = threads.data.find((item) => item.id === threadId);
-          if (!thread) {
-            sendJson(response, 502, {
-              error: error.message,
-              adapter: "codex-app-server"
-            });
-            return;
-          }
-
-          const detail = historicalDetailProjection(
-            binding,
-            await readCodexRolloutDetail(thread, error)
-          );
-          sendJson(response, 200, {
-            thread: detail,
-            fallback: true
-          });
-        } catch (fallbackError) {
-          sendJson(response, 502, {
-            error: fallbackError.message,
-            originalError: error.message,
-            adapter: "codex-app-server"
-          });
-        }
-      });
-    return;
-  }
-
-  const codexApprovalMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/approval$/);
-  if (request.method === "POST" && codexApprovalMatch) {
-    const threadId = decodeURIComponent(codexApprovalMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const approved = input.approved === true;
-        return codexRuntime.respondToApproval(threadId, {
-          approved,
-          optionId: input.optionId
-        }).then(() => {
-          const sessionId = `codex:${threadId}`;
-          const previousSession = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId) ?? null;
-          store.clearActiveChoicePrompt(sessionId);
-          const session = previousSession ? {
-            ...previousSession,
-            status: previousSession.status === "blocked" ? "running" : previousSession.status,
-            suggestedOptions: null,
-            suggestedPrompt: null,
-            activityStatus: approved ? "Approval sent" : "Approval denied",
-            updatedAt: now()
-          } : null;
-          if (session) {
-            upsertManagedCodexSession(session);
-          }
-          emitEvent("CodexThreadApprovalResponded", { threadId, approved, session });
-          sendJson(response, 202, { mode: "codex-app-server-approval", approved, session });
-        });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "codex-app-server" });
-      });
-    return;
-  }
-
-  const codexMessageMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/messages$/);
-  if (request.method === "POST" && codexMessageMatch) {
-    const threadId = decodeURIComponent(codexMessageMatch[1]);
-    readJson(request)
-      .then(async (input) => {
-        const text = typeof input.text === "string" ? input.text.trim() : "";
-        const allowBackgroundFallback = input.allowBackgroundFallback === true;
-        if (!text) {
-          sendJson(response, 400, { error: "Message text is required" });
-          return;
-        }
-
-        console.log(`[codex] send requested thread=${threadId} chars=${text.length}`);
-        const sessionId = `codex:${threadId}`;
-        const managedSessionBeforeSend = await ensureCodexSessionPermissions(
-          sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
-        );
-        if (!managedSessionBeforeSend) {
-          sendJson(response, 404, { error: "Session not found", code: "SESSION_NOT_FOUND" });
-          return;
-        }
-        if (isClearCommand(text)) {
-          const result = await clearCodexAppServerSession(sessionId, managedSessionBeforeSend, { type: "desktop" });
-          sendJson(response, 202, result);
-          return;
-        }
-        bumpChoiceGeneration(sessionId);
-        store.clearActiveChoicePrompt(sessionId);
-        if (managedSessionBeforeSend) {
-          upsertManagedCodexSession({
-            ...managedSessionBeforeSend,
-            suggestedOptions: null,
-            updatedAt: new Date().toISOString()
-          });
-        }
-
-        try {
-          await codexRuntime.resumeThread(threadId, collaborationThreadOptionsForSession(sessionId));
-          const managedSession = sessionPresentationCache.get(`codex:${threadId}`);
-          const result = await codexRuntime.startTurn(threadId, text, {
-            model: managedSession?.external?.currentModel ?? input.model ?? undefined,
-            reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined,
-            ...codexTurnPermissionOptions(managedSession ?? managedSessionBeforeSend)
-          });
-          if (managedSession) {
-            upsertManagedCodexSession({
-              ...managedSession,
-              status: "running",
-              progress: 0.5,
-              suggestedOptions: null,
-              activityStatus: "Working",
-              updatedAt: new Date().toISOString(),
-              capabilities: {
-                ...(managedSession.capabilities ?? {}),
-                canInterrupt: true
-              },
-              external: {
-                ...managedSession.external,
-                activeTurnId: result.turn?.id ?? managedSession.external?.activeTurnId ?? null
-              }
-            });
-          }
-          emitEvent("CodexTurnStarted", { threadId, turn: result.turn, mode: "app-server" });
-          console.log(`[codex] send accepted by app-server thread=${threadId} turn=${result.turn?.id ?? "unknown"}`);
-          sendJson(response, 202, {
-            turn: result.turn,
-            mode: "app-server-stdio",
-            visibleInCodexDesktop: false,
-            warning: "Sent through Corptie' stdio app-server connection. Codex Desktop may not refresh this thread."
-          });
-        } catch (appServerError) {
-          console.log(`[codex] app-server send failed thread=${threadId} error=${appServerError.message}`);
-          if (!allowBackgroundFallback) {
-            sendJson(response, 502, {
-              error: "Codex app-server could not resume this thread, so the message was not sent.",
-              rawError: appServerError.message,
-              adapter: "codex-app-server",
-              visibleInCodexDesktop: false,
-              hint: "This thread is read-only in Corptie until we connect to the Codex Desktop control socket or find a supported resume path."
-            });
-            return;
-          }
-
-          const result = await codexRuntime.execResumeThread(threadId, text);
-          emitEvent("CodexTurnStarted", { threadId, mode: result.mode, pid: result.pid });
-          sendJson(response, 202, {
-            ...result,
-            fallback: true,
-            visibleInCodexDesktop: false,
-            appServerError: appServerError.message
-          });
-        }
-      })
-      .catch((error) => {
-        sendJson(response, unifiedErrorStatus(error), {
-          error: error.message,
-          code: error.code,
-          adapter: "codex-app-server"
-        });
-      });
-    return;
-  }
-
-  const codexModelMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)\/model$/);
-  if (request.method === "POST" && codexModelMatch) {
-    const threadId = decodeURIComponent(codexModelMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const model = typeof input.model === "string" ? input.model.trim() : "";
-        if (!model) {
-          sendJson(response, 400, { error: "Model is required" });
-          return;
-        }
-
-        const sessionId = `codex:${threadId}`;
-        const previous = sessionPresentationCache.get(sessionId);
-        const now = new Date().toISOString();
-        const session = previous ?? {
-          id: sessionId,
-          title: `Codex ${threadId.slice(0, 8)}`,
-          agent: "Codex",
-          status: "complete",
-          progress: 1,
-          summary: "Corptie-managed Codex task",
-          updatedAt: now,
-          accent: "cyan",
-          external: {
-            provider: "codex-app-server",
-            threadId,
-            source: "corptie"
-          }
-        };
-        const nextSession = {
-          ...session,
-          updatedAt: now,
-          external: {
-            ...session.external,
-            provider: "codex-app-server",
-            threadId,
-            currentModel: model
-          }
-        };
-        upsertManagedCodexSession(nextSession);
-        emitEvent("CodexThreadModelChanged", { threadId, model });
-        sendJson(response, 202, { session: nextSession, model });
-      })
-      .catch((error) => {
-        sendJson(response, 502, {
-          error: error.message,
-          adapter: "codex-app-server"
-        });
+        sendJson(response, unifiedErrorStatus(error), { error: error.stderr || error.message, code: error.code ?? null });
       });
     return;
   }
