@@ -17,6 +17,16 @@ import {
 } from "./adapters/codexAppServer.mjs";
 import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
+import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mjs";
+import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
+import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
+import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
+import { createCodexAppServerProvider } from "./agent-provider/providers/codexAppServerProvider.mjs";
+import {
+  CODEX_PTY_PROVIDER_ID,
+  createPtyAgentProvider,
+  GENERIC_PTY_PROVIDER_ID
+} from "./agent-provider/providers/ptyAgentProvider.mjs";
 import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishuGatewayManager.mjs";
 import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
@@ -170,6 +180,28 @@ const projectToolsetInitializer = new ProjectToolsetInitializer({
 });
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 const claudeAgents = new ClaudeAgentManager({ store });
+const agentProviderRegistry = new AgentProviderRegistry([
+  createClaudeAgentSdkProvider(claudeAgents),
+  createPtyAgentProvider(ptyAgents, { providerId: GENERIC_PTY_PROVIDER_ID }),
+  createPtyAgentProvider(ptyAgents, { providerId: CODEX_PTY_PROVIDER_ID }),
+  createCodexAppServerProvider({
+    listSessions: listCodexProviderSessions,
+    readSession: readCodexProviderSession,
+    send: sendCodexProviderMessage,
+    interrupt: interruptCodexProviderSession,
+    respondToApproval: respondCodexProviderApproval
+  }, {
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE
+    ]
+  })
+]);
+const sessionApplicationService = new SessionApplicationService({
+  registry: agentProviderRegistry,
+  resolveSessionReference: resolveExistingSessionReference
+});
 const feishuGateway = new FeishuGatewayManager({
   store,
   listSessions: listGatewaySessions,
@@ -1872,23 +1904,27 @@ async function assertDirectory(path) {
   }
 }
 
-function listGatewaySessions() {
-  const storedSessions = ptyAgents.list({ archived: false });
-  const ptySessions = storedSessions
-    .filter((session) => session.external?.provider !== "codex-app-server")
-    .filter((session) => session.external?.provider !== "claude-sdk");
+function listGatewaySessions(options = {}) {
+  return agentProviderRegistry.listSessionsSync({ archived: options.archived === true });
+}
+
+function listCodexProviderSessions(options = {}) {
+  const archived = options.archived === true;
+  const storedSessions = ptyAgents.list({ archived });
   const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
-  const claudeSessions = claudeAgents.list({ archived: false });
-  const listedIds = new Set([...ptySessions, ...claudeSessions].map((session) => session.id));
-  const managedById = new Map(Array.from(managedCodexSessions.values()).map((session) => [session.id, session]));
+  const managedById = new Map(
+    Array.from(managedCodexSessions.values())
+      .filter((session) => Boolean(session.archived) === archived)
+      .map((session) => [session.id, session])
+  );
   const codexSessions = [
     ...storedCodexSessions.map((stored) => {
       const managed = managedById.get(stored.id);
       return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
     }),
     ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
-  ].filter((session) => !listedIds.has(session.id));
-  return sortSessionsForList([...ptySessions, ...claudeSessions, ...codexSessions]);
+  ];
+  return sortSessionsForList(codexSessions);
 }
 
 function listGatewayWorkspaces() {
@@ -2020,27 +2056,7 @@ async function getUnifiedSessionSnapshot(sessionId) {
     throw error;
   }
 
-  let detail = null;
-  if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    detail = claudeAgents.has(id) ? claudeAgents.detail(id) : ptyAgents.detail(id);
-  } else if (sessionId.startsWith("codex:")) {
-    const threadId = summary.external?.threadId ?? sessionId.slice("codex:".length);
-    try {
-      const result = await codexClient.readThread(threadId, { includeTurns: true });
-      detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
-        result.thread,
-        codexClient.liveItemsForThread(threadId),
-        codexClient.turnDiffsForThread(threadId)
-      ));
-      syncManagedCodexSessionFromDetail(threadId, detail);
-    } catch (error) {
-      const managed = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-      detail = managed
-        ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
-        : store.getDetail(sessionId);
-    }
-  }
+  const detail = await sessionApplicationService.readSession(sessionId);
 
   return {
     ...summary,
@@ -2054,6 +2070,162 @@ async function getUnifiedSessionSnapshot(sessionId) {
     items: agentWorkQueueItemsForSnapshot(sessionId, detail?.items ?? []),
     lastEventSequence: store.lastSessionEventSequence(sessionId)
   };
+}
+
+function resolveExistingSessionReference(sessionId) {
+  const session = listGatewaySessions().find((candidate) => candidate.id === sessionId);
+  if (!session) return null;
+  const externalProvider = session.external?.provider;
+  const providerId = externalProvider === "claude-sdk"
+    ? "claude-sdk"
+    : externalProvider === "codex-app-server"
+      ? "codex-app-server"
+      : externalProvider === CODEX_PTY_PROVIDER_ID
+        ? CODEX_PTY_PROVIDER_ID
+        : GENERIC_PTY_PROVIDER_ID;
+  const logical = providerId === "codex-app-server"
+    ? store.getLogicalSessionByLegacySessionId(sessionId)
+    : null;
+  return {
+    bindingId: null,
+    providerId,
+    providerSessionId: logical?.activeThreadId
+      ?? session.external?.threadId
+      ?? session.external?.sessionId
+      ?? normalizeSessionId(sessionId),
+    routingVersion: logical?.routingVersion ?? null,
+    metadata: { session }
+  };
+}
+
+async function readCodexProviderSession(reference) {
+  const sessionId = reference.sessionId;
+  const threadId = reference.providerSessionId;
+  try {
+    const result = await codexClient.readThread(threadId, { includeTurns: true });
+    const detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
+      result.thread,
+      codexClient.liveItemsForThread(threadId),
+      codexClient.turnDiffsForThread(threadId)
+    ));
+    syncManagedCodexSessionFromDetail(threadId, detail);
+    return detail;
+  } catch (error) {
+    const managed = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+    return managed
+      ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
+      : store.getDetail(sessionId);
+  }
+}
+
+async function interruptCodexProviderSession(reference, context = {}) {
+  const summary = context.summary ?? reference.metadata?.session;
+  const activeTurnId = summary?.external?.activeTurnId ?? summary?.rawStatus?.activeTurnId ?? null;
+  if (!activeTurnId) {
+    const error = new Error("Session does not have an active turn to interrupt.");
+    error.code = "NO_ACTIVE_RUN";
+    throw error;
+  }
+  await codexClient.interruptTurn(reference.providerSessionId, activeTurnId);
+  const session = {
+    ...summary,
+    status: "cancelled",
+    progress: 1,
+    activityStatus: null,
+    updatedAt: now(),
+    capabilities: { ...(summary?.capabilities ?? {}), canInterrupt: false },
+    external: { ...summary?.external, activeTurnId: null, rawStatus: "cancelled" }
+  };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+async function respondCodexProviderApproval(reference, input = {}, context = {}) {
+  const summary = context.summary ?? reference.metadata?.session;
+  const approved = input.approved === true;
+  await codexClient.respondToApproval(reference.providerSessionId, {
+    approved,
+    optionId: input.optionId
+  });
+  store.clearActiveChoicePrompt(reference.sessionId);
+  const session = {
+    ...summary,
+    status: summary?.status === "blocked" ? "running" : summary?.status,
+    suggestedOptions: null,
+    suggestedPrompt: null,
+    activityStatus: approved ? "Approval sent" : "Approval denied",
+    updatedAt: now()
+  };
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+async function sendCodexProviderMessage(reference, value, context = {}) {
+  const before = context.before ?? reference.metadata?.session;
+  const options = context.options ?? context;
+  const sessionId = reference.sessionId;
+  const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (workspaceTransitionBlocksWork(logicalRoute)) {
+    const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+  const threadId = logicalRoute?.activeThreadId ?? reference.providerSessionId;
+  const activeRoute = logicalRoute
+    ? await assertWorkspaceRouteUsable({
+        store,
+        logicalSession: logicalRoute,
+        providerThreadId: threadId
+      })
+    : null;
+  bumpChoiceGeneration(sessionId);
+  store.clearActiveChoicePrompt(sessionId);
+  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
+    managedCodexSessions.get(sessionId) ?? before,
+    logicalRoute
+  ));
+  const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
+  const startingSession = {
+    ...managed,
+    status: "running",
+    progress: 0.5,
+    suggestedOptions: null,
+    activityStatus: "Starting",
+    updatedAt: now(),
+    capabilities: {
+      ...(managed.capabilities ?? {}),
+      canInterrupt: true
+    }
+  };
+  upsertManagedCodexSession(startingSession);
+  emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
+  try {
+    await codexClient.resumeThread(threadId, {
+      cwd: activeCwd,
+      runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
+      ...collaborationThreadOptionsForSession(sessionId)
+    });
+    const result = await codexClient.startTurn(threadId, value, {
+      cwd: activeCwd,
+      model: managed?.external?.currentModel ?? options.model ?? undefined,
+      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
+      ...codexTurnPermissionOptions(managed)
+    });
+    upsertManagedCodexSession({
+      ...startingSession,
+      activityStatus: "Working",
+      updatedAt: now(),
+      external: {
+        ...managed.external,
+        activeTurnId: result.turn?.id ?? managed.external?.activeTurnId ?? null
+      }
+    });
+    return result;
+  } catch (error) {
+    upsertManagedCodexSession(managed);
+    emitEvent("CodexThreadProgressChanged", { session: managed, threadId, method: "turn/start-failed" });
+    throw error;
+  }
 }
 
 function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
@@ -2206,84 +2378,17 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
 
-  let result;
   if (sessionId.startsWith("pty:")) {
     const id = normalizeSessionId(sessionId);
     bumpChoiceGeneration(sessionId);
     store.clearActiveChoicePrompt(id);
-    if (claudeAgents.has(id)) {
-      result = await claudeAgents.send(id, value);
-    } else {
-      ptyAgents.write(id, value, { submit: options.submit !== false });
-      result = ptyAgents.get(id) ? ptyAgents.detail(id, { flush: false }) : store.getDetail(id);
-    }
-  } else if (sessionId.startsWith("codex:")) {
-    const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
-    if (workspaceTransitionBlocksWork(logicalRoute)) {
-      const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
-      error.code = "SESSION_BUSY";
-      throw error;
-    }
-    const threadId = logicalRoute?.activeThreadId ?? sessionId.slice("codex:".length);
-    const activeRoute = logicalRoute
-      ? await assertWorkspaceRouteUsable({
-          store,
-          logicalSession: logicalRoute,
-          providerThreadId: threadId
-        })
-      : null;
-    bumpChoiceGeneration(sessionId);
-    store.clearActiveChoicePrompt(sessionId);
-    const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-      managedCodexSessions.get(sessionId) ?? before,
-      logicalRoute
-    ));
-    const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
-    const startingSession = {
-      ...managed,
-      status: "running",
-      progress: 0.5,
-      suggestedOptions: null,
-      activityStatus: "Starting",
-      updatedAt: now(),
-      capabilities: {
-        ...(managed.capabilities ?? {}),
-        canInterrupt: true
-      }
-    };
-    upsertManagedCodexSession(startingSession);
-    emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
-    try {
-      await codexClient.resumeThread(threadId, {
-        cwd: activeCwd,
-        runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
-        ...collaborationThreadOptionsForSession(sessionId)
-      });
-      result = await codexClient.startTurn(threadId, value, {
-        cwd: activeCwd,
-        model: managed?.external?.currentModel ?? options.model ?? undefined,
-        reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
-        ...codexTurnPermissionOptions(managed)
-      });
-      upsertManagedCodexSession({
-        ...startingSession,
-        activityStatus: "Working",
-        updatedAt: now(),
-        external: {
-          ...managed.external,
-          activeTurnId: result.turn?.id ?? managed.external?.activeTurnId ?? null
-        }
-      });
-    } catch (error) {
-      upsertManagedCodexSession(managed);
-      emitEvent("CodexThreadProgressChanged", { session: managed, threadId, method: "turn/start-failed" });
-      throw error;
-    }
-  } else {
-    const error = new Error("Session provider does not support messages.");
-    error.code = "UNSUPPORTED_SESSION";
-    throw error;
   }
+  const result = await sessionApplicationService.sendMessage(sessionId, value, {
+    before,
+    options,
+    source,
+    submit: options.submit
+  });
 
   emitEvent("SessionUserMessageCreated", {
     sessionId,
@@ -2630,34 +2735,7 @@ async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) 
     error.code = "SESSION_NOT_FOUND";
     throw error;
   }
-  let session;
-  if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    session = claudeAgents.has(id) ? await claudeAgents.interrupt(id) : ptyAgents.interrupt(id);
-  } else if (sessionId.startsWith("codex:")) {
-    const threadId = sessionId.slice("codex:".length);
-    const activeTurnId = summary.external?.activeTurnId ?? summary.rawStatus?.activeTurnId ?? null;
-    if (!activeTurnId) {
-      const error = new Error("Session does not have an active turn to interrupt.");
-      error.code = "NO_ACTIVE_RUN";
-      throw error;
-    }
-    await codexClient.interruptTurn(threadId, activeTurnId);
-    session = {
-      ...summary,
-      status: "cancelled",
-      progress: 1,
-      activityStatus: null,
-      updatedAt: now(),
-      capabilities: { ...(summary.capabilities ?? {}), canInterrupt: false },
-      external: { ...summary.external, activeTurnId: null, rawStatus: "cancelled" }
-    };
-    upsertManagedCodexSession(session);
-  } else {
-    const error = new Error("Session provider does not support interruption.");
-    error.code = "UNSUPPORTED_SESSION";
-    throw error;
-  }
+  const session = await sessionApplicationService.interrupt(sessionId, { summary, source });
   emitEvent("SessionRunInterrupted", { sessionId, session, source }, { sessionId, source });
   return session;
 }
@@ -2671,49 +2749,7 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
   }
 
   const approved = input.approved === true;
-  let session;
-  if (sessionId.startsWith("codex:")) {
-    const threadId = sessionId.slice("codex:".length);
-    await codexClient.respondToApproval(threadId, {
-      approved,
-      optionId: input.optionId
-    });
-    store.clearActiveChoicePrompt(sessionId);
-    session = {
-      ...summary,
-      status: summary.status === "blocked" ? "running" : summary.status,
-      suggestedOptions: null,
-      suggestedPrompt: null,
-      activityStatus: approved ? "Approval sent" : "Approval denied",
-      updatedAt: now()
-    };
-    upsertManagedCodexSession(session);
-  } else if (sessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(sessionId);
-    const isClaude = claudeAgents.has(id) || summary.external?.provider === "claude-sdk";
-    if (isClaude) {
-      session = claudeAgents.respondToChoice(id, {
-        choiceId: input.choiceId,
-        optionId: input.optionId,
-        optionIndex: input.optionIndex
-      });
-    } else if (input.itemType === "approval") {
-      session = ptyAgents.respondToCodexApproval(id, {
-        approved,
-        optionId: input.optionId,
-        optionIndex: input.optionIndex
-      });
-    } else {
-      session = ptyAgents.respondToPtyChoice(id, {
-        optionId: input.optionId,
-        optionIndex: input.optionIndex
-      });
-    }
-  } else {
-    const error = new Error("Session provider does not support approvals.");
-    error.code = "UNSUPPORTED_SESSION";
-    throw error;
-  }
+  const session = await sessionApplicationService.respondToApproval(sessionId, input, { summary, source });
 
   emitEvent("SessionApprovalResponded", { sessionId, approved, session, source }, { sessionId, source });
   return session;
@@ -4007,6 +4043,11 @@ function route(request, response) {
       .catch((error) => {
         sendJson(response, 400, { ok: false, error: error.message });
       });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/providers") {
+    sendJson(response, 200, { providers: agentProviderRegistry.descriptors() });
     return;
   }
 
