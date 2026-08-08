@@ -9,12 +9,12 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
 import {
-  CodexAppServerClient,
   mapCodexThreadToDetail,
   mapCodexThreadToSession,
   readCodexRolloutDetail,
   readCodexRolloutTokenUsage
 } from "./adapters/codexAppServer.mjs";
+import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
@@ -85,7 +85,7 @@ import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "./utils/agentWorkQueue.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
-import { CodexWorkspaceTransitionManager } from "./runtime/codexWorkspaceTransitionManager.mjs";
+import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTransitionManager.mjs";
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
@@ -162,7 +162,7 @@ const hostToolCatalog = new HostToolCatalog([
 ]);
 let toolHostService = null;
 const codexAppServerCommand = resolveCodexCommand();
-const codexClient = new CodexAppServerClient({
+const codexRuntime = createCodexProviderRuntime({
   command: codexAppServerCommand,
   env: () => ({
     ...environmentForCommand(codexAppServerCommand),
@@ -177,16 +177,16 @@ const codexClient = new CodexAppServerClient({
     actorId: params.agentId
   })
 });
-const codexWorkspaceTransitions = new CodexWorkspaceTransitionManager({
+const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   store,
-  codexClient,
+  providerPort: codexRuntime,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
   onRouteCommitted: (event) => commitManagedCodexWorkspaceRoute(event)
 });
 const gitWorkspaces = new GitWorkspaceManager({
   store,
-  transitions: codexWorkspaceTransitions
+  transitions: workspaceTransitionManager
 });
 const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
@@ -217,7 +217,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
       attachment,
       collaborationProviderRuntimeOptions(attachment.actorId)
     ),
-    runBackgroundPrompt: (input) => codexClient.runEphemeralPrompt({
+    runBackgroundPrompt: (input) => codexRuntime.runEphemeralPrompt({
       cwd: input.cwd,
       runtimeWorkspaceRoots: input.allowedRoots,
       prompt: input.prompt,
@@ -568,7 +568,7 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
     ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
     : null;
   if (!transition || transition.phase !== "waitingForTurn") return null;
-  return codexWorkspaceTransitions.continueWorkspaceTransition(transition.transitionId, {
+  return workspaceTransitionManager.continueWorkspaceTransition(transition.transitionId, {
     lastCompletedTurnId,
     ...collaborationThreadOptionsForSession(logical.legacySessionId)
   }).catch((error) => {
@@ -634,7 +634,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       }
       if (options.verifyProviderIdle) {
         try {
-          const response = await codexClient.readThread(logical.activeThreadId, {
+          const response = await codexRuntime.readThread(logical.activeThreadId, {
             includeTurns: true
           });
           const latest = (response.thread?.turns ?? response.turns ?? []).at(-1);
@@ -646,7 +646,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       }
       reconcilingWorkspacePaths.add(logical.logicalSessionId);
       try {
-        await codexWorkspaceTransitions.reconcileActiveWorkspacePath(
+        await workspaceTransitionManager.reconcileActiveWorkspacePath(
           logical.logicalSessionId,
           collaborationThreadOptionsForSession(logical.legacySessionId)
         );
@@ -745,7 +745,7 @@ function normalizeRelativeDiffPath(value, cwd) {
 }
 
 function turnDiffFor(threadId, turnId, changes) {
-  const liveDiff = codexClient.turnDiffsForThread(threadId).get(turnId);
+  const liveDiff = codexRuntime.turnDiffsForThread(threadId).get(turnId);
   return liveDiff || changes.map(unifiedDiffForChange).filter(Boolean).join("\n");
 }
 
@@ -1387,7 +1387,7 @@ async function createAgentWorktree(agentId, input = {}) {
   const { sessionId, logical } = requireAgentLogicalSession(agentId);
   const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
-  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
   const runtimeOptions = collaborationThreadOptions(agentId);
   return gitWorkspaces.createWorktree({
     logicalSessionId: logical.logicalSessionId,
@@ -1531,7 +1531,7 @@ function handleCodexAppServerNotification(message) {
   }
 
   if (method === "thread/tokenUsage/updated") {
-    const context = codexClient.tokenUsageForThread(threadId);
+    const context = codexRuntime.tokenUsageForThread(threadId);
     if (context) {
       emitEvent("SessionUsageUpdated", {
         sessionId,
@@ -1545,7 +1545,7 @@ function handleCodexAppServerNotification(message) {
     return;
   }
 
-  const liveItems = codexClient.liveItemsForThread(threadId);
+  const liveItems = codexRuntime.liveItemsForThread(threadId);
   const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
   const nowIso = now();
 
@@ -2237,7 +2237,7 @@ async function createCodexProviderSession(input = {}) {
       sandbox: normalizeCodexSandbox(input.sandbox),
       approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
     };
-    const started = await codexClient.startThread({
+    const started = await codexRuntime.startThread({
       cwd: input.cwd,
       ...permissions,
       model: runtime.model,
@@ -2254,7 +2254,7 @@ async function createCodexProviderSession(input = {}) {
     const prompt = typeof input.prompt === "string" && input.prompt.trim()
       ? input.prompt.trim()
       : "Reply exactly: Ready";
-    const turn = await codexClient.startTurn(started.thread.id, prompt, {
+    const turn = await codexRuntime.startTurn(started.thread.id, prompt, {
       cwd: input.cwd,
       ...codexTurnPermissionOptions({ external: permissions }),
       model: runtime.model,
@@ -2295,7 +2295,7 @@ async function resumeCodexProviderSession(reference) {
     ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
-  const result = await codexClient.resumeThread(
+  const result = await codexRuntime.resumeThread(
     reference.providerSessionId,
     collaborationThreadOptionsForSession(reference.sessionId)
   );
@@ -2308,7 +2308,7 @@ async function resumeCodexProviderSession(reference) {
 }
 
 async function deleteCodexProviderSession(reference) {
-  await codexClient.deleteThread(reference.providerSessionId);
+  await codexRuntime.deleteThread(reference.providerSessionId);
   const existed = sessionPresentationCache.delete(reference.sessionId);
   store.deleteSession(reference.sessionId);
   return existed;
@@ -2319,7 +2319,7 @@ async function renameCodexProviderSession(reference, title) {
     ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
-  await codexClient.setThreadName(reference.providerSessionId, title);
+  await codexRuntime.setThreadName(reference.providerSessionId, title);
   const session = { ...previous, title, updatedAt: new Date().toISOString() };
   upsertManagedCodexSession(session);
   return session;
@@ -2370,11 +2370,11 @@ async function readCodexProviderSession(reference) {
   const sessionId = reference.sessionId;
   const threadId = reference.providerSessionId;
   try {
-    const result = await codexClient.readThread(threadId, { includeTurns: true });
+    const result = await codexRuntime.readThread(threadId, { includeTurns: true });
     const detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
       result.thread,
-      codexClient.liveItemsForThread(threadId),
-      codexClient.turnDiffsForThread(threadId)
+      codexRuntime.liveItemsForThread(threadId),
+      codexRuntime.turnDiffsForThread(threadId)
     ));
     syncManagedCodexSessionFromDetail(threadId, detail);
     return detail;
@@ -2382,7 +2382,7 @@ async function readCodexProviderSession(reference) {
     if (reference.metadata?.historical) throw error;
     const managed = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
     return managed
-      ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
+      ? createManagedCodexDetail(managed, codexRuntime.liveItemsForThread(threadId), error)
       : store.getDetail(sessionId);
   }
 }
@@ -2395,7 +2395,7 @@ async function interruptCodexProviderSession(reference, context = {}) {
     error.code = "NO_ACTIVE_RUN";
     throw error;
   }
-  await codexClient.interruptTurn(reference.providerSessionId, activeTurnId);
+  await codexRuntime.interruptTurn(reference.providerSessionId, activeTurnId);
   const session = {
     ...summary,
     status: "cancelled",
@@ -2465,7 +2465,7 @@ function updateCodexProviderPermissions(reference, permissions) {
 async function respondCodexProviderApproval(reference, input = {}, context = {}) {
   const summary = context.summary ?? reference.metadata?.session;
   const approved = input.approved === true;
-  await codexClient.respondToApproval(reference.providerSessionId, {
+  await codexRuntime.respondToApproval(reference.providerSessionId, {
     approved,
     optionId: input.optionId
   });
@@ -2522,12 +2522,12 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   upsertManagedCodexSession(startingSession);
   emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
   try {
-    await codexClient.resumeThread(threadId, {
+    await codexRuntime.resumeThread(threadId, {
       cwd: activeCwd,
       runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
       ...collaborationThreadOptionsForSession(sessionId)
     });
-    const result = await codexClient.startTurn(threadId, value, {
+    const result = await codexRuntime.startTurn(threadId, value, {
       cwd: activeCwd,
       model: managed?.external?.currentModel ?? options.model ?? undefined,
       reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
@@ -2646,7 +2646,7 @@ async function getGatewayUsage(sessionId = null) {
     };
   }
 
-  const usage = await codexClient.readAccountRateLimits();
+  const usage = await codexRuntime.readAccountRateLimits();
   return {
     available: true,
     provider: "codex",
@@ -2760,13 +2760,13 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   const title = session.title || "Codex";
   const releaseTitle = reserveSessionTitle(title, sessionId);
   try {
-  const started = await codexClient.startThread({
+  const started = await codexRuntime.startThread({
     cwd,
     ...permissions,
     model,
     ...collaborationThreadOptionsForSession(sessionId)
   });
-  await codexClient.setThreadName(started.thread.id, title).catch((error) => {
+  await codexRuntime.setThreadName(started.thread.id, title).catch((error) => {
     console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
   });
 
@@ -3000,7 +3000,7 @@ async function inspectCollaborationSession(sessionId) {
   // against App Server before deciding that a durable collaboration Delivery
   // must remain queued.
   try {
-    const result = await codexClient.readThread(threadId, { includeTurns: true });
+    const result = await codexRuntime.readThread(threadId, { includeTurns: true });
     const live = mapCodexThreadToSession(result.thread);
     const presentation = session
       ? {
@@ -3032,7 +3032,7 @@ async function inspectCollaborationSession(sessionId) {
 
 async function resumeCollaborationSession(sessionId) {
   if (!String(sessionId).startsWith("codex:")) throw new Error("Only Codex Sessions can be resumed for collaboration.");
-  await codexClient.resumeThread(
+  await codexRuntime.resumeThread(
     sessionId.slice("codex:".length),
     collaborationThreadOptionsForSession(sessionId)
   );
@@ -3290,9 +3290,9 @@ async function switchCodexProviderWorkspace(reference, input = {}) {
   const logical = (reference.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? await ensureLogicalRouteForCodexSession(session);
-  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
+  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
   const activeTurnId = session.external?.activeTurnId ?? null;
-  const result = await codexWorkspaceTransitions.switchWorkspace({
+  const result = await workspaceTransitionManager.switchWorkspace({
     transitionId: input.transitionId,
     logicalSessionId: logical.logicalSessionId,
     targetWorktreeId: input.targetWorkspaceId,
@@ -3319,8 +3319,8 @@ async function restartCodexProviderSession(reference) {
   const logical = (reference.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? await ensureLogicalRouteForCodexSession(session);
-  const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
-  const result = await codexWorkspaceTransitions.restartSession({
+  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
+  const result = await workspaceTransitionManager.restartSession({
     transitionId: `session-restart:${randomUUID()}`,
     logicalSessionId: logical.logicalSessionId,
     activeTurnId: session.external?.activeTurnId ?? null,
@@ -4037,7 +4037,7 @@ function route(request, response) {
         const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
         const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
         if (codexBackendChanged || codexProxyChanged) {
-          await codexClient.close();
+          await codexRuntime.close();
         }
         return settings;
       })
@@ -5355,7 +5355,7 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/codex/threads") {
-    codexClient
+    codexRuntime
       .listThreads({
         limit: Number(url.searchParams.get("limit") ?? 12),
         archived: url.searchParams.get("archived") === "true",
@@ -5383,7 +5383,7 @@ function route(request, response) {
 
   if (request.method === "GET" && url.pathname === "/codex/notifications") {
     sendJson(response, 200, {
-      notifications: codexClient.notifications.slice(-Number(url.searchParams.get("limit") ?? 80))
+      notifications: codexRuntime.notifications.slice(-Number(url.searchParams.get("limit") ?? 80))
     });
     return;
   }
@@ -5432,7 +5432,7 @@ function route(request, response) {
         })
       : null)
       .then((activeRoute) => Promise.all([
-        codexClient.readThread(threadId, { includeTurns: true }),
+        codexRuntime.readThread(threadId, { includeTurns: true }),
         activeRoute
       ]))
       .then(async ([result, activeRoute]) => {
@@ -5490,7 +5490,7 @@ function route(request, response) {
   const codexThreadMatch = url.pathname.match(/^\/codex\/threads\/([^/]+)$/);
   if (request.method === "GET" && codexThreadMatch) {
     const threadId = decodeURIComponent(codexThreadMatch[1]);
-    codexClient
+    codexRuntime
       .readThread(threadId, { includeTurns: true })
       .then(async (result) => {
         const sessionId = `codex:${threadId}`;
@@ -5499,8 +5499,8 @@ function route(request, response) {
         );
         const detail = mapCodexThreadToDetail(
           result.thread,
-          codexClient.liveItemsForThread(threadId),
-          codexClient.turnDiffsForThread(threadId)
+          codexRuntime.liveItemsForThread(threadId),
+          codexRuntime.turnDiffsForThread(threadId)
         );
         const binding = store.getProviderThreadBinding(threadId);
         const enrichedDetail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, {
@@ -5529,7 +5529,7 @@ function route(request, response) {
         if (managedSession) {
           const detail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, createManagedCodexDetail(
             managedSession,
-            codexClient.liveItemsForThread(threadId),
+            codexRuntime.liveItemsForThread(threadId),
             error
           )));
           const detailWithQueue = {
@@ -5547,7 +5547,7 @@ function route(request, response) {
         }
 
         try {
-          const threads = await codexClient.listThreads({ limit: 100, archived: false });
+          const threads = await codexRuntime.listThreads({ limit: 100, archived: false });
           const thread = threads.data.find((item) => item.id === threadId);
           if (!thread) {
             sendJson(response, 502, {
@@ -5582,7 +5582,7 @@ function route(request, response) {
     readJson(request)
       .then((input) => {
         const approved = input.approved === true;
-        return codexClient.respondToApproval(threadId, {
+        return codexRuntime.respondToApproval(threadId, {
           approved,
           optionId: input.optionId
         }).then(() => {
@@ -5647,9 +5647,9 @@ function route(request, response) {
         }
 
         try {
-          await codexClient.resumeThread(threadId, collaborationThreadOptionsForSession(sessionId));
+          await codexRuntime.resumeThread(threadId, collaborationThreadOptionsForSession(sessionId));
           const managedSession = sessionPresentationCache.get(`codex:${threadId}`);
-          const result = await codexClient.startTurn(threadId, text, {
+          const result = await codexRuntime.startTurn(threadId, text, {
             model: managedSession?.external?.currentModel ?? input.model ?? undefined,
             reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined,
             ...codexTurnPermissionOptions(managedSession ?? managedSessionBeforeSend)
@@ -5693,7 +5693,7 @@ function route(request, response) {
             return;
           }
 
-          const result = await codexClient.execResumeThread(threadId, text);
+          const result = await codexRuntime.execResumeThread(threadId, text);
           emitEvent("CodexTurnStarted", { threadId, mode: result.mode, pid: result.pid });
           sendJson(response, 202, {
             ...result,
@@ -5823,7 +5823,7 @@ function route(request, response) {
         sendJson(response, 409, { error: "Codex session does not have an active turn to interrupt" });
         return;
       }
-      codexClient
+      codexRuntime
         .interruptTurn(threadId, activeTurnId)
         .then(() => {
           const session = {
@@ -5875,7 +5875,7 @@ async function resolveSessionContextUsage(session) {
   if (session.external?.provider !== "codex-app-server") return null;
   const threadId = session.external?.threadId;
   if (!threadId) return null;
-  const live = codexClient.tokenUsageForThread(threadId);
+  const live = codexRuntime.tokenUsageForThread(threadId);
   if (live) return live;
   const rollout = await findCodexRolloutBySessionId(threadId);
   return readCodexRolloutTokenUsage(rollout?.path);
@@ -5919,7 +5919,7 @@ const corptieCodexRuntime = await ensureCorptieCodexRuntime({
 process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
 if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
-  const rebuilt = await codexClient.listThreads({
+  const rebuilt = await codexRuntime.listThreads({
     limit: Math.max(100, corptieCodexRuntime.threadMigration.rolloutCount + 20),
     useStateDbOnly: false,
     requestTimeoutMs: 30000
@@ -5947,7 +5947,7 @@ for (const storedSession of storedSessionsAtStartup) {
 for (const transition of store.listPendingWorkspaceTransitions()) {
   const logical = store.getLogicalSession(transition.logicalSessionId);
   try {
-    const recovered = await codexWorkspaceTransitions.recoverWorkspaceTransition(
+    const recovered = await workspaceTransitionManager.recoverWorkspaceTransition(
       transition.transitionId,
       collaborationThreadOptionsForSession(logical?.legacySessionId)
     );
@@ -5997,7 +5997,7 @@ function shutdown() {
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
     await feishuGateway.close();
-    await codexClient.close();
+    await codexRuntime.close();
     await store.close();
     process.exit(0);
   })();

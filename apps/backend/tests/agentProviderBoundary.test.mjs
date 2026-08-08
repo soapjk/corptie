@@ -8,10 +8,7 @@ const backendRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const backendSourceRoot = join(backendRoot, "src");
 const macosSourceRoot = join(backendRoot, "..", "macos", "Sources", "CopetsMac");
 
-const backendDebtBaseline = Object.freeze({
-  "runtime/codexWorkspaceTransitionManager.mjs": 16,
-  "server.mjs": 45
-});
+const backendDebtBaseline = Object.freeze({});
 
 const frontendDebtBaseline = Object.freeze({});
 

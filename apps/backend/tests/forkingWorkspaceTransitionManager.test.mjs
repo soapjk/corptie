@@ -4,18 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
-  CodexWorkspaceTransitionManager,
+  ForkingWorkspaceTransitionManager,
   isForkUnsupported,
   rewriteWorkspacePath,
   workspaceHandoffPrompt
-} from "../src/runtime/codexWorkspaceTransitionManager.mjs";
+} from "../src/runtime/forkingWorkspaceTransitionManager.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 test("workspace transition waits for an active turn then atomically routes a fork", async () => {
   const fixture = await createFixture("success");
   const calls = [];
   const events = [];
-  const codexClient = {
+  const providerPort = {
     async forkThread(threadId, options) {
       calls.push({ method: "fork", threadId, options });
       return {
@@ -42,9 +42,9 @@ test("workspace transition waits for an active turn then atomically routes a for
       return {};
     }
   };
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient,
+    providerPort,
     requiredInstructionSources: async () => [
       fixture.rootInstructions,
       fixture.featureInstructions
@@ -100,9 +100,9 @@ test("workspace transition waits for an active turn then atomically routes a for
 test("a Git workspace session restarts its thread while preserving context", async () => {
   const fixture = await createFixture("restart");
   const calls = [];
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async forkThread(threadId, options) {
         calls.push({ threadId, options });
         return {
@@ -143,9 +143,9 @@ test("a Git workspace session restarts its thread while preserving context", asy
 
 test("a session in a regular directory restarts without a Git worktree", async () => {
   const fixture = await createDirectoryFixture("non-git-restart");
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async forkThread(threadId, options) {
         assert.equal(threadId, "thread-source");
         assert.equal(options.cwd, fixture.workspace);
@@ -183,9 +183,9 @@ test("a session in a regular directory restarts without a Git worktree", async (
 
 test("invalid fork instruction sources preserve the original route and retain an invalid child binding", async () => {
   const fixture = await createFixture("invalid");
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async forkThread() {
         return {
           thread: { id: "thread-invalid", cwd: fixture.feature },
@@ -225,9 +225,9 @@ test("invalid fork instruction sources preserve the original route and retain an
 test("a source-thread deletion failure does not roll back the committed workspace route", async () => {
   const fixture = await createFixture("delete-failure");
   const events = [];
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async forkThread() {
         return {
           thread: { id: "thread-feature", cwd: fixture.feature },
@@ -270,9 +270,9 @@ test("a source-thread deletion failure does not roll back the committed workspac
 test("an unsupported fork falls back to a new thread with a bounded local handoff", async () => {
   const fixture = await createFixture("handoff-fallback");
   const calls = [];
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async forkThread() {
         const error = new Error("thread/fork is an unknown method");
         error.code = -32601;
@@ -355,9 +355,9 @@ test("a cross-repository switch uses handoff without attempting a fork", async (
     ]
   });
   let forked = false;
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async forkThread() {
         forked = true;
         assert.fail("cross-repository switching must not fork");
@@ -444,9 +444,9 @@ test("a moved worktree path is rebound in place with updated sandbox roots and i
   });
   const calls = [];
   const events = [];
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async updateThreadSettings(threadId, options) {
         calls.push({ method: "settings", threadId, options });
         return {};
@@ -505,9 +505,9 @@ test("restart recovery preserves automatic goal continuation for an in-turn work
     resumeGoalAfterTransition: true,
     phase: "waitingForTurn"
   });
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async readThread() {
         return {
           thread: {
@@ -560,9 +560,9 @@ test("restart recovery resumes a validated fork and commits the stored transitio
     phase: "validatingInstructions",
     newThreadId: "thread-recovered"
   });
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async resumeThread(threadId, options) {
         assert.equal(threadId, "thread-recovered");
         assert.equal(options.cwd, fixture.feature);
@@ -609,9 +609,9 @@ test("restart recovery starts a missing handoff turn before committing its route
     newThreadId: "thread-handoff-recovered"
   });
   const startedTurns = [];
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {
+    providerPort: {
       async resumeThread() {
         return {
           thread: { id: "thread-handoff-recovered", cwd: fixture.feature },
@@ -669,9 +669,9 @@ test("restart recovery fails an ambiguous forking journal without changing the s
     lastCompletedTurnId: "turn-7",
     phase: "forking"
   });
-  const manager = new CodexWorkspaceTransitionManager({
+  const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
-    codexClient: {}
+    providerPort: {}
   });
 
   try {

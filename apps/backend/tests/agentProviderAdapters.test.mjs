@@ -4,6 +4,7 @@ import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegist
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { CODEX_PTY_PROVIDER_ID, createPtyAgentProvider } from "../src/agent-provider/providers/ptyAgentProvider.mjs";
+import { CodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
 
 function recordingManager(provider = "claude-sdk") {
   const calls = [];
@@ -92,5 +93,24 @@ test("Codex PTY protocol differences remain inside its Provider adapter", async 
     ["approval", "pty-native-a", { itemType: "approval", approved: true }],
     ["reasoning", "pty-native-a", "high"],
     ["disconnect", "pty-native-a"]
+  ]);
+});
+
+test("Codex bootstrap owns the concrete client behind a Provider runtime port", async () => {
+  const calls = [];
+  const runtime = new CodexProviderRuntime({
+    client: {
+      notifications: [{ method: "ready" }],
+      readThread: async (...args) => calls.push(["read", ...args]),
+      deleteThread: async (...args) => calls.push(["delete", ...args])
+    }
+  });
+
+  await runtime.readThread("thread-a", { includeTurns: true });
+  await runtime.deleteThread("thread-a");
+  assert.deepEqual(runtime.notifications, [{ method: "ready" }]);
+  assert.deepEqual(calls, [
+    ["read", "thread-a", { includeTurns: true }],
+    ["delete", "thread-a"]
   ]);
 });
