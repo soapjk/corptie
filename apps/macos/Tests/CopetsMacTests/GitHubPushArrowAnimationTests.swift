@@ -21,7 +21,7 @@ struct GitHubPushArrowAnimationTests {
 
     @Test func pushButtonUsesFixedCircularGeometryWithoutAnInnerSolidCircle() {
         #expect(GitHubPushButtonAppearance.diameter == 30)
-        #expect(GitHubPushButtonAppearance.arrowFontSize == 9)
+        #expect(GitHubPushButtonAppearance.arrowFontSize == 12)
     }
 
     @Test func ignoredAgentDirectoryIsRemovedFromDisclosedPushFiles() {
