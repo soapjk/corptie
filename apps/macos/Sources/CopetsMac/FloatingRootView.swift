@@ -4617,42 +4617,24 @@ private struct DetailHeaderView: View {
         case .gitHubPush:
             let worktree = selectedSessionWorktree
             let color = gitHubButtonColor(worktree)
-            Button {
-                if !backendClient.isSelectedSessionPushingGitHub {
+            if backendClient.isSelectedSessionPushingGitHub {
+                GitHubPushButtonVisual(color: color, state: .pushing)
+                    .help(gitHubPushButtonHelp(worktree))
+            } else {
+                Button {
                     backendClient.prepareGitHubPush()
-                }
-            } label: {
-                ZStack {
-                    if backendClient.isSelectedSessionPushingGitHub {
-                        GitHubPushProgressIcon()
-                    } else if backendClient.isPreparingGitHubPush {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(color)
-                    }
-                }
-                .frame(
-                    width: GitHubPushButtonAppearance.width,
-                    height: GitHubPushButtonAppearance.height
-                )
-                .background(
-                    color.opacity(GitHubPushButtonAppearance.backgroundOpacity),
-                    in: RoundedRectangle(
-                        cornerRadius: GitHubPushButtonAppearance.cornerRadius,
-                        style: .continuous
+                } label: {
+                    GitHubPushButtonVisual(
+                        color: color,
+                        state: backendClient.isPreparingGitHubPush ? .preparing : .ready
                     )
+                }
+                .buttonStyle(.plain)
+                .disabled(
+                    backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub
                 )
+                .help(gitHubPushButtonHelp(worktree))
             }
-            .buttonStyle(.plain)
-            .disabled(
-                backendClient.isPreparingGitHubPush
-                    || (backendClient.isPushingGitHub && !backendClient.isSelectedSessionPushingGitHub)
-            )
-            .allowsHitTesting(!backendClient.isSelectedSessionPushingGitHub)
-            .help(gitHubPushButtonHelp(worktree))
         case .manageWorktrees:
             if let status = backendClient.selectedProjectWorktreeStatus {
                 Button {
@@ -4903,7 +4885,61 @@ struct GitHubPushButtonAppearance {
     static let height = 28.0
     static let cornerRadius = 8.0
     static let backgroundOpacity = 0.13
+    static let solidCircleDiameter = 16.0
+    static let arrowFontSize = 9.0
     static let arrowOpacity = 1.0
+}
+
+private struct GitHubPushButtonVisual: View {
+    enum State: Equatable {
+        case ready
+        case preparing
+        case pushing
+    }
+
+    let color: Color
+    let state: State
+
+    var body: some View {
+        ZStack {
+            if state != .pushing {
+                Circle()
+                    .fill(color)
+                    .frame(
+                        width: GitHubPushButtonAppearance.solidCircleDiameter,
+                        height: GitHubPushButtonAppearance.solidCircleDiameter
+                    )
+            }
+            switch state {
+            case .ready:
+                Image(systemName: GitHubPushArrowAnimation.progressSymbolName)
+                    .font(.system(
+                        size: GitHubPushButtonAppearance.arrowFontSize,
+                        weight: .bold
+                    ))
+                    .symbolRenderingMode(.monochrome)
+                    .foregroundColor(.white)
+                    .opacity(GitHubPushButtonAppearance.arrowOpacity)
+            case .preparing:
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+            case .pushing:
+                GitHubPushProgressIcon()
+            }
+        }
+        .frame(
+            width: GitHubPushButtonAppearance.width,
+            height: GitHubPushButtonAppearance.height
+        )
+        .background(
+            color.opacity(GitHubPushButtonAppearance.backgroundOpacity),
+            in: RoundedRectangle(
+                cornerRadius: GitHubPushButtonAppearance.cornerRadius,
+                style: .continuous
+            )
+        )
+    }
 }
 
 struct GitHubPushDisclosure {
@@ -4943,12 +4979,19 @@ private struct GitHubPushProgressIcon: View {
                 at: context.date.timeIntervalSinceReferenceDate
             )
             Image(systemName: GitHubPushArrowAnimation.progressSymbolName)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(Color.white)
+                .font(.system(
+                    size: GitHubPushButtonAppearance.arrowFontSize,
+                    weight: .bold
+                ))
+                .symbolRenderingMode(.monochrome)
+                .foregroundColor(.white)
                 .offset(y: reduceMotion ? 0 : GitHubPushArrowAnimation.verticalOffset(progress: progress))
                 .opacity(GitHubPushButtonAppearance.arrowOpacity)
         }
-        .frame(width: 24, height: 24)
+        .frame(
+            width: GitHubPushButtonAppearance.width,
+            height: GitHubPushButtonAppearance.height
+        )
         .clipped()
         .accessibilityLabel(L10n("Pushing to GitHub…"))
     }
