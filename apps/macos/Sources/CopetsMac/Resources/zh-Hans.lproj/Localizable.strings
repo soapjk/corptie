@@ -444,11 +444,13 @@
 "Review GitHub push" = "检查 GitHub 推送";
 "Could not prepare GitHub push." = "无法准备 GitHub 推送。";
 "GitHub push failed." = "GitHub 推送失败。";
+"GitHub push failed: %@" = "GitHub 推送失败：%@";
+"Pushing to GitHub…" = "正在推送到 GitHub…";
 "Changes committed and pushed to GitHub" = "修改已提交并推送到 GitHub";
 "Branch pushed to GitHub" = "分支已推送到 GitHub";
 "Local Agent files detected" = "检测到本地 Agent 文件";
 "Choose how Corptie should handle them before committing." = "提交前请选择 Corptie 应如何处理这些文件。";
-"These local Agent files would be included:" = "以下本地 Agent 文件将被提交：";
+"Detected these local Agent files:" = "检测到以下本地 Agent 文件：";
 "Add matching paths to the project .gitignore" = "将匹配路径加入项目 .gitignore";
 "Include these files in the commit" = "仍然提交这些文件";
 "Do not remind me again for this project" = "本项目不再提醒";
@@ -532,3 +534,9 @@
 "Copy full workspace path: %@" = "复制完整工作区路径：%@";
 "Open in Visual Studio Code" = "使用 Visual Studio Code 打开";
 "Open in Finder" = "在 Finder 中打开";
+"Commit message" = "Commit Message";
+"Generate with Agent" = "使用 Agent 自动生成";
+"Generating…" = "正在生成…";
+"Enter a commit message" = "输入 Commit Message";
+"Enter your own message or generate one with Agent, then edit it before pushing." = "可以自行输入，也可以使用 Agent 生成后再修改。";
+"Could not generate commit message." = "无法生成 Commit Message。";

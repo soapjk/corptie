@@ -83,18 +83,25 @@ export class GitHubPushManager {
     }
   }
 
+  async generateCommitMessage(input) {
+    this.pruneExpired();
+    const { confirmation, inspection } = await this.validatedConfirmation(input);
+    if (!inspection.dirty) {
+      throw new Error("The Worktree has no uncommitted changes that need a commit message.");
+    }
+    return input.generateCommitMessage({
+      sourceBranch: inspection.branch,
+      sourcePath: confirmation.canonicalPath,
+      statusSummary: inspection.statusSummary,
+      diffStat: inspection.diffStat
+    });
+  }
+
   async confirm(input) {
     this.pruneExpired();
-    const confirmation = this.confirmations.get(input.confirmationToken);
-    if (!confirmation || confirmation.sessionId !== input.sessionId) {
-      throw new Error("The GitHub push confirmation is missing or expired. Review the push details again.");
-    }
+    const { confirmation, inspection: validatedInspection } = await this.validatedConfirmation(input);
     this.confirmations.delete(input.confirmationToken);
-    let inspection = await this.inspect(confirmation.canonicalPath);
-    if (inspection.identity.worktreeId !== confirmation.worktreeId
-      || inspection.fingerprint !== confirmation.fingerprint) {
-      throw new Error("The Worktree or push contents changed after confirmation. Review the push details again.");
-    }
+    let inspection = validatedInspection;
     let expectedFingerprint = confirmation.fingerprint;
 
     if (inspection.dirty && this.commitProtection) {
@@ -111,12 +118,13 @@ export class GitHubPushManager {
 
     let commitMessage = null;
     if (inspection.dirty) {
-      commitMessage = await input.generateCommitMessage({
-        sourceBranch: inspection.branch,
-        sourcePath: inspection.identity.canonicalPath,
-        statusSummary: inspection.statusSummary,
-        diffStat: inspection.diffStat
-      });
+      commitMessage = requiredCommitMessage(input.commitMessage)
+        ?? await input.generateCommitMessage({
+          sourceBranch: inspection.branch,
+          sourcePath: inspection.identity.canonicalPath,
+          statusSummary: inspection.statusSummary,
+          diffStat: inspection.diffStat
+        });
       const afterMessage = await this.inspect(confirmation.canonicalPath);
       if (afterMessage.fingerprint !== expectedFingerprint) {
         throw new Error("The Worktree changed while generating the commit message. Review the push details again.");
@@ -144,6 +152,19 @@ export class GitHubPushManager {
       stdout: pushed.stdout.trim(),
       stderr: pushed.stderr.trim()
     };
+  }
+
+  async validatedConfirmation(input) {
+    const confirmation = this.confirmations.get(input.confirmationToken);
+    if (!confirmation || confirmation.sessionId !== input.sessionId) {
+      throw new Error("The GitHub push confirmation is missing or expired. Review the push details again.");
+    }
+    const inspection = await this.inspect(confirmation.canonicalPath);
+    if (inspection.identity.worktreeId !== confirmation.worktreeId
+      || inspection.fingerprint !== confirmation.fingerprint) {
+      throw new Error("The Worktree or push contents changed after confirmation. Review the push details again.");
+    }
+    return { confirmation, inspection };
   }
 
   async inspect(workingDirectory) {
@@ -285,4 +306,11 @@ export function parsePorcelainPaths(output) {
     }
   }
   return [...new Set(paths)].sort();
+}
+
+function requiredCommitMessage(value) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message) return null;
+  if (message.includes("\0")) throw new Error("The commit message is invalid.");
+  return message;
 }

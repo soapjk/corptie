@@ -72,6 +72,39 @@ test("confirmed push commits dirty changes and pushes only after explicit confir
   }
 });
 
+test("Agent-generated commit message can be reviewed and edited before confirmation", async () => {
+  const fixture = await createFixture();
+  const manager = localPushManager();
+  try {
+    await writeFile(join(fixture.repository, "editable.txt"), "review me\n");
+    const prepared = await manager.prepare({
+      sessionId: "codex:test",
+      workingDirectory: fixture.repository
+    });
+    const suggestion = await manager.generateCommitMessage({
+      sessionId: "codex:test",
+      confirmationToken: prepared.confirmationToken,
+      generateCommitMessage: async () => "Add editable file"
+    });
+    assert.equal(suggestion, "Add editable file");
+
+    const result = await manager.confirm({
+      sessionId: "codex:test",
+      confirmationToken: prepared.confirmationToken,
+      commitMessage: "Refine editable file handling",
+      generateCommitMessage: async () => assert.fail("confirmation must use the reviewed message")
+    });
+
+    assert.equal(result.commitMessage, "Refine editable file handling");
+    assert.equal(
+      (await gitOutput(["log", "-1", "--pretty=%s", "main"], fixture.remote)).trim(),
+      "Refine editable file handling"
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("prepare refuses to open a confirmation when there is nothing to push", async () => {
   const fixture = await createFixture();
   const manager = localPushManager();
