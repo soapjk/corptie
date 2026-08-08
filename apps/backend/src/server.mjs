@@ -22,6 +22,7 @@ import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
+import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createCodexAppServerProvider } from "./agent-provider/providers/codexAppServerProvider.mjs";
@@ -194,6 +195,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
     respondToApproval: respondCodexProviderApproval,
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
+    prepareWorkspaceTransition: switchCodexProviderWorkspace,
     runBackgroundPrompt: (input) => codexClient.runEphemeralPrompt({
       cwd: input.cwd,
       runtimeWorkspaceRoots: input.allowedRoots,
@@ -209,6 +211,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   })
@@ -226,6 +229,11 @@ const backgroundAgentService = new BackgroundAgentService({
   registry: agentProviderRegistry,
   defaultProviderId: "codex-app-server",
   onOperationEvent: (type, payload) => emitEvent(type, payload)
+});
+const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
+  registry: agentProviderRegistry,
+  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
 });
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
@@ -3010,20 +3018,21 @@ async function sessionWorkspaceRecoveryStatus(sessionId) {
   };
 }
 
-async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
-  if (!session || session.external?.provider !== "codex-app-server") {
-    const error = new Error("Codex session not found.");
-    error.statusCode = 404;
-    throw error;
-  }
-  const logical = await ensureLogicalRouteForCodexSession(session);
+async function switchCodexProviderWorkspace(reference, input = {}) {
+  const sessionId = reference.sessionId;
+  const session = reference.metadata?.session
+    ?? managedCodexSessions.get(sessionId)
+    ?? store.getSession(sessionId);
+  if (!session) throw new Error("Session not found.");
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? await ensureLogicalRouteForCodexSession(session);
   const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
   const activeTurnId = session.external?.activeTurnId ?? null;
   const result = await codexWorkspaceTransitions.switchWorkspace({
-    transitionId,
+    transitionId: input.transitionId,
     logicalSessionId: logical.logicalSessionId,
-    targetWorktreeId,
+    targetWorktreeId: input.targetWorkspaceId,
     activeTurnId,
     lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
     ...collaborationThreadOptionsForSession(sessionId)
@@ -3036,6 +3045,13 @@ async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId 
     { sessionId }
   );
   return result;
+}
+
+async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined) {
+  return sessionWorkspaceCoordinator.switchWorkspace(sessionId, {
+    targetWorkspaceId: targetWorktreeId,
+    transitionId
+  });
 }
 
 async function generateSessionCommitMessage(sessionId, plan) {
@@ -5173,6 +5189,9 @@ function route(request, response) {
   }
 
   const sessionWorkspaceSwitchMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/switch$/);
+  const unifiedSessionWorkspaceSwitchMatch = url.pathname.match(
+    /^\/sessions\/([^/]+)\/actions\/switch-workspace$/
+  );
   const sessionWorkspaceRecoveryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/workspace\/recovery$/);
   if (sessionWorkspaceRecoveryMatch && request.method === "GET") {
     const sessionId = decodeURIComponent(sessionWorkspaceRecoveryMatch[1]);
@@ -5210,17 +5229,18 @@ function route(request, response) {
       .catch((error) => sendJson(response, errorStatus(error, 400), { error: error.message }));
     return;
   }
-  if (request.method === "POST" && sessionWorkspaceSwitchMatch) {
-    const sessionId = decodeURIComponent(sessionWorkspaceSwitchMatch[1]);
+  if (request.method === "POST" && (sessionWorkspaceSwitchMatch || unifiedSessionWorkspaceSwitchMatch)) {
+    const sessionId = decodeURIComponent((sessionWorkspaceSwitchMatch || unifiedSessionWorkspaceSwitchMatch)[1]);
     readJson(request)
       .then(async (input) => {
-        const result = await switchSessionWorkspace(sessionId, input.targetWorktreeId, input.transitionId);
+        const targetWorkspaceId = input.targetWorkspaceId ?? input.targetWorktreeId;
+        const result = await switchSessionWorkspace(sessionId, targetWorkspaceId, input.transitionId);
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
       .catch((error) => {
-        sendJson(response, errorStatus(error, 400), {
+        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
           error: error.message,
-          adapter: "codex-app-server"
+          code: error.code
         });
       });
     return;
