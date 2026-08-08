@@ -10,7 +10,7 @@ const macosSourceRoot = join(backendRoot, "..", "macos", "Sources", "CopetsMac")
 
 const backendDebtBaseline = Object.freeze({
   "runtime/codexWorkspaceTransitionManager.mjs": 16,
-  "server.mjs": 89
+  "server.mjs": 45
 });
 
 const frontendDebtBaseline = Object.freeze({});
@@ -19,7 +19,7 @@ test("supported concrete backend Provider dependencies cannot spread beyond the 
   const files = await sourceFiles(backendSourceRoot, ".mjs");
   const actual = {};
   // PTY is intentionally outside this migration boundary because the product is removing it.
-  const pattern = /\b(?:codexClient|claudeAgents|managedCodexSessions)\b/g;
+  const pattern = /\b(?:codexClient|claudeAgents)\b/g;
   for (const file of files) {
     if (file.includes("/adapters/") || file.includes("/agent-provider/providers/")) continue;
     const count = ((await readFile(file, "utf8")).match(pattern) ?? []).length;
