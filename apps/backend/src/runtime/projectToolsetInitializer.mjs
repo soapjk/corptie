@@ -3,12 +3,10 @@ import { readFile } from "node:fs/promises";
 export class ProjectToolsetInitializer {
   constructor(options) {
     this.manager = options.manager;
-    this.codexClient = options.codexClient;
+    this.backgroundAgent = options.backgroundAgent;
     this.referencePath = options.referencePath;
-    this.runtimeOptions = options.runtimeOptions ?? (async () => ({}));
     this.onEvent = options.onEvent ?? (() => {});
     this.timeoutMs = options.timeoutMs ?? 10 * 60_000;
-    this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.activeByRepository = new Map();
     this.recoveredRepositories = new Set();
     this.lastErrorByRepository = new Map();
@@ -64,7 +62,6 @@ export class ProjectToolsetInitializer {
       unconfigure: options.force === true
     });
     const protocol = await readFile(this.referencePath, "utf8");
-    const runtime = await this.runtimeOptions();
     this.onEvent("ProjectToolsetInitializationStarted", {
       repositoryId: toolset.repositoryId,
       mainPath: toolset.mainPath,
@@ -73,53 +70,18 @@ export class ProjectToolsetInitializer {
       recovery: options.recovery === true
     });
 
-    const notificationStart = Array.isArray(this.codexClient.notifications)
-      ? this.codexClient.notifications.length
-      : 0;
-    const started = await this.codexClient.startThread({
-      cwd: toolset.toolsetPath,
-      runtimeWorkspaceRoots: [toolset.toolsetPath],
-      approvalPolicy: "never",
-      sandbox: "workspace-write",
-      model: runtime.model,
-      config: {
-        features: { multi_agent: false }
-      },
-      developerInstructions: initializerInstructions(toolset),
-      threadSource: "corptie-project-toolset",
-      ephemeral: true
-    });
-    const threadId = started?.thread?.id;
-    if (!threadId) throw new Error("Corptie could not start the project-toolset Agent.");
-    const turn = await this.codexClient.startTurn(
-      threadId,
-      initializerPrompt(toolset, protocol, options.force === true),
-      {
-        cwd: toolset.toolsetPath,
-        approvalPolicy: "never",
-        sandboxPolicy: {
-          type: "workspaceWrite",
-          writableRoots: [toolset.toolsetPath],
-          networkAccess: false
-        },
-        model: runtime.model,
-        reasoningEffort: runtime.reasoningLevel
-      }
-    );
-    const turnId = turn?.turn?.id;
-    if (!turnId) throw new Error("Corptie could not start the project-toolset initialization turn.");
-    try {
-      await this.waitForCompletion(threadId, turnId, notificationStart);
-    } catch (error) {
-      if (typeof this.codexClient.interruptTurn === "function") {
-        await this.codexClient.interruptTurn(threadId, turnId).catch(() => {});
-      }
-      throw error;
-    } finally {
-      if (typeof this.codexClient.deleteThread === "function") {
-        await this.codexClient.deleteThread(threadId).catch(() => {});
-      }
+    if (!this.backgroundAgent) {
+      throw new Error("ProjectToolsetInitializer requires a Background Agent Service.");
     }
+    const result = await this.backgroundAgent.run({
+      purpose: "project-toolset-initialization",
+      cwd: toolset.toolsetPath,
+      allowedRoots: [toolset.toolsetPath],
+      permissionProfile: "workspace-write",
+      developerInstructions: initializerInstructions(toolset),
+      prompt: initializerPrompt(toolset, protocol, options.force === true),
+      timeoutMs: this.timeoutMs
+    });
 
     const completed = await this.manager.inspect(toolset.mainPath);
     if (!completed.configured) {
@@ -131,40 +93,13 @@ export class ProjectToolsetInitializer {
       toolsetPath: completed.toolsetPath
     });
     this.lastErrorByRepository.delete(completed.repositoryId);
-    return { status: "ready", skipped: false, toolset: completed, threadId, turnId };
-  }
-
-  async waitForCompletion(threadId, turnId, notificationStart = 0) {
-    const deadline = Date.now() + this.timeoutMs;
-    while (Date.now() < deadline) {
-      const notifications = Array.isArray(this.codexClient.notifications)
-        ? this.codexClient.notifications.slice(notificationStart)
-        : [];
-      const completed = notifications.find((message) => {
-        return message.method === "turn/completed"
-          && message.params?.threadId === threadId
-          && message.params?.turn?.id === turnId;
-      });
-      if (completed) {
-        const status = String(completed.params?.turn?.status ?? "completed").toLowerCase();
-        if (["failed", "cancelled", "canceled"].includes(status)) {
-          throw new Error(`The project-toolset Agent stopped with status ${status}.`);
-        }
-        return;
-      }
-      if (!Array.isArray(this.codexClient.notifications) && this.codexClient.readThread) {
-        const response = await this.codexClient.readThread(threadId, { includeTurns: true });
-        const thread = response?.thread ?? response;
-        const turn = (thread?.turns ?? []).find((item) => item.id === turnId);
-        const status = String(turn?.status ?? "").toLowerCase().replaceAll("_", "");
-        if (["completed", "complete"].includes(status)) return;
-        if (["failed", "cancelled", "canceled"].includes(status)) {
-          throw new Error(`The project-toolset Agent stopped with status ${turn?.status ?? "failed"}.`);
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, this.pollIntervalMs));
-    }
-    throw new Error("Timed out while initializing the Corptie Scripts Tools Set.");
+    return {
+      status: "ready",
+      skipped: false,
+      toolset: completed,
+      operationId: result.operationId,
+      providerId: result.providerId
+    };
   }
 }
 

@@ -10,8 +10,7 @@ const macosSourceRoot = join(backendRoot, "..", "macos", "Sources", "CopetsMac")
 
 const backendDebtBaseline = Object.freeze({
   "runtime/codexWorkspaceTransitionManager.mjs": 16,
-  "runtime/projectToolsetInitializer.mjs": 15,
-  "server.mjs": 182
+  "server.mjs": 149
 });
 
 const frontendDebtBaseline = Object.freeze({

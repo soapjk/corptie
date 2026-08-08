@@ -6,8 +6,8 @@ import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvid
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { BackgroundAgentService, BackgroundAgentUnavailableError } from "../src/application/backgroundAgentService.mjs";
 
-function provider(id, capabilities, calls) {
-  return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
+function provider(id, capabilities, calls, metadata = {}) {
+  return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities, metadata }, {
     listSessions: () => [],
     readSession: () => null,
     runBackgroundPrompt: capabilities.includes(AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT)
@@ -43,6 +43,43 @@ test("background work reports a structured error when no Provider supports it", 
   const service = new BackgroundAgentService({ registry });
   assert.throws(
     () => service.selectProvider(),
+    (error) => error instanceof BackgroundAgentUnavailableError
+  );
+});
+
+test("workspace-write background work selects a Provider that explicitly supports that profile", async () => {
+  const calls = [];
+  const capability = [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT];
+  const registry = new AgentProviderRegistry([
+    provider("read-only", capability, calls, { backgroundPermissionProfiles: ["read-only"] }),
+    provider("writer", capability, calls, { backgroundPermissionProfiles: ["read-only", "workspace-write"] })
+  ]);
+  const service = new BackgroundAgentService({ registry, defaultProviderId: "read-only" });
+  const result = await service.run({
+    purpose: "toolset-initialization",
+    cwd: "/repo/.corptie",
+    allowedRoots: ["/repo/.corptie"],
+    permissionProfile: "workspace-write",
+    developerInstructions: "Only edit the toolset.",
+    prompt: "Configure the toolset."
+  });
+
+  assert.equal(result.providerId, "writer");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][1].permissionProfile, "workspace-write");
+  assert.equal(calls[0][1].developerInstructions, "Only edit the toolset.");
+  assert.equal(calls[0][1].historyPolicy, "hidden");
+});
+
+test("workspace-write background work fails when no Provider declares that profile", () => {
+  const capability = [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT];
+  const registry = new AgentProviderRegistry([
+    provider("read-only", capability, [], { backgroundPermissionProfiles: ["read-only"] })
+  ]);
+  const service = new BackgroundAgentService({ registry, defaultProviderId: "read-only" });
+
+  assert.throws(
+    () => service.selectProvider(null, "workspace-write"),
     (error) => error instanceof BackgroundAgentUnavailableError
   );
 });
