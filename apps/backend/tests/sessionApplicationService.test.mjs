@@ -11,6 +11,8 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
@@ -47,6 +49,14 @@ function fixture(capabilities = [
     disconnectSession: async (...args) => {
       calls.push(["disconnectSession", ...args]);
       return { status: "disconnected" };
+    },
+    renameSession: async (...args) => {
+      calls.push(["renameSession", ...args]);
+      return { title: args[1] };
+    },
+    updateAvatar: async (...args) => {
+      calls.push(["updateAvatar", ...args]);
+      return { avatarPath: args[1] };
     },
     listModels: async (...args) => {
       calls.push(["listModels", ...args]);
@@ -127,6 +137,8 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   assert.equal(resumed.title, "Resumed");
   assert.deepEqual(await service.restartSession("logical-a"), { status: "completed" });
   assert.deepEqual(await service.disconnectSession("logical-a"), { status: "disconnected" });
+  assert.deepEqual(await service.renameSession("logical-a", "Renamed"), { title: "Renamed" });
+  assert.deepEqual(await service.updateAvatar("logical-a", "/tmp/avatar.png"), { avatarPath: "/tmp/avatar.png" });
   const deleted = await service.deleteSession("logical-a", { source: "desktop" });
   assert.deepEqual(deleted, {
     ok: true,
@@ -141,6 +153,8 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
     "resumeSession",
     "restartSession",
     "disconnectSession",
+    "renameSession",
+    "updateAvatar",
     "deleteSession",
     "removeSessionBinding"
   ]);
