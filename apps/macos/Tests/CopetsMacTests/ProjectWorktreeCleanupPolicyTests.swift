@@ -46,7 +46,8 @@ struct ProjectWorktreeCleanupPolicyTests {
             aheadOfMain: 0,
             behindMain: 0,
             pendingIntegration: false,
-            sessions: sessions
+            sessions: sessions,
+            gitHubPush: nil
         )
     }
 }

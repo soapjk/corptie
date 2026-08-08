@@ -13,12 +13,14 @@ export class ProjectApplicationService {
   constructor(options = {}) {
     this.resolveProject = options.resolveProject;
     this.inspectWorkspaces = options.inspectWorkspaces;
+    this.inspectWorkspacePushStatus = options.inspectWorkspacePushStatus;
     this.inspectDevelopmentService = options.inspectDevelopmentService;
     this.performDevelopmentServiceAction = options.performDevelopmentServiceAction;
     this.performWorkspaceAction = options.performWorkspaceAction;
     for (const method of [
       "resolveProject",
       "inspectWorkspaces",
+      "inspectWorkspacePushStatus",
       "inspectDevelopmentService",
       "performDevelopmentServiceAction",
       "performWorkspaceAction"
@@ -44,11 +46,27 @@ export class ProjectApplicationService {
     };
   }
 
-  async listWorkspaces(projectId) {
+  async listWorkspaces(projectId, options = {}) {
     const project = await this.requireProject(projectId);
-    const status = await this.inspectWorkspaces(project);
-    const development = await this.inspectDevelopmentService(project);
-    return { projectId: project.id, project: status, ...development };
+    const [status, development] = await Promise.all([
+      this.inspectWorkspaces(project),
+      this.inspectDevelopmentService(project)
+    ]);
+    const pushWorkspaceIds = new Set([
+      status.mainWorktreeId,
+      typeof options.activeWorkspaceId === "string" ? options.activeWorkspaceId.trim() : ""
+    ].filter(Boolean));
+    const worktrees = await Promise.all((status.worktrees ?? []).map(async (worktree) => ({
+      ...worktree,
+      gitHubPush: worktree.availability === "available" && pushWorkspaceIds.has(worktree.worktreeId)
+        ? await this.inspectWorkspacePushStatus(project, worktree)
+        : null
+    })));
+    return {
+      projectId: project.id,
+      project: { ...status, worktrees },
+      ...development
+    };
   }
 
   async readDevelopmentService(projectId) {

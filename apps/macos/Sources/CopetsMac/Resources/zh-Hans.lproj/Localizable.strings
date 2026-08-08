@@ -401,6 +401,10 @@
 "GitHub push is unavailable" = "GitHub 推送当前不可用";
 "No changes or commits to push" = "没有需要提交或推送的内容";
 "%d commit(s) ready to push" = "有 %d 个提交待推送";
+"%d commit(s) pending push" = "%d 个提交待推送";
+"Pending GitHub push" = "有内容待推送";
+"Review and push the current main branch to GitHub" = "检查并将当前 main 分支推送到 GitHub";
+"Open a Session on main to review and push these commits" = "请打开位于 main 的会话，检查并推送这些提交";
 "Service is running the latest code" = "服务正在运行最新代码";
 "Service is running older or modified code" = "服务正在运行旧版或有修改的代码";
 "Service is stopped" = "服务未运行";
