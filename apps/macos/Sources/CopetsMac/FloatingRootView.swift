@@ -7206,22 +7206,22 @@ private struct ThreadItemView: View {
     }
 
     private func reviewChanges() {
-        guard let threadId = backendClient.selectedDetail?.id else { return }
+        guard let sessionId = backendClient.selectedDetail?.id else { return }
         isDiffActionRunning = true
         Task {
             defer { isDiffActionRunning = false }
-            if case .failure(let error) = await backendClient.reviewCodexChanges(threadId: threadId, turnId: item.turnId) {
+            if case .failure(let error) = await backendClient.reviewTurnChanges(sessionId: sessionId, turnId: item.turnId) {
                 diffActionError = error.localizedDescription
             }
         }
     }
 
     private func undoChanges() {
-        guard let threadId = backendClient.selectedDetail?.id else { return }
+        guard let sessionId = backendClient.selectedDetail?.id else { return }
         isDiffActionRunning = true
         Task {
             defer { isDiffActionRunning = false }
-            if case .failure(let error) = await backendClient.undoCodexChanges(threadId: threadId, turnId: item.turnId) {
+            if case .failure(let error) = await backendClient.undoTurnChanges(sessionId: sessionId, turnId: item.turnId) {
                 diffActionError = error.localizedDescription
             }
         }

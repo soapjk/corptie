@@ -19,7 +19,8 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
   AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
-  AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE
+  AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
+  AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE
 ]) {
   const calls = [];
   const provider = new CallbackAgentProvider({
@@ -67,7 +68,8 @@ function fixture(capabilities = [
     respondToApproval: async (...args) => calls.push(["respondToApproval", ...args]),
     switchModel: async (...args) => calls.push(["switchModel", ...args]),
     switchReasoning: async (...args) => calls.push(["switchReasoning", ...args]),
-    updatePermissions: async (...args) => calls.push(["updatePermissions", ...args])
+    updatePermissions: async (...args) => calls.push(["updatePermissions", ...args]),
+    manageTurnChanges: async (...args) => calls.push(["manageTurnChanges", ...args])
   });
   const registry = new AgentProviderRegistry([provider]);
   const service = new SessionApplicationService({
@@ -179,7 +181,30 @@ test("Session application service exposes the same operations for every Provider
   await service.switchModel("logical-a", "fake-model");
   await service.switchReasoning("logical-a", "high");
   await service.updatePermissions("logical-a", { sandbox: "read-only" });
-  assert.deepEqual(calls.map((call) => call[0]), ["interrupt", "respondToApproval", "switchModel", "switchReasoning", "updatePermissions"]);
+  await service.manageTurnChanges("logical-a", "turn-a", "review", { source: "desktop" });
+  assert.deepEqual(calls.map((call) => call[0]), [
+    "interrupt",
+    "respondToApproval",
+    "switchModel",
+    "switchReasoning",
+    "updatePermissions",
+    "manageTurnChanges"
+  ]);
+  assert.deepEqual(calls.at(-1).slice(1), [
+    {
+      sessionId: "legacy-a",
+      requestedSessionId: "logical-a",
+      logicalSessionId: "logical-a",
+      bindingId: "binding-a",
+      providerId: "fake.provider",
+      providerSessionId: "native-a",
+      routingVersion: 3,
+      metadata: {}
+    },
+    "turn-a",
+    "review",
+    { source: "desktop" }
+  ]);
 });
 
 test("Session application service reads historical bindings through their recorded Provider", async () => {

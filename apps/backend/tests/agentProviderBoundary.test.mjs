@@ -48,6 +48,24 @@ test("frontend Provider-name branching cannot spread beyond the migration baseli
   }
 });
 
+test("supported Providers expose only unified product HTTP routes", async () => {
+  const serverSource = await readFile(join(backendSourceRoot, "server.mjs"), "utf8");
+  const supportedProviderRoutes = [...serverSource.matchAll(/["'`]\/(?:codex|claude)\/[^"'`\s]*/g)]
+    .map((match) => match[0].slice(1))
+    .filter((route) => route !== "/codex/pty-sessions");
+  assert.deepEqual(supportedProviderRoutes, []);
+
+  const frontendFiles = await sourceFiles(macosSourceRoot, ".swift");
+  for (const file of frontendFiles) {
+    const source = await readFile(file, "utf8");
+    assert.equal(
+      /(?:codex|claude)\/(?:threads|sessions|models)/.test(source),
+      false,
+      `${relative(macosSourceRoot, file)} uses a Provider-specific HTTP route`
+    );
+  }
+});
+
 async function sourceFiles(root, extension) {
   const results = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {

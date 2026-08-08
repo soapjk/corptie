@@ -17,7 +17,8 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   BACKGROUND_PROMPT: "background.prompt",
   ACCOUNT_USAGE_READ: "usage.account.read",
   SESSION_USAGE_READ: "usage.session.read",
-  TOOL_HOST_ATTACH: "tools.attach"
+  TOOL_HOST_ATTACH: "tools.attach",
+  TURN_CHANGES_MANAGE: "turn.changes.manage"
 });
 
 export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
@@ -39,7 +40,8 @@ export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
   [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT]: "runBackgroundPrompt",
   [AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ]: "readAccountUsage",
   [AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ]: "readSessionUsage",
-  [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]: "attachTools"
+  [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]: "attachTools",
+  [AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE]: "manageTurnChanges"
 });
 
 const REQUIRED_PROVIDER_METHODS = Object.freeze([
