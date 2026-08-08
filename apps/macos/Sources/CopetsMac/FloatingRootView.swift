@@ -4881,11 +4881,7 @@ struct GitHubPushArrowAnimation {
 }
 
 struct GitHubPushButtonAppearance {
-    static let width = 30.0
-    static let height = 28.0
-    static let cornerRadius = 8.0
-    static let backgroundOpacity = 0.13
-    static let solidCircleDiameter = 16.0
+    static let diameter = 30.0
     static let arrowFontSize = 9.0
     static let arrowOpacity = 1.0
 }
@@ -4902,14 +4898,6 @@ private struct GitHubPushButtonVisual: View {
 
     var body: some View {
         ZStack {
-            if state != .pushing {
-                Circle()
-                    .fill(color)
-                    .frame(
-                        width: GitHubPushButtonAppearance.solidCircleDiameter,
-                        height: GitHubPushButtonAppearance.solidCircleDiameter
-                    )
-            }
             switch state {
             case .ready:
                 Image(systemName: GitHubPushArrowAnimation.progressSymbolName)
@@ -4918,27 +4906,21 @@ private struct GitHubPushButtonVisual: View {
                         weight: .bold
                     ))
                     .symbolRenderingMode(.monochrome)
-                    .foregroundColor(.white)
+                    .foregroundColor(color)
                     .opacity(GitHubPushButtonAppearance.arrowOpacity)
             case .preparing:
                 ProgressView()
                     .controlSize(.small)
-                    .tint(.white)
+                    .tint(color)
             case .pushing:
-                GitHubPushProgressIcon()
+                GitHubPushProgressIcon(color: color)
             }
         }
         .frame(
-            width: GitHubPushButtonAppearance.width,
-            height: GitHubPushButtonAppearance.height
+            width: GitHubPushButtonAppearance.diameter,
+            height: GitHubPushButtonAppearance.diameter
         )
-        .background(
-            color.opacity(GitHubPushButtonAppearance.backgroundOpacity),
-            in: RoundedRectangle(
-                cornerRadius: GitHubPushButtonAppearance.cornerRadius,
-                style: .continuous
-            )
-        )
+        .background { ComposerGlassActionBackground(tint: color) }
     }
 }
 
@@ -5011,6 +4993,7 @@ struct GitHubPushDisclosure {
 
 private struct GitHubPushProgressIcon: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let color: Color
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
@@ -5023,13 +5006,13 @@ private struct GitHubPushProgressIcon: View {
                     weight: .bold
                 ))
                 .symbolRenderingMode(.monochrome)
-                .foregroundColor(.white)
+                .foregroundColor(color)
                 .offset(y: reduceMotion ? 0 : GitHubPushArrowAnimation.verticalOffset(progress: progress))
                 .opacity(GitHubPushButtonAppearance.arrowOpacity)
         }
         .frame(
-            width: GitHubPushButtonAppearance.width,
-            height: GitHubPushButtonAppearance.height
+            width: GitHubPushButtonAppearance.diameter,
+            height: GitHubPushButtonAppearance.diameter
         )
         .clipped()
         .accessibilityLabel(L10n("Pushing to GitHub…"))
