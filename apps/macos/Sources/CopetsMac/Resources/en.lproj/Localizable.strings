@@ -248,3 +248,12 @@
 "Service unhealthy" = "Service unhealthy";
 "profile" = "profile";
 "Could not update the service profile." = "Could not update the service profile.";
+"Review Commit" = "Review Commit";
+"Enter your own message or generate one with Agent, then edit it before continuing." = "Enter your own message or generate one with Agent, then edit it before continuing.";
+"The changes will be committed to this Worktree only. No remote push is performed." = "The changes will be committed to this Worktree only. No remote push is performed.";
+"The changes will be committed and then merged into main. No remote push is performed." = "The changes will be committed and then merged into main. No remote push is performed.";
+"The changes will be committed before completing the Worktree operation. No remote push is performed." = "The changes will be committed before completing the Worktree operation. No remote push is performed.";
+"The changes will be committed before running the selected Worktree operations. No remote push is performed." = "The changes will be committed before running the selected Worktree operations. No remote push is performed.";
+"Commit Changes" = "Commit Changes";
+"Commit and Merge" = "Commit and Merge";
+"Commit and Continue" = "Commit and Continue";
