@@ -4457,130 +4457,29 @@ function route(request, response) {
 
   if (request.method === "GET" && url.pathname === "/sessions") {
     const includeMock = url.searchParams.get("includeMock") === "true";
-    const includeCodexHistory = url.searchParams.get("includeCodexHistory") === "true";
     const archived = url.searchParams.get("archived") === "true";
-
-    if (!includeCodexHistory) {
-      const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-      const providerSessions = listGatewaySessions({ archived });
-      const providerCounts = providerSessions.reduce((counts, session) => {
-        const providerId = session.external?.provider ?? "unknown";
-        counts[providerId] = (counts[providerId] ?? 0) + 1;
-        return counts;
-      }, {});
-      sendJson(response, 200, {
-        sessions: sortSessionsForList(withPendingCollaborationConfirmations([
-          ...providerSessions,
-          ...(archived ? [] : mockSessions)
-        ])),
-        sources: Object.fromEntries(agentProviderRegistry.descriptors().map((provider) => [
-          provider.id,
-          { ok: true, count: providerCounts[provider.id] ?? 0 }
-        ])),
-        mock: {
-          ok: true,
-          count: archived ? 0 : mockSessions.length,
-          included: includeMock && !archived
-        }
-      });
-      return;
-    }
-
-    codexClient
-      .listThreads({
-        limit: Number(url.searchParams.get("codexLimit") ?? 8),
-        archived: false,
-        sortKey: "updated_at",
-        sortDirection: "desc"
-      })
-      .then((result) => {
-        const claudeSessions = claudeAgents.list({ archived });
-        const codexSessions = result.data.map((thread) => {
-          const session = mapCodexThreadToSession(thread);
-          const managedSession = managedCodexSessions.get(session.id);
-          const stored = store.getSession(session.id);
-          if (!managedSession) {
-            return mergeStoredSessionPresentation(session, stored);
-          }
-          return mergeStoredSessionPresentation({
-            ...session,
-            status: managedSession.status ?? session.status,
-            progress: managedSession.progress ?? session.progress,
-            summary: managedSession.summary || session.summary,
-            suggestedOptions: managedSession.suggestedOptions ?? session.suggestedOptions ?? null,
-            capabilities: managedSession.capabilities ?? session.capabilities,
-            external: {
-              ...session.external,
-              currentModel: managedSession.external?.currentModel ?? session.external?.currentModel ?? null,
-              currentReasoningLevel: managedSession.external?.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null,
-              sandbox: managedSession.external?.sandbox ?? session.external?.sandbox,
-              approvalPolicy: managedSession.external?.approvalPolicy ?? session.external?.approvalPolicy
-            }
-          }, stored);
-        });
-        const knownIds = new Set(codexSessions.map((session) => session.id));
-        const managedSessions = Array.from(managedCodexSessions.values())
-          .filter((session) => !knownIds.has(session.id));
-        const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-        const ptySessions = ptyAgents.list({ archived })
-          .filter((session) => session.external?.provider !== "codex-app-server")
-          .filter((session) => session.external?.provider !== "claude-sdk")
-          .filter((session) => !knownIds.has(session.id));
-
-        sendJson(response, 200, {
-          sessions: sortSessionsForList(withPendingCollaborationConfirmations([
-            ...ptySessions,
-            ...claudeSessions,
-            ...(archived ? [] : managedSessions),
-            ...(archived ? [] : codexSessions),
-            ...(archived ? [] : mockSessions)
-          ])),
-          sources: {
-            pty: {
-              ok: true,
-              count: ptySessions.length
-            },
-            claude: {
-              ok: true,
-              count: claudeSessions.length
-            },
-            codex: {
-              ok: true,
-              count: result.data.length,
-              managedCount: managedSessions.length
-            },
-            mock: {
-              ok: true,
-              count: mockSessions.length,
-              included: includeMock
-            }
-          }
-        });
-      })
-      .catch((error) => {
-        const mockSessions = Array.from(sessions.values());
-        const ptySessions = ptyAgents.list({ archived });
-
-        sendJson(response, 200, {
-          sessions: [...ptySessions, ...(archived ? [] : mockSessions)],
-          sources: {
-            pty: {
-              ok: true,
-              count: ptySessions.length
-            },
-            codex: {
-              ok: false,
-              error: error.message
-            },
-            mock: {
-              ok: true,
-              count: mockSessions.length,
-              included: true,
-              fallback: true
-            }
-          }
-        });
-      });
+    const mockSessions = includeMock ? Array.from(sessions.values()) : [];
+    const providerSessions = listGatewaySessions({ archived });
+    const providerCounts = providerSessions.reduce((counts, session) => {
+      const providerId = session.external?.provider ?? "unknown";
+      counts[providerId] = (counts[providerId] ?? 0) + 1;
+      return counts;
+    }, {});
+    sendJson(response, 200, {
+      sessions: sortSessionsForList(withPendingCollaborationConfirmations([
+        ...providerSessions,
+        ...(archived ? [] : mockSessions)
+      ])),
+      sources: Object.fromEntries(agentProviderRegistry.descriptors().map((provider) => [
+        provider.id,
+        { ok: true, count: providerCounts[provider.id] ?? 0 }
+      ])),
+      mock: {
+        ok: true,
+        count: archived ? 0 : mockSessions.length,
+        included: includeMock && !archived
+      }
+    });
     return;
   }
 
