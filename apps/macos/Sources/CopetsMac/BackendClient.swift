@@ -1045,7 +1045,7 @@ final class BackendClient: ObservableObject {
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         projectStatusRefreshTask?.cancel()
-        if session.external?.provider == "codex-app-server" {
+        if projectId(for: session) != nil {
             projectStatusRefreshTask = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.loadProjectWorktreeStatus(for: session)
@@ -1223,11 +1223,12 @@ final class BackendClient: ObservableObject {
     }
 
     private func loadProjectWorktreeStatus(for session: TaskSession) async {
-        guard selectedSession?.id == session.id else { return }
+        guard selectedSession?.id == session.id,
+              let projectId = projectId(for: session) else { return }
         projectStatusRequestSequence &+= 1
         let requestSequence = projectStatusRequestSequence
         do {
-            let url = baseURL.appending(path: "sessions/\(session.id)/project-worktrees")
+            let url = baseURL.appending(path: "projects/\(projectId)/workspaces")
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
@@ -1297,14 +1298,15 @@ final class BackendClient: ObservableObject {
     }
 
     func initializeProjectToolset(update: Bool = false) {
-        guard let session = selectedSession else { return }
+        guard let session = selectedSession,
+              let projectId = projectId(for: session) else { return }
         let action = update ? "update" : "initialize"
         Task {
             isLoadingProjectWorktrees = true
             defer { isLoadingProjectWorktrees = false }
             do {
                 var request = URLRequest(
-                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/\(action)")
+                    url: baseURL.appending(path: "projects/\(projectId)/development-service/actions/\(action)")
                 )
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1326,14 +1328,15 @@ final class BackendClient: ObservableObject {
     }
 
     func runProjectServiceAction(_ action: String) {
-        guard let session = selectedSession else { return }
+        guard let session = selectedSession,
+              let projectId = projectId(for: session) else { return }
         let actionId = "service:\(action)"
         Task {
             projectWorktreeActionIds.insert(actionId)
             defer { projectWorktreeActionIds.remove(actionId) }
             do {
                 var request = URLRequest(
-                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/\(action)")
+                    url: baseURL.appending(path: "projects/\(projectId)/development-service/actions/\(action)")
                 )
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1351,14 +1354,15 @@ final class BackendClient: ObservableObject {
     }
 
     func selectProjectServiceProfile(_ profileId: String) {
-        guard let session = selectedSession else { return }
+        guard let session = selectedSession,
+              let projectId = projectId(for: session) else { return }
         let actionId = "service:profile"
         Task {
             projectWorktreeActionIds.insert(actionId)
             defer { projectWorktreeActionIds.remove(actionId) }
             do {
                 var request = URLRequest(
-                    url: baseURL.appending(path: "sessions/\(session.id)/project-toolset/profile")
+                    url: baseURL.appending(path: "projects/\(projectId)/development-service/actions/profile")
                 )
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1530,8 +1534,14 @@ final class BackendClient: ObservableObject {
             projectWorktreeActionIds.insert(worktree.worktreeId)
             defer { projectWorktreeActionIds.remove(worktree.worktreeId) }
             do {
+                let path: String
+                if action == "restart", let projectId = projectId(for: session) {
+                    path = "projects/\(projectId)/workspaces/\(worktree.worktreeId)/actions/restart"
+                } else {
+                    path = "sessions/\(session.id)/project-worktrees/\(worktree.worktreeId)/\(action)"
+                }
                 var request = URLRequest(url: baseURL.appending(
-                    path: "sessions/\(session.id)/project-worktrees/\(worktree.worktreeId)/\(action)"
+                    path: path
                 ))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -1556,6 +1566,12 @@ final class BackendClient: ObservableObject {
                 lastError = error.localizedDescription
             }
         }
+    }
+
+    private func projectId(for session: TaskSession) -> String? {
+        let projectId = session.external?.workspace?.repositoryId?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return projectId?.isEmpty == false ? projectId : nil
     }
 
     private func loadUsage(for session: TaskSession) async {

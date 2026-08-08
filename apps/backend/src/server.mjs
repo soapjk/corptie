@@ -20,6 +20,7 @@ import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRunti
 import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
+import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createCodexAppServerProvider } from "./agent-provider/providers/codexAppServerProvider.mjs";
@@ -210,6 +211,13 @@ const sessionBindingRepository = new SessionBindingRepository({
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId)
+});
+const projectApplicationService = new ProjectApplicationService({
+  resolveProject: resolveProjectContext,
+  inspectWorkspaces: (project) => gitWorkspaces.projectStatusForPath(project.mainPath, project.id),
+  inspectDevelopmentService: (project) => projectToolsetStatusForPath(project.mainPath),
+  performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
+  performWorkspaceAction: performProjectWorkspaceAction
 });
 const feishuGateway = new FeishuGatewayManager({
   store,
@@ -2806,10 +2814,101 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
 }
 
 function unifiedErrorStatus(error) {
-  if (error.code === "SESSION_NOT_FOUND") return 404;
+  if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND"].includes(error.code)) return 404;
+  if (error.code === "INVALID_PROJECT_ACTION") return 400;
   if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
+}
+
+function resolveProjectContext(projectId) {
+  const repository = store.getGitRepository(projectId);
+  if (!repository) return null;
+  const worktrees = store.listGitWorktrees(projectId);
+  const main = worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+  if (!main?.path) return null;
+  return {
+    id: repository.id,
+    mainPath: main.canonicalPath || main.path,
+    mainWorkspaceId: main.worktreeId
+  };
+}
+
+async function performProjectDevelopmentServiceAction(project, action, input = {}) {
+  if (!["initialize", "update", "profile", "start", "restart", "stop"].includes(action)) {
+    const error = new Error(`Unsupported development service action: ${action}`);
+    error.code = "INVALID_PROJECT_ACTION";
+    throw error;
+  }
+  if (action === "initialize" || action === "update") {
+    projectToolsetInitializer.schedule(project.mainPath, { force: action === "update" });
+    return { scheduled: true };
+  }
+  if (action === "profile") {
+    const profileId = String(input.profileId ?? "").trim();
+    if (!profileId) throw new Error("A Corptie service profile is required.");
+    return projectToolsets.selectProfile(project.mainPath, profileId);
+  }
+  if (action === "start" || action === "restart") {
+    return rebuildAndRestartProjectService(project.mainPath);
+  }
+  return projectToolsets.run(project.mainPath, "stop");
+}
+
+async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
+  if (!["commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
+    const error = new Error(`Unsupported workspace action: ${action}`);
+    error.code = "INVALID_PROJECT_ACTION";
+    throw error;
+  }
+  const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
+  const workspace = status.worktrees.find((candidate) => candidate.worktreeId === workspaceId);
+  if (!workspace || workspace.availability !== "available") {
+    const error = new Error("The selected workspace is unavailable or does not belong to this Project.");
+    error.code = "WORKSPACE_NOT_FOUND";
+    throw error;
+  }
+  if (action === "restart") {
+    const toolset = await projectToolsets.inspect(workspace.path);
+    if (!toolset.configured) {
+      throw new Error("Configure the Corptie Scripts Tools Set before restarting from this workspace.");
+    }
+    return rebuildAndRestartProjectService(workspace.path, workspace.path);
+  }
+  if (action === "synchronize") {
+    return gitWorkspaces.synchronizeWorktreeWithMainForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      sourceWorktreeId: workspaceId
+    });
+  }
+  if (action === "delete") {
+    return gitWorkspaces.removeWorktreeForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      sourceWorktreeId: workspaceId,
+      deleteBranch: input.deleteBranch !== false,
+      forceDeleteUnmerged: input.forceDeleteUnmerged === true,
+      acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
+      confirmedBranchName: input.confirmedBranchName
+    });
+  }
+  await resolveProjectCommitProtection(workspace, input);
+  if (action === "commit") {
+    return gitWorkspaces.commitWorktreeChangesForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      sourceWorktreeId: workspaceId,
+      commitMessage: input.commitMessage
+    });
+  }
+  return gitWorkspaces.mergeWorktreeIntoMainForProject({
+    repositoryId: project.id,
+    workingDirectory: project.mainPath,
+    sourceWorktreeId: workspaceId,
+    commitMessage: input.commitMessage,
+    synchronizeSource: input.synchronizeSource === true
+  });
 }
 
 async function sessionDeletionPlan(sessionId) {
@@ -3009,6 +3108,10 @@ function scheduleProjectToolsetInitialization(cwd) {
 
 async function projectToolsetStatus(sessionId) {
   const cwd = projectWorkingDirectoryForSession(sessionId);
+  return projectToolsetStatusForPath(cwd);
+}
+
+async function projectToolsetStatusForPath(cwd) {
   const toolset = await projectToolsets.inspect(cwd);
   if (toolset.requiresUpdate && toolset.manifestConfigured) {
     const legacySource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
@@ -3983,6 +4086,70 @@ function route(request, response) {
 
   if (request.method === "GET" && url.pathname === "/providers") {
     sendJson(response, 200, { providers: agentProviderRegistry.descriptors() });
+    return;
+  }
+
+  const projectWorkspacesMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspaces$/);
+  const projectWorkspaceActionMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
+  );
+  const projectDevelopmentServiceMatch = url.pathname.match(/^\/projects\/([^/]+)\/development-service$/);
+  const projectDevelopmentServiceActionMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/development-service\/actions\/([^/]+)$/
+  );
+  const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+  if (request.method === "GET" && projectWorkspacesMatch) {
+    const projectId = decodeURIComponent(projectWorkspacesMatch[1]);
+    projectApplicationService.listWorkspaces(projectId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+  if (request.method === "POST" && projectWorkspaceActionMatch) {
+    const projectId = decodeURIComponent(projectWorkspaceActionMatch[1]);
+    const workspaceId = decodeURIComponent(projectWorkspaceActionMatch[2]);
+    const action = decodeURIComponent(projectWorkspaceActionMatch[3]);
+    readJson(request)
+      .then((input) => projectApplicationService.runWorkspaceAction(projectId, workspaceId, action, input))
+      .then((result) => {
+        emitEvent("ProjectWorkspaceChanged", { projectId, workspaceId, action, result });
+        sendJson(response, 200, result);
+      })
+      .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
+        error: error.message,
+        code: error.code,
+        unmergedCommitCount: error.unmergedCommitCount,
+        branchName: error.branchName
+      }));
+    return;
+  }
+  if (request.method === "GET" && projectDevelopmentServiceMatch) {
+    const projectId = decodeURIComponent(projectDevelopmentServiceMatch[1]);
+    projectApplicationService.readDevelopmentService(projectId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+  if (request.method === "POST" && projectDevelopmentServiceActionMatch) {
+    const projectId = decodeURIComponent(projectDevelopmentServiceActionMatch[1]);
+    const action = decodeURIComponent(projectDevelopmentServiceActionMatch[2]);
+    readJson(request)
+      .then((input) => projectApplicationService.runDevelopmentServiceAction(projectId, action, input))
+      .then((result) => {
+        emitEvent("ProjectDevelopmentServiceChanged", { projectId, action, result });
+        sendJson(response, action === "initialize" || action === "update" ? 202 : 200, result);
+      })
+      .catch((error) => sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
+        error: error.message,
+        code: error.code
+      }));
+    return;
+  }
+  if (request.method === "GET" && projectMatch) {
+    const projectId = decodeURIComponent(projectMatch[1]);
+    projectApplicationService.readProject(projectId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
   }
 
