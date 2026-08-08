@@ -7,7 +7,7 @@ export class ProjectToolsetInitializer {
     this.referencePath = options.referencePath;
     this.runtimeOptions = options.runtimeOptions ?? (async () => ({}));
     this.onEvent = options.onEvent ?? (() => {});
-    this.timeoutMs = options.timeoutMs ?? 5 * 60_000;
+    this.timeoutMs = options.timeoutMs ?? 10 * 60_000;
     this.pollIntervalMs = options.pollIntervalMs ?? 500;
     this.activeByRepository = new Map();
     this.recoveredRepositories = new Set();
@@ -28,7 +28,7 @@ export class ProjectToolsetInitializer {
 
   async recoverOnce(workingDirectory) {
     const state = await this.manager.inspect(workingDirectory);
-    if (state.configured || this.recoveredRepositories.has(state.repositoryId)) return false;
+    if (state.configured || state.requiresUpdate || this.recoveredRepositories.has(state.repositoryId)) return false;
     this.recoveredRepositories.add(state.repositoryId);
     this.schedule(workingDirectory, { recovery: true });
     return true;
@@ -60,7 +60,9 @@ export class ProjectToolsetInitializer {
   }
 
   async runInitialization(workingDirectory, options) {
-    const toolset = await this.manager.scaffold(workingDirectory);
+    const toolset = await this.manager.scaffold(workingDirectory, {
+      unconfigure: options.force === true
+    });
     const protocol = await readFile(this.referencePath, "utf8");
     const runtime = await this.runtimeOptions();
     this.onEvent("ProjectToolsetInitializationStarted", {
@@ -106,7 +108,18 @@ export class ProjectToolsetInitializer {
     );
     const turnId = turn?.turn?.id;
     if (!turnId) throw new Error("Corptie could not start the project-toolset initialization turn.");
-    await this.waitForCompletion(threadId, turnId, notificationStart);
+    try {
+      await this.waitForCompletion(threadId, turnId, notificationStart);
+    } catch (error) {
+      if (typeof this.codexClient.interruptTurn === "function") {
+        await this.codexClient.interruptTurn(threadId, turnId).catch(() => {});
+      }
+      throw error;
+    } finally {
+      if (typeof this.codexClient.deleteThread === "function") {
+        await this.codexClient.deleteThread(threadId).catch(() => {});
+      }
+    }
 
     const completed = await this.manager.inspect(toolset.mainPath);
     if (!completed.configured) {
