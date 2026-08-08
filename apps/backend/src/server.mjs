@@ -174,13 +174,6 @@ const gitWorkspaces = new GitWorkspaceManager({
 const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
-const projectToolsetInitializer = new ProjectToolsetInitializer({
-  manager: projectToolsets,
-  codexClient,
-  referencePath: bundledProjectToolsetReferencePath,
-  runtimeOptions: () => resolvedNewCodexRuntimeConfig(),
-  onEvent: (type, payload) => emitEvent(type, payload)
-});
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 const claudeAgents = new ClaudeAgentManager({ store });
 const agentProviderRegistry = new AgentProviderRegistry([
@@ -206,9 +199,15 @@ const agentProviderRegistry = new AgentProviderRegistry([
       prompt: input.prompt,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
-      timeoutMs: input.timeoutMs
+      timeoutMs: input.timeoutMs,
+      permissionProfile: input.permissionProfile,
+      developerInstructions: input.developerInstructions,
+      threadSource: input.purpose
     })
   }, {
+    metadata: {
+      backgroundPermissionProfiles: ["read-only", "workspace-write"]
+    },
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
@@ -264,6 +263,12 @@ const backgroundAgentService = new BackgroundAgentService({
   registry: agentProviderRegistry,
   defaultProviderId: "codex-app-server",
   onOperationEvent: (type, payload) => emitEvent(type, payload)
+});
+const projectToolsetInitializer = new ProjectToolsetInitializer({
+  manager: projectToolsets,
+  backgroundAgent: backgroundAgentService,
+  referencePath: bundledProjectToolsetReferencePath,
+  onEvent: (type, payload) => emitEvent(type, payload)
 });
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,

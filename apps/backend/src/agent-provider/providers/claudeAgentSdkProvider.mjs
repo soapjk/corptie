@@ -9,6 +9,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     id: CLAUDE_AGENT_SDK_PROVIDER_ID,
     displayName: "Claude Code",
     transport: "agent-sdk",
+    metadata: { backgroundPermissionProfiles: ["read-only"] },
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
