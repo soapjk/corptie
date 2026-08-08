@@ -8,15 +8,23 @@ struct GitHubPushArrowAnimationTests {
 
     @Test func phaseRepeatsAtTheConfiguredDuration() {
         #expect(GitHubPushArrowAnimation.progress(at: 0) == 0)
-        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.45) - 0.5) < 0.000_001)
-        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.9)) < 0.000_001)
+        #expect(abs(GitHubPushArrowAnimation.progress(at: 0.55) - 0.5) < 0.000_001)
+        #expect(abs(GitHubPushArrowAnimation.progress(at: 1.1)) < 0.000_001)
     }
 
-    @Test func arrowTravelsUpWhileRemainingFullyOpaque() {
-        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0) == 8)
+    @Test func arrowTravelsCompletelyThroughTheCircularButton() {
+        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0) == 22)
         #expect(GitHubPushArrowAnimation.verticalOffset(progress: 0.5) == 0)
-        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 1) == -8)
+        #expect(GitHubPushArrowAnimation.verticalOffset(progress: 1) == -22)
         #expect(GitHubPushButtonAppearance.arrowOpacity == 1)
+    }
+
+    @Test func arrowFadesInFromBelowAndOutAtTheTopBeforeLooping() {
+        #expect(GitHubPushArrowAnimation.opacity(progress: 0) == 0)
+        #expect(abs(GitHubPushArrowAnimation.opacity(progress: 0.125) - 0.5) < 0.000_001)
+        #expect(GitHubPushArrowAnimation.opacity(progress: 0.4) == 1)
+        #expect(abs(GitHubPushArrowAnimation.opacity(progress: 0.775) - 0.5) < 0.000_001)
+        #expect(GitHubPushArrowAnimation.opacity(progress: 1) == 0)
     }
 
     @Test func pushButtonUsesFixedCircularGeometryWithoutAnInnerSolidCircle() {

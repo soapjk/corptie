@@ -4867,8 +4867,9 @@ private struct DetailHeaderView: View {
 }
 
 struct GitHubPushArrowAnimation {
-    static let duration = 0.9
+    static let duration = 1.1
     static let progressSymbolName = "arrow.up"
+    static let travelExtent = 22.0
 
     static func progress(at time: TimeInterval) -> Double {
         let remainder = time.truncatingRemainder(dividingBy: duration)
@@ -4876,7 +4877,19 @@ struct GitHubPushArrowAnimation {
     }
 
     static func verticalOffset(progress: Double) -> Double {
-        8 - (16 * min(max(progress, 0), 1))
+        let clamped = min(max(progress, 0), 1)
+        return travelExtent - (travelExtent * 2 * clamped)
+    }
+
+    static func opacity(progress: Double) -> Double {
+        let clamped = min(max(progress, 0), 1)
+        if clamped < 0.25 {
+            return clamped / 0.25
+        }
+        if clamped <= 0.55 {
+            return 1
+        }
+        return (1 - clamped) / 0.45
     }
 }
 
@@ -5008,13 +5021,15 @@ private struct GitHubPushProgressIcon: View {
                 .symbolRenderingMode(.monochrome)
                 .foregroundColor(color)
                 .offset(y: reduceMotion ? 0 : GitHubPushArrowAnimation.verticalOffset(progress: progress))
-                .opacity(GitHubPushButtonAppearance.arrowOpacity)
+                .opacity(reduceMotion
+                    ? GitHubPushButtonAppearance.arrowOpacity
+                    : GitHubPushArrowAnimation.opacity(progress: progress))
         }
         .frame(
             width: GitHubPushButtonAppearance.diameter,
             height: GitHubPushButtonAppearance.diameter
         )
-        .clipped()
+        .clipShape(Circle())
         .accessibilityLabel(L10n("Pushing to GitHub…"))
     }
 }
