@@ -5076,39 +5076,12 @@ private struct GitHubPushConfirmationView: View {
             .frame(maxHeight: 210)
 
             if preparation.dirty {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack {
-                        Text(L10n("Commit message"))
-                            .font(.system(size: 12, weight: .semibold))
-                        Spacer()
-                        Button {
-                            Task {
-                                if let suggestion = await backendClient.generateGitHubCommitMessage() {
-                                    commitMessage = suggestion
-                                }
-                            }
-                        } label: {
-                            if backendClient.isGeneratingGitHubCommitMessage {
-                                HStack(spacing: 6) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text(L10n("Generating…"))
-                                }
-                            } else {
-                                Label(L10n("Generate with Agent"), systemImage: "wand.and.stars")
-                            }
-                        }
-                        .disabled(backendClient.isGeneratingGitHubCommitMessage)
-                    }
-
-                    TextField(L10n("Enter a commit message"), text: $commitMessage)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, design: .monospaced))
-
-                    Text(L10n("Enter your own message or generate one with Agent, then edit it before pushing."))
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                }
+                CommitMessageEditor(
+                    message: $commitMessage,
+                    isGenerating: backendClient.isGeneratingGitHubCommitMessage,
+                    helpText: L10n("Enter your own message or generate one with Agent, then edit it before pushing."),
+                    generate: { await backendClient.generateGitHubCommitMessage() }
+                )
             }
 
             if preparation.commitProtection?.requiresDecision == true,
@@ -5198,6 +5171,46 @@ private struct GitHubPushConfirmationView: View {
                         .textSelection(.enabled)
                 }
             }
+        }
+    }
+}
+
+private struct CommitMessageEditor: View {
+    @Binding var message: String
+    let isGenerating: Bool
+    let helpText: String
+    let generate: () async -> String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(L10n("Commit message"))
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button {
+                    Task {
+                        if let suggestion = await generate() {
+                            message = suggestion
+                        }
+                    }
+                } label: {
+                    if isGenerating {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(L10n("Generating…"))
+                        }
+                    } else {
+                        Label(L10n("Generate with Agent"), systemImage: "wand.and.stars")
+                    }
+                }
+                .disabled(isGenerating)
+            }
+            TextField(L10n("Enter a commit message"), text: $message)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+            Text(helpText)
+                .font(.system(size: 10.5))
+                .foregroundStyle(CorptiePalette.secondaryText)
         }
     }
 }
@@ -5561,12 +5574,12 @@ private struct ProjectWorktreeManagerView: View {
             }
         }
         .sheet(item: Binding(
-            get: { backendClient.protectedWorktreeCommitPrompt },
+            get: { backendClient.worktreeCommitReviewPrompt },
             set: { value in
                 if value == nil { backendClient.cancelProtectedWorktreeCommit() }
             }
         )) { prompt in
-            ProtectedWorktreeCommitView(prompt: prompt)
+            WorktreeCommitReviewView(prompt: prompt)
                 .environmentObject(backendClient)
         }
         .confirmationDialog(
@@ -6157,32 +6170,46 @@ private struct ForceDeleteWorktreeConfirmationView: View {
     }
 }
 
-private struct ProtectedWorktreeCommitView: View {
+private struct WorktreeCommitReviewView: View {
     @EnvironmentObject private var backendClient: BackendClient
-    let prompt: ProtectedWorktreeCommitPrompt
+    let prompt: WorktreeCommitReviewPrompt
     @State private var decision = "include"
     @State private var neverRemind = false
+    @State private var commitMessage = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
-                Image(systemName: "exclamationmark.shield.fill")
+                Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 24))
                     .foregroundStyle(CorptiePalette.amber)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n("Local Agent files detected"))
+                    Text(L10n("Review Commit"))
                         .font(.system(size: 18, weight: .bold))
-                    Text(L10n("Choose how Corptie should handle them before committing."))
-                        .font(.system(size: 11))
+                    Text(prompt.worktree.branchName ?? L10n("detached HEAD"))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
             }
 
-            PrivateAgentFilesDecisionView(
-                protection: prompt.protection,
-                decision: $decision,
-                neverRemind: $neverRemind
+            Text(operationSummary)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(CorptiePalette.secondaryText)
+
+            CommitMessageEditor(
+                message: $commitMessage,
+                isGenerating: backendClient.isGeneratingWorktreeCommitMessage,
+                helpText: L10n("Enter your own message or generate one with Agent, then edit it before continuing."),
+                generate: { await backendClient.generateWorktreeCommitMessage() }
             )
+
+            if prompt.protection.requiresDecision {
+                PrivateAgentFilesDecisionView(
+                    protection: prompt.protection,
+                    decision: $decision,
+                    neverRemind: $neverRemind
+                )
+            }
 
             HStack {
                 Spacer()
@@ -6190,19 +6217,39 @@ private struct ProtectedWorktreeCommitView: View {
                     backendClient.cancelProtectedWorktreeCommit()
                 }
                 .keyboardShortcut(.cancelAction)
-                Button(decision == "ignore"
-                    ? L10n("Update .gitignore and Commit")
-                    : L10n("Commit These Files")) {
+                Button(confirmButtonLabel) {
                     backendClient.confirmProtectedWorktreeCommit(
+                        commitMessage: commitMessage.trimmingCharacters(in: .whitespacesAndNewlines),
                         decision: decision,
                         neverRemindPrivateFiles: neverRemind
                     )
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(
+                    backendClient.isGeneratingWorktreeCommitMessage
+                        || commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
             }
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(width: 560)
+    }
+
+    private var operationSummary: String {
+        switch prompt.operation {
+        case .commit: L10n("The changes will be committed to this Worktree only. No remote push is performed.")
+        case .merge: L10n("The changes will be committed and then merged into main. No remote push is performed.")
+        case .complete: L10n("The changes will be committed before completing the Worktree operation. No remote push is performed.")
+        case .operate: L10n("The changes will be committed before running the selected Worktree operations. No remote push is performed.")
+        }
+    }
+
+    private var confirmButtonLabel: String {
+        switch prompt.operation {
+        case .commit: L10n("Commit Changes")
+        case .merge: L10n("Commit and Merge")
+        case .complete, .operate: L10n("Commit and Continue")
+        }
     }
 }
 
