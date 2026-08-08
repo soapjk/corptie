@@ -15,7 +15,6 @@ import {
   readCodexRolloutDetail,
   readCodexRolloutTokenUsage
 } from "./adapters/codexAppServer.mjs";
-import { ClaudeAgentManager } from "./adapters/claudeAgentManager.mjs";
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { AgentProviderRegistry } from "./agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
@@ -26,7 +25,7 @@ import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
-import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
+import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import {
   codexToolHostAttachment,
   createCodexAppServerProvider
@@ -105,7 +104,7 @@ const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
-const managedCodexSessions = new Map();
+const sessionPresentationCache = new Map();
 const eventLog = [];
 const sseClients = new Set();
 const sessionEventListeners = new Set();
@@ -193,15 +192,15 @@ const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
 const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
-const claudeAgents = new ClaudeAgentManager({ store });
 const agentProviderRegistry = new AgentProviderRegistry([
-  createClaudeAgentSdkProvider(claudeAgents, { listModels: loadClaudeModels }),
+  createClaudeProviderRuntime({ store, listModels: loadClaudeModels }),
   createPtyAgentProvider(ptyAgents, { providerId: GENERIC_PTY_PROVIDER_ID }),
   createPtyAgentProvider(ptyAgents, { providerId: CODEX_PTY_PROVIDER_ID, listModels: loadCodexModels }),
   createCodexAppServerProvider({
     listSessions: listCodexProviderSessions,
     readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
+    resumeSession: resumeCodexProviderSession,
     deleteSession: deleteCodexProviderSession,
     restartSession: restartCodexProviderSession,
     renameSession: renameCodexProviderSession,
@@ -236,6 +235,7 @@ const agentProviderRegistry = new AgentProviderRegistry([
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
@@ -540,7 +540,7 @@ async function commitManagedCodexWorkspaceRoute(event) {
   const logical = store.getLogicalSession(event.logicalSessionId);
   const legacySessionId = logical?.legacySessionId;
   if (!legacySessionId) return;
-  const previous = managedCodexSessions.get(legacySessionId) ?? store.getSession(legacySessionId);
+  const previous = sessionPresentationCache.get(legacySessionId) ?? store.getSession(legacySessionId);
   if (!previous) return;
   const session = sessionWithLogicalWorkspace({
     ...previous,
@@ -618,7 +618,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       if (!targetCwd || logical.activeBinding?.boundCwd === targetCwd) continue;
       if (reconcilingWorkspacePaths.has(logical.logicalSessionId)) continue;
       const session = logical.legacySessionId
-        ? managedCodexSessions.get(logical.legacySessionId) ?? store.getSession(logical.legacySessionId)
+        ? sessionPresentationCache.get(logical.legacySessionId) ?? store.getSession(logical.legacySessionId)
         : null;
       if (sessionHasActiveRun(session)) {
         emitEvent("SessionWorkspacePathRebindDeferred", {
@@ -1223,7 +1223,7 @@ function scheduleCodexChoiceParseForText(threadId, text) {
 
 function syncManagedCodexSessionFromDetail(threadId, detail) {
   const sessionId = sessionIdForProviderThread(threadId);
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   if (!session || !detail) {
     return null;
   }
@@ -1253,7 +1253,7 @@ function syncManagedCodexSessionFromDetail(threadId, detail) {
 
 function applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
   const sessionId = sessionIdForProviderThread(threadId);
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   if (!session) {
     return null;
   }
@@ -1284,7 +1284,7 @@ function applyCodexChoiceOptionsToManagedSession(threadId, text, options, genera
 }
 
 function upsertManagedCodexSession(session, preferredAgentId = null) {
-  managedCodexSessions.set(session.id, session);
+  sessionPresentationCache.set(session.id, session);
   store.upsertSession({
     ...session,
     provider: session.external?.provider ?? "codex-app-server",
@@ -1346,7 +1346,7 @@ function collaborationProviderRuntimeOptions(agentId) {
 
 function collaborationThreadOptionsForSession(sessionId) {
   if (!sessionId) return {};
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const agent = collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(session);
   return collaborationThreadOptions(agent?.agentId);
@@ -1385,7 +1385,7 @@ function requireAgentLogicalSession(agentId) {
 
 async function createAgentWorktree(agentId, input = {}) {
   const { sessionId, logical } = requireAgentLogicalSession(agentId);
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   const thread = await codexClient.readThread(logical.activeThreadId, { includeTurns: true });
   const runtimeOptions = collaborationThreadOptions(agentId);
@@ -1507,7 +1507,7 @@ function handleCodexAppServerNotification(message) {
     }, { sessionId, source: { type: "codex-app-server" } });
     return;
   }
-  const managedSession = managedCodexSessions.get(sessionId);
+  const managedSession = sessionPresentationCache.get(sessionId);
   if (method === "thread/name/updated") {
     const title = typeof params.threadName === "string" ? params.threadName.trim() : "";
     const current = managedSession ?? store.getSession(sessionId);
@@ -2122,7 +2122,7 @@ function listCodexProviderSessions(options = {}) {
   const storedSessions = ptyAgents.list({ archived });
   const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
   const managedById = new Map(
-    Array.from(managedCodexSessions.values())
+    Array.from(sessionPresentationCache.values())
       .filter((session) => Boolean(session.archived) === archived)
       .map((session) => [session.id, session])
   );
@@ -2290,15 +2290,33 @@ async function createCodexProviderSession(input = {}) {
   }
 }
 
-function deleteCodexProviderSession(reference) {
-  const existed = managedCodexSessions.delete(reference.sessionId);
+async function resumeCodexProviderSession(reference) {
+  const previous = reference.metadata?.session
+    ?? sessionPresentationCache.get(reference.sessionId)
+    ?? store.getSession(reference.sessionId);
+  if (!previous) throw new Error("Session not found.");
+  const result = await codexClient.resumeThread(
+    reference.providerSessionId,
+    collaborationThreadOptionsForSession(reference.sessionId)
+  );
+  const session = mergeStoredSessionPresentation(
+    mapCodexThreadToSession(result.thread ?? result),
+    previous
+  );
+  upsertManagedCodexSession(session);
+  return session;
+}
+
+async function deleteCodexProviderSession(reference) {
+  await codexClient.deleteThread(reference.providerSessionId);
+  const existed = sessionPresentationCache.delete(reference.sessionId);
   store.deleteSession(reference.sessionId);
   return existed;
 }
 
 async function renameCodexProviderSession(reference, title) {
   const previous = reference.metadata?.session
-    ?? managedCodexSessions.get(reference.sessionId)
+    ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
   await codexClient.setThreadName(reference.providerSessionId, title);
@@ -2309,7 +2327,7 @@ async function renameCodexProviderSession(reference, title) {
 
 function updateCodexProviderAvatar(reference, avatarPath) {
   const previous = reference.metadata?.session
-    ?? managedCodexSessions.get(reference.sessionId)
+    ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
   const session = { ...previous, avatarPath, updatedAt: new Date().toISOString() };
@@ -2362,7 +2380,7 @@ async function readCodexProviderSession(reference) {
     return detail;
   } catch (error) {
     if (reference.metadata?.historical) throw error;
-    const managed = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+    const managed = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
     return managed
       ? createManagedCodexDetail(managed, codexClient.liveItemsForThread(threadId), error)
       : store.getDetail(sessionId);
@@ -2394,7 +2412,7 @@ async function interruptCodexProviderSession(reference, context = {}) {
 function updateCodexProviderConfiguration(reference, updates) {
   const sessionId = reference.sessionId;
   const threadId = reference.providerSessionId;
-  const previous = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const previous = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const timestamp = now();
   const session = previous ?? {
     id: sessionId,
@@ -2429,7 +2447,7 @@ function updateCodexProviderConfiguration(reference, updates) {
 
 function updateCodexProviderPermissions(reference, permissions) {
   const previous = reference.metadata?.session
-    ?? managedCodexSessions.get(reference.sessionId)
+    ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) {
     const error = new Error("Session not found.");
@@ -2485,7 +2503,7 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   bumpChoiceGeneration(sessionId);
   store.clearActiveChoicePrompt(sessionId);
   const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-    managedCodexSessions.get(sessionId) ?? before,
+    sessionPresentationCache.get(sessionId) ?? before,
     logicalRoute
   ));
   const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
@@ -2783,7 +2801,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
       activeTurnId: null
     }
   }, permissions);
-  managedCodexSessions.delete(sessionId);
+  sessionPresentationCache.delete(sessionId);
   store.deleteSession(sessionId);
   const logicalRoute = await ensureLogicalRouteForCodexSession(replacement, started);
   replacement = sessionWithLogicalWorkspace(replacement, logicalRoute);
@@ -2974,7 +2992,7 @@ async function inspectCollaborationSession(sessionId) {
   if (!String(sessionId).startsWith("codex:")) return "missing";
   const threadId = sessionId.slice("codex:".length);
   let session = listGatewaySessions().find((item) => item.id === sessionId)
-    ?? managedCodexSessions.get(sessionId)
+    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
 
   // A process restart can leave the persisted presentation at `running` even
@@ -3213,7 +3231,7 @@ async function sessionDeletionPlan(sessionId) {
 }
 
 async function sessionWorkspaceRecoveryStatus(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
   if (!session || !logical?.activeBinding || !logical.repositoryId) {
     const error = new Error("Session workspace route not found.");
@@ -3266,7 +3284,7 @@ async function sessionWorkspaceRecoveryStatus(sessionId) {
 async function switchCodexProviderWorkspace(reference, input = {}) {
   const sessionId = reference.sessionId;
   const session = reference.metadata?.session
-    ?? managedCodexSessions.get(sessionId)
+    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
   if (!session) throw new Error("Session not found.");
   const logical = (reference.logicalSessionId
@@ -3295,7 +3313,7 @@ async function switchCodexProviderWorkspace(reference, input = {}) {
 async function restartCodexProviderSession(reference) {
   const sessionId = reference.sessionId;
   const session = reference.metadata?.session
-    ?? managedCodexSessions.get(sessionId)
+    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
   if (!session) throw new Error("Session not found.");
   const logical = (reference.logicalSessionId
@@ -3393,7 +3411,7 @@ async function mergeSessionWorktreeBeforeDeletion(sessionId, plan) {
 }
 
 function projectWorkingDirectoryForSession(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
   const cwd = logical?.activeBinding?.boundCwd ?? session?.external?.cwd ?? session?.cwd;
   if (!cwd) {
@@ -3554,7 +3572,7 @@ async function rebuildAndRestartProjectService(workingDirectory, executionRoot =
 }
 
 async function projectWorktreeStatus(sessionId) {
-  const session = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId);
+  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   if (!session) {
     const error = new Error("Session not found.");
     error.statusCode = 404;
@@ -3736,7 +3754,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   }
   for (const binding of source.sessions) {
     const session = binding.sessionId
-      ? managedCodexSessions.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+      ? sessionPresentationCache.get(binding.sessionId) ?? store.getSession(binding.sessionId)
       : null;
     if (sessionHasActiveRun(session)) {
       const error = new Error(`Session ${session.title || binding.sessionId} is busy. Wait for it before completing the worktree.`);
@@ -3766,7 +3784,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   const deletedSessionIds = [];
   for (const binding of source.sessions) {
     if (!binding.sessionId) continue;
-    managedCodexSessions.delete(binding.sessionId);
+    sessionPresentationCache.delete(binding.sessionId);
     collaborationCore.deactivateAgentForSession(binding.sessionId);
     store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
     store.deleteSession(binding.sessionId);
@@ -3820,7 +3838,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   if (operations.deleteSessions) {
     for (const binding of source.sessions) {
       const session = binding.sessionId
-        ? managedCodexSessions.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+        ? sessionPresentationCache.get(binding.sessionId) ?? store.getSession(binding.sessionId)
         : null;
       if (sessionHasActiveRun(session)) {
         const error = new Error(`Session ${session?.title || binding.sessionId} is busy. Wait for it before deleting associated Sessions.`);
@@ -3874,7 +3892,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   if (operations.deleteSessions) {
     for (const binding of source.sessions) {
       if (!binding.sessionId) continue;
-      managedCodexSessions.delete(binding.sessionId);
+      sessionPresentationCache.delete(binding.sessionId);
       collaborationCore.deactivateAgentForSession(binding.sessionId);
       store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
       store.deleteSession(binding.sessionId);
@@ -4532,7 +4550,7 @@ function route(request, response) {
         const rawId = decodeURIComponent(sessionArchiveMatch[1]);
         const archived = input.archived !== false;
         if (rawId.startsWith("codex:")) {
-          const session = managedCodexSessions.get(rawId) ?? store.getSession(rawId);
+          const session = sessionPresentationCache.get(rawId) ?? store.getSession(rawId);
           if (!session) {
             sendJson(response, 404, { error: "Session not found" });
             return;
@@ -4543,7 +4561,7 @@ function route(request, response) {
             updatedAt: new Date().toISOString()
           };
           if (archived) {
-            managedCodexSessions.delete(rawId);
+            sessionPresentationCache.delete(rawId);
             store.archiveSession(rawId, true);
           } else {
             upsertManagedCodexSession(nextSession);
@@ -4577,9 +4595,9 @@ function route(request, response) {
           sendJson(response, 404, { error: "Session not found" });
           return;
         }
-        if (managedCodexSessions.has(id)) {
-          const managed = managedCodexSessions.get(id);
-          managedCodexSessions.set(id, {
+        if (sessionPresentationCache.has(id)) {
+          const managed = sessionPresentationCache.get(id);
+          sessionPresentationCache.set(id, {
             ...managed,
             pinned,
             sortOrder: session.sortOrder ?? managed.sortOrder,
@@ -4598,9 +4616,9 @@ function route(request, response) {
         const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => normalizeSessionId(String(id))) : [];
         const sessions = ptyAgents.reorder(sessionIds);
         sessionIds.forEach((id, index) => {
-          if (managedCodexSessions.has(id)) {
-            managedCodexSessions.set(id, {
-              ...managedCodexSessions.get(id),
+          if (sessionPresentationCache.has(id)) {
+            sessionPresentationCache.set(id, {
+              ...sessionPresentationCache.get(id),
               sortOrder: index
             });
           }
@@ -5420,7 +5438,7 @@ function route(request, response) {
       .then(async ([result, activeRoute]) => {
         const cwd = activeRoute?.cwd
           || result.thread.cwd
-          || managedCodexSessions.get(`codex:${threadId}`)?.external?.cwd;
+          || sessionPresentationCache.get(`codex:${threadId}`)?.external?.cwd;
         if (!cwd) {
           throw new Error("The task working directory is unavailable.");
         }
@@ -5477,7 +5495,7 @@ function route(request, response) {
       .then(async (result) => {
         const sessionId = `codex:${threadId}`;
         const managedSession = await ensureCodexSessionPermissions(
-          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
+          sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
         );
         const detail = mapCodexThreadToDetail(
           result.thread,
@@ -5506,7 +5524,7 @@ function route(request, response) {
         const sessionId = `codex:${threadId}`;
         const binding = store.getProviderThreadBinding(threadId);
         const managedSession = await ensureCodexSessionPermissions(
-          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
+          sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
         );
         if (managedSession) {
           const detail = enrichCodexDetailChoiceOptions(historicalDetailProjection(binding, createManagedCodexDetail(
@@ -5569,7 +5587,7 @@ function route(request, response) {
           optionId: input.optionId
         }).then(() => {
           const sessionId = `codex:${threadId}`;
-          const previousSession = managedCodexSessions.get(sessionId) ?? store.getSession(sessionId) ?? null;
+          const previousSession = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId) ?? null;
           store.clearActiveChoicePrompt(sessionId);
           const session = previousSession ? {
             ...previousSession,
@@ -5607,7 +5625,7 @@ function route(request, response) {
         console.log(`[codex] send requested thread=${threadId} chars=${text.length}`);
         const sessionId = `codex:${threadId}`;
         const managedSessionBeforeSend = await ensureCodexSessionPermissions(
-          managedCodexSessions.get(sessionId) ?? store.getSession(sessionId)
+          sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
         );
         if (!managedSessionBeforeSend) {
           sendJson(response, 404, { error: "Session not found", code: "SESSION_NOT_FOUND" });
@@ -5630,7 +5648,7 @@ function route(request, response) {
 
         try {
           await codexClient.resumeThread(threadId, collaborationThreadOptionsForSession(sessionId));
-          const managedSession = managedCodexSessions.get(`codex:${threadId}`);
+          const managedSession = sessionPresentationCache.get(`codex:${threadId}`);
           const result = await codexClient.startTurn(threadId, text, {
             model: managedSession?.external?.currentModel ?? input.model ?? undefined,
             reasoningEffort: managedSession?.external?.currentReasoningLevel ?? undefined,
@@ -5707,7 +5725,7 @@ function route(request, response) {
         }
 
         const sessionId = `codex:${threadId}`;
-        const previous = managedCodexSessions.get(sessionId);
+        const previous = sessionPresentationCache.get(sessionId);
         const now = new Date().toISOString();
         const session = previous ?? {
           id: sessionId,
@@ -5792,7 +5810,7 @@ function route(request, response) {
     }
 
     if (taskId.startsWith("codex:")) {
-      const previous = managedCodexSessions.get(taskId) ?? store.getSession(taskId);
+      const previous = sessionPresentationCache.get(taskId) ?? store.getSession(taskId);
       if (!previous) {
         sendJson(response, 404, { error: "Codex session not found" });
         return;
