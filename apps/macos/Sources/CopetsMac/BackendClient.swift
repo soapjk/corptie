@@ -45,6 +45,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var projectWorktreeLoadError: String?
     @Published private(set) var isLoadingProjectWorktrees = false
     @Published private(set) var projectWorktreeActionIds = Set<String>()
+    @Published private(set) var isCleaningMergedProjectWorktrees = false
     @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
     @Published private(set) var gitHubPushError: String?
     @Published private(set) var isPreparingGitHubPush = false
@@ -1535,6 +1536,62 @@ final class BackendClient: ObservableObject {
                 "deleteBranch": true
             ]
         )
+    }
+
+    func cleanupMergedProjectWorktrees(_ worktrees: [ProjectWorktreeStatus]) {
+        guard !worktrees.isEmpty,
+              let session = selectedSession,
+              let projectId = projectId(for: session),
+              !isCleaningMergedProjectWorktrees else { return }
+        let worktreeIds = Set(worktrees.map(\.worktreeId))
+        Task {
+            lastError = nil
+            isCleaningMergedProjectWorktrees = true
+            projectWorktreeActionIds.formUnion(worktreeIds)
+            defer {
+                projectWorktreeActionIds.subtract(worktreeIds)
+                isCleaningMergedProjectWorktrees = false
+            }
+
+            var removedCount = 0
+            var failures: [String] = []
+            for worktree in worktrees {
+                do {
+                    var request = URLRequest(url: baseURL.appending(
+                        path: "projects/\(projectId)/workspaces/\(worktree.worktreeId)/actions/delete"
+                    ))
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "content-type")
+                    request.httpBody = try JSONSerialization.data(withJSONObject: ["deleteBranch": true])
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse,
+                          (200..<300).contains(httpResponse.statusCode) else {
+                        throw BackendError.message(
+                            Self.errorMessage(from: data) ?? L10n("Worktree action failed.")
+                        )
+                    }
+                    removedCount += 1
+                } catch {
+                    let name = worktree.branchName ?? worktree.path
+                    failures.append("\(name): \(error.localizedDescription)")
+                }
+            }
+
+            if failures.isEmpty {
+                sendStatusMessage = L10nFormat("Removed %d merged Worktrees", removedCount)
+            } else {
+                lastError = L10nFormat(
+                    "Removed %d Worktrees; %d could not be removed:\n%@",
+                    removedCount,
+                    failures.count,
+                    failures.joined(separator: "\n")
+                )
+            }
+            await refresh()
+            if selectedSession?.id == session.id {
+                await loadProjectWorktreeStatus(for: session)
+            }
+        }
     }
 
     private func performProjectWorktreeAction(
