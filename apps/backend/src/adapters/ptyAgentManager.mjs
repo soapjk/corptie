@@ -89,10 +89,12 @@ export class PtyAgentManager {
 
     session.terminal = terminal;
     this.sessions.set(id, session);
+    // session_items has a foreign key to sessions. Persist the owning Session
+    // before recording the first host-generated lifecycle item.
+    this.persistSession(session);
     if (input.suppressStartItem !== true) {
       this.appendSystemItem(session, `Started ${command} ${args.join(" ")}`.trim());
     }
-    this.persistSession(session);
 
     terminal.onData((chunk) => {
       if (session.deleted) {

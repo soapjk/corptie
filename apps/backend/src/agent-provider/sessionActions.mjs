@@ -1,6 +1,8 @@
 import { AGENT_PROVIDER_CAPABILITIES, providerSupports } from "./contracts.mjs";
 
 const ACTION_CAPABILITIES = Object.freeze({
+  resume: AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  delete: AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   send: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   interrupt: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
   approve: AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
@@ -26,6 +28,11 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
   }
 
   const legacy = session.capabilities ?? {};
+  if (action === "resume") {
+    return legacy.canReconnect === false
+      ? unavailable("SESSION_ALREADY_CONNECTED", true)
+      : available();
+  }
   if (action === "send") {
     if (session.canSend === false || legacy.canSend === false) {
       return unavailable(session.sendUnavailableReason ? "PROVIDER_UNAVAILABLE" : "SESSION_NOT_READY", true);

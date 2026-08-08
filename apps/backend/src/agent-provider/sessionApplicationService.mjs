@@ -13,6 +13,8 @@ export class SessionApplicationService {
   constructor(options = {}) {
     this.registry = options.registry;
     this.resolveSessionReference = options.resolveSessionReference;
+    this.bindCreatedSession = options.bindCreatedSession ?? null;
+    this.removeSessionBinding = options.removeSessionBinding ?? null;
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionApplicationService requires resolveSessionReference().");
@@ -21,6 +23,50 @@ export class SessionApplicationService {
 
   listSessions(options = {}) {
     return this.registry.listSessions(options);
+  }
+
+  async createSession(providerId, input = {}, context = {}) {
+    const session = await this.registry.invoke(
+      providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      input,
+      context
+    );
+    const reference = this.bindCreatedSession
+      ? await this.bindCreatedSession({ providerId, session, input, context })
+      : null;
+    return this.decorateLifecycleSession(providerId, session, reference);
+  }
+
+  async resumeSession(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    const session = await this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      reference,
+      context
+    );
+    return this.decorateLifecycleSession(reference.providerId, session, reference);
+  }
+
+  async deleteSession(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    const providerResult = await this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+      reference,
+      context
+    );
+    if (this.removeSessionBinding) {
+      await this.removeSessionBinding({ reference, providerResult, context });
+    }
+    return {
+      ok: true,
+      deleted: providerResult !== false,
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId,
+      providerId: reference.providerId
+    };
   }
 
   async readSession(sessionId) {
@@ -100,5 +146,18 @@ export class SessionApplicationService {
       routingVersion: reference.routingVersion ?? null,
       metadata: reference.metadata ?? {}
     });
+  }
+
+  decorateLifecycleSession(providerId, session, reference = null) {
+    const decorated = this.registry.decorateSession(providerId, reference?.session ?? session);
+    const legacySessionId = reference?.sessionId ?? decorated.id ?? null;
+    const logicalSessionId = reference?.logicalSessionId ?? null;
+    return {
+      ...decorated,
+      id: legacySessionId,
+      sessionId: legacySessionId,
+      logicalSessionId,
+      publicSessionId: logicalSessionId ?? legacySessionId
+    };
   }
 }
