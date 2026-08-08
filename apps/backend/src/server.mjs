@@ -22,10 +22,15 @@ import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
+import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeAgentSdkProvider } from "./agent-provider/providers/claudeAgentSdkProvider.mjs";
-import { createCodexAppServerProvider } from "./agent-provider/providers/codexAppServerProvider.mjs";
+import {
+  codexToolHostAttachment,
+  createCodexAppServerProvider
+} from "./agent-provider/providers/codexAppServerProvider.mjs";
 import {
   CODEX_PTY_PROVIDER_ID,
   createPtyAgentProvider,
@@ -88,7 +93,7 @@ import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
 import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
-import { isWorkspaceDynamicTool, workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
+import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
 import {
@@ -138,6 +143,25 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   },
   onEvent: (type, payload) => emitEvent(type, payload)
 });
+const hostToolCatalog = new HostToolCatalog([
+  {
+    id: "workspace",
+    tools: workspaceDynamicTools,
+    execute: (input) => callWorkspaceDynamicTool(input)
+  },
+  {
+    id: "collaboration",
+    tools: collaborationDynamicTools,
+    execute: (input) => {
+      const client = new CollaborationHttpClient({
+        agentId: input.actorId,
+        baseUrl: `http://127.0.0.1:${port}`
+      });
+      return callCollaborationDynamicTool(client, input.tool, input.arguments);
+    }
+  }
+]);
+let toolHostService = null;
 const codexAppServerCommand = resolveCodexCommand();
 const codexClient = new CodexAppServerClient({
   command: codexAppServerCommand,
@@ -149,16 +173,10 @@ const codexClient = new CodexAppServerClient({
   onNotification: (message) => {
     handleCodexAppServerNotification(message);
   },
-  onDynamicToolCall: (params) => {
-    if (isWorkspaceDynamicTool(params.tool)) {
-      return callWorkspaceDynamicTool(params);
-    }
-    const client = new CollaborationHttpClient({
-      agentId: params.agentId,
-      baseUrl: `http://127.0.0.1:${port}`
-    });
-    return callCollaborationDynamicTool(client, params.tool, params.arguments);
-  }
+  onDynamicToolCall: (params) => toolHostService.execute({
+    ...params,
+    actorId: params.agentId
+  })
 });
 const codexWorkspaceTransitions = new CodexWorkspaceTransitionManager({
   store,
@@ -193,6 +211,10 @@ const agentProviderRegistry = new AgentProviderRegistry([
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
     updatePermissions: updateCodexProviderPermissions,
     prepareWorkspaceTransition: switchCodexProviderWorkspace,
+    attachTools: (attachment) => codexToolHostAttachment(
+      attachment,
+      collaborationProviderRuntimeOptions(attachment.actorId)
+    ),
     runBackgroundPrompt: (input) => codexClient.runEphemeralPrompt({
       cwd: input.cwd,
       runtimeWorkspaceRoots: input.allowedRoots,
@@ -219,10 +241,12 @@ const agentProviderRegistry = new AgentProviderRegistry([
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
-      AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
+      AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
     ]
   })
 ]);
+toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
 const sessionBindingRepository = new SessionBindingRepository({
   store,
   findSession: (sessionId) => listGatewaySessions().find((session) => session.id === sessionId),
@@ -230,6 +254,7 @@ const sessionBindingRepository = new SessionBindingRepository({
 });
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
+  toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   bindCreatedSession: async ({ providerId, session, input }) => {
@@ -1283,9 +1308,14 @@ function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
 
 function collaborationThreadOptions(agentId) {
   if (!agentId) return {};
+  return codexToolHostAttachment({
+    actorId: agentId,
+    tools: hostToolCatalog.definitions()
+  }, collaborationProviderRuntimeOptions(agentId));
+}
+
+function collaborationProviderRuntimeOptions(agentId) {
   return {
-    dynamicTools: [...collaborationDynamicTools, ...workspaceDynamicTools],
-    dynamicToolAgentId: agentId,
     config: {
       features: {
         multi_agent: false
@@ -1371,11 +1401,12 @@ async function createAgentWorktree(agentId, input = {}) {
 }
 
 async function callWorkspaceDynamicTool(params) {
+  const actorId = params.actorId ?? params.agentId;
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId) {
     throw new Error("Workspace operations are only available from the active logical Session thread.");
   }
-  const runtimeOptions = collaborationThreadOptions(params.agentId);
+  const runtimeOptions = collaborationThreadOptions(actorId);
   if (params.tool === "corptie_list_workspaces") {
     return workspaceInventory(logical);
   }
@@ -1391,7 +1422,7 @@ async function callWorkspaceDynamicTool(params) {
       switchAfterCreate: input.switch_after_create,
       inventoryVersion: input.inventory_version,
       activeTurnId: params.turnId,
-      dynamicToolAgentId: params.agentId,
+      dynamicToolAgentId: actorId,
       config: runtimeOptions.config,
       developerInstructions: runtimeOptions.developerInstructions
     });
@@ -1401,7 +1432,7 @@ async function callWorkspaceDynamicTool(params) {
       logicalSessionId: logical.logicalSessionId,
       targetWorktreeId: params.arguments?.target_worktree_id,
       activeTurnId: params.turnId,
-      dynamicToolAgentId: params.agentId,
+      dynamicToolAgentId: actorId,
       config: runtimeOptions.config,
       developerInstructions: runtimeOptions.developerInstructions
     });
@@ -2191,7 +2222,7 @@ async function createCodexProviderSession(input = {}) {
   const creationId = randomUUID();
   activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
   try {
-    const collaborationAgentId = `agent-${randomUUID()}`;
+    const collaborationAgentId = input.toolHost?.actorId ?? `agent-${randomUUID()}`;
     const runtime = await resolvedNewCodexRuntimeConfig(input);
     const permissions = {
       sandbox: normalizeCodexSandbox(input.sandbox),
@@ -2202,7 +2233,7 @@ async function createCodexProviderSession(input = {}) {
       ...permissions,
       model: runtime.model,
       modelProvider: input.modelProvider,
-      ...collaborationThreadOptions(collaborationAgentId)
+      ...(input.toolHost?.providerAttachment ?? collaborationThreadOptions(collaborationAgentId))
     });
     collaborationCore.registerAgent({
       agentId: collaborationAgentId,

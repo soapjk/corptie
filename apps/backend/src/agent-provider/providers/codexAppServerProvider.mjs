@@ -28,3 +28,14 @@ export function createCodexAppServerProvider(operations, options = {}) {
     ]
   }, operations);
 }
+
+export function codexToolHostAttachment(attachment, providerOptions = {}) {
+  if (!attachment?.actorId || !Array.isArray(attachment?.tools)) {
+    throw new TypeError("Codex Tool Host attachment requires an actor id and tool catalog.");
+  }
+  return {
+    ...providerOptions,
+    dynamicTools: attachment.tools.map((tool) => ({ ...tool })),
+    dynamicToolAgentId: attachment.actorId
+  };
+}
