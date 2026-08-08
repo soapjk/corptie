@@ -4805,6 +4805,18 @@ function route(request, response) {
     return;
   }
 
+  const sessionDisconnectMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/disconnect$/);
+  if (request.method === "POST" && sessionDisconnectMatch) {
+    const rawId = decodeURIComponent(sessionDisconnectMatch[1]);
+    sessionApplicationService.disconnectSession(rawId, { source: "http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/pty/sessions") {
     readJson(request)
       .then((input) => createSessionThroughApplication("pty", input, { source: "legacy-http" }))
@@ -5115,17 +5127,12 @@ function route(request, response) {
   const ptyDisconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/disconnect$/);
   if (request.method === "POST" && ptyDisconnectMatch) {
     const sessionId = decodeURIComponent(ptyDisconnectMatch[1]);
-    try {
-      const session = ptyAgents.disconnect(sessionId);
-      if (!session) {
-        sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
-        return;
-      }
-      emitEvent("PtySessionDisconnected", { sessionId });
-      sendJson(response, 200, { session });
-    } catch (error) {
-      sendJson(response, 400, { error: error.message, adapter: "pty" });
-    }
+    sessionApplicationService.disconnectSession(sessionId, { source: "legacy-http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 
@@ -5169,41 +5176,12 @@ function route(request, response) {
   const ptyReconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/reconnect$/);
   if (request.method === "POST" && ptyReconnectMatch) {
     const sessionId = decodeURIComponent(ptyReconnectMatch[1]);
-    const storedSession = store.getSession(sessionId);
-    if (claudeAgents.has(sessionId) || storedSession?.external?.provider === "claude-sdk") {
-      claudeAgents.reconnect(sessionId)
-        .then((session) => {
-        if (!session) {
-          sendJson(response, 404, { error: "Claude session cannot be reconnected", adapter: "claude-sdk" });
-          return;
-        }
-        emitEvent("ClaudeSessionReconnected", { session });
-        sendJson(response, 200, { session });
-        })
-        .catch((error) => {
-          sendJson(response, 502, { error: error.message, adapter: "claude-sdk" });
-        });
-      return;
-    }
-    const session = ptyAgents.reconnect(sessionId);
-    if (!session) {
-      sendJson(response, 404, { error: "PTY session cannot be reconnected", adapter: "pty" });
-      return;
-    }
-    ptyAgents.waitForConnectionReady(sessionId)
-      .then((isReady) => {
-        const readySession = ptyAgents.get(sessionId);
-        if (!isReady || !readySession) {
-          sendJson(response, 504, { error: "PTY session did not become ready in time", adapter: "pty" });
-          return;
-        }
-        const summary = ptyAgents.toSessionSummary(readySession);
-        emitEvent("PtySessionReconnected", { session: summary });
-        sendJson(response, 200, { session: summary });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
+    sessionApplicationService.resumeSession(sessionId, { source: "legacy-http" })
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 

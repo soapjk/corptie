@@ -58,3 +58,14 @@ test("restart availability is driven only by the Provider capability", () => {
   assert.equal(unsupported.actions.restart.available, false);
   assert.equal(unsupported.actions.restart.reason, "CAPABILITY_UNSUPPORTED");
 });
+
+test("manual disconnect availability is driven only by the Provider capability", () => {
+  const supported = withSessionActions({ status: "running", capabilities: {} }, {
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT]
+  });
+  const unsupported = withSessionActions({ status: "running", capabilities: {} }, descriptor);
+
+  assert.equal(supported.actions.disconnect.available, true);
+  assert.equal(unsupported.actions.disconnect.available, false);
+  assert.equal(unsupported.actions.disconnect.reason, "CAPABILITY_UNSUPPORTED");
+});

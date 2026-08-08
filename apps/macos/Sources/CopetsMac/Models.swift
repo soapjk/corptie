@@ -52,7 +52,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     }
 
     var usesManualConnection: Bool {
-        external?.connectionStatus?.localizedCaseInsensitiveContains("pty") == true
+        if let disconnect = actions?.disconnect {
+            return disconnect.available || disconnect.reason != "CAPABILITY_UNSUPPORTED"
+        }
+        return external?.connectionStatus?.localizedCaseInsensitiveContains("pty") == true
     }
 
     var isUnboundSession: Bool {
@@ -336,6 +339,7 @@ struct SessionActions: Codable, Equatable, Sendable {
     let resume: SessionActionAvailability?
     let delete: SessionActionAvailability?
     let restart: SessionActionAvailability?
+    let disconnect: SessionActionAvailability?
     let send: SessionActionAvailability
     let interrupt: SessionActionAvailability
     let approve: SessionActionAvailability
