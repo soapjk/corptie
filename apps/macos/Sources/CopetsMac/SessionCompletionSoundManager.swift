@@ -69,10 +69,17 @@ final class SessionCompletionSoundManager {
     }
 
     static func previewSound(_ soundId: String) {
+        playSound(named: option(for: soundId).systemSoundName)
+    }
+
+    static func playGitHubPushSuccess() {
+        playSound(named: "Hero")
+    }
+
+    private static func playSound(named soundName: String?) {
         activeSound?.stop()
         activeSound = nil
-        let option = option(for: soundId)
-        guard let soundName = option.systemSoundName else {
+        guard let soundName else {
             return
         }
         if let sound = NSSound(named: NSSound.Name(soundName)) {

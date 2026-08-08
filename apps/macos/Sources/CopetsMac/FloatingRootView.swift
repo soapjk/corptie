@@ -4523,14 +4523,15 @@ private struct DetailHeaderView: View {
         .task(id: workspaceRouteIdentity) {
             await refreshGitBranch()
         }
-        .sheet(item: Binding(
-            get: { backendClient.gitHubPushPreparation },
-            set: { value in
-                if value == nil { backendClient.cancelGitHubPush() }
+        .onChange(of: backendClient.gitHubPushPreparation) { _, preparation in
+            if let preparation {
+                GitHubPushConfirmationWindowManager.shared.show(
+                    preparation: preparation,
+                    backendClient: backendClient
+                )
+            } else {
+                GitHubPushConfirmationWindowManager.shared.close()
             }
-        )) { preparation in
-            GitHubPushConfirmationView(preparation: preparation)
-                .environmentObject(backendClient)
         }
     }
 
@@ -4562,6 +4563,9 @@ private struct DetailHeaderView: View {
         }
         if canReconnectSelectedSession {
             return .reconnect
+        }
+        if backendClient.isSelectedSessionPushingGitHub {
+            return .gitHubPush
         }
         if gitHubPushHasPendingChanges, selectedSessionWorktree != nil {
             return .gitHubPush
@@ -4611,28 +4615,32 @@ private struct DetailHeaderView: View {
             .buttonStyle(IconButtonStyle())
             .help(L10n("Reconnect session"))
         case .gitHubPush:
-            if let worktree = selectedSessionWorktree {
-                Button {
+            let worktree = selectedSessionWorktree
+            let color = gitHubButtonColor(worktree)
+            Button {
+                if !backendClient.isSelectedSessionPushingGitHub {
                     backendClient.prepareGitHubPush()
-                } label: {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(gitHubButtonColor(worktree).opacity(0.13))
-                        if backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub {
-                            ProgressView()
-                                .controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(gitHubButtonColor(worktree))
-                        }
-                    }
-                    .frame(width: 30, height: 28)
                 }
-                .buttonStyle(.plain)
-                .disabled(backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub)
-                .help(gitHubPushButtonHelp(worktree))
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(color.opacity(0.13))
+                    if backendClient.isSelectedSessionPushingGitHub {
+                        GitHubPushProgressIcon(color: color)
+                    } else if backendClient.isPreparingGitHubPush {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(color)
+                    }
+                }
+                .frame(width: 30, height: 28)
             }
+            .buttonStyle(.plain)
+            .disabled(backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub)
+            .help(gitHubPushButtonHelp(worktree))
         case .manageWorktrees:
             if let status = backendClient.selectedProjectWorktreeStatus {
                 Button {
@@ -4696,9 +4704,12 @@ private struct DetailHeaderView: View {
         .disabled(workspacePath == nil)
     }
 
-    private func gitHubButtonColor(_ worktree: ProjectWorktreeStatus) -> Color {
+    private func gitHubButtonColor(_ worktree: ProjectWorktreeStatus?) -> Color {
+        if backendClient.isSelectedSessionPushingGitHub {
+            return worktree?.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
+        }
         guard gitHubPushHasPendingChanges else { return CorptiePalette.mutedText }
-        return worktree.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
+        return worktree?.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
     }
 
     private var gitHubPushHasPendingChanges: Bool {
@@ -4706,7 +4717,13 @@ private struct DetailHeaderView: View {
         return push.available && push.pending
     }
 
-    private func gitHubPushButtonHelp(_ worktree: ProjectWorktreeStatus) -> String {
+    private func gitHubPushButtonHelp(_ worktree: ProjectWorktreeStatus?) -> String {
+        if backendClient.isSelectedSessionPushingGitHub {
+            return L10n("Pushing to GitHub…")
+        }
+        if let error = backendClient.gitHubPushError {
+            return error
+        }
         guard let push = backendClient.selectedProjectWorktreeStatus?.gitHubPush else {
             return L10n("Checking for changes to push")
         }
@@ -4716,7 +4733,7 @@ private struct DetailHeaderView: View {
         if !push.pending {
             return L10n("No changes or commits to push")
         }
-        return worktree.dirty == true
+        return worktree?.dirty == true
             ? L10n("Uncommitted changes — review commit and GitHub push")
             : L10nFormat("%d commit(s) ready to push", push.unpushedCommitCount)
     }
@@ -4844,11 +4861,78 @@ private struct DetailHeaderView: View {
     }
 }
 
+struct GitHubPushArrowAnimation {
+    static let duration = 0.9
+
+    static func progress(at time: TimeInterval) -> Double {
+        let remainder = time.truncatingRemainder(dividingBy: duration)
+        return (remainder < 0 ? remainder + duration : remainder) / duration
+    }
+
+    static func verticalOffset(progress: Double) -> Double {
+        8 - (16 * min(max(progress, 0), 1))
+    }
+
+    static func opacity(progress: Double) -> Double {
+        sin(.pi * min(max(progress, 0), 1))
+    }
+}
+
+struct GitHubPushDisclosure {
+    static func filesToPush(
+        filesToPush: [String],
+        changedFiles: [String],
+        protectedPaths: [String],
+        ignoringProtectedFiles: Bool
+    ) -> [String] {
+        guard ignoringProtectedFiles else { return filesToPush }
+        let normalizedChangedPaths = Set(changedFiles.map(normalize))
+        let normalizedProtectedPaths = protectedPaths.map(normalize)
+        let disclosed = filesToPush.filter { path in
+            let normalizedPath = normalize(path)
+            guard normalizedChangedPaths.contains(normalizedPath) else { return true }
+            return !normalizedProtectedPaths.contains { protectedPath in
+                protectedPath == normalizedPath || protectedPath.hasPrefix("\(normalizedPath)/")
+            }
+        }
+        return Array(Set(disclosed + [".gitignore"])).sorted()
+    }
+
+    private static func normalize(_ path: String) -> String {
+        var normalized = path
+        while normalized.hasPrefix("/") { normalized.removeFirst() }
+        while normalized.hasSuffix("/") { normalized.removeLast() }
+        return normalized
+    }
+}
+
+private struct GitHubPushProgressIcon: View {
+    let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+            let progress = GitHubPushArrowAnimation.progress(
+                at: context.date.timeIntervalSinceReferenceDate
+            )
+            Image(systemName: "arrow.up.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(color)
+                .offset(y: reduceMotion ? 0 : GitHubPushArrowAnimation.verticalOffset(progress: progress))
+                .opacity(reduceMotion ? 0.75 : GitHubPushArrowAnimation.opacity(progress: progress))
+        }
+        .frame(width: 24, height: 24)
+        .clipped()
+        .accessibilityLabel(L10n("Pushing to GitHub…"))
+    }
+}
+
 private struct GitHubPushConfirmationView: View {
     @EnvironmentObject private var backendClient: BackendClient
     let preparation: GitHubPushPreparation
-    @State private var privateFilesDecision = "ignore"
+    @State private var privateFilesDecision = "include"
     @State private var neverRemindPrivateFiles = false
+    @State private var commitMessage = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -4922,12 +5006,39 @@ private struct GitHubPushConfirmationView: View {
             .frame(maxHeight: 210)
 
             if preparation.dirty {
-                Label(
-                    L10n("The associated Session will generate one commit subject. Corptie will then commit all listed uncommitted changes before pushing."),
-                    systemImage: "wand.and.stars"
-                )
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(CorptiePalette.amber)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack {
+                        Text(L10n("Commit message"))
+                            .font(.system(size: 12, weight: .semibold))
+                        Spacer()
+                        Button {
+                            Task {
+                                if let suggestion = await backendClient.generateGitHubCommitMessage() {
+                                    commitMessage = suggestion
+                                }
+                            }
+                        } label: {
+                            if backendClient.isGeneratingGitHubCommitMessage {
+                                HStack(spacing: 6) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text(L10n("Generating…"))
+                                }
+                            } else {
+                                Label(L10n("Generate with Agent"), systemImage: "wand.and.stars")
+                            }
+                        }
+                        .disabled(backendClient.isGeneratingGitHubCommitMessage)
+                    }
+
+                    TextField(L10n("Enter a commit message"), text: $commitMessage)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+
+                    Text(L10n("Enter your own message or generate one with Agent, then edit it before pushing."))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
             }
 
             if preparation.commitProtection?.requiresDecision == true,
@@ -4952,12 +5063,14 @@ private struct GitHubPushConfirmationView: View {
                     backendClient.cancelGitHubPush()
                 }
                 .keyboardShortcut(.cancelAction)
-                .disabled(backendClient.isPushingGitHub)
 
                 Button(preparation.dirty
                     ? L10n("Commit and Push to GitHub")
                     : L10n("Push to GitHub")) {
                     backendClient.confirmGitHubPush(
+                        commitMessage: preparation.dirty
+                            ? commitMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+                            : nil,
                         privateFilesDecision: preparation.commitProtection?.requiresDecision == true
                             ? privateFilesDecision
                             : nil,
@@ -4965,12 +5078,15 @@ private struct GitHubPushConfirmationView: View {
                     )
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(backendClient.isPushingGitHub)
+                .disabled(
+                    backendClient.isGeneratingGitHubCommitMessage
+                        || (preparation.dirty
+                            && commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                )
             }
         }
         .padding(20)
-        .frame(width: 560, height: 590)
-        .interactiveDismissDisabled(backendClient.isPushingGitHub)
+        .frame(width: 560, height: 710)
     }
 
     private func disclosureRow(_ title: String, value: String) -> some View {
@@ -4987,14 +5103,13 @@ private struct GitHubPushConfirmationView: View {
     }
 
     private var disclosedFilesToPush: [String] {
-        guard privateFilesDecision == "ignore",
-              preparation.commitProtection?.requiresDecision == true,
-              let protectedPaths = preparation.commitProtection?.protectedPaths else {
-            return preparation.filesToPush
-        }
-        return Array(Set(
-            preparation.filesToPush.filter { !protectedPaths.contains($0) } + [".gitignore"]
-        )).sorted()
+        GitHubPushDisclosure.filesToPush(
+            filesToPush: preparation.filesToPush,
+            changedFiles: preparation.changedFiles,
+            protectedPaths: preparation.commitProtection?.protectedPaths ?? [],
+            ignoringProtectedFiles: privateFilesDecision == "ignore"
+                && preparation.commitProtection?.requiresDecision == true
+        )
     }
 
     @ViewBuilder
@@ -5014,6 +5129,88 @@ private struct GitHubPushConfirmationView: View {
                 }
             }
         }
+    }
+}
+
+@MainActor
+private final class GitHubPushConfirmationWindowManager {
+    static let shared = GitHubPushConfirmationWindowManager()
+    private var controller: GitHubPushConfirmationWindowController?
+
+    func show(preparation: GitHubPushPreparation, backendClient: BackendClient) {
+        if let controller {
+            controller.show()
+            return
+        }
+        let controller = GitHubPushConfirmationWindowController(
+            preparation: preparation,
+            backendClient: backendClient
+        ) { [weak self] in
+            self?.controller = nil
+        }
+        self.controller = controller
+        controller.show()
+    }
+
+    func close() {
+        controller?.close()
+    }
+}
+
+@MainActor
+private final class GitHubPushConfirmationWindowController: NSObject, NSWindowDelegate {
+    private let panel: NSPanel
+    private let backendClient: BackendClient
+    private let didClose: () -> Void
+
+    init(
+        preparation: GitHubPushPreparation,
+        backendClient: BackendClient,
+        didClose: @escaping () -> Void
+    ) {
+        self.backendClient = backendClient
+        self.didClose = didClose
+        let content = GitHubPushConfirmationView(preparation: preparation)
+            .environmentObject(backendClient)
+        let hostingController = NSHostingController(rootView: content)
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 710),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = L10n("Review GitHub Push")
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        panel.standardWindowButton(.zoomButton)?.isHidden = true
+        panel.contentViewController = hostingController
+        panel.isReleasedWhenClosed = false
+        panel.hidesOnDeactivate = false
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.center()
+        self.panel = panel
+        super.init()
+        panel.delegate = self
+    }
+
+    func show() {
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func close() {
+        panel.close()
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        backendClient.cancelGitHubPush()
+        return true
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        didClose()
     }
 }
 
@@ -5713,7 +5910,7 @@ private struct ForceDeleteWorktreeConfirmationView: View {
 private struct ProtectedWorktreeCommitView: View {
     @EnvironmentObject private var backendClient: BackendClient
     let prompt: ProtectedWorktreeCommitPrompt
-    @State private var decision = "ignore"
+    @State private var decision = "include"
     @State private var neverRemind = false
 
     var body: some View {
@@ -5766,19 +5963,33 @@ private struct PrivateAgentFilesDecisionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(L10n("These local Agent files would be included:"))
+            Text(L10n("Detected these local Agent files:"))
                 .font(.system(size: 12, weight: .semibold))
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(protection.protectedPaths, id: \.self) { path in
-                        Text(path)
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .textSelection(.enabled)
+                        Label {
+                            Text(path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                        } icon: {
+                            Image(systemName: "doc.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(CorptiePalette.amber)
+                        }
+                        .textSelection(.enabled)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxHeight: 105)
+            .frame(
+                height: min(
+                    max(CGFloat(protection.protectedPaths.count) * 18, 36),
+                    105
+                )
+            )
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6))
 
             Picker("", selection: $decision) {
                 Text(L10n("Add matching paths to the project .gitignore")).tag("ignore")
