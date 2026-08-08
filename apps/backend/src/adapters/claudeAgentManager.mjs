@@ -487,6 +487,10 @@ export class ClaudeAgentManager {
       throw new Error("No active Claude choice prompt");
     }
 
+    if (pendingDecision.choice.kind === "ask-user" && advanceAskUserChoice(session, pendingDecision, option, this)) {
+      return this.toSessionSummary(session);
+    }
+
     const resolution = optionResolution(pendingDecision.choice, option);
     console.log(`[claude-sdk] choice selected id=${id} choiceId=${pendingDecision.choice.id ?? ""} option=${option.id} behavior=${resolution.behavior} updatedPermissions=${Array.isArray(resolution.updatedPermissions) ? resolution.updatedPermissions.length : 0}`);
     pendingDecision.resolve(resolution);
@@ -1192,24 +1196,21 @@ function escapeRegExp(value) {
 
 function buildToolChoice(toolName, input, context = {}) {
   if (toolName === "AskUserQuestion") {
-    const question = typeof input?.question === "string" ? input.question.trim() : "Claude needs your input.";
-    const options = Array.isArray(input?.options) ? input.options : [];
-    if (options.length > 0) {
+    const questions = normalizeAskUserQuestions(input);
+    if (questions.length > 0 && questions[0].options.length > 0) {
+      const firstQuestion = questions[0];
       return {
         kind: "ask-user",
         title: "Claude needs input",
-        text: question,
-        questions: input?.questions ?? null,
-        options: options.map((option, index) => ({
-          id: String(option.id ?? option.value ?? index),
-          label: String(option.label ?? option.title ?? option.value ?? `Option ${index + 1}`),
-          role: "message-choice",
-          index,
-          selected: false,
-          value: option.value ?? option.id ?? option.label
-        }))
+        text: askUserQuestionText(firstQuestion, 0, questions.length),
+        questions,
+        originalQuestions: Array.isArray(input?.questions) ? input.questions : null,
+        questionIndex: 0,
+        answers: {},
+        options: askUserQuestionOptions(firstQuestion, 0)
       };
     }
+    const question = typeof input?.question === "string" ? input.question.trim() : "Claude needs your input.";
     return {
       kind: "ask-user-unsupported",
       title: "Claude needs input",
@@ -1279,12 +1280,14 @@ function optionResolution(choice, option) {
   }
 
   if (choice.kind === "ask-user") {
-    const key = choice.questions?.[0]?.name ?? choice.questions?.[0]?.id ?? "answer";
+    const question = choice.questions?.[choice.questionIndex ?? 0];
+    const key = question?.question ?? "answer";
     return {
       behavior: "allow",
       updatedInput: {
-        ...(choice.questions ? { questions: choice.questions } : {}),
+        questions: choice.originalQuestions ?? choice.questions,
         answers: {
+          ...(choice.answers ?? {}),
           [key]: option.value ?? option.label
         }
       }
@@ -1292,6 +1295,84 @@ function optionResolution(choice, option) {
   }
 
   return { behavior: "deny", message: "This Claude prompt type is not supported in Corptie yet." };
+}
+
+function normalizeAskUserQuestions(input = {}) {
+  const nested = Array.isArray(input?.questions) ? input.questions : [];
+  const source = nested.length > 0
+    ? nested
+    : (typeof input?.question === "string" ? [{ question: input.question, options: input.options }] : []);
+  return source
+    .map((question, questionIndex) => ({
+      question: String(question?.question ?? "").trim(),
+      header: String(question?.header ?? "").trim(),
+      multiSelect: question?.multiSelect === true,
+      options: (Array.isArray(question?.options) ? question.options : []).map((option, optionIndex) => ({
+        label: String(option?.label ?? option?.title ?? option?.value ?? `Option ${optionIndex + 1}`),
+        description: String(option?.description ?? "").trim(),
+        value: option?.value ?? option?.id ?? option?.label ?? optionIndex
+      })),
+      sourceIndex: questionIndex
+    }))
+    .filter((question) => question.question && question.options.length > 0);
+}
+
+function askUserQuestionText(question, index, total) {
+  const progress = total > 1 ? `Question ${index + 1} of ${total}\n\n` : "";
+  const header = question.header ? `${question.header}\n\n` : "";
+  const descriptions = question.options
+    .filter((option) => option.description)
+    .map((option) => `${option.label}: ${option.description}`)
+    .join("\n");
+  return `${progress}${header}${question.question}${descriptions ? `\n\n${descriptions}` : ""}`;
+}
+
+function askUserQuestionOptions(question, questionIndex) {
+  return question.options.map((option, optionIndex) => ({
+    id: `question-${questionIndex}-option-${optionIndex}`,
+    label: option.label,
+    role: "message-choice",
+    index: optionIndex,
+    selected: false,
+    value: option.value
+  }));
+}
+
+function advanceAskUserChoice(session, pendingDecision, option, manager) {
+  const choice = pendingDecision.choice;
+  const questionIndex = choice.questionIndex ?? 0;
+  const question = choice.questions?.[questionIndex];
+  const nextQuestion = choice.questions?.[questionIndex + 1];
+  if (!question || !nextQuestion) {
+    return false;
+  }
+
+  choice.answers = {
+    ...(choice.answers ?? {}),
+    [question.question]: String(option.value ?? option.label)
+  };
+  manager.markPendingChoiceItemsSelected(session, option.id, choice.id);
+  session.pendingChoices.delete(choice.id);
+  choice.questionIndex = questionIndex + 1;
+  choice.id = `${session.id}:choice:${session.nextItemSeq}`;
+  choice.text = askUserQuestionText(nextQuestion, choice.questionIndex, choice.questions.length);
+  choice.options = askUserQuestionOptions(nextQuestion, choice.questionIndex);
+  session.pendingChoices.set(choice.id, pendingDecision);
+  session.pendingChoice = choice;
+  session.pendingDecision = pendingDecision;
+  session.turnState = "requires_action";
+  session.phase = "waiting_approval";
+  session.updatedAt = new Date().toISOString();
+  manager.appendItem(session, {
+    id: choice.id,
+    type: "choice",
+    title: choice.title,
+    text: choice.text,
+    status: "pending",
+    options: choice.options
+  });
+  manager.persistSession(session);
+  return true;
 }
 
 function permissionUpdatesForAlwaysAllow(choice) {

@@ -205,6 +205,81 @@ test("Claude permissions can switch while a turn is waiting for approval", async
   assert.equal(updated.external.permissionMode, "bypassPermissions");
 });
 
+test("Claude AskUserQuestion handles the SDK questions array one question at a time", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-questions", cwd: "/tmp/project" });
+  const session = manager.get("claude-questions");
+  const resolutionPromise = manager.handleToolRequest(session, "AskUserQuestion", {
+    questions: [
+      {
+        header: "Instructions",
+        question: "Keep CLAUDE.md?",
+        multiSelect: false,
+        options: [
+          { label: "Keep", description: "Keep project instructions." },
+          { label: "Ignore", description: "Keep it local only." }
+        ]
+      },
+      {
+        header: "Strategies",
+        question: "Ignore strategy sources?",
+        multiSelect: false,
+        options: [
+          { label: "Ignore", description: "Keep strategies private." },
+          { label: "Track", description: "Keep the clone runnable." }
+        ]
+      }
+    ]
+  });
+
+  let detail = manager.detail("claude-questions");
+  assert.match(detail.items.at(-1).text, /Question 1 of 2/);
+  assert.deepEqual(detail.items.at(-1).options.map((option) => option.label), ["Keep", "Ignore"]);
+
+  manager.respondToChoice("claude-questions", {
+    choiceId: detail.items.at(-1).id,
+    optionId: "question-0-option-0"
+  });
+  detail = manager.detail("claude-questions");
+  assert.equal(detail.items.at(-2).status, "selected");
+  assert.match(detail.items.at(-1).text, /Question 2 of 2/);
+  assert.deepEqual(detail.items.at(-1).options.map((option) => option.label), ["Ignore", "Track"]);
+
+  manager.respondToChoice("claude-questions", {
+    choiceId: detail.items.at(-1).id,
+    optionId: "question-1-option-0"
+  });
+  assert.deepEqual(await resolutionPromise, {
+    behavior: "allow",
+    updatedInput: {
+      questions: [
+        {
+          header: "Instructions",
+          question: "Keep CLAUDE.md?",
+          multiSelect: false,
+          options: [
+            { label: "Keep", description: "Keep project instructions." },
+            { label: "Ignore", description: "Keep it local only." }
+          ]
+        },
+        {
+          header: "Strategies",
+          question: "Ignore strategy sources?",
+          multiSelect: false,
+          options: [
+            { label: "Ignore", description: "Keep strategies private." },
+            { label: "Track", description: "Keep the clone runnable." }
+          ]
+        }
+      ],
+      answers: {
+        "Keep CLAUDE.md?": "Keep",
+        "Ignore strategy sources?": "Ignore"
+      }
+    }
+  });
+});
+
 function letAgentRoles(manager, expected) {
   const roles = manager.detail("claude-live").items
     .filter((item) => item.type === "agentMessage")
