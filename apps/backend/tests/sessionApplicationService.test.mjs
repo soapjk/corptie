@@ -6,6 +6,9 @@ import { AGENT_PROVIDER_CAPABILITIES, AgentProviderCapabilityError } from "../sr
 import { SessionApplicationService, SessionNotFoundError } from "../src/agent-provider/sessionApplicationService.mjs";
 
 function fixture(capabilities = [
+  AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
@@ -21,6 +24,18 @@ function fixture(capabilities = [
   }, {
     listSessions: async () => [{ id: "logical-a", updatedAt: "2026-08-08T00:00:00.000Z" }],
     readSession: async (reference) => ({ id: reference.sessionId, source: "fake.provider" }),
+    createSession: async (...args) => {
+      calls.push(["createSession", ...args]);
+      return { id: "legacy-created", title: "Created" };
+    },
+    resumeSession: async (...args) => {
+      calls.push(["resumeSession", ...args]);
+      return { id: "legacy-a", title: "Resumed" };
+    },
+    deleteSession: async (...args) => {
+      calls.push(["deleteSession", ...args]);
+      return true;
+    },
     send: async (...args) => calls.push(["send", ...args]),
     interrupt: async (...args) => calls.push(["interrupt", ...args]),
     respondToApproval: async (...args) => calls.push(["respondToApproval", ...args]),
@@ -33,11 +48,23 @@ function fixture(capabilities = [
     resolveSessionReference: async (sessionId) => sessionId === "logical-a"
       ? {
           bindingId: "binding-a",
+          logicalSessionId: "logical-a",
+          sessionId: "legacy-a",
           providerId: "fake.provider",
           providerSessionId: "native-a",
           routingVersion: 3
         }
-      : null
+      : null,
+    bindCreatedSession: async ({ providerId, session }) => {
+      calls.push(["bindCreatedSession", providerId, session.id]);
+      return {
+        sessionId: session.id,
+        logicalSessionId: "logical-created"
+      };
+    },
+    removeSessionBinding: async ({ reference }) => {
+      calls.push(["removeSessionBinding", reference.sessionId]);
+    }
   });
   return { calls, registry, service };
 }
@@ -48,9 +75,9 @@ test("Session application service resolves stable logical ids before Provider ca
   assert.deepEqual(calls, [[
     "send",
     {
-      sessionId: "logical-a",
+      sessionId: "legacy-a",
       requestedSessionId: "logical-a",
-      logicalSessionId: null,
+      logicalSessionId: "logical-a",
       bindingId: "binding-a",
       providerId: "fake.provider",
       providerSessionId: "native-a",
@@ -62,10 +89,37 @@ test("Session application service resolves stable logical ids before Provider ca
   ]]);
 });
 
+test("Session application service owns Provider-neutral lifecycle and stable identity", async () => {
+  const { calls, service } = fixture();
+  const created = await service.createSession("fake.provider", { cwd: "/tmp/project" }, { source: "desktop" });
+  assert.equal(created.id, "legacy-created");
+  assert.equal(created.logicalSessionId, "logical-created");
+  assert.equal(created.publicSessionId, "logical-created");
+  assert.equal(created.actions.send.available, true);
+
+  const resumed = await service.resumeSession("logical-a", { source: "desktop" });
+  assert.equal(resumed.title, "Resumed");
+  const deleted = await service.deleteSession("logical-a", { source: "desktop" });
+  assert.deepEqual(deleted, {
+    ok: true,
+    deleted: true,
+    sessionId: "legacy-a",
+    logicalSessionId: "logical-a",
+    providerId: "fake.provider"
+  });
+  assert.deepEqual(calls.map((call) => call[0]), [
+    "createSession",
+    "bindCreatedSession",
+    "resumeSession",
+    "deleteSession",
+    "removeSessionBinding"
+  ]);
+});
+
 test("Session application service exposes the same operations for every Provider", async () => {
   const { calls, service } = fixture();
   const detail = await service.readSession("logical-a");
-  assert.equal(detail.id, "logical-a");
+  assert.equal(detail.id, "legacy-a");
   assert.equal(detail.source, "fake.provider");
   assert.equal(detail.actions.send.available, true);
   assert.equal(detail.actions.interrupt.reason, "NO_ACTIVE_TURN");

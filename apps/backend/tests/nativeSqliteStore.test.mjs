@@ -5,6 +5,30 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { PtyAgentManager } from "../src/adapters/ptyAgentManager.mjs";
+
+test("PTY creation persists its Session before the first lifecycle item", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-pty-session-order-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const store = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+
+  try {
+    await store.initialize();
+    const manager = new PtyAgentManager({ store });
+    const session = manager.start({
+      title: "PTY persistence ordering",
+      command: "/usr/bin/true",
+      cwd: directory
+    });
+    const nativeId = session.external.sessionId;
+    assert.equal(store.getSession(nativeId)?.title, "PTY persistence ordering");
+    assert.equal(store.getDetail(nativeId).items[0]?.type, "system");
+    manager.delete(nativeId);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("native SQLite persists committed writes immediately in WAL mode", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-native-sqlite-"));

@@ -200,6 +200,7 @@ final class BackendClient: ObservableObject {
             return
         }
         let refreshEvents: Set<String> = [
+            "SessionStarted",
             "CodexThreadCreated",
             "CodexTurnStarted",
             "CodexThreadProgressChanged",
@@ -219,6 +220,7 @@ final class BackendClient: ObservableObject {
             "SessionRenamed",
             "SessionAvatarUpdated",
             "PtySessionStarted",
+            "ClaudeSessionStarted",
             "PtySessionInputSent",
             "PtySessionTerminated",
             "PtySessionInterrupted",
@@ -700,10 +702,11 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "providerId": "pty",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "command": trimmedCommand,
                     "args": arguments,
@@ -762,10 +765,11 @@ final class BackendClient: ObservableObject {
 
             do {
                 let usesAppServer = settings?.codexBackend?.mode != "pty" && trimmedExistingSessionId.isEmpty
-                var request = URLRequest(url: baseURL.appending(path: usesAppServer ? "codex/threads" : "codex/pty-sessions"))
+                var request = URLRequest(url: baseURL.appending(path: usesAppServer ? "sessions" : "codex/pty-sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = [
+                    "providerId": "codex-app-server",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": trimmedPrompt.isEmpty ? "Reply exactly: Ready" : trimmedPrompt,
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
@@ -829,10 +833,11 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "claude/sessions"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 var body: [String: Any] = [
+                    "providerId": "claude-sdk",
                     "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
                     "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Reply exactly: Ready" : prompt.trimmingCharacters(in: .whitespacesAndNewlines),
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
@@ -996,10 +1001,11 @@ final class BackendClient: ObservableObject {
             defer { isCreatingTask = false }
 
             do {
-                var request = URLRequest(url: baseURL.appending(path: "codex/threads"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "providerId": "codex-app-server",
                     "prompt": trimmedPrompt,
                     "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd
                 ])
@@ -1982,10 +1988,6 @@ final class BackendClient: ObservableObject {
     }
 
     func reconnect(session: TaskSession) {
-        guard let threadId = session.external?.threadId else {
-            return
-        }
-
         Task {
             connectionTransitionSessionIds.insert(session.id)
             defer {
@@ -1993,7 +1995,7 @@ final class BackendClient: ObservableObject {
             }
             do {
                 sendStatusMessage = L10n("Reconnecting...")
-                var request = URLRequest(url: baseURL.appending(path: "pty/sessions/\(threadId)/reconnect"))
+                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/resume"))
                 request.httpMethod = "POST"
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
