@@ -47,3 +47,14 @@ test("approval becomes available only while the Session has a pending approval",
   assert.equal(idle.actions.approve.reason, "NO_PENDING_APPROVAL");
   assert.equal(blocked.actions.approve.available, true);
 });
+
+test("restart availability is driven only by the Provider capability", () => {
+  const supported = withSessionActions({ status: "complete", capabilities: {} }, {
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART]
+  });
+  const unsupported = withSessionActions({ status: "complete", capabilities: {} }, descriptor);
+
+  assert.equal(supported.actions.restart.available, true);
+  assert.equal(unsupported.actions.restart.available, false);
+  assert.equal(unsupported.actions.restart.reason, "CAPABILITY_UNSUPPORTED");
+});

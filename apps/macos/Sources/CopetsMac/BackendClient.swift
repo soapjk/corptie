@@ -1909,7 +1909,7 @@ final class BackendClient: ObservableObject {
     }
 
     func togglePtyConnection(for session: TaskSession) {
-        guard session.external?.provider == "codex-pty",
+        guard session.usesManualConnection,
               let threadId = session.external?.threadId else {
             return
         }
@@ -1976,7 +1976,7 @@ final class BackendClient: ObservableObject {
     }
 
     func restart(session: TaskSession) {
-        guard session.external?.provider == "codex-app-server",
+        guard session.actions?.restart?.available == true,
               !restartingSessionIds.contains(session.id) else {
             return
         }
@@ -2441,7 +2441,6 @@ final class BackendClient: ObservableObject {
             }
             let detail = try await BackendResponseDecoder.detail(
                 from: data,
-                isPtyProvider: false,
                 threadId: history.providerThreadId,
                 authoritativeCwd: history.boundCwd,
                 workspacePath: history.boundCwd
@@ -2545,7 +2544,6 @@ final class BackendClient: ObservableObject {
         do {
             let decodedDetail = try await BackendResponseDecoder.detail(
                 from: payload,
-                isPtyProvider: false,
                 threadId: expectedThreadId,
                 authoritativeCwd: expectedSession.external?.cwd,
                 workspacePath: expectedSession.external?.workspace?.path
@@ -2602,7 +2600,6 @@ final class BackendClient: ObservableObject {
     private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) async throws -> CodexThreadDetail {
         try await BackendResponseDecoder.detail(
             from: data,
-            isPtyProvider: false,
             threadId: threadId,
             authoritativeCwd: session.external?.cwd,
             workspacePath: session.external?.workspace?.path
