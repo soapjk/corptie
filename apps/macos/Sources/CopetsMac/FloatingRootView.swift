@@ -4626,7 +4626,7 @@ private struct DetailHeaderView: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(color.opacity(0.13))
                     if backendClient.isSelectedSessionPushingGitHub {
-                        GitHubPushProgressIcon(color: color)
+                        GitHubPushProgressIcon()
                     } else if backendClient.isPreparingGitHubPush {
                         ProgressView()
                             .controlSize(.small)
@@ -4867,6 +4867,7 @@ private struct DetailHeaderView: View {
 
 struct GitHubPushArrowAnimation {
     static let duration = 0.9
+    static let progressSymbolName = "arrow.up"
 
     static func progress(at time: TimeInterval) -> Double {
         let remainder = time.truncatingRemainder(dividingBy: duration)
@@ -4911,7 +4912,6 @@ struct GitHubPushDisclosure {
 }
 
 private struct GitHubPushProgressIcon: View {
-    let color: Color
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -4919,9 +4919,9 @@ private struct GitHubPushProgressIcon: View {
             let progress = GitHubPushArrowAnimation.progress(
                 at: context.date.timeIntervalSinceReferenceDate
             )
-            Image(systemName: "arrow.up.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(color)
+            Image(systemName: GitHubPushArrowAnimation.progressSymbolName)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(Color.white)
                 .offset(y: reduceMotion ? 0 : GitHubPushArrowAnimation.verticalOffset(progress: progress))
                 .opacity(reduceMotion ? 0.75 : GitHubPushArrowAnimation.opacity(progress: progress))
         }
@@ -5346,6 +5346,18 @@ private struct PendingWorktreeDeletion: Identifiable {
     let restartService: Bool
 }
 
+enum ProjectWorktreeCleanupPolicy {
+    static func eligibleWorktrees(from worktrees: [ProjectWorktreeStatus]) -> [ProjectWorktreeStatus] {
+        worktrees.filter { worktree in
+            !worktree.isMain
+                && worktree.availability == "available"
+                && worktree.mergedIntoMain == true
+                && worktree.dirty == false
+                && worktree.sessions.isEmpty
+        }
+    }
+}
+
 private struct ProjectWorktreeManagerView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @StateObject private var newSessionPanel = NewSessionPanelController()
@@ -5354,6 +5366,7 @@ private struct ProjectWorktreeManagerView: View {
     @State private var pendingCommit: ProjectWorktreeStatus?
     @State private var pendingDeletionWarning: PendingWorktreeDeletion?
     @State private var pendingDeletionConfirmation: PendingWorktreeDeletion?
+    @State private var pendingMergedCleanup: [ProjectWorktreeStatus] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -5368,6 +5381,24 @@ private struct ProjectWorktreeManagerView: View {
                     }
                 }
                 Spacer()
+                if let status {
+                    let eligible = ProjectWorktreeCleanupPolicy.eligibleWorktrees(
+                        from: status.project.worktrees
+                    )
+                    Button {
+                        pendingMergedCleanup = eligible
+                    } label: {
+                        Label(
+                            L10nFormat("Clean Up Merged (%d)", eligible.count),
+                            systemImage: "trash"
+                        )
+                    }
+                    .controlSize(.small)
+                    .disabled(eligible.isEmpty || backendClient.isCleaningMergedProjectWorktrees)
+                    .help(eligible.isEmpty
+                        ? L10n("No merged Worktrees without associated sessions")
+                        : L10n("Remove all merged Worktrees that have no associated sessions"))
+                }
             }
 
             if let error = backendClient.lastError {
@@ -5462,6 +5493,28 @@ private struct ProjectWorktreeManagerView: View {
         )) { prompt in
             ProtectedWorktreeCommitView(prompt: prompt)
                 .environmentObject(backendClient)
+        }
+        .confirmationDialog(
+            L10nFormat("Remove %d merged Worktrees?", pendingMergedCleanup.count),
+            isPresented: Binding(
+                get: { !pendingMergedCleanup.isEmpty },
+                set: { if !$0 { pendingMergedCleanup = [] } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Remove Worktrees"), role: .destructive) {
+                let targets = pendingMergedCleanup
+                pendingMergedCleanup = []
+                backendClient.cleanupMergedProjectWorktrees(targets)
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                pendingMergedCleanup = []
+            }
+        } message: {
+            Text(L10nFormat(
+                "The following merged Worktrees have no associated sessions and will be permanently removed with their local branches:\n%@",
+                pendingMergedCleanup.map { $0.branchName ?? $0.path }.joined(separator: "\n")
+            ))
         }
         .confirmationDialog(
             L10nFormat(

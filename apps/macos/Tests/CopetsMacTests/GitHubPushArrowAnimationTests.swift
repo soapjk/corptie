@@ -2,6 +2,10 @@ import Testing
 @testable import CorptieMac
 
 struct GitHubPushArrowAnimationTests {
+    @Test func progressUsesAnArrowWithoutACircularBackground() {
+        #expect(GitHubPushArrowAnimation.progressSymbolName == "arrow.up")
+    }
+
     @Test func phaseRepeatsAtTheConfiguredDuration() {
         #expect(GitHubPushArrowAnimation.progress(at: 0) == 0)
         #expect(abs(GitHubPushArrowAnimation.progress(at: 0.45) - 0.5) < 0.000_001)

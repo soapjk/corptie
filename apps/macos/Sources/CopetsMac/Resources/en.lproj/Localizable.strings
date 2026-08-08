@@ -86,6 +86,14 @@
 "Service is stopped" = "Service is stopped";
 "Service version is unknown" = "Service version is unknown";
 "Project Worktrees" = "Project Worktrees";
+"Clean Up Merged (%d)" = "Clean Up Merged (%d)";
+"No merged Worktrees without associated sessions" = "No merged Worktrees without associated sessions";
+"Remove all merged Worktrees that have no associated sessions" = "Remove all merged Worktrees that have no associated sessions";
+"Remove %d merged Worktrees?" = "Remove %d merged Worktrees?";
+"Remove Worktrees" = "Remove Worktrees";
+"The following merged Worktrees have no associated sessions and will be permanently removed with their local branches:\n%@" = "The following merged Worktrees have no associated sessions and will be permanently removed with their local branches:\n%@";
+"Removed %d merged Worktrees" = "Removed %d merged Worktrees";
+"Removed %d Worktrees; %d could not be removed:\n%@" = "Removed %d Worktrees; %d could not be removed:\n%@";
 "%d worktrees are not merged into main" = "%d worktrees are not merged into main";
 "Loading project worktrees" = "Loading project worktrees";
 "Could not load project worktrees" = "Could not load project worktrees";
