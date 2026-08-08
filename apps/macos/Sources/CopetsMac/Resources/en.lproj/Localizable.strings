@@ -183,6 +183,9 @@
 "Remote storage" = "Remote storage";
 "Commits will remain in GitHub history until removed under repository and GitHub retention policies." = "Commits will remain in GitHub history until removed under repository and GitHub retention policies.";
 "Files sent to GitHub (%d)" = "Files sent to GitHub (%d)";
+"Added files (%d)" = "Added files (%d)";
+"Modified files (%d)" = "Modified files (%d)";
+"Deleted files (%d)" = "Deleted files (%d)";
 "Currently uncommitted files (%d)" = "Currently uncommitted files (%d)";
 "Commits sent to GitHub (%d)" = "Commits sent to GitHub (%d)";
 "No existing local commits are waiting to be pushed." = "No existing local commits are waiting to be pushed.";

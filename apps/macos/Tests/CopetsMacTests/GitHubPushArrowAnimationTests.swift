@@ -49,4 +49,34 @@ struct GitHubPushArrowAnimationTests {
 
         #expect(disclosed == [".corptie/", "Feature.swift"])
     }
+
+    @Test func pushChangesRemainSeparatedByOperation() {
+        let groups = GitHubPushDisclosure.changeGroups(
+            addedFiles: ["Added.swift"],
+            modifiedFiles: ["Modified.swift"],
+            deletedFiles: ["Deleted.swift"],
+            changedFiles: ["Added.swift", "Modified.swift", "Deleted.swift"],
+            protectedPaths: [],
+            ignoringProtectedFiles: false
+        )
+
+        #expect(groups.added == ["Added.swift"])
+        #expect(groups.modified == ["Modified.swift"])
+        #expect(groups.deleted == ["Deleted.swift"])
+    }
+
+    @Test func ignoredAgentFilesAreRemovedFromTheirChangeGroup() {
+        let groups = GitHubPushDisclosure.changeGroups(
+            addedFiles: [".corptie/toolset.json", "Feature.swift"],
+            modifiedFiles: [],
+            deletedFiles: [],
+            changedFiles: [".corptie/toolset.json", "Feature.swift"],
+            protectedPaths: [".corptie/toolset.json"],
+            ignoringProtectedFiles: true
+        )
+
+        #expect(groups.added == ["Feature.swift"])
+        #expect(groups.modified == [".gitignore"])
+        #expect(groups.deleted.isEmpty)
+    }
 }

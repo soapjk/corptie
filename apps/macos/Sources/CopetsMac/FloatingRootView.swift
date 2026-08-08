@@ -4943,6 +4943,45 @@ private struct GitHubPushButtonVisual: View {
 }
 
 struct GitHubPushDisclosure {
+    struct ChangeGroups: Equatable {
+        let added: [String]
+        let modified: [String]
+        let deleted: [String]
+    }
+
+    static func changeGroups(
+        addedFiles: [String],
+        modifiedFiles: [String],
+        deletedFiles: [String],
+        changedFiles: [String],
+        protectedPaths: [String],
+        ignoringProtectedFiles: Bool
+    ) -> ChangeGroups {
+        guard ignoringProtectedFiles else {
+            return ChangeGroups(added: addedFiles, modified: modifiedFiles, deleted: deletedFiles)
+        }
+        let normalizedChangedPaths = Set(changedFiles.map(normalize))
+        let normalizedProtectedPaths = protectedPaths.map(normalize)
+        func filtered(_ values: [String]) -> [String] {
+            values.filter { path in
+                let normalizedPath = normalize(path)
+                guard normalizedChangedPaths.contains(normalizedPath) else { return true }
+                return !normalizedProtectedPaths.contains { protectedPath in
+                    protectedPath == normalizedPath || protectedPath.hasPrefix("\(normalizedPath)/")
+                }
+            }
+        }
+        var added = filtered(addedFiles)
+        var modified = filtered(modifiedFiles)
+        let deleted = filtered(deletedFiles)
+        if !added.contains(".gitignore") && !modified.contains(".gitignore") {
+            modified.append(".gitignore")
+        }
+        added = Array(Set(added)).sorted()
+        modified = Array(Set(modified)).sorted()
+        return ChangeGroups(added: added, modified: modified, deleted: Array(Set(deleted)).sorted())
+    }
+
     static func filesToPush(
         filesToPush: [String],
         changedFiles: [String],
@@ -5042,15 +5081,23 @@ private struct GitHubPushConfirmationView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     disclosureList(
-                        title: L10nFormat("Files sent to GitHub (%d)", disclosedFilesToPush.count),
-                        values: disclosedFilesToPush
+                        title: L10nFormat("Added files (%d)", disclosedChangeGroups.added.count),
+                        values: disclosedChangeGroups.added,
+                        icon: "plus.circle.fill",
+                        color: CorptiePalette.connected
                     )
-                    if !preparation.changedFiles.isEmpty {
-                        disclosureList(
-                            title: L10nFormat("Currently uncommitted files (%d)", preparation.changedFiles.count),
-                            values: preparation.changedFiles
-                        )
-                    }
+                    disclosureList(
+                        title: L10nFormat("Modified files (%d)", disclosedChangeGroups.modified.count),
+                        values: disclosedChangeGroups.modified,
+                        icon: "pencil.circle.fill",
+                        color: CorptiePalette.amber
+                    )
+                    disclosureList(
+                        title: L10nFormat("Deleted files (%d)", disclosedChangeGroups.deleted.count),
+                        values: disclosedChangeGroups.deleted,
+                        icon: "minus.circle.fill",
+                        color: .red
+                    )
                     VStack(alignment: .leading, spacing: 6) {
                         Text(L10nFormat("Commits sent to GitHub (%d)", preparation.commitsToPush.count))
                             .font(.system(size: 12, weight: .semibold))
@@ -5145,9 +5192,14 @@ private struct GitHubPushConfirmationView: View {
         }
     }
 
-    private var disclosedFilesToPush: [String] {
-        GitHubPushDisclosure.filesToPush(
-            filesToPush: preparation.filesToPush,
+    private var disclosedChangeGroups: GitHubPushDisclosure.ChangeGroups {
+        let hasStructuredChanges = preparation.addedFiles != nil
+            || preparation.modifiedFiles != nil
+            || preparation.deletedFiles != nil
+        return GitHubPushDisclosure.changeGroups(
+            addedFiles: preparation.addedFiles ?? [],
+            modifiedFiles: preparation.modifiedFiles ?? (hasStructuredChanges ? [] : preparation.filesToPush),
+            deletedFiles: preparation.deletedFiles ?? [],
             changedFiles: preparation.changedFiles,
             protectedPaths: preparation.commitProtection?.protectedPaths ?? [],
             ignoringProtectedFiles: privateFilesDecision == "ignore"
@@ -5156,10 +5208,11 @@ private struct GitHubPushConfirmationView: View {
     }
 
     @ViewBuilder
-    private func disclosureList(title: String, values: [String]) -> some View {
+    private func disclosureList(title: String, values: [String], icon: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title)
+            Label(title, systemImage: icon)
                 .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(color)
             if values.isEmpty {
                 Text(L10n("None"))
                     .font(.system(size: 11))
@@ -8060,7 +8113,7 @@ private struct CodexModelMenu: View {
                         .controlSize(.small)
                         .frame(width: 16, height: 16)
                 }
-                Text(currentModelLabel)
+                Text(ModelMenuLabel.compact(currentModelLabel))
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -8165,6 +8218,17 @@ private struct CodexModelMenu: View {
         case "xhigh": L10n("Extra high reasoning depth")
         default: value
         }
+    }
+}
+
+enum ModelMenuLabel {
+    static let maximumCharacterCount = 15
+
+    static func compact(_ value: String) -> String {
+        guard value.count > maximumCharacterCount else {
+            return value
+        }
+        return String(value.prefix(maximumCharacterCount - 1)) + "…"
     }
 }
 

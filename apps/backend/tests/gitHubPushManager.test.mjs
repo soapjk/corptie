@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   GitHubPushManager,
+  parseNameStatusChanges,
   parsePorcelainPaths,
   resolveGitHubDestination
 } from "../src/runtime/gitHubPushManager.mjs";
@@ -31,6 +32,43 @@ test("porcelain paths include renamed sources and destinations", () => {
     parsePorcelainPaths(" M regular.txt\0R  renamed.txt\0original.txt\0?? new.txt\0"),
     ["new.txt", "original.txt", "regular.txt", "renamed.txt"]
   );
+});
+
+test("name-status changes are separated into added, modified, and deleted files", () => {
+  assert.deepEqual(
+    parseNameStatusChanges("A\0added.txt\0M\0modified.txt\0D\0deleted.txt\0T\0type-changed.txt\0"),
+    {
+      added: ["added.txt"],
+      modified: ["modified.txt", "type-changed.txt"],
+      deleted: ["deleted.txt"]
+    }
+  );
+});
+
+test("push preparation clearly classifies the final file changes", async () => {
+  const fixture = await createFixture();
+  const manager = localPushManager();
+  try {
+    await writeFile(join(fixture.repository, "remove-me.txt"), "remove me\n");
+    await git(["add", "remove-me.txt"], fixture.repository);
+    await git(["commit", "-m", "Add removable file"], fixture.repository);
+    await git(["push"], fixture.repository);
+
+    await writeFile(join(fixture.repository, "README.md"), "updated\n");
+    await writeFile(join(fixture.repository, "new-file.txt"), "new\n");
+    await rm(join(fixture.repository, "remove-me.txt"));
+
+    const prepared = await manager.prepare({
+      sessionId: "codex:test",
+      workingDirectory: fixture.repository
+    });
+    assert.deepEqual(prepared.addedFiles, ["new-file.txt"]);
+    assert.deepEqual(prepared.modifiedFiles, ["README.md"]);
+    assert.deepEqual(prepared.deletedFiles, ["remove-me.txt"]);
+    assert.deepEqual(prepared.filesToPush, ["README.md", "new-file.txt", "remove-me.txt"]);
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("confirmed push commits dirty changes and pushes only after explicit confirmation", async () => {

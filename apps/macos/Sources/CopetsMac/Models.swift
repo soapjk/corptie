@@ -24,7 +24,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var pendingCollaborationConfirmation: PendingCollaborationConfirmation? = nil
 
     var isConnected: Bool {
-        isConnectedStatus(external?.connectionStatus, provider: external?.provider)
+        SessionConnectionPresentation.isConnected(
+            status: external?.connectionStatus,
+            usesManualConnection: usesManualConnection
+        )
     }
 
     var isConnecting: Bool {
@@ -307,6 +310,9 @@ struct GitHubPushPreparation: Identifiable, Decodable, Equatable, Sendable {
     let dirty: Bool
     let changedFiles: [String]
     let filesToPush: [String]
+    let addedFiles: [String]?
+    let modifiedFiles: [String]?
+    let deletedFiles: [String]?
     let commitsToPush: [GitHubPushCommit]
     let statusSummary: String
     let commitProtection: GitCommitProtectionStatus?
@@ -716,11 +722,21 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     var actions: SessionActions? = nil
 
     var isConnected: Bool {
-        isConnectedStatus(connectionStatus, provider: source)
+        SessionConnectionPresentation.isConnected(
+            status: connectionStatus,
+            usesManualConnection: usesManualConnection
+        )
     }
 
     var isConnecting: Bool {
         isConnectingStatus(connectionStatus, provider: source)
+    }
+
+    var usesManualConnection: Bool {
+        if let disconnect = actions?.disconnect {
+            return disconnect.available || disconnect.reason != "CAPABILITY_UNSUPPORTED"
+        }
+        return connectionStatus?.localizedCaseInsensitiveContains("pty") == true
     }
 
     var canInterruptNow: Bool {
@@ -746,14 +762,16 @@ struct CodexModelsResponse: Decodable {
     let models: [CodexModel]
 }
 
-private func isConnectedStatus(_ status: String?, provider _: String?) -> Bool {
-    guard let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-          !normalized.isEmpty else {
-        return false
+enum SessionConnectionPresentation {
+    static func isConnected(status: String?, usesManualConnection: Bool) -> Bool {
+        guard let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !normalized.isEmpty else {
+            return !usesManualConnection
+        }
+        return normalized.contains("connected")
+            && !normalized.contains("disconnected")
+            && !normalized.contains("connecting")
     }
-    return normalized.contains("connected")
-        && !normalized.contains("disconnected")
-        && !normalized.contains("connecting")
 }
 
 private func isConnectingStatus(_ status: String?, provider _: String?) -> Bool {
