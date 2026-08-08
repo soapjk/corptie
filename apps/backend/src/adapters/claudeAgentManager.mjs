@@ -7,7 +7,9 @@ export class ClaudeAgentManager {
   constructor(options = {}) {
     this.sessions = new Map();
     this.store = options.store ?? null;
-    this.maxItems = options.maxItems ?? 240;
+    this.maxItems = options.maxItems ?? 2_000;
+    this.transcriptPageSize = options.transcriptPageSize ?? 500;
+    this.maxTranscriptMessages = options.maxTranscriptMessages ?? 20_000;
     this.detailSubscribers = new Map();
     this.detailEmitTimers = new Map();
   }
@@ -113,6 +115,13 @@ export class ClaudeAgentManager {
   detail(id) {
     const session = this.get(id);
     return session ? this.toDetail(session) : (this.store?.getDetail(id) ?? null);
+  }
+
+  async read(id) {
+    if (!this.get(id)) {
+      await this.reconnect(id, { startQuery: false });
+    }
+    return this.detail(id);
   }
 
   subscribeDetail(id, response) {
@@ -376,7 +385,7 @@ export class ClaudeAgentManager {
     this.store?.deleteSession(id);
   }
 
-  async reconnect(id) {
+  async reconnect(id, options = {}) {
     if (this.get(id)) {
       return this.toSessionSummary(this.get(id));
     }
@@ -435,18 +444,20 @@ export class ClaudeAgentManager {
     session.nextItemSeq = Math.max(session.nextItemSeq, nextSeqFromItems(session.items));
     session.nextTurnSeq = Math.max(session.nextTurnSeq, nextTurnSeqFromItems(session.id, session.items));
     this.sessions.set(id, session);
-    console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId ?? "fresh"}`);
-    if (agentSessionId) void this.ensureQueryStarted(session);
+    const startQuery = options.startQuery !== false;
+    console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId ?? "fresh"} startQuery=${startQuery}`);
+    if (agentSessionId && startQuery) void this.ensureQueryStarted(session);
     this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
   async loadTranscriptItems(session) {
     try {
-      const messages = await getSessionMessages(session.agentSessionId, {
+      const messages = await loadClaudeTranscriptMessages(session.agentSessionId, {
         dir: session.cwd,
-        limit: this.maxItems,
-        includeSystemMessages: false
+        includeSystemMessages: false,
+        pageSize: this.transcriptPageSize,
+        maxMessages: this.maxTranscriptMessages
       });
       return claudeTranscriptItems(session, messages ?? []);
     } catch (error) {
@@ -922,6 +933,34 @@ export class ClaudeAgentManager {
     session.pendingChoice = null;
     session.pendingDecision = null;
   }
+}
+
+export async function loadClaudeTranscriptMessages(
+  sessionId,
+  options = {},
+  loadPage = getSessionMessages
+) {
+  const pageSize = Math.max(1, Number(options.pageSize ?? 500));
+  const maxMessages = Math.max(pageSize, Number(options.maxMessages ?? 20_000));
+  const requestOptions = {
+    ...(options.dir ? { dir: options.dir } : {}),
+    includeSystemMessages: options.includeSystemMessages === true
+  };
+  const messages = [];
+  let offset = 0;
+  while (messages.length < maxMessages) {
+    const limit = Math.min(pageSize, maxMessages - messages.length);
+    const page = await loadPage(sessionId, {
+      ...requestOptions,
+      limit,
+      offset
+    });
+    if (!Array.isArray(page) || page.length === 0) break;
+    messages.push(...page);
+    offset += page.length;
+    if (page.length < limit) break;
+  }
+  return messages;
 }
 
 function hasPendingChoices(session) {

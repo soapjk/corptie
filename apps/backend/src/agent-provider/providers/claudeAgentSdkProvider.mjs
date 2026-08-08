@@ -27,7 +27,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     ]
   }, {
     listSessions: (options) => manager.list(options),
-    readSession: (reference) => manager.detail(reference.providerSessionId),
+    readSession: (reference) => manager.read(reference.providerSessionId),
     createSession: (input) => manager.start(input),
     resumeSession: (reference) => manager.reconnect(reference.providerSessionId),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),

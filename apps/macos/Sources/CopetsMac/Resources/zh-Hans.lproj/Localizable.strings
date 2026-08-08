@@ -406,6 +406,14 @@
 "Service is stopped" = "服务未运行";
 "Service version is unknown" = "服务版本未知";
 "Project Worktrees" = "项目 Worktree";
+"Clean Up Merged (%d)" = "清除已合并项 (%d)";
+"No merged Worktrees without associated sessions" = "没有可清除的已合并且无关联会话的 Worktree";
+"Remove all merged Worktrees that have no associated sessions" = "清除所有已合并且无关联会话的 Worktree";
+"Remove %d merged Worktrees?" = "清除 %d 个已合并的 Worktree？";
+"Remove Worktrees" = "清除 Worktree";
+"The following merged Worktrees have no associated sessions and will be permanently removed with their local branches:\n%@" = "以下 Worktree 已合并且没有关联会话，将连同本地分支一起永久删除：\n%@";
+"Removed %d merged Worktrees" = "已清除 %d 个已合并的 Worktree";
+"Removed %d Worktrees; %d could not be removed:\n%@" = "已清除 %d 个 Worktree；%d 个无法清除：\n%@";
 "%d worktrees are not merged into main" = "还有 %d 个 Worktree 未合入 main";
 "Loading project worktrees" = "正在载入项目 Worktree";
 "Could not load project worktrees" = "无法载入项目 Worktree";

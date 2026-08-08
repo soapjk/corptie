@@ -2,8 +2,49 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ClaudeAgentManager,
-  claudeTranscriptItems
+  claudeTranscriptItems,
+  loadClaudeTranscriptMessages
 } from "../src/adapters/claudeAgentManager.mjs";
+
+test("Claude transcript loader pages past the SDK's earliest-message limit", async () => {
+  const source = Array.from({ length: 7 }, (_, index) => ({ index }));
+  const calls = [];
+  const messages = await loadClaudeTranscriptMessages(
+    "sdk-session",
+    { dir: "/tmp/project", pageSize: 3, maxMessages: 20 },
+    async (_sessionId, options) => {
+      calls.push({ limit: options.limit, offset: options.offset });
+      return source.slice(options.offset, options.offset + options.limit);
+    }
+  );
+
+  assert.deepEqual(messages, source);
+  assert.deepEqual(calls, [
+    { limit: 3, offset: 0 },
+    { limit: 3, offset: 3 },
+    { limit: 3, offset: 6 }
+  ]);
+});
+
+test("reading a persisted Claude session restores history without starting a Query", async () => {
+  const manager = new ClaudeAgentManager();
+  let reconnectOptions = null;
+  manager.reconnect = async (id, options) => {
+    reconnectOptions = options;
+    return manager.start({
+      id,
+      cwd: "/tmp/restored",
+      items: [{ id: "history", type: "userMessage", text: "Restored" }]
+    });
+  };
+
+  const detail = await manager.read("claude-persisted");
+
+  assert.deepEqual(reconnectOptions, { startQuery: false });
+  assert.equal(detail.items.length, 1);
+  assert.equal(detail.items[0].text, "Restored");
+  assert.equal(manager.get("claude-persisted").query, null);
+});
 
 test("Claude transcript keeps SDK tool results inside the originating user turn", () => {
   const session = { id: "claude-a" };

@@ -12,6 +12,7 @@ function recordingManager(provider = "claude-sdk") {
     calls,
     list: (options) => [{ id: `pty:${provider}-a`, external: { provider }, options }],
     detail: (id) => ({ id }),
+    read: (id) => ({ id }),
     start: (input) => calls.push(["start", input]),
     reconnect: (id) => calls.push(["reconnect", id]),
     delete: (id) => calls.push(["delete", id]),
