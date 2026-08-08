@@ -24,6 +24,8 @@ struct GitHubPushArrowAnimationTests {
         #expect(GitHubPushButtonAppearance.height == 28)
         #expect(GitHubPushButtonAppearance.cornerRadius == 8)
         #expect(GitHubPushButtonAppearance.backgroundOpacity == 0.13)
+        #expect(GitHubPushButtonAppearance.solidCircleDiameter == 16)
+        #expect(GitHubPushButtonAppearance.arrowFontSize == 9)
     }
 
     @Test func ignoredAgentDirectoryIsRemovedFromDisclosedPushFiles() {
