@@ -4623,8 +4623,6 @@ private struct DetailHeaderView: View {
                 }
             } label: {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(color.opacity(0.13))
                     if backendClient.isSelectedSessionPushingGitHub {
                         GitHubPushProgressIcon()
                     } else if backendClient.isPreparingGitHubPush {
@@ -4636,10 +4634,24 @@ private struct DetailHeaderView: View {
                             .foregroundStyle(color)
                     }
                 }
-                .frame(width: 30, height: 28)
+                .frame(
+                    width: GitHubPushButtonAppearance.width,
+                    height: GitHubPushButtonAppearance.height
+                )
+                .background(
+                    color.opacity(GitHubPushButtonAppearance.backgroundOpacity),
+                    in: RoundedRectangle(
+                        cornerRadius: GitHubPushButtonAppearance.cornerRadius,
+                        style: .continuous
+                    )
+                )
             }
             .buttonStyle(.plain)
-            .disabled(backendClient.isPreparingGitHubPush || backendClient.isPushingGitHub)
+            .disabled(
+                backendClient.isPreparingGitHubPush
+                    || (backendClient.isPushingGitHub && !backendClient.isSelectedSessionPushingGitHub)
+            )
+            .allowsHitTesting(!backendClient.isSelectedSessionPushingGitHub)
             .help(gitHubPushButtonHelp(worktree))
         case .manageWorktrees:
             if let status = backendClient.selectedProjectWorktreeStatus {
@@ -4884,10 +4896,14 @@ struct GitHubPushArrowAnimation {
     static func verticalOffset(progress: Double) -> Double {
         8 - (16 * min(max(progress, 0), 1))
     }
+}
 
-    static func opacity(progress: Double) -> Double {
-        sin(.pi * min(max(progress, 0), 1))
-    }
+struct GitHubPushButtonAppearance {
+    static let width = 30.0
+    static let height = 28.0
+    static let cornerRadius = 8.0
+    static let backgroundOpacity = 0.13
+    static let arrowOpacity = 1.0
 }
 
 struct GitHubPushDisclosure {
@@ -4930,7 +4946,7 @@ private struct GitHubPushProgressIcon: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(Color.white)
                 .offset(y: reduceMotion ? 0 : GitHubPushArrowAnimation.verticalOffset(progress: progress))
-                .opacity(reduceMotion ? 0.75 : GitHubPushArrowAnimation.opacity(progress: progress))
+                .opacity(GitHubPushButtonAppearance.arrowOpacity)
         }
         .frame(width: 24, height: 24)
         .clipped()
