@@ -13,6 +13,7 @@ export class SessionApplicationService {
   constructor(options = {}) {
     this.registry = options.registry;
     this.resolveSessionReference = options.resolveSessionReference;
+    this.resolveSessionBinding = options.resolveSessionBinding ?? null;
     this.bindCreatedSession = options.bindCreatedSession ?? null;
     this.removeSessionBinding = options.removeSessionBinding ?? null;
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
@@ -23,6 +24,14 @@ export class SessionApplicationService {
 
   listSessions(options = {}) {
     return this.registry.listSessions(options);
+  }
+
+  listModels(providerId, context = {}) {
+    return this.registry.invoke(
+      providerId,
+      AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
+      context
+    );
   }
 
   async createSession(providerId, input = {}, context = {}) {
@@ -71,6 +80,18 @@ export class SessionApplicationService {
 
   async readSession(sessionId) {
     const reference = await this.referenceFor(sessionId);
+    const session = await this.registry.get(reference.providerId).readSession(reference);
+    return this.registry.decorateSession(reference.providerId, session);
+  }
+
+  async readSessionBinding(sessionId, bindingId) {
+    if (!this.resolveSessionBinding) {
+      throw new SessionNotFoundError(sessionId);
+    }
+    const reference = await this.resolveSessionBinding(sessionId, bindingId);
+    if (!reference?.providerId || !reference?.providerSessionId) {
+      throw new SessionNotFoundError(sessionId);
+    }
     const session = await this.registry.get(reference.providerId).readSession(reference);
     return this.registry.decorateSession(reference.providerId, session);
   }
@@ -125,6 +146,17 @@ export class SessionApplicationService {
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
       reference,
       level,
+      context
+    );
+  }
+
+  async updatePermissions(sessionId, permissions, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
+      reference,
+      permissions,
       context
     );
   }

@@ -15,6 +15,7 @@ export function createPtyAgentProvider(manager, options = {}) {
     AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
     AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
     AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+    ...(typeof options.listModels === "function" ? [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST] : []),
     ...(isCodex
       ? [
           AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
@@ -44,6 +45,7 @@ export function createPtyAgentProvider(manager, options = {}) {
       }
       return manager.respondToPtyChoice(reference.providerSessionId, approval);
     },
+    ...(typeof options.listModels === "function" ? { listModels: options.listModels } : {}),
     ...(isCodex ? {
       switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
       switchReasoning: (reference, level) => manager.switchReasoning(reference.providerSessionId, level)

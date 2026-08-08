@@ -49,6 +49,28 @@ export class SessionBindingRepository {
       }
     };
   }
+
+  resolveBinding(requestedSessionId, bindingId) {
+    const active = this.resolve(requestedSessionId);
+    const normalizedBindingId = normalizedText(bindingId);
+    if (!active?.logicalSessionId || !normalizedBindingId) return null;
+    const binding = this.store.listProviderThreadBindings(active.logicalSessionId)
+      .find((candidate) => candidate.bindingId === normalizedBindingId);
+    if (!binding?.providerId || !binding?.providerSessionId) return null;
+    return {
+      ...active,
+      bindingId: binding.bindingId,
+      providerId: binding.providerId,
+      providerSessionId: binding.providerSessionId,
+      routingVersion: binding.routingVersion,
+      metadata: {
+        ...active.metadata,
+        providerMetadata: binding.providerMetadata ?? {},
+        binding,
+        historical: binding.state !== "active"
+      }
+    };
+  }
 }
 
 export function providerIdForLegacySession(session) {

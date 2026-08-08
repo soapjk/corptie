@@ -9,11 +9,13 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+  AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
-  AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH
+  AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+  AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE
 ]) {
   const calls = [];
   const provider = new CallbackAgentProvider({
@@ -36,11 +38,16 @@ function fixture(capabilities = [
       calls.push(["deleteSession", ...args]);
       return true;
     },
+    listModels: async (...args) => {
+      calls.push(["listModels", ...args]);
+      return { models: [{ id: "fake-model" }] };
+    },
     send: async (...args) => calls.push(["send", ...args]),
     interrupt: async (...args) => calls.push(["interrupt", ...args]),
     respondToApproval: async (...args) => calls.push(["respondToApproval", ...args]),
     switchModel: async (...args) => calls.push(["switchModel", ...args]),
-    switchReasoning: async (...args) => calls.push(["switchReasoning", ...args])
+    switchReasoning: async (...args) => calls.push(["switchReasoning", ...args]),
+    updatePermissions: async (...args) => calls.push(["updatePermissions", ...args])
   });
   const registry = new AgentProviderRegistry([provider]);
   const service = new SessionApplicationService({
@@ -53,6 +60,15 @@ function fixture(capabilities = [
           providerId: "fake.provider",
           providerSessionId: "native-a",
           routingVersion: 3
+        }
+      : null,
+    resolveSessionBinding: async (sessionId, bindingId) => sessionId === "logical-a" && bindingId === "binding-old"
+      ? {
+          sessionId: "legacy-a",
+          logicalSessionId: "logical-a",
+          bindingId,
+          providerId: "fake.provider",
+          providerSessionId: "native-old"
         }
       : null,
     bindCreatedSession: async ({ providerId, session }) => {
@@ -116,6 +132,13 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("Session application service exposes Provider model catalogs through capability dispatch", async () => {
+  const { calls, service } = fixture();
+  const result = await service.listModels("fake.provider", { refresh: true });
+  assert.deepEqual(result, { models: [{ id: "fake-model" }] });
+  assert.deepEqual(calls, [["listModels", { refresh: true }]]);
+});
+
 test("Session application service exposes the same operations for every Provider", async () => {
   const { calls, service } = fixture();
   const detail = await service.readSession("logical-a");
@@ -127,7 +150,15 @@ test("Session application service exposes the same operations for every Provider
   await service.respondToApproval("logical-a", { approved: true });
   await service.switchModel("logical-a", "fake-model");
   await service.switchReasoning("logical-a", "high");
-  assert.deepEqual(calls.map((call) => call[0]), ["interrupt", "respondToApproval", "switchModel", "switchReasoning"]);
+  await service.updatePermissions("logical-a", { sandbox: "read-only" });
+  assert.deepEqual(calls.map((call) => call[0]), ["interrupt", "respondToApproval", "switchModel", "switchReasoning", "updatePermissions"]);
+});
+
+test("Session application service reads historical bindings through their recorded Provider", async () => {
+  const { service } = fixture();
+  const detail = await service.readSessionBinding("logical-a", "binding-old");
+  assert.equal(detail.id, "legacy-a");
+  assert.equal(detail.source, "fake.provider");
 });
 
 test("Session application service preserves structured unsupported-capability errors", async () => {

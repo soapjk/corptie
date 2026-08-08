@@ -27,7 +27,18 @@ function fixture() {
   const store = {
     getLogicalSession: (id) => id === logical.logicalSessionId ? logical : null,
     getLogicalSessionByLegacySessionId: (id) => id === logical.legacySessionId ? logical : null,
-    getSession: (id) => sessions.get(id) ?? null
+    getSession: (id) => sessions.get(id) ?? null,
+    listProviderThreadBindings: (id) => id === logical.logicalSessionId ? [
+      logical.activeBinding,
+      {
+        bindingId: "binding:old",
+        providerId: "fake-history",
+        providerSessionId: "native-before-fork",
+        providerMetadata: { source: "history" },
+        routingVersion: 3,
+        state: "superseded"
+      }
+    ] : []
   };
   return new SessionBindingRepository({
     store,
@@ -61,4 +72,13 @@ test("binding repository maps an unbound Claude Session to its Provider", () => 
 
 test("binding repository returns null for unknown Sessions", () => {
   assert.equal(fixture().resolve("missing"), null);
+});
+
+test("binding repository resolves a historical binding without Provider-specific routing", () => {
+  const reference = fixture().resolveBinding("logical:a", "binding:old");
+  assert.equal(reference.logicalSessionId, "logical:a");
+  assert.equal(reference.bindingId, "binding:old");
+  assert.equal(reference.providerId, "fake-history");
+  assert.equal(reference.providerSessionId, "native-before-fork");
+  assert.equal(reference.metadata.historical, true);
 });
