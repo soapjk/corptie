@@ -52,6 +52,9 @@ export class GitHubPushManager {
       dirty: inspection.dirty,
       changedFiles: inspection.changedFiles,
       filesToPush: inspection.filesToPush,
+      addedFiles: inspection.addedFiles,
+      modifiedFiles: inspection.modifiedFiles,
+      deletedFiles: inspection.deletedFiles,
       commitsToPush: inspection.commitsToPush,
       statusSummary: inspection.statusSummary,
       commitProtection
@@ -190,8 +193,11 @@ export class GitHubPushManager {
     ]);
     const baseRef = upstream || (hasOriginBranch ? originBranchRef : null);
     const commitsToPush = await this.commitList(identity.canonicalPath, baseRef);
-    const committedFiles = await this.filesForPush(identity.canonicalPath, baseRef);
-    const filesToPush = [...new Set([...committedFiles, ...changedFiles])].sort();
+    const fileChanges = await this.fileChangesForPush(identity.canonicalPath, baseRef);
+    const addedFiles = fileChanges.added;
+    const modifiedFiles = fileChanges.modified;
+    const deletedFiles = fileChanges.deleted;
+    const filesToPush = [...new Set([...addedFiles, ...modifiedFiles, ...deletedFiles])].sort();
     const headOid = (await this.gitOutput(identity.canonicalPath, ["rev-parse", "HEAD"])).trim();
     const dirty = Boolean(statusRaw);
     const fingerprint = createHash("sha256").update(JSON.stringify({
@@ -212,6 +218,9 @@ export class GitHubPushManager {
       diffStat: diffStat.trim(),
       changedFiles,
       filesToPush,
+      addedFiles,
+      modifiedFiles,
+      deletedFiles,
       commitsToPush,
       upstream,
       dirty,
@@ -230,11 +239,30 @@ export class GitHubPushManager {
     return commits;
   }
 
-  async filesForPush(cwd, baseRef) {
-    const output = baseRef
-      ? await this.gitOutput(cwd, ["diff", "--name-only", "-z", `${baseRef}...HEAD`])
-      : await this.gitOutput(cwd, ["ls-tree", "-r", "--name-only", "-z", "HEAD"]);
-    return output.split("\0").filter(Boolean).sort();
+  async fileChangesForPush(cwd, baseRef) {
+    if (!baseRef) {
+      const [tracked, untracked] = await Promise.all([
+        this.gitOutput(cwd, ["ls-files", "-z"]),
+        this.gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z"])
+      ]);
+      return {
+        added: [...new Set([...tracked.split("\0"), ...untracked.split("\0")].filter(Boolean))].sort(),
+        modified: [],
+        deleted: []
+      };
+    }
+
+    const [diffOutput, untrackedOutput] = await Promise.all([
+      this.gitOutput(cwd, ["diff", "--name-status", "-z", "--no-renames", baseRef]),
+      this.gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z"])
+    ]);
+    const changes = parseNameStatusChanges(diffOutput);
+    changes.added.push(...untrackedOutput.split("\0").filter(Boolean));
+    return {
+      added: [...new Set(changes.added)].sort(),
+      modified: [...new Set(changes.modified)].sort(),
+      deleted: [...new Set(changes.deleted)].sort()
+    };
   }
 
   pruneExpired() {
@@ -306,6 +334,20 @@ export function parsePorcelainPaths(output) {
     }
   }
   return [...new Set(paths)].sort();
+}
+
+export function parseNameStatusChanges(output) {
+  const fields = String(output ?? "").split("\0").filter(Boolean);
+  const changes = { added: [], modified: [], deleted: [] };
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const status = fields[index].charAt(0);
+    const path = fields[index + 1];
+    if (!path) continue;
+    if (status === "A") changes.added.push(path);
+    else if (status === "D") changes.deleted.push(path);
+    else changes.modified.push(path);
+  }
+  return changes;
 }
 
 function requiredCommitMessage(value) {
