@@ -291,6 +291,49 @@ test("project status can be inspected by repository path without an Agent Sessio
   }
 });
 
+test("project status excludes stale logical routes whose Sessions were deleted", async () => {
+  const fixture = await createFixture("project-status-live-sessions");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const repository = fixture.store.getLogicalSession("logical:one");
+    const live = fixture.store.createLogicalSessionRoute({
+      logicalSessionId: "logical:live",
+      legacySessionId: "codex:live-thread",
+      providerThreadId: "live-thread",
+      repositoryId: repository.repositoryId,
+      worktreeId: repository.activeWorkspaceId,
+      boundCwd: fixture.repository,
+      title: "Live session"
+    });
+    fixture.store.upsertSession({
+      id: live.legacySessionId,
+      title: "Live session",
+      agent: "Codex",
+      provider: "codex-app-server",
+      cwd: fixture.repository,
+      status: "complete"
+    });
+    fixture.store.createLogicalSessionRoute({
+      logicalSessionId: "logical:deleted",
+      legacySessionId: "codex:deleted-thread",
+      providerThreadId: "deleted-thread",
+      repositoryId: repository.repositoryId,
+      worktreeId: repository.activeWorkspaceId,
+      boundCwd: fixture.repository,
+      title: "Deleted session"
+    });
+
+    const project = await manager.projectStatus("logical:one");
+    const main = project.worktrees.find((worktree) => worktree.isMain);
+    assert.deepEqual(main.sessions.map((session) => session.sessionId), ["codex:live-thread"]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("the primary worktree branch is not required to be named main", async () => {
   const fixture = await createFixture("custom-primary-branch", {
     activeFeatureWorktree: true,

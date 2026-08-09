@@ -49,6 +49,24 @@ test("instruction validation rejects missing target and stale source worktree in
   assert.deepEqual(validation.staleSourceSources, ["/repo/source/AGENTS.md"]);
 });
 
+test("instruction validation accepts target-required Agent config symlinked to the main worktree", async () => {
+  const aliases = new Map([
+    ["/repo/feature/AGENTS.md", "/repo/main/AGENTS.md"]
+  ]);
+  const validation = await validateWorkspaceInstructionSources({
+    sourceCwd: "/repo/main",
+    targetCwd: "/repo/feature",
+    instructionSources: ["/repo/main/AGENTS.md"],
+    requiredTargetSources: ["/repo/feature/AGENTS.md"]
+  }, {
+    realpath: async (path) => aliases.get(path) ?? path
+  });
+
+  assert.equal(validation.valid, true);
+  assert.deepEqual(validation.requiredTargetSources, ["/repo/main/AGENTS.md"]);
+  assert.deepEqual(validation.staleSourceSources, []);
+});
+
 test("instruction validation fails closed when a response source is outside known scopes", async () => {
   const validation = await validateWorkspaceInstructionSources({
     sourceCwd: "/repo/source",

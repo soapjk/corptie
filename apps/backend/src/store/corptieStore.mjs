@@ -1378,7 +1378,7 @@ export class CorptieStore {
       this.db.run(
         `UPDATE logical_sessions SET transition_state = ?, updated_at = ?
          WHERE logical_session_id = ?`,
-        [update.phase === "committed" ? null : update.phase, timestamp, transition.logicalSessionId]
+        [["committed", "failed"].includes(update.phase) ? null : update.phase, timestamp, transition.logicalSessionId]
       );
       this.db.run("COMMIT");
     } catch (error) {
