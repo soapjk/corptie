@@ -4547,6 +4547,8 @@ private struct DetailHeaderView: View {
                         Label(L10n("Continuing after Worktree switch"), systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(CorptiePalette.connected)
+                            .lineLimit(2)
+                            .truncationMode(.tail)
                     } else if backendClient.selectedSession?.external?.workspace?.continuationState == "failed" {
                         Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
                             .font(.system(size: 9, weight: .bold))
