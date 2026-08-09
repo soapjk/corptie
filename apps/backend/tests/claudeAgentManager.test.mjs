@@ -317,6 +317,45 @@ test("Claude interrupt closes the whole Query so background agents cannot surviv
   assert.equal(summary.status, "complete");
 });
 
+test("Claude interrupt supports the SDK synchronous Query.close contract", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-interrupt-sync-close", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-interrupt-sync-close");
+  const calls = [];
+  session.status = "running";
+  session.turnState = "running";
+  session.query = {
+    interrupt: async () => calls.push("interrupt"),
+    close: () => { calls.push("close"); }
+  };
+  session.queryTask = Promise.resolve();
+
+  const summary = await manager.interrupt("claude-interrupt-sync-close");
+
+  assert.deepEqual(calls, ["interrupt", "close"]);
+  assert.equal(summary.status, "complete");
+  assert.equal(summary.capabilities.canInterrupt, false);
+  assert.equal(session.query, null);
+  assert.equal(session.turnState, "idle");
+});
+
+test("Claude interrupt repairs a stale running session without an active Query", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-interrupt-stale", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-interrupt-stale");
+  session.status = "running";
+  session.turnState = "running";
+  session.query = null;
+  session.queryTask = null;
+
+  const summary = await manager.interrupt("claude-interrupt-stale");
+
+  assert.equal(summary.status, "complete");
+  assert.equal(summary.capabilities.canInterrupt, false);
+  assert.equal(session.turnState, "idle");
+  assert.equal(session.interruptRequested, false);
+});
+
 test("Claude reports a normalized turn-settled event to product orchestration", async () => {
   let settle;
   const settled = new Promise((resolve) => { settle = resolve; });
