@@ -516,7 +516,11 @@ struct FloatingRootView: View {
     @ViewBuilder
     private func sessionItem(for session: TaskSession) -> some View {
         if displayMode == .compact {
-            CompactSessionRow(session: session, preheatRequested: preheatDetail)
+            CompactSessionRow(
+                session: session,
+                showsProjectName: !groupsSessionsByProject,
+                preheatRequested: preheatDetail
+            )
                 .environmentObject(backendClient)
                 .environmentObject(detachedSessionManager)
                 .opacity(draggedSessionId == session.id ? 0 : 1)
@@ -524,6 +528,7 @@ struct FloatingRootView: View {
         } else {
             TaskCardView(
                 session: session,
+                showsProjectName: !groupsSessionsByProject,
                 hoverPreviewChanged: { sessionId, isVisible in
                     guard draggedSessionId == nil else {
                         return
@@ -551,11 +556,18 @@ struct FloatingRootView: View {
            let viewportFrame = sessionCardFrames[listViewportFrameKey] {
             Group {
                 if displayMode == .compact {
-                    CompactSessionRow(session: session, preheatRequested: { _ in })
+                    CompactSessionRow(
+                        session: session,
+                        showsProjectName: !groupsSessionsByProject,
+                        preheatRequested: { _ in }
+                    )
                         .environmentObject(backendClient)
                         .environmentObject(detachedSessionManager)
                 } else {
-                    TaskCardView(session: session)
+                    TaskCardView(
+                        session: session,
+                        showsProjectName: !groupsSessionsByProject
+                    )
                         .environmentObject(backendClient)
                         .environmentObject(detachedSessionManager)
                 }
@@ -885,27 +897,28 @@ private struct CompactSessionRow: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
     let session: TaskSession
+    var showsProjectName = true
     var preheatRequested: (TaskSession) -> Void = { _ in }
 
     var body: some View {
         HStack(spacing: 10) {
             SessionAvatarView(session: session, avatarSize: 28)
-            Text(session.title)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-                .layoutPriority(1)
-            if let projectPath {
-                Text(URL(fileURLWithPath: projectPath).standardizedFileURL.lastPathComponent)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(CorptiePalette.mutedText)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.title)
+                    .font(.system(size: 12.5, weight: .semibold))
                     .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(projectPath)
+                    .layoutPriority(1)
+                SessionIdentityLine(
+                    session: session,
+                    showsProjectName: showsProjectName,
+                    fontSize: 9.5
+                )
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
         }
         .padding(.horizontal, 10)
-        .frame(height: 42)
+        .frame(height: 46)
         .standardSessionCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onHover { if $0 { preheatRequested(session) } }
@@ -920,9 +933,76 @@ private struct CompactSessionRow: View {
         }
     }
 
+}
+
+private struct SessionIdentityLine: View {
+    let session: TaskSession
+    var showsProjectName = false
+    var fontSize: CGFloat = 10
+
+    var body: some View {
+        HStack(spacing: 6) {
+            SessionAgentIdentity(session: session)
+
+            if let branchName {
+                HStack(spacing: 2) {
+                    Image(systemName: "arrow.triangle.branch")
+                    Text(branchName)
+                        .fontDesign(.monospaced)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .lineLimit(1)
+                .layoutPriority(1)
+                .help(branchName)
+            }
+
+            if showsProjectName, let projectName {
+                HStack(spacing: 2) {
+                    Image(systemName: "folder")
+                    Text(projectName)
+                }
+                    .foregroundStyle(CorptiePalette.mutedText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(-1)
+                    .help(projectPath ?? projectName)
+            }
+        }
+        .font(.system(size: fontSize, weight: .semibold))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .clipped()
+    }
+
+    private var branchName: String? {
+        normalized(session.external?.workspace?.branchName)
+    }
+
     private var projectPath: String? {
-        let path = session.external?.cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return path.isEmpty ? nil : path
+        normalized(session.external?.workspace?.projectPath)
+            ?? normalized(session.external?.cwd)
+    }
+
+    private var projectName: String? {
+        projectPath.map { URL(fileURLWithPath: $0).standardizedFileURL.lastPathComponent }
+    }
+
+    private func normalized(_ value: String?) -> String? {
+        let text = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return text.isEmpty ? nil : text
+    }
+}
+
+private struct SessionAgentIdentity: View {
+    let session: TaskSession
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "cpu")
+            Text(session.agent)
+        }
+        .foregroundStyle(session.accent.color)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -2730,6 +2810,7 @@ private struct TaskCardView: View {
     @FocusState private var isQuickReplyFocused: Bool
 
     let session: TaskSession
+    var showsProjectName = true
     var hoverPreviewChanged: (String, Bool) -> Void = { _, _ in }
     var preheatRequested: (TaskSession) -> Void = { _ in }
 
@@ -2748,7 +2829,13 @@ private struct TaskCardView: View {
                     Text(session.title)
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
+                    SessionIdentityLine(
+                        session: session,
+                        showsProjectName: showsProjectName,
+                        fontSize: 10
+                    )
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 Spacer()
 
@@ -2779,11 +2866,6 @@ private struct TaskCardView: View {
                 }
 
             HStack(spacing: 10) {
-                Text(session.agent)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .lineLimit(1)
-
                 if let restartActivity = backendClient.restartActivityBySessionId[session.id] {
                     ActivityStatusText(
                         text: restartActivity.text,
@@ -4460,6 +4542,15 @@ private struct DetailHeaderView: View {
                         Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.orange)
+                    } else if let continuationState = backendClient.selectedSession?.external?.workspace?.continuationState,
+                              ["pending", "queued", "running"].contains(continuationState) {
+                        Label(L10n("Continuing after Worktree switch"), systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(CorptiePalette.connected)
+                    } else if backendClient.selectedSession?.external?.workspace?.continuationState == "failed" {
+                        Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.orange)
                     } else if backendClient.selectedSession?.external?.workspace?.transitionStrategy == "handoff" {
                         Label(L10n("Context handoff"), systemImage: "arrow.triangle.branch")
                             .font(.system(size: 9, weight: .bold))
@@ -4468,6 +4559,11 @@ private struct DetailHeaderView: View {
                 }
                 if let cwd = workspacePath, !cwd.isEmpty {
                     HStack(alignment: .center, spacing: 6) {
+                        if let selectedSession = backendClient.selectedSession {
+                            SessionAgentIdentity(session: selectedSession)
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+
                         Button(action: copyWorkspacePath) {
                             HStack(spacing: 4) {
                                 Text(projectName ?? URL(fileURLWithPath: cwd).lastPathComponent)
@@ -7297,6 +7393,17 @@ private struct ThreadItemView: View {
                     } else {
                         messageTextView(text: item.text, allowsSelection: true)
                     }
+                }
+
+                if item.type == "choice",
+                   item.status == "selected",
+                   let selected = item.options?.first(where: { $0.selected == true }) {
+                    Label(L10nFormat("Selected: %@", selected.label), systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CorptiePalette.connected)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
                 }
 
                 if shouldShowOptions {

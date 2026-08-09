@@ -4,6 +4,7 @@ import {
   codexToolHostAttachment,
   createCodexAppServerProvider
 } from "../providers/codexAppServerProvider.mjs";
+import { claudeToolHostAttachment } from "../providers/claudeAgentSdkProvider.mjs";
 import {
   CODEX_PTY_PROVIDER_ID,
   createPtyAgentProvider,
@@ -54,7 +55,7 @@ export function createAgentProviderRuntimeRegistry(options = {}) {
   return new AgentProviderRegistry(providers);
 }
 
-export { codexToolHostAttachment };
+export { claudeToolHostAttachment, codexToolHostAttachment };
 
 function requiredProvider(provider, name) {
   if (!provider) throw new TypeError(`Agent Provider bootstrap requires ${name}.`);

@@ -23,6 +23,12 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ...(typeof options.listModels === "function" ? [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST] : []),
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
+      ...(typeof options.prepareWorkspaceTransition === "function"
+        ? [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION]
+        : []),
+      ...(typeof options.attachTools === "function"
+        ? [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]
+        : []),
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   }, {
@@ -33,13 +39,39 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     updateAvatar: (reference, avatarPath) => manager.updateAvatar(reference.providerSessionId, avatarPath),
-    send: (reference, message) => manager.send(reference.providerSessionId, message),
+    send: (reference, message, context = {}) => manager.send(
+      reference.providerSessionId,
+      message,
+      context.source ?? context
+    ),
     clearConversation: (reference) => manager.clear(reference.providerSessionId),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),
     ...(typeof options.listModels === "function" ? { listModels: options.listModels } : {}),
     switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
     updatePermissions: (reference, permissions) => manager.updatePermissions(reference.providerSessionId, permissions),
+    ...(typeof options.prepareWorkspaceTransition === "function"
+      ? { prepareWorkspaceTransition: options.prepareWorkspaceTransition }
+      : {}),
+    ...(typeof options.attachTools === "function"
+      ? { attachTools: options.attachTools }
+      : {}),
     runBackgroundPrompt: (input) => manager.runBackgroundPrompt(input)
   });
+}
+
+export function claudeToolHostAttachment(attachment, providerOptions = {}) {
+  if (!attachment?.actorId || !Array.isArray(attachment?.tools)) {
+    throw new TypeError("Claude Tool Host attachment requires an actor id and tool catalog.");
+  }
+  return {
+    actorId: attachment.actorId,
+    mcpServers: { ...(providerOptions.mcpServers ?? {}) },
+    plugins: Array.isArray(providerOptions.plugins)
+      ? providerOptions.plugins.map((plugin) => ({ ...plugin }))
+      : [],
+    skills: providerOptions.skills ?? "all",
+    settingSources: providerOptions.settingSources ?? ["user", "project", "local"],
+    systemPrompt: providerOptions.systemPrompt ?? undefined
+  };
 }
