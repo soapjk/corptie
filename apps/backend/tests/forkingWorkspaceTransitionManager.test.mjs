@@ -214,7 +214,7 @@ test("invalid fork instruction sources preserve the original route and retain an
     assert.equal(logical.activeThreadId, "thread-source");
     assert.equal(logical.activeWorkspaceId, "worktree:main");
     assert.equal(logical.routingVersion, 1);
-    assert.equal(logical.transitionState, "failed");
+    assert.equal(logical.transitionState, null);
     assert.equal(fixture.store.getWorkspaceTransition("transition:invalid").phase, "failed");
     assert.equal(fixture.store.getProviderThreadBinding("thread-invalid").state, "invalid");
   } finally {

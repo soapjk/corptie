@@ -21,6 +21,7 @@ import { ProjectApplicationService } from "./application/projectApplicationServi
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
@@ -332,6 +333,10 @@ const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
+});
+const sessionWorktrees = new SessionWorktreeService({
+  gitWorkspaces,
+  workspaceCoordinator: sessionWorkspaceCoordinator
 });
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
@@ -1481,11 +1486,7 @@ function requireAgentLogicalSession(agentId) {
 
 async function createAgentWorktree(agentId, input = {}) {
   const { sessionId, logical } = requireAgentLogicalSession(agentId);
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
-  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
-  const runtimeOptions = collaborationThreadOptions(agentId);
-  return gitWorkspaces.createWorktree({
+  return sessionWorktrees.createWorktree(sessionId, {
     logicalSessionId: logical.logicalSessionId,
     targetPath: input.target_path,
     branch: input.branch,
@@ -1494,28 +1495,21 @@ async function createAgentWorktree(agentId, input = {}) {
     detach: input.detach,
     switchAfterCreate: input.switch_after_create,
     inventoryVersion: input.inventory_version,
-    continuationPrompt: input.continuation_checkpoint,
-    activeTurnId: session?.external?.activeTurnId ?? runningWork?.targetTurnId ?? null,
-    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-    dynamicToolAgentId: agentId,
-    config: runtimeOptions.config,
-    developerInstructions: runtimeOptions.developerInstructions
+    continuationPrompt: input.continuation_checkpoint
   });
 }
 
 async function callWorkspaceDynamicTool(params) {
-  const actorId = params.actorId ?? params.agentId;
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId) {
     throw new Error("Workspace operations are only available from the active logical Session thread.");
   }
-  const runtimeOptions = collaborationThreadOptions(actorId);
   if (params.tool === "corptie_list_workspaces") {
     return workspaceInventory(logical);
   }
   if (params.tool === "corptie_create_worktree") {
     const input = params.arguments ?? {};
-    return gitWorkspaces.createWorktree({
+    return sessionWorktrees.createWorktree(logical.legacySessionId, {
       logicalSessionId: logical.logicalSessionId,
       targetPath: input.target_path,
       branch: input.branch,
@@ -1524,23 +1518,15 @@ async function callWorkspaceDynamicTool(params) {
       detach: input.detach,
       switchAfterCreate: input.switch_after_create,
       inventoryVersion: input.inventory_version,
-      continuationPrompt: input.continuation_checkpoint,
-      activeTurnId: params.turnId,
-      dynamicToolAgentId: actorId,
-      config: runtimeOptions.config,
-      developerInstructions: runtimeOptions.developerInstructions
+      continuationPrompt: input.continuation_checkpoint
     });
   }
   if (params.tool === "corptie_switch_workspace") {
-    return gitWorkspaces.switchWorkspace({
-      logicalSessionId: logical.logicalSessionId,
-      targetWorktreeId: params.arguments?.target_worktree_id,
-      activeTurnId: params.turnId,
-      continuationPrompt: params.arguments?.continuation_checkpoint,
-      dynamicToolAgentId: actorId,
-      config: runtimeOptions.config,
-      developerInstructions: runtimeOptions.developerInstructions
-    });
+    return sessionWorktrees.switchWorkspace(
+      logical.legacySessionId,
+      params.arguments?.target_worktree_id,
+      params.arguments?.continuation_checkpoint
+    );
   }
   throw new Error(`Unsupported workspace tool: ${params.tool}`);
 }

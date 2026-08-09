@@ -67,12 +67,16 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
       arguments: {
         target_path: "/repo/feature",
         branch: "feature",
-        switch_after_create: false
+        switch_after_create: false,
+        continuation_checkpoint: "Continue after migration"
       }
     });
     await client.callTool({
       name: "corptie_switch_workspace",
-      arguments: { target_worktree_id: "worktree:feature" }
+      arguments: {
+        target_worktree_id: "worktree:feature",
+        continuation_checkpoint: "Resume the remaining work"
+      }
     });
     assert.deepEqual(reads[0], {
       path: "/internal/collaboration/workspaces",
@@ -83,11 +87,15 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
       body: {
         target_path: "/repo/feature",
         branch: "feature",
-        switch_after_create: false
+        switch_after_create: false,
+        continuation_checkpoint: "Continue after migration"
       }
     }, {
       path: "/internal/collaboration/workspaces/switch",
-      body: { target_worktree_id: "worktree:feature" }
+      body: {
+        target_worktree_id: "worktree:feature",
+        continuation_checkpoint: "Resume the remaining work"
+      }
     }]);
 
     const result = await client.callTool({

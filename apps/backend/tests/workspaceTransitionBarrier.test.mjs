@@ -8,6 +8,8 @@ import {
 test("workspace transition state blocks queued work until route selection is final", () => {
   assert.equal(workspaceTransitionBlocksWork({ transitionState: "waitingForTurn" }), true);
   assert.equal(workspaceTransitionBlocksWork({ transitionState: "committingRoute" }), true);
+  assert.equal(workspaceTransitionBlocksWork({ transitionState: "failed" }), false);
+  assert.equal(workspaceTransitionBlocksWork({ transitionState: "committed" }), false);
   assert.equal(workspaceTransitionBlocksWork({ transitionState: null }), false);
 });
 

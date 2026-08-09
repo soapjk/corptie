@@ -80,7 +80,8 @@ export function createCollaborationMcpServer(options) {
       create_branch: z.boolean().optional(),
       detach: z.boolean().optional(),
       switch_after_create: z.boolean().optional(),
-      inventory_version: z.string().min(1).optional()
+      inventory_version: z.string().min(1).optional(),
+      continuation_checkpoint: z.string().min(1).optional()
     },
     handler: (input) => client.post("/internal/collaboration/worktrees", input)
   });
@@ -88,7 +89,8 @@ export function createCollaborationMcpServer(options) {
   register(server, "corptie_switch_workspace", {
     description: "Schedule the active logical Session to switch to an existing registered worktree after the current turn completes.",
     inputSchema: {
-      target_worktree_id: z.string().min(1).describe("Opaque worktree id from corptie_list_workspaces.")
+      target_worktree_id: z.string().min(1).describe("Opaque worktree id from corptie_list_workspaces."),
+      continuation_checkpoint: z.string().min(1).optional()
     },
     handler: (input) => client.post("/internal/collaboration/workspaces/switch", input)
   });
