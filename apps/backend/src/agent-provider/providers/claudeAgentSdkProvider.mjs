@@ -2,6 +2,10 @@ import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
 
 export const CLAUDE_AGENT_SDK_PROVIDER_ID = "claude-sdk";
+const CORPTIE_OWNED_CLAUDE_WORKSPACE_TOOLS = Object.freeze([
+  "EnterWorktree",
+  "ExitWorktree"
+]);
 
 export function createClaudeAgentSdkProvider(manager, options = {}) {
   if (!manager) throw new TypeError("Claude Agent SDK Provider requires a manager.");
@@ -72,6 +76,12 @@ export function claudeToolHostAttachment(attachment, providerOptions = {}) {
       : [],
     skills: providerOptions.skills ?? "all",
     settingSources: providerOptions.settingSources ?? ["user", "project", "local"],
-    systemPrompt: providerOptions.systemPrompt ?? undefined
+    systemPrompt: providerOptions.systemPrompt ?? undefined,
+    disallowedTools: [
+      ...new Set([
+        ...CORPTIE_OWNED_CLAUDE_WORKSPACE_TOOLS,
+        ...(Array.isArray(providerOptions.disallowedTools) ? providerOptions.disallowedTools : [])
+      ])
+    ]
   };
 }
