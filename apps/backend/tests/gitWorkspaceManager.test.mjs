@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { lstat, mkdtemp, mkdir, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -413,6 +413,30 @@ test("stage merge retains and synchronizes the source worktree", async () => {
     assert.equal(feature.state, "synced");
     assert.equal(feature.synchronizedWithMain, true);
     assert.equal(project.pendingWorktreeCount, 0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("merge blocks a committed local Agent link that would loop in the main Worktree", async () => {
+  const fixture = await createFixture("shared-link-merge", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  const mainToolsetPath = join(await realpath(fixture.repository), ".corptie");
+  await symlink(mainToolsetPath, join(fixture.activeWorktree, ".corptie"));
+  await git(["add", "--force", ".corptie"], fixture.activeWorktree);
+  await git(["commit", "-m", "Accidentally track local toolset link"], fixture.activeWorktree);
+  const mainHeadBefore = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+
+  try {
+    await assert.rejects(
+      () => manager.mergeWorktreeIntoMain({ logicalSessionId: "logical:one" }),
+      (error) => error?.code === "GIT_SHARED_AGENT_LINK_MERGE_BLOCKED"
+    );
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim(), mainHeadBefore);
+    await assert.rejects(() => lstat(mainToolsetPath), /ENOENT/);
   } finally {
     await fixture.close();
   }
