@@ -249,7 +249,8 @@ test("Claude remains working and interruptible while a background task outlives 
     type: "system",
     subtype: "task_started",
     task_id: "task-market-cow",
-    description: "Implement the delegated change"
+    description: "Implement the delegated change",
+    subagent_type: "general-purpose"
   });
   manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Delegated." });
 
@@ -271,6 +272,46 @@ test("Claude remains working and interruptible while a background task outlives 
   assert.equal(detail.status, "complete");
   assert.equal(detail.capabilities.canInterrupt, false);
   await Promise.resolve();
+  assert.equal(settled.length, 1);
+});
+
+test("Claude settles after its result while a background Bash service keeps running", async () => {
+  const settled = [];
+  const manager = new ClaudeAgentManager({ onTurnSettled: (event) => settled.push(event) });
+  manager.start({ id: "claude-background-service", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-background-service");
+  session.currentTurnId = "claude-background-service:turn:1";
+  session.status = "running";
+  session.turnState = "running";
+  session.query = {};
+
+  manager.handleSdkMessage(session, {
+    type: "system",
+    subtype: "task_started",
+    task_id: "task-dashboard",
+    task_type: "bash",
+    description: "Start dashboard in background"
+  });
+  manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Dashboard started." });
+
+  let detail = manager.detail("claude-background-service");
+  assert.equal(detail.status, "complete");
+  assert.equal(detail.activityStatus, "Ready");
+  assert.equal(detail.capabilities.canInterrupt, false);
+  await Promise.resolve();
+  assert.equal(settled.length, 1);
+
+  manager.handleSdkMessage(session, {
+    type: "system",
+    subtype: "task_progress",
+    task_id: "task-dashboard",
+    task_type: "bash",
+    description: "Dashboard is still running"
+  });
+
+  detail = manager.detail("claude-background-service");
+  assert.equal(detail.status, "complete");
+  assert.equal(detail.activityStatus, "Ready");
   assert.equal(settled.length, 1);
 });
 
