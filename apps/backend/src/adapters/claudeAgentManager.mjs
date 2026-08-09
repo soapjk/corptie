@@ -817,11 +817,12 @@ export class ClaudeAgentManager {
     if (taskSubtype) {
       const taskId = String(message?.task_id ?? message?.tool_use_id ?? "").trim();
       const terminal = isTerminalClaudeTaskMessage(message, taskSubtype);
+      const blocksTurnSettlement = claudeTaskBlocksTurnSettlement(message);
       if (taskId) {
         if (terminal) session.activeTaskIds.delete(taskId);
-        else session.activeTaskIds.add(taskId);
+        else if (blocksTurnSettlement) session.activeTaskIds.add(taskId);
       }
-      if (!terminal) {
+      if (!terminal && (!session.lastResult || blocksTurnSettlement)) {
         if (session.lastResult && !session.deferredResult) {
           session.deferredResult = session.lastResult;
         }
@@ -1588,6 +1589,15 @@ function isTerminalClaudeTaskMessage(message, subtype) {
   if (subtype === "task_complete" || subtype === "task_notification") return true;
   if (subtype !== "task_updated") return false;
   return ["completed", "failed", "killed"].includes(message?.patch?.status);
+}
+
+function claudeTaskBlocksTurnSettlement(message) {
+  if (typeof message?.subagent_type === "string" && message.subagent_type.trim()) {
+    return true;
+  }
+  return ["agent", "subagent", "local_workflow"].includes(
+    String(message?.task_type ?? "").trim().toLowerCase()
+  );
 }
 
 function activityStatusForSession(session) {
