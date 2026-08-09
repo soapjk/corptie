@@ -10,6 +10,22 @@ export function shouldReportAgentWorkQueued({
   );
 }
 
+export function interruptedAgentWorkRecoveryPatch(workItem) {
+  if (!workItem || workItem.status !== "running") return null;
+  if (workItem.targetTurnId) {
+    return {
+      status: "cancelled",
+      lastError: "Provider stopped after dispatch; message was not resent."
+    };
+  }
+  return {
+    status: "queued",
+    startedAt: null,
+    targetTurnId: null,
+    lastError: "Provider stopped before dispatch; work was requeued."
+  };
+}
+
 export function annotateAgentWorkDetailItems(detailItems = [], workItems = []) {
   const workByTurnId = new Map(
     workItems.filter((item) => item.targetTurnId).map((item) => [item.targetTurnId, item])
