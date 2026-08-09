@@ -54,6 +54,11 @@ export const workspaceDynamicTools = Object.freeze([
         type: "string",
         minLength: 1,
         description: "Optional optimistic-concurrency version returned by workspace discovery."
+      },
+      continuation_checkpoint: {
+        type: "string",
+        minLength: 1,
+        description: "Optional concise description of the remaining work Corptie should continue automatically after switching."
       }
     },
     ["target_path"]
@@ -66,6 +71,11 @@ export const workspaceDynamicTools = Object.freeze([
         type: "string",
         minLength: 1,
         description: "Opaque worktree id from Corptie's workspace inventory."
+      },
+      continuation_checkpoint: {
+        type: "string",
+        minLength: 1,
+        description: "Optional concise description of the remaining work Corptie should continue automatically after switching."
       }
     },
     ["target_worktree_id"]

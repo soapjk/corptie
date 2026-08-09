@@ -260,3 +260,5 @@
 "Commit Changes" = "Commit Changes";
 "Commit and Merge" = "Commit and Merge";
 "Commit and Continue" = "Commit and Continue";
+"Continuing after Worktree switch" = "Continuing after Worktree switch";
+"Worktree continuation failed" = "Worktree continuation failed";

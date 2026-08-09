@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 
@@ -12,6 +12,9 @@ export class ClaudeAgentManager {
     this.maxTranscriptMessages = options.maxTranscriptMessages ?? 20_000;
     this.detailSubscribers = new Map();
     this.detailEmitTimers = new Map();
+    this.onTurnSettled = options.onTurnSettled ?? null;
+    this.resolveRuntimeOptions = options.resolveRuntimeOptions ?? null;
+    this.queryFactory = options.query ?? query;
   }
 
   start(input = {}) {
@@ -47,7 +50,7 @@ export class ClaudeAgentManager {
       lastOutputAt: null,
       nextItemSeq: Number(input.nextItemSeq ?? 1),
       nextTurnSeq: Number(input.nextTurnSeq ?? 1),
-      currentTurnId: null,
+      currentTurnId: input.currentTurnId ?? null,
       items: Array.isArray(input.items) ? input.items.slice(-this.maxItems) : [],
       pendingChoice: null,
       pendingDecision: null,
@@ -56,10 +59,16 @@ export class ClaudeAgentManager {
       queryTask: null,
       queryClosed: false,
       interruptRequested: false,
+      activeTaskIds: new Set(),
+      deferredResult: null,
+      lastResult: null,
       turnState: "idle",
       inputQueue: [],
       inputResolvers: []
     };
+    session.runtimeOptions = normalizeClaudeRuntimeOptions(
+      input.toolHost?.providerAttachment ?? input.runtimeOptions
+    );
     this.sessions.set(id, session);
     console.log(`[claude-sdk] session created id=${id} cwd=${session.cwd}`);
     this.persistSession(session);
@@ -152,7 +161,7 @@ export class ClaudeAgentManager {
     return true;
   }
 
-  async send(id, text) {
+  async send(id, text, options = {}) {
     const session = this.get(id);
     if (!session) {
       throw new Error("Claude session not found");
@@ -170,21 +179,46 @@ export class ClaudeAgentManager {
 
     await this.ensureQueryStarted(session);
     session.interruptRequested = false;
+    session.activeTaskIds.clear();
+    session.deferredResult = null;
+    session.lastResult = null;
     session.status = "running";
     session.phase = "input_sent";
     session.turnState = "running";
     session.currentTurnId = `${session.id}:turn:${session.nextTurnSeq++}`;
     session.lastInputAt = new Date().toISOString();
     session.updatedAt = session.lastInputAt;
-    this.appendItem(session, {
-      type: "userMessage",
-      title: "User",
-      text: value,
-      status: "sent"
-    });
+    if (options.localVisibility !== "status_only") {
+      this.appendItem(session, {
+        type: "userMessage",
+        title: "User",
+        text: value,
+        status: "sent"
+      });
+    }
     this.persistSession(session);
     console.log(`[claude-sdk] send queued id=${id} chars=${value.length}`);
     this.enqueueInput(session, makeUserMessage(value));
+    return this.toSessionSummary(session);
+  }
+
+  async switchWorkspace(id, cwd) {
+    const session = await this.sessionForOperation(id);
+    if (session.turnState !== "idle") {
+      const error = new Error("Claude must finish the active turn before switching workspaces.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+    await this.closeIdleQuery(session);
+    if (session.agentSessionId) {
+      const forked = await forkSession(session.agentSessionId, { dir: session.cwd, title: session.title });
+      session.agentSessionId = forked.sessionId;
+    }
+    session.cwd = cwd;
+    session.updatedAt = new Date().toISOString();
+    session.phase = "ready";
+    session.status = "complete";
+    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -250,12 +284,31 @@ export class ClaudeAgentManager {
     if (!session.query) {
       throw new Error("Claude session is not active");
     }
-    await session.query.interrupt();
+    const query = session.query;
+    const queryTask = session.queryTask;
+    session.interruptRequested = true;
+    try {
+      await query.interrupt();
+    } finally {
+      // Claude background agents share the Query stream with their parent turn.
+      // Interrupting only the foreground turn can leave those agents alive, so
+      // close the entire stream and resume it lazily on the next user message.
+      session.queryClosed = true;
+      session.inputQueue = [];
+      for (const resolve of session.inputResolvers.splice(0)) resolve(null);
+      await query.close().catch(() => {});
+      if (queryTask) await queryTask.catch(() => {});
+      session.query = null;
+      session.queryTask = null;
+      session.queryClosed = false;
+    }
     this.resolveAllPendingChoices(session, "Claude Code turn interrupted in Corptie.");
     session.pendingChoice = null;
     session.pendingDecision = null;
     session.pendingChoices?.clear();
-    session.interruptRequested = true;
+    session.activeTaskIds.clear();
+    session.deferredResult = null;
+    session.lastResult = null;
     session.turnState = "idle";
     session.phase = "ready";
     session.status = "complete";
@@ -297,6 +350,9 @@ export class ClaudeAgentManager {
     session.queryTask = null;
     session.queryClosed = false;
     session.interruptRequested = false;
+    session.activeTaskIds.clear();
+    session.deferredResult = null;
+    session.lastResult = null;
     session.lastInputAt = null;
     session.lastOutputAt = null;
     session.updatedAt = clearedAt;
@@ -409,7 +465,9 @@ export class ClaudeAgentManager {
       permissionMode: raw.permissionMode ?? claudePermissionMode(raw.sandbox, raw.approvalPolicy),
       createdAt: stored.createdAt,
       updatedAt: new Date().toISOString(),
-      status: stored.status === "failed" || stored.status === "cancelled" ? "complete" : stored.status,
+      status: ["running", "blocked", "failed", "cancelled"].includes(stored.status)
+        ? "complete"
+        : stored.status,
       archived: stored.archived === true,
       pinned: stored.pinned === true,
       sortOrder: stored.sortOrder ?? null,
@@ -424,7 +482,7 @@ export class ClaudeAgentManager {
       lastOutputAt: raw.lastOutputAt ?? null,
       nextItemSeq: Number(raw.nextItemSeq ?? 1),
       nextTurnSeq: Number(raw.nextTurnSeq ?? 1),
-      currentTurnId: null,
+      currentTurnId: raw.currentTurnId ?? null,
       items: [],
       pendingChoice: null,
       pendingDecision: null,
@@ -433,14 +491,18 @@ export class ClaudeAgentManager {
       queryTask: null,
       queryClosed: false,
       interruptRequested: false,
+      activeTaskIds: new Set(),
+      deferredResult: null,
+      lastResult: null,
       turnState: "idle",
       inputQueue: [],
       inputResolvers: []
     };
+    session.runtimeOptions = null;
+    const storedItems = this.store?.getItems(id, this.maxItems, "claude-sdk") ?? [];
     const transcriptItems = agentSessionId ? await this.loadTranscriptItems(session) : [];
-    session.items = transcriptItems.length > 0
-      ? transcriptItems.slice(-this.maxItems)
-      : this.store?.getItems(id, this.maxItems, "claude-sdk") ?? [];
+    session.items = mergeClaudeTranscriptItems(transcriptItems, storedItems)
+      .slice(-this.maxItems);
     session.nextItemSeq = Math.max(session.nextItemSeq, nextSeqFromItems(session.items));
     session.nextTurnSeq = Math.max(session.nextTurnSeq, nextTurnSeqFromItems(session.id, session.items));
     this.sessions.set(id, session);
@@ -512,13 +574,15 @@ export class ClaudeAgentManager {
     console.log(`[claude-sdk] query starting id=${session.id} resume=${session.agentSessionId ?? ""}`);
     session.queryClosed = false;
     const permissionOptions = claudePermissionOptions(session);
-    session.query = query({
+    const runtimeOptions = await this.runtimeOptionsFor(session);
+    session.query = this.queryFactory({
       prompt: this.inputStream(session),
       options: {
         cwd: session.cwd,
         resume: session.agentSessionId || undefined,
         persistSession: true,
         model: session.currentModel || undefined,
+        ...runtimeOptions,
         ...permissionOptions,
         canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
       }
@@ -526,6 +590,15 @@ export class ClaudeAgentManager {
     session.queryTask = this.consumeQuery(session);
     this.persistSession(session);
     return session.query;
+  }
+
+  async runtimeOptionsFor(session) {
+    if (session.runtimeOptions) return session.runtimeOptions;
+    if (typeof this.resolveRuntimeOptions !== "function") return {};
+    session.runtimeOptions = normalizeClaudeRuntimeOptions(
+      await this.resolveRuntimeOptions(session.id)
+    );
+    return session.runtimeOptions;
   }
 
   async consumeQuery(session) {
@@ -566,6 +639,11 @@ export class ClaudeAgentManager {
         });
       }
       this.persistSession(session);
+      this.notifyTurnSettled(session, {
+        turnId: session.currentTurnId,
+        status: wasInterrupted ? "cancelled" : "failed",
+        error: wasInterrupted ? null : (error?.message || String(error))
+      });
     }
   }
 
@@ -574,7 +652,7 @@ export class ClaudeAgentManager {
     const timeout = setTimeout(() => abortController.abort(), input.timeoutMs ?? 120_000);
     let latestText = "";
     try {
-      const operation = query({
+      const operation = this.queryFactory({
         prompt: input.prompt,
         options: {
           cwd: input.cwd,
@@ -648,6 +726,14 @@ export class ClaudeAgentManager {
     }
 
     if (message?.type === "assistant") {
+      if (session.lastResult && session.turnState !== "running") {
+        // A foreground result is not necessarily the end of the Query. Claude
+        // can continue streaming assistant/tool events from a background Agent.
+        session.deferredResult = session.lastResult;
+        session.turnState = "running";
+        session.status = "running";
+        session.phase = "working";
+      }
       const items = claudeAssistantContentItems(message.message);
       if (items.length > 0) {
         session.lastOutputAt = session.updatedAt;
@@ -659,20 +745,24 @@ export class ClaudeAgentManager {
 
     if (message?.type === "result") {
       const text = typeof message.result === "string" ? message.result.trim() : "";
-      session.turnState = "idle";
       session.pendingChoice = null;
       session.pendingDecision = null;
       session.pendingChoices?.clear();
       const wasInterrupted = session.interruptRequested === true;
       session.interruptRequested = false;
-      session.phase = message.subtype === "success" || wasInterrupted ? "ready" : "failed";
-      session.status = message.subtype === "success" || wasInterrupted ? "complete" : "failed";
+      const result = {
+        turnId: session.currentTurnId,
+        succeeded: message.subtype === "success" || wasInterrupted,
+        text,
+        notified: false
+      };
+      session.lastResult = result;
       finalizeClaudeTurnItems(
         session,
         session.currentTurnId,
-        message.subtype === "success" || wasInterrupted ? "complete" : "failed"
+        result.succeeded ? "complete" : "failed"
       );
-      if (text && message.subtype !== "success" && !wasInterrupted) {
+      if (text && !result.succeeded) {
         session.lastOutputAt = session.updatedAt;
         this.appendItem(session, {
           type: "system",
@@ -681,7 +771,15 @@ export class ClaudeAgentManager {
           status: message.subtype || "result"
         });
       }
-      this.persistSession(session);
+      if (session.activeTaskIds.size > 0) {
+        session.deferredResult = result;
+        session.turnState = "running";
+        session.status = "running";
+        session.phase = "working";
+        this.persistSession(session);
+      } else {
+        this.settleClaudeResult(session, result);
+      }
       return;
     }
 
@@ -701,17 +799,36 @@ export class ClaudeAgentManager {
       return;
     }
 
-    if (message?.type === "task_started" || message?.type === "task_progress" || message?.type === "task_complete" || message?.type === "task_notification") {
+    const taskSubtype = claudeTaskSubtype(message);
+    if (taskSubtype) {
+      const taskId = String(message?.task_id ?? message?.tool_use_id ?? "").trim();
+      const terminal = isTerminalClaudeTaskMessage(message, taskSubtype);
+      if (taskId) {
+        if (terminal) session.activeTaskIds.delete(taskId);
+        else session.activeTaskIds.add(taskId);
+      }
+      if (!terminal) {
+        if (session.lastResult && !session.deferredResult) {
+          session.deferredResult = session.lastResult;
+        }
+        session.turnState = "running";
+        session.status = "running";
+        session.phase = "working";
+      }
       const text = taskMessageText(message);
-      if (text) {
+      if (text && message?.skip_transcript !== true) {
         this.appendItem(session, {
           type: "mcpToolCall",
-          title: message?.label || "Claude task",
+          title: message?.label || message?.subagent_type || "Claude task",
           text,
-          status: message?.type === "task_complete" ? "completed" : "running"
+          status: terminal ? (message?.status === "failed" ? "failed" : "completed") : "running"
         });
       }
-      this.persistSession(session);
+      if (terminal && session.activeTaskIds.size === 0 && session.deferredResult) {
+        this.settleClaudeResult(session, session.deferredResult);
+      } else {
+        this.persistSession(session);
+      }
       return;
     }
 
@@ -729,6 +846,27 @@ export class ClaudeAgentManager {
     }
 
     this.persistSession(session);
+  }
+
+  settleClaudeResult(session, result) {
+    session.deferredResult = null;
+    session.turnState = "idle";
+    session.phase = result.succeeded ? "ready" : "failed";
+    session.status = result.succeeded ? "complete" : "failed";
+    finalizeClaudeTurnItems(
+      session,
+      result.turnId,
+      result.succeeded ? "complete" : "failed"
+    );
+    this.persistSession(session);
+    if (!result.notified) {
+      result.notified = true;
+      this.notifyTurnSettled(session, {
+        turnId: result.turnId,
+        status: result.succeeded ? "completed" : "failed",
+        error: result.succeeded ? null : result.text
+      });
+    }
   }
 
   inputStream(session) {
@@ -797,6 +935,7 @@ export class ClaudeAgentManager {
         lastInputAt: session.lastInputAt,
         lastOutputAt: session.lastOutputAt,
         turnState: session.turnState,
+        currentTurnId: session.currentTurnId,
         accent: session.accent
       },
       canSend,
@@ -888,7 +1027,7 @@ export class ClaudeAgentManager {
 
   appendItem(session, item) {
     const createdAt = createdAtFromOrNow(item);
-    session.items.push({
+    const appendedItem = {
       id: item.id ?? `${session.id}:${session.nextItemSeq}`,
       turnId: item.turnId ?? session.currentTurnId ?? session.id,
       turnStatus: session.status,
@@ -900,7 +1039,9 @@ export class ClaudeAgentManager {
       createdAt,
       presentationRole: item.presentationRole ?? null,
       presentationText: item.presentationText ?? null
-    });
+    };
+    session.items.push(appendedItem);
+    this.store?.appendItem?.(session.id, appendedItem);
     session.nextItemSeq += 1;
     if (session.items.length > this.maxItems) {
       session.items = session.items.slice(-this.maxItems);
@@ -924,6 +1065,11 @@ export class ClaudeAgentManager {
         }))
       };
     });
+    for (const item of session.items) {
+      if (item.type === "choice" && item.status === "selected" && (!choiceId || item.id === choiceId)) {
+        this.store?.appendItem?.(session.id, item);
+      }
+    }
   }
 
   resolveAllPendingChoices(session, message) {
@@ -936,6 +1082,17 @@ export class ClaudeAgentManager {
     }
     session.pendingChoice = null;
     session.pendingDecision = null;
+  }
+
+  notifyTurnSettled(session, event) {
+    if (typeof this.onTurnSettled !== "function") return;
+    queueMicrotask(() => Promise.resolve(this.onTurnSettled({
+      providerSessionId: session.id,
+      session: this.toSessionSummary(session),
+      ...event
+    })).catch((error) => {
+      console.error(`[claude-sdk] turn-settled callback failed id=${session.id}: ${error.message}`);
+    }));
   }
 }
 
@@ -1393,10 +1550,30 @@ function taskMessageText(message) {
   const segments = [
     message?.label,
     message?.status,
+    message?.description,
+    message?.summary,
+    message?.patch?.error,
     message?.message,
     message?.content
   ].filter((value) => typeof value === "string" && value.trim());
   return segments.join(": ").trim();
+}
+
+function claudeTaskSubtype(message) {
+  const subtype = message?.type === "system" ? message?.subtype : message?.type;
+  return [
+    "task_started",
+    "task_progress",
+    "task_updated",
+    "task_complete",
+    "task_notification"
+  ].includes(subtype) ? subtype : null;
+}
+
+function isTerminalClaudeTaskMessage(message, subtype) {
+  if (subtype === "task_complete" || subtype === "task_notification") return true;
+  if (subtype !== "task_updated") return false;
+  return ["completed", "failed", "killed"].includes(message?.patch?.status);
 }
 
 function activityStatusForSession(session) {
@@ -1442,6 +1619,27 @@ function claudePermissionOptions(session) {
   };
 }
 
+export function normalizeClaudeRuntimeOptions(input = {}) {
+  if (!input || typeof input !== "object") return {};
+  const result = {};
+  if (input.mcpServers && typeof input.mcpServers === "object") {
+    result.mcpServers = { ...input.mcpServers };
+  }
+  if (Array.isArray(input.plugins)) {
+    result.plugins = input.plugins.map((plugin) => ({ ...plugin }));
+  }
+  if (input.skills === "all" || Array.isArray(input.skills)) {
+    result.skills = Array.isArray(input.skills) ? [...input.skills] : input.skills;
+  }
+  if (Array.isArray(input.settingSources)) {
+    result.settingSources = [...input.settingSources];
+  }
+  if (typeof input.systemPrompt === "string" || Array.isArray(input.systemPrompt) || input.systemPrompt?.type === "preset") {
+    result.systemPrompt = input.systemPrompt;
+  }
+  return result;
+}
+
 function lastMeaningfulText(items = []) {
   for (const item of items.slice().reverse()) {
     if (item.text && item.type !== "userMessage") {
@@ -1477,6 +1675,21 @@ function visibleClaudeItems(items = []) {
     }
   }
   return visible;
+}
+
+export function mergeClaudeTranscriptItems(transcriptItems = [], storedItems = []) {
+  if (transcriptItems.length === 0) {
+    return storedItems;
+  }
+  const retainedChoices = storedItems.filter((item) =>
+    item.type === "choice" && item.status && item.status !== "pending"
+  );
+  const merged = new Map(transcriptItems.map((item) => [item.id, item]));
+  for (const item of retainedChoices) merged.set(item.id, item);
+  return Array.from(merged.values()).sort((left, right) => {
+    const createdAtOrder = String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
+    return createdAtOrder || String(left.id ?? "").localeCompare(String(right.id ?? ""));
+  });
 }
 
 function compareSessionOrder(left, right) {

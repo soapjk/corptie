@@ -3,7 +3,8 @@ import test from "node:test";
 import {
   ClaudeAgentManager,
   claudeTranscriptItems,
-  loadClaudeTranscriptMessages
+  loadClaudeTranscriptMessages,
+  mergeClaudeTranscriptItems
 } from "../src/adapters/claudeAgentManager.mjs";
 
 test("Claude transcript loader pages past the SDK's earliest-message limit", async () => {
@@ -26,6 +27,108 @@ test("Claude transcript loader pages past the SDK's earliest-message limit", asy
   ]);
 });
 
+test("Claude transcript replay retains Corptie-hosted handled choices", () => {
+  const transcript = [
+    { id: "user-1", type: "userMessage", text: "Choose one", createdAt: "2026-08-09T10:00:00.000Z" },
+    { id: "agent-1", type: "agentMessage", text: "Continuing", createdAt: "2026-08-09T10:02:00.000Z" }
+  ];
+  const selectedChoice = {
+    id: "choice-1",
+    type: "choice",
+    text: "Which option?",
+    status: "selected",
+    createdAt: "2026-08-09T10:01:00.000Z",
+    options: [
+      { id: "a", label: "A", selected: false },
+      { id: "b", label: "B", selected: true }
+    ]
+  };
+
+  const merged = mergeClaudeTranscriptItems(transcript, [
+    selectedChoice,
+    { ...selectedChoice, id: "pending", status: "pending" }
+  ]);
+
+  assert.deepEqual(merged.map((item) => item.id), ["user-1", "choice-1", "agent-1"]);
+  assert.equal(merged[1].options[1].selected, true);
+});
+
+test("Claude reconnect restores a handled choice alongside SDK transcript history", async () => {
+  const selectedChoice = {
+    id: "choice-restored",
+    turnId: "claude-restored-choice:turn:1",
+    turnStatus: "complete",
+    type: "choice",
+    title: "Claude question",
+    text: "Deploy now?",
+    status: "selected",
+    createdAt: "2026-08-09T10:01:00.000Z",
+    options: [{ id: "yes", label: "Yes", selected: true }]
+  };
+  const storedSession = {
+    id: "claude-restored-choice",
+    title: "Claude restored choice",
+    agent: "Claude Code",
+    status: "complete",
+    createdAt: "2026-08-09T10:00:00.000Z",
+    updatedAt: "2026-08-09T10:02:00.000Z",
+    external: {
+      provider: "claude-sdk",
+      agentSessionId: "sdk-restored-choice",
+      cwd: "/tmp/project"
+    },
+    rawStatus: {}
+  };
+  const store = {
+    getSession: () => storedSession,
+    getItems: () => [selectedChoice],
+    upsertSession: () => {}
+  };
+  const manager = new ClaudeAgentManager({ store });
+  manager.loadTranscriptItems = async () => [{
+    id: "agent-restored",
+    turnId: "claude-restored-choice:turn:1",
+    turnStatus: "complete",
+    type: "agentMessage",
+    title: "Claude Code",
+    text: "Done",
+    createdAt: "2026-08-09T10:02:00.000Z"
+  }];
+
+  await manager.reconnect("claude-restored-choice", { startQuery: false });
+
+  const restored = manager.detail("claude-restored-choice").items;
+  assert.deepEqual(restored.map((item) => item.id), ["choice-restored", "agent-restored"]);
+  assert.equal(restored[0].status, "selected");
+  assert.equal(restored[0].options[0].selected, true);
+});
+
+test("Claude reconnect clears a stale running state left by a backend restart", async () => {
+  const storedSession = {
+    id: "claude-stale-running",
+    title: "Claude stale running",
+    agent: "Claude Code",
+    status: "running",
+    createdAt: "2026-08-09T10:00:00.000Z",
+    updatedAt: "2026-08-09T10:01:00.000Z",
+    external: { provider: "claude-sdk", agentSessionId: "sdk-stale", cwd: "/tmp/project" },
+    rawStatus: {}
+  };
+  const manager = new ClaudeAgentManager({
+    store: {
+      getSession: () => storedSession,
+      getItems: () => [],
+      upsertSession: () => {}
+    }
+  });
+  manager.loadTranscriptItems = async () => [];
+
+  await manager.reconnect("claude-stale-running", { startQuery: false });
+
+  assert.equal(manager.detail("claude-stale-running").status, "complete");
+  assert.equal(manager.get("claude-stale-running").turnState, "idle");
+});
+
 test("reading a persisted Claude session restores history without starting a Query", async () => {
   const manager = new ClaudeAgentManager();
   let reconnectOptions = null;
@@ -44,6 +147,37 @@ test("reading a persisted Claude session restores history without starting a Que
   assert.equal(detail.items.length, 1);
   assert.equal(detail.items[0].text, "Restored");
   assert.equal(manager.get("claude-persisted").query, null);
+});
+
+test("Claude Query receives Corptie MCP, skills, plugin, and project settings", async () => {
+  let capturedOptions = null;
+  const manager = new ClaudeAgentManager({
+    query: ({ options }) => {
+      capturedOptions = options;
+      return (async function* emptyQuery() {})();
+    }
+  });
+  manager.start({
+    id: "claude-corptie-runtime",
+    cwd: "/tmp/project",
+    toolHost: {
+      providerAttachment: {
+        mcpServers: { corptie: { type: "stdio", command: "node" } },
+        plugins: [{ type: "local", path: "/runtime/corptie-plugin", skipMcpDiscovery: true }],
+        skills: "all",
+        settingSources: ["user", "project", "local"],
+        systemPrompt: { type: "preset", preset: "claude_code", append: "Use Corptie collaboration." }
+      }
+    }
+  });
+
+  await manager.ensureQueryStarted(manager.get("claude-corptie-runtime"));
+
+  assert.equal(capturedOptions.mcpServers.corptie.command, "node");
+  assert.equal(capturedOptions.plugins[0].path, "/runtime/corptie-plugin");
+  assert.equal(capturedOptions.skills, "all");
+  assert.deepEqual(capturedOptions.settingSources, ["user", "project", "local"]);
+  assert.match(capturedOptions.systemPrompt.append, /Corptie collaboration/);
 });
 
 test("Claude transcript keeps SDK tool results inside the originating user turn", () => {
@@ -97,6 +231,109 @@ test("Claude live messages become process items until the result marks a final a
   manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Done." });
   letAgentRoles(manager, ["commentary", "final_answer"]);
   assert.ok(manager.detail("claude-live").items.every((item) => item.turnStatus === "complete"));
+});
+
+test("Claude remains working and interruptible while a background task outlives the parent result", async () => {
+  const settled = [];
+  const manager = new ClaudeAgentManager({ onTurnSettled: (event) => settled.push(event) });
+  manager.start({ id: "claude-background", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-background");
+  session.currentTurnId = "claude-background:turn:1";
+  session.status = "running";
+  session.turnState = "running";
+  session.query = {};
+
+  manager.handleSdkMessage(session, {
+    type: "system",
+    subtype: "task_started",
+    task_id: "task-market-cow",
+    description: "Implement the delegated change"
+  });
+  manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Delegated." });
+
+  let detail = manager.detail("claude-background");
+  assert.equal(detail.status, "running");
+  assert.equal(detail.activityStatus, "Claude is working");
+  assert.equal(detail.capabilities.canInterrupt, true);
+  assert.equal(settled.length, 0);
+
+  manager.handleSdkMessage(session, {
+    type: "system",
+    subtype: "task_notification",
+    task_id: "task-market-cow",
+    status: "completed",
+    summary: "Implementation completed"
+  });
+
+  detail = manager.detail("claude-background");
+  assert.equal(detail.status, "complete");
+  assert.equal(detail.capabilities.canInterrupt, false);
+  await Promise.resolve();
+  assert.equal(settled.length, 1);
+});
+
+test("Claude restores working state when assistant activity arrives after a parent result", () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-late-background", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-late-background");
+  session.currentTurnId = "claude-late-background:turn:1";
+  session.status = "running";
+  session.turnState = "running";
+  session.query = {};
+
+  manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Done." });
+  assert.equal(manager.detail("claude-late-background").status, "complete");
+
+  manager.handleSdkMessage(session, sdkAssistant([
+    { type: "tool_use", name: "Bash", input: { command: "npm test" } }
+  ]));
+
+  const detail = manager.detail("claude-late-background");
+  assert.equal(detail.status, "running");
+  assert.equal(detail.capabilities.canInterrupt, true);
+});
+
+test("Claude interrupt closes the whole Query so background agents cannot survive", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-interrupt-background", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-interrupt-background");
+  const calls = [];
+  session.status = "running";
+  session.turnState = "running";
+  session.query = {
+    interrupt: async () => calls.push("interrupt"),
+    close: async () => calls.push("close")
+  };
+  session.queryTask = Promise.resolve();
+  session.activeTaskIds.add("background-task");
+
+  const summary = await manager.interrupt("claude-interrupt-background");
+
+  assert.deepEqual(calls, ["interrupt", "close"]);
+  assert.equal(session.query, null);
+  assert.equal(session.activeTaskIds.size, 0);
+  assert.equal(summary.status, "complete");
+});
+
+test("Claude reports a normalized turn-settled event to product orchestration", async () => {
+  let settle;
+  const settled = new Promise((resolve) => { settle = resolve; });
+  const manager = new ClaudeAgentManager({ onTurnSettled: settle });
+  manager.start({ id: "claude-settled", title: "Claude settled", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-settled");
+  session.currentTurnId = "claude-settled:turn:1";
+  session.status = "running";
+  session.turnState = "running";
+
+  manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Done." });
+
+  assert.deepEqual(await settled, {
+    providerSessionId: "claude-settled",
+    session: manager.toSessionSummary(session),
+    turnId: "claude-settled:turn:1",
+    status: "completed",
+    error: null
+  });
 });
 
 test("Claude clear forgets the SDK context while preserving the Corptie session", async () => {

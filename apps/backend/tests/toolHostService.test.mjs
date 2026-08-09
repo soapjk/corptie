@@ -7,6 +7,10 @@ import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs
 import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { codexToolHostAttachment } from "../src/agent-provider/providers/codexAppServerProvider.mjs";
+import {
+  claudeToolHostAttachment,
+  createClaudeAgentSdkProvider
+} from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 
 function provider(id, capabilities, operations = {}) {
@@ -76,6 +80,27 @@ test("Codex Provider maps the common attachment to its native dynamic-tool optio
   assert.equal(mapped.dynamicToolAgentId, "agent-one");
   assert.equal(mapped.dynamicTools[0].name, "corptie_agents_discover");
   assert.equal(mapped.developerInstructions, "Provider runtime instructions");
+});
+
+test("Claude Provider maps the common attachment to MCP, skills, and project settings", () => {
+  const provider = createClaudeAgentSdkProvider({}, { attachTools: () => ({}) });
+  assert.ok(provider.descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH));
+
+  const mapped = claudeToolHostAttachment({
+    actorId: "agent-claude",
+    tools: [{ name: "corptie_agents_discover" }]
+  }, {
+    mcpServers: { corptie: { type: "stdio", command: "node" } },
+    plugins: [{ type: "local", path: "/runtime/corptie-plugin", skipMcpDiscovery: true }],
+    systemPrompt: { type: "preset", preset: "claude_code", append: "Stable Agent identity: agent-claude" }
+  });
+
+  assert.equal(mapped.actorId, "agent-claude");
+  assert.equal(mapped.mcpServers.corptie.command, "node");
+  assert.equal(mapped.plugins[0].path, "/runtime/corptie-plugin");
+  assert.equal(mapped.skills, "all");
+  assert.deepEqual(mapped.settingSources, ["user", "project", "local"]);
+  assert.match(mapped.systemPrompt.append, /agent-claude/);
 });
 
 test("Session creation passes a prepared Tool Host attachment without knowing Provider mechanics", async () => {
