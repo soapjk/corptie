@@ -19,14 +19,22 @@ export async function validateWorkspaceInstructionSources(input, options = {}) {
     input.globalInstructionSources ?? [],
     resolveRealpath
   ));
+  const requiredTargetSet = new Set(requiredTargetSources);
   const responseSet = new Set(responseSources);
   const missingTargetSources = requiredTargetSources.filter((path) => !responseSet.has(path));
   const staleSourceSources = responseSources.filter((path) => {
-    if (globalSources.has(path) || isInstructionApplicableToWorkspace(path, targetCwd)) return false;
+    // Locally shared Agent configuration is intentionally symlinked from each
+    // worktree to the main workspace. Its realpath therefore points into the
+    // source workspace even though the target explicitly requires that same
+    // file. Required target provenance makes this source valid.
+    if (globalSources.has(path)
+      || requiredTargetSet.has(path)
+      || isInstructionApplicableToWorkspace(path, targetCwd)) return false;
     return sourceCwd ? isWithin(path, sourceCwd) : true;
   });
   const unexpectedSources = responseSources.filter((path) => {
     return !globalSources.has(path)
+      && !requiredTargetSet.has(path)
       && !isInstructionApplicableToWorkspace(path, targetCwd)
       && !staleSourceSources.includes(path);
   });
