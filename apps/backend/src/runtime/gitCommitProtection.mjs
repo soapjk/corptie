@@ -23,17 +23,21 @@ export class GitCommitProtection {
     const rules = await this.loadRules();
     const protectedPaths = [];
     const matchedRules = [];
+    const localSymlinkPaths = [];
     for (const rule of rules) {
       const matches = changedPaths.filter((path) => pathMatchesRule(path, rule));
       if (matches.length === 0) continue;
-      if (rule.onlyWhenSymlink === true && !await isSymbolicLink(join(root, rule.path))) continue;
+      const rulePathIsSymlink = await isSymbolicLink(join(root, rule.path));
+      if (rule.onlyWhenSymlink === true && !rulePathIsSymlink) continue;
       matchedRules.push(rule);
       protectedPaths.push(...matches);
+      if (rulePathIsSymlink) localSymlinkPaths.push(rule.path);
     }
     const warningEnabled = await this.warningEnabled(root);
     return {
       repositoryRoot: root,
       protectedPaths: [...new Set(protectedPaths)].sort(),
+      localSymlinkPaths: [...new Set(localSymlinkPaths)].sort(),
       suggestedIgnorePatterns: matchedRules.map(ignorePatternForRule),
       warningEnabled,
       requiresDecision: warningEnabled && protectedPaths.length > 0
@@ -43,6 +47,14 @@ export class GitCommitProtection {
   async resolve(workingDirectory, input = {}) {
     const inspection = await this.inspect(workingDirectory);
     const decision = String(input.decision ?? "");
+    if (inspection.localSymlinkPaths.length > 0 && decision !== "ignore") {
+      const error = new Error(
+        `Local Agent configuration links cannot be committed: ${inspection.localSymlinkPaths.join(", ")}. Replace the links with real project files before committing them.`
+      );
+      error.code = "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE";
+      error.protection = inspection;
+      throw error;
+    }
     if (inspection.requiresDecision && decision !== "ignore" && decision !== "include") {
       const error = new Error("Choose whether to add local Agent files to .gitignore or include them in this commit.");
       error.code = "GIT_COMMIT_PROTECTION_REQUIRED";

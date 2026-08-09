@@ -3,7 +3,10 @@ import { access, mkdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
-import { linkSharedAgentConfiguration } from "./sharedAgentConfiguration.mjs";
+import {
+  DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS,
+  linkSharedAgentConfiguration
+} from "./sharedAgentConfiguration.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -251,6 +254,7 @@ export class GitWorkspaceManager {
     }
 
     const sourceHead = (await this.gitOutput(source.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    await this.assertCommitHasNoMainLinkedAgentConfiguration(source.path, main.path, sourceHead);
     const alreadyMerged = await this.gitSucceeds(main.path, [
       "merge-base",
       "--is-ancestor",
@@ -597,6 +601,7 @@ export class GitWorkspaceManager {
     }
 
     const sourceHead = (await this.gitOutput(plan.sourcePath, ["rev-parse", "--verify", "HEAD"])).trim();
+    await this.assertCommitHasNoMainLinkedAgentConfiguration(plan.sourcePath, plan.mainPath, sourceHead);
     try {
       await this.runGit(plan.mainPath, ["merge", "--no-ff", "--no-edit", sourceHead]);
     } catch (error) {
@@ -623,6 +628,28 @@ export class GitWorkspaceManager {
       throw new Error(`Logical session ${logicalSessionId} has no active workspace route.`);
     }
     return logical;
+  }
+
+  async assertCommitHasNoMainLinkedAgentConfiguration(sourcePath, mainPath, revision) {
+    const unsafePaths = [];
+    for (const relativePath of DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS) {
+      const entry = await this.gitOutput(sourcePath, [
+        "ls-tree", revision, "--", relativePath
+      ]);
+      if (!entry.startsWith("120000 ")) continue;
+      const linkTarget = await this.gitOutput(sourcePath, [
+        "show", `${revision}:${relativePath}`
+      ]);
+      const resolvedTarget = resolve(dirname(resolve(sourcePath, relativePath)), linkTarget.trim());
+      if (resolvedTarget === resolve(mainPath, relativePath)) unsafePaths.push(relativePath);
+    }
+    if (unsafePaths.length === 0) return;
+    const error = new Error(
+      `The Worktree commit contains local Agent configuration links that would point back to themselves in the main Worktree: ${unsafePaths.join(", ")}. Remove these links from Git tracking before merging.`
+    );
+    error.code = "GIT_SHARED_AGENT_LINK_MERGE_BLOCKED";
+    error.paths = unsafePaths;
+    throw error;
   }
 
   async worktreeAddArguments(input, snapshot, targetPath) {
