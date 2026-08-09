@@ -113,12 +113,14 @@ export class GitWorkspaceManager {
     }
     const worktrees = [];
     for (const worktree of snapshot.worktrees) {
-      const sessions = this.store.listLogicalSessionsByWorkspaceId(worktree.worktreeId).map((session) => ({
-        logicalSessionId: session.logicalSessionId,
-        sessionId: session.legacySessionId,
-        title: session.title,
-        active: true
-      }));
+      const sessions = this.store.listLogicalSessionsByWorkspaceId(worktree.worktreeId)
+        .filter((session) => Boolean(this.store.getSession(session.legacySessionId)))
+        .map((session) => ({
+          logicalSessionId: session.logicalSessionId,
+          sessionId: session.legacySessionId,
+          title: session.title,
+          active: true
+        }));
       if (worktree.availability !== "available") {
         worktrees.push({
           ...worktree,

@@ -1,5 +1,11 @@
 export function workspaceTransitionBlocksWork(logicalSession) {
-  return Boolean(logicalSession?.transitionState);
+  return new Set([
+    "waitingForTurn",
+    "preflighting",
+    "forking",
+    "validatingInstructions",
+    "committingRoute"
+  ]).has(logicalSession?.transitionState);
 }
 
 export function resumeWorkAfterTransition(continuation, resume) {
