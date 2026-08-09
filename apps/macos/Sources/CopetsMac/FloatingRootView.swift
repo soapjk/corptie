@@ -8080,7 +8080,7 @@ private struct MessageComposer: View {
     }
 
     private var isRunningTurn: Bool {
-        backendClient.selectedDetail?.canSend == false
+        backendClient.selectedDetail?.status == .running
             && backendClient.selectedDetail?.canInterruptNow == true
     }
 
