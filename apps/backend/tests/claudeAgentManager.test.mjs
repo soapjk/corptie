@@ -166,6 +166,7 @@ test("Claude Query receives Corptie MCP, skills, plugin, and project settings", 
         plugins: [{ type: "local", path: "/runtime/corptie-plugin", skipMcpDiscovery: true }],
         skills: "all",
         settingSources: ["user", "project", "local"],
+        disallowedTools: ["EnterWorktree", "ExitWorktree", "EnterWorktree", ""],
         systemPrompt: { type: "preset", preset: "claude_code", append: "Use Corptie collaboration." }
       }
     }
@@ -177,6 +178,7 @@ test("Claude Query receives Corptie MCP, skills, plugin, and project settings", 
   assert.equal(capturedOptions.plugins[0].path, "/runtime/corptie-plugin");
   assert.equal(capturedOptions.skills, "all");
   assert.deepEqual(capturedOptions.settingSources, ["user", "project", "local"]);
+  assert.deepEqual(capturedOptions.disallowedTools, ["EnterWorktree", "ExitWorktree"]);
   assert.match(capturedOptions.systemPrompt.append, /Corptie collaboration/);
 });
 
