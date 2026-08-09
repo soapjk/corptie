@@ -3646,6 +3646,20 @@ async function projectToolsetStatus(sessionId) {
 
 async function projectToolsetStatusForPath(cwd) {
   const toolset = await projectToolsets.inspect(cwd);
+  if (toolset.configurationError) {
+    return {
+      toolset,
+      service: {
+        state: "configurationFailed",
+        configurationError: toolset.configurationError,
+        freshness: "unknown",
+        running: null,
+        mainHeadOid: toolset.mainHeadOid,
+        desiredProfile: toolset.selectedProfile,
+        verified: false
+      }
+    };
+  }
   if (toolset.requiresUpdate && toolset.manifestConfigured) {
     const legacySource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
     const [status, health, version] = await Promise.all([

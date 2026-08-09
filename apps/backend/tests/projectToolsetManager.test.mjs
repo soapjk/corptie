@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +11,22 @@ import {
 } from "../src/runtime/projectToolsetManager.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("inspect reports a main Worktree toolset symlink without following a link loop", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  const toolsetPath = join(fixture.mainPath, ".corptie");
+  try {
+    await symlink(toolsetPath, toolsetPath);
+    const state = await manager.inspect(fixture.featurePath);
+    assert.equal(state.installed, false);
+    assert.equal(state.configured, false);
+    assert.match(state.configurationError, /\.corptie path is a symbolic link/);
+    assert.ok(Object.values(state.scripts).every((script) => script.exists === false));
+  } finally {
+    await fixture.close();
+  }
+});
 
 test("scaffold creates a private standard toolset in the main worktree", async () => {
   const fixture = await createFixture();
