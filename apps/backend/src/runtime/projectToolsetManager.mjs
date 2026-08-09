@@ -251,8 +251,18 @@ export class ProjectToolsetManager {
       await this.execFile("git", ["-C", identity.canonicalPath, "read-tree", "HEAD"], { env });
       await this.execFile(
         "git",
-        ["-C", identity.canonicalPath, "add", "-A", "--", ".", ":(exclude).corptie"],
+        ["-C", identity.canonicalPath, "add", "-A"],
         { env, maxBuffer: 8 * 1024 * 1024 }
+      );
+      // A negative pathspec that explicitly names an ignored `.corptie`
+      // directory makes `git add` fail even though the path is excluded. Let
+      // Git apply its normal ignore rules first, then restore any historically
+      // tracked `.corptie` entries inside the temporary index so private tools
+      // never affect the source fingerprint.
+      await this.execFile(
+        "git",
+        ["-C", identity.canonicalPath, "reset", "-q", "HEAD", "--", ".corptie"],
+        { env, maxBuffer: 1024 * 1024 }
       );
       const fingerprint = (await this.execFile(
         "git",
