@@ -222,6 +222,33 @@ test("revision details report the verified commit time and source Worktree branc
   }
 });
 
+test("source identity ignores a gitignored .corptie directory without failing staging", async () => {
+  const fixture = await createFixture();
+  const manager = new ProjectToolsetManager();
+  try {
+    await writeFile(join(fixture.mainPath, ".gitignore"), "/.corptie/\n");
+    await git(["add", ".gitignore"], fixture.mainPath);
+    await git(["commit", "-m", "ignore private Corptie tools"], fixture.mainPath);
+    await mkdir(join(fixture.mainPath, ".corptie"));
+    await writeFile(join(fixture.mainPath, ".corptie", "local.json"), "{\"version\":1}\n");
+
+    const clean = await manager.sourceIdentity(fixture.mainPath);
+    assert.equal(clean.dirty, false);
+    assert.match(clean.fingerprint, /^[0-9a-f]{40}$/);
+
+    await writeFile(join(fixture.mainPath, "proposal.md"), "proposal\n");
+    const withSourceChange = await manager.sourceIdentity(fixture.mainPath);
+    await writeFile(join(fixture.mainPath, ".corptie", "local.json"), "{\"version\":2}\n");
+    const withPrivateToolChange = await manager.sourceIdentity(fixture.mainPath);
+
+    assert.equal(withSourceChange.dirty, true);
+    assert.equal(withPrivateToolChange.fingerprint, withSourceChange.fingerprint);
+    assert.equal((await gitOutput(["diff", "--cached", "--name-only"], fixture.mainPath)).trim(), "");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("scaffold refuses a repository that already tracks .corptie content", async () => {
   const fixture = await createFixture();
   const manager = new ProjectToolsetManager();
