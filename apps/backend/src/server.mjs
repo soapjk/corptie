@@ -81,7 +81,11 @@ import { collaborationMcpServerName } from "./utils/collaborationRuntime.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "./collaboration/collaborationDynamicTools.mjs";
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
-import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "./utils/agentWorkQueue.mjs";
+import {
+  annotateAgentWorkDetailItems,
+  interruptedAgentWorkRecoveryPatch,
+  shouldReportAgentWorkQueued
+} from "./utils/agentWorkQueue.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
 import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTransitionManager.mjs";
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
@@ -3093,13 +3097,35 @@ async function drainAgentWork(agentId) {
   if (!sessionId) return;
   const session = listGatewaySessions().find((item) => item.id === sessionId);
   if (!session) return;
-  if (sessionHasActiveRun(session)) {
+  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
+  if (sessionHasActiveRun(session) || runningWork) {
     // Persisted activeTurnId values can outlive an interrupted turn when the
-    // completion notification was missed. Reconcile with Codex before leaving
-    // queued work blocked indefinitely.
+    // completion notification was missed. A running work item can likewise
+    // outlive a Provider process when only the desktop app is force-quit while
+    // the backend remains alive. Reconcile both before leaving queued work
+    // blocked indefinitely.
     const liveState = await inspectCollaborationSession(sessionId);
     if (liveState === "running" || liveState === "missing") return;
-    console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
+    if (sessionHasActiveRun(session)) {
+      console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
+    }
+    if (runningWork) {
+      const patch = interruptedAgentWorkRecoveryPatch(runningWork);
+      const recoveredWork = patch ? store.updateAgentWorkItem(runningWork.workItemId, patch) : null;
+      if (recoveredWork?.status === "cancelled") {
+        emitEvent("AgentWorkCompleted", { sessionId, workItem: recoveredWork }, {
+          sessionId,
+          source: runningWork.source
+        });
+        workspaceContinuationCoordinator.recordWorkSettled(recoveredWork);
+      } else if (recoveredWork?.status === "queued") {
+        emitEvent("AgentWorkQueued", { sessionId, workItem: recoveredWork, queuePosition: null, source: runningWork.source }, {
+          sessionId,
+          source: runningWork.source
+        });
+      }
+      console.log(`[agent-work] recovered orphaned work agent=${agentId} session=${sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
+    }
   }
   if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
   const next = store.listQueuedAgentWorkItems(agentId, 1)[0];

@@ -748,7 +748,6 @@ export class CorptieStore {
            last_error = COALESCE(last_error, 'Execution interrupted by process restart after dispatch; message was not resent.'),
            updated_at = ?
        WHERE status = 'running'
-         AND kind = 'user'
          AND target_turn_id IS NOT NULL`,
       [restartTimestamp, restartTimestamp]
     );
