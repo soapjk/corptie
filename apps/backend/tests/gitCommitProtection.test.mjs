@@ -60,6 +60,28 @@ test("tracked project instructions are allowed while a local symlink is protecte
   }
 });
 
+test("a local Agent symlink cannot be included as if it were a real project file", async () => {
+  const fixture = await createRepository();
+  const protection = new GitCommitProtection({ rules });
+  try {
+    await writeFile(join(fixture.path, "shared.md"), "Local instructions\n");
+    await symlink(join(fixture.path, "shared.md"), join(fixture.path, "AGENTS.md"));
+    const inspection = await protection.inspect(fixture.path);
+    assert.deepEqual(inspection.localSymlinkPaths, ["AGENTS.md"]);
+    await assert.rejects(
+      () => protection.resolve(fixture.path, { decision: "include" }),
+      (error) => error?.code === "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE"
+    );
+    await git(fixture.path, ["config", "--local", "corptie.privateFilesWarning", "false"]);
+    await assert.rejects(
+      () => protection.resolve(fixture.path),
+      (error) => error?.code === "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE"
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("do not remind preference is stored per repository", async () => {
   const fixture = await createRepository();
   const protection = new GitCommitProtection({ rules });

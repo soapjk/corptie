@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
@@ -27,6 +27,13 @@ export class ProjectToolsetManager {
 
   async inspect(workingDirectory) {
     const layout = await this.layout(workingDirectory);
+    const toolsetRoot = await pathMetadata(layout.toolsetPath);
+    if (toolsetRoot?.isSymbolicLink()) {
+      return unavailableToolsetState(
+        layout,
+        "The main Worktree .corptie path is a symbolic link. Remove it from Git tracking before configuring the local Corptie toolset."
+      );
+    }
     const manifest = await readJsonFile(layout.manifestPath);
     const scripts = {};
     for (const action of PROJECT_TOOLSET_ACTIONS) {
@@ -460,4 +467,37 @@ async function fileState(path) {
     if (error?.code === "ENOENT") return { path, exists: false, executable: false };
     throw error;
   }
+}
+
+async function pathMetadata(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function unavailableToolsetState(layout, configurationError) {
+  return {
+    ...layout,
+    installed: false,
+    manifestConfigured: false,
+    compatible: false,
+    requiresUpdate: false,
+    configured: false,
+    schemaVersion: null,
+    profiles: normalizedProfiles(null),
+    selectedProfile: selectedProfile(null),
+    manifest: null,
+    scripts: Object.fromEntries(PROJECT_TOOLSET_ACTIONS.map((action) => [
+      action,
+      {
+        path: join(layout.scriptsPath, action),
+        exists: false,
+        executable: false
+      }
+    ])),
+    configurationError
+  };
 }
