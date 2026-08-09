@@ -674,6 +674,11 @@ export class CorptieStore {
         last_completed_turn_id TEXT,
         new_thread_id TEXT,
         resume_goal_after_transition INTEGER NOT NULL DEFAULT 0,
+        continuation_prompt TEXT,
+        continuation_state TEXT NOT NULL DEFAULT 'none'
+          CHECK (continuation_state IN ('none', 'pending', 'queued', 'running', 'completed', 'failed')),
+        continuation_turn_id TEXT,
+        continuation_error TEXT,
         phase TEXT NOT NULL
           CHECK (phase IN (
             'waitingForTurn', 'preflighting', 'forking', 'validatingInstructions',
@@ -707,6 +712,10 @@ export class CorptieStore {
     this.migrateAgentProviderBindings();
     this.migrateWorkspaceTransitionsForDirectoryTargets();
     this.ensureColumn("workspace_transitions", "resume_goal_after_transition", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("workspace_transitions", "continuation_prompt", "TEXT");
+    this.ensureColumn("workspace_transitions", "continuation_state", "TEXT NOT NULL DEFAULT 'none'");
+    this.ensureColumn("workspace_transitions", "continuation_turn_id", "TEXT");
+    this.ensureColumn("workspace_transitions", "continuation_error", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -960,9 +969,6 @@ export class CorptieStore {
     const providerId = requiredText(input?.providerId ?? "codex-app-server", "providerId");
     const providerSessionId = requiredText(input?.providerSessionId ?? providerThreadId, "providerSessionId");
     const bindingId = requiredText(input?.bindingId ?? `binding:${randomUUID()}`, "bindingId");
-    if (providerSessionId !== providerThreadId) {
-      throw new Error("providerSessionId must match providerThreadId during the compatibility migration.");
-    }
     const boundCwd = requiredText(input?.boundCwd, "boundCwd");
     const timestamp = input.createdAt || new Date().toISOString();
     this.db.run("BEGIN IMMEDIATE");
@@ -1065,6 +1071,15 @@ export class CorptieStore {
     return row ? this.getLogicalSession(row.logical_session_id) : null;
   }
 
+  getLogicalSessionByProviderSessionId(providerId, providerSessionId) {
+    const row = this.selectOne(
+      `SELECT logical_session_id FROM provider_thread_bindings
+       WHERE provider_id = ? AND provider_session_id = ? AND state = 'active'`,
+      [providerId, providerSessionId]
+    );
+    return row ? this.getLogicalSession(row.logical_session_id) : null;
+  }
+
   deleteLogicalSessionByLegacySessionId(legacySessionId) {
     const row = this.selectOne(
       "SELECT logical_session_id FROM logical_sessions WHERE legacy_session_id = ?",
@@ -1163,7 +1178,9 @@ export class CorptieStore {
   getAgentSessionBindingByProviderSession(providerId, providerSessionId) {
     const row = this.selectOne(
       `SELECT * FROM provider_thread_bindings
-       WHERE provider_id = ? AND provider_session_id = ?`,
+       WHERE provider_id = ? AND provider_session_id = ?
+       ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END, routing_version DESC
+       LIMIT 1`,
       [providerId, providerSessionId]
     );
     return row ? providerThreadBindingFromRow(row) : null;
@@ -1279,9 +1296,10 @@ export class CorptieStore {
       this.db.run(
         `INSERT INTO workspace_transitions (
           transition_id, logical_session_id, source_thread_id, target_worktree_id, target_cwd,
-          source_routing_version, last_completed_turn_id, resume_goal_after_transition, phase, strategy,
+          source_routing_version, last_completed_turn_id, resume_goal_after_transition,
+          continuation_prompt, continuation_state, phase, strategy,
           error_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
         [
           transitionId,
           logicalSessionId,
@@ -1291,6 +1309,8 @@ export class CorptieStore {
           sourceRoutingVersion,
           input.lastCompletedTurnId || null,
           input.resumeGoalAfterTransition ? 1 : 0,
+          input.continuationPrompt || null,
+          input.continuationPrompt ? "pending" : "none",
           input.phase || "waitingForTurn",
           input.strategy || "fork",
           timestamp,
@@ -1331,7 +1351,16 @@ export class CorptieStore {
       this.db.run(
         `UPDATE workspace_transitions
          SET phase = ?, strategy = ?, last_completed_turn_id = ?, new_thread_id = ?,
-             error_json = ?, updated_at = ?
+             error_json = ?,
+             continuation_state = CASE
+               WHEN ? = 'failed' AND continuation_state = 'pending' THEN 'failed'
+               ELSE continuation_state
+             END,
+             continuation_error = CASE
+               WHEN ? = 'failed' AND continuation_state = 'pending' THEN ?
+               ELSE continuation_error
+             END,
+             updated_at = ?
          WHERE transition_id = ?`,
         [
           update.phase,
@@ -1339,6 +1368,9 @@ export class CorptieStore {
           update.lastCompletedTurnId ?? transition.lastCompletedTurnId,
           update.newThreadId ?? transition.newThreadId,
           update.error === undefined ? (transition.error ? JSON.stringify(transition.error) : null) : JSON.stringify(update.error),
+          update.phase,
+          update.phase,
+          update.error?.message ?? null,
           timestamp,
           transitionId
         ]
@@ -1371,9 +1403,6 @@ export class CorptieStore {
     const providerId = requiredText(binding?.providerId ?? sourceBinding?.providerId ?? "codex-app-server", "providerId");
     const providerSessionId = requiredText(binding?.providerSessionId ?? newThreadId, "providerSessionId");
     const bindingId = requiredText(binding?.bindingId ?? `binding:${randomUUID()}`, "bindingId");
-    if (providerSessionId !== newThreadId) {
-      throw new Error("providerSessionId must match providerThreadId during the compatibility migration.");
-    }
     const boundCwd = requiredText(binding?.boundCwd, "boundCwd");
     const target = transition.targetWorktreeId
       ? this.selectOne(
@@ -1504,6 +1533,37 @@ export class CorptieStore {
       [logicalSessionId]
     );
     return row ? workspaceTransitionFromRow(row) : null;
+  }
+
+  listWorkspaceTransitionsAwaitingContinuation() {
+    return this.selectAll(
+      `SELECT * FROM workspace_transitions
+       WHERE phase = 'committed' AND continuation_state IN ('pending', 'queued', 'running', 'failed')
+       ORDER BY created_at ASC`
+    ).map(workspaceTransitionFromRow);
+  }
+
+  updateWorkspaceTransitionContinuation(transitionId, update = {}) {
+    const transition = this.getWorkspaceTransition(transitionId);
+    if (!transition) throw new Error(`Workspace transition ${transitionId} was not found.`);
+    const states = new Set(["none", "pending", "queued", "running", "completed", "failed"]);
+    const state = update.state ?? transition.continuationState;
+    if (!states.has(state)) throw new Error(`Unsupported workspace continuation state: ${state}`);
+    const timestamp = update.updatedAt || new Date().toISOString();
+    this.db.run(
+      `UPDATE workspace_transitions
+       SET continuation_state = ?, continuation_turn_id = ?, continuation_error = ?, updated_at = ?
+       WHERE transition_id = ?`,
+      [
+        state,
+        Object.hasOwn(update, "turnId") ? update.turnId : transition.continuationTurnId,
+        Object.hasOwn(update, "error") ? update.error : transition.continuationError,
+        timestamp,
+        transitionId
+      ]
+    );
+    this.scheduleSave();
+    return this.getWorkspaceTransition(transitionId);
   }
 
   listPendingWorkspaceTransitions() {
@@ -2244,9 +2304,10 @@ export class CorptieStore {
     this.db.run(
       "CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_thread_bindings_binding_id ON provider_thread_bindings(binding_id)"
     );
+    this.db.run("DROP INDEX IF EXISTS idx_provider_thread_bindings_provider_session");
     this.db.run(
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_thread_bindings_provider_session
-       ON provider_thread_bindings(provider_id, provider_session_id)`
+       ON provider_thread_bindings(provider_id, provider_session_id) WHERE state = 'active'`
     );
   }
 
@@ -2489,6 +2550,10 @@ function workspaceTransitionFromRow(row) {
     lastCompletedTurnId: row.last_completed_turn_id,
     newThreadId: row.new_thread_id,
     resumeGoalAfterTransition: Boolean(row.resume_goal_after_transition),
+    continuationPrompt: row.continuation_prompt || null,
+    continuationState: row.continuation_state || "none",
+    continuationTurnId: row.continuation_turn_id || null,
+    continuationError: row.continuation_error || null,
     phase: row.phase,
     strategy: row.strategy,
     error: parseJson(row.error_json, null),

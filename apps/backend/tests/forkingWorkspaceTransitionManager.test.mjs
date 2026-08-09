@@ -80,7 +80,7 @@ test("workspace transition waits for an active turn then atomically routes a for
     assert.equal(result.logicalSession.routingVersion, 2);
     assert.equal(calls[0].method, "fork");
     assert.equal(calls[0].options.lastTurnId, "turn-7");
-    assert.equal(calls[0].options.deferGoalContinuation, false);
+    assert.equal(calls[0].options.deferGoalContinuation, true);
     assert.equal(result.transition.resumeGoalAfterTransition, true);
     assert.deepEqual(calls[0].options.runtimeWorkspaceRoots, [fixture.feature]);
     assert.equal(calls[1].method, "settings");
@@ -494,7 +494,7 @@ test("workspace path rewriting changes only the moved workspace prefix", () => {
   });
 });
 
-test("restart recovery preserves automatic goal continuation for an in-turn workspace switch", async () => {
+test("restart recovery defers Provider-native goal continuation to Corptie's durable queue", async () => {
   const fixture = await createFixture("recover-waiting-goal");
   fixture.store.beginWorkspaceTransition({
     transitionId: "transition:recover-waiting-goal",
@@ -519,7 +519,7 @@ test("restart recovery preserves automatic goal continuation for an in-turn work
       async forkThread(threadId, options) {
         assert.equal(threadId, "thread-source");
         assert.equal(options.lastTurnId, "turn-7");
-        assert.equal(options.deferGoalContinuation, false);
+        assert.equal(options.deferGoalContinuation, true);
         return {
           thread: { id: "thread-recovered-goal", cwd: fixture.feature },
           cwd: fixture.feature,
