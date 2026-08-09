@@ -281,22 +281,35 @@ export class ClaudeAgentManager {
     if (!session) {
       throw new Error("Claude session not found");
     }
-    if (!session.query) {
+    if (!session.query && session.turnState === "idle" && session.status !== "running") {
       throw new Error("Claude session is not active");
     }
     const query = session.query;
     const queryTask = session.queryTask;
     session.interruptRequested = true;
-    try {
-      await query.interrupt();
-    } finally {
+    if (query) {
+      try {
+        await query.interrupt();
+      } catch (error) {
+        // Closing the Query below is the authoritative cancellation path. The
+        // SDK can reject interrupt() when its child process has already exited.
+        console.warn(`[claude-sdk] interrupt request failed id=${session.id}: ${error?.message || String(error)}`);
+      }
+
       // Claude background agents share the Query stream with their parent turn.
       // Interrupting only the foreground turn can leave those agents alive, so
       // close the entire stream and resume it lazily on the next user message.
       session.queryClosed = true;
       session.inputQueue = [];
       for (const resolve of session.inputResolvers.splice(0)) resolve(null);
-      await query.close().catch(() => {});
+      try {
+        // Claude Agent SDK's Query.close() currently returns void, while some
+        // test doubles and older versions return a Promise. `await` supports
+        // both contracts; calling `.catch()` on the void result does not.
+        await query.close();
+      } catch (error) {
+        console.warn(`[claude-sdk] query close failed id=${session.id}: ${error?.message || String(error)}`);
+      }
       if (queryTask) await queryTask.catch(() => {});
       session.query = null;
       session.queryTask = null;
@@ -309,6 +322,7 @@ export class ClaudeAgentManager {
     session.activeTaskIds.clear();
     session.deferredResult = null;
     session.lastResult = null;
+    session.interruptRequested = false;
     session.turnState = "idle";
     session.phase = "ready";
     session.status = "complete";
