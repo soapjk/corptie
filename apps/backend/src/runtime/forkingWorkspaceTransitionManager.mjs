@@ -28,17 +28,21 @@ export class ForkingWorkspaceTransitionManager {
       : "fork";
     const activeTurnId = input.activeTurnId || null;
     const lastCompletedTurnId = input.lastCompletedTurnId || null;
+    const transitionId = input.transitionId || `workspace-transition:${randomUUID()}`;
     if (!activeTurnId && !lastCompletedTurnId) {
       throw new Error("A completed source turn is required before forking a workspace.");
     }
     const transition = this.store.beginWorkspaceTransition({
-      transitionId: input.transitionId || `workspace-transition:${randomUUID()}`,
+      transitionId,
       logicalSessionId: input.logicalSessionId,
       targetWorktreeId: target.worktreeId,
       targetCwd: target.canonicalPath || target.path,
       sourceRoutingVersion: logical.routingVersion,
       lastCompletedTurnId,
       resumeGoalAfterTransition: Boolean(activeTurnId),
+      continuationPrompt: activeTurnId
+        ? workspaceContinuationPrompt(input.continuationPrompt, transitionId)
+        : null,
       strategy,
       phase: activeTurnId ? "waitingForTurn" : "preflighting"
     });
@@ -59,17 +63,21 @@ export class ForkingWorkspaceTransitionManager {
     }
     const activeTurnId = input.activeTurnId || null;
     const lastCompletedTurnId = input.lastCompletedTurnId || null;
+    const transitionId = input.transitionId || `session-restart:${randomUUID()}`;
     if (!activeTurnId && !lastCompletedTurnId) {
       throw new Error("A completed source turn is required before restarting a session.");
     }
     const transition = this.store.beginWorkspaceTransition({
-      transitionId: input.transitionId || `session-restart:${randomUUID()}`,
+      transitionId,
       logicalSessionId: input.logicalSessionId,
       targetWorktreeId: logical.activeWorkspaceId,
       targetCwd: logical.activeBinding.boundCwd,
       sourceRoutingVersion: logical.routingVersion,
       lastCompletedTurnId,
       resumeGoalAfterTransition: Boolean(activeTurnId),
+      continuationPrompt: activeTurnId
+        ? workspaceContinuationPrompt(input.continuationPrompt, transitionId)
+        : null,
       strategy: "fork",
       phase: activeTurnId ? "waitingForTurn" : "preflighting"
     });
@@ -142,7 +150,9 @@ export class ForkingWorkspaceTransitionManager {
           candidateResponse = await this.providerPort.forkThread(transition.sourceThreadId, {
             ...threadOptions,
             lastTurnId: lastCompletedTurnId,
-            deferGoalContinuation: !transition.resumeGoalAfterTransition
+            // Corptie owns continuation delivery above the Provider boundary.
+            // Native Provider goal continuation would race that durable delivery.
+            deferGoalContinuation: true
           });
         } catch (error) {
           if (!isForkUnsupported(error) || input.allowHandoffFallback === false) throw error;
@@ -222,6 +232,8 @@ export class ForkingWorkspaceTransitionManager {
       if (input.sandboxPolicy) permissionSnapshot.sandboxPolicy = input.sandboxPolicy;
       const switched = this.store.commitWorkspaceTransition(transitionId, {
         providerThreadId: newThreadId,
+        providerId: candidateResponse.providerId,
+        providerSessionId: candidateResponse.providerSessionId,
         boundCwd: targetCwd,
         forkedAtTurnId: lastCompletedTurnId,
         instructionSources: instructionValidation.instructionSources,
@@ -266,6 +278,8 @@ export class ForkingWorkspaceTransitionManager {
           forkedAtTurnId: lastCompletedTurnId,
           instructionSources: candidateResponse.instructionSources ?? [],
           permissionSnapshot: permissionSnapshotFromAppServerResponse(candidateResponse),
+          providerId: candidateResponse.providerId,
+          providerSessionId: candidateResponse.providerSessionId,
           routingVersion: transition.sourceRoutingVersion + 1,
           state: instructionValidation && !instructionValidation.valid ? "invalid" : "orphaned"
         });
@@ -397,6 +411,8 @@ export class ForkingWorkspaceTransitionManager {
       });
       const switched = this.store.commitWorkspaceTransition(transitionId, {
         providerThreadId: transition.newThreadId,
+        providerId: response.providerId,
+        providerSessionId: response.providerSessionId,
         boundCwd: targetCwd,
         forkedAtTurnId: transition.lastCompletedTurnId,
         instructionSources: validation.instructionSources,
@@ -579,6 +595,19 @@ export class ForkingWorkspaceTransitionManager {
       headOid: null
     };
   }
+}
+
+export function workspaceContinuationPrompt(value = null, transitionId = null) {
+  const remaining = typeof value === "string" ? value.trim() : "";
+  return [
+    transitionId ? `<corptie_workspace_continuation id="${transitionId}">` : "<corptie_workspace_continuation>",
+    "Corptie has finished switching this Session to the requested Worktree.",
+    "Continue the task that was in progress before the switch from the current checkpoint.",
+    "Do not repeat completed work. Re-inspect the current workspace state, then carry out the remaining steps autonomously.",
+    "If this continuation id already appears earlier in Provider context, treat this delivery as recovery: do not duplicate finished changes and continue only genuinely remaining work.",
+    remaining ? `Checkpoint supplied before the switch:\n${remaining}` : null,
+    "</corptie_workspace_continuation>"
+  ].filter(Boolean).join("\n\n");
 }
 
 function coarseSandboxMode(sandboxPolicy) {

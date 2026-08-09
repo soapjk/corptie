@@ -3,6 +3,16 @@ import { createClaudeAgentSdkProvider } from "../providers/claudeAgentSdkProvide
 
 export function createClaudeProviderRuntime(options = {}) {
   if (!options.store) throw new TypeError("Claude Provider bootstrap requires a store.");
-  const manager = new ClaudeAgentManager({ store: options.store });
-  return createClaudeAgentSdkProvider(manager, { listModels: options.listModels });
+  const manager = new ClaudeAgentManager({
+    store: options.store,
+    onTurnSettled: options.onTurnSettled,
+    resolveRuntimeOptions: options.resolveRuntimeOptions
+  });
+  const provider = createClaudeAgentSdkProvider(manager, {
+    listModels: options.listModels,
+    prepareWorkspaceTransition: options.prepareWorkspaceTransition,
+    attachTools: options.attachTools
+  });
+  provider.manager = manager;
+  return provider;
 }

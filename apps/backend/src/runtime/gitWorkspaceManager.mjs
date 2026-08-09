@@ -70,6 +70,7 @@ export class GitWorkspaceManager {
         targetWorktreeId: created.worktreeId,
         activeTurnId: input.activeTurnId,
         lastCompletedTurnId: input.lastCompletedTurnId,
+        continuationPrompt: input.continuationPrompt,
         dynamicToolAgentId: input.dynamicToolAgentId,
         config: input.config,
         developerInstructions: input.developerInstructions

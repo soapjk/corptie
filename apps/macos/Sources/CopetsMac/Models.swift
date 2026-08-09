@@ -109,6 +109,7 @@ struct SessionWorkspace: Codable, Equatable, Sendable {
     let headOid: String?
     var transitionStrategy: String? = nil
     var previousThreadId: String? = nil
+    var continuationState: String? = nil
 }
 
 struct WorkspaceRecoveryStatus: Decodable, Equatable, Sendable {
