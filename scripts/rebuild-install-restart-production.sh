@@ -234,7 +234,7 @@ else
 fi
 
 echo "Building production installers from the current checkout..."
-BUILD_LOG="$(mktemp /tmp/corptie-production-build-XXXXXX.log)"
+BUILD_LOG="$(mktemp /tmp/corptie-production-build-XXXXXX)"
 "${ROOT}/scripts/package-macos-installer.sh" | tee "${BUILD_LOG}"
 PKG_PATH="$(sed -n 's/^Built production installer package: //p' "${BUILD_LOG}" | tail -1)"
 DMG_PATH="$(sed -n 's/^Built production dmg: //p' "${BUILD_LOG}" | tail -1)"
