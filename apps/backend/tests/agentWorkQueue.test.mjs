@@ -9,7 +9,11 @@ import {
   reconcileAuthoritativeRunState,
   sessionHasActiveRun
 } from "../src/utils/sessionPresentation.mjs";
-import { annotateAgentWorkDetailItems, shouldReportAgentWorkQueued } from "../src/utils/agentWorkQueue.mjs";
+import {
+  annotateAgentWorkDetailItems,
+  interruptedAgentWorkRecoveryPatch,
+  shouldReportAgentWorkQueued
+} from "../src/utils/agentWorkQueue.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-work-queue-test-"));
@@ -44,6 +48,25 @@ test("a message reports queued when an Agent is busy or work is ahead", () => {
   assert.equal(shouldReportAgentWorkQueued({ sessionHasActiveRun: true }), true);
   assert.equal(shouldReportAgentWorkQueued({ hasRunningWorkItem: true }), true);
   assert.equal(shouldReportAgentWorkQueued({ queuedWorkItemsAhead: 1 }), true);
+});
+
+test("orphaned dispatched work is cancelled while pre-dispatch work is requeued", () => {
+  assert.deepEqual(interruptedAgentWorkRecoveryPatch({
+    status: "running",
+    targetTurnId: "turn-interrupted"
+  }), {
+    status: "cancelled",
+    lastError: "Provider stopped after dispatch; message was not resent."
+  });
+  assert.deepEqual(interruptedAgentWorkRecoveryPatch({
+    status: "running",
+    targetTurnId: null
+  }), {
+    status: "queued",
+    startedAt: null,
+    targetTurnId: null,
+    lastError: "Provider stopped before dispatch; work was requeued."
+  });
 });
 
 test("a Feishu work item hides its matching session user message during turn startup", () => {
@@ -123,6 +146,36 @@ test("a running work item is recovered to queued after restart", async () => {
     const recovered = reopened.getAgentWorkItem("user-1");
     assert.equal(recovered.status, "queued");
     assert.match(recovered.lastError, /restart/);
+  } finally {
+    if (store.saveTimer) clearTimeout(store.saveTimer);
+    if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("restart recovery does not requeue dispatched collaboration work", async () => {
+  const { directory, dbPath, store } = await fixture();
+  let reopened = null;
+  try {
+    enqueue(store, {
+      workItemId: "collaboration-dispatched",
+      kind: "collaboration",
+      priority: 50
+    });
+    store.claimAgentWorkItem("collaboration-dispatched");
+    store.updateAgentWorkItem("collaboration-dispatched", { targetTurnId: "turn-interrupted" });
+    if (store.saveTimer) {
+      clearTimeout(store.saveTimer);
+      store.saveTimer = null;
+    }
+    await store.save();
+
+    reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await reopened.initialize();
+
+    const recovered = reopened.getAgentWorkItem("collaboration-dispatched");
+    assert.equal(recovered.status, "cancelled");
+    assert.match(recovered.lastError, /not resent/);
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
