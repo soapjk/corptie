@@ -100,7 +100,19 @@ test("Claude Provider maps the common attachment to MCP, skills, and project set
   assert.equal(mapped.plugins[0].path, "/runtime/corptie-plugin");
   assert.equal(mapped.skills, "all");
   assert.deepEqual(mapped.settingSources, ["user", "project", "local"]);
+  assert.deepEqual(mapped.disallowedTools, ["EnterWorktree", "ExitWorktree"]);
   assert.match(mapped.systemPrompt.append, /agent-claude/);
+});
+
+test("Claude Provider preserves extra native tool restrictions while reserving Worktree routing for Corptie", () => {
+  const mapped = claudeToolHostAttachment({
+    actorId: "agent-claude",
+    tools: [{ name: "corptie_create_worktree" }]
+  }, {
+    disallowedTools: ["WebSearch", "EnterWorktree"]
+  });
+
+  assert.deepEqual(mapped.disallowedTools, ["EnterWorktree", "ExitWorktree", "WebSearch"]);
 });
 
 test("Session creation passes a prepared Tool Host attachment without knowing Provider mechanics", async () => {

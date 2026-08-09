@@ -1634,6 +1634,11 @@ export function normalizeClaudeRuntimeOptions(input = {}) {
   if (Array.isArray(input.settingSources)) {
     result.settingSources = [...input.settingSources];
   }
+  if (Array.isArray(input.disallowedTools)) {
+    result.disallowedTools = [...new Set(input.disallowedTools.filter((tool) => {
+      return typeof tool === "string" && tool.trim();
+    }).map((tool) => tool.trim()))];
+  }
   if (typeof input.systemPrompt === "string" || Array.isArray(input.systemPrompt) || input.systemPrompt?.type === "preset") {
     result.systemPrompt = input.systemPrompt;
   }
