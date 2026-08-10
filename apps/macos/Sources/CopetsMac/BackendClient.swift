@@ -939,50 +939,78 @@ final class BackendClient: ObservableObject {
         respondToCodexApproval(option: fallback)
     }
 
-    func respondToPtyChoice(option: CodexApprovalOption, choiceId: String? = nil) {
-        guard let session = selectedSession else {
+    func respondToPtyChoice(option: CodexApprovalOption, choiceId: String? = nil, in targetSession: TaskSession? = nil) {
+        guard let session = targetSession ?? selectedSession else {
             sendStatusMessage = L10n("No terminal choice is active.")
             return
         }
 
         Task {
-            isSendingMessage = true
-            sendStatusMessage = L10n("Selecting option...")
-            defer { isSendingMessage = false }
+            await submitChoice(option: option, choiceId: choiceId, in: session)
+        }
+    }
 
-            do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/approve"))
-                request.httpMethod = "POST"
-                request.setValue("application/json", forHTTPHeaderField: "content-type")
-                var body: [String: Any] = [
-                    "optionId": option.id,
-                    "optionIndex": option.index ?? 0,
-                    "itemType": "choice",
-                    "approved": true
-                ]
-                if let choiceId, !choiceId.isEmpty {
-                    body["choiceId"] = choiceId
-                }
-                request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    throw URLError(.badServerResponse)
-                }
-                guard (200..<300).contains(httpResponse.statusCode) else {
-                    throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
-                }
-
-                if let choiceId, !choiceId.isEmpty {
-                    markChoiceHandled(choiceId: choiceId, selectedOptionId: option.id)
-                }
-                sendStatusMessage = L10nFormat("Selected %@", option.label)
-                await loadDetail(for: session)
-                await refresh()
-            } catch {
-                lastError = error.localizedDescription
-                sendStatusMessage = L10nFormat("Choice failed: %@", error.localizedDescription)
+    func respondToSuggestedOption(_ option: CodexApprovalOption, in session: TaskSession) {
+        Task {
+            let detail = await fetchDetail(for: session)
+            if let choiceId = SuggestedOptionRouting.pendingChoiceId(
+                for: option.id,
+                items: detail?.items ?? []
+            ) {
+                await submitChoice(option: option, choiceId: choiceId, in: session)
+            } else {
+                sendText(
+                    option.label,
+                    to: session,
+                    reloadDetail: selectedSession?.id == session.id,
+                    isChoiceSelection: true,
+                    onSuccess: {}
+                )
             }
+        }
+    }
+
+    private func submitChoice(option: CodexApprovalOption, choiceId: String?, in session: TaskSession) async {
+        isSendingMessage = true
+        sendStatusMessage = L10n("Selecting option...")
+        defer { isSendingMessage = false }
+
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/approve"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            var body: [String: Any] = [
+                "optionId": option.id,
+                "optionIndex": option.index ?? 0,
+                "itemType": "choice",
+                "approved": true
+            ]
+            if let choiceId, !choiceId.isEmpty {
+                body["choiceId"] = choiceId
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
+            }
+
+            if let choiceId, !choiceId.isEmpty {
+                markChoiceHandled(choiceId: choiceId, selectedOptionId: option.id)
+            }
+            sendStatusMessage = L10nFormat("Selected %@", option.label)
+            if selectedSession?.id == session.id {
+                await loadDetail(for: session)
+            } else if let detail = await fetchDetail(for: session) {
+                syncSessionSummary(from: detail)
+            }
+            await refresh()
+        } catch {
+            lastError = error.localizedDescription
+            sendStatusMessage = L10nFormat("Choice failed: %@", error.localizedDescription)
         }
     }
 
@@ -3071,6 +3099,16 @@ private func choiceParserTestMessage(durationMs: Int?) -> String {
     }
     let seconds = Double(durationMs) / 1000
     return L10nFormat("Test passed in %.1f s", seconds)
+}
+
+enum SuggestedOptionRouting {
+    static func pendingChoiceId(for optionId: String, items: [CodexThreadItem]) -> String? {
+        items.reversed().first { item in
+            item.type == "choice"
+                && item.status != "selected"
+                && (item.options ?? []).contains(where: { $0.id == optionId })
+        }?.id
+    }
 }
 
 @MainActor
