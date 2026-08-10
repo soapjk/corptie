@@ -77,6 +77,7 @@ import {
   resolveNewCodexRuntimeConfig
 } from "./utils/newSessionDefaults.mjs";
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
+import { mergeSupplementalTimelineItems } from "./utils/sessionItemTimeline.mjs";
 import { collaborationMcpServerName } from "./utils/collaborationRuntime.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "./collaboration/collaborationDynamicTools.mjs";
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
@@ -262,6 +263,8 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
     updatePermissions: updateCodexProviderPermissions,
+    readAccountUsage: readCodexProviderAccountUsage,
+    readSessionUsage: readCodexProviderSessionUsage,
     prepareWorkspaceTransition: switchCodexProviderWorkspace,
     attachTools: (attachment) => codexToolHostAttachment(
       attachment,
@@ -2758,7 +2761,7 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
     collaborationConfirmationStatus: confirmation.status,
     collaborationTaskId: confirmation.taskId
   }));
-  return [...annotated, ...queued, ...confirmations];
+  return [...mergeSupplementalTimelineItems(annotated, confirmations), ...queued];
 }
 
 function collaborationPresentationForWorkItem(workItem) {
@@ -2782,27 +2785,27 @@ function collaborationPresentationForWorkItem(workItem) {
 }
 
 async function getGatewayUsage(sessionId = null) {
-  const session = sessionId
-    ? listGatewaySessions().find((item) => item.id === sessionId) ?? null
-    : null;
-  const provider = String(session?.external?.provider ?? "").toLowerCase();
-  const agent = String(session?.agent ?? "").toLowerCase();
-  if (provider === "claude-sdk" || agent.includes("claude")) {
-    return {
-      available: false,
-      provider: "claude",
-      model: session?.external?.currentModel ?? null,
-      message: "当前会话使用 Claude Code，暂时没有可查询的账户额度百分比。"
-    };
-  }
+  if (sessionId) return sessionApplicationService.readAccountUsage(sessionId);
+  return readCodexProviderAccountUsage(null);
+}
 
+async function readCodexProviderAccountUsage(reference = null) {
   const usage = await codexRuntime.readAccountRateLimits();
   return {
     available: true,
     provider: "codex",
-    model: session?.external?.currentModel ?? null,
+    model: reference?.metadata?.session?.external?.currentModel ?? null,
     ...usage
   };
+}
+
+async function readCodexProviderSessionUsage(reference) {
+  const threadId = reference?.providerSessionId;
+  if (!threadId) return null;
+  const live = codexRuntime.tokenUsageForThread(threadId);
+  if (live) return live;
+  const rollout = await findCodexRolloutBySessionId(threadId);
+  return readCodexRolloutTokenUsage(rollout?.path);
 }
 
 async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desktop" }, options = {}) {
@@ -4437,12 +4440,12 @@ function route(request, response) {
       sendJson(response, 404, { error: "Session not found." });
       return;
     }
-    const threadId = session.external?.threadId;
-    Promise.all([
-      getGatewayUsage(sessionId),
-      resolveSessionContextUsage(session)
-    ])
-      .then(([account, context]) => sendJson(response, 200, { account, context }))
+    sessionApplicationService.readAccountUsage(sessionId)
+      .then(async (account) => ({
+        account,
+        context: await sessionApplicationService.readSessionUsage(sessionId)
+      }))
+      .then((usage) => sendJson(response, 200, usage))
       .catch((error) => sendJson(response, 503, { error: error.message }));
     return;
   }
@@ -5692,16 +5695,6 @@ function route(request, response) {
   }
 
   sendJson(response, 404, { error: "Not found" });
-}
-
-async function resolveSessionContextUsage(session) {
-  if (session.external?.provider !== "codex-app-server") return null;
-  const threadId = session.external?.threadId;
-  if (!threadId) return null;
-  const live = codexRuntime.tokenUsageForThread(threadId);
-  if (live) return live;
-  const rollout = await findCodexRolloutBySessionId(threadId);
-  return readCodexRolloutTokenUsage(rollout?.path);
 }
 
 const server = http.createServer(route);

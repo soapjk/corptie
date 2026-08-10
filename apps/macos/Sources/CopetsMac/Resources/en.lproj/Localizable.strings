@@ -41,6 +41,7 @@
 "协作任务" = "Collaboration Task";
 "Context" = "Context";
 "Codex quota" = "Codex quota";
+"Claude quota" = "Claude quota";
 "Tasks are still running" = "Tasks are still running";
 "There are %d unfinished conversations. Quitting will stop the backend and interrupt all of them. Current work may be lost.\n\n%@%@" = "There are %d unfinished conversations. Quitting will stop the backend and interrupt all of them. Current work may be lost.\n\n%@%@";
 "and %d more tasks" = "and %d more tasks";
