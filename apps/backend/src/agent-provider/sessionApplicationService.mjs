@@ -229,6 +229,26 @@ export class SessionApplicationService {
     );
   }
 
+  async readAccountUsage(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ,
+      reference,
+      context
+    );
+  }
+
+  async readSessionUsage(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
+      reference,
+      context
+    );
+  }
+
   async referenceFor(sessionId) {
     const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!normalizedSessionId) throw new SessionNotFoundError(String(sessionId ?? ""));

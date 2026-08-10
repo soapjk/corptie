@@ -21,6 +21,8 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
   AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
   AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
+  AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
   AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE
 ]) {
   const calls = [];
@@ -74,6 +76,14 @@ function fixture(capabilities = [
     switchModel: async (...args) => calls.push(["switchModel", ...args]),
     switchReasoning: async (...args) => calls.push(["switchReasoning", ...args]),
     updatePermissions: async (...args) => calls.push(["updatePermissions", ...args]),
+    readAccountUsage: async (...args) => {
+      calls.push(["readAccountUsage", ...args]);
+      return { provider: "fake", available: true };
+    },
+    readSessionUsage: async (...args) => {
+      calls.push(["readSessionUsage", ...args]);
+      return { usedTokens: 10, contextWindow: 100 };
+    },
     manageTurnChanges: async (...args) => calls.push(["manageTurnChanges", ...args])
   });
   const registry = new AgentProviderRegistry([provider]);
@@ -172,6 +182,15 @@ test("Session application service exposes Provider model catalogs through capabi
   const result = await service.listModels("fake.provider", { refresh: true });
   assert.deepEqual(result, { models: [{ id: "fake-model" }] });
   assert.deepEqual(calls, [["listModels", { refresh: true }]]);
+});
+
+test("Session application service routes account and context usage through the active Provider", async () => {
+  const { calls, service } = fixture();
+  assert.deepEqual(await service.readAccountUsage("logical-a"), { provider: "fake", available: true });
+  assert.deepEqual(await service.readSessionUsage("logical-a"), { usedTokens: 10, contextWindow: 100 });
+  assert.deepEqual(calls.map((call) => call[0]), ["readAccountUsage", "readSessionUsage"]);
+  assert.equal(calls[0][1].providerSessionId, "native-a");
+  assert.equal(calls[1][1].providerSessionId, "native-a");
 });
 
 test("Session application service exposes the same operations for every Provider", async () => {
