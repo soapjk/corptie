@@ -133,6 +133,41 @@ export class ClaudeAgentManager {
     return this.detail(id);
   }
 
+  async readSessionUsage(id) {
+    try {
+      const session = await this.sessionForOperation(id);
+      const query = await this.ensureQueryStarted(session);
+      if (typeof query?.getContextUsage !== "function") return null;
+      const usage = await query.getContextUsage();
+      const usedTokens = finiteNumber(usage?.totalTokens);
+      const contextWindow = finiteNumber(usage?.maxTokens);
+      if (usedTokens === null || contextWindow === null || contextWindow <= 0) return null;
+      return {
+        usedTokens,
+        contextWindow,
+        remainingTokens: Math.max(0, contextWindow - usedTokens),
+        usedPercent: finiteNumber(usage?.percentage)
+          ?? Math.max(0, Math.min(100, usedTokens / contextWindow * 100))
+      };
+    } catch (error) {
+      console.log(`[claude-sdk] context usage unavailable id=${id}: ${error?.message || String(error)}`);
+      return null;
+    }
+  }
+
+  async readAccountUsage(id) {
+    try {
+      const session = await this.sessionForOperation(id);
+      const query = await this.ensureQueryStarted(session);
+      const readUsage = query?.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+      if (typeof readUsage !== "function") return unavailableClaudeAccountUsage(session.currentModel);
+      return normalizeClaudeAccountUsage(await readUsage.call(query), session.currentModel);
+    } catch (error) {
+      console.log(`[claude-sdk] account usage unavailable id=${id}: ${error?.message || String(error)}`);
+      return unavailableClaudeAccountUsage(this.get(id)?.currentModel);
+    }
+  }
+
   subscribeDetail(id, response) {
     const session = this.get(id);
     if (!session) {
@@ -582,28 +617,36 @@ export class ClaudeAgentManager {
   }
 
   async ensureQueryStarted(session) {
-    if (session.query) {
+    if (session.query) return session.query;
+    if (session.queryStartTask) return session.queryStartTask;
+    const startTask = (async () => {
+      if (session.query) return session.query;
+      console.log(`[claude-sdk] query starting id=${session.id} resume=${session.agentSessionId ?? ""}`);
+      session.queryClosed = false;
+      const permissionOptions = claudePermissionOptions(session);
+      const runtimeOptions = await this.runtimeOptionsFor(session);
+      session.query = this.queryFactory({
+        prompt: this.inputStream(session),
+        options: {
+          cwd: session.cwd,
+          resume: session.agentSessionId || undefined,
+          persistSession: true,
+          model: session.currentModel || undefined,
+          ...runtimeOptions,
+          ...permissionOptions,
+          canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
+        }
+      });
+      session.queryTask = this.consumeQuery(session);
+      this.persistSession(session);
       return session.query;
+    })();
+    session.queryStartTask = startTask;
+    try {
+      return await startTask;
+    } finally {
+      if (session.queryStartTask === startTask) session.queryStartTask = null;
     }
-    console.log(`[claude-sdk] query starting id=${session.id} resume=${session.agentSessionId ?? ""}`);
-    session.queryClosed = false;
-    const permissionOptions = claudePermissionOptions(session);
-    const runtimeOptions = await this.runtimeOptionsFor(session);
-    session.query = this.queryFactory({
-      prompt: this.inputStream(session),
-      options: {
-        cwd: session.cwd,
-        resume: session.agentSessionId || undefined,
-        persistSession: true,
-        model: session.currentModel || undefined,
-        ...runtimeOptions,
-        ...permissionOptions,
-        canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
-      }
-    });
-    session.queryTask = this.consumeQuery(session);
-    this.persistSession(session);
-    return session.query;
   }
 
   async runtimeOptionsFor(session) {
@@ -1719,6 +1762,61 @@ export function mergeClaudeTranscriptItems(transcriptItems = [], storedItems = [
     const createdAtOrder = String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
     return createdAtOrder || String(left.id ?? "").localeCompare(String(right.id ?? ""));
   });
+}
+
+function normalizeClaudeAccountUsage(usage, model = null) {
+  const windows = [];
+  const addWindow = (id, label, raw, durationMinutes) => {
+    const usedPercent = finiteNumber(raw?.utilization);
+    if (usedPercent === null) return;
+    windows.push([id, {
+      limitId: id,
+      limitName: label,
+      primary: {
+        usedPercent,
+        windowDurationMins: durationMinutes,
+        resetsAt: epochSeconds(raw?.resets_at)
+      },
+      secondary: null
+    }]);
+  };
+  addWindow("five_hour", "5 hour", usage?.rate_limits?.five_hour, 300);
+  addWindow("seven_day", "7 day", usage?.rate_limits?.seven_day, 10_080);
+  addWindow("seven_day_oauth_apps", "7 day OAuth apps", usage?.rate_limits?.seven_day_oauth_apps, 10_080);
+  addWindow("seven_day_opus", "7 day Opus", usage?.rate_limits?.seven_day_opus, 10_080);
+  addWindow("seven_day_sonnet", "7 day Sonnet", usage?.rate_limits?.seven_day_sonnet, 10_080);
+  for (const [index, raw] of (usage?.rate_limits?.model_scoped ?? []).entries()) {
+    addWindow(`model_scoped_${index}`, raw?.display_name || "Model", raw, 10_080);
+  }
+  return {
+    available: usage?.rate_limits_available === true && windows.length > 0,
+    provider: "claude",
+    model,
+    subscriptionType: usage?.subscription_type ?? null,
+    rateLimits: windows[0]?.[1] ?? null,
+    rateLimitsByLimitId: Object.fromEntries(windows)
+  };
+}
+
+function unavailableClaudeAccountUsage(model = null) {
+  return {
+    available: false,
+    provider: "claude",
+    model,
+    rateLimits: null,
+    rateLimitsByLimitId: {}
+  };
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function epochSeconds(value) {
+  const timestamp = Date.parse(String(value ?? ""));
+  return Number.isFinite(timestamp) ? timestamp / 1_000 : null;
 }
 
 function compareSessionOrder(left, right) {

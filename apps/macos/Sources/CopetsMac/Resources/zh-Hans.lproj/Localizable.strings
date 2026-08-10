@@ -356,6 +356,7 @@
 "Create the new session with the available name “%@”?" = "是否使用可用名称“%@”创建新会话？";
 "Context" = "上下文";
 "Codex quota" = "Codex 额度";
+"Claude quota" = "Claude 额度";
 "Log Directory" = "日志目录";
 "Choose a log directory" = "选择日志目录";
 "Choose log directory" = "选择日志目录";
