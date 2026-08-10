@@ -1877,7 +1877,7 @@ private struct DetachedSessionAccessoryView: View {
                                 || option.role?.localizedCaseInsensitiveContains("deny") == true {
                                 client.respondToCodexApproval(option: option, to: session)
                             } else {
-                                client.sendMessage(option.label, to: session, isChoiceSelection: true)
+                                client.respondToSuggestedOption(option, in: session)
                             }
                         }
                     )
