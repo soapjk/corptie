@@ -7,6 +7,67 @@ import {
   mergeClaudeTranscriptItems
 } from "../src/adapters/claudeAgentManager.mjs";
 
+test("Claude exposes context use and subscription rate-limit windows through its live SDK query", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-usage", model: "claude-opus" });
+  manager.get("claude-usage").query = {
+    async getContextUsage() {
+      return { totalTokens: 120_000, maxTokens: 200_000, percentage: 60 };
+    },
+    async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() {
+      return {
+        subscription_type: "max",
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 37.5, resets_at: "2026-08-10T12:00:00.000Z" },
+          seven_day: { utilization: 22, resets_at: "2026-08-17T00:00:00.000Z" }
+        }
+      };
+    }
+  };
+
+  assert.deepEqual(await manager.readSessionUsage("claude-usage"), {
+    usedTokens: 120_000,
+    contextWindow: 200_000,
+    remainingTokens: 80_000,
+    usedPercent: 60
+  });
+  const account = await manager.readAccountUsage("claude-usage");
+  assert.equal(account.available, true);
+  assert.equal(account.provider, "claude");
+  assert.equal(account.subscriptionType, "max");
+  assert.equal(account.rateLimitsByLimitId.five_hour.primary.usedPercent, 37.5);
+  assert.equal(account.rateLimitsByLimitId.five_hour.primary.windowDurationMins, 300);
+  assert.equal(account.rateLimitsByLimitId.seven_day.primary.windowDurationMins, 10_080);
+});
+
+test("Claude starts only one live Query when usage loading and sending connect concurrently", async () => {
+  let starts = 0;
+  const query = {
+    async *[Symbol.asyncIterator]() {},
+    async getContextUsage() { return { totalTokens: 1, maxTokens: 100, percentage: 1 }; },
+    async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() {
+      return { rate_limits_available: false, rate_limits: null };
+    }
+  };
+  const manager = new ClaudeAgentManager({
+    query: () => {
+      starts += 1;
+      return query;
+    }
+  });
+  manager.start({ id: "claude-concurrent-usage" });
+  const session = manager.get("claude-concurrent-usage");
+
+  await Promise.all([
+    manager.ensureQueryStarted(session),
+    manager.readSessionUsage("claude-concurrent-usage"),
+    manager.readAccountUsage("claude-concurrent-usage")
+  ]);
+
+  assert.equal(starts, 1);
+});
+
 test("Claude transcript loader pages past the SDK's earliest-message limit", async () => {
   const source = Array.from({ length: 7 }, (_, index) => ({ index }));
   const calls = [];

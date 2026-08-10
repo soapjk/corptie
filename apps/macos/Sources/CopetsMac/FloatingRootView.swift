@@ -4125,7 +4125,7 @@ private struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
 
     var body: some View {
-        if let usage, usage.account.provider == "codex" {
+        if let usage {
             HStack(alignment: .center, spacing: 10) {
                 if let context = usage.context,
                    let remaining = context.remainingTokens,
@@ -4148,7 +4148,7 @@ private struct ChatUsageBar: View {
                         value: "\(formatPercent(remainingPercent))%",
                         progress: remainingPercent / 100,
                         color: quotaColor(remainingPercent: remainingPercent),
-                        help: "\(L10n("Codex quota")): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
+                        help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
                     )
                 }
             }
@@ -4185,6 +4185,10 @@ private struct ChatUsageBar: View {
         let snapshots = account.rateLimitsByLimitId?.sorted { $0.key < $1.key }.map(\.value)
             ?? [account.rateLimits].compactMap { $0 }
         return snapshots.compactMap(\.primary).first
+    }
+
+    private func providerQuotaLabel(_ provider: String?) -> String {
+        provider == "claude" ? L10n("Claude quota") : L10n("Codex quota")
     }
 
     private func exactTokens(_ value: Double) -> String {

@@ -33,6 +33,8 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ...(typeof options.attachTools === "function"
         ? [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]
         : []),
+      AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   }, {
@@ -60,6 +62,8 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     ...(typeof options.attachTools === "function"
       ? { attachTools: options.attachTools }
       : {}),
+    readAccountUsage: (reference) => manager.readAccountUsage(reference.providerSessionId),
+    readSessionUsage: (reference) => manager.readSessionUsage(reference.providerSessionId),
     runBackgroundPrompt: (input) => manager.runBackgroundPrompt(input)
   });
 }
