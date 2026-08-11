@@ -583,3 +583,6 @@
 "Commit and Continue" = "提交并继续";
 "Continuing after Worktree switch" = "正在切换后的 Worktree 中继续任务";
 "Worktree continuation failed" = "Worktree 自动续跑失败";
+"Plan reset: %@" = "套餐重置：%@";
+"Tibo forecast: %@" = "Tibo预告：%@";
+"Tibo forecast: No upcoming reset announcement" = "Tibo预告：暂无即将重置的消息";
