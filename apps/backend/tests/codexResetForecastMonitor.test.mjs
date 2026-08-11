@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   CodexResetForecastMonitor,
   classifyCodexResetPost,
+  curlArgumentsForFeed,
   latestForecastFromItems,
   parseRssItems
 } from "../src/runtime/codexResetForecastMonitor.mjs";
@@ -84,4 +85,17 @@ test("monitor retains persisted forecast when the feed request fails", async () 
   assert.equal(snapshot.forecast.postId, "persisted");
   assert.equal(snapshot.sourceHealthy, false);
   assert.equal(writes.length, 1);
+});
+
+test("curl feed requests inherit the configured Codex proxy without changing the source URL", () => {
+  const args = curlArgumentsForFeed(
+    "https://nitter.net/thsottiaux/rss",
+    15_000,
+    "http://127.0.0.1:7890"
+  );
+  assert.deepEqual(args.slice(-3), [
+    "--proxy",
+    "http://127.0.0.1:7890",
+    "https://nitter.net/thsottiaux/rss"
+  ]);
 });
