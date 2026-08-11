@@ -648,6 +648,24 @@ struct UnifiedSessionSnapshotResponse: Decodable, Sendable {
 struct SessionUsageResponse: Decodable, Equatable {
     let account: CodexAccountUsage
     let context: CodexContextUsage?
+    var resetForecast: CodexResetForecastSnapshot? = nil
+}
+
+struct CodexResetForecastSnapshot: Decodable, Equatable {
+    let forecast: CodexResetForecast?
+    let checkedAt: String?
+    let sourceHealthy: Bool?
+    let sourceError: String?
+    let sourceUrl: String?
+}
+
+struct CodexResetForecast: Decodable, Equatable {
+    let postId: String
+    let text: String
+    let url: String?
+    let publishedAt: String
+    let estimateLabel: String
+    let expiresAt: String
 }
 
 struct SessionUsageEventEnvelope: Decodable {

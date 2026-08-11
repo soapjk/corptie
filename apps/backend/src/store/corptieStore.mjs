@@ -278,6 +278,12 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_session_events_cursor
       ON session_events(session_id, sequence);
 
+      CREATE TABLE IF NOT EXISTS runtime_state (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS feishu_bots (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -1882,6 +1888,25 @@ export class CorptieStore {
       turnCount: 1,
       items: canonicalCodexItems(id, session) ?? this.getItems(id, 240, session.external?.provider)
     };
+  }
+
+  getRuntimeState(key) {
+    const statement = this.db.prepare(
+      "SELECT value_json FROM runtime_state WHERE key = ?",
+      [String(key)]
+    );
+    return statement.step() ? parseJson(statement.getAsObject().value_json, null) : null;
+  }
+
+  setRuntimeState(key, value) {
+    this.db.run(
+      `INSERT INTO runtime_state (key, value_json, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(key) DO UPDATE SET
+         value_json=excluded.value_json,
+         updated_at=excluded.updated_at`,
+      [String(key), JSON.stringify(value ?? null), new Date().toISOString()]
+    );
   }
 
   archiveSession(id, archived = true) {

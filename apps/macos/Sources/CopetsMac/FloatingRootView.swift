@@ -4123,6 +4123,11 @@ private struct OrphanedWorkspaceRecoveryView: View {
 
 private struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
+    @AppStorage(
+        "codexResetNoticeAcknowledgedFingerprint",
+        store: CorptieAppEnvironment.userDefaults
+    ) private var acknowledgedResetNoticeFingerprint = ""
+    @State private var isResetNoticePresented = false
 
     var body: some View {
         if let usage {
@@ -4143,18 +4148,137 @@ private struct ChatUsageBar: View {
                 }
                 if let window = preferredRateLimitWindow(usage.account) {
                     let remainingPercent = max(0, 100 - (window.usedPercent ?? 0))
-                    usageItem(
-                        icon: "bolt.fill",
-                        value: "\(formatPercent(remainingPercent))%",
-                        progress: remainingPercent / 100,
-                        color: quotaColor(remainingPercent: remainingPercent),
-                        help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
-                    )
+                    if usage.account.provider == "codex" {
+                        Button {
+                            isResetNoticePresented = true
+                        } label: {
+                            usageItem(
+                                icon: "bolt.fill",
+                                value: "\(formatPercent(remainingPercent))%",
+                                progress: remainingPercent / 100,
+                                color: quotaColor(remainingPercent: remainingPercent),
+                                help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
+                            resetNoticePopover(usage: usage, window: window)
+                        }
+                    } else {
+                        usageItem(
+                            icon: "bolt.fill",
+                            value: "\(formatPercent(remainingPercent))%",
+                            progress: remainingPercent / 100,
+                            color: quotaColor(remainingPercent: remainingPercent),
+                            help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
+                        )
+                    }
                 }
             }
             .font(.system(size: 9, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
+            .onAppear {
+                presentResetNoticeIfNeeded(usage)
+            }
+            .onChange(of: resetNoticeFingerprint(usage)) { _, _ in
+                presentResetNoticeIfNeeded(usage)
+            }
+            .onChange(of: isResetNoticePresented) { _, presented in
+                guard !presented, resetNoticeRequiresAcknowledgement(usage) else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    isResetNoticePresented = true
+                }
+            }
         }
+    }
+
+    @ViewBuilder
+    private func resetNoticePopover(
+        usage: SessionUsageResponse,
+        window: CodexRateLimitWindow
+    ) -> some View {
+        let requiresAcknowledgement = resetNoticeRequiresAcknowledgement(usage)
+        VStack(alignment: .leading, spacing: 7) {
+            Label(
+                L10nFormat("Plan reset: %@", formattedResetDate(window.resetsAt)),
+                systemImage: "clock"
+            )
+            .lineLimit(1)
+
+            if let forecast = usage.resetForecast?.forecast {
+                Button {
+                    openResetForecast(forecast)
+                } label: {
+                    Label(
+                        L10nFormat("Tibo forecast: %@", forecast.estimateLabel),
+                        systemImage: "bubble.left"
+                    )
+                    .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .help(forecast.text)
+            } else {
+                Label(
+                    L10n("Tibo forecast: No upcoming reset announcement"),
+                    systemImage: "bubble.left"
+                )
+                .lineLimit(1)
+            }
+
+            if requiresAcknowledgement {
+                HStack {
+                    Spacer()
+                    Button(L10n("Confirm")) {
+                        acknowledgeResetNotice(usage)
+                    }
+                    .controlSize(.mini)
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(CorptiePalette.primaryText)
+        .padding(10)
+        .frame(width: 280)
+    }
+
+    private func presentResetNoticeIfNeeded(_ usage: SessionUsageResponse?) {
+        guard resetNoticeRequiresAcknowledgement(usage) else { return }
+        isResetNoticePresented = true
+    }
+
+    private func resetNoticeRequiresAcknowledgement(_ usage: SessionUsageResponse?) -> Bool {
+        guard let fingerprint = resetNoticeFingerprint(usage) else { return false }
+        return fingerprint != acknowledgedResetNoticeFingerprint
+    }
+
+    private func resetNoticeFingerprint(_ usage: SessionUsageResponse?) -> String? {
+        guard let usage else { return nil }
+        return CodexResetNoticeIdentity.fingerprint(
+            provider: usage.account.provider,
+            window: preferredRateLimitWindow(usage.account),
+            forecast: usage.resetForecast?.forecast
+        )
+    }
+
+    private func acknowledgeResetNotice(_ usage: SessionUsageResponse) {
+        guard let fingerprint = resetNoticeFingerprint(usage) else { return }
+        acknowledgedResetNoticeFingerprint = fingerprint
+        isResetNoticePresented = false
+    }
+
+    private func formattedResetDate(_ epochSeconds: Double?) -> String {
+        guard let epochSeconds else { return L10n("Unknown") }
+        return Date(timeIntervalSince1970: epochSeconds).formatted(
+            date: .abbreviated,
+            time: .shortened
+        )
+    }
+
+    private func openResetForecast(_ forecast: CodexResetForecast) {
+        guard let value = forecast.url, let url = URL(string: value) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String, numericValue: Double? = nil) -> some View {
