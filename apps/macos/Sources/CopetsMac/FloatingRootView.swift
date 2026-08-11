@@ -3533,7 +3533,13 @@ private struct DetailView: View {
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                LazyVStack(alignment: .leading, spacing: 8) {
+                // Dynamic-height Markdown and nested horizontal code scrollers can
+                // send LazyVStack's off-screen height estimator into a sustained
+                // layout loop on macOS. Keep the explicitly paged timeline eager
+                // until the bounded-window timeline store is available; a regular
+                // stack is slower for very large pages but avoids the lazy
+                // estimate loop observed in production.
+                VStack(alignment: .leading, spacing: 8) {
                     if hiddenCount > 0 {
                         Button {
                             let anchor = DetailHistoryScrollAnchor.resolve(
