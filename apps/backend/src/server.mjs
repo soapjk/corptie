@@ -5705,7 +5705,13 @@ function route(request, response) {
 const server = http.createServer(route);
 
 await store.initialize();
-codexResetForecastMonitor = new CodexResetForecastMonitor({ store });
+const codexResetProxy = store.settings().agentProxy?.codex;
+codexResetForecastMonitor = new CodexResetForecastMonitor({
+  store,
+  proxyUrl: codexResetProxy?.enabled
+    ? codexResetProxy.httpsProxy || codexResetProxy.httpProxy || codexResetProxy.allProxy
+    : null
+});
 codexResetForecastMonitor.start();
 const deactivatedOrphanedAgents = collaborationCore.deactivateAgentsWithMissingSessions();
 if (deactivatedOrphanedAgents.length > 0) {
