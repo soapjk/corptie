@@ -4128,6 +4128,7 @@ private struct ChatUsageBar: View {
         store: CorptieAppEnvironment.userDefaults
     ) private var acknowledgedResetNoticeFingerprint = ""
     @State private var isResetNoticePresented = false
+    @State private var resetNoticePresentationTask: Task<Void, Never>?
 
     var body: some View {
         if let usage {
@@ -4150,7 +4151,7 @@ private struct ChatUsageBar: View {
                     let remainingPercent = max(0, 100 - (window.usedPercent ?? 0))
                     if usage.account.provider == "codex" {
                         Button {
-                            isResetNoticePresented = true
+                            presentResetNoticeManually()
                         } label: {
                             usageItem(
                                 icon: "bolt.fill",
@@ -4178,17 +4179,26 @@ private struct ChatUsageBar: View {
             .font(.system(size: 9, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
             .onAppear {
-                presentResetNoticeIfNeeded(usage)
+                scheduleResetNoticeIfNeeded(usage)
             }
             .onChange(of: resetNoticeFingerprint(usage)) { _, _ in
-                presentResetNoticeIfNeeded(usage)
+                scheduleResetNoticeIfNeeded(usage)
             }
             .onChange(of: isResetNoticePresented) { _, presented in
-                guard !presented, resetNoticeRequiresAcknowledgement(usage) else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    isResetNoticePresented = true
-                }
+                guard !presented,
+                      let fingerprint = resetNoticeFingerprint(usage),
+                      CodexResetNoticePresentation.shouldPresent(
+                          fingerprint: fingerprint,
+                          acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+                      ) else { return }
+                scheduleResetNoticePresentation(
+                    after: CodexResetNoticePresentation.rearmDelay,
+                    requiredFingerprint: fingerprint
+                )
+            }
+            .onDisappear {
+                resetNoticePresentationTask?.cancel()
+                resetNoticePresentationTask = nil
             }
         }
     }
@@ -4243,14 +4253,67 @@ private struct ChatUsageBar: View {
         .frame(width: 280)
     }
 
-    private func presentResetNoticeIfNeeded(_ usage: SessionUsageResponse?) {
-        guard resetNoticeRequiresAcknowledgement(usage) else { return }
-        isResetNoticePresented = true
+    private func scheduleResetNoticeIfNeeded(_ usage: SessionUsageResponse?) {
+        guard let fingerprint = resetNoticeFingerprint(usage),
+              CodexResetNoticePresentation.shouldPresent(
+                  fingerprint: fingerprint,
+                  acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+              ) else { return }
+        scheduleResetNoticePresentation(
+            after: CodexResetNoticePresentation.automaticPresentationDelay,
+            requiredFingerprint: fingerprint
+        )
+    }
+
+    private func presentResetNoticeManually() {
+        resetNoticePresentationTask?.cancel()
+        resetNoticePresentationTask = nil
+        switch CodexResetNoticePresentation.manualAction(isPresented: isResetNoticePresented) {
+        case .present:
+            isResetNoticePresented = true
+        case .rearm:
+            // SwiftUI can leave the binding true when a popover was requested
+            // during the detail view's opening transition but AppKit could not
+            // attach it. Toggle the binding before presenting it again.
+            isResetNoticePresented = false
+            scheduleResetNoticePresentation(
+                after: CodexResetNoticePresentation.rearmDelay
+            )
+        }
+    }
+
+    private func scheduleResetNoticePresentation(
+        after delay: Duration,
+        requiredFingerprint: String? = nil
+    ) {
+        resetNoticePresentationTask?.cancel()
+        resetNoticePresentationTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            if let requiredFingerprint {
+                guard CodexResetNoticePresentation.shouldPresent(
+                    fingerprint: requiredFingerprint,
+                    acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+                ) else {
+                    resetNoticePresentationTask = nil
+                    return
+                }
+            }
+            isResetNoticePresented = true
+            resetNoticePresentationTask = nil
+        }
     }
 
     private func resetNoticeRequiresAcknowledgement(_ usage: SessionUsageResponse?) -> Bool {
         guard let fingerprint = resetNoticeFingerprint(usage) else { return false }
-        return fingerprint != acknowledgedResetNoticeFingerprint
+        return CodexResetNoticePresentation.shouldPresent(
+            fingerprint: fingerprint,
+            acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+        )
     }
 
     private func resetNoticeFingerprint(_ usage: SessionUsageResponse?) -> String? {
@@ -4264,6 +4327,8 @@ private struct ChatUsageBar: View {
 
     private func acknowledgeResetNotice(_ usage: SessionUsageResponse) {
         guard let fingerprint = resetNoticeFingerprint(usage) else { return }
+        resetNoticePresentationTask?.cancel()
+        resetNoticePresentationTask = nil
         acknowledgedResetNoticeFingerprint = fingerprint
         isResetNoticePresented = false
     }
