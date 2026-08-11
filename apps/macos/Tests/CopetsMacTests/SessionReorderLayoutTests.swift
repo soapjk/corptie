@@ -74,6 +74,37 @@ final class SessionReorderLayoutTests: XCTestCase {
         )
     }
 
+    func testTargetRemainsBasedOnMouseDownFramesAfterLiveRowsRelayout() {
+        let mouseDownFrames = [
+            "dragged": CGRect(x: 0, y: 20, width: 300, height: 80),
+            "second": CGRect(x: 0, y: 120, width: 300, height: 80),
+            "third": CGRect(x: 0, y: 220, width: 300, height: 80)
+        ]
+        let liveFramesAfterFirstMove = [
+            "second": CGRect(x: 0, y: 20, width: 300, height: 80),
+            "third": CGRect(x: 0, y: 120, width: 300, height: 80),
+            "dragged": CGRect(x: 0, y: 220, width: 300, height: 80)
+        ]
+
+        XCTAssertEqual(
+            SessionReorderLayout.insertionTargetSessionId(
+                forDraggedCenterY: 170,
+                excluding: "dragged",
+                using: mouseDownFrames,
+                eligibleIds: ["dragged", "second", "third"]
+            ),
+            "third"
+        )
+        XCTAssertNil(
+            SessionReorderLayout.insertionTargetSessionId(
+                forDraggedCenterY: 170,
+                excluding: "dragged",
+                using: liveFramesAfterFirstMove,
+                eligibleIds: ["dragged", "second", "third"]
+            )
+        )
+    }
+
     func testTargetIgnoresDraggedAndIneligibleSessions() {
         let frames = [
             "pinned": CGRect(x: 0, y: 20, width: 300, height: 80),
