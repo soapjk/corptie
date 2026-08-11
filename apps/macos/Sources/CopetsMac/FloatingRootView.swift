@@ -3533,11 +3533,16 @@ private struct DetailView: View {
 
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: 8) {
                     if hiddenCount > 0 {
                         Button {
+                            let anchor = DetailHistoryScrollAnchor.resolve(
+                                orderedEntryIds: displayEntries.map(\.id)
+                            )
+                            isFollowingLatest = false
                             visibleMessageLimit += 100
                             updateCachedDisplayEntries(for: detail)
+                            restoreHistoryScrollAnchor(anchor, proxy: proxy)
                         } label: {
                             Label(L10nFormat("Load %lld earlier messages", min(100, hiddenCount)), systemImage: "arrow.up.circle")
                                 .font(.system(size: 11, weight: .semibold))
@@ -3550,42 +3555,34 @@ private struct DetailView: View {
                     }
 
                     ForEach(displayEntries) { entry in
-                        switch entry.kind {
-                        case .message(let item):
-                            ThreadItemView(
-                                item: item,
-                                isCollaborationExpanded: collaborationExpansionBinding(for: item),
-                                isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
-                            )
-                                .id(entry.id)
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .identity
-                                ))
-                        case .userTurn(let item, let turnId, let processItems):
-                            ThreadItemView(
-                                item: item,
-                                processItems: processItems,
-                                isProcessExpanded: processExpansionBinding(for: turnId),
-                                isCollaborationExpanded: collaborationExpansionBinding(for: item),
-                                isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
-                            )
-                                .id(entry.id)
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .identity
-                                ))
-                        case .process(let turnId, let items):
-                            ThreadProcessGroupView(
-                                items: items,
-                                isExpanded: processExpansionBinding(for: turnId)
-                            )
-                                .id(entry.id)
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .identity
-                                ))
+                        Group {
+                            switch entry.kind {
+                            case .message(let item):
+                                ThreadItemView(
+                                    item: item,
+                                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
+                                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
+                                )
+                            case .userTurn(let item, let turnId, let processItems):
+                                ThreadItemView(
+                                    item: item,
+                                    processItems: processItems,
+                                    isProcessExpanded: processExpansionBinding(for: turnId),
+                                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
+                                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
+                                )
+                            case .process(let turnId, let items):
+                                ThreadProcessGroupView(
+                                    items: items,
+                                    isExpanded: processExpansionBinding(for: turnId)
+                                )
+                            }
                         }
+                        .id(entry.id)
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .identity
+                        ))
                     }
 
                     Color.clear
@@ -3654,6 +3651,28 @@ private struct DetailView: View {
                 }
                 .animation(.easeOut(duration: 0.16), value: hasNewMessagesBelow)
             }
+        }
+    }
+
+    private func restoreHistoryScrollAnchor(
+        _ anchor: DetailHistoryScrollAnchor?,
+        proxy: ScrollViewProxy
+    ) {
+        guard let anchor else { return }
+        Task { @MainActor in
+            // Let the prepended rows complete layout before restoring the old
+            // visible entry. A second pass covers variable-height Markdown
+            // cards whose final size settles one layout turn later.
+            await Task.yield()
+            proxy.scrollTo(
+                anchor.entryId,
+                anchor: .top
+            )
+            await Task.yield()
+            proxy.scrollTo(
+                anchor.entryId,
+                anchor: .top
+            )
         }
     }
 
