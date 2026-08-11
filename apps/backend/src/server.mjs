@@ -94,6 +94,7 @@ import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
 import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
+import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
@@ -118,6 +119,7 @@ const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
+let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
 const collaborationMcpServerPath = fileURLToPath(new URL("./mcp/collaborationMcpServer.mjs", import.meta.url));
 const bundledAgentsPath = fileURLToPath(new URL(
@@ -4443,7 +4445,10 @@ function route(request, response) {
     sessionApplicationService.readAccountUsage(sessionId)
       .then(async (account) => ({
         account,
-        context: await sessionApplicationService.readSessionUsage(sessionId)
+        context: await sessionApplicationService.readSessionUsage(sessionId),
+        resetForecast: session.external?.provider === "codex-app-server"
+          ? codexResetForecastMonitor?.snapshot() ?? null
+          : null
       }))
       .then((usage) => sendJson(response, 200, usage))
       .catch((error) => sendJson(response, 503, { error: error.message }));
@@ -5700,6 +5705,8 @@ function route(request, response) {
 const server = http.createServer(route);
 
 await store.initialize();
+codexResetForecastMonitor = new CodexResetForecastMonitor({ store });
+codexResetForecastMonitor.start();
 const deactivatedOrphanedAgents = collaborationCore.deactivateAgentsWithMissingSessions();
 if (deactivatedOrphanedAgents.length > 0) {
   console.log(`[collaboration] deactivated ${deactivatedOrphanedAgents.length} Agent(s) with deleted Sessions`);
@@ -5822,6 +5829,7 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
+    codexResetForecastMonitor?.stop();
     await feishuGateway.close();
     await codexRuntime.close();
     await store.close();
