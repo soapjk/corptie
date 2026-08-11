@@ -3,6 +3,32 @@ import Testing
 
 struct CodexResetNoticeTests {
     @Test
+    func firstManualTapPresentsANoticeThatIsNotAlreadyRequested() {
+        #expect(CodexResetNoticePresentation.manualAction(isPresented: false) == .present)
+    }
+
+    @Test
+    func manualTapRearmsAStalePresentedBinding() {
+        #expect(CodexResetNoticePresentation.manualAction(isPresented: true) == .rearm)
+    }
+
+    @Test
+    func acknowledgedFingerprintCannotBePresentedByADelayedTask() {
+        #expect(!CodexResetNoticePresentation.shouldPresent(
+            fingerprint: "same-notice",
+            acknowledgedFingerprint: "same-notice"
+        ))
+    }
+
+    @Test
+    func changedFingerprintCanPresentANewNotice() {
+        #expect(CodexResetNoticePresentation.shouldPresent(
+            fingerprint: "new-notice",
+            acknowledgedFingerprint: "old-notice"
+        ))
+    }
+
+    @Test
     func fingerprintChangesWhenTheOfficialResetChanges() {
         let first = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",
