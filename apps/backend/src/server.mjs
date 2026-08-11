@@ -18,6 +18,10 @@ import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProv
 import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
+import {
+  applyPersistedSessionOrder,
+  storedSessionIdForListSession
+} from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
@@ -2206,10 +2210,14 @@ async function assertDirectory(path) {
 }
 
 function listGatewaySessions(options = {}) {
-  return agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).map((session) => {
+  const sessions = agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).map((session) => {
     const logical = store.getLogicalSessionByLegacySessionId(session.id);
     return logical ? sessionWithLogicalWorkspace(session, logical) : session;
   });
+  // Corptie owns list presentation order. A Provider may keep an active
+  // session object in memory with the sort order it had at startup, so always
+  // project the persisted order back onto the unified Session list.
+  return applyPersistedSessionOrder(sessions, (id) => store.getSession(id));
 }
 
 function listCodexProviderSessions(options = {}) {
@@ -4847,18 +4855,23 @@ function route(request, response) {
   if (request.method === "POST" && url.pathname === "/sessions/reorder") {
     readJson(request)
       .then((input) => {
-        const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => normalizeSessionId(String(id))) : [];
-        const sessions = ptyAgents.reorder(sessionIds);
+        const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => String(id)) : [];
+        const storedSessionIds = sessionIds.map(storedSessionIdForListSession);
+        store.reorderSessions(storedSessionIds);
         sessionIds.forEach((id, index) => {
-          if (sessionPresentationCache.has(id)) {
-            sessionPresentationCache.set(id, {
-              ...sessionPresentationCache.get(id),
+          const cacheIds = [id, storedSessionIdForListSession(id)];
+          cacheIds.forEach((cacheId) => {
+            if (!sessionPresentationCache.has(cacheId)) return;
+            sessionPresentationCache.set(cacheId, {
+              ...sessionPresentationCache.get(cacheId),
               sortOrder: index
             });
-          }
+          });
         });
         emitEvent("SessionsReordered", { sessionIds });
-        sendJson(response, 200, { sessions });
+        sendJson(response, 200, {
+          sessions: sortSessionsForList(listGatewaySessions({ archived: false }))
+        });
       })
       .catch((error) => {
         sendJson(response, 400, { error: error.message });

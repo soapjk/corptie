@@ -139,9 +139,11 @@ final class FloatingPanelController: NSObject {
         panel.contentView = hostingView
 
         client.$sessions
+            .map(\.count)
+            .removeDuplicates()
             .receive(on: RunLoop.main)
-            .sink { [weak self] sessions in
-                self?.resizeForSessionCount(sessions.count)
+            .sink { [weak self] sessionCount in
+                self?.resizeForSessionCount(sessionCount)
                 self?.adjustListHeightForCurrentMeasurements(animated: true)
             }
             .store(in: &cancellables)
@@ -237,6 +239,12 @@ final class FloatingPanelController: NSObject {
             return
         }
 
+        // Reordering publishes a new sessions array without changing its
+        // count. Treating every publication as a count change reset the panel
+        // to its default width and preferred height at the end of a drag.
+        guard count != lastSessionCount else {
+            return
+        }
         let didDecreaseSessionCount = count < lastSessionCount
         lastSessionCount = count
 
