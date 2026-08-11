@@ -19,3 +19,24 @@ enum CodexResetNoticeIdentity {
         ].joined(separator: "|")
     }
 }
+
+enum CodexResetNoticePresentation {
+    enum ManualAction: Equatable {
+        case present
+        case rearm
+    }
+
+    static let automaticPresentationDelay: Duration = .milliseconds(350)
+    static let rearmDelay: Duration = .milliseconds(60)
+
+    static func manualAction(isPresented: Bool) -> ManualAction {
+        isPresented ? .rearm : .present
+    }
+
+    static func shouldPresent(
+        fingerprint: String,
+        acknowledgedFingerprint: String
+    ) -> Bool {
+        fingerprint != acknowledgedFingerprint
+    }
+}
