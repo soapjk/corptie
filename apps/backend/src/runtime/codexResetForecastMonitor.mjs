@@ -13,9 +13,10 @@ export class CodexResetForecastMonitor {
     this.feedUrl = options.feedUrl ?? process.env.CORPTIE_TIBO_RSS_URL ?? DEFAULT_FEED_URL;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.proxyUrl = normalizedProxyUrl(options.proxyUrl);
     this.readFeed = options.readFeed
       ?? (options.fetch ? (() => fetchFeed(options.fetch, this.feedUrl, this.requestTimeoutMs)) : null)
-      ?? (() => readFeedWithCurl(this.feedUrl, this.requestTimeoutMs));
+      ?? (() => readFeedWithCurl(this.feedUrl, this.requestTimeoutMs, this.proxyUrl));
     this.now = options.now ?? (() => new Date());
     this.timer = null;
     this.running = false;
@@ -66,7 +67,7 @@ export class CodexResetForecastMonitor {
         ...this.state,
         checkedAt,
         sourceHealthy: false,
-        sourceError: error?.message || String(error)
+        sourceError: feedErrorMessage(error)
       };
       this.persist();
       console.warn(`[codex-reset-forecast] refresh failed: ${this.state.sourceError}`);
@@ -93,9 +94,22 @@ async function fetchFeed(fetchImplementation, feedUrl, requestTimeoutMs) {
   return response.text();
 }
 
-async function readFeedWithCurl(feedUrl, requestTimeoutMs) {
+async function readFeedWithCurl(feedUrl, requestTimeoutMs, proxyUrl) {
+  const args = curlArgumentsForFeed(feedUrl, requestTimeoutMs, proxyUrl);
+  try {
+    const { stdout } = await execFileAsync(process.env.CORPTIE_CURL_PATH || "/usr/bin/curl", args, {
+      encoding: "utf8",
+      maxBuffer: 4 * 1024 * 1024
+    });
+    return stdout;
+  } catch (error) {
+    throw new Error(feedErrorMessage(error));
+  }
+}
+
+export function curlArgumentsForFeed(feedUrl, requestTimeoutMs, proxyUrl) {
   const maxSeconds = Math.max(1, Math.ceil(requestTimeoutMs / 1000));
-  const { stdout } = await execFileAsync(process.env.CORPTIE_CURL_PATH || "/usr/bin/curl", [
+  return [
     "--fail",
     "--silent",
     "--show-error",
@@ -104,12 +118,9 @@ async function readFeedWithCurl(feedUrl, requestTimeoutMs) {
     "--max-time", String(maxSeconds),
     "--user-agent", "Corptie Codex reset monitor/0.5",
     "--header", "Accept: application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
+    ...(proxyUrl ? ["--proxy", proxyUrl] : []),
     feedUrl
-  ], {
-    encoding: "utf8",
-    maxBuffer: 4 * 1024 * 1024
-  });
-  return stdout;
+  ];
 }
 
 export function latestForecastFromItems(items, now = new Date()) {
@@ -221,6 +232,19 @@ function normalizeStoredState(value) {
     sourceHealthy: value?.sourceHealthy ?? null,
     sourceError: value?.sourceError ?? null
   };
+}
+
+function normalizedProxyUrl(value) {
+  const proxy = String(value ?? "").trim();
+  return /^(https?|socks5h?):\/\//i.test(proxy) ? proxy : null;
+}
+
+function feedErrorMessage(error) {
+  const stderr = String(error?.stderr ?? "").trim();
+  if (stderr) return stderr.replace(/\s+/g, " ").slice(0, 500);
+  const message = String(error?.message ?? error ?? "RSS request failed");
+  const curlLine = message.split("\n").find((line) => /^curl:/i.test(line.trim()));
+  return (curlLine || message.split("\n")[0]).trim().slice(0, 500);
 }
 
 function tagValue(body, name) {
