@@ -263,3 +263,6 @@
 "Commit and Continue" = "Commit and Continue";
 "Continuing after Worktree switch" = "Continuing after Worktree switch";
 "Worktree continuation failed" = "Worktree continuation failed";
+"Plan reset: %@" = "Plan reset: %@";
+"Tibo forecast: %@" = "Tibo forecast: %@";
+"Tibo forecast: No upcoming reset announcement" = "Tibo forecast: No upcoming reset announcement";
