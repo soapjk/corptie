@@ -21,6 +21,7 @@ struct FloatingRootView: View {
     @State private var draggedSessionId: String?
     @State private var sessionCardFrames: [String: CGRect] = [:]
     @State private var sessionCardFramesLayoutKey: String?
+    @State private var reorderSessionFrames: [String: CGRect] = [:]
     @State private var sessionSummaryFrames: [String: CGRect] = [:]
     @State private var reorderDragStartMouseScreenY: CGFloat = 0
     @State private var reorderDragScreenDeltaY: CGFloat = 0
@@ -775,6 +776,11 @@ struct FloatingRootView: View {
                     let mouseScreenY = NSEvent.mouseLocation.y
                     draggedSessionId = hitSession.id
                     reorderDragFrame = frame
+                    // Keep hit-testing anchored to the layout that existed at
+                    // mouse-down. Reordering the model immediately relays out
+                    // the live rows, so using their new frames would make the
+                    // insertion target drift underneath a stationary pointer.
+                    reorderSessionFrames = sessionCardFrames
                     // The gesture belongs to the stable list viewport rather
                     // than a row that can move or be recreated. AppKit's global
                     // coordinate then makes the floating preview independent of
@@ -797,7 +803,8 @@ struct FloatingRootView: View {
                 withTransaction(continuousTransaction) {
                     reorderDragScreenDeltaY = stableMouseDeltaY
                 }
-                guard !sessionCardFrames.isEmpty else {
+                let stableFrames = reorderSessionFrames.isEmpty ? sessionCardFrames : reorderSessionFrames
+                guard !stableFrames.isEmpty else {
                     return
                 }
 
@@ -811,7 +818,7 @@ struct FloatingRootView: View {
                 let targetSessionId = SessionReorderLayout.insertionTargetSessionId(
                     forDraggedCenterY: draggedCenterY,
                     excluding: session.id,
-                    using: sessionCardFrames,
+                    using: stableFrames,
                     eligibleIds: eligibleIds
                 )
                 guard targetSessionId != reorderTargetSessionId || !hasResolvedReorderTarget else {
@@ -828,17 +835,40 @@ struct FloatingRootView: View {
                 }
             }
             .onEnded { _ in
-                guard let completedSessionId = draggedSessionId else {
+                guard let completedSessionId = draggedSessionId,
+                      let completedSession = backendClient.sessions.first(where: { $0.id == completedSessionId }) else {
                     return
                 }
                 let stableMouseDeltaY = reorderDragStartMouseScreenY - NSEvent.mouseLocation.y
+                let stableFrames = reorderSessionFrames.isEmpty ? sessionCardFrames : reorderSessionFrames
+                let eligibleIds = Set(backendClient.sessions.lazy
+                    .filter { ($0.pinned == true) == (completedSession.pinned == true) }
+                    .map(\.id))
+                let draggedCenterY = SessionReorderLayout.draggedCenterY(
+                    initialCenterY: reorderDragFrame?.midY ?? stableFrames[completedSessionId]?.midY ?? 0,
+                    mouseDeltaY: stableMouseDeltaY
+                )
+                let finalTargetSessionId = SessionReorderLayout.insertionTargetSessionId(
+                    forDraggedCenterY: draggedCenterY,
+                    excluding: completedSessionId,
+                    using: stableFrames,
+                    eligibleIds: eligibleIds
+                )
                 logSessionReorder(
-                    "end id=\(debugSessionId(completedSessionId)) stableDeltaY=\(debugNumber(stableMouseDeltaY))"
+                    "end id=\(debugSessionId(completedSessionId)) stableDeltaY=\(debugNumber(stableMouseDeltaY)) before=\(finalTargetSessionId.map(debugSessionId) ?? "end")"
+                )
+                // DragGesture does not guarantee that its final pointer
+                // position is delivered through onChanged. Settle once more
+                // from the actual mouse position before persisting the order.
+                backendClient.moveSession(
+                    draggedSessionId: completedSessionId,
+                    before: finalTargetSessionId
                 )
                 backendClient.persistSessionOrder()
                 withAnimation(.spring(response: 0.24, dampingFraction: 0.86)) {
                     draggedSessionId = nil
                     reorderDragFrame = nil
+                    reorderSessionFrames = [:]
                     reorderDragStartMouseScreenY = 0
                     reorderDragScreenDeltaY = 0
                     reorderTargetSessionId = nil
