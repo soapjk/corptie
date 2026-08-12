@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,7 +18,7 @@ async function withFixture(run) {
   await mkdir(join(directory, "native-codex"), { recursive: true });
   await mkdir(join(directory, "bundle"), { recursive: true });
   await writeFile(sourceAuthPath, '{"token":"local-test-token"}\n');
-  await writeFile(bundledAgentsPath, "# Corptie global instructions\n\nCODEX_HOME: `{{CODEX_HOME}}`\n");
+  await writeFile(bundledAgentsPath, "# Corptie global instructions\n\nEnvironment: `{{CORPTIE_ENVIRONMENT}}`\n");
   await writeFile(bundledSkillPath, "---\nname: corptie-collaboration\ndescription: test\n---\n\n# Test\n");
   await writeFile(bundledProjectToolsReferencePath, "# Project tools protocol\n");
   await writeFile(collaborationMcpServerPath, "export {};\n");
@@ -27,10 +27,6 @@ async function withFixture(run) {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 test("resolves isolated production and development Codex homes", () => {
@@ -61,8 +57,10 @@ test("initialization copies authentication and installs required runtime files",
     assert.equal(await readFile(result.authPath, "utf8"), '{"token":"local-test-token"}\n');
     assert.match(await readFile(result.authBootstrapMarkerPath, "utf8"), /"source": "copied"/);
     const agents = await readFile(result.agentsPath, "utf8");
-    assert.match(agents, new RegExp(`CODEX_HOME: \\\`${escapeRegExp(result.codexHome)}\\\``));
-    assert.doesNotMatch(agents, /\{\{CODEX_HOME\}\}/);
+    assert.match(agents, /Environment: `production`/);
+    assert.doesNotMatch(agents, /\{\{CORPTIE_ENVIRONMENT\}\}/);
+    assert.equal((await lstat(result.agentsPath)).isSymbolicLink(), true);
+    assert.equal(await realpath(result.agentsPath), await realpath(result.sharedMemoryPath));
     assert.equal(await readFile(result.collaborationSkillPath, "utf8"), await readFile(bundledSkillPath, "utf8"));
     assert.equal(
       await readFile(result.collaborationProjectToolsReferencePath, "utf8"),
@@ -74,7 +72,7 @@ test("initialization copies authentication and installs required runtime files",
   });
 });
 
-test("startup self-heals managed files without replacing authentication or AGENTS.md", async () => {
+test("startup self-heals managed files without replacing authentication or shared Agent memory", async () => {
   await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
     const options = {
       corptieHome: join(directory, ".corptie"),
@@ -176,6 +174,6 @@ test("initialization fails closed when the built-in AGENTS.md is absent", async 
       bundledSkillPath: join(os.tmpdir(), "missing-skill"),
       collaborationMcpServerPath: join(os.tmpdir(), "missing-mcp")
     }),
-    /AGENTS\.md is missing/
+    /Agent memory is missing/
   );
 });
