@@ -21,7 +21,12 @@ struct MarkdownMessageView: View {
     }
 
     private var markdownContent: some View {
-        Markdown(ClickableMessageText.markdown(from: text, baseDirectory: baseDirectory))
+        let preparedMarkdown = ChatPerformanceTrace.measure("markdown.preprocess") {
+            ChatPerformanceRecorder.shared.increment(.markdownPreprocesses)
+            ChatPerformanceRecorder.shared.increment(.markdownCharacters, by: Int64(text.count))
+            return ClickableMessageText.markdown(from: text, baseDirectory: baseDirectory)
+        }
+        return Markdown(preparedMarkdown)
             .markdownTheme(.corptieMessage)
             .font(.system(size: fontSize, weight: fontWeight))
             .foregroundStyle(foregroundColor)

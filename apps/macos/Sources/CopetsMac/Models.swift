@@ -451,6 +451,31 @@ struct SessionsResponse: Decodable, Sendable {
     let sessions: [TaskSession]
 }
 
+struct SessionCollectionSnapshotEnvelope: Decodable, Sendable {
+    let revision: UInt64
+    let sessions: [TaskSession]
+}
+
+struct SessionCollectionPatchEnvelope: Decodable, Sendable {
+    struct Insertion: Decodable, Sendable {
+        let index: Int
+        let session: TaskSession
+    }
+
+    struct Update: Decodable, Sendable {
+        let sessionId: String
+        let changedFields: [String]
+        let session: TaskSession
+    }
+
+    let baseRevision: UInt64
+    let revision: UInt64
+    let orderedIds: [String]?
+    let inserted: [Insertion]
+    let removedIds: [String]
+    let updated: [Update]
+}
+
 struct CollaborationOverviewResponse: Decodable {
     let agents: [CollaborationAgent]
     let services: [CollaborationService]
@@ -772,6 +797,31 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
 
     var connectionColor: Color {
         isConnected ? CorptiePalette.connectedDot : CorptiePalette.disconnected
+    }
+
+    // Compare revision-bearing metadata before the potentially large item
+    // array. Streaming updates normally change updatedAt, so the common path
+    // is O(1); unchanged metadata still retains strict Equatable semantics.
+    static func == (lhs: CodexThreadDetail, rhs: CodexThreadDetail) -> Bool {
+        guard lhs.id == rhs.id,
+              lhs.title == rhs.title,
+              lhs.status == rhs.status,
+              lhs.source == rhs.source,
+              lhs.connectionStatus == rhs.connectionStatus,
+              lhs.currentModel == rhs.currentModel,
+              lhs.currentReasoningLevel == rhs.currentReasoningLevel,
+              lhs.activityStatus == rhs.activityStatus,
+              lhs.cwd == rhs.cwd,
+              lhs.createdAt == rhs.createdAt,
+              lhs.updatedAt == rhs.updatedAt,
+              lhs.canSend == rhs.canSend,
+              lhs.sendUnavailableReason == rhs.sendUnavailableReason,
+              lhs.capabilities == rhs.capabilities,
+              lhs.turnCount == rhs.turnCount,
+              lhs.actions == rhs.actions else {
+            return false
+        }
+        return lhs.items == rhs.items
     }
 }
 

@@ -875,7 +875,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             )
         )
 
-        client.$sessions
+        client.sessionsDidChange
             .receive(on: RunLoop.main)
             .sink { [weak self] sessions in
                 guard let self else { return }

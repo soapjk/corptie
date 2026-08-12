@@ -107,6 +107,17 @@ import {
   resumeWorkAfterTransition,
   workspaceTransitionBlocksWork
 } from "./runtime/workspaceTransitionBarrier.mjs";
+import {
+  initialTimelineSnapshot,
+  legacyTimelineSnapshotFrame,
+  nextTimelineEvent,
+  supportsTimelineDelta
+} from "./utils/sessionTimelineDelta.mjs";
+import {
+  SessionTimelineRefreshScheduler
+} from "./utils/sessionTimelineRefreshPolicy.mjs";
+import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
+import { SessionCollectionRevisionBuffer } from "./utils/sessionCollectionDelta.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -115,6 +126,10 @@ const sessions = new Map();
 const sessionPresentationCache = new Map();
 const eventLog = [];
 const sseClients = new Set();
+const sessionCollectionClients = new Set();
+const sessionCollectionRevisions = new SessionCollectionRevisionBuffer();
+let sessionCollectionPublishScheduled = false;
+let sessionCollectionConsistencyTimer = null;
 const sessionEventListeners = new Set();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
@@ -1025,6 +1040,7 @@ function emitEvent(type, payload, options = {}) {
   for (const response of sseClients) {
     response.write(frame);
   }
+  scheduleSessionCollectionPublish();
 
   const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
   if (sessionId && store.db) {
@@ -1041,6 +1057,41 @@ function emitEvent(type, payload, options = {}) {
         listener(sessionEvent);
       }
     }
+  }
+}
+
+function activeSessionCollection() {
+  return sortSessionsForList(withPendingCollaborationConfirmations(listGatewaySessions({ archived: false })));
+}
+
+function writeSessionCollectionFrame(response, name, data) {
+  response.write(`id: ${data.revision}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function publishSessionCollectionIfChanged() {
+  const patch = sessionCollectionRevisions.update(activeSessionCollection());
+  if (!patch) return;
+  for (const response of sessionCollectionClients) {
+    writeSessionCollectionFrame(response, "session-collection-patch", patch);
+  }
+}
+
+function scheduleSessionCollectionPublish() {
+  if (sessionCollectionPublishScheduled) return;
+  sessionCollectionPublishScheduled = true;
+  setImmediate(() => {
+    sessionCollectionPublishScheduled = false;
+    publishSessionCollectionIfChanged();
+  });
+}
+
+function updateSessionCollectionConsistencyTimer() {
+  if (sessionCollectionClients.size > 0 && !sessionCollectionConsistencyTimer) {
+    sessionCollectionConsistencyTimer = setInterval(publishSessionCollectionIfChanged, 2_000);
+    sessionCollectionConsistencyTimer.unref?.();
+  } else if (sessionCollectionClients.size === 0 && sessionCollectionConsistencyTimer) {
+    clearInterval(sessionCollectionConsistencyTimer);
+    sessionCollectionConsistencyTimer = null;
   }
 }
 
@@ -1061,7 +1112,7 @@ function sessionIdFromEventPayload(payload = {}) {
   return null;
 }
 
-function streamCanonicalSessionSnapshots(request, response, requestedSessionId) {
+function streamCanonicalSessionSnapshots(request, response, requestedSessionId, eventSessionId = requestedSessionId) {
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -1069,50 +1120,68 @@ function streamCanonicalSessionSnapshots(request, response, requestedSessionId) 
   });
   response.flushHeaders?.();
   let closed = false;
-  let reading = false;
-  let previousSignature = null;
-  let sequence = 0;
+  let streamState = null;
+  let legacySignature = null;
+  let lastSession = null;
+  let refreshScheduler = null;
+  let publishGate = null;
+  const usesTimelineDelta = supportsTimelineDelta(request.headers);
 
-  const publish = async () => {
-    if (closed || reading) return;
-    reading = true;
+  const readAndPublish = async ({ fullConsistency = true } = {}) => {
     try {
       const session = await sessionApplicationService.readSession(requestedSessionId);
-      // Provider diagnostics may contain clocks such as idleSeconds that change
-      // on every read without changing the Canonical Session visible to clients.
-      const { rawStatus: _rawStatus, ...canonicalSession } = session;
-      const signature = JSON.stringify(canonicalSession);
-      if (signature !== previousSignature) {
-        previousSignature = signature;
-        sequence += 1;
-        response.write(`id: ${sequence}\nevent: snapshot\ndata: ${JSON.stringify({ session })}\n\n`);
+      lastSession = session;
+      if (usesTimelineDelta) {
+        const result = streamState
+          ? nextTimelineEvent(streamState, session, { fullConsistency })
+          : initialTimelineSnapshot(session);
+        streamState = result.state;
+        if (result.event) {
+          response.write(`id: ${result.event.revision}\nevent: ${result.event.name}\ndata: ${JSON.stringify(result.event.data)}\n\n`);
+        }
+      } else {
+        const frame = legacyTimelineSnapshotFrame(session);
+        if (frame.signature !== legacySignature) {
+          legacySignature = frame.signature;
+          response.write(`event: snapshot\ndata: ${frame.payload}\n\n`);
+        }
       }
     } catch (error) {
-      sequence += 1;
-      response.write(`id: ${sequence}\nevent: error\ndata: ${JSON.stringify({
+      response.write(`event: error\ndata: ${JSON.stringify({
         error: error.message,
         code: error.code ?? null
       })}\n\n`);
-    } finally {
-      reading = false;
     }
   };
 
-  const snapshotTimer = setInterval(() => void publish(), 400);
   const heartbeatTimer = setInterval(() => {
     if (!closed) response.write(`: heartbeat ${Date.now()}\n\n`);
   }, 15_000);
-  snapshotTimer.unref?.();
   heartbeatTimer.unref?.();
+  refreshScheduler = new SessionTimelineRefreshScheduler({
+    sessionId: eventSessionId,
+    supportsDelta: usesTimelineDelta,
+    onRefresh: (options) => void publishGate?.request(options)
+  });
+  publishGate = new SessionTimelinePublishGate({
+    read: readAndPublish,
+    onSettled: () => refreshScheduler?.schedule(lastSession)
+  });
+  const wakeForSessionEvent = (event) => {
+    refreshScheduler?.wake(event);
+  };
+  if (usesTimelineDelta) sessionEventListeners.add(wakeForSessionEvent);
   const close = () => {
     if (closed) return;
     closed = true;
-    clearInterval(snapshotTimer);
+    publishGate?.close();
+    refreshScheduler?.close();
     clearInterval(heartbeatTimer);
+    sessionEventListeners.delete(wakeForSessionEvent);
   };
   request.once("close", close);
   response.once("close", close);
-  void publish();
+  void publishGate.request();
 }
 
 function updateMockProgress() {
@@ -4471,7 +4540,7 @@ function route(request, response) {
     sessionApplicationService.referenceFor(sessionId)
       .then((reference) => {
         if (acceptsStream) {
-          streamCanonicalSessionSnapshots(request, response, sessionId);
+          streamCanonicalSessionSnapshots(request, response, sessionId, reference.sessionId);
           return;
         }
         const after = Number(url.searchParams.get("after") || 0);
@@ -5624,6 +5693,32 @@ function route(request, response) {
     sseClients.add(response);
     request.on("close", () => {
       sseClients.delete(response);
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/session-collection/events") {
+    response.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive"
+    });
+    response.flushHeaders?.();
+    publishSessionCollectionIfChanged();
+    const requestedRevision = Number(
+      request.headers["last-event-id"] ?? url.searchParams.get("revision") ?? Number.NaN
+    );
+    for (const frame of sessionCollectionRevisions.framesAfter(requestedRevision)) {
+      writeSessionCollectionFrame(response, frame.name, frame.data);
+    }
+    sessionCollectionClients.add(response);
+    updateSessionCollectionConsistencyTimer();
+    const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
+    heartbeat.unref?.();
+    request.on("close", () => {
+      clearInterval(heartbeat);
+      sessionCollectionClients.delete(response);
+      updateSessionCollectionConsistencyTimer();
     });
     return;
   }
