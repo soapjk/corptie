@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @EnvironmentObject private var sessionListStore: SessionListStore
     @ObservedObject private var appLanguage = AppLanguageController.shared
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @EnvironmentObject private var panelFocusState: PanelFocusState
@@ -22,7 +23,6 @@ struct FloatingRootView: View {
     @State private var sessionCardFrames: [String: CGRect] = [:]
     @State private var sessionCardFramesLayoutKey: String?
     @State private var reorderSessionFrames: [String: CGRect] = [:]
-    @State private var sessionSummaryFrames: [String: CGRect] = [:]
     @State private var reorderDragStartMouseScreenY: CGFloat = 0
     @State private var reorderDragScreenDeltaY: CGFloat = 0
     @State private var reorderDragFrame: CGRect?
@@ -259,7 +259,7 @@ struct FloatingRootView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            if backendClient.sessions.isEmpty {
+            if sessionListStore.orderedIDs.isEmpty {
                 ReadyEmptyView()
                     .measureListHeight(.cards)
             } else if filteredSessions.isEmpty {
@@ -267,32 +267,14 @@ struct FloatingRootView: View {
                     .frame(maxWidth: .infinity, minHeight: 150)
                     .measureListHeight(.cards)
             } else {
-                NativeSessionScrollView {
-                    LazyVStack(alignment: .leading, spacing: displayMode == .cards ? PanelLayoutState.cardSpacing : 4) {
-                        ForEach(sessionGroups) { group in
-                            if groupsSessionsByProject {
-                                ProjectGroupHeader(path: group.path, count: group.sessions.count)
-                                    .padding(.top, group.id == sessionGroups.first?.id ? 0 : 8)
-                            }
-                            ForEach(group.sessions) { session in
-                                sessionItem(for: session)
-                            }
-                        }
-                    }
-                    .fixedSize(horizontal: false, vertical: true)
-                    .animation(
-                        draggedSessionId == nil
-                            ? .spring(response: 0.30, dampingFraction: 0.84)
-                            : .interactiveSpring(response: 0.16, dampingFraction: 0.90, blendDuration: 0.04),
-                        value: filteredSessions.map(\.id)
-                    )
-                    .measureSessionCardFrame(listContentFrameKey)
-                    .measureListHeight(.cards)
-                }
+                AppKitSessionListView(
+                    rows: appKitSessionListRows,
+                    rowSpacing: displayMode == .cards ? PanelLayoutState.cardSpacing : 4,
+                    onGeometryChange: applyNativeSessionListGeometry
+                )
                 .id(listLayoutKey)
-                .measureListGlobalMinY(.scrollTop)
+                .measureListMinY(.scrollTop, coordinateSpace: "session-list-root")
                 .coordinateSpace(name: "session-list")
-                .measureSessionCardFrame(listViewportFrameKey)
                 .simultaneousGesture(sessionListReorderGesture)
                 .overlay(alignment: .topLeading) {
                     sessionReorderDragOverlay
@@ -303,22 +285,8 @@ struct FloatingRootView: View {
             }
         }
         .animation(.spring(response: 0.30, dampingFraction: 0.86), value: isSearching)
-        .measureListGlobalMinY(.browserTop)
-        .onPreferenceChange(SessionCardFramePreferenceKey.self) { frames in
-            sessionCardFrames = frames
-            sessionCardFramesLayoutKey = listLayoutKey
-            guard draggedSessionId == nil else {
-                return
-            }
-            logListGeometry(trigger: "card-frames", frames: frames)
-            updatePreferredListHeight(listHeightMeasurements)
-        }
-        .onPreferenceChange(SessionSummaryFramePreferenceKey.self) { frames in
-            guard draggedSessionId == nil else {
-                return
-            }
-            sessionSummaryFrames = frames
-        }
+        .coordinateSpace(name: "session-list-root")
+        .measureListMinY(.browserTop, coordinateSpace: "session-list-root")
         .onChange(of: sessionDisplayModeRawValue) { _, _ in
             sessionCardFrames = [:]
             sessionCardFramesLayoutKey = nil
@@ -330,8 +298,57 @@ struct FloatingRootView: View {
         }
     }
 
+    private var appKitSessionListRows: [AppKitSessionListRow] {
+        var rows: [AppKitSessionListRow] = []
+        for (groupIndex, group) in sessionGroups.enumerated() {
+            if groupsSessionsByProject {
+                rows.append(AppKitSessionListRow(
+                    id: "project-header:\(group.id)",
+                    sessionID: nil,
+                    contentRevision: group.rows.count,
+                    content: AnyView(
+                        ProjectGroupHeader(path: group.path, count: group.rows.count)
+                            .padding(.top, groupIndex == 0 ? 0 : 8)
+                    )
+                ))
+            }
+            rows.append(contentsOf: group.rows.map { row in
+                AppKitSessionListRow(
+                    id: row.id,
+                    sessionID: row.id,
+                    contentRevision: draggedSessionId == row.id ? 1 : 0,
+                    content: AnyView(sessionItem(for: row))
+                )
+            })
+        }
+        return rows
+    }
+
+    private func applyNativeSessionListGeometry(
+        _ rowFrames: [String: CGRect],
+        contentFrame: CGRect,
+        viewportFrame: CGRect,
+        contentHeight: CGFloat
+    ) {
+        var nextFrames = rowFrames
+        nextFrames[listContentFrameKey] = contentFrame
+        nextFrames[listViewportFrameKey] = viewportFrame
+        guard nextFrames != sessionCardFrames || sessionCardFramesLayoutKey != listLayoutKey else { return }
+        sessionCardFrames = nextFrames
+        sessionCardFramesLayoutKey = listLayoutKey
+        listHeightMeasurements[.cards] = contentHeight
+        guard draggedSessionId == nil else { return }
+        logListGeometry(trigger: "native-row-frames", frames: nextFrames)
+        updatePreferredListHeight(listHeightMeasurements)
+    }
+
     private var displayMode: SessionDisplayMode {
-        get { SessionDisplayMode(rawValue: sessionDisplayModeRawValue) ?? .cards }
+        get {
+            if SessionListPerformanceFlags.current.forcesCardDisplayMode {
+                return .cards
+            }
+            return SessionDisplayMode(rawValue: sessionDisplayModeRawValue) ?? .cards
+        }
         nonmutating set { sessionDisplayModeRawValue = newValue.rawValue }
     }
 
@@ -344,22 +361,16 @@ struct FloatingRootView: View {
     private func detailSessionRail(height: CGFloat) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 6) {
-                ForEach(backendClient.sessions) { session in
-                    let isSelected = backendClient.selectedSession?.id == session.id
-                    Button {
-                        guard !isSelected else { return }
-                        preheatDetail(for: session)
-                        backendClient.select(session: session)
-                    } label: {
-                        detailSessionRailButtonLabel(session: session, isSelected: isSelected)
-                    }
-                    .buttonStyle(.plain)
-                    .help("\(session.title)\n\(session.status.label)")
-                    .onHover { hovering in
-                        if hovering {
+                ForEach(sessionListStore.rows) { row in
+                    DetailSessionRailRow(
+                        row: row,
+                        selectedSessionID: backendClient.selectedSession?.id,
+                        select: { session in
                             preheatDetail(for: session)
-                        }
-                    }
+                            backendClient.select(session: session)
+                        },
+                        preheat: preheatDetail
+                    )
                 }
             }
             .padding(.vertical, 8)
@@ -374,25 +385,6 @@ struct FloatingRootView: View {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 1)
         }
-    }
-
-    @ViewBuilder
-    private func detailSessionRailButtonLabel(session: TaskSession, isSelected: Bool) -> some View {
-        VStack(spacing: 2) {
-            SessionAvatarView(session: session, avatarSize: isSelected ? 38 : 34)
-                .frame(width: 58, height: 58)
-                .background {
-                    detailSessionSelectionBackground(isSelected)
-                }
-
-            Text(session.title)
-                .font(.system(size: 10, weight: isSelected ? .semibold : .medium, design: .rounded))
-                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: 64)
-        }
-        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -456,23 +448,32 @@ struct FloatingRootView: View {
         }
     }
 
-    private var filteredSessions: [TaskSession] {
+    private var filteredSessionRows: [SessionRowModel] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return backendClient.sessions }
-        return backendClient.sessions.filter { session in
-            [session.title, session.summary, session.agent, session.external?.cwd ?? ""]
+        let matchingRows = query.isEmpty ? sessionListStore.rows : sessionListStore.rows.filter { row in
+            let session = row.session
+            return [session.title, session.summary, session.agent, session.external?.cwd ?? ""]
                 .contains { $0.localizedCaseInsensitiveContains(query) }
         }
+        guard let limit = SessionListPerformanceFlags.current.sessionLimit else {
+            return matchingRows
+        }
+        return Array(matchingRows.prefix(limit))
+    }
+
+    private var filteredSessions: [TaskSession] {
+        filteredSessionRows.map(\.session)
     }
 
     private var sessionGroups: [SessionProjectGroup] {
         guard groupsSessionsByProject else {
-            return [SessionProjectGroup(id: "all", path: "", sessions: filteredSessions)]
+            return [SessionProjectGroup(id: "all", path: "", rows: filteredSessionRows)]
         }
         var order: [String] = []
-        var grouped: [String: [TaskSession]] = [:]
+        var grouped: [String: [SessionRowModel]] = [:]
         var paths: [String: String] = [:]
-        for session in filteredSessions {
+        for row in filteredSessionRows {
+            let session = row.session
             let workspace = session.external?.workspace
             let repositoryId = workspace?.repositoryId?.trimmingCharacters(in: .whitespacesAndNewlines)
             let currentPath = workspace?.path ?? session.external?.cwd
@@ -481,13 +482,13 @@ struct FloatingRootView: View {
             let path = projectPath?.isEmpty == false ? projectPath! : (fallbackPath?.isEmpty == false ? fallbackPath! : "No Project")
             let key = repositoryId?.isEmpty == false ? "repository:\(repositoryId!)" : "path:\(path)"
             if grouped[key] == nil { order.append(key) }
-            grouped[key, default: []].append(session)
+            grouped[key, default: []].append(row)
             if paths[key] == nil || projectPath?.isEmpty == false {
                 paths[key] = path
             }
         }
         return order.map {
-            SessionProjectGroup(id: $0, path: paths[$0] ?? "No Project", sessions: grouped[$0] ?? [])
+            SessionProjectGroup(id: $0, path: paths[$0] ?? "No Project", rows: grouped[$0] ?? [])
         }
     }
 
@@ -515,38 +516,23 @@ struct FloatingRootView: View {
     }
 
     @ViewBuilder
-    private func sessionItem(for session: TaskSession) -> some View {
-        if displayMode == .compact {
-            CompactSessionRow(
-                session: session,
-                showsProjectName: !groupsSessionsByProject,
-                preheatRequested: preheatDetail
-            )
-                .environmentObject(backendClient)
-                .environmentObject(detachedSessionManager)
-                .opacity(draggedSessionId == session.id ? 0 : 1)
-                .measureSessionCardFrame(session.id)
-        } else {
-            TaskCardView(
-                session: session,
-                showsProjectName: !groupsSessionsByProject,
-                hoverPreviewChanged: { sessionId, isVisible in
-                    guard draggedSessionId == nil else {
-                        return
-                    }
-                    updateHoverPreview(sessionId: sessionId, isVisible: isVisible)
-                },
-                preheatRequested: { session in
-                    guard draggedSessionId == nil else {
-                        return
-                    }
-                    preheatDetail(for: session)
-                }
-            )
-                .opacity(draggedSessionId == session.id ? 0 : 1)
-                .measureSessionCardFrame(session.id)
-                .animation(draggedSessionId == nil ? .spring(response: 0.28, dampingFraction: 0.82) : nil, value: backendClient.sessions.map(\.id))
-        }
+    private func sessionItem(for row: SessionRowModel) -> some View {
+        SessionListRowContent(
+            row: row,
+            displayMode: displayMode,
+            showsProjectName: !groupsSessionsByProject,
+            isHiddenForReorder: draggedSessionId == row.id,
+            hoverPreviewChanged: { sessionId, isVisible in
+                guard draggedSessionId == nil else { return }
+                updateHoverPreview(sessionId: sessionId, isVisible: isVisible)
+            },
+            preheatRequested: { session in
+                guard draggedSessionId == nil else { return }
+                preheatDetail(for: session)
+            }
+        )
+        .environmentObject(backendClient)
+        .environmentObject(detachedSessionManager)
     }
 
     @ViewBuilder
@@ -595,7 +581,7 @@ struct FloatingRootView: View {
     @ViewBuilder
     private var sessionHoverPreviewOverlay: some View {
         if let session = backendClient.sessions.first(where: { $0.id == hoverPreviewSessionId }),
-           let frame = sessionSummaryFrames[session.id] {
+           let frame = sessionCardFrames[session.id] {
             SessionReplyHoverBubble(text: session.summary, showsArrow: true)
                 .frame(width: 248, alignment: .topLeading)
                 .frame(maxHeight: 92, alignment: .topLeading)
@@ -714,7 +700,8 @@ struct FloatingRootView: View {
         let preferredHeight = itemHeights[min(3, itemHeights.count) - 1]
         let usefulHeight = itemHeights.last ?? (outerPadding + listTopOffset + cardsHeight)
 
-        if CorptieAppEnvironment.isDevelopment {
+        if CorptieAppEnvironment.isDevelopment,
+           SessionListPerformanceFlags.current.layoutLoggingEnabled {
             print("[layout-debug] metrics key=\(listLayoutKey) content=\(debugRect(contentFrame)) cardsHeight=\(debugNumber(cardsHeight)) listTop=\(debugNumber(listTopOffset)) itemHeights=\(itemHeights.map(debugNumber).joined(separator: ",")) min=\(debugNumber(minimumHeight)) preferred=\(debugNumber(preferredHeight)) useful=\(debugNumber(usefulHeight))")
         }
 
@@ -734,7 +721,8 @@ struct FloatingRootView: View {
     }
 
     private func logListGeometry(trigger: String, frames: [String: CGRect]? = nil) {
-        guard CorptieAppEnvironment.isDevelopment else { return }
+        guard CorptieAppEnvironment.isDevelopment,
+              SessionListPerformanceFlags.current.layoutLoggingEnabled else { return }
         let values = frames ?? sessionCardFrames
         let content = values[listContentFrameKey].map(debugRect) ?? "nil"
         let cards = filteredSessions.compactMap { session in
@@ -892,7 +880,77 @@ private enum SessionDisplayMode: String {
 private struct SessionProjectGroup: Identifiable {
     let id: String
     let path: String
-    let sessions: [TaskSession]
+    let rows: [SessionRowModel]
+}
+
+private struct SessionListRowContent: View {
+    @ObservedObject var row: SessionRowModel
+    let displayMode: SessionDisplayMode
+    let showsProjectName: Bool
+    let isHiddenForReorder: Bool
+    let hoverPreviewChanged: (String, Bool) -> Void
+    let preheatRequested: (TaskSession) -> Void
+
+    var body: some View {
+        Group {
+            if displayMode == .compact {
+                CompactSessionRow(
+                    session: row.session,
+                    showsProjectName: showsProjectName,
+                    preheatRequested: preheatRequested
+                )
+            } else {
+                TaskCardView(
+                    session: row.session,
+                    showsProjectName: showsProjectName,
+                    hoverPreviewChanged: hoverPreviewChanged,
+                    preheatRequested: preheatRequested
+                )
+            }
+        }
+        .opacity(isHiddenForReorder ? 0 : 1)
+    }
+}
+
+private struct DetailSessionRailRow: View {
+    @ObservedObject var row: SessionRowModel
+    let selectedSessionID: String?
+    let select: (TaskSession) -> Void
+    let preheat: (TaskSession) -> Void
+
+    private var session: TaskSession { row.session }
+    private var isSelected: Bool { selectedSessionID == row.id }
+
+    var body: some View {
+        Button {
+            guard !isSelected else { return }
+            select(session)
+        } label: {
+            VStack(spacing: 2) {
+                SessionAvatarView(session: session, avatarSize: isSelected ? 38 : 34)
+                    .frame(width: 58, height: 58)
+                    .background {
+                        if isSelected {
+                            Circle().fill(Color.white.opacity(0.22))
+                            Circle().strokeBorder(Color.white.opacity(0.48), lineWidth: 1)
+                        }
+                    }
+
+                Text(session.title)
+                    .font(.system(size: 10, weight: isSelected ? .semibold : .medium, design: .rounded))
+                    .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(width: 64)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(session.title)\n\(session.status.label)")
+        .onHover { hovering in
+            if hovering { preheat(session) }
+        }
+    }
 }
 
 private struct ProjectGroupHeader: View {
@@ -1269,22 +1327,6 @@ private struct ListHeightPreferenceKey: PreferenceKey {
     }
 }
 
-private struct SessionCardFramePreferenceKey: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
-    }
-}
-
-private struct SessionSummaryFramePreferenceKey: PreferenceKey {
-    static let defaultValue: [String: CGRect] = [:]
-
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
-    }
-}
-
 private struct DetailScrollViewportHeightPreferenceKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
 
@@ -1310,117 +1352,17 @@ private extension View {
         )
     }
 
-    func measureListGlobalMinY(_ metric: ListHeightMetric) -> some View {
+    func measureListMinY(_ metric: ListHeightMetric, coordinateSpace: String) -> some View {
         background(
             GeometryReader { proxy in
                 Color.clear.preference(
                     key: ListHeightPreferenceKey.self,
-                    value: [metric: proxy.frame(in: .global).minY]
+                    value: [metric: proxy.frame(in: .named(coordinateSpace)).minY]
                 )
             }
         )
     }
 
-    func measureSessionCardFrame(_ id: String) -> some View {
-        background(
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: SessionCardFramePreferenceKey.self,
-                    value: [id: proxy.frame(in: .named("session-list"))]
-                )
-            }
-        )
-    }
-
-    func measureSessionSummaryFrame(_ id: String) -> some View {
-        background(
-            GeometryReader { proxy in
-                Color.clear.preference(
-                    key: SessionSummaryFramePreferenceKey.self,
-                    value: [id: proxy.frame(in: .named("session-list"))]
-                )
-            }
-        )
-    }
-
-}
-
-private struct NativeSessionScrollView<Content: View>: NSViewRepresentable {
-    let content: Content
-
-    init(@ViewBuilder content: () -> Content) {
-        self.content = content()
-    }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = SessionListNSScrollView()
-        scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.autohidesScrollers = false
-        scrollView.scrollerStyle = .legacy
-        scrollView.verticalScroller?.controlSize = .small
-        scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: -2)
-        scrollView.borderType = .noBorder
-        scrollView.contentView.postsBoundsChangedNotifications = true
-
-        let hostingView = FirstMouseListHostingView(rootView: content)
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
-        hostingView.wantsLayer = true
-        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
-        scrollView.documentView = hostingView
-
-        NSLayoutConstraint.activate([
-            hostingView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: scrollView.contentView.trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
-            hostingView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
-        ])
-
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        if let hostingView = scrollView.documentView as? NSHostingView<Content> {
-            hostingView.rootView = content
-        }
-        scrollView.hasVerticalScroller = true
-        scrollView.scrollerStyle = .legacy
-        scrollView.autohidesScrollers = false
-        scrollView.verticalScroller?.controlSize = .small
-        scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: -2)
-        if let sessionScrollView = scrollView as? SessionListNSScrollView {
-            sessionScrollView.updateVerticalScrollerVisibility()
-        }
-    }
-
-    final class SessionListNSScrollView: NSScrollView {
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-            true
-        }
-
-        override func layout() {
-            super.layout()
-            updateVerticalScrollerVisibility()
-        }
-
-        func updateVerticalScrollerVisibility() {
-            let contentHeight = documentView?.fittingSize.height ?? documentView?.bounds.height ?? 0
-            let viewportHeight = contentView.bounds.height
-            let shouldShowScroller = contentHeight > viewportHeight + 1
-
-            if hasVerticalScroller != shouldShowScroller {
-                hasVerticalScroller = shouldShowScroller
-            }
-            verticalScroller?.isHidden = !shouldShowScroller
-        }
-    }
-
-    final class FirstMouseListHostingView<HostedContent: View>: NSHostingView<HostedContent> {
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-            true
-        }
-    }
 }
 
 private struct LiquidGlassPanelBackground: View {
@@ -1428,7 +1370,10 @@ private struct LiquidGlassPanelBackground: View {
     let cornerRadius: CGFloat
 
     var body: some View {
-        if #available(macOS 26.0, *) {
+        if !SessionListPerformanceFlags.current.glassEffectsEnabled {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color(nsColor: .windowBackgroundColor))
+        } else if #available(macOS 26.0, *) {
             ZStack {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(.clear)
@@ -2889,7 +2834,6 @@ private struct TaskCardView: View {
                 .foregroundStyle(CorptiePalette.cardPreviewText)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .measureSessionSummaryFrame(session.id)
                 .contentShape(Rectangle())
                 .onHover { hovering in
                     handleSummaryHover(hovering)
@@ -3199,7 +3143,10 @@ private struct LiquidGlassCardBackground: View {
     let fillOpacity: Double
 
     var body: some View {
-        if #available(macOS 26.0, *) {
+        if !SessionListPerformanceFlags.current.glassEffectsEnabled {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        } else if #available(macOS 26.0, *) {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(.clear)
                 .glassEffect(.clear.tint(Color.white.opacity(0.025)), in: .rect(cornerRadius: cornerRadius))
@@ -3406,12 +3353,19 @@ private struct AnimatedAvatarImage: NSViewRepresentable {
 private struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
-    static let initialVisibleMessageLimit = 7
+    @MainActor
+    static var initialVisibleMessageLimit: Int {
+        ChatTimelineFeatureFlags.current.initialDisplayWeight
+    }
     @State private var didInitialScroll = false
-    @State private var visibleMessageLimit = initialVisibleMessageLimit
-    @State private var cachedDisplayItems: [CodexThreadItem] = []
+    @State private var visibleMessageLimit: Int
+    @State private var cachedSourceItemCount = 0
+    @State private var cachedSourcePenultimateItemId: String?
+    @State private var cachedSourceTailItem: CodexThreadItem?
     @State private var cachedDisplayEntries: [ChatDisplayEntry] = []
+    @State private var cachedAppKitRows: [AppKitChatTimelineRow] = []
     @State private var cachedTotalDisplayEntryCount = 0
+    @State private var cachedVisibleMessageLimit = 0
     @State private var cachedItemsSignature = ""
     @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
@@ -3427,9 +3381,23 @@ private struct DetailView: View {
     @State private var pendingFollowScrollWorkItem: DispatchWorkItem?
     @State private var lastVisibleContentSignature = ""
     @State private var hasNewMessagesBelow = false
+    @State private var appKitScrollToBottomRevision = 0
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
     let composerDraftRepository: ComposerDraftRepository
+
+    init(
+        sessionId: String,
+        preheatedDisplayCache: DetailDisplayCache?,
+        composerDraftRepository: ComposerDraftRepository
+    ) {
+        self.sessionId = sessionId
+        self.preheatedDisplayCache = preheatedDisplayCache
+        self.composerDraftRepository = composerDraftRepository
+        _visibleMessageLimit = State(
+            initialValue: ChatTimelineFeatureFlags.current.initialDisplayWeight
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -3450,17 +3418,29 @@ private struct DetailView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let detail = backendClient.selectedDetail {
-                ThreadMetaView(detail: detail)
+                ThreadMetaView(
+                    status: detail.status,
+                    isConnecting: detail.isConnecting,
+                    connectionColor: detail.connectionColor,
+                    activityStatus: detail.activityStatus
+                )
 
                 Group {
-                    if shouldRenderDetailMessages(for: detail) {
-                        detailMessages(detail)
+                    if shouldRenderDetailMessages {
+                        if ChatTimelineFeatureFlags.current.renderer == .appKitTable
+                            || ChatTimelineFeatureFlags.current.renderer == .appKitNativeText {
+                            appKitCachedDetailMessages()
+                        } else {
+                            detailMessages(detail)
+                        }
                     } else {
                         DetailMessagesPlaceholder()
                     }
                 }
                 .onAppear {
-                    updateCachedDisplayEntries(for: detail)
+                    if let currentDetail = backendClient.selectedDetail {
+                        updateCachedDisplayEntries(for: currentDetail)
+                    }
                 }
             } else if backendClient.selectedDetail == nil,
                       backendClient.isLoadingDetail == false,
@@ -3516,7 +3496,7 @@ private struct DetailView: View {
             hasNewMessagesBelow = false
             detailScrollViewportHeight = 0
             detailScrollBottomMaxY = 0
-            visibleMessageLimit = Self.initialVisibleMessageLimit
+            visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
             collaborationExpansionByItemKey.removeAll()
             collaborationConfirmationExpansionByItemKey.removeAll()
             expandedProcessTurnIds.removeAll()
@@ -3531,6 +3511,20 @@ private struct DetailView: View {
         let visibleDisplayWeight = displayEntries.reduce(0) { $0 + $1.displayWeight }
         let hiddenCount = max(0, preparedDisplay.totalCount - visibleDisplayWeight)
 
+        swiftUIDetailMessages(detail, displayEntries: displayEntries, hiddenCount: hiddenCount)
+    }
+
+    private func appKitCachedDetailMessages() -> some View {
+        let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
+        let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
+        return appKitDetailMessages(displayEntries: cachedDisplayEntries, hiddenCount: hiddenCount)
+    }
+
+    private func swiftUIDetailMessages(
+        _ detail: CodexThreadDetail,
+        displayEntries: [ChatDisplayEntry],
+        hiddenCount: Int
+    ) -> some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: true) {
                 // Dynamic-height Markdown and nested horizontal code scrollers can
@@ -3546,6 +3540,8 @@ private struct DetailView: View {
                                 orderedEntryIds: displayEntries.map(\.id)
                             )
                             isFollowingLatest = false
+                            ChatPerformanceRecorder.shared.increment(.historyPrepends)
+                            ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))
                             visibleMessageLimit += 100
                             updateCachedDisplayEntries(for: detail)
                             restoreHistoryScrollAnchor(anchor, proxy: proxy)
@@ -3573,14 +3569,20 @@ private struct DetailView: View {
                                 ThreadItemView(
                                     item: item,
                                     processItems: processItems,
-                                    isProcessExpanded: processExpansionBinding(for: turnId),
+                                    isProcessExpanded: expandedProcessTurnIds.contains(turnId),
+                                    onToggleProcess: {
+                                        toggleNativeProcessExpansion(turnId)
+                                    },
                                     isCollaborationExpanded: collaborationExpansionBinding(for: item),
                                     isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
                                 )
                             case .process(let turnId, let items):
                                 ThreadProcessGroupView(
                                     items: items,
-                                    isExpanded: processExpansionBinding(for: turnId)
+                                    isExpanded: expandedProcessTurnIds.contains(turnId),
+                                    onToggle: {
+                                        toggleNativeProcessExpansion(turnId)
+                                    }
                                 )
                             }
                         }
@@ -3660,6 +3662,310 @@ private struct DetailView: View {
         }
     }
 
+    private func appKitDetailMessages(
+        displayEntries: [ChatDisplayEntry],
+        hiddenCount: Int
+    ) -> some View {
+        let rows = cachedAppKitRows.count == displayEntries.count
+            ? cachedAppKitRows
+            : displayEntries.map { appKitRow($0) }
+        return VStack(alignment: .leading, spacing: 6) {
+            if hiddenCount > 0 {
+                Button {
+                    isFollowingLatest = false
+                    ChatPerformanceRecorder.shared.increment(.historyPrepends)
+                    ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))
+                    visibleMessageLimit += 100
+                    if let currentDetail = backendClient.selectedDetail {
+                        updateCachedDisplayEntries(for: currentDetail)
+                    }
+                } label: {
+                    Label(L10nFormat("Load %lld earlier messages", min(100, hiddenCount)), systemImage: "arrow.up.circle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            AppKitChatTimelineView(
+                rows: rows,
+                scrollToBottomRevision: appKitScrollToBottomRevision,
+                usesNativeText: ChatTimelineFeatureFlags.current.renderer == .appKitNativeText,
+                followsLatest: $isFollowingLatest,
+                onToggleExpansion: toggleNativeProcessExpansion
+            )
+            .onAppear {
+                if let currentDetail = backendClient.selectedDetail {
+                    updateCachedDisplayEntries(for: currentDetail)
+                }
+            }
+            .onChange(of: appKitDetailRevision) { _, _ in
+                if let currentDetail = backendClient.selectedDetail {
+                    updateCachedDisplayEntries(for: currentDetail)
+                }
+                if !isFollowingLatest {
+                    hasNewMessagesBelow = true
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if hasNewMessagesBelow {
+                    Button {
+                        isFollowingLatest = true
+                        hasNewMessagesBelow = false
+                        appKitScrollToBottomRevision &+= 1
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 12, weight: .bold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(IconButtonStyle())
+                    .help(L10n("Jump to latest message"))
+                    .padding(10)
+                }
+            }
+        }
+    }
+
+    private var appKitDetailRevision: String {
+        guard let detail = backendClient.selectedDetail else { return "none" }
+        return detailSourceSignature(for: detail)
+    }
+
+    private func appKitRow(
+        _ entry: ChatDisplayEntry,
+        expansionSnapshot: Set<String>? = nil
+    ) -> AppKitChatTimelineRow {
+        let expandedTurnIds = expansionSnapshot ?? expandedProcessTurnIds
+        if ChatTimelineFeatureFlags.current.renderer == .appKitNativeText {
+            return nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
+        }
+        let content = swiftUIAppKitContent(for: entry, expandedTurnIds: expandedTurnIds)
+        let expansion = processExpansionMetadata(for: entry, expandedTurnIds: expandedTurnIds)
+        return AppKitChatTimelineRow(
+            id: entry.id,
+            contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
+            content: content,
+            nativeText: "",
+            copyText: "",
+            nativeStyle: .agent,
+            title: "",
+            metadata: "",
+            expandableTurnId: expansion.turnId,
+            isExpanded: expansion.isExpanded
+        )
+    }
+
+    private func swiftUIAppKitContent(
+        for entry: ChatDisplayEntry,
+        expandedTurnIds: Set<String>
+    ) -> AnyView {
+        switch entry.kind {
+        case .message(let item):
+            return AnyView(
+                ThreadItemView(
+                    item: item,
+                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
+                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
+                )
+                .environmentObject(backendClient)
+            )
+        case .userTurn(let item, let turnId, let processItems):
+            let isExpanded = expandedTurnIds.contains(turnId)
+            return AnyView(
+                ThreadItemView(
+                    item: item,
+                    processItems: processItems,
+                    isProcessExpanded: isExpanded,
+                    onToggleProcess: {
+                        setProcessExpansion(!isExpanded, for: turnId)
+                    },
+                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
+                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
+                )
+                .environmentObject(backendClient)
+            )
+        case .process(let turnId, let items):
+            let isExpanded = expandedTurnIds.contains(turnId)
+            return AnyView(
+                ThreadProcessGroupView(
+                    items: items,
+                    isExpanded: isExpanded,
+                    onToggle: {
+                        setProcessExpansion(!isExpanded, for: turnId)
+                    }
+                )
+                .environmentObject(backendClient)
+            )
+        }
+    }
+
+    private func nativeAppKitRow(
+        _ entry: ChatDisplayEntry,
+        expandedTurnIds: Set<String>
+    ) -> AppKitChatTimelineRow {
+        let isExpandedProcessEntry: Bool = switch entry.kind {
+        case .userTurn(_, let turnId, _), .process(let turnId, _): expandedTurnIds.contains(turnId)
+        case .message: false
+        }
+        if shouldUseSwiftUIHosting(for: entry) || isExpandedProcessEntry {
+            let expansion = processExpansionMetadata(for: entry, expandedTurnIds: expandedTurnIds)
+            return AppKitChatTimelineRow(
+                id: entry.id,
+                contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
+                content: swiftUIAppKitContent(for: entry, expandedTurnIds: expandedTurnIds),
+                nativeText: "",
+                copyText: "",
+                nativeStyle: .agent,
+                title: "",
+                metadata: "",
+                expandableTurnId: expansion.turnId,
+                isExpanded: expansion.isExpanded
+            )
+        }
+        let text: String
+        let copyText: String
+        let style: AppKitChatTimelineRow.NativeStyle
+        let title: String
+        let metadata: String
+        let expandableTurnId: String?
+        let isExpanded: Bool
+        var processCount: Int?
+        var processDuration: String?
+        switch entry.kind {
+        case .message(let item):
+            style = item.type == "userMessage" ? .user : .agent
+            copyText = nativeTimelineText(for: item)
+            text = ClickableMessageText.markdown(
+                from: copyText,
+                baseDirectory: backendClient.selectedDetail?.cwd
+            )
+            title = item.title
+            metadata = nativeTimelineMetadata(for: item)
+            expandableTurnId = nil
+            isExpanded = false
+            processCount = nil
+            processDuration = nil
+        case .userTurn(let item, let turnId, let processItems):
+            let expanded = expandedTurnIds.contains(turnId)
+            copyText = nativeTimelineText(for: item)
+            text = ClickableMessageText.markdown(
+                from: copyText,
+                baseDirectory: backendClient.selectedDetail?.cwd
+            )
+            style = .user
+            title = item.title
+            metadata = nativeTimelineMetadata(for: item)
+            expandableTurnId = turnId
+            isExpanded = expanded
+            processCount = processItems.count
+            processDuration = nativeProcessDuration(for: processItems)
+        case .process(let turnId, let items):
+            let expanded = expandedTurnIds.contains(turnId)
+            copyText = items.map { nativeTimelineText(for: $0) }.joined(separator: "\n")
+            text = ""
+            style = .process
+            title = ""
+            metadata = ""
+            expandableTurnId = turnId
+            isExpanded = expanded
+            processCount = items.count
+            processDuration = nativeProcessDuration(for: items)
+        }
+        return AppKitChatTimelineRow(
+            id: entry.id,
+            contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
+            content: nil,
+            nativeText: text,
+            copyText: copyText,
+            nativeStyle: style,
+            title: title,
+            metadata: metadata,
+            expandableTurnId: expandableTurnId,
+            isExpanded: isExpanded,
+            processCount: processCount,
+            processDuration: processDuration
+        )
+    }
+
+    private func nativeProcessDuration(for items: [CodexThreadItem]) -> String? {
+        let timestamps = items.compactMap { item in
+            item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+        }
+        guard let start = timestamps.min(), let end = timestamps.max() else { return nil }
+        let duration = max(0, end.timeIntervalSince(start))
+        if duration < 0.95 { return "· <1s" }
+        if duration < 10 { return String(format: "· %.1fs", duration) }
+        return "· \(Int(duration.rounded()))s"
+    }
+
+    private func processExpansionMetadata(
+        for entry: ChatDisplayEntry,
+        expandedTurnIds: Set<String>
+    ) -> (turnId: String?, isExpanded: Bool) {
+        switch entry.kind {
+        case .userTurn(_, let turnId, _), .process(let turnId, _):
+            return (turnId, expandedTurnIds.contains(turnId))
+        case .message:
+            return (nil, false)
+        }
+    }
+
+    private func toggleNativeProcessExpansion(_ turnId: String) {
+        if ChatTimelineFeatureFlags.current.renderer == .swiftUIVStack {
+            withAnimation(.easeOut(duration: 0.14)) {
+                setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
+            }
+        } else {
+            // AppKit owns the row geometry. Running a SwiftUI transition around
+            // the same change gives the hosted content and NSTableView different
+            // animation clocks, which causes flashing and transient overlap.
+            setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
+        }
+    }
+
+    private func nativeTimelineMetadata(for item: CodexThreadItem) -> String {
+        guard let createdAt = item.createdAt,
+              let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else { return "" }
+        return date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())
+    }
+
+    private func shouldUseSwiftUIHosting(for entry: ChatDisplayEntry) -> Bool {
+        ChatTimelineRowRouting.route(for: entry) == .swiftUI
+    }
+
+    private func nativeTimelineText(for item: CodexThreadItem) -> String {
+        ChatTimelineRowRouting.displayText(for: item)
+    }
+
+    private func appKitContentRevision(
+        _ entry: ChatDisplayEntry,
+        expandedTurnIds: Set<String>
+    ) -> Int {
+        var hasher = Hasher()
+        hasher.combine(entry.id)
+        switch entry.kind {
+        case .message(let item):
+            hasher.combine(itemSignature(item))
+        case .userTurn(let item, let turnId, let items):
+            hasher.combine(itemSignature(item))
+            hasher.combine(turnId)
+            hasher.combine(expandedTurnIds.contains(turnId))
+            if expandedTurnIds.contains(turnId) {
+                items.forEach { hasher.combine(itemSignature($0)) }
+            }
+        case .process(let turnId, let items):
+            hasher.combine(turnId)
+            hasher.combine(expandedTurnIds.contains(turnId))
+            if expandedTurnIds.contains(turnId) {
+                items.forEach { hasher.combine(itemSignature($0)) }
+            }
+        }
+        return hasher.finalize()
+    }
+
     private func restoreHistoryScrollAnchor(
         _ anchor: DetailHistoryScrollAnchor?,
         proxy: ScrollViewProxy
@@ -3703,17 +4009,25 @@ private struct DetailView: View {
         "\(sessionId)::\(item.id)"
     }
 
-    private func processExpansionBinding(for turnId: String) -> Binding<Bool> {
-        Binding(
-            get: { expandedProcessTurnIds.contains(turnId) },
-            set: { isExpanded in
-                if isExpanded {
-                    expandedProcessTurnIds.insert(turnId)
-                } else {
-                    expandedProcessTurnIds.remove(turnId)
-                }
+    private func setProcessExpansion(_ isExpanded: Bool, for turnId: String) {
+        let wasExpanded = expandedProcessTurnIds.contains(turnId)
+        guard wasExpanded != isExpanded else { return }
+        var nextExpandedTurnIds = expandedProcessTurnIds
+        if isExpanded {
+            nextExpandedTurnIds.insert(turnId)
+        } else {
+            nextExpandedTurnIds.remove(turnId)
+        }
+        expandedProcessTurnIds = nextExpandedTurnIds
+
+        // AppKit rows are independent NSHostingView roots. Parent state changes
+        // do not invalidate a cached root by themselves, so rebuild rows with a
+        // new content revision and let NSTableView remeasure the changed height.
+        if ChatTimelineFeatureFlags.current.renderer != .swiftUIVStack {
+            cachedAppKitRows = cachedDisplayEntries.map {
+                appKitRow($0, expansionSnapshot: nextExpandedTurnIds)
             }
-        )
+        }
     }
 
     private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
@@ -3721,7 +4035,15 @@ private struct DetailView: View {
         guard cachedSessionId != sessionId || sourceSignature != cachedDetailSourceSignature else {
             return
         }
-        let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+        let preparedDisplay = ChatPerformanceTrace.measure("timeline.display.diff") {
+            if ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
+               let incremental = makeIncrementalTailDisplay(for: detail) {
+                incremental
+            } else {
+                makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+            }
+        }
+        ChatPerformanceRecorder.shared.increment(.displayRebuilds)
         let addsMainCard = preparedDisplay.totalCount > cachedTotalDisplayEntryCount
         let oldExpandedProcessCounts = expandedProcessItemCounts(in: cachedDisplayEntries)
         let newExpandedProcessCounts = expandedProcessItemCounts(in: preparedDisplay.visibleEntries)
@@ -3739,25 +4061,121 @@ private struct DetailView: View {
             && isDetailScrolledNearBottom
         var transaction = Transaction(animation: animateInsertion ? .easeOut(duration: 0.22) : nil)
         transaction.disablesAnimations = !animateInsertion
+        let nextAppKitRows = makeCachedAppKitRows(
+            previousEntries: cachedDisplayEntries,
+            previousRows: cachedAppKitRows,
+            nextEntries: preparedDisplay.visibleEntries
+        )
         withTransaction(transaction) {
             cachedDetailSourceSignature = sourceSignature
             cachedItemsSignature = preparedDisplay.signature
             cachedSessionId = sessionId
-            cachedDisplayItems = preparedDisplay.displayItems
+            updateCachedSourceTail(from: preparedDisplay.displayItems)
             cachedTotalDisplayEntryCount = preparedDisplay.totalCount
+            cachedVisibleMessageLimit = visibleMessageLimit
             cachedDisplayEntries = preparedDisplay.visibleEntries
+            cachedAppKitRows = nextAppKitRows
             displayCacheBySessionId[sessionId] = DetailDisplayCache(
                 sessionId: sessionId,
                 displayItems: preparedDisplay.displayItems,
                 displayEntries: preparedDisplay.visibleEntries,
                 totalDisplayEntryCount: preparedDisplay.totalCount,
+                visibleMessageLimit: visibleMessageLimit,
                 signature: preparedDisplay.signature,
                 sourceSignature: sourceSignature
             )
         }
     }
 
-    private func shouldRenderDetailMessages(for detail: CodexThreadDetail) -> Bool {
+    private func makeCachedAppKitRows(
+        previousEntries: [ChatDisplayEntry],
+        previousRows: [AppKitChatTimelineRow],
+        nextEntries: [ChatDisplayEntry]
+    ) -> [AppKitChatTimelineRow] {
+        guard ChatTimelineFeatureFlags.current.renderer != .swiftUIVStack else { return [] }
+        guard ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
+              previousEntries.count == previousRows.count,
+              let nextTailTurnId = nextEntries.last.map(chatDisplayEntryTurnId),
+              let nextTailStart = nextEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
+              let previousTailStart = previousEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
+              nextTailStart == previousTailStart,
+              zip(nextEntries[..<nextTailStart], previousEntries[..<previousTailStart]).allSatisfy({ next, previous in
+                  next.id == previous.id
+              }) else {
+            return nextEntries.map { appKitRow($0) }
+        }
+        return Array(previousRows[..<previousTailStart]) + nextEntries[nextTailStart...].map { appKitRow($0) }
+    }
+
+    private func makeIncrementalTailDisplay(
+        for detail: CodexThreadDetail
+    ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
+        guard cachedSessionId == sessionId,
+              DetailTimelineIncrementalEligibility.canReuseCachedWindow(
+                cachedVisibleMessageLimit: cachedVisibleMessageLimit,
+                requestedVisibleMessageLimit: visibleMessageLimit
+              ),
+              detail.items.count == cachedSourceItemCount,
+              let nextLast = detail.items.last,
+              let cachedLast = cachedSourceTailItem,
+              nextLast.id == cachedLast.id,
+              nextLast.turnId == cachedLast.turnId,
+              detail.items.dropLast().last?.id == cachedSourcePenultimateItemId else {
+            return nil
+        }
+
+        let tailItems = detail.items.reversed().prefix { $0.turnId == nextLast.turnId }.reversed()
+        let nextTailEntries = makeChatDisplayEntriesForTurn(Array(tailItems))
+        guard let oldTailStart = cachedDisplayEntries.firstIndex(where: {
+            chatDisplayEntryTurnId($0) == nextLast.turnId
+        }) else {
+            return nil
+        }
+        let oldTailEntries = cachedDisplayEntries[oldTailStart...]
+        guard oldTailEntries.allSatisfy({ chatDisplayEntryTurnId($0) == nextLast.turnId }) else {
+            return nil
+        }
+
+        let oldTailWeight = oldTailEntries.reduce(0) { $0 + $1.displayWeight }
+        let nextTailWeight = nextTailEntries.reduce(0) { $0 + $1.displayWeight }
+        let combined = Array(cachedDisplayEntries[..<oldTailStart]) + nextTailEntries
+        let visibleEntries = visibleDetailEntries(from: combined, limit: visibleMessageLimit)
+        let totalCount = max(0, cachedTotalDisplayEntryCount - oldTailWeight + nextTailWeight)
+        return (
+            displayItems: detail.items,
+            visibleEntries: visibleEntries,
+            totalCount: totalCount,
+            signature: incrementalDisplaySignature(
+                previousSignature: cachedItemsSignature,
+                tailEntries: nextTailEntries
+            ),
+            sourceSignature: detailSourceSignature(for: detail)
+        )
+    }
+
+    private func updateCachedSourceTail(from items: [CodexThreadItem]) {
+        cachedSourceItemCount = items.count
+        cachedSourcePenultimateItemId = items.dropLast().last?.id
+        cachedSourceTailItem = items.last
+    }
+
+    private func incrementalDisplaySignature(
+        previousSignature: String,
+        tailEntries: [ChatDisplayEntry]
+    ) -> String {
+        let tailSignature = tailEntries.map { entry in
+            switch entry.kind {
+            case .message(let item): return detailItemSignature(item)
+            case .userTurn(let item, let turnId, let items):
+                return detailItemSignature(item) + ":" + turnId + ":" + items.suffix(1).map(detailItemSignature).joined()
+            case .process(let turnId, let items):
+                return turnId + ":" + items.suffix(1).map(detailItemSignature).joined()
+            }
+        }.joined(separator: "|")
+        return "\(previousSignature.hashValue):\(tailSignature)"
+    }
+
+    private var shouldRenderDetailMessages: Bool {
         if hasPreparedDisplayCacheForCurrentSession || hasPreheatedDisplayCacheForCurrentSession {
             return true
         }
@@ -3794,9 +4212,11 @@ private struct DetailView: View {
             return
         }
         cachedSessionId = sessionId
-        cachedDisplayItems = preheatedDisplayCache.displayItems
+        updateCachedSourceTail(from: preheatedDisplayCache.displayItems)
         cachedDisplayEntries = preheatedDisplayCache.displayEntries
+        cachedAppKitRows = preheatedDisplayCache.displayEntries.map { appKitRow($0) }
         cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
+        cachedVisibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
         cachedItemsSignature = preheatedDisplayCache.signature
         cachedDetailSourceSignature = preheatedDisplayCache.sourceSignature
         displayCacheBySessionId[sessionId] = preheatedDisplayCache
@@ -3805,17 +4225,23 @@ private struct DetailView: View {
     private func restoreDisplayCacheForCurrentSession() {
         if let cache = displayCacheBySessionId[sessionId] {
             cachedSessionId = sessionId
-            cachedDisplayItems = cache.displayItems
+            updateCachedSourceTail(from: cache.displayItems)
             cachedDisplayEntries = cache.displayEntries
+            cachedAppKitRows = cache.displayEntries.map { appKitRow($0) }
             cachedTotalDisplayEntryCount = cache.totalDisplayEntryCount
+            cachedVisibleMessageLimit = cache.visibleMessageLimit
             cachedItemsSignature = cache.signature
             cachedDetailSourceSignature = cache.sourceSignature
             return
         }
         cachedSessionId = ""
-        cachedDisplayItems = []
+        cachedSourceItemCount = 0
+        cachedSourcePenultimateItemId = nil
+        cachedSourceTailItem = nil
         cachedDisplayEntries = []
+        cachedAppKitRows = []
         cachedTotalDisplayEntryCount = 0
+        cachedVisibleMessageLimit = 0
         cachedItemsSignature = ""
         cachedDetailSourceSignature = ""
     }
@@ -4025,74 +4451,6 @@ private struct DetailView: View {
         return false
     }
 
-    private func chatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
-        var entries: [ChatDisplayEntry] = []
-        var turnIds: [String] = []
-        var itemsByTurnId: [String: [CodexThreadItem]] = [:]
-
-        for item in items {
-            if itemsByTurnId[item.turnId] == nil {
-                turnIds.append(item.turnId)
-                itemsByTurnId[item.turnId] = []
-            }
-            itemsByTurnId[item.turnId]?.append(item)
-        }
-
-        for turnId in turnIds {
-            if let turnItems = itemsByTurnId[turnId] {
-                entries.append(contentsOf: chatDisplayEntriesForTurn(turnItems))
-            }
-        }
-        return entries
-    }
-
-    private func chatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
-        let userMessages = items.filter { $0.type == "userMessage" }
-        if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
-            return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-                + [ChatDisplayEntry(kind: .message(confirmation))]
-        }
-        let agentMessages = items.filter {
-            $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
-        let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
-        let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
-        let processItems = items.filter { item in
-            isProcessItem(item) || progressAgentMessageIds.contains(item.id)
-        }
-        let trailingItems = items.filter { item in
-            item.type != "userMessage" && item.type != "agentMessage" && !isProcessItem(item)
-        }
-
-        var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-        if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
-           let turnId = items.first?.turnId {
-            if userMessages.count == 1,
-               let userMessage = userMessages.first,
-               !isCollaborationUserMessage(userMessage) {
-                entries[entries.count - 1] = ChatDisplayEntry(
-                    kind: .userTurn(message: userMessage, turnId: turnId, processItems: processItems)
-                )
-            } else {
-                entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
-            }
-        }
-        if let presentedAgentMessage {
-            entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
-        }
-        entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
-        return entries
-    }
-
-    private func isProcessItem(_ item: CodexThreadItem) -> Bool {
-        switch item.type {
-        case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning":
-            return true
-        default:
-            return false
-        }
-    }
 }
 
 private struct OrphanedWorkspaceRecoveryView: View {
@@ -4465,7 +4823,7 @@ private struct UsageProgressRing: View {
     }
 }
 
-private struct ChatDisplayEntry: Identifiable {
+struct ChatDisplayEntry: Identifiable {
     enum Kind {
         case message(CodexThreadItem)
         case userTurn(message: CodexThreadItem, turnId: String, processItems: [CodexThreadItem])
@@ -4509,10 +4867,20 @@ private struct DetailDisplayCache {
     let displayItems: [CodexThreadItem]
     let displayEntries: [ChatDisplayEntry]
     let totalDisplayEntryCount: Int
+    let visibleMessageLimit: Int
     let signature: String
     let sourceSignature: String
 }
 
+private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
+    switch entry.kind {
+    case .message(let item): item.turnId
+    case .userTurn(_, let turnId, _): turnId
+    case .process(let turnId, _): turnId
+    }
+}
+
+@MainActor
 private func makeDetailDisplayCache(
     for detail: CodexThreadDetail,
     sessionId: String,
@@ -4524,11 +4892,13 @@ private func makeDetailDisplayCache(
         displayItems: preparedDisplay.displayItems,
         displayEntries: preparedDisplay.visibleEntries,
         totalDisplayEntryCount: preparedDisplay.totalCount,
+        visibleMessageLimit: visibleMessageLimit,
         signature: preparedDisplay.signature,
         sourceSignature: preparedDisplay.sourceSignature
     )
 }
 
+@MainActor
 private func makeVisibleDetailDisplay(
     for detail: CodexThreadDetail,
     visibleMessageLimit: Int
@@ -4546,8 +4916,12 @@ private func makeVisibleDetailDisplay(
     )
 }
 
+@MainActor
 private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMessageLimit: Int) -> String {
-    let items = detail.items.suffix(max(visibleMessageLimit * 4, visibleMessageLimit + 8))
+    let signatureItemLimit = ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+        ? 2
+        : max(visibleMessageLimit * 4, visibleMessageLimit + 8)
+    let items = detail.items.suffix(signatureItemLimit)
     let itemSignatures = items.map { item in
         [
             item.id,
@@ -4565,7 +4939,7 @@ private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMes
     return "\(visibleMessageLimit)|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
 }
 
-private func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -> [ChatDisplayEntry] {
+func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -> [ChatDisplayEntry] {
     guard displayEntries.reduce(0, { $0 + $1.displayWeight }) > limit else {
         return displayEntries
     }
@@ -4583,7 +4957,7 @@ private func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit
     return Array(displayEntries[startIndex...])
 }
 
-private func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
     var entries: [ChatDisplayEntry] = []
     var turnIds: [String] = []
     var itemsByTurnId: [String: [CodexThreadItem]] = [:]
@@ -4604,7 +4978,7 @@ private func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDispl
     return entries
 }
 
-private func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
     let userMessages = items.filter { $0.type == "userMessage" }
     if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
         return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
@@ -6874,19 +7248,22 @@ private struct DetailMessagesPlaceholder: View {
 
 private struct ThreadMetaView: View {
     @EnvironmentObject private var backendClient: BackendClient
-    let detail: CodexThreadDetail
+    let status: TaskStatus
+    let isConnecting: Bool
+    let connectionColor: Color
+    let activityStatus: String?
 
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 5) {
                 ConnectionIndicatorLight(
-                    color: detail.isConnecting ? CorptiePalette.disconnected : detail.connectionColor,
+                    color: isConnecting ? CorptiePalette.disconnected : connectionColor,
                     size: 5,
                     glowSize: 10,
-                    isBreathing: detail.isConnecting
+                    isBreathing: isConnecting
                 )
-                Text(detail.status.label)
-                    .foregroundStyle(detail.status.color)
+                Text(status.label)
+                    .foregroundStyle(status.color)
                 if let sessionId = backendClient.selectedSession?.id,
                    let restartActivity = backendClient.restartActivityBySessionId[sessionId] {
                     ActivityStatusText(
@@ -6895,10 +7272,10 @@ private struct ThreadMetaView: View {
                         fontSize: 9
                     )
                         .layoutPriority(-1)
-                } else if let activityStatus = detail.activityStatus, !activityStatus.isEmpty {
+                } else if let activityStatus, !activityStatus.isEmpty {
                     ActivityStatusText(
                         text: activityStatus,
-                        isActive: detail.status == .running,
+                        isActive: status == .running,
                         fontSize: 9
                     )
                         .layoutPriority(-1)
@@ -7026,14 +7403,16 @@ private func copySessionNameToPasteboard(_ rawName: String?) -> Bool {
 private struct ThreadProcessGroupView: View {
     let items: [CodexThreadItem]
     var isEmbeddedInUserCard = false
-    @Binding var isExpanded: Bool
+    let isExpanded: Bool
+    let onToggle: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeOut(duration: 0.14)) {
-                    isExpanded.toggle()
-                }
+                // The owning timeline decides whether this state change is
+                // animated. AppKit-hosted rows must not start a nested SwiftUI
+                // transition while NSTableView is updating row geometry.
+                onToggle()
             } label: {
                 HStack(spacing: isEmbeddedInUserCard ? 4 : 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -7201,20 +7580,23 @@ private struct ThreadItemView: View {
     @State private var didCopySessionName = false
     let item: CodexThreadItem
     let processItems: [CodexThreadItem]?
-    @Binding private var isProcessExpanded: Bool
+    private let isProcessExpanded: Bool
+    private let onToggleProcess: () -> Void
     @Binding private var isCollaborationExpanded: Bool
     @Binding private var isCollaborationConfirmationExpanded: Bool
 
     init(
         item: CodexThreadItem,
         processItems: [CodexThreadItem]? = nil,
-        isProcessExpanded: Binding<Bool> = .constant(false),
+        isProcessExpanded: Bool = false,
+        onToggleProcess: @escaping () -> Void = {},
         isCollaborationExpanded: Binding<Bool>,
         isCollaborationConfirmationExpanded: Binding<Bool>
     ) {
         self.item = item
         self.processItems = processItems
-        _isProcessExpanded = isProcessExpanded
+        self.isProcessExpanded = isProcessExpanded
+        self.onToggleProcess = onToggleProcess
         _isCollaborationExpanded = isCollaborationExpanded
         _isCollaborationConfirmationExpanded = isCollaborationConfirmationExpanded
     }
@@ -7700,7 +8082,8 @@ private struct ThreadItemView: View {
                         ThreadProcessGroupView(
                             items: processItems,
                             isEmbeddedInUserCard: true,
-                            isExpanded: $isProcessExpanded
+                            isExpanded: isProcessExpanded,
+                            onToggle: onToggleProcess
                         )
                     }
                 }

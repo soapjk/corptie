@@ -9,12 +9,20 @@ struct StatusHalo: NSViewRepresentable {
 
     func makeNSView(context: Context) -> StatusHaloLayerView {
         let view = StatusHaloLayerView()
-        view.configure(status: status, reduceMotion: accessibilityReduceMotion)
+        view.configure(
+            status: status,
+            reduceMotion: accessibilityReduceMotion
+                || !SessionListPerformanceFlags.current.haloAnimationsEnabled
+        )
         return view
     }
 
     func updateNSView(_ nsView: StatusHaloLayerView, context: Context) {
-        nsView.configure(status: status, reduceMotion: accessibilityReduceMotion)
+        nsView.configure(
+            status: status,
+            reduceMotion: accessibilityReduceMotion
+                || !SessionListPerformanceFlags.current.haloAnimationsEnabled
+        )
     }
 }
 

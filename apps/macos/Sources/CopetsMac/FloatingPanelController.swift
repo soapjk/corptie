@@ -117,6 +117,7 @@ final class FloatingPanelController: NSObject {
 
         let rootView = FloatingRootView()
             .environmentObject(client)
+            .environmentObject(client.sessionListStore)
             .environmentObject(focusState)
             .environmentObject(layoutState)
             .environmentObject(detachedSessionManager)
@@ -138,7 +139,7 @@ final class FloatingPanelController: NSObject {
         hostingView.layer?.masksToBounds = false
         panel.contentView = hostingView
 
-        client.$sessions
+        client.sessionListStore.$orderedIDs
             .map(\.count)
             .removeDuplicates()
             .receive(on: RunLoop.main)
@@ -560,7 +561,8 @@ final class FloatingPanelController: NSObject {
     }
 
     private func logWindowGeometry(_ trigger: String) {
-        guard CorptieAppEnvironment.isDevelopment else { return }
+        guard CorptieAppEnvironment.isDevelopment,
+              SessionListPerformanceFlags.current.layoutLoggingEnabled else { return }
         let frame = panel.frame
         let contentRect = panel.contentRect(forFrameRect: frame)
         let viewFrame = panel.contentView?.frame ?? .zero

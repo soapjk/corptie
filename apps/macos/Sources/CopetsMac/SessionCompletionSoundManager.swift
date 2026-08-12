@@ -36,7 +36,7 @@ final class SessionCompletionSoundManager {
     }
 
     func start() {
-        client.$sessions
+        client.sessionsDidChange
             .receive(on: RunLoop.main)
             .sink { [weak self] sessions in
                 self?.handleSessionsUpdate(sessions)
