@@ -2,13 +2,17 @@ import { constants as fsConstants } from "node:fs";
 import { chmod, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
+import {
+  ensureCorptieAgentMemory,
+  ensureProviderMemoryLink,
+  resolveCorptieAgentMemoryPaths
+} from "./corptieAgentMemory.mjs";
 
 const MANAGED_CONFIG_HEADER = "# Managed by Corptie. Runtime-specific user settings may be added below.";
 const REQUIRED_CONFIG = Object.freeze({
   cli_auth_credentials_store: "file",
   mcp_oauth_credentials_store: "file"
 });
-const CODEX_HOME_PLACEHOLDER = "{{CODEX_HOME}}";
 
 export function resolveCorptieRuntimePaths(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());
@@ -18,6 +22,7 @@ export function resolveCorptieRuntimePaths(options = {}) {
     ? join(corptieHome, "development", "runtimes", "codex")
     : join(corptieHome, "runtimes", "codex");
   const codexHome = resolve(options.codexHome ?? process.env.CORPTIE_CODEX_HOME ?? runtimeRoot);
+  const agentMemory = resolveCorptieAgentMemoryPaths({ homeDir: home, corptieHome, environmentName });
 
   return {
     corptieHome,
@@ -25,6 +30,7 @@ export function resolveCorptieRuntimePaths(options = {}) {
     configPath: join(codexHome, "config.toml"),
     authPath: join(codexHome, "auth.json"),
     agentsPath: join(codexHome, "AGENTS.md"),
+    sharedMemoryPath: agentMemory.sharedMemoryPath,
     skillsDir: join(codexHome, "skills"),
     collaborationSkillDir: join(codexHome, "skills", "corptie-collaboration"),
     collaborationSkillPath: join(codexHome, "skills", "corptie-collaboration", "SKILL.md"),
@@ -45,14 +51,14 @@ export function resolveCorptieRuntimePaths(options = {}) {
 export async function ensureCorptieCodexRuntime(options = {}) {
   const paths = resolveCorptieRuntimePaths(options);
   const bundledSkillPath = resolve(String(options.bundledSkillPath ?? ""));
-  const bundledAgentsPath = resolve(String(options.bundledAgentsPath ?? ""));
+  const bundledMemoryPath = resolve(String(options.bundledMemoryPath ?? options.bundledAgentsPath ?? ""));
   const collaborationMcpServerPath = resolve(String(options.collaborationMcpServerPath ?? ""));
   const bundledProjectToolsReferencePath = options.bundledProjectToolsReferencePath
     ? resolve(String(options.bundledProjectToolsReferencePath))
     : null;
 
-  if (!options.bundledAgentsPath || !await isFile(bundledAgentsPath)) {
-    throw new Error(`Bundled Codex global AGENTS.md is missing: ${bundledAgentsPath}`);
+  if (!(options.bundledMemoryPath || options.bundledAgentsPath) || !await isFile(bundledMemoryPath)) {
+    throw new Error(`Bundled Corptie Agent memory is missing: ${bundledMemoryPath}`);
   }
   if (!options.bundledSkillPath || !await isFile(bundledSkillPath)) {
     throw new Error(`Bundled Corptie collaboration Skill is missing: ${bundledSkillPath}`);
@@ -71,7 +77,12 @@ export async function ensureCorptieCodexRuntime(options = {}) {
 
   const configChanged = await ensureRuntimeConfig(paths.configPath);
   const authCopied = await bootstrapAuthentication(paths);
-  const agentsCreated = await installInitialAgentsFile(bundledAgentsPath, paths.agentsPath, paths.codexHome, 0o600);
+  const agentMemory = await ensureCorptieAgentMemory({
+    ...options,
+    bundledMemoryPath,
+    legacyMemoryPath: paths.agentsPath
+  });
+  const memoryLinkChanged = await ensureProviderMemoryLink(agentMemory.sharedMemoryPath, paths.agentsPath);
   const skillChanged = await syncManagedFile(bundledSkillPath, paths.collaborationSkillPath, 0o600);
   const projectToolsReferenceChanged = bundledProjectToolsReferencePath
     ? await syncManagedFile(
@@ -84,12 +95,14 @@ export async function ensureCorptieCodexRuntime(options = {}) {
 
   return {
     ...paths,
-    bundledAgentsPath,
+    bundledMemoryPath,
     bundledSkillPath,
     collaborationMcpServerPath,
     configChanged,
     authCopied,
-    agentsCreated,
+    agentsCreated: agentMemory.created,
+    memoryLinkChanged,
+    agentMemory,
     skillChanged,
     projectToolsReferenceChanged,
     threadMigration,
@@ -238,24 +251,6 @@ async function syncManagedFile(source, destination, mode) {
     return false;
   }
   await atomicWrite(destination, expected, mode);
-  return true;
-}
-
-async function installInitialAgentsFile(source, destination, codexHome, mode) {
-  const template = await readFile(source, "utf8");
-  if (!template.includes(CODEX_HOME_PLACEHOLDER)) {
-    throw new Error(`Bundled Codex global instructions are missing ${CODEX_HOME_PLACEHOLDER}: ${source}`);
-  }
-  const content = template.replaceAll(CODEX_HOME_PLACEHOLDER, codexHome);
-  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-  try {
-    await writeFile(destination, content, { flag: "wx", mode });
-  } catch (error) {
-    if (error.code !== "EEXIST") throw error;
-    await chmod(destination, mode);
-    return false;
-  }
-  await chmod(destination, mode);
   return true;
 }
 
