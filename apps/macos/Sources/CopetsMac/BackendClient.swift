@@ -11,7 +11,9 @@ struct SessionRestartActivity: Equatable {
 final class BackendClient: ObservableObject {
     static let shared = BackendClient()
 
-    @Published private(set) var sessions: [TaskSession] = []
+    private(set) var sessions: [TaskSession] = []
+    let sessionListStore = SessionListStore()
+    let sessionsDidChange = CurrentValueSubject<[TaskSession], Never>([])
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
     @Published private(set) var selectedDetail: CodexThreadDetail?
@@ -62,8 +64,20 @@ final class BackendClient: ObservableObject {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("corptie", isDirectory: true).path
     }
     private var pollingTask: Task<Void, Never>?
+    private let sessionPayloadProcessor = SessionPayloadProcessor()
     private var eventStreamTask: Task<Void, Never>?
+    private var sessionCollectionStreamTask: Task<Void, Never>?
+    private var sessionCollectionRevision: UInt64?
+    private var isSessionCollectionStreamConnected = false
     private var detailStreamTask: Task<Void, Never>?
+    private var detailStreamWatchdogTask: Task<Void, Never>?
+    private var detailStreamGeneration = 0
+    private(set) var detailStreamHealth: ChatDetailStreamHealth = .inactive
+    private(set) var detailStreamLastDiagnostic = "inactive"
+    private var detailStreamLastActivity: ContinuousClock.Instant?
+    private(set) var detailTimelineRevision: Int?
+    private var detailStreamCanonicalDetail: CodexThreadDetail?
+    private var performanceFixtureStreamTask: Task<Void, Never>?
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
     private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
@@ -92,16 +106,40 @@ final class BackendClient: ObservableObject {
     func start() {
         pollingTask?.cancel()
         eventStreamTask?.cancel()
+        sessionCollectionStreamTask?.cancel()
+        isSessionCollectionStreamConnected = false
+        detailStreamTask?.cancel()
+        detailStreamWatchdogTask?.cancel()
+        detailStreamGeneration &+= 1
+        detailStreamHealth = .inactive
+        detailStreamLastActivity = nil
+        resetDetailTimelineState()
+        performanceFixtureStreamTask?.cancel()
+        let chatFeatures = ChatTimelineFeatureFlags.current
+        ChatPerformanceTrace.event("chat.renderer.selected", value: chatFeatures.rendererIndex)
+        if chatFeatures.fixtureMode == .standard {
+            installPerformanceFixture(replaysStreamingUpdates: chatFeatures.replaysStreamingUpdates)
+            return
+        }
         Task {
             await loadSettings()
             await loadModels(for: "codex-pty")
         }
         startEventStream()
+        startSessionCollectionStream()
+        if let selectedSession, viewingHistoricalThreadId == nil {
+            startDetailStream(for: selectedSession)
+        }
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.refresh()
+                if self?.isSessionCollectionStreamConnected != true {
+                    await self?.refresh()
+                }
                 await self?.syncNewSessionDefaultsFromPreferences()
                 await self?.refreshSelectedDetailFromPolling()
+                guard SessionListPerformanceFlags.current.pollingEnabled else {
+                    return
+                }
                 try? await Task.sleep(for: .seconds(2))
             }
         }
@@ -112,8 +150,20 @@ final class BackendClient: ObservableObject {
         pollingTask = nil
         eventStreamTask?.cancel()
         eventStreamTask = nil
+        sessionCollectionStreamTask?.cancel()
+        sessionCollectionStreamTask = nil
+        sessionCollectionRevision = nil
+        isSessionCollectionStreamConnected = false
         detailStreamTask?.cancel()
         detailStreamTask = nil
+        detailStreamWatchdogTask?.cancel()
+        detailStreamWatchdogTask = nil
+        detailStreamGeneration &+= 1
+        detailStreamHealth = .inactive
+        detailStreamLastActivity = nil
+        resetDetailTimelineState()
+        performanceFixtureStreamTask?.cancel()
+        performanceFixtureStreamTask = nil
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
         projectStatusRefreshTask?.cancel()
@@ -158,6 +208,114 @@ final class BackendClient: ObservableObject {
                 }
             }
         }
+    }
+
+    private func startSessionCollectionStream() {
+        sessionCollectionStreamTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                var request = URLRequest(url: self.baseURL.appending(path: "session-collection/events"))
+                request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+                request.setValue("identity", forHTTPHeaderField: "accept-encoding")
+                if let revision = self.sessionCollectionRevision {
+                    request.setValue(String(revision), forHTTPHeaderField: "last-event-id")
+                }
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse,
+                          httpResponse.statusCode == 200 else {
+                        throw URLError(.badServerResponse)
+                    }
+                    self.isSessionCollectionStreamConnected = true
+                    var eventName = ""
+                    var dataLines: [String] = []
+                    for try await line in bytes.lines {
+                        guard !Task.isCancelled else { return }
+                        if line.isEmpty {
+                            await self.handleSessionCollectionFrame(
+                                eventName,
+                                data: dataLines.joined(separator: "\n")
+                            )
+                            eventName = ""
+                            dataLines.removeAll(keepingCapacity: true)
+                        } else if line.hasPrefix("event:") {
+                            eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                        } else if line.hasPrefix("data:") {
+                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                        }
+                    }
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.isSessionCollectionStreamConnected = false
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+        }
+    }
+
+    private func handleSessionCollectionFrame(_ eventName: String, data: String) async {
+        guard let payload = data.data(using: .utf8), !payload.isEmpty else { return }
+        do {
+            if eventName == "session-collection-snapshot" {
+                let envelope = try await Task.detached(priority: .userInitiated) {
+                    try JSONDecoder().decode(SessionCollectionSnapshotEnvelope.self, from: payload)
+                }.value
+                let nextSessions = envelope.sessions
+                let patch = await sessionPayloadProcessor.processSnapshot(
+                    sessions: nextSessions,
+                    current: sessions
+                )
+                applySessionSnapshot(nextSessions, patch: patch)
+                sessionCollectionRevision = envelope.revision
+                return
+            }
+            guard eventName == "session-collection-patch" else { return }
+            let envelope = try await Task.detached(priority: .userInitiated) {
+                try JSONDecoder().decode(SessionCollectionPatchEnvelope.self, from: payload)
+            }.value
+            guard sessionCollectionRevision == envelope.baseRevision else {
+                sessionCollectionRevision = nil
+                sessionCollectionStreamTask?.cancel()
+                startSessionCollectionStream()
+                return
+            }
+            guard let next = Self.applyingSessionCollectionPatch(envelope, to: sessions) else {
+                sessionCollectionRevision = nil
+                sessionCollectionStreamTask?.cancel()
+                startSessionCollectionStream()
+                return
+            }
+            let collectionPatch = await sessionPayloadProcessor.processSnapshot(
+                sessions: next,
+                current: sessions
+            )
+            applySessionSnapshot(next, patch: collectionPatch)
+            sessionCollectionRevision = envelope.revision
+        } catch {
+            sessionCollectionRevision = nil
+        }
+    }
+
+    nonisolated static func applyingSessionCollectionPatch(
+        _ patch: SessionCollectionPatchEnvelope,
+        to current: [TaskSession]
+    ) -> [TaskSession]? {
+        var byID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        patch.removedIds.forEach { byID[$0] = nil }
+        patch.inserted.forEach { byID[$0.session.id] = $0.session }
+        patch.updated.forEach { byID[$0.sessionId] = $0.session }
+        if let orderedIDs = patch.orderedIds {
+            guard Set(orderedIDs) == Set(byID.keys) else { return nil }
+            return orderedIDs.compactMap { byID[$0] }
+        }
+        let currentIDs = current.map(\.id).filter { byID[$0] != nil }
+        let newInsertions = patch.inserted.sorted { $0.index < $1.index }
+        var ids = currentIDs
+        for insertion in newInsertions where !ids.contains(insertion.session.id) {
+            ids.insert(insertion.session.id, at: min(max(0, insertion.index), ids.count))
+        }
+        guard Set(ids) == Set(byID.keys) else { return nil }
+        return ids.compactMap { byID[$0] }
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
@@ -239,7 +397,9 @@ final class BackendClient: ObservableObject {
         guard refreshEvents.contains(eventName) else {
             return
         }
-        await refresh()
+        if !isSessionCollectionStreamConnected {
+            await refresh()
+        }
         if eventName == "CodexThreadCompleted"
             || eventName == "CodexThreadFailed"
             || eventName == "CodexThreadError" {
@@ -636,12 +796,12 @@ final class BackendClient: ObservableObject {
 
     func refresh() async {
         do {
-            let latestSessions = try await fetchSessionsForShutdown()
-            if sessions != latestSessions, !isReorderingSessions, NSEvent.pressedMouseButtons == 0 {
-                sessions = latestSessions
-                syncSelectedSessionFromSessions()
-                syncSelectedDetailMetadataFromSessions()
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "sessions"))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
             }
+            let result = try await sessionPayloadProcessor.processSnapshot(data: data, current: sessions)
+            applySessionSnapshot(result.sessions, patch: result.patch)
             if !isOnline {
                 isOnline = true
             }
@@ -665,6 +825,34 @@ final class BackendClient: ObservableObject {
             throw URLError(.badServerResponse)
         }
         return try await BackendResponseDecoder.sessions(from: data)
+    }
+
+    private func applySessionSnapshot(
+        _ nextSessions: [TaskSession],
+        patch: SessionCollectionPatch? = nil,
+        allowDuringReorder: Bool = false
+    ) {
+        if isReorderingSessions && !allowDuringReorder {
+            let nextByID = Dictionary(uniqueKeysWithValues: nextSessions.map { ($0.id, $0) })
+            // Keep the locally manipulated order and membership stable, while
+            // still applying live status/summary/capability changes to every
+            // row that exists on both sides. The authoritative structural
+            // snapshot is fetched as soon as reorder persistence settles.
+            let contentOnlySnapshot = sessions.map { nextByID[$0.id] ?? $0 }
+            applySessionSnapshot(contentOnlySnapshot, allowDuringReorder: true)
+            return
+        }
+        let resolvedPatch = patch ?? SessionCollectionDiffer.patch(
+            from: sessions,
+            to: nextSessions,
+            revision: 0
+        )
+        guard sessions != nextSessions else { return }
+        sessions = nextSessions
+        sessionListStore.apply(resolvedPatch, authoritativeSessions: nextSessions)
+        sessionsDidChange.send(nextSessions)
+        syncSelectedSessionFromSessions()
+        syncSelectedDetailMetadataFromSessions()
     }
 
     func refreshArchivedSessions() async {
@@ -1066,12 +1254,14 @@ final class BackendClient: ObservableObject {
     func select(session: TaskSession) {
         viewingHistoricalThreadId = nil
         selectedSession = session
+        resetDetailTimelineState()
         selectedSessionUsage = nil
         usageRefreshTask?.cancel()
         usageRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.loadUsage(for: session)
                 try? await Task.sleep(for: .seconds(30))
+                if Task.isCancelled { return }
             }
         }
         selectedProjectWorktreeStatus = nil
@@ -1084,6 +1274,7 @@ final class BackendClient: ObservableObject {
                 while !Task.isCancelled {
                     await self?.loadProjectWorktreeStatus(for: session)
                     try? await Task.sleep(for: .seconds(5))
+                    if Task.isCancelled { return }
                 }
             }
         }
@@ -1105,6 +1296,12 @@ final class BackendClient: ObservableObject {
         projectStatusRefreshTask = nil
         detailStreamTask?.cancel()
         detailStreamTask = nil
+        detailStreamWatchdogTask?.cancel()
+        detailStreamWatchdogTask = nil
+        detailStreamGeneration &+= 1
+        detailStreamHealth = .inactive
+        detailStreamLastActivity = nil
+        resetDetailTimelineState()
         selectedSession = nil
         selectedDetail = nil
         viewingHistoricalThreadId = nil
@@ -1938,11 +2135,13 @@ final class BackendClient: ObservableObject {
     }
 
     private func publishSessionReplacement(_ replacement: SessionReplacement) {
-        if let index = sessions.firstIndex(where: { $0.id == replacement.previousSessionId }) {
-            sessions[index] = replacement.session
-        } else if !sessions.contains(where: { $0.id == replacement.session.id }) {
-            sessions.append(replacement.session)
+        var nextSessions = sessions
+        if let index = nextSessions.firstIndex(where: { $0.id == replacement.previousSessionId }) {
+            nextSessions[index] = replacement.session
+        } else if !nextSessions.contains(where: { $0.id == replacement.session.id }) {
+            nextSessions.append(replacement.session)
         }
+        applySessionSnapshot(nextSessions, allowDuringReorder: true)
         sessionReplacements.send(replacement)
     }
 
@@ -1953,7 +2152,7 @@ final class BackendClient: ObservableObject {
     }
 
     private func clearSuggestedOptions(for session: TaskSession) {
-        sessions = sessions.map { existing in
+        let nextSessions = sessions.map { existing in
             guard existing.id == session.id else {
                 return existing
             }
@@ -1978,6 +2177,7 @@ final class BackendClient: ObservableObject {
                 pendingCollaborationConfirmation: existing.pendingCollaborationConfirmation
             )
         }
+        applySessionSnapshot(nextSessions, allowDuringReorder: true)
     }
 
     private func appendOptimisticUserMessage(_ text: String, to session: TaskSession) {
@@ -2258,24 +2458,28 @@ final class BackendClient: ObservableObject {
             return
         }
 
-        let movedSession = sessions.remove(at: fromIndex)
+        var nextSessions = sessions
+        let movedSession = nextSessions.remove(at: fromIndex)
         guard let targetSessionId,
-              let targetIndex = sessions.firstIndex(where: {
+              let targetIndex = nextSessions.firstIndex(where: {
                   $0.id == targetSessionId && ($0.pinned == true) == (movedSession.pinned == true)
               }) else {
-            let lastMatchingIndex = sessions.lastIndex {
+            let lastMatchingIndex = nextSessions.lastIndex {
                 ($0.pinned == true) == (movedSession.pinned == true)
             }
-            let insertionIndex = lastMatchingIndex.map { $0 + 1 } ?? min(fromIndex, sessions.count)
-            sessions.insert(movedSession, at: insertionIndex)
+            let insertionIndex = lastMatchingIndex.map { $0 + 1 } ?? min(fromIndex, nextSessions.count)
+            nextSessions.insert(movedSession, at: insertionIndex)
+            applySessionSnapshot(nextSessions, allowDuringReorder: true)
             return
         }
         let insertionIndex = targetIndex
         if insertionIndex == fromIndex {
-            sessions.insert(movedSession, at: fromIndex)
+            nextSessions.insert(movedSession, at: fromIndex)
+            applySessionSnapshot(nextSessions, allowDuringReorder: true)
             return
         }
-        sessions.insert(movedSession, at: max(0, min(insertionIndex, sessions.count)))
+        nextSessions.insert(movedSession, at: max(0, min(insertionIndex, nextSessions.count)))
+        applySessionSnapshot(nextSessions, allowDuringReorder: true)
     }
 
     func beginSessionReorder() {
@@ -2564,9 +2768,16 @@ final class BackendClient: ObservableObject {
     }
 
     private func refreshSelectedDetailFromPolling() async {
-        guard viewingHistoricalThreadId == nil, let selectedSession else {
+        guard let selectedSession,
+              ChatDetailRefreshPolicy.shouldPoll(
+                  sessionId: selectedSession.id,
+                  isViewingHistory: viewingHistoricalThreadId != nil,
+                  sseHealthEnabled: ChatTimelineFeatureFlags.current.sseHealthEnabled,
+                  streamHealth: detailStreamHealth
+              ) else {
             return
         }
+        ChatPerformanceRecorder.shared.increment(.detailPollRequests)
         await loadDetail(for: selectedSession, showLoading: false)
     }
 
@@ -2608,6 +2819,12 @@ final class BackendClient: ObservableObject {
             viewingHistoricalThreadId = history.providerThreadId
             detailStreamTask?.cancel()
             detailStreamTask = nil
+            detailStreamWatchdogTask?.cancel()
+            detailStreamWatchdogTask = nil
+            detailStreamGeneration &+= 1
+            detailStreamHealth = .inactive
+            detailStreamLastActivity = nil
+            resetDetailTimelineState()
             return true
         } catch {
             lastError = error.localizedDescription
@@ -2648,65 +2865,150 @@ final class BackendClient: ObservableObject {
 
     private func startDetailStream(for session: TaskSession) {
         detailStreamTask?.cancel()
+        detailStreamWatchdogTask?.cancel()
+        detailStreamGeneration &+= 1
+        let generation = detailStreamGeneration
         let threadId = session.external?.threadId ?? session.id
+        detailStreamHealth = .connecting(sessionId: session.id)
+        detailStreamLastDiagnostic = "generation=\(generation) connecting session=\(session.id)"
+        detailStreamLastActivity = .now
+        resetDetailTimelineState()
+
+        detailStreamWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled, let self,
+                      self.detailStreamGeneration == generation,
+                      self.selectedSession?.id == session.id,
+                      let lastActivity = self.detailStreamLastActivity else { return }
+                guard ContinuousClock.now - lastActivity >= .seconds(35) else { continue }
+                self.detailStreamHealth = .fallback(sessionId: session.id)
+                self.startDetailStream(for: session)
+                return
+            }
+        }
 
         detailStreamTask = Task { [weak self] in
             guard let self else {
                 return
             }
-            var request = URLRequest(url: self.baseURL.appending(path: "sessions/\(session.id)/events"))
-            request.setValue("text/event-stream", forHTTPHeaderField: "accept")
-
-            do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                    throw URLError(.badServerResponse)
+            var failureCount = 0
+            while !Task.isCancelled {
+                guard self.detailStreamGeneration == generation,
+                      self.selectedSession?.id == session.id else { return }
+                var request = URLRequest(url: self.baseURL.appending(path: "sessions/\(session.id)/events"))
+                request.setValue("text/event-stream", forHTTPHeaderField: "accept")
+                request.setValue("identity", forHTTPHeaderField: "accept-encoding")
+                if ChatTimelineFeatureFlags.current.deltaTimelineEnabled {
+                    request.setValue("1", forHTTPHeaderField: "x-corptie-timeline-protocol")
                 }
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                self.detailStreamLastDiagnostic = "generation=\(generation) requesting"
 
-                var eventName = ""
-                var dataLines: [String] = []
-                for try await line in bytes.lines {
-                    if Task.isCancelled {
-                        return
+                do {
+                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                        throw URLError(.badServerResponse)
                     }
-                    if line.isEmpty {
-                        await self.handleDetailStreamEvent(
-                            eventName: eventName,
-                            data: dataLines.joined(separator: "\n"),
-                            expectedSession: session,
-                            expectedThreadId: threadId
-                        )
-                        eventName = ""
-                        dataLines.removeAll(keepingCapacity: true)
-                    } else if line.hasPrefix("event:") {
-                        eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                    } else if line.hasPrefix("data:") {
-                        dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                    guard self.detailStreamGeneration == generation,
+                          self.selectedSession?.id == session.id else { return }
+                    self.detailStreamLastDiagnostic = "generation=\(generation) response=\(httpResponse.statusCode)"
+                    failureCount = 0
+
+                    var eventName = ""
+                    var dataLines: [String] = []
+                    for try await line in bytes.lines {
+                        if Task.isCancelled { return }
+                        guard self.detailStreamGeneration == generation,
+                              self.selectedSession?.id == session.id else { return }
+                        if !line.isEmpty {
+                            self.detailStreamLastActivity = .now
+                            self.detailStreamLastDiagnostic = "generation=\(generation) line=\(line.prefix(32))"
+                        }
+                        if line.isEmpty {
+                            await self.handleDetailStreamEvent(
+                                eventName: eventName,
+                                data: dataLines.joined(separator: "\n"),
+                                expectedSession: session,
+                                expectedThreadId: threadId
+                            )
+                            eventName = ""
+                            dataLines.removeAll(keepingCapacity: true)
+                        } else if line.hasPrefix("event:") {
+                            eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+                        } else if line.hasPrefix("data:") {
+                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                            // The canonical session endpoint emits snapshot payloads as one JSON line.
+                            // Foundation's AsyncLineSequence can hold the trailing empty delimiter
+                            // until the next heartbeat, so publish the complete frame immediately.
+                            if Self.isSingleLineTimelineEvent(eventName), dataLines.count == 1 {
+                                await self.handleDetailStreamEvent(
+                                    eventName: eventName,
+                                    data: dataLines[0],
+                                    expectedSession: session,
+                                    expectedThreadId: threadId
+                                )
+                                eventName = ""
+                                dataLines.removeAll(keepingCapacity: true)
+                            }
+                        }
                     }
-                }
-            } catch {
-                if !Task.isCancelled {
-                    lastError = error.localizedDescription
+                    throw URLError(.networkConnectionLost)
+                } catch {
+                    if Task.isCancelled || self.detailStreamGeneration != generation { return }
+                    self.detailStreamLastDiagnostic = "generation=\(generation) error=\(error.localizedDescription)"
+                    self.detailStreamHealth = .fallback(sessionId: session.id)
+                    failureCount += 1
+                    let delay = ChatDetailRefreshPolicy.reconnectDelaySeconds(afterFailure: failureCount)
+                    try? await Task.sleep(for: .seconds(delay))
+                    if Task.isCancelled { return }
+                    self.detailStreamHealth = .connecting(sessionId: session.id)
                 }
             }
         }
     }
 
     private func handleDetailStreamEvent(eventName: String, data: String, expectedSession: TaskSession, expectedThreadId: String) async {
-        guard eventName == "snapshot",
-              !data.isEmpty,
+        guard !data.isEmpty,
               selectedSession?.id == expectedSession.id,
               let payload = data.data(using: .utf8) else {
             return
         }
-        do {
-            let decodedDetail = try await BackendResponseDecoder.detail(
-                from: payload,
-                threadId: expectedThreadId,
-                authoritativeCwd: expectedSession.external?.cwd,
-                workspacePath: expectedSession.external?.workspace?.path
+        if eventName == "snapshot" {
+            await handleDetailStreamSnapshot(
+                payload,
+                expectedSession: expectedSession,
+                expectedThreadId: expectedThreadId
             )
-            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(decodedDetail)))
+            return
+        }
+        guard let kind = ChatTimelineDeltaKind(rawValue: eventName) else { return }
+        await handleDetailStreamDelta(kind, payload: payload, expectedSession: expectedSession)
+    }
+
+    private func handleDetailStreamSnapshot(
+        _ payload: Data,
+        expectedSession: TaskSession,
+        expectedThreadId: String
+    ) async {
+        ChatPerformanceRecorder.shared.increment(.sseSnapshots)
+        ChatPerformanceRecorder.shared.increment(.sseSnapshotBytes, by: Int64(payload.count))
+        do {
+            async let header = ChatTimelineDeltaDecoder.snapshotHeader(from: payload)
+            let canonicalDetail = try await ChatPerformanceTrace.measure("timeline.snapshot.decode") {
+                try await BackendResponseDecoder.detail(
+                    from: payload,
+                    threadId: expectedThreadId,
+                    authoritativeCwd: expectedSession.external?.cwd,
+                    workspacePath: expectedSession.external?.workspace?.path
+                )
+            }
+            let decodedHeader = try await header
+            guard selectedSession?.id == expectedSession.id else { return }
+            detailStreamCanonicalDetail = canonicalDetail
+            detailTimelineRevision = decodedHeader.protocolVersion == 1 ? decodedHeader.revision : nil
+            let mergedDetail = presentationDetail(from: canonicalDetail)
+            markDetailStreamHealthy(for: expectedSession)
             publishSelectedDetailIfSafe(mergedDetail)
             if let selectedSession {
                 detailCacheBySessionId[selectedSession.id] = mergedDetail
@@ -2718,6 +3020,91 @@ final class BackendClient: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    private func handleDetailStreamDelta(
+        _ kind: ChatTimelineDeltaKind,
+        payload: Data,
+        expectedSession: TaskSession
+    ) async {
+        ChatPerformanceRecorder.shared.increment(.sseDeltas)
+        ChatPerformanceRecorder.shared.increment(.sseDeltaBytes, by: Int64(payload.count))
+        do {
+            let envelope = try await ChatPerformanceTrace.measure("timeline.delta.decode") {
+                try await ChatTimelineDeltaDecoder.delta(from: payload)
+            }
+            guard selectedSession?.id == expectedSession.id else { return }
+            let preferredCwd = BackendResponseDecoder.preferredWorkspacePath(
+                authoritativePath: expectedSession.external?.cwd,
+                providerPath: envelope.metadata.cwd,
+                workspacePath: expectedSession.external?.workspace?.path
+            )
+            switch ChatTimelineDeltaMerger.merge(
+                kind: kind,
+                envelope: envelope,
+                currentDetail: detailStreamCanonicalDetail,
+                currentRevision: detailTimelineRevision,
+                preferredCwd: preferredCwd
+            ) {
+            case .applied(let canonicalDetail, let revision):
+                detailStreamCanonicalDetail = canonicalDetail
+                detailTimelineRevision = revision
+                let mergedDetail = presentationDetail(from: canonicalDetail)
+                markDetailStreamHealthy(for: expectedSession)
+                publishSelectedDetailIfSafe(mergedDetail)
+                detailCacheBySessionId[expectedSession.id] = mergedDetail
+                syncSessionSummary(from: mergedDetail)
+                lastError = nil
+            case .duplicate:
+                markDetailStreamHealthy(for: expectedSession)
+            case .requiresSnapshot:
+                scheduleDetailStreamSnapshotRecovery(for: expectedSession)
+            }
+        } catch {
+            scheduleDetailStreamSnapshotRecovery(for: expectedSession, error: error)
+        }
+    }
+
+    private func presentationDetail(from canonicalDetail: CodexThreadDetail) -> CodexThreadDetail {
+        applyingHandledChoices(
+            to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(canonicalDetail))
+        )
+    }
+
+    private func markDetailStreamHealthy(for session: TaskSession) {
+        detailStreamLastActivity = .now
+        detailStreamHealth = .healthy(sessionId: session.id)
+        let revisionDescription = detailTimelineRevision.map(String.init) ?? "legacy"
+        detailStreamLastDiagnostic = "generation=\(detailStreamGeneration) healthy session=\(session.id) revision=\(revisionDescription)"
+    }
+
+    private func scheduleDetailStreamSnapshotRecovery(for session: TaskSession, error: Error? = nil) {
+        guard selectedSession?.id == session.id else { return }
+        ChatPerformanceRecorder.shared.increment(.sseSnapshotRecoveries)
+        detailStreamHealth = .fallback(sessionId: session.id)
+        let errorDescription = error.map { " error=\($0.localizedDescription)" } ?? ""
+        detailStreamLastDiagnostic = "generation=\(detailStreamGeneration) snapshot-recovery session=\(session.id)\(errorDescription)"
+        resetDetailTimelineState()
+        detailStreamGeneration &+= 1
+        let recoveryGeneration = detailStreamGeneration
+        detailStreamTask?.cancel()
+        detailStreamWatchdogTask?.cancel()
+        Task { [weak self] in
+            await Task.yield()
+            guard let self,
+                  self.detailStreamGeneration == recoveryGeneration,
+                  self.selectedSession?.id == session.id else { return }
+            self.startDetailStream(for: session)
+        }
+    }
+
+    private func resetDetailTimelineState() {
+        detailTimelineRevision = nil
+        detailStreamCanonicalDetail = nil
+    }
+
+    private static func isSingleLineTimelineEvent(_ eventName: String) -> Bool {
+        eventName == "snapshot" || ChatTimelineDeltaKind(rawValue: eventName) != nil
     }
 
     private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
@@ -2817,9 +3204,7 @@ final class BackendClient: ObservableObject {
                 pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
             )
         }
-        if sessions != nextSessions, !isReorderingSessions, NSEvent.pressedMouseButtons == 0 {
-            sessions = nextSessions
-        }
+        applySessionSnapshot(nextSessions)
     }
 
     private func syncSelectedSessionFromSessions() {
@@ -2835,7 +3220,9 @@ final class BackendClient: ObservableObject {
             selectedDetail = nil
             detailCacheBySessionId.removeValue(forKey: refreshed.id)
             Task { [weak self] in
-                await self?.loadDetail(for: refreshed, showLoading: false)
+                guard let self, self.selectedSession?.id == refreshed.id else { return }
+                self.startDetailStream(for: refreshed)
+                await self.loadDetail(for: refreshed, showLoading: false)
             }
         }
     }
@@ -2949,10 +3336,72 @@ final class BackendClient: ObservableObject {
     }
 
     private func publishSelectedDetailIfSafe(_ detail: CodexThreadDetail) {
-        guard selectedDetail != detail, NSEvent.pressedMouseButtons == 0 else {
+        if let selectedDetail,
+           detailPublicationRevision(selectedDetail) == detailPublicationRevision(detail),
+           selectedDetail == detail {
             return
         }
+        guard NSEvent.pressedMouseButtons == 0 else { return }
+        ChatPerformanceRecorder.shared.increment(.detailPublishes)
+        ChatPerformanceTrace.event("ui.detail.publish", value: detail.items.count)
         selectedDetail = detail
+    }
+
+    private func detailPublicationRevision(_ detail: CodexThreadDetail) -> String {
+        let tail = detail.items.last
+        return [
+            detail.id,
+            detail.status.rawValue,
+            detail.updatedAt,
+            "\(detail.items.count)",
+            tail?.id ?? "",
+            tail?.turnStatus ?? "",
+            tail?.status ?? "",
+            "\(tail?.text.count ?? 0)",
+            String(tail?.text.suffix(64) ?? "")
+        ].joined(separator: ":")
+    }
+
+    private func installPerformanceFixture(replaysStreamingUpdates: Bool) {
+        let fixture = ChatPerformanceTrace.measure("fixture.generate") {
+            ChatPerformanceFixture.make()
+        }
+        applySessionSnapshot([fixture.session], allowDuringReorder: true)
+        archivedSessions = []
+        selectedSession = fixture.session
+        selectedDetail = fixture.detail
+        detailCacheBySessionId = [fixture.session.id: fixture.detail]
+        isLoadingDetail = false
+        isOnline = true
+        lastError = nil
+        ChatPerformanceRecorder.shared.logSnapshot(reason: "fixture-installed")
+        guard replaysStreamingUpdates else { return }
+
+        performanceFixtureStreamTask = Task { [weak self] in
+            guard let self else { return }
+            var detail = fixture.detail
+            var lastPublishedAt = ContinuousClock.now
+            let fixtureFlags = ChatTimelineFeatureFlags.current
+            let finalStep = fixtureFlags.fixtureStreamSteps
+            for step in 1...finalStep {
+                if Task.isCancelled { return }
+                try? await Task.sleep(for: .milliseconds(fixtureFlags.fixtureStreamIntervalMilliseconds))
+                if Task.isCancelled { return }
+                detail = ChatPerformanceFixture.appendingStreamStep(step, to: detail, finalStep: finalStep)
+                ChatPerformanceRecorder.shared.increment(.fixtureStreamingUpdates)
+                let flags = ChatTimelineFeatureFlags.current
+                let batchInterval = Duration.milliseconds(flags.uiBatchIntervalMilliseconds)
+                if !flags.uiBatchingEnabled
+                    || ContinuousClock.now - lastPublishedAt >= batchInterval
+                    || step == finalStep {
+                    publishSelectedDetailIfSafe(detail)
+                    lastPublishedAt = .now
+                }
+                if step.isMultiple(of: 20) {
+                    ChatPerformanceRecorder.shared.logSnapshot(reason: "fixture-stream-step-\(step)")
+                }
+            }
+        }
     }
 
     private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {
