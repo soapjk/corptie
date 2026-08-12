@@ -87,12 +87,25 @@ export function handleCollaborationHttpRequest({
 
       if (request.method === "POST" && url.pathname === "/internal/collaboration/task-confirmations") {
         const input = await readJson(request);
+        const recipient = input.recipientAgentId
+          ? core.getAgent(input.recipientAgentId)
+          : core.resolveAgentBySessionName(input.recipientSessionName);
+        if (!recipient) {
+          throw apiError(
+            "AGENT_NOT_FOUND",
+            input.recipientSessionName
+              ? `No active Session is named ${input.recipientSessionName}.`
+              : "recipientSessionName or recipientAgentId is required.",
+            404
+          );
+        }
         const actor = core.getAgent(actorAgentId);
         const runningWork = actor?.currentSessionId
           ? core.store.getRunningAgentWorkItemForSession(actor.currentSessionId)
           : null;
         const confirmation = core.proposeTask({
           ...input,
+          recipientAgentId: recipient.agentId,
           initiatorAgentId: actorAgentId,
           sourceSessionId: actor?.currentSessionId,
           sourceTurnId: runningWork?.targetTurnId ?? null
