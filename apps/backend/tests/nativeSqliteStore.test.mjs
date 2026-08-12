@@ -62,6 +62,43 @@ test("native SQLite persists committed writes immediately in WAL mode", async ()
   }
 });
 
+test("logical Session owns the canonical unique name and preserves renamed aliases", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-identity-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "codex:provider-thread",
+      title: "original_agent",
+      agent: "Codex",
+      provider: "codex-app-server",
+      cwd: directory,
+      status: "complete"
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:stable-session",
+      legacySessionId: "codex:provider-thread",
+      providerThreadId: "provider-thread",
+      providerId: "codex-app-server",
+      boundCwd: directory,
+      title: "original_agent"
+    });
+
+    store.renameSession("logical:stable-session", "renamed_agent");
+
+    assert.equal(store.getLogicalSession("logical:stable-session").sessionName, "renamed_agent");
+    assert.equal(store.getSession("codex:provider-thread").title, "renamed_agent");
+    assert.equal(store.getLogicalSessionByName("renamed_agent").logicalSessionId, "logical:stable-session");
+    assert.equal(store.getLogicalSessionByName("original_agent").logicalSessionId, "logical:stable-session");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("legacy workspace transition tables migrate to support regular directories", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-directory-transition-migration-"));
   const dbPath = join(directory, "corptie.sqlite");

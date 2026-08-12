@@ -137,7 +137,10 @@ function pathMatchesRule(path, rule) {
 }
 
 function ignorePatternForRule(rule) {
-  return `/${rule.path}${rule.kind === "directory" ? "/" : ""}`;
+  // A trailing slash matches only real directories. Corptie can expose the
+  // same local configuration path as a symlink shared across Worktrees, so
+  // ignore the path name itself and let Git cover either representation.
+  return `/${rule.path}`;
 }
 
 async function appendGitignore(root, patterns) {

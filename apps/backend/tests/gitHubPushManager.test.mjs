@@ -211,7 +211,7 @@ test("confirmed ignore decision commits gitignore without pushing private Agent 
     );
     assert.equal(
       (await gitOutput(["show", "main:.gitignore"], fixture.remote)).trim(),
-      "# Corptie local Agent configuration\n/.corptie/"
+      "# Corptie local Agent configuration\n/.corptie"
     );
   } finally {
     await fixture.close();

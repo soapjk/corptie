@@ -45,24 +45,42 @@ export class CollaborationCore {
 
   getAgent(agentId) {
     const row = this.store.selectOne("SELECT * FROM agents WHERE agent_id = ?", [agentId]);
-    return row ? agentFromRow(row) : null;
+    return row ? agentFromRow(row, this.store) : null;
   }
 
   getAgentForSession(sessionId) {
+    const logical = this.store.getLogicalSession(sessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
     const row = this.store.selectOne(
       `SELECT a.* FROM agents a
        JOIN agent_sessions s ON s.agent_id = a.agent_id
-       WHERE s.session_id = ? AND s.unbound_at IS NULL`,
-      [sessionId]
+       WHERE s.session_id IN (?, ?) AND s.unbound_at IS NULL
+       ORDER BY s.bound_at DESC LIMIT 1`,
+      [sessionId, logical?.legacySessionId ?? sessionId]
     );
-    return row ? agentFromRow(row) : null;
+    return row ? agentFromRow(row, this.store) : null;
+  }
+
+  resolveAgentBySessionName(sessionName) {
+    const logical = this.store.getLogicalSessionByName(sessionName);
+    if (!logical) return null;
+    const row = this.store.selectOne(
+      `SELECT a.* FROM agents a
+       JOIN agent_sessions binding ON binding.agent_id = a.agent_id
+       WHERE binding.unbound_at IS NULL
+         AND binding.session_id IN (?, ?)
+       ORDER BY binding.bound_at DESC LIMIT 1`,
+      [logical.logicalSessionId, logical.legacySessionId]
+    );
+    return row ? agentFromRow(row, this.store) : null;
   }
 
   listAgents(options = {}) {
     const params = [];
     const where = options.status ? "WHERE status = ?" : "";
     if (options.status) params.push(options.status);
-    return this.store.selectAll(`SELECT * FROM agents ${where} ORDER BY name ASC`, params).map(agentFromRow);
+    return this.store.selectAll(`SELECT * FROM agents ${where} ORDER BY name ASC`, params)
+      .map((row) => agentFromRow(row, this.store));
   }
 
   bindSession(input) {
@@ -267,7 +285,7 @@ export class CollaborationCore {
        JOIN service_consumers c ON c.agent_id = a.agent_id
        WHERE c.service_id = ? ORDER BY a.name ASC`,
       [serviceId]
-    ).map(agentFromRow);
+    ).map((row) => agentFromRow(row, this.store));
   }
 
   createTask(input) {
@@ -314,12 +332,17 @@ export class CollaborationCore {
         `INSERT INTO collaboration_tasks (
           task_id, context_id, parent_task_id, initiator_agent_id, recipient_agent_id, service_id,
           type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
-          idempotency_key, created_at, updated_at, completed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+          idempotency_key, created_at, updated_at, completed_at,
+          initiator_session_id, recipient_session_id, initiator_name_at_send, recipient_name_at_send
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
         [
           taskId, contextId, optionalText(input.parentTaskId), initiator.agentId, recipient.agentId,
           service?.serviceId ?? null, taskType, maxIterations, title, summary,
-          JSON.stringify(stringList(input.acceptanceCriteria)), idempotencyKey, timestamp, timestamp
+          JSON.stringify(stringList(input.acceptanceCriteria)), idempotencyKey, timestamp, timestamp,
+          input.initiatorSessionId ?? initiator.sessionId,
+          input.recipientSessionId ?? recipient.sessionId,
+          input.initiatorNameAtSend ?? initiator.sessionName,
+          input.recipientNameAtSend ?? recipient.sessionName
         ]
       );
       this.store.db.run(
@@ -368,6 +391,10 @@ export class CollaborationCore {
       ...input,
       initiatorAgentId: initiator.agentId,
       recipientAgentId: recipient.agentId,
+      initiatorSessionId: initiator.sessionId,
+      recipientSessionId: recipient.sessionId,
+      initiatorNameAtSend: initiator.sessionName,
+      recipientNameAtSend: recipient.sessionName,
       type: taskType,
       title: requiredText(input.title, "title"),
       summary: requiredText(input.summary, "summary"),
@@ -379,12 +406,14 @@ export class CollaborationCore {
     this.store.db.run(
       `INSERT INTO collaboration_request_confirmations (
         confirmation_id, initiator_agent_id, recipient_agent_id, source_session_id, source_turn_id,
-        request_json, status, task_id, created_at, resolved_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)`,
+        request_json, status, task_id, created_at, resolved_at,
+        initiator_session_id, recipient_session_id, initiator_name_at_send, recipient_name_at_send
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL, ?, ?, ?, ?)`,
       [
         confirmationId, initiator.agentId, recipient.agentId,
         optionalText(input.sourceSessionId) ?? initiator.currentSessionId,
-        optionalText(input.sourceTurnId), JSON.stringify(request), timestamp
+        optionalText(input.sourceTurnId), JSON.stringify(request), timestamp,
+        initiator.stableSessionId, recipient.stableSessionId, initiator.sessionName, recipient.sessionName
       ]
     );
     this.store.scheduleSave();
@@ -1065,10 +1094,16 @@ export class CollaborationCore {
   }
 }
 
-function agentFromRow(row) {
+function agentFromRow(row, store) {
+  const logical = row.current_session_id
+    ? (store.getLogicalSession(row.current_session_id) ?? store.getLogicalSessionByLegacySessionId(row.current_session_id))
+    : null;
   return {
     agentId: row.agent_id,
-    name: row.name,
+    name: logical?.sessionName ?? row.name,
+    sessionName: logical?.sessionName ?? row.name,
+    sessionId: logical?.logicalSessionId ?? null,
+    providerSessionId: row.current_session_id || null,
     description: row.description,
     status: row.status,
     capabilities: parseJson(row.capabilities_json, []),
@@ -1101,6 +1136,10 @@ function taskFromRow(row) {
     parentTaskId: row.parent_task_id || null,
     initiatorAgentId: row.initiator_agent_id,
     recipientAgentId: row.recipient_agent_id,
+    initiatorSessionId: row.initiator_session_id || null,
+    recipientSessionId: row.recipient_session_id || null,
+    initiatorNameAtSend: row.initiator_name_at_send || null,
+    recipientNameAtSend: row.recipient_name_at_send || null,
     serviceId: row.service_id || null,
     type: row.type,
     status: row.status,
@@ -1179,9 +1218,11 @@ function taskConfirmationFromRow(row, core) {
   return {
     confirmationId: row.confirmation_id,
     initiatorAgentId: row.initiator_agent_id,
-    initiatorAgentName: initiator?.name ?? row.initiator_agent_id,
+    initiatorSessionId: row.initiator_session_id || initiator?.sessionId || null,
+    initiatorAgentName: row.initiator_name_at_send || initiator?.sessionName || initiator?.name || row.initiator_agent_id,
     recipientAgentId: row.recipient_agent_id,
-    recipientAgentName: recipient?.name ?? row.recipient_agent_id,
+    recipientSessionId: row.recipient_session_id || recipient?.sessionId || null,
+    recipientAgentName: row.recipient_name_at_send || recipient?.sessionName || recipient?.name || row.recipient_agent_id,
     sourceSessionId: row.source_session_id || null,
     sourceTurnId: row.source_turn_id || null,
     request,

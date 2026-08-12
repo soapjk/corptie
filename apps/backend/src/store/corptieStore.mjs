@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
 import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
+import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -629,6 +630,14 @@ export class CorptieStore {
         FOREIGN KEY (active_workspace_id) REFERENCES git_worktrees(worktree_id) ON DELETE SET NULL
       );
 
+      CREATE TABLE IF NOT EXISTS session_name_aliases (
+        alias_key TEXT PRIMARY KEY,
+        alias TEXT NOT NULL,
+        logical_session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS provider_thread_bindings (
         provider_thread_id TEXT PRIMARY KEY,
         binding_id TEXT,
@@ -709,6 +718,20 @@ export class CorptieStore {
     this.ensureColumn("sessions", "sort_order", "REAL");
     this.ensureColumn("sessions", "avatar_path", "TEXT");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
+    this.ensureColumn("logical_sessions", "session_name", "TEXT");
+    this.ensureColumn("logical_sessions", "session_name_key", "TEXT");
+    this.ensureColumn("collaboration_tasks", "initiator_session_id", "TEXT");
+    this.ensureColumn("collaboration_tasks", "recipient_session_id", "TEXT");
+    this.ensureColumn("collaboration_tasks", "initiator_name_at_send", "TEXT");
+    this.ensureColumn("collaboration_tasks", "recipient_name_at_send", "TEXT");
+    this.ensureColumn("collaboration_request_confirmations", "initiator_session_id", "TEXT");
+    this.ensureColumn("collaboration_request_confirmations", "recipient_session_id", "TEXT");
+    this.ensureColumn("collaboration_request_confirmations", "initiator_name_at_send", "TEXT");
+    this.ensureColumn("collaboration_request_confirmations", "recipient_name_at_send", "TEXT");
+    this.migrateCanonicalSessionNames();
+    this.migrateCollaborationSessionIdentities();
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_logical_sessions_session_name
+      ON logical_sessions(session_name_key) WHERE session_name_key IS NOT NULL`);
     this.ensureColumn("provider_thread_bindings", "routing_version", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("provider_thread_bindings", "binding_id", "TEXT");
     this.ensureColumn("provider_thread_bindings", "provider_id", "TEXT");
@@ -791,6 +814,74 @@ export class CorptieStore {
              AND m.message_type = 'question'
          )`
     );
+  }
+
+  migrateCanonicalSessionNames() {
+    const rows = this.selectAll(
+      `SELECT ls.logical_session_id, ls.legacy_session_id, ls.title, ls.session_name,
+              s.title AS legacy_title
+       FROM logical_sessions ls
+       LEFT JOIN sessions s ON s.id = ls.legacy_session_id
+       ORDER BY ls.created_at ASC, ls.logical_session_id ASC`
+    );
+    const used = new Set();
+    for (const row of rows) {
+      const base = String(row.session_name || row.legacy_title || row.title || "Agent").trim() || "Agent";
+      let sessionName = base;
+      let suffix = 1;
+      while (used.has(normalizeSessionTitle(sessionName))) {
+        sessionName = `${base} ${suffix}`;
+        suffix += 1;
+      }
+      const sessionNameKey = normalizeSessionTitle(sessionName);
+      used.add(sessionNameKey);
+      this.db.run(
+        `UPDATE logical_sessions
+         SET session_name = ?, session_name_key = ?, title = ?
+         WHERE logical_session_id = ?`,
+        [sessionName, sessionNameKey, sessionName, row.logical_session_id]
+      );
+      if (row.legacy_session_id) {
+        this.db.run("UPDATE sessions SET title = ? WHERE id = ?", [sessionName, row.legacy_session_id]);
+      }
+    }
+  }
+
+  migrateCollaborationSessionIdentities() {
+    for (const table of ["collaboration_tasks", "collaboration_request_confirmations"]) {
+      this.db.run(
+        `UPDATE ${table}
+         SET initiator_session_id = COALESCE(initiator_session_id, (
+               SELECT ls.logical_session_id
+               FROM agent_sessions binding
+               JOIN logical_sessions ls
+                 ON ls.legacy_session_id = binding.session_id
+                    OR ls.logical_session_id = binding.session_id
+               WHERE binding.agent_id = ${table}.initiator_agent_id
+               ORDER BY binding.unbound_at IS NULL DESC, binding.bound_at DESC LIMIT 1
+             )),
+             recipient_session_id = COALESCE(recipient_session_id, (
+               SELECT ls.logical_session_id
+               FROM agent_sessions binding
+               JOIN logical_sessions ls
+                 ON ls.legacy_session_id = binding.session_id
+                    OR ls.logical_session_id = binding.session_id
+               WHERE binding.agent_id = ${table}.recipient_agent_id
+               ORDER BY binding.unbound_at IS NULL DESC, binding.bound_at DESC LIMIT 1
+             ))`
+      );
+      this.db.run(
+        `UPDATE ${table}
+         SET initiator_name_at_send = COALESCE(initiator_name_at_send, (
+               SELECT ls.session_name FROM logical_sessions ls
+               WHERE ls.logical_session_id = initiator_session_id
+             )),
+             recipient_name_at_send = COALESCE(recipient_name_at_send, (
+               SELECT ls.session_name FROM logical_sessions ls
+               WHERE ls.logical_session_id = recipient_session_id
+             ))`
+      );
+    }
   }
 
   async save() {
@@ -976,14 +1067,30 @@ export class CorptieStore {
     const bindingId = requiredText(input?.bindingId ?? `binding:${randomUUID()}`, "bindingId");
     const boundCwd = requiredText(input?.boundCwd, "boundCwd");
     const timestamp = input.createdAt || new Date().toISOString();
+    const sessionName = requiredText(input.sessionName ?? input.title ?? logicalSessionId, "sessionName");
+    const sessionNameKey = normalizeSessionTitle(sessionName);
+    const nameOwner = this.selectOne(
+      `SELECT logical_session_id FROM logical_sessions WHERE session_name_key = ?
+       UNION ALL
+       SELECT logical_session_id FROM session_name_aliases WHERE alias_key = ?
+       LIMIT 1`,
+      [sessionNameKey, sessionNameKey]
+    );
+    if (nameOwner && nameOwner.logical_session_id !== logicalSessionId) {
+      const error = new Error(`A session named "${sessionName}" already exists.`);
+      error.code = "SESSION_TITLE_CONFLICT";
+      error.statusCode = 409;
+      error.conflictingSessionId = nameOwner.logical_session_id;
+      throw error;
+    }
     this.db.run("BEGIN IMMEDIATE");
     try {
       this.db.run(
         `INSERT INTO logical_sessions (
           logical_session_id, legacy_session_id, active_thread_id, active_workspace_id,
           repository_id, routing_version, transition_state, title, pinned, avatar_path,
-          archived, created_at, updated_at
-        ) VALUES (?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?)`,
+          archived, created_at, updated_at, session_name, session_name_key
+        ) VALUES (?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           logicalSessionId,
           input.legacySessionId || null,
@@ -994,7 +1101,9 @@ export class CorptieStore {
           input.avatarPath || null,
           input.archived ? 1 : 0,
           timestamp,
-          timestamp
+          timestamp,
+          sessionName,
+          sessionNameKey
         ]
       );
       this.db.run(
@@ -1040,6 +1149,7 @@ export class CorptieStore {
       [logicalSessionId]
     );
     if (!row) return null;
+    const sessionName = row.session_name || row.title || row.logical_session_id;
     return {
       logicalSessionId: row.logical_session_id,
       legacySessionId: row.legacy_session_id,
@@ -1048,7 +1158,8 @@ export class CorptieStore {
       repositoryId: row.repository_id,
       routingVersion: Number(row.routing_version),
       transitionState: row.transition_state,
-      title: row.title,
+      sessionName,
+      title: sessionName,
       pinned: Boolean(row.pinned),
       avatarPath: row.avatar_path,
       archived: Boolean(row.archived),
@@ -1064,6 +1175,19 @@ export class CorptieStore {
     const row = this.selectOne(
       "SELECT logical_session_id FROM logical_sessions WHERE legacy_session_id = ?",
       [legacySessionId]
+    );
+    return row ? this.getLogicalSession(row.logical_session_id) : null;
+  }
+
+  getLogicalSessionByName(sessionName) {
+    const key = normalizeSessionTitle(sessionName);
+    if (!key) return null;
+    const row = this.selectOne(
+      `SELECT logical_session_id FROM logical_sessions WHERE session_name_key = ?
+       UNION ALL
+       SELECT logical_session_id FROM session_name_aliases WHERE alias_key = ?
+       LIMIT 1`,
+      [key, key]
     );
     return row ? this.getLogicalSession(row.logical_session_id) : null;
   }
@@ -1935,10 +2059,71 @@ export class CorptieStore {
   }
 
   renameSession(id, title) {
+    const sessionName = requiredText(title, "title");
+    const sessionNameKey = normalizeSessionTitle(sessionName);
     const updatedAt = new Date().toISOString();
-    this.db.run("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?", [title, updatedAt, id]);
+    const logical = this.getLogicalSessionByLegacySessionId(id) ?? this.getLogicalSession(id);
+    const storageSessionId = logical?.legacySessionId ?? id;
+    if (logical) {
+      const conflict = this.selectOne(
+        `SELECT logical_session_id FROM logical_sessions
+         WHERE session_name_key = ? AND logical_session_id <> ?`,
+        [sessionNameKey, logical.logicalSessionId]
+      );
+      const aliasConflict = this.selectOne(
+        `SELECT logical_session_id FROM session_name_aliases
+         WHERE alias_key = ? AND logical_session_id <> ?`,
+        [sessionNameKey, logical.logicalSessionId]
+      );
+      if (conflict || aliasConflict) {
+        const error = new Error(`A session named "${sessionName}" already exists.`);
+        error.code = "SESSION_TITLE_CONFLICT";
+        error.statusCode = 409;
+        error.conflictingSessionId = conflict?.logical_session_id ?? aliasConflict.logical_session_id;
+        throw error;
+      }
+    }
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?", [sessionName, updatedAt, storageSessionId]);
+      if (logical) {
+        const previousName = logical.sessionName;
+        const previousKey = normalizeSessionTitle(previousName);
+        if (previousKey && previousKey !== sessionNameKey) {
+          this.db.run(
+            `INSERT INTO session_name_aliases (alias_key, alias, logical_session_id, created_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(alias_key) DO NOTHING`,
+            [previousKey, previousName, logical.logicalSessionId, updatedAt]
+          );
+        }
+        this.db.run(
+          "DELETE FROM session_name_aliases WHERE alias_key = ? AND logical_session_id = ?",
+          [sessionNameKey, logical.logicalSessionId]
+        );
+        this.db.run(
+          `UPDATE logical_sessions
+           SET session_name = ?, session_name_key = ?, title = ?, updated_at = ?
+           WHERE logical_session_id = ?`,
+          [sessionName, sessionNameKey, sessionName, updatedAt, logical.logicalSessionId]
+        );
+        this.db.run(
+          `UPDATE agents SET name = ?, updated_at = ?
+           WHERE current_session_id = ?
+              OR agent_id IN (
+                SELECT agent_id FROM agent_sessions
+                WHERE session_id = ? AND unbound_at IS NULL
+              )`,
+          [sessionName, updatedAt, logical.legacySessionId, logical.legacySessionId]
+        );
+      }
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
     this.scheduleSave();
-    return this.getSession(id);
+    return this.getSession(storageSessionId);
   }
 
   updateSessionAvatar(id, avatarPath = null) {
@@ -2435,9 +2620,16 @@ export class CorptieStore {
     const latestAssistantSummary = latestCodexAssistantText(row.id, rawStatus, row.provider);
     const activeChoicePrompt = parseActiveChoicePrompt(row.active_choice_json);
     const suggestedOptions = activeChoicePrompt?.options ?? null;
+    const logicalIdentity = this.selectOne(
+      `SELECT logical_session_id, session_name
+       FROM logical_sessions WHERE legacy_session_id = ?`,
+      [row.id]
+    );
     return {
       id: publicId,
-      title: row.title,
+      title: logicalIdentity?.session_name || row.title,
+      sessionName: logicalIdentity?.session_name || row.title,
+      logicalSessionId: logicalIdentity?.logical_session_id ?? null,
       agent: row.agent,
       status: displayStatus,
       progress: displayStatus === "running" || displayStatus === "blocked" ? Number(row.progress) : 1,
@@ -2463,7 +2655,7 @@ export class CorptieStore {
         activeTurnId: rawStatus.activeTurnId ?? null,
         sandbox: rawStatus.sandbox ?? rawStatus.sandboxMode ?? null,
         approvalPolicy: rawStatus.approvalPolicy ?? null,
-        logicalSessionId: rawStatus.logicalSessionId ?? null,
+        logicalSessionId: logicalIdentity?.logical_session_id ?? rawStatus.logicalSessionId ?? null,
         workspace: rawStatus.workspace ?? null,
         routingVersion: Number(rawStatus.routingVersion ?? 0),
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
