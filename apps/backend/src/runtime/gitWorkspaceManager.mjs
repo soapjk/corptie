@@ -121,7 +121,7 @@ export class GitWorkspaceManager {
         .map((session) => ({
           logicalSessionId: session.logicalSessionId,
           sessionId: session.legacySessionId,
-          title: session.title,
+          title: session.sessionName,
           active: true
         }));
       if (worktree.availability !== "available") {

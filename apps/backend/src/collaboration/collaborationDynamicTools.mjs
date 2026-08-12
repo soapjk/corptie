@@ -53,6 +53,7 @@ export const collaborationDynamicTools = Object.freeze([
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
   tool("corptie_collaboration_request", "Stage a point-to-point question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn.", {
+    recipient_session_name: { type: "string", minLength: 1 },
     recipient_agent_id: { type: "string", minLength: 1 },
     service_id: { type: "string", minLength: 1 },
     type: { type: "string", enum: ["question", "change_request"] },
@@ -65,7 +66,7 @@ export const collaborationDynamicTools = Object.freeze([
     idempotency_key: { type: "string", minLength: 1 },
     parent_task_id: { type: "string", minLength: 1 },
     context_id: { type: "string", minLength: 1 }
-  }, ["recipient_agent_id", "type", "title", "summary"]),
+  }, ["type", "title", "summary"]),
   tool("corptie_collaboration_accept", "Accept a proposed task or resume requested revisions and begin working.", {
     task_id: { type: "string", minLength: 1 }
   }, ["task_id"]),
@@ -117,6 +118,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     corptie_services_describe: () => client.get(`/internal/collaboration/services/${encodeURIComponent(input.service_id)}`),
     corptie_collaboration_request: () => client.post("/internal/collaboration/task-confirmations", compact({
       recipientAgentId: input.recipient_agent_id,
+      recipientSessionName: input.recipient_session_name,
       serviceId: input.service_id,
       type: input.type,
       title: input.title,
