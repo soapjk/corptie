@@ -126,10 +126,10 @@ const store = new CorptieStore();
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
 const collaborationMcpServerPath = fileURLToPath(new URL("./mcp/collaborationMcpServer.mjs", import.meta.url));
-const bundledAgentsPath = fileURLToPath(new URL(
+const bundledAgentMemoryPath = fileURLToPath(new URL(
   environmentName === "development"
-    ? "../resources/codex/global-instructions.development.md"
-    : "../resources/codex/global-instructions.production.md",
+    ? "../resources/agent/global-instructions.development.md"
+    : "../resources/agent/global-instructions.production.md",
   import.meta.url
 ));
 const bundledCollaborationSkillPath = fileURLToPath(new URL("../resources/codex/skills/corptie-collaboration/SKILL.md", import.meta.url));
@@ -574,8 +574,9 @@ async function requiredWorkspaceInstructionSources(cwd) {
 
 async function knownGlobalInstructionSources() {
   const candidates = [
-    bundledAgentsPath,
-    join(corptieCodexRuntimePaths.codexHome, "AGENTS.md")
+    bundledAgentMemoryPath,
+    join(corptieCodexRuntimePaths.codexHome, "AGENTS.md"),
+    corptieClaudeRuntimePaths.claudeMemoryPath
   ];
   const paths = [];
   for (const candidate of candidates) {
@@ -5747,7 +5748,7 @@ for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
 storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
 const corptieCodexRuntime = await ensureCorptieCodexRuntime({
   environmentName,
-  bundledAgentsPath,
+  bundledMemoryPath: bundledAgentMemoryPath,
   bundledSkillPath: bundledCollaborationSkillPath,
   bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
   collaborationMcpServerPath,
@@ -5757,15 +5758,24 @@ const corptieCodexRuntime = await ensureCorptieCodexRuntime({
 });
 const corptieClaudeRuntime = await ensureCorptieClaudeRuntime({
   environmentName,
+  bundledMemoryPath: bundledAgentMemoryPath,
   bundledSkillPath: bundledCollaborationSkillPath,
-  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath
+  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
+  legacySessionIds: storedSessionsAtStartup
+    .filter((session) => session.external?.provider === "claude-sdk")
+    .map((session) => session.external?.agentSessionId)
+    .filter(Boolean)
 });
 // Scope the dedicated Codex home to Corptie's process tree. A Codex process
 // launched independently from Terminal continues to use the user's native
 // ~/.codex home.
 process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
+// Claude's SDK helpers and subprocesses use this directory for native
+// CLAUDE.md discovery, credentials, and Corptie-owned session transcripts.
+process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir;
+console.log(`[agent-memory] ready shared=${corptieCodexRuntime.sharedMemoryPath}`);
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
-console.log(`[claude-runtime] ready plugin=${corptieClaudeRuntime.pluginPath} skill=${corptieClaudeRuntime.skillAvailable ? "ready" : "missing"} mcp=ready`);
+console.log(`[claude-runtime] ready home=${corptieClaudeRuntime.configDir} auth=${corptieClaudeRuntime.credentialsAvailable ? "available" : "missing"} memory=${corptieClaudeRuntime.memoryAvailable ? "ready" : "missing"} plugin=${corptieClaudeRuntime.pluginPath} skill=${corptieClaudeRuntime.skillAvailable ? "ready" : "missing"} mcp=ready`);
 if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
   const rebuilt = await codexRuntime.listThreads({
     limit: Math.max(100, corptieCodexRuntime.threadMigration.rolloutCount + 20),

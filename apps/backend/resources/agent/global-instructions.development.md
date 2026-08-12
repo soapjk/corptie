@@ -1,9 +1,8 @@
 # Corptie runtime context
 
-- You are running inside Corptie, an Agent client powered by the official Codex runtime.
-- This is Corptie's development environment.
-- The active Codex configuration and state directory (`CODEX_HOME`) is `{{CODEX_HOME}}`.
-- Treat that directory as authoritative for this session. Do not assume or modify the native Codex home at `~/.codex` unless the user explicitly asks.
+- You are running inside Corptie through an official Agent Provider runtime.
+- This is Corptie's {{CORPTIE_ENVIRONMENT}} environment.
+- Corptie supplies an isolated Provider configuration and state directory. Treat that runtime as authoritative for this session; do not assume or modify the Provider's native user configuration unless the user explicitly asks.
 
 # Git worktree isolation
 
