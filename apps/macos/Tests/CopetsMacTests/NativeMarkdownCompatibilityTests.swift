@@ -1,0 +1,94 @@
+import XCTest
+@testable import CorptieMac
+
+final class NativeMarkdownCompatibilityTests: XCTestCase {
+    func testRoutesUnsupportedBlockContentToSwiftUI() {
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("![alt](image.png)"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("- [ ] unfinished"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("| A | B |\n|---|---|\n| 1 | 2 |"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("```swift\nlet value = 42\n```"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("<details>\ntext\n</details>"))
+    }
+
+    func testKeepsSupportedMarkdownOnNativePath() {
+        let markdown = """
+        # Heading
+
+        - first
+        - second
+
+        > quote with **bold**, ~~deleted~~, and [link](https://example.com)
+        """
+
+        XCTAssertFalse(NativeMarkdownCompatibility.requiresSwiftUIRenderer(markdown))
+    }
+
+    func testUserTurnWithReasoningAndStandaloneProcessKeepEstablishedSwiftUICard() {
+        let user = item(id: "user", type: "userMessage", text: "hi")
+        let reasoning = item(id: "reasoning", type: "reasoning", text: "Thinking")
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .userTurn(message: user, turnId: "turn", processItems: [reasoning]))
+            ),
+            .swiftUI
+        )
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .userTurn(message: user, turnId: "empty-turn", processItems: []))
+            ),
+            .swiftUI
+        )
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .process(turnId: "turn", items: [reasoning]))
+            ),
+            .swiftUI
+        )
+    }
+
+    func testPlainUserAndAgentMessagesRemainNative() {
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .message(item(id: "user", type: "userMessage", text: "hi")))
+            ),
+            .native
+        )
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .message(item(id: "agent", type: "agentMessage", text: "Ready")))
+            ),
+            .native
+        )
+    }
+
+    func testLongAgentReplyUsesExactSwiftUIHeightPath() {
+        let longReply = String(repeating: "A long model reply that wraps across several lines. ", count: 20)
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .message(item(id: "long", type: "agentMessage", text: longReply)))
+            ),
+            .swiftUI
+        )
+        let manyLines = (0..<12).map { "line \($0)" }.joined(separator: "\n")
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .message(item(id: "lines", type: "agentMessage", text: manyLines)))
+            ),
+            .swiftUI
+        )
+    }
+
+    private func item(id: String, type: String, text: String) -> CodexThreadItem {
+        CodexThreadItem(
+            id: id,
+            turnId: "turn",
+            turnStatus: "complete",
+            type: type,
+            title: type == "userMessage" ? "User" : "Claude Code",
+            text: text,
+            options: nil,
+            status: nil,
+            createdAt: "2026-08-12T03:55:44.520Z"
+        )
+    }
+}
