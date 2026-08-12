@@ -32,10 +32,30 @@ test("protected local Agent files can be added to the project gitignore", async 
 
     const result = await protection.resolve(fixture.path, { decision: "ignore" });
     assert.equal(result.gitignoreUpdated, true);
-    assert.match(await readFile(join(fixture.path, ".gitignore"), "utf8"), /^# Corptie local Agent configuration\n\/.corptie\/\n$/);
+    assert.match(await readFile(join(fixture.path, ".gitignore"), "utf8"), /^# Corptie local Agent configuration\n\/.corptie\n$/);
     assert.deepEqual((await protection.inspect(fixture.path)).protectedPaths, []);
   } finally {
     await fixture.close();
+  }
+});
+
+test("directory rules also ignore a same-name local symlink", async () => {
+  const fixture = await createRepository();
+  const protection = new GitCommitProtection({ rules });
+  const shared = await mkdtemp(join(tmpdir(), "corptie-shared-config-"));
+  try {
+    await symlink(shared, join(fixture.path, ".corptie"));
+    const inspection = await protection.inspect(fixture.path);
+    assert.deepEqual(inspection.protectedPaths, [".corptie"]);
+    assert.deepEqual(inspection.suggestedIgnorePatterns, ["/.corptie"]);
+
+    await protection.resolve(fixture.path, { decision: "ignore" });
+    const ignored = await execFileAsync("git", ["-C", fixture.path, "check-ignore", ".corptie"]);
+    assert.equal(ignored.stdout.trim(), ".corptie");
+    assert.deepEqual((await protection.inspect(fixture.path)).protectedPaths, []);
+  } finally {
+    await fixture.close();
+    await rm(shared, { recursive: true, force: true });
   }
 });
 

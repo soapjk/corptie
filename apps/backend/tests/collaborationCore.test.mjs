@@ -72,6 +72,7 @@ test("Phase 1 migration creates every collaboration table", async () => {
     for (const table of [
       "agents",
       "agent_sessions",
+      "session_name_aliases",
       "services",
       "service_consumers",
       "collaboration_contexts",
@@ -117,6 +118,59 @@ test("a staged request creates no task until deterministic user confirmation", a
     assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 1);
     assert.equal(store.selectAll("SELECT * FROM collaboration_deliveries").length, 1);
     assert.equal(core.confirmTaskConfirmation(confirmation.confirmationId).taskId, resolved.taskId);
+  });
+});
+
+test("Session names resolve to stable Session ids and collaboration snapshots survive rename", async () => {
+  await withFixture(async ({ core, store, directory }) => {
+    for (const [legacyId, logicalId, name, agentId] of [
+      ["codex:sender-thread", "logical:sender", "sender_agent", "sender-agent"],
+      ["claude:recipient-thread", "logical:recipient", "recipient_agent", "recipient-agent"]
+    ]) {
+      store.upsertSession({
+        id: legacyId,
+        title: name,
+        agent: "Agent",
+        provider: legacyId.startsWith("claude:") ? "claude-sdk" : "codex-app-server",
+        cwd: directory,
+        status: "complete"
+      });
+      store.createLogicalSessionRoute({
+        logicalSessionId: logicalId,
+        legacySessionId: legacyId,
+        providerThreadId: legacyId.split(":")[1],
+        providerId: legacyId.startsWith("claude:") ? "claude-sdk" : "codex-app-server",
+        boundCwd: directory,
+        title: name
+      });
+      core.registerAgent({ agentId, name });
+      core.bindSession({ agentId, sessionId: legacyId });
+    }
+
+    const recipient = core.resolveAgentBySessionName("recipient_agent");
+    assert.equal(recipient.agentId, "recipient-agent");
+    assert.equal(recipient.sessionId, "logical:recipient");
+
+    const confirmation = core.proposeTask({
+      initiatorAgentId: "sender-agent",
+      recipientAgentId: recipient.agentId,
+      type: "question",
+      title: "Confirm stable routing",
+      summary: "Which Session receives this task?"
+    });
+    assert.equal(confirmation.initiatorSessionId, "logical:sender");
+    assert.equal(confirmation.recipientSessionId, "logical:recipient");
+    assert.equal(confirmation.recipientAgentName, "recipient_agent");
+
+    store.renameSession("claude:recipient-thread", "recipient_agent_v2");
+    const resolved = core.confirmTaskConfirmation(confirmation.confirmationId);
+    const task = core.getTask(resolved.taskId);
+    assert.equal(task.initiatorSessionId, "logical:sender");
+    assert.equal(task.recipientSessionId, "logical:recipient");
+    assert.equal(task.recipientNameAtSend, "recipient_agent");
+
+    assert.equal(core.resolveAgentBySessionName("recipient_agent").sessionId, "logical:recipient");
+    assert.equal(core.getTask(resolved.taskId).recipientNameAtSend, "recipient_agent");
   });
 });
 

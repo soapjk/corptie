@@ -732,13 +732,17 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
 
 function reserveSessionTitle(title, excludingSessionId = null) {
   const knownSessions = knownSessionsForTitleValidation();
+  const logical = excludingSessionId
+    ? (store.getLogicalSession(excludingSessionId) ?? store.getLogicalSessionByLegacySessionId(excludingSessionId))
+    : null;
+  const canonicalExclusion = logical?.legacySessionId ?? excludingSessionId;
   try {
-    assertSessionTitleAvailable(knownSessions, title, excludingSessionId);
+    assertSessionTitleAvailable(knownSessions, title, canonicalExclusion);
   } catch (error) {
     error.suggestedTitle = suggestAvailableSessionTitle(
       knownSessions,
       title,
-      excludingSessionId,
+      canonicalExclusion,
       reservedSessionTitleKeys
     );
     throw error;
@@ -751,7 +755,7 @@ function reserveSessionTitle(title, excludingSessionId = null) {
     error.suggestedTitle = suggestAvailableSessionTitle(
       knownSessions,
       title,
-      excludingSessionId,
+      canonicalExclusion,
       reservedSessionTitleKeys
     );
     throw error;
@@ -1359,13 +1363,14 @@ function upsertManagedCodexSession(session, preferredAgentId = null) {
 function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
   if (!store.db || !session?.id || session.external?.provider === "codex-pty") return null;
   const bound = collaborationCore.getAgentForSession(session.id);
+  const logical = store.getLogicalSessionByLegacySessionId(session.id);
   const agentId = preferredAgentId ?? bound?.agentId ?? `agent-${randomUUID()}`;
   const status = session.archived
     ? "inactive"
     : (sessionHasActiveRun(session) ? "busy" : (session.status === "failed" ? "offline" : "available"));
   collaborationCore.registerAgent({
     agentId,
-    name: session.title || bound?.name || session.agent || "Agent",
+    name: logical?.sessionName || session.title || bound?.name || session.agent || "Agent",
     description: `Independent Corptie Agent for ${session.external?.cwd || "an Agent workspace"}.`,
     status,
     capabilities: [`${session.external?.provider || "agent"}-session`, "corptie-collaboration"]
@@ -2425,7 +2430,7 @@ async function renameCodexProviderSession(reference, title) {
   await codexRuntime.setThreadName(reference.providerSessionId, title);
   const session = { ...previous, title, updatedAt: new Date().toISOString() };
   upsertManagedCodexSession(session);
-  return session;
+  return store.renameSession(reference.sessionId, title) ?? session;
 }
 
 function updateCodexProviderAvatar(reference, avatarPath) {
