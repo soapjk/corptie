@@ -4536,10 +4536,6 @@ private struct OrphanedWorkspaceRecoveryView: View {
 
 private struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
-    @AppStorage(
-        "codexResetNoticeAcknowledgedFingerprint",
-        store: CorptieAppEnvironment.userDefaults
-    ) private var acknowledgedResetNoticeFingerprint = ""
     @State private var isResetNoticePresented = false
     @State private var resetNoticePresentationTask: Task<Void, Never>?
 
@@ -4602,7 +4598,7 @@ private struct ChatUsageBar: View {
                       let fingerprint = resetNoticeFingerprint(usage),
                       CodexResetNoticePresentation.shouldPresent(
                           fingerprint: fingerprint,
-                          acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+                          acknowledgedFingerprints: resetNoticeAcknowledgements
                       ) else { return }
                 scheduleResetNoticePresentation(
                     after: CodexResetNoticePresentation.rearmDelay,
@@ -4670,7 +4666,7 @@ private struct ChatUsageBar: View {
         guard let fingerprint = resetNoticeFingerprint(usage),
               CodexResetNoticePresentation.shouldPresent(
                   fingerprint: fingerprint,
-                  acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+                  acknowledgedFingerprints: resetNoticeAcknowledgements
               ) else { return }
         scheduleResetNoticePresentation(
             after: CodexResetNoticePresentation.automaticPresentationDelay,
@@ -4710,7 +4706,7 @@ private struct ChatUsageBar: View {
             if let requiredFingerprint {
                 guard CodexResetNoticePresentation.shouldPresent(
                     fingerprint: requiredFingerprint,
-                    acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+                    acknowledgedFingerprints: resetNoticeAcknowledgements
                 ) else {
                     resetNoticePresentationTask = nil
                     return
@@ -4725,7 +4721,7 @@ private struct ChatUsageBar: View {
         guard let fingerprint = resetNoticeFingerprint(usage) else { return false }
         return CodexResetNoticePresentation.shouldPresent(
             fingerprint: fingerprint,
-            acknowledgedFingerprint: acknowledgedResetNoticeFingerprint
+            acknowledgedFingerprints: resetNoticeAcknowledgements
         )
     }
 
@@ -4742,8 +4738,12 @@ private struct ChatUsageBar: View {
         guard let fingerprint = resetNoticeFingerprint(usage) else { return }
         resetNoticePresentationTask?.cancel()
         resetNoticePresentationTask = nil
-        acknowledgedResetNoticeFingerprint = fingerprint
+        CodexResetNoticeAcknowledgements.record(fingerprint)
         isResetNoticePresented = false
+    }
+
+    private var resetNoticeAcknowledgements: [String] {
+        CodexResetNoticeAcknowledgements.load()
     }
 
     private func formattedResetDate(_ epochSeconds: Double?) -> String {
