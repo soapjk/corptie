@@ -3,41 +3,24 @@ import Combine
 import SwiftUI
 
 @MainActor
-final class DetachedSessionManager: ObservableObject {
+final class AgentOrbManager: ObservableObject {
     private static let orbWindowSize = NSSize(width: 88, height: 88)
 
     private let client: BackendClient
-    private let openSession: (TaskSession) -> Void
     private let showMain: () -> Void
-    private let isMainVisible: () -> Bool
     private var controllers: [String: DetachedSessionWindowController] = [:]
-    private var avoidanceLoopTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
 
     init(
         client: BackendClient,
-        showMain: @escaping () -> Void,
-        isMainVisible: @escaping () -> Bool,
-        openSession: @escaping (TaskSession) -> Void
+        showMain: @escaping () -> Void
     ) {
         self.client = client
         self.showMain = showMain
-        self.isMainVisible = isMainVisible
-        self.openSession = openSession
-
-        client.sessionReplacements
-            .sink { [weak self] replacement in
-                self?.rebindFloatingSession(replacement)
-            }
-            .store(in: &cancellables)
     }
 
-    func float(session: TaskSession) {
-        float(session: session, initialOrigin: nil)
-    }
-
-    private func float(session: TaskSession, initialOrigin preservedOrigin: NSPoint?) {
-        let id = session.id
+    func float(agent: Agent) {
+        let id = agent.agentId
         if let controller = controllers[id] {
             controller.show()
             return
@@ -45,70 +28,29 @@ final class DetachedSessionManager: ObservableObject {
 
         let targetScreen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
         let visibleFrame = targetScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        let initialOrigin = preservedOrigin ?? DetachedOrbPlacementGeometry.origin(
+        let initialOrigin = DetachedOrbPlacementGeometry.origin(
             visibleFrame: visibleFrame,
             windowSize: Self.orbWindowSize,
             occupiedFrames: controllers.values.map(\.frame)
         )
         let controller = DetachedSessionWindowController(
-            sessionId: id,
+            agent: agent,
             initialOrigin: initialOrigin,
             client: client,
-            occupiedFrames: { [weak self] excludingSessionId in
-                self?.controllers.compactMap { sessionId, controller in
-                    sessionId == excludingSessionId ? nil : controller.frame
-                } ?? []
-            },
             showMain: { [weak self] in
                 self?.showMain()
             },
-            isMainVisible: { [weak self] in
-                self?.isMainVisible() ?? false
-            },
-            openSession: { [weak self] session in
-                self?.openSession(session)
-            },
-            close: { [weak self] sessionId in
-                self?.controllers[sessionId] = nil
-                self?.stopAvoidanceLoopIfIdle()
-            },
-            requestBatchObservation: { [weak self] in
-                self?.ensureAvoidanceLoop()
+            close: { [weak self] agentId in
+                self?.controllers[agentId] = nil
             }
         )
         controllers[id] = controller
         controller.show()
-        ensureAvoidanceLoop()
     }
 
-    private func rebindFloatingSession(_ replacement: SessionReplacement) {
-        guard DetachedSessionReplacementLogic.shouldRebind(
-            previousSessionId: replacement.previousSessionId,
-            replacementSessionId: replacement.session.id,
-            floatingSessionIds: Set(controllers.keys)
-        ), let previousController = controllers.removeValue(forKey: replacement.previousSessionId) else {
-            return
-        }
-
-        let preservedOrigin = previousController.frame.origin
-        previousController.close()
-        float(session: replacement.session, initialOrigin: preservedOrigin)
-    }
-
-    func floatForMainWindowCloseIfNeeded(session: TaskSession) {
-        guard DetachedSessionCloseBehavior.shouldCreateOrb(
-            status: session.status,
-            isAlreadyFloating: controllers[session.id] != nil
-        ) else {
-            return
-        }
-        float(session: session)
-    }
-
-    func close(sessionId: String) {
-        controllers[sessionId]?.close()
-        controllers[sessionId] = nil
-        stopAvoidanceLoopIfIdle()
+    func close(agentId: String) {
+        controllers[agentId]?.close()
+        controllers[agentId] = nil
     }
 
     func closeAll() {
@@ -116,301 +58,35 @@ final class DetachedSessionManager: ObservableObject {
             controller.close()
         }
         controllers.removeAll()
-        avoidanceLoopTask?.cancel()
-        avoidanceLoopTask = nil
     }
 
-    private func ensureAvoidanceLoop() {
-        guard avoidanceLoopTask == nil, !controllers.isEmpty else {
-            return
-        }
-        avoidanceLoopTask = Task { [weak self] in
-            guard let self else {
-                return
-            }
-            var cadence = DetachedOrbObservationCadence()
-            var delay = cadence.activeInterval
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(delay))
-                    try Task.checkCancellation()
-                } catch {
-                    return
-                }
-                let batchStartedAt = Date()
-                let outcome = await self.runAvoidanceBatch()
-                let interval = cadence.nextInterval(after: outcome)
-                self.logDevelopment(
-                    "[orb-avoidance] cadence outcome=\(outcome) interval=\(interval)"
-                )
-                delay = DetachedOrbBatchCoordinatorLogic.nextDelay(
-                    interval: interval,
-                    batchDuration: Date().timeIntervalSince(batchStartedAt)
-                )
+    // 通知聚合 + 生命周期：按 agents + sessions 计算各 Agent 待处理角标，float/回收球
+    func sync(agents: [Agent], sessions: [TaskSession]) {
+        for agent in agents {
+            let agentSessions = sessions.filter { $0.agentId == agent.agentId }
+            let hasActive = agentSessions.contains { Self.isActive($0.status) }
+
+            if agent.isAssistant {
+                // 助手永置顶、永不回收
+                float(agent: agent)
+            } else if hasActive {
+                float(agent: agent)
+            } else {
+                close(agentId: agent.agentId)
             }
         }
     }
 
-    private func stopAvoidanceLoopIfIdle() {
-        guard controllers.isEmpty else {
-            return
-        }
-        avoidanceLoopTask?.cancel()
-        avoidanceLoopTask = nil
+    private static func isActive(_ status: TaskStatus) -> Bool {
+        status == .running
     }
 
-    private func runAvoidanceBatch() async -> DetachedOrbBatchOutcome {
-        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture else {
-            return .idle
-        }
-        let batchControllers = controllers
-            .sorted { $0.key < $1.key }
-            .map(\.value)
-        guard !batchControllers.isEmpty else {
-            return .idle
-        }
-        logDevelopment("[orb-avoidance] batch_started orbs=\(batchControllers.count)")
 
-        var pendingObservations: [DetachedOrbPendingObservation] = []
-        pendingObservations.reserveCapacity(batchControllers.count)
-        for controller in batchControllers {
-            guard controllers[controller.sessionId] === controller,
-                  let request = controller.makeBatchObservationRequest() else {
-                continue
-            }
-            pendingObservations.append(
-                DetachedOrbPendingObservation(controller: controller, request: request)
-            )
-        }
-        let hasSkippedControllers = pendingObservations.count < batchControllers.count
-        guard !pendingObservations.isEmpty else {
-            return .active
-        }
 
-        var evaluations: [DetachedOrbBatchEvaluation] = []
-        evaluations.reserveCapacity(pendingObservations.count)
-        var hasIncompleteEvaluation = false
-        var hasCaptureFailure = false
-        let observationsByDisplay = Dictionary(
-            grouping: pendingObservations,
-            by: { $0.request.target.displayID }
-        )
-        logDevelopment(
-            "[orb-avoidance] batch_captures displays=\(observationsByDisplay.count) "
-                + "requests=\(pendingObservations.count)"
-        )
-        for displayID in observationsByDisplay.keys.sorted() {
-            guard let displayObservations = observationsByDisplay[displayID],
-                  let firstObservation = displayObservations.first else {
-                continue
-            }
-            let sharedSampleRect = displayObservations.reduce(CGRect.null) {
-                $0.union($1.request.target.sampleRect)
-            }
-            let sharedTarget = ScreenContentCaptureTarget(
-                displayID: displayID,
-                screenFrame: firstObservation.request.target.screenFrame,
-                sampleRect: sharedSampleRect,
-                maximumOutputDimension:
-                    DetachedOrbBatchCoordinatorLogic.sharedCaptureMaximumDimension(
-                        sharedSampleRect: sharedSampleRect,
-                        individualSampleRects: displayObservations.map {
-                            $0.request.target.sampleRect
-                        }
-                    )
-            )
-            let sharedRegions = displayObservations.flatMap(\.request.regions)
-            do {
-                let observation = try await ScreenContentSampler.shared.analyze(
-                    target: sharedTarget,
-                    regions: sharedRegions
-                )
-                try Task.checkCancellation()
-                var regionOffset = 0
-                for pendingObservation in displayObservations {
-                    let controller = pendingObservation.controller
-                    let request = pendingObservation.request
-                    let regionEnd = regionOffset + request.regions.count
-                    guard regionEnd <= observation.regions.count else {
-                        controller.noteBatchAnalysisFailure(
-                            ScreenContentSamplerError.pixelConversionFailed
-                        )
-                        hasIncompleteEvaluation = true
-                        break
-                    }
-                    let controllerObservation = ScreenContentAnalysisObservation(
-                        sourceRect: observation.sourceRect,
-                        pixelWidth: observation.pixelWidth,
-                        pixelHeight: observation.pixelHeight,
-                        durationMilliseconds: observation.durationMilliseconds,
-                        regions: Array(observation.regions[regionOffset..<regionEnd])
-                    )
-                    regionOffset = regionEnd
-                    guard controllers[controller.sessionId] === controller,
-                          let evaluation = controller.evaluateBatchObservation(
-                            controllerObservation,
-                            request: request
-                          ) else {
-                        hasIncompleteEvaluation = true
-                        continue
-                    }
-                    evaluations.append(evaluation)
-                }
-            } catch is CancellationError {
-                return .idle
-            } catch {
-                for pendingObservation in displayObservations {
-                    pendingObservation.controller.noteBatchAnalysisFailure(error)
-                }
-                hasIncompleteEvaluation = true
-                hasCaptureFailure = true
-            }
-        }
 
-        guard DetachedOrbBatchCoordinatorLogic.canCommitBatch(
-            evaluatedCount: evaluations.count,
-            expectedCount: pendingObservations.count,
-            hasIncompleteEvaluation: hasIncompleteEvaluation
-        ) else {
-            logDevelopment(
-                "[orb-avoidance] batch_aborted reason=incomplete_evaluation "
-                    + "evaluated=\(evaluations.count) expected=\(pendingObservations.count)"
-            )
-            return hasCaptureFailure ? .captureFailure : .active
-        }
 
-        var reservedDestinationFrames: [CGRect] = []
-        var moves: [DetachedOrbBatchMove] = []
-        let evaluationsByIdentifier = Dictionary(
-            uniqueKeysWithValues: evaluations.map { ($0.controller.sessionId, $0) }
-        )
-        let orderedIdentifiers = DetachedOrbBatchCoordinatorLogic.orderedIdentifiers(
-            evaluations.map {
-                DetachedOrbBatchPriority(
-                    identifier: $0.controller.sessionId,
-                    currentRisk: $0.currentRisk
-                )
-            }
-        )
-        for identifier in orderedIdentifiers {
-            guard let evaluation = evaluationsByIdentifier[identifier] else {
-                continue
-            }
-            let plan = evaluation.controller.planBatchMove(
-                evaluation,
-                additionalOccupiedFrames: reservedDestinationFrames
-            )
-            if let move = evaluation.controller.acceptBatchPlan(
-                plan,
-                evaluation: evaluation
-            ) {
-                reservedDestinationFrames.append(move.destinationFrame)
-                moves.append(move)
-            }
-        }
-        logDevelopment(
-            "[orb-avoidance] batch_planned evaluated=\(evaluations.count) moves=\(moves.count)"
-        )
-        moveTogether(moves)
-        return hasSkippedControllers
-            || !moves.isEmpty
-            || evaluations.contains(where: \.isCurrentPositionRisky)
-            ? .active
-            : .stable
-    }
 
-    private func moveTogether(_ moves: [DetachedOrbBatchMove]) {
-        guard !moves.isEmpty else {
-            return
-        }
-        let animation = DetachedOrbTeleportAnimation.configuration(
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        )
-        for move in moves {
-            move.controller.prepareBatchMove(move)
-        }
-        beginBatchMoveDisappearance(moves, animation: animation)
 
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(animation.disappearDuration))
-            guard let self else {
-                return
-            }
-            let continuingMoves = moves.filter {
-                self.controllers[$0.controller.sessionId] === $0.controller
-                    && $0.controller.canContinueBatchMove($0)
-            }
-            for move in continuingMoves {
-                move.controller.teleportBatchMove(move)
-            }
-            self.beginBatchMoveAppearance(continuingMoves, animation: animation)
-
-            try? await Task.sleep(for: .seconds(animation.appearDuration))
-            let appearingMoves = continuingMoves.filter {
-                self.controllers[$0.controller.sessionId] === $0.controller
-                    && $0.controller.canContinueBatchMove($0)
-            }
-            for move in appearingMoves {
-                move.controller.settleBatchMoveAppearance(
-                    move,
-                    animation: animation
-                )
-            }
-
-            if animation.settleDuration > 0 {
-                try? await Task.sleep(for: .seconds(animation.settleDuration))
-            }
-            for move in appearingMoves where self.controllers[move.controller.sessionId]
-                === move.controller && move.controller.canContinueBatchMove(move) {
-                move.controller.finishBatchMove(move)
-            }
-            for move in moves where !move.controller.canContinueBatchMove(move) {
-                if self.controllers[move.controller.sessionId] === move.controller {
-                    move.controller.restoreBatchMoveAppearanceIfNeeded()
-                }
-            }
-        }
-    }
-
-    private func beginBatchMoveDisappearance(
-        _ moves: [DetachedOrbBatchMove],
-        animation: DetachedOrbTeleportAnimation
-    ) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = animation.disappearDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            for move in moves {
-                move.controller.beginBatchMoveDisappearance(
-                    move,
-                    animation: animation
-                )
-            }
-        }
-    }
-
-    private func beginBatchMoveAppearance(
-        _ moves: [DetachedOrbBatchMove],
-        animation: DetachedOrbTeleportAnimation
-    ) {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = animation.appearDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            for move in moves {
-                move.controller.beginBatchMoveAppearance(
-                    move,
-                    animation: animation
-                )
-            }
-        }
-    }
-
-    private func logDevelopment(_ message: @autoclosure () -> String) {
-        guard CorptieAppEnvironment.isDevelopment else {
-            return
-        }
-        print(message())
-        fflush(stdout)
-    }
 }
 
 @MainActor
@@ -468,7 +144,7 @@ private final class DetachedAccessoryWindowController {
     private let hostingView: DetachedFirstMouseHostingView<DetachedSessionAccessoryView>
     private let state: DetachedReplyPreviewState
     private let client: BackendClient
-    private let sessionId: String
+    private let agentId: String
     private let dismissPreview: () -> Void
     private let dismissQuickReply: () -> Void
     private let didResignKey: () -> Void
@@ -486,14 +162,14 @@ private final class DetachedAccessoryWindowController {
     init(
         state: DetachedReplyPreviewState,
         client: BackendClient,
-        sessionId: String,
+        agentId: String,
         dismissPreview: @escaping () -> Void,
         dismissQuickReply: @escaping () -> Void,
         didResignKey: @escaping () -> Void
     ) {
         self.state = state
         self.client = client
-        self.sessionId = sessionId
+        self.agentId = agentId
         self.dismissPreview = dismissPreview
         self.dismissQuickReply = dismissQuickReply
         self.didResignKey = didResignKey
@@ -501,7 +177,7 @@ private final class DetachedAccessoryWindowController {
         self.hostingView = DetachedFirstMouseHostingView(
             rootView: DetachedSessionAccessoryView(
                 client: client,
-                sessionId: sessionId,
+                agentId: agentId,
                 previewState: state,
                 dismissPreview: dismissPreview,
                 dismissQuickReply: dismissQuickReply
@@ -687,70 +363,24 @@ private final class DetachedAccessoryWindowController {
     }
 }
 
-@MainActor
-private struct DetachedOrbObservationRequest {
-    let target: ScreenContentCaptureTarget
-    let regions: [ScreenContentAnalysisRegion]
-    let currentOrigin: CGPoint
-    let userAnchor: CGPoint
-    let visibleFrame: CGRect
-    let placementFrame: CGRect
-    let candidateOrigins: [CGPoint]
-    let occupiedFrames: [CGRect]
-    let excludedFrames: [CGRect]
-}
 
-@MainActor
-private struct DetachedOrbPendingObservation {
-    let controller: DetachedSessionWindowController
-    let request: DetachedOrbObservationRequest
-}
 
-private struct DetachedOrbRecentAutomaticPosition {
-    let origin: CGPoint
-    let date: Date
-}
 
-@MainActor
-private struct DetachedOrbBatchEvaluation {
-    let controller: DetachedSessionWindowController
-    let request: DetachedOrbObservationRequest
-    let currentRisk: Double
-    let currentCaptureConfidence: Double
-    let isCurrentPositionRisky: Bool
-    let candidates: [OrbPlacementCandidate]
-    let recentAutomaticOrigins: [CGPoint]
-    let cooldownActive: Bool
-    let bestCandidateRisk: Double?
-}
 
-@MainActor
-private struct DetachedOrbBatchMove {
-    let controller: DetachedSessionWindowController
-    let origin: CGPoint
-    let previousOrigin: CGPoint
-    let destinationFrame: CGRect
-    let currentRisk: Double
-    let candidateRisk: Double
-}
 
 @MainActor
 private final class DetachedSessionWindowController: NSObject, NSWindowDelegate {
-    let sessionId: String
+    let agent: Agent
     private let client: BackendClient
-    private let occupiedFrames: (String) -> [CGRect]
     private let showMain: () -> Void
-    private let isMainVisible: () -> Bool
-    private let openSession: (TaskSession) -> Void
     private let closeHandler: (String) -> Void
-    private let requestBatchObservation: () -> Void
     private let panel: NSPanel
     private let previewState = DetachedReplyPreviewState()
     private let animationState = DetachedOrbAnimationState()
     private lazy var accessoryController = DetachedAccessoryWindowController(
         state: previewState,
         client: client,
-        sessionId: sessionId,
+        agentId: agent.agentId,
         dismissPreview: { [weak self] in
             self?.hideReplyPreview(markDismissed: true)
             self?.updateAccessory(for: self?.currentSession)
@@ -771,46 +401,26 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
-    private var recentAutomaticPositions: [DetachedOrbRecentAutomaticPosition] = []
-    private var luminanceSignatures: [String: OrbLuminanceSignature] = [:]
-    private var safeRegionHistory = OrbSafeRegionHistory()
-    private var cooldownUntil = Date.distantPast
-    private var captureFailureCount = 0
-    private var isPointerDown = false
-    private var isPointerHovering = false
-    private var isMovingAutomatically = false
-    private var automaticMoveDestination: CGPoint?
-    private var automaticMoveDidTeleport = false
     private var isClosing = false
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
-    private let automaticMoveCooldown: TimeInterval = 2.5
-    private let placementConfiguration = OrbPlacementPlannerConfiguration()
 
     var frame: NSRect {
         panel.frame
     }
 
     init(
-        sessionId: String,
+        agent: Agent,
         initialOrigin: NSPoint,
         client: BackendClient,
-        occupiedFrames: @escaping (String) -> [CGRect],
         showMain: @escaping () -> Void,
-        isMainVisible: @escaping () -> Bool,
-        openSession: @escaping (TaskSession) -> Void,
-        close: @escaping (String) -> Void,
-        requestBatchObservation: @escaping () -> Void
+        close: @escaping (String) -> Void
     ) {
-        self.sessionId = sessionId
+        self.agent = agent
         self.client = client
-        self.occupiedFrames = occupiedFrames
         self.showMain = showMain
-        self.isMainVisible = isMainVisible
-        self.openSession = openSession
         self.closeHandler = close
-        self.requestBatchObservation = requestBatchObservation
         let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
         self.panel = DetachedSessionPanel(
             contentRect: NSRect(origin: initialOrigin, size: size),
@@ -836,8 +446,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         panel.delegate = self
         panel.contentView = DetachedFirstMouseHostingView(
             rootView: DetachedSessionOrbView(
-                client: client,
-                sessionId: sessionId,
+                agent: agent,
                 previewState: previewState,
                 animationState: animationState,
                 primaryAction: { [weak self] in
@@ -845,12 +454,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 },
                 showMain: { [weak self] in
                     self?.showMain()
-                },
-                openSession: { [weak self] session in
-                    self?.hideReplyPreview()
-                    self?.hideQuickReply()
-                    self?.updateAccessory(for: session)
-                    self?.openSession(session)
                 },
                 dismissPreview: { [weak self] in
                     self?.hideReplyPreview(markDismissed: true)
@@ -863,78 +466,28 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 close: { [weak self] in
                     self?.close()
                 },
-                interactionBegan: { [weak self] in
-                    self?.handlePointerInteractionBegan()
-                },
-                interactionEnded: { [weak self] didDrag in
-                    self?.handlePointerInteractionEnded(didDrag: didDrag)
-                },
-                hoverChanged: { [weak self] hovering in
-                    self?.handleHoverChanged(hovering)
-                }
+                interactionBegan: {},
+                interactionEnded: { _ in },
+                hoverChanged: { _ in }
             )
         )
 
         client.sessionsDidChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] sessions in
-                guard let self else { return }
-                let session = sessions.first { $0.id == self.sessionId }
-                self.updateReplyPreview(for: session)
-                self.updateAccessory(for: session)
-                self.scheduleObservationIfNeeded(delay: 1)
-            }
-            .store(in: &cancellables)
-
-        DetachedOrbSmartAvoidancePreferences.shared.$isEnabled
-            .combineLatest(
-                DetachedOrbSmartAvoidancePreferences.shared.$permissionStatus,
-                DetachedOrbSmartAvoidancePreferences.shared.$isCaptureSuspended
-            )
-            .receive(on: RunLoop.main)
-            .sink { [weak self] isEnabled, permissionStatus, isSuspended in
-                guard let self else {
-                    return
-                }
-                if isEnabled, permissionStatus == .authorized, !isSuspended {
-                    self.scheduleObservationIfNeeded(delay: 0.4)
-                } else {
-                    self.safeRegionHistory.reset()
-                }
-            }
-            .store(in: &cancellables)
-
-        NotificationCenter.default.publisher(for: NSApplication.didChangeScreenParametersNotification)
-            .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                self?.invalidatePlacementAndReschedule(delay: 1)
+                guard let self else { return }
+                self.updateReplyPreview(for: self.currentSession)
+                self.updateAccessory(for: self.currentSession)
             }
             .store(in: &cancellables)
 
-        NSWorkspace.shared.notificationCenter.publisher(
-            for: NSWorkspace.didActivateApplicationNotification
-        )
-        .merge(with: NSWorkspace.shared.notificationCenter.publisher(
-            for: NSWorkspace.activeSpaceDidChangeNotification
-        ))
-        .receive(on: RunLoop.main)
-        .sink { [weak self] _ in
-            self?.invalidatePlacementAndReschedule(delay: 0.8)
-        }
-        .store(in: &cancellables)
+
+
     }
 
     func show() {
         panel.orderFrontRegardless()
         updateAccessory(for: currentSession)
-        let preferences = DetachedOrbSmartAvoidancePreferences.shared
-        logDevelopment(
-            "[orb-avoidance] shown session=\(sessionId) " +
-            "enabled=\(preferences.isEnabled) " +
-            "permission=\(preferences.permissionStatus) " +
-            "suspended=\(preferences.isCaptureSuspended)"
-        )
-        scheduleObservationIfNeeded(delay: 0.8)
     }
 
     func close() {
@@ -946,7 +499,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     func windowWillClose(_ notification: Notification) {
         isClosing = true
         removeOutsideClickMonitor()
-        closeHandler(sessionId)
+        closeHandler(agent.agentId)
     }
 
     func windowDidResignKey(_ notification: Notification) {
@@ -998,471 +551,39 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
     private func hideQuickReply() {
         previewState.isQuickReplyVisible = false
-        scheduleObservationIfNeeded(delay: 1)
     }
 
     private func updateAccessory(for session: TaskSession?) {
         accessoryController.update(for: session, orbCenter: currentOrbCenter, screenFrame: panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
     }
 
-    private func scheduleObservationIfNeeded(delay: TimeInterval) {
-        guard !isClosing else {
-            return
-        }
-        requestBatchObservation()
-    }
 
-    func makeBatchObservationRequest() -> DetachedOrbObservationRequest? {
-        let reconciledInteraction = DetachedOrbInteractionRecovery.reconcile(
-            reportedPointerDown: isPointerDown,
-            reportedPointerHovering: isPointerHovering,
-            pressedMouseButtons: NSEvent.pressedMouseButtons,
-            mouseLocation: NSEvent.mouseLocation,
-            windowFrame: panel.frame
-        )
-        isPointerDown = reconciledInteraction.isPointerDown
-        isPointerHovering = reconciledInteraction.isPointerHovering
 
-        guard !isInteractionFrozen,
-              let screen = panel.screen,
-              let displayID = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
-                as? CGDirectDisplayID else {
-            return nil
-        }
 
-        let currentOrigin = panel.frame.origin
-        // Persistent user anchoring is intentionally disabled. Every batch searches
-        // from the orb's current position, including after a manual drag.
-        let searchOrigin = currentOrigin
-        let placementFrame = DetachedOrbPlacementRegion.automaticPlacementFrame(
-            in: screen.visibleFrame
-        )
-        let occupied = occupiedFrames(sessionId)
-        let excluded = accessoryController.visibleFrame.map { [$0] } ?? []
-        let candidates = OrbPlacementPlanner.candidateOrigins(
-            currentOrigin: currentOrigin,
-            userAnchor: searchOrigin,
-            windowSize: panel.frame.size,
-            visibleFrame: placementFrame,
-            occupiedFrames: occupied,
-            excludedFrames: excluded
-        )
-        guard !candidates.isEmpty else {
-            return nil
-        }
-        let analysisOrigins = DetachedOrbObservationGeometry.analysisOrigins(
-            currentOrigin: currentOrigin,
-            candidateOrigins: candidates
-        )
 
-        let coverage = analysisOrigins.reduce(CGRect.null) { partial, origin in
-            partial.union(contentFrame(forPanelOrigin: origin))
-        }
-        let searchRect = coverage
-            .insetBy(dx: -8, dy: -8)
-            .intersection(screen.visibleFrame)
-        guard !searchRect.isNull, !searchRect.isEmpty else {
-            return nil
-        }
 
-        let regions = analysisOrigins.map { origin in
-            let identifier = Self.originIdentifier(origin)
-            return ScreenContentAnalysisRegion(
-                identifier: identifier,
-                frame: contentFrame(forPanelOrigin: origin),
-                previousSignature: luminanceSignatures[identifier]
-            )
-        }
-        return DetachedOrbObservationRequest(
-            target: ScreenContentCaptureTarget(
-                displayID: displayID,
-                screenFrame: screen.frame,
-                sampleRect: searchRect
-            ),
-            regions: regions,
-            currentOrigin: currentOrigin,
-            userAnchor: searchOrigin,
-            visibleFrame: screen.visibleFrame,
-            placementFrame: placementFrame,
-            candidateOrigins: candidates,
-            occupiedFrames: occupied,
-            excludedFrames: excluded
-        )
-    }
 
-    func evaluateBatchObservation(
-        _ observation: ScreenContentAnalysisObservation,
-        request: DetachedOrbObservationRequest
-    ) -> DetachedOrbBatchEvaluation? {
-        guard DetachedOrbSmartAvoidancePreferences.shared.canCapture else {
-            logInvalidEvaluation("capture_disabled")
-            return nil
-        }
-        guard !isClosing else {
-            logInvalidEvaluation("closing")
-            return nil
-        }
-        guard Self.distance(panel.frame.origin, request.currentOrigin) <= 0.5 else {
-            logInvalidEvaluation("position_changed")
-            return nil
-        }
-        guard panel.screen?.visibleFrame == request.visibleFrame else {
-            logInvalidEvaluation("screen_changed")
-            return nil
-        }
 
-        var analysesByIdentifier: [String: OrbContentAnalysis] = [:]
-        for region in observation.regions {
-            analysesByIdentifier[region.identifier] = region.analysis
-            if case let .known(_, signature) = region.analysis {
-                luminanceSignatures[region.identifier] = signature
-            }
-        }
 
-        let currentIdentifier = Self.originIdentifier(request.currentOrigin)
-        guard let currentAnalysis = analysesByIdentifier[currentIdentifier] else {
-            logInvalidEvaluation("current_region_missing")
-            return nil
-        }
-        guard case let .known(currentRisk, _) = currentAnalysis else {
-            if case let .unknown(reason) = currentAnalysis {
-                logInvalidEvaluation("current_region_\(reason)")
-            }
-            return nil
-        }
 
-        let observationDate = Date()
-        safeRegionHistory.prune(at: observationDate)
-        let observedCandidates = request.candidateOrigins.compactMap {
-            origin -> (origin: CGPoint, risk: OrbContentRisk)? in
-            let identifier = Self.originIdentifier(origin)
-            guard case let .known(risk, _)? = analysesByIdentifier[identifier] else {
-                return nil
-            }
-            return (origin, risk)
-        }
-        safeRegionHistory.record(
-            frames: observedCandidates
-                .filter {
-                    $0.risk.captureConfidence
-                        >= placementConfiguration.minimumCaptureConfidence
-                        && $0.risk.totalRisk <= placementConfiguration.safeRisk
-                }
-                .sorted { $0.risk.totalRisk < $1.risk.totalRisk }
-                .map { contentFrame(forPanelOrigin: $0.origin) },
-            at: observationDate
-        )
-        let candidates = observedCandidates.map { observedCandidate in
-            let origin = observedCandidate.origin
-            let risk = observedCandidate.risk
-            let candidateFrame = contentFrame(forPanelOrigin: origin)
-            let historicalMatch = safeRegionHistory.match(for: candidateFrame)
-            return OrbPlacementCandidate(
-                origin: origin,
-                contentRisk: risk.totalRisk,
-                captureConfidence: risk.captureConfidence,
-                historicalOverlapCount: historicalMatch.overlapCount,
-                historicalCoverage: historicalMatch.coverage
-            )
-        }
-        captureFailureCount = 0
-        let bestCandidateRisk = candidates
-            .filter { Self.distance($0.origin, request.currentOrigin) > 0.5 }
-            .map(\.contentRisk)
-            .min()
-        return DetachedOrbBatchEvaluation(
-            controller: self,
-            request: request,
-            currentRisk: currentRisk.totalRisk,
-            currentCaptureConfidence: currentRisk.captureConfidence,
-            isCurrentPositionRisky:
-                currentRisk.totalRisk >= placementConfiguration.triggerRisk,
-            candidates: candidates,
-            recentAutomaticOrigins: recentAutomaticPositions.compactMap {
-                Date().timeIntervalSince($0.date) <= 15 ? $0.origin : nil
-            },
-            cooldownActive: Date() < cooldownUntil,
-            bestCandidateRisk: bestCandidateRisk
-        )
-    }
 
-    func planBatchMove(
-        _ evaluation: DetachedOrbBatchEvaluation,
-        additionalOccupiedFrames: [CGRect]
-    ) -> OrbPlacementPlan {
-        let input = OrbPlacementPlanningInput(
-            currentOrigin: evaluation.request.currentOrigin,
-            userAnchor: evaluation.request.userAnchor,
-            windowSize: panel.frame.size,
-            visibleFrame: evaluation.request.placementFrame,
-            occupiedFrames: evaluation.request.occupiedFrames + additionalOccupiedFrames,
-            excludedFrames: evaluation.request.excludedFrames,
-            currentRisk: evaluation.currentRisk,
-            currentCaptureConfidence: evaluation.currentCaptureConfidence,
-            candidates: evaluation.candidates,
-            recentAutomaticOrigins: evaluation.recentAutomaticOrigins,
-            interactionFrozen: isInteractionFrozen,
-            cooldownActive: evaluation.cooldownActive
-        )
-        let plan = OrbPlacementPlanner.plan(
-            input: input,
-            configuration: placementConfiguration
-        )
-        if case .move = plan.action {
-            let diagnostics = OrbPlacementPlanner.directionalDiagnostics(
-                input: input,
-                configuration: placementConfiguration
-            )
-            logDevelopment(
-                "[orb-avoidance] direction_candidates session=\(sessionId) "
-                    + "right=\(Self.logDirectionStatistic(diagnostics.right)) "
-                    + "top=\(Self.logDirectionStatistic(diagnostics.top)) "
-                    + "left=\(Self.logDirectionStatistic(diagnostics.left)) "
-                    + "bottom=\(Self.logDirectionStatistic(diagnostics.bottom))"
-            )
-        }
-        return plan
-    }
 
-    func acceptBatchPlan(
-        _ plan: OrbPlacementPlan,
-        evaluation: DetachedOrbBatchEvaluation
-    ) -> DetachedOrbBatchMove? {
-        switch plan.action {
-        case let .hold(reason):
-            let bestScoreDescription =
-                evaluation.bestCandidateRisk.map(Self.logScore) ?? "unknown"
-            logDevelopment(
-                "[orb-avoidance] evaluated session=\(sessionId) " +
-                "risk=\(Self.logScore(evaluation.currentRisk)) " +
-                "best=\(bestScoreDescription) " +
-                "decision=\(reason)"
-            )
-            return nil
-        case let .move(proposal):
-            guard !isInteractionFrozen,
-                  Self.distance(panel.frame.origin, evaluation.request.currentOrigin) <= 0.5 else {
-                return nil
-            }
-            let previousOrigin = panel.frame.origin
-            return DetachedOrbBatchMove(
-                controller: self,
-                origin: proposal.origin,
-                previousOrigin: previousOrigin,
-                destinationFrame: CGRect(
-                    origin: proposal.origin,
-                    size: panel.frame.size
-                ),
-                currentRisk: evaluation.currentRisk,
-                candidateRisk: proposal.contentRisk
-            )
-        }
-    }
 
-    func prepareBatchMove(_ move: DetachedOrbBatchMove) {
-        isMovingAutomatically = true
-        automaticMoveDestination = move.origin
-        automaticMoveDidTeleport = false
-    }
 
-    func beginBatchMoveDisappearance(
-        _ move: DetachedOrbBatchMove,
-        animation: DetachedOrbTeleportAnimation
-    ) {
-        guard canContinueBatchMove(move) else {
-            return
-        }
-        withAnimation(.easeIn(duration: animation.disappearDuration)) {
-            animationState.scale = animation.collapsedScale
-        }
-        panel.animator().alphaValue = 0
-    }
 
-    func teleportBatchMove(_ move: DetachedOrbBatchMove) {
-        guard canContinueBatchMove(move) else {
-            return
-        }
-        panel.alphaValue = 0
-        panel.setFrameOrigin(move.origin)
-        recentAutomaticPositions.append(
-            DetachedOrbRecentAutomaticPosition(origin: move.previousOrigin, date: Date())
-        )
-        recentAutomaticPositions = Array(recentAutomaticPositions.suffix(4))
-        automaticMoveDidTeleport = true
-    }
 
-    func beginBatchMoveAppearance(
-        _ move: DetachedOrbBatchMove,
-        animation: DetachedOrbTeleportAnimation
-    ) {
-        guard canContinueBatchMove(move) else {
-            return
-        }
-        withAnimation(.easeOut(duration: animation.appearDuration)) {
-            animationState.scale = animation.overshootScale
-        }
-        panel.animator().alphaValue = 1
-    }
 
-    func settleBatchMoveAppearance(
-        _ move: DetachedOrbBatchMove,
-        animation: DetachedOrbTeleportAnimation
-    ) {
-        guard canContinueBatchMove(move) else {
-            return
-        }
-        guard animation.settleDuration > 0 else {
-            animationState.scale = 1
-            return
-        }
-        withAnimation(.easeInOut(duration: animation.settleDuration)) {
-            animationState.scale = 1
-        }
-    }
 
-    func canContinueBatchMove(_ move: DetachedOrbBatchMove) -> Bool {
-        guard isMovingAutomatically, !isClosing, let automaticMoveDestination else {
-            return false
-        }
-        return Self.distance(automaticMoveDestination, move.origin) <= 0.5
-    }
 
-    func restoreBatchMoveAppearanceIfNeeded() {
-        panel.alphaValue = 1
-        animationState.scale = 1
-    }
 
-    func finishBatchMove(_ move: DetachedOrbBatchMove) {
-        isMovingAutomatically = false
-        automaticMoveDestination = nil
-        automaticMoveDidTeleport = false
-        restoreBatchMoveAppearanceIfNeeded()
-        cooldownUntil = Date().addingTimeInterval(automaticMoveCooldown)
-        updateAccessory(for: currentSession)
-        logDevelopment(
-            "[orb-avoidance] batch_moved session=\(sessionId) " +
-            "from=\(Self.logPoint(move.previousOrigin)) to=\(Self.logPoint(move.origin)) " +
-            "actual=\(Self.logPoint(panel.frame.origin)) " +
-            "risk=\(Self.logScore(move.currentRisk))->\(Self.logScore(move.candidateRisk))"
-        )
-    }
 
-    func noteBatchAnalysisFailure(_ error: Error) {
-        captureFailureCount += 1
-        let category = (error as? ScreenContentSamplerError)?.description
-            ?? String(describing: type(of: error))
-        logDevelopment(
-            "[orb-avoidance] batch_analysis_failed session=\(sessionId) " +
-            "category=\(category) failures=\(captureFailureCount)"
-        )
-    }
 
-    private func logInvalidEvaluation(_ reason: String) {
-        logDevelopment(
-            "[orb-avoidance] evaluation_invalid session=\(sessionId) reason=\(reason)"
-        )
-    }
 
-    private func handlePointerInteractionBegan() {
-        cancelAutomaticMoveForInteraction()
-        isPointerDown = true
-    }
 
-    private func handlePointerInteractionEnded(didDrag: Bool) {
-        isPointerDown = false
-        guard didDrag else {
-            scheduleObservationIfNeeded(delay: 1)
-            return
-        }
-        recentAutomaticPositions.removeAll()
-        cooldownUntil = Date().addingTimeInterval(0.8)
-        scheduleObservationIfNeeded(delay: 0.85)
-    }
 
-    private func handleHoverChanged(_ hovering: Bool) {
-        isPointerHovering = hovering
-        if hovering {
-            cancelAutomaticMoveForInteraction()
-        }
-        if !hovering {
-            scheduleObservationIfNeeded(delay: 0.8)
-        }
-    }
 
-    private func invalidatePlacementAndReschedule(delay: TimeInterval) {
-        luminanceSignatures.removeAll()
-        safeRegionHistory.reset()
-        scheduleObservationIfNeeded(delay: delay)
-    }
 
-    private func cancelAutomaticMoveForInteraction() {
-        guard isMovingAutomatically else {
-            return
-        }
-        let didTeleport = automaticMoveDidTeleport
-        isMovingAutomatically = false
-        automaticMoveDestination = nil
-        automaticMoveDidTeleport = false
-        restoreBatchMoveAppearanceIfNeeded()
-        if didTeleport {
-            cooldownUntil = Date().addingTimeInterval(automaticMoveCooldown)
-            updateAccessory(for: currentSession)
-        }
-        logDevelopment(
-            "[orb-avoidance] batch_animation_cancelled session=\(sessionId) "
-                + "phase=\(didTeleport ? "after_teleport" : "before_teleport")"
-        )
-    }
 
-    private var isInteractionFrozen: Bool {
-        isPointerDown
-            || isPointerHovering
-            || isMovingAutomatically
-            || isClosing
-            || accessoryController.isKeyWindow
-            || accessoryController.visibleFrame != nil
-            || previewState.isQuickReplyVisible
-    }
-
-    private func contentFrame(forPanelOrigin origin: CGPoint) -> CGRect {
-        CGRect(
-            x: origin.x + orbHaloPadding,
-            y: origin.y + orbHaloPadding,
-            width: orbSize,
-            height: orbSize
-        )
-    }
-
-    private static func originIdentifier(_ origin: CGPoint) -> String {
-        "\(Int(origin.x.rounded())):\(Int(origin.y.rounded()))"
-    }
-
-    private static func distance(_ lhs: CGPoint, _ rhs: CGPoint) -> CGFloat {
-        hypot(lhs.x - rhs.x, lhs.y - rhs.y)
-    }
-
-    private static func logPoint(_ point: CGPoint) -> String {
-        "\(Int(point.x.rounded())),\(Int(point.y.rounded()))"
-    }
-
-    private static func logScore(_ score: Double) -> String {
-        String(format: "%.3f", score)
-    }
-
-    private static func logDirectionStatistic(
-        _ statistic: OrbPlacementDirectionStatistic
-    ) -> String {
-        let risk = statistic.minimumRisk.map(logScore) ?? "none"
-        return "\(statistic.safeCandidateCount)/\(risk)"
-    }
-
-    private func logDevelopment(_ message: @autoclosure () -> String) {
-        guard CorptieAppEnvironment.isDevelopment else {
-            return
-        }
-        print(message())
-        fflush(stdout)
-    }
 
     private func updateReplyPreview(for session: TaskSession?) {
         guard let session else {
@@ -1605,7 +726,7 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private func isSessionOpenInMainView(_ session: TaskSession) -> Bool {
-        isMainVisible() && client.selectedSession?.id == session.id
+        client.selectedSession?.id == session.id
     }
 
     private static func latestFinalAgentPreviewText(from detail: CodexThreadDetail?, includeActiveTurn: Bool) -> String? {
@@ -1641,7 +762,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private var currentSession: TaskSession? {
-        client.sessions.first { $0.id == sessionId }
+        guard let sessionId = agent.currentSessionId else { return nil }
+        return client.sessions.first { $0.id == sessionId }
     }
 
     private func installOutsideClickMonitor() {
@@ -1694,13 +816,11 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
 private struct DetachedSessionOrbView: View {
     @ObservedObject private var appLanguage = AppLanguageController.shared
-    @ObservedObject var client: BackendClient
-    let sessionId: String
+    let agent: Agent
     @ObservedObject var previewState: DetachedReplyPreviewState
     @ObservedObject var animationState: DetachedOrbAnimationState
     let primaryAction: () -> Void
     let showMain: () -> Void
-    let openSession: (TaskSession) -> Void
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
     let close: () -> Void
@@ -1709,49 +829,38 @@ private struct DetachedSessionOrbView: View {
     let hoverChanged: (Bool) -> Void
 
     var body: some View {
-        Group {
-            if let session {
-                orb(session: session)
-                    .help(session.status.label)
-            } else {
-                EmptyView()
-                    .onAppear {
-                        close()
-                }
-            }
-        }
-        .frame(width: orbRenderSize, height: orbRenderSize, alignment: .topLeading)
-        .scaleEffect(animationState.scale)
-        .background(Color.clear)
-        .environment(\.locale, appLanguage.locale)
+        orb
+            .frame(width: orbRenderSize, height: orbRenderSize, alignment: .topLeading)
+            .scaleEffect(animationState.scale)
+            .background(Color.clear)
+            .environment(\.locale, appLanguage.locale)
     }
 
-    @ViewBuilder
-    private func orb(session: TaskSession) -> some View {
-        SessionAvatarView(session: session, avatarSize: 52)
-        .frame(width: 72, height: 72)
-        .transaction { transaction in
-            transaction.animation = nil
-        }
-        .contentShape(Circle())
-        .overlay(
-            DetachedOrbEventLayer(
-                sessionId: session.id,
-                open: {
-                    primaryAction()
-                },
-                openSession: {
-                    openSession(session)
-                },
-                showMain: showMain,
-                close: close,
-                interactionBegan: interactionBegan,
-                interactionEnded: interactionEnded,
-                hoverChanged: hoverChanged
-            )
+    private var orb: some View {
+        AgentOrbView(agent: agent)
             .frame(width: 72, height: 72)
-        )
-        .padding(orbHaloPadding)
+            .transaction { transaction in
+                transaction.animation = nil
+            }
+            .contentShape(Circle())
+            .overlay(
+                DetachedOrbEventLayer(
+                    sessionId: agent.agentId,
+                    open: {
+                        primaryAction()
+                    },
+                    openSession: {
+                        showMain()
+                    },
+                    showMain: showMain,
+                    close: close,
+                    interactionBegan: interactionBegan,
+                    interactionEnded: interactionEnded,
+                    hoverChanged: hoverChanged
+                )
+                .frame(width: 72, height: 72)
+            )
+            .padding(orbHaloPadding)
     }
 
     private var orbRenderSize: CGFloat {
@@ -1761,16 +870,13 @@ private struct DetachedSessionOrbView: View {
     private var orbHaloPadding: CGFloat {
         8
     }
-
-    private var session: TaskSession? {
-        client.sessions.first { $0.id == sessionId }
-    }
 }
 
 private struct DetachedSessionAccessoryView: View {
     @ObservedObject private var appLanguage = AppLanguageController.shared
     @ObservedObject var client: BackendClient
-    let sessionId: String
+    @ObservedObject private var entityClient = EntityAPIClient.shared
+    let agentId: String
     @ObservedObject var previewState: DetachedReplyPreviewState
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
@@ -1901,7 +1007,11 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var session: TaskSession? {
-        client.sessions.first { $0.id == sessionId }
+        guard let agent = entityClient.agents.first(where: { $0.agentId == agentId }),
+              let sessionId = agent.currentSessionId else {
+            return nil
+        }
+        return client.sessions.first { $0.id == sessionId }
     }
 
     private var visibleOptions: [CodexApprovalOption] {
@@ -2540,9 +1650,6 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
             interactionBegan?()
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: L10n("Show Main Window"), action: #selector(showMain), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: L10n("Open Session"), action: #selector(openSession), keyEquivalent: ""))
-            menu.addItem(.separator())
-            menu.addItem(completionSoundMenuItem())
             menu.addItem(.separator())
             menu.addItem(NSMenuItem(title: L10n("Close Floating Orb"), action: #selector(closeOrb), keyEquivalent: ""))
             menu.items.forEach { $0.target = self }
@@ -2550,38 +1657,12 @@ private struct DetachedOrbEventLayer: NSViewRepresentable {
             interactionEnded?(false)
         }
 
-        private func completionSoundMenuItem() -> NSMenuItem {
-            let parent = NSMenuItem(title: L10n("Completion Sound"), action: nil, keyEquivalent: "")
-            let submenu = NSMenu()
-            let selectedSoundId = SessionCompletionSoundManager.selectedSoundId(for: sessionId)
-            for option in SessionCompletionSoundManager.options {
-                let item = NSMenuItem(title: option.label, action: #selector(selectCompletionSound(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = option.id
-                item.state = option.id == selectedSoundId ? .on : .off
-                submenu.addItem(item)
-            }
-            parent.submenu = submenu
-            return parent
-        }
-
         @objc private func showMain() {
             showMainAction?()
         }
 
-        @objc private func openSession() {
-            openSessionAction?()
-        }
-
         @objc private func closeOrb() {
             close?()
-        }
-
-        @objc private func selectCompletionSound(_ sender: NSMenuItem) {
-            guard let soundId = sender.representedObject as? String else {
-                return
-            }
-            SessionCompletionSoundManager.setSelectedSoundId(soundId, for: sessionId)
         }
     }
 }

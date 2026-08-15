@@ -350,8 +350,10 @@ export class CorptieStore {
         agent_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
+        role TEXT NOT NULL DEFAULT 'independentContributor',
         status TEXT NOT NULL DEFAULT 'available'
           CHECK (status IN ('available', 'busy', 'offline', 'inactive')),
+        provider TEXT,
         capabilities_json TEXT NOT NULL DEFAULT '[]',
         current_session_id TEXT,
         created_at TEXT NOT NULL,
@@ -713,6 +715,164 @@ export class CorptieStore {
       ON workspace_transitions(logical_session_id, created_at DESC);
     `);
 
+    // --- 实体层：Objective / WorkItem / 依赖 DAG（净新增，见 15 Phase 1） ---
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS objectives (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        acceptance_criteria TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'active',
+        budget_config TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS work_items (
+        id TEXT PRIMARY KEY,
+        objective_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'medium',
+        status TEXT NOT NULL DEFAULT 'todo',
+        main_workspace_id TEXT,
+        main_agent_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS work_item_dependencies (
+        work_item_id TEXT NOT NULL,
+        target_work_item_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        PRIMARY KEY (work_item_id, target_work_item_id),
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (target_work_item_id) REFERENCES work_items(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_work_items_objective_id ON work_items(objective_id);
+      CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+    `);
+
+    // --- 三层记忆（13：Objective/WorkItem 工作记忆 + Agent 进化记忆） ---
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id TEXT PRIMARY KEY,
+        owner_type TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL,
+        structured_json TEXT NOT NULL DEFAULT '{}',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        base_confidence REAL NOT NULL DEFAULT 0.5,
+        confidence REAL NOT NULL DEFAULT 0.5,
+        recency_score REAL NOT NULL DEFAULT 0,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        last_accessed_at TEXT,
+        source_type TEXT NOT NULL DEFAULT 'user',
+        source_session_id TEXT,
+        source_event_seqs_json TEXT,
+        promotion_status TEXT NOT NULL DEFAULT 'active',
+        promoted_skill_id TEXT,
+        access_policy TEXT NOT NULL DEFAULT '{}',
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS memory_embeddings (
+        memory_id TEXT PRIMARY KEY,
+        vector TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_type, owner_id);
+      CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+    `);
+
+    // --- 合作调度中心（14：协作目录 + 协作会话 + 声誉缓存） ---
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS collaborator_registry (
+        entry_type TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'independentContributor',
+        capability_tags_json TEXT NOT NULL DEFAULT '[]',
+        description TEXT NOT NULL DEFAULT '',
+        availability TEXT NOT NULL DEFAULT 'idle',
+        trust_score REAL NOT NULL DEFAULT 0.5,
+        policy_json TEXT NOT NULL DEFAULT '{}',
+        endpoint_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (entry_type, entry_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS collaboration_sessions (
+        id TEXT PRIMARY KEY,
+        requester_session_id TEXT,
+        requester_objective_id TEXT,
+        requester_work_item_id TEXT,
+        mode TEXT NOT NULL,
+        request_json TEXT NOT NULL DEFAULT '{}',
+        candidate_entry_type TEXT,
+        candidate_entry_id TEXT,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        result_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        closed_at TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS collab_reputation_cache (
+        entry_id TEXT PRIMARY KEY,
+        trust_score REAL NOT NULL DEFAULT 0.5,
+        sample_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaborator_availability
+        ON collaborator_registry(entry_type, availability);
+    `);
+
+    // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS hub_intent_cache (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        work_item_id TEXT,
+        objective_id TEXT,
+        agent_id TEXT,
+        intent_hash TEXT NOT NULL,
+        result_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_active_tools (
+        session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        tool_def_json TEXT NOT NULL DEFAULT '{}',
+        registered_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, tool_name)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_hub_intent_cache_hash
+        ON hub_intent_cache(agent_id, intent_hash);
+    `);
+
+    this.ensureColumn("sessions", "objective_id", "TEXT");
+    this.ensureColumn("sessions", "work_item_id", "TEXT");
+    this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
+    this.ensureColumn("agents", "provider", "TEXT");
+    this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("objectives", "priority", "TEXT");
+    this.ensureColumn("objectives", "target_date", "TEXT");
+    this.ensureColumn("objectives", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("objectives", "workspace_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("objectives", "related_objective_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("objectives", "contributor_agent_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("work_items", "current_session_id", "TEXT");
+    this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
+    this.ensureColumn("hub_intent_cache", "agent_id", "TEXT");
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "sort_order", "REAL");
@@ -755,6 +915,7 @@ export class CorptieStore {
     this.ensureColumn("feishu_bots", "remote_open_id", "TEXT");
     this.ensureColumn("feishu_bots", "remote_activate_status", "INTEGER");
     this.initializeSortOrder();
+    this.ensureAssistantAgent();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
 
     this.db.run(
@@ -989,6 +1150,25 @@ export class CorptieStore {
     return this.listGitWorktrees(repository.id);
   }
 
+  listGitRepositories() {
+    return this.selectAll("SELECT * FROM git_repositories ORDER BY discovered_at ASC").map((row) => {
+      const path = row.common_git_dir ?? "";
+      const segments = path.split("/").filter(Boolean);
+      let name = segments[segments.length - 1] ?? "";
+      // common_git_dir 通常指向 <repo>/.git，basename 为 ".git"，展示名取仓库目录名
+      if (name === ".git" || name === "worktrees") {
+        name = segments[segments.length - 2] ?? name;
+      }
+      return {
+        id: row.repository_id,
+        path,
+        name: name || row.repository_id,
+        discoveredAt: row.discovered_at,
+        lastValidatedAt: row.last_validated_at
+      };
+    });
+  }
+
   getGitRepository(repositoryId) {
     const row = this.selectOne(
       "SELECT * FROM git_repositories WHERE repository_id = ?",
@@ -1000,6 +1180,18 @@ export class CorptieStore {
       discoveredAt: row.discovered_at,
       lastValidatedAt: row.last_validated_at
     } : null;
+  }
+
+  // 解析仓库的真实工作目录（cwd）：优先主 worktree 的 path，退回 common_git_dir 去掉 /.git 后缀。
+  resolveWorkspacePath(repositoryId) {
+    const worktree = this.selectOne(
+      "SELECT path FROM git_worktrees WHERE repository_id = ? AND is_main = 1 LIMIT 1",
+      [repositoryId]
+    );
+    if (worktree?.path) return worktree.path;
+    const repo = this.getGitRepository(repositoryId);
+    if (!repo?.commonGitDirCanonicalPath) return null;
+    return repo.commonGitDirCanonicalPath.replace(/\/\.git$/, "") || null;
   }
 
   listGitWorktrees(repositoryId) {
@@ -1725,8 +1917,8 @@ export class CorptieStore {
     const summary = toSessionSummary(session);
     this.db.run(
       `INSERT INTO sessions (
-        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json, objective_id, work_item_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
         agent=excluded.agent,
@@ -1744,7 +1936,9 @@ export class CorptieStore {
         sort_order=excluded.sort_order,
         avatar_path=excluded.avatar_path,
         active_choice_json=excluded.active_choice_json,
-        raw_json=excluded.raw_json`,
+        raw_json=excluded.raw_json,
+        objective_id=COALESCE(excluded.objective_id, sessions.objective_id),
+        work_item_id=COALESCE(excluded.work_item_id, sessions.work_item_id)`,
       [
         session.id,
         session.title,
@@ -1764,10 +1958,83 @@ export class CorptieStore {
         Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
         session.avatarPath ?? session.external?.avatarPath ?? null,
         serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
-        JSON.stringify(toRawStatus(session))
+        JSON.stringify(toRawStatus(session)),
+        session.objectiveId ?? null,
+        session.workItemId ?? null
       ]
     );
     this.scheduleSave();
+  }
+
+  // 将已有 Session 归属到某个 WorkItem（及其 Objective），只更新归属两列，不覆盖其它字段。
+  bindSessionToWorkItem(sessionId, workItemId, objectiveId) {
+    this.db.run(
+      `UPDATE sessions SET objective_id = ?, work_item_id = ?, updated_at = ? WHERE id = ?`,
+      [objectiveId ?? null, workItemId ?? null, createdAtFromOrNow(), sessionId]
+    );
+    // 1:1 语义：work_item 记录当前活跃 session（换 Agent/重来时覆盖为新的）
+    if (workItemId) {
+      this.db.run(
+        `UPDATE work_items SET current_session_id = ?, updated_at = ? WHERE id = ?`,
+        [sessionId, createdAtFromOrNow(), workItemId]
+      );
+    }
+    this.scheduleSave();
+    return this.getSession(sessionId);
+  }
+
+  // 创建 Session 记录（绑定 work_item + agent；1:1 更新 work_item.current_session_id）。
+  createSession(input = {}) {
+    const id = input.id ?? `session:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO sessions (
+        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent,
+        created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json,
+        objective_id, work_item_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.title ?? "新会话",
+        input.agentName ?? "Agent",
+        input.provider ?? "codex-app-server",
+        input.command ?? null,
+        JSON.stringify(input.args ?? []),
+        input.cwd ?? null,
+        input.status ?? "running",
+        input.progress ?? 0,
+        input.summary ?? "",
+        input.accent ?? "cyan",
+        now,
+        now,
+        input.archived ? 1 : 0,
+        input.pinned ? 1 : 0,
+        input.sortOrder ?? null,
+        input.avatarPath ?? null,
+        input.activeChoiceJson ?? null,
+        JSON.stringify(input.raw ?? {}),
+        input.objectiveId ?? null,
+        input.workItemId ?? null
+      ]
+    );
+    if (input.workItemId) {
+      this.db.run(
+        `UPDATE work_items SET current_session_id = ?, updated_at = ? WHERE id = ?`,
+        [id, now, input.workItemId]
+      );
+    }
+    this.scheduleSave();
+    return this.getSession(id);
+  }
+
+  // 关闭 Session（置终态 completed）。
+  closeSession(id) {
+    this.db.run(
+      `UPDATE sessions SET status = 'completed', updated_at = ? WHERE id = ?`,
+      [createdAtFromOrNow(), id]
+    );
+    this.scheduleSave();
+    return this.getSession(id);
   }
 
   appendItem(sessionId, item) {
@@ -1956,6 +2223,25 @@ export class CorptieStore {
   getSession(id) {
     const row = this.selectOne("SELECT * FROM sessions WHERE id = ?", [id]);
     return row ? this.rowToSession(row) : null;
+  }
+
+  listSessionsByWorkItem(workItemId) {
+    const rows = this.selectAll(
+      "SELECT * FROM sessions WHERE work_item_id = ? ORDER BY created_at ASC",
+      [workItemId]
+    );
+    return rows.map((row) => this.rowToSession(row));
+  }
+
+  listSessionsByAgent(agentId) {
+    const rows = this.selectAll(
+      `SELECT s.* FROM sessions s
+       JOIN agent_sessions a ON a.session_id = s.id AND a.unbound_at IS NULL
+       WHERE a.agent_id = ?
+       ORDER BY s.created_at ASC`,
+      [agentId]
+    );
+    return rows.map((row) => this.rowToSession(row));
   }
 
   getItems(sessionId, limit = 240, provider = "") {
@@ -2455,6 +2741,563 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  // ===== Agent（设计：通用角色化执行主体，role ∈ {independentContributor, assistant}）=====
+
+  listAgents() {
+    return this.selectAll(`SELECT * FROM agents ORDER BY created_at ASC`).map(agentFromRow);
+  }
+
+  getAgent(agentId) {
+    const row = this.selectOne(`SELECT * FROM agents WHERE agent_id = ?`, [agentId]);
+    return row ? agentFromRow(row) : null;
+  }
+
+  // 预种助手 Agent（role=assistant，单例，默认名 Corptie）。幂等：已存在则跳过。
+  ensureAssistantAgent() {
+    const existing = this.selectOne(`SELECT * FROM agents WHERE role = 'assistant' LIMIT 1`);
+    if (existing) return existing;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["assistant", "Corptie", "平台助手：负责协助用户使用 Corptie 平台本身（建目标/工作项、改配置等元操作）。", "assistant", "available", "harness", "[]", null, now, now]
+    );
+    this.scheduleSave();
+    return this.getAgent("assistant");
+  }
+
+  // 创建独立贡献者 Agent（role 默认 independentContributor；assistant 为平台预置单例，不由 UI 创建）
+  createAgent(input = {}) {
+    const id = input.id ?? `agent:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, system_prompt, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.name,
+        input.description ?? "",
+        input.role ?? "independentContributor",
+        input.status ?? "available",
+        input.provider ?? null,
+        JSON.stringify(input.capabilities ?? []),
+        input.systemPrompt ?? "",
+        input.currentSessionId ?? null,
+        now,
+        now
+      ]
+    );
+    this.scheduleSave();
+    return this.getAgent(id);
+  }
+
+  // 更新 Agent（name/description/provider/role/status/systemPrompt/capabilities；role 可自由切换 assistant↔independentContributor）
+  updateAgent(agentId, input = {}) {
+    const existing = this.getAgent(agentId);
+    if (!existing) return null;
+    const now = createdAtFromOrNow();
+    const role = input.role ?? existing.role;
+    this.db.run(
+      `UPDATE agents SET name = ?, description = ?, role = ?, status = ?, provider = ?, system_prompt = ?, capabilities_json = ?, updated_at = ? WHERE agent_id = ?`,
+      [
+        input.name ?? existing.name,
+        input.description ?? existing.description,
+        role,
+        input.status ?? existing.status,
+        input.provider ?? existing.provider,
+        input.systemPrompt ?? existing.systemPrompt ?? "",
+        input.capabilities != null ? JSON.stringify(input.capabilities) : JSON.stringify(existing.capabilities ?? []),
+        now,
+        agentId
+      ]
+    );
+    this.scheduleSave();
+    return this.getAgent(agentId);
+  }
+
+  // 删除 Agent：有活跃（running）session 时抛错阻止；无则解绑保留历史 session（agent_sessions 级联删除）
+  deleteAgent(agentId) {
+    const sessionIds = this.selectAll(
+      `SELECT session_id FROM agent_sessions WHERE agent_id = ? AND unbound_at IS NULL`,
+      [agentId]
+    ).map((row) => row.session_id);
+    if (sessionIds.length > 0) {
+      const placeholders = sessionIds.map(() => "?").join(",");
+      const active = this.selectOne(
+        `SELECT COUNT(*) AS count FROM sessions WHERE id IN (${placeholders}) AND status = 'running'`,
+        sessionIds
+      );
+      if (active && active.count > 0) {
+        const error = new Error("Agent has running sessions; stop them before deleting.");
+        error.code = "AGENT_HAS_RUNNING_SESSIONS";
+        throw error;
+      }
+    }
+    this.db.run(`DELETE FROM agents WHERE agent_id = ?`, [agentId]);
+    this.scheduleSave();
+    return true;
+  }
+
+  // ===== 实体层：Objective / WorkItem / 依赖 DAG（15 Phase 1，净新增）=====
+
+  createObjective(input = {}) {
+    const id = input.id ?? `objective:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO objectives (id, name, description, acceptance_criteria, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.name,
+        input.description ?? "",
+        input.acceptanceCriteria ?? "",
+        input.status ?? "active",
+        JSON.stringify(input.budgetConfig ?? {}),
+        input.priority ?? null,
+        input.targetDate ?? null,
+        JSON.stringify(input.tags ?? []),
+        JSON.stringify(input.workspaceIds ?? []),
+        JSON.stringify(input.relatedObjectiveIds ?? []),
+        JSON.stringify(input.contributorAgentIds ?? []),
+        now,
+        now,
+      ]
+    );
+    this.scheduleSave();
+    return this.getObjective(id);
+  }
+
+  listObjectives() {
+    return this.selectAll(`SELECT * FROM objectives ORDER BY created_at DESC`).map(objectiveFromRow);
+  }
+
+  getObjective(id) {
+    const row = this.selectOne(`SELECT * FROM objectives WHERE id = ?`, [id]);
+    return row ? objectiveFromRow(row) : null;
+  }
+
+  updateObjective(id, patch = {}) {
+    const current = this.getObjective(id);
+    if (!current) return null;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
+    // priority/targetDate 传 "" 或 null 视为清除（写 NULL）
+    const normalizeOptional = (value) => (value === "" || value == null ? null : value);
+    this.db.run(
+      `UPDATE objectives SET name=?, description=?, acceptance_criteria=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
+      [
+        has("name") ? patch.name : current.name,
+        has("description") ? (patch.description ?? "") : current.description,
+        has("acceptanceCriteria") ? (patch.acceptanceCriteria ?? "") : current.acceptanceCriteria,
+        has("status") ? patch.status : current.status,
+        has("budgetConfig") ? JSON.stringify(patch.budgetConfig ?? {}) : JSON.stringify(current.budgetConfig ?? {}),
+        has("priority") ? normalizeOptional(patch.priority) : current.priority,
+        has("targetDate") ? normalizeOptional(patch.targetDate) : current.targetDate,
+        has("tags") ? JSON.stringify(patch.tags ?? []) : JSON.stringify(current.tags ?? []),
+        has("workspaceIds") ? JSON.stringify(patch.workspaceIds ?? []) : JSON.stringify(current.workspaceIds ?? []),
+        has("relatedObjectiveIds") ? JSON.stringify(patch.relatedObjectiveIds ?? []) : JSON.stringify(current.relatedObjectiveIds ?? []),
+        has("contributorAgentIds") ? JSON.stringify(patch.contributorAgentIds ?? []) : JSON.stringify(current.contributorAgentIds ?? []),
+        createdAtFromOrNow(),
+        id,
+      ]
+    );
+    this.scheduleSave();
+    return this.getObjective(id);
+  }
+
+  deleteObjective(id) {
+    this.db.run(`DELETE FROM objectives WHERE id = ?`, [id]);
+    this.scheduleSave();
+  }
+
+  createWorkItem(input = {}) {
+    const id = input.id ?? `work_item:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO work_items (id, objective_id, title, description, priority, status, main_workspace_id, main_agent_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.objectiveId,
+        input.title,
+        input.description ?? "",
+        input.priority ?? "medium",
+        input.status ?? "todo",
+        input.mainWorkspaceId ?? null,
+        input.mainAgentId ?? null,
+        now,
+        now,
+      ]
+    );
+    this.scheduleSave();
+    return this.getWorkItem(id);
+  }
+
+  listWorkItems() {
+    return this.selectAll(`SELECT * FROM work_items ORDER BY created_at ASC`);
+  }
+
+  listWorkItemsByObjective(objectiveId) {
+    return this.selectAll(
+      `SELECT * FROM work_items WHERE objective_id = ? ORDER BY created_at ASC`,
+      [objectiveId]
+    );
+  }
+
+  getWorkItem(id) {
+    return this.selectOne(`SELECT * FROM work_items WHERE id = ?`, [id]);
+  }
+
+  // 按当前活跃 session 反查其绑定的实体 WorkItem（session 落定时推进状态用）。
+  getWorkItemBySessionId(sessionId) {
+    return this.selectOne(
+      `SELECT * FROM work_items WHERE current_session_id = ?`,
+      [sessionId]
+    );
+  }
+
+  updateWorkItem(id, patch = {}) {
+    const current = this.getWorkItem(id);
+    if (!current) return null;
+    this.db.run(
+      `UPDATE work_items SET title=?, description=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, updated_at=? WHERE id=?`,
+      [
+        patch.title ?? current.title,
+        patch.description ?? current.description,
+        patch.priority ?? current.priority,
+        patch.status ?? current.status,
+        patch.mainWorkspaceId ?? current.main_workspace_id,
+        patch.mainAgentId ?? current.main_agent_id,
+        createdAtFromOrNow(),
+        id,
+      ]
+    );
+    this.scheduleSave();
+    return this.getWorkItem(id);
+  }
+
+  deleteWorkItem(id) {
+    this.db.run(`DELETE FROM work_items WHERE id = ?`, [id]);
+    this.scheduleSave();
+  }
+
+  addWorkItemDependency(workItemId, targetWorkItemId, type = "depends_on") {
+    this.db.run(
+      `INSERT OR REPLACE INTO work_item_dependencies (work_item_id, target_work_item_id, type) VALUES (?, ?, ?)`,
+      [workItemId, targetWorkItemId, type]
+    );
+    this.scheduleSave();
+  }
+
+  removeWorkItemDependency(workItemId, targetWorkItemId) {
+    this.db.run(
+      `DELETE FROM work_item_dependencies WHERE work_item_id = ? AND target_work_item_id = ?`,
+      [workItemId, targetWorkItemId]
+    );
+    this.scheduleSave();
+  }
+
+  listWorkItemDependencies(workItemId) {
+    return this.selectAll(
+      `SELECT * FROM work_item_dependencies WHERE work_item_id = ?`,
+      [workItemId]
+    );
+  }
+
+  listWorkItemDependents(targetWorkItemId) {
+    return this.selectAll(
+      `SELECT * FROM work_item_dependencies WHERE target_work_item_id = ?`,
+      [targetWorkItemId]
+    );
+  }
+
+  // ===== 三层记忆（13：Objective/WorkItem 工作记忆 + Agent 进化记忆）=====
+
+  createMemory(input = {}) {
+    const id = input.id ?? `memory:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO memories (
+        id, owner_type, owner_id, kind, content, structured_json, tags_json,
+        base_confidence, confidence, recency_score, usage_count, last_accessed_at,
+        source_type, source_session_id, source_event_seqs_json,
+        promotion_status, promoted_skill_id, access_policy, version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.ownerType,
+        input.ownerId,
+        input.kind,
+        input.content,
+        JSON.stringify(input.structuredJson ?? {}),
+        JSON.stringify(input.tags ?? []),
+        input.baseConfidence ?? 0.5,
+        input.confidence ?? input.baseConfidence ?? 0.5,
+        input.recencyScore ?? 0,
+        input.usageCount ?? 0,
+        input.lastAccessedAt ?? null,
+        input.sourceType ?? "user",
+        input.sourceSessionId ?? null,
+        JSON.stringify(input.sourceEventSeqs ?? []),
+        input.promotionStatus ?? "active",
+        input.promotedSkillId ?? null,
+        JSON.stringify(input.accessPolicy ?? {}),
+        input.version ?? 1,
+        now,
+        now
+      ]
+    );
+    this.scheduleSave();
+    return this.getMemory(id);
+  }
+
+  getMemory(id) {
+    return this.selectOne(`SELECT * FROM memories WHERE id = ?`, [id]);
+  }
+
+  listMemoriesByOwner(ownerType, ownerId) {
+    return this.selectAll(
+      `SELECT * FROM memories WHERE owner_type = ? AND owner_id = ? ORDER BY confidence DESC`,
+      [ownerType, ownerId]
+    );
+  }
+
+  listMemoriesByKind(kind) {
+    return this.selectAll(
+      `SELECT * FROM memories WHERE kind = ? ORDER BY confidence DESC`,
+      [kind]
+    );
+  }
+
+  listAllMemories() {
+    return this.selectAll(`SELECT * FROM memories ORDER BY updated_at DESC`);
+  }
+
+  updateMemory(id, patch = {}) {
+    const current = this.getMemory(id);
+    if (!current) return null;
+    this.db.run(
+      `UPDATE memories SET
+        content=?, structured_json=?, tags_json=?, confidence=?, recency_score=?,
+        usage_count=?, last_accessed_at=?, promotion_status=?, promoted_skill_id=?,
+        access_policy=?, version=?, updated_at=?
+       WHERE id=?`,
+      [
+        patch.content ?? current.content,
+        JSON.stringify(patch.structuredJson ?? JSON.parse(current.structured_json || "{}")),
+        JSON.stringify(patch.tags ?? JSON.parse(current.tags_json || "[]")),
+        patch.confidence ?? current.confidence,
+        patch.recencyScore ?? current.recency_score,
+        patch.usageCount ?? current.usage_count,
+        patch.lastAccessedAt ?? current.last_accessed_at,
+        patch.promotionStatus ?? current.promotion_status,
+        patch.promotedSkillId ?? current.promoted_skill_id,
+        JSON.stringify(patch.accessPolicy ?? JSON.parse(current.access_policy || "{}")),
+        patch.version ?? current.version,
+        createdAtFromOrNow(),
+        id
+      ]
+    );
+    this.scheduleSave();
+    return this.getMemory(id);
+  }
+
+  deleteMemory(id) {
+    this.db.run(`DELETE FROM memories WHERE id = ?`, [id]);
+    this.scheduleSave();
+  }
+
+  // 置信度衰减（13）：按 factor 下调某 owner 下所有记忆的 confidence
+  decayMemories(ownerType, ownerId, factor = 0.9) {
+    this.db.run(
+      `UPDATE memories SET confidence = confidence * ? WHERE owner_type = ? AND owner_id = ?`,
+      [factor, ownerType, ownerId]
+    );
+    this.scheduleSave();
+  }
+
+  // 记忆访问：usage_count +1、recency 提升、刷新 last_accessed_at（供检索排序）
+  touchMemory(id) {
+    this.db.run(
+      `UPDATE memories SET usage_count = usage_count + 1, recency_score = recency_score + 1, last_accessed_at = ? WHERE id = ?`,
+      [createdAtFromOrNow(), id]
+    );
+    this.scheduleSave();
+  }
+
+  // ===== 合作调度中心（14：协作目录 + 协作会话 + 声誉缓存）=====
+
+  upsertCollaborator(entry) {
+    this.db.run(
+      `INSERT INTO collaborator_registry (
+        entry_type, entry_id, role, capability_tags_json, description, availability,
+        trust_score, policy_json, endpoint_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(entry_type, entry_id) DO UPDATE SET
+        role=excluded.role,
+        capability_tags_json=excluded.capability_tags_json,
+        description=excluded.description,
+        availability=excluded.availability,
+        trust_score=excluded.trust_score,
+        policy_json=excluded.policy_json,
+        endpoint_json=excluded.endpoint_json,
+        updated_at=excluded.updated_at`,
+      [
+        entry.entryType,
+        entry.entryId,
+        entry.role ?? "independentContributor",
+        JSON.stringify(entry.capabilityTags ?? []),
+        entry.description ?? "",
+        entry.availability ?? "idle",
+        entry.trustScore ?? 0.5,
+        JSON.stringify(entry.policy ?? {}),
+        JSON.stringify(entry.endpoint ?? {}),
+        createdAtFromOrNow()
+      ]
+    );
+    this.scheduleSave();
+    return this.getCollaborator(entry.entryType, entry.entryId);
+  }
+
+  getCollaborator(entryType, entryId) {
+    return this.selectOne(
+      `SELECT * FROM collaborator_registry WHERE entry_type = ? AND entry_id = ?`,
+      [entryType, entryId]
+    );
+  }
+
+  listCollaborators(entryType = "agent") {
+    return this.selectAll(
+      `SELECT * FROM collaborator_registry WHERE entry_type = ?`,
+      [entryType]
+    );
+  }
+
+  removeCollaborator(entryType, entryId) {
+    this.db.run(
+      `DELETE FROM collaborator_registry WHERE entry_type = ? AND entry_id = ?`,
+      [entryType, entryId]
+    );
+    this.scheduleSave();
+  }
+
+  createCollaborationSession(input = {}) {
+    const id = input.id ?? `collab:${randomUUID()}`;
+    this.db.run(
+      `INSERT INTO collaboration_sessions (
+        id, requester_session_id, requester_objective_id, requester_work_item_id,
+        mode, request_json, candidate_entry_type, candidate_entry_id,
+        status, result_json, created_at, closed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.requesterSessionId ?? null,
+        input.requesterObjectiveId ?? null,
+        input.requesterWorkItemId ?? null,
+        input.mode,
+        JSON.stringify(input.request ?? {}),
+        input.candidateEntryType ?? null,
+        input.candidateEntryId ?? null,
+        input.status ?? "proposed",
+        JSON.stringify(input.result ?? {}),
+        createdAtFromOrNow(),
+        input.closedAt ?? null
+      ]
+    );
+    this.scheduleSave();
+    return this.getCollaborationSession(id);
+  }
+
+  getCollaborationSession(id) {
+    return this.selectOne(`SELECT * FROM collaboration_sessions WHERE id = ?`, [id]);
+  }
+
+  updateCollaborationSession(id, patch = {}) {
+    const current = this.getCollaborationSession(id);
+    if (!current) return null;
+    this.db.run(
+      `UPDATE collaboration_sessions SET
+        status=?, candidate_entry_type=?, candidate_entry_id=?, result_json=?, closed_at=?
+       WHERE id=?`,
+      [
+        patch.status ?? current.status,
+        patch.candidateEntryType ?? current.candidate_entry_type,
+        patch.candidateEntryId ?? current.candidate_entry_id,
+        JSON.stringify(patch.result ?? JSON.parse(current.result_json || "{}")),
+        patch.closedAt ?? current.closed_at,
+        id
+      ]
+    );
+    this.scheduleSave();
+    return this.getCollaborationSession(id);
+  }
+
+  upsertReputation(entryId, trustScore, sampleCount = 1) {
+    this.db.run(
+      `INSERT INTO collab_reputation_cache (entry_id, trust_score, sample_count, updated_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(entry_id) DO UPDATE SET
+         trust_score=excluded.trust_score,
+         sample_count=excluded.sample_count,
+         updated_at=excluded.updated_at`,
+      [entryId, trustScore, sampleCount, createdAtFromOrNow()]
+    );
+    this.scheduleSave();
+  }
+
+  getReputation(entryId) {
+    return this.selectOne(
+      `SELECT * FROM collab_reputation_cache WHERE entry_id = ?`,
+      [entryId]
+    );
+  }
+
+  // ===== 统一检索 hub（12：去抖缓存 + 活跃工具集）=====
+
+  cacheHubIntent({ sessionId, workItemId, objectiveId, agentId, intentHash, result }) {
+    const id = `hub_cache:${randomUUID()}`;
+    this.db.run(
+      `INSERT INTO hub_intent_cache (id, session_id, work_item_id, objective_id, agent_id, intent_hash, result_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        sessionId ?? null,
+        workItemId ?? null,
+        objectiveId ?? null,
+        agentId ?? null,
+        intentHash,
+        JSON.stringify(result ?? {}),
+        createdAtFromOrNow()
+      ]
+    );
+    this.scheduleSave();
+    return id;
+  }
+
+  getHubIntentCache(intentHash, { agentId } = {}) {
+    return this.selectOne(
+      `SELECT * FROM hub_intent_cache
+       WHERE intent_hash = ? AND agent_id IS ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [intentHash, agentId ?? null]
+    );
+  }
+
+  registerActiveTool(sessionId, toolName, toolDef = {}) {
+    this.db.run(
+      `INSERT OR REPLACE INTO session_active_tools (session_id, tool_name, tool_def_json, registered_at)
+       VALUES (?, ?, ?, ?)`,
+      [sessionId, toolName, JSON.stringify(toolDef), createdAtFromOrNow()]
+    );
+    this.scheduleSave();
+  }
+
+  listActiveTools(sessionId) {
+    return this.selectAll(
+      `SELECT * FROM session_active_tools WHERE session_id = ?`,
+      [sessionId]
+    );
+  }
+
   selectAll(sql, params = []) {
     const stmt = this.db.prepare(sql, params);
     const rows = [];
@@ -2625,12 +3468,17 @@ export class CorptieStore {
        FROM logical_sessions WHERE legacy_session_id = ?`,
       [row.id]
     );
+    const agentIdentity = this.selectOne(
+      `SELECT agent_id FROM agent_sessions WHERE session_id = ? AND unbound_at IS NULL LIMIT 1`,
+      [row.id]
+    );
     return {
       id: publicId,
       title: logicalIdentity?.session_name || row.title,
       sessionName: logicalIdentity?.session_name || row.title,
       logicalSessionId: logicalIdentity?.logical_session_id ?? null,
       agent: row.agent,
+      agentId: agentIdentity?.agent_id ?? null,
       status: displayStatus,
       progress: displayStatus === "running" || displayStatus === "blocked" ? Number(row.progress) : 1,
       summary: isUnsafeLegacyCodexResume || isMissingCodexSessionId
@@ -2644,6 +3492,8 @@ export class CorptieStore {
       pinned: Boolean(row.pinned),
       sortOrder: Number(row.sort_order ?? 0),
       avatarPath: row.avatar_path || null,
+      objectiveId: row.objective_id ?? null,
+      workItemId: row.work_item_id ?? null,
       capabilities: row.provider === "claude-sdk"
         ? capabilitiesForStoredProvider(row.provider, displayStatus)
         : rawStatus.capabilities ?? capabilitiesForStoredProvider(row.provider, displayStatus),
@@ -2781,6 +3631,41 @@ function workspaceTransitionFromRow(row) {
 function requiredText(value, name) {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required.`);
   return value;
+}
+
+function objectiveFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? "",
+    acceptanceCriteria: row.acceptance_criteria ?? "",
+    status: row.status,
+    priority: row.priority ?? null,
+    targetDate: row.target_date ?? null,
+    tags: parseJson(row.tags_json, []),
+    workspaceIds: parseJson(row.workspace_ids_json, []),
+    relatedObjectiveIds: parseJson(row.related_objective_ids_json, []),
+    contributorAgentIds: parseJson(row.contributor_agent_ids_json, []),
+    budgetConfig: parseJson(row.budget_config, {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function agentFromRow(row) {
+  return {
+    agentId: row.agent_id,
+    name: row.name,
+    description: row.description ?? "",
+    role: row.role ?? "independentContributor",
+    status: row.status,
+    provider: row.provider ?? null,
+    systemPrompt: row.system_prompt ?? "",
+    capabilities: parseJson(row.capabilities_json, []),
+    currentSessionId: row.current_session_id ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
 }
 
 function feishuBotFromRow(row) {

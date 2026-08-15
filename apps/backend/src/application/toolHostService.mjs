@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 
 export class ToolHostService {
@@ -11,7 +10,13 @@ export class ToolHostService {
 
   async prepareSession(providerId, context = {}) {
     if (!this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)) return null;
-    const actorId = normalizedText(context.actorId) ?? `agent-${randomUUID()}`;
+    // Session 必须绑定已有 Agent：actorId 必传，不再静默生成随机 actor。
+    const actorId = normalizedText(context.actorId);
+    if (!actorId) {
+      const error = new Error("A session must be bound to an existing Agent; actorId is required.");
+      error.code = "AGENT_REQUIRED";
+      throw error;
+    }
     const attachment = Object.freeze({
       actorId,
       tools: Object.freeze([...this.catalog.definitions()]),

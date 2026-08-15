@@ -18,15 +18,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let backendClient = BackendClient.shared
     private let appLanguage = AppLanguageController.shared
     private var panelController: FloatingPanelController?
-    private var detachedSessionManager: DetachedSessionManager?
+    private var agentOrbManager: AgentOrbManager?
     private var completionSoundManager: SessionCompletionSoundManager?
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var settingsWindow: NSWindow?
     private var collaborationWindow: NSWindow?
+    private var warRoomWindow: NSWindow?
+    private var assistantWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
-    private var workspaceNotificationObservers: [NSObjectProtocol] = []
-    private var distributedNotificationObservers: [NSObjectProtocol] = []
     private var isEvaluatingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -39,24 +39,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showWelcomePromptIfNeeded()
         CorptieBackendSupervisor.ensureProductionBackendStarted()
 
-        let detachedManager = DetachedSessionManager(client: backendClient, showMain: { [weak self] in
-            self?.backendClient.closeDetail()
-            self?.panelController?.show()
-        }, isMainVisible: { [weak self] in
-            self?.panelController?.isVisible ?? false
-        }) { [weak self] session in
-            self?.panelController?.show()
-            self?.backendClient.select(session: session)
-        }
-        let controller = FloatingPanelController(client: backendClient, detachedSessionManager: detachedManager)
+        let controller = FloatingPanelController(client: backendClient)
         let soundManager = SessionCompletionSoundManager(client: backendClient)
-        controller.show()
         panelController = controller
-        detachedSessionManager = detachedManager
+        // 控制台是主界面：启动默认打开控制台；液态玻璃悬浮窗是辅助界面，默认不打开
+        openWarRoom()
+
+        // Agent 浮球：订阅 sessions + agents 变化驱动 sync（通知聚合 + 生命周期）
+        let agentOrbManager = AgentOrbManager(client: backendClient, showMain: { [weak self] in
+            self?.openWarRoom()
+        })
+        self.agentOrbManager = agentOrbManager
+        backendClient.sessionsDidChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] sessions in
+                MainActor.assumeIsolated {
+                    self?.agentOrbManager?.sync(agents: EntityAPIClient.shared.agents, sessions: sessions)
+                }
+            }
+            .store(in: &cancellables)
+        EntityAPIClient.shared.$agents
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] agents in
+                MainActor.assumeIsolated {
+                    self?.agentOrbManager?.sync(agents: agents, sessions: self?.backendClient.sessions ?? [])
+                }
+            }
+            .store(in: &cancellables)
+
         completionSoundManager = soundManager
         soundManager.start()
-        installScreenCaptureLifecycleObservers()
         installStatusItem()
+
+        // 控制台 WorkItem 详情「打开对话」→ 在主悬浮窗打开该 session 对话
+        NotificationCenter.default.publisher(for: .openSessionConversation)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let sessionId = notification.userInfo?["sessionId"] as? String else { return }
+                self?.openSessionInPanel(sessionId: sessionId)
+            }
+            .store(in: &cancellables)
         appLanguage.$selection
             .dropFirst()
             .sink { [weak self] _ in
@@ -65,18 +87,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         backendClient.start()
+
+        Task { @MainActor in
+            await EntityAPIClient.shared.refreshAgents()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        DetachedOrbSmartAvoidancePreferences.shared.suspendCapture()
-        removeScreenCaptureLifecycleObservers()
-        detachedSessionManager?.closeAll()
+        agentOrbManager?.closeAll()
         completionSoundManager?.stop()
         backendClient.stop()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        DetachedOrbSmartAvoidancePreferences.shared.refreshPermission()
         Task {
             await backendClient.refreshSelectedUsage()
         }
@@ -115,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showPanel()
+        openWarRoom()
         return true
     }
 
@@ -162,66 +185,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = item
     }
 
-    private func installScreenCaptureLifecycleObservers() {
-        let workspaceCenter = NSWorkspace.shared.notificationCenter
-        workspaceNotificationObservers = [
-            workspaceCenter.addObserver(
-                forName: NSWorkspace.willSleepNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in
-                    DetachedOrbSmartAvoidancePreferences.shared.suspendCapture()
-                }
-            },
-            workspaceCenter.addObserver(
-                forName: NSWorkspace.didWakeNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in
-                    DetachedOrbSmartAvoidancePreferences.shared.resumeCapture()
-                }
-            }
-        ]
-
-        let distributedCenter = DistributedNotificationCenter.default()
-        distributedNotificationObservers = [
-            distributedCenter.addObserver(
-                forName: Notification.Name("com.apple.screenIsLocked"),
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in
-                    DetachedOrbSmartAvoidancePreferences.shared.suspendCapture()
-                }
-            },
-            distributedCenter.addObserver(
-                forName: Notification.Name("com.apple.screenIsUnlocked"),
-                object: nil,
-                queue: .main
-            ) { _ in
-                Task { @MainActor in
-                    DetachedOrbSmartAvoidancePreferences.shared.resumeCapture()
-                }
-            }
-        ]
-    }
-
-    private func removeScreenCaptureLifecycleObservers() {
-        let workspaceCenter = NSWorkspace.shared.notificationCenter
-        workspaceNotificationObservers.forEach(workspaceCenter.removeObserver)
-        workspaceNotificationObservers.removeAll()
-
-        let distributedCenter = DistributedNotificationCenter.default()
-        distributedNotificationObservers.forEach(distributedCenter.removeObserver)
-        distributedNotificationObservers.removeAll()
-    }
-
     private func refreshStatusMenu() {
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: L10n("Show Corptie"), action: #selector(showPanel), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Collaboration..."), action: #selector(openCollaboration), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "助手", action: #selector(openAssistant), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "控制台", action: #selector(openWarRoom), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Settings..."), action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: L10n("Quit Corptie"), action: #selector(quit), keyEquivalent: "q"))
@@ -233,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshStatusMenu()
         settingsWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
         collaborationWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Collaboration"))"
+        warRoomWindow?.title = "\(CorptieAppEnvironment.appName) 控制台"
+        assistantWindow?.title = "\(CorptieAppEnvironment.appName) 助手"
     }
 
     @objc private func handleStatusItemClick() {
@@ -240,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let event = NSApp.currentEvent,
               let button = statusItem?.button,
               let statusMenu else {
-            showPanel()
+            openWarRoom()
             return
         }
 
@@ -248,6 +219,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showPanel() {
+        NSApp.activate(ignoringOtherApps: true)
+        panelController?.show()
+    }
+
+    // 在悬浮窗打开某个 session 的对话（选中 + 显示悬浮窗）
+    private func openSessionInPanel(sessionId: String) {
+        guard let session = backendClient.sessions.first(where: { $0.id == sessionId }) else { return }
+        backendClient.select(session: session)
         NSApp.activate(ignoringOtherApps: true)
         panelController?.show()
     }
@@ -298,6 +277,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = NSHostingView(rootView: CollaborationView())
         window.makeKeyAndOrderFront(nil)
         collaborationWindow = window
+    }
+
+    @objc private func openWarRoom() {
+        NSApp.activate(ignoringOtherApps: true)
+        // 控制台前置时，收起辅助的液态玻璃悬浮窗
+        panelController?.hide()
+
+        if let warRoomWindow {
+            warRoomWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "\(CorptieAppEnvironment.appName)"
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: MainTabView())
+        window.makeKeyAndOrderFront(nil)
+        warRoomWindow = window
+    }
+
+    @objc private func openAssistant() {
+        NSApp.activate(ignoringOtherApps: true)
+
+        if let assistantWindow {
+            assistantWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "\(CorptieAppEnvironment.appName) 助手"
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: AssistantConversationView())
+        window.makeKeyAndOrderFront(nil)
+        assistantWindow = window
     }
 
     @objc private func quit() {
@@ -455,21 +480,6 @@ enum CorptiePermissionManager {
             }
         }
     }
-
-    @MainActor
-    static func openScreenRecordingSettings() {
-        let candidateURLs: [URL] = [
-            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!,
-            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy")!,
-            URL(fileURLWithPath: "/System/Library/PreferencePanes/Security.prefPane")
-        ]
-
-        for url in candidateURLs {
-            if NSWorkspace.shared.open(url) {
-                break
-            }
-        }
-    }
 }
 
 private enum SettingsTab: Hashable {
@@ -482,7 +492,6 @@ private enum SettingsTab: Hashable {
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @ObservedObject private var appLanguage = AppLanguageController.shared
-    @ObservedObject private var orbAvoidancePreferences = DetachedOrbSmartAvoidancePreferences.shared
     var onClose: () -> Void = {}
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
@@ -740,50 +749,6 @@ struct SettingsView: View {
                     Spacer()
                     Button(L10n("View…"), systemImage: "archivebox") {
                         selectedTab = .archivedSessions
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    L10n("Smart Floating Orb Avoidance"),
-                    isOn: Binding(
-                        get: { orbAvoidancePreferences.isEnabled },
-                        set: { orbAvoidancePreferences.setEnabledByUser($0) }
-                    )
-                )
-                .font(.system(size: 12, weight: .bold))
-
-                Text(L10n("Automatically moves detached session orbs to nearby areas with less visual content. Corptie analyzes only nearby screen pixels in memory and never saves or uploads screenshots."))
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    Label(
-                        orbAvoidancePreferences.permissionStatus == .authorized
-                            ? L10n("Screen Recording access granted")
-                            : L10n("Screen Recording access required"),
-                        systemImage: orbAvoidancePreferences.permissionStatus == .authorized
-                            ? "checkmark.circle.fill"
-                            : "exclamationmark.triangle.fill"
-                    )
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(
-                        orbAvoidancePreferences.permissionStatus == .authorized
-                            ? Color.green
-                            : CorptiePalette.secondaryText
-                    )
-
-                    Spacer()
-
-                    if orbAvoidancePreferences.permissionStatus != .authorized {
-                        Button(L10n("Open System Settings")) {
-                            CorptiePermissionManager.openScreenRecordingSettings()
-                        }
-                        Button(L10n("Check Again")) {
-                            orbAvoidancePreferences.refreshPermission()
-                        }
                     }
                 }
             }

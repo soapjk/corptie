@@ -57,7 +57,6 @@ final class PanelLayoutState: ObservableObject {
 final class FloatingPanelController: NSObject {
     private let panel: FloatingPanel
     private let client: BackendClient
-    private let detachedSessionManager: DetachedSessionManager
     private let focusState = PanelFocusState()
     private let layoutState = PanelLayoutState()
     private let listMinimumSize = NSSize(width: 402, height: 92)
@@ -83,9 +82,8 @@ final class FloatingPanelController: NSObject {
         panel.isVisible
     }
 
-    init(client: BackendClient, detachedSessionManager: DetachedSessionManager) {
+    init(client: BackendClient) {
         self.client = client
-        self.detachedSessionManager = detachedSessionManager
 
         let initialFrame = NSRect(x: 1120, y: 580, width: 420, height: 460)
 
@@ -120,7 +118,6 @@ final class FloatingPanelController: NSObject {
             .environmentObject(client.sessionListStore)
             .environmentObject(focusState)
             .environmentObject(layoutState)
-            .environmentObject(detachedSessionManager)
 
         let hostingView = FirstMouseHostingView(rootView: rootView)
         // The SwiftUI root (including the liquid-glass panel background) must
@@ -189,6 +186,11 @@ final class FloatingPanelController: NSObject {
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         focusState.isFocused = panel.isKeyWindow
+    }
+
+    func hide() {
+        panel.orderOut(nil)
+        focusState.isFocused = false
     }
 
     @objc private func closePanelButtonPressed() {

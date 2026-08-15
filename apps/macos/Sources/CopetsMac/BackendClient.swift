@@ -2,6 +2,12 @@ import AppKit
 import Combine
 import Foundation
 
+extension Notification.Name {
+    /// 请求在主悬浮窗（液态玻璃）打开某个 session 的对话，userInfo["sessionId"] 传 session id。
+    /// 控制台 WorkItem 详情「打开对话」用，桥接新版控制台与旧版 session 对话视图。
+    static let openSessionConversation = Notification.Name("openSessionConversation")
+}
+
 struct SessionRestartActivity: Equatable {
     let text: String
     let isActive: Bool
@@ -17,6 +23,8 @@ final class BackendClient: ObservableObject {
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
     @Published private(set) var selectedDetail: CodexThreadDetail?
+    // Sessions Tab 等轻量场景置 true：select 后不启动 usage/worktree 后台轮询，减少刷新。
+    var suppressBackgroundPolling = false
     @Published private(set) var viewingHistoricalThreadId: String?
     @Published private(set) var isLoadingDetail = false
     @Published private(set) var isSendingMessage = false
@@ -1257,7 +1265,8 @@ final class BackendClient: ObservableObject {
         resetDetailTimelineState()
         selectedSessionUsage = nil
         usageRefreshTask?.cancel()
-        usageRefreshTask = Task { [weak self] in
+        // 轻量场景（如 Sessions Tab）置了 suppressBackgroundPolling，跳过轮询以减少刷新。
+        usageRefreshTask = suppressBackgroundPolling ? nil : Task { [weak self] in
             while !Task.isCancelled {
                 await self?.loadUsage(for: session)
                 try? await Task.sleep(for: .seconds(30))
@@ -1269,7 +1278,7 @@ final class BackendClient: ObservableObject {
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         projectStatusRefreshTask?.cancel()
-        if projectId(for: session) != nil {
+        if !suppressBackgroundPolling, projectId(for: session) != nil {
             projectStatusRefreshTask = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.loadProjectWorktreeStatus(for: session)
@@ -1277,6 +1286,8 @@ final class BackendClient: ObservableObject {
                     if Task.isCancelled { return }
                 }
             }
+        } else {
+            projectStatusRefreshTask = nil
         }
         Task {
             await Task.yield()
@@ -2160,6 +2171,7 @@ final class BackendClient: ObservableObject {
                 id: existing.id,
                 title: existing.title,
                 agent: existing.agent,
+                agentId: existing.agentId,
                 status: existing.status == .complete || existing.status == .blocked ? .running : existing.status,
                 progress: existing.status == .complete || existing.status == .blocked ? 0.5 : existing.progress,
                 summary: existing.summary,
@@ -3172,6 +3184,7 @@ final class BackendClient: ObservableObject {
                 id: session.id,
                 title: session.title,
                 agent: session.agent,
+                agentId: session.agentId,
                 status: detail.status,
                 progress: session.progress,
                 summary: latestSummary?.isEmpty == false ? latestSummary! : session.summary,
