@@ -42,6 +42,12 @@ import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDeliveryDispatcher.mjs";
 import { formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
+import { ObjectiveApplicationService } from "./application/objectiveApplicationService.mjs";
+import { HubService } from "./application/hubService.mjs";
+import { CollaborationRouter } from "./application/collaborationRouter.mjs";
+import { MemoryExtractor } from "./application/memoryExtractor.mjs";
+import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
+import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
@@ -140,6 +146,15 @@ const choiceGenerations = new Map();
 const store = new CorptieStore();
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
+const objectiveService = new ObjectiveApplicationService({ store });
+const hubService = new HubService({ store });
+const collaborationRouter = new CollaborationRouter({ store });
+const memoryExtractor = new MemoryExtractor({ store });
+const assistantService = new AssistantService({
+  store,
+  objectiveService,
+  intentResolver: createAssistantIntentResolver(store.choiceParserSettings())
+});
 const collaborationMcpServerPath = fileURLToPath(new URL("./mcp/collaborationMcpServer.mjs", import.meta.url));
 const bundledAgentMemoryPath = fileURLToPath(new URL(
   environmentName === "development"
@@ -1432,21 +1447,15 @@ function upsertManagedCodexSession(session, preferredAgentId = null) {
 
 function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
   if (!store.db || !session?.id || session.external?.provider === "codex-pty") return null;
+  // 2026-08-15 决策：Agent 由用户手动创建，Session 必须绑定已有 Agent。
+  // 只做绑定（bindSession 内部要求 agent 已存在），绝不注册/创建/覆盖 agent 信息。
   const bound = collaborationCore.getAgentForSession(session.id);
-  const logical = store.getLogicalSessionByLegacySessionId(session.id);
-  const agentId = preferredAgentId ?? bound?.agentId ?? `agent-${randomUUID()}`;
-  const status = session.archived
-    ? "inactive"
-    : (sessionHasActiveRun(session) ? "busy" : (session.status === "failed" ? "offline" : "available"));
-  collaborationCore.registerAgent({
-    agentId,
-    name: logical?.sessionName || session.title || bound?.name || session.agent || "Agent",
-    description: `Independent Corptie Agent for ${session.external?.cwd || "an Agent workspace"}.`,
-    status,
-    capabilities: [`${session.external?.provider || "agent"}-session`, "corptie-collaboration"]
-  });
+  const agentId = preferredAgentId ?? bound?.agentId;
+  if (!agentId) return null;
+  const agent = collaborationCore.getAgent(agentId);
+  if (!agent) return null;
   collaborationCore.bindSession({ agentId, sessionId: session.id });
-  return collaborationCore.getAgent(agentId);
+  return agent;
 }
 
 function collaborationThreadOptions(agentId) {
@@ -1813,6 +1822,7 @@ function handleCodexAppServerNotification(message) {
         }
       };
       upsertManagedCodexSession(nextSession);
+      settleEntityWorkItemFromSession(nextSession);
       if (!failed && !cancelled && latestAgentMessage?.text) {
         scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
       }
@@ -2400,6 +2410,76 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   }
 }
 
+// 实体层 Agent.provider → providerId 映射。deepseek / harness 暂无执行 runtime，返回 null。
+function entityAgentProviderId(provider) {
+  const aliases = {
+    codex: "codex-app-server",
+    claude_code: "claude-sdk"
+  };
+  return aliases[provider] ?? null;
+}
+
+// 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
+async function launchWorkItemSession({ agent, workItem }) {
+  const providerId = entityAgentProviderId(agent.provider);
+  if (!providerId) {
+    const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
+    error.code = "PROVIDER_UNSUPPORTED";
+    throw error;
+  }
+  const cwd = store.resolveWorkspacePath(workItem.main_workspace_id);
+  if (!cwd) {
+    const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
+    error.code = "WORKSPACE_REQUIRED";
+    throw error;
+  }
+  const objective = workItem.objective_id ? store.getObjective(workItem.objective_id) : null;
+  const prompt = [
+    `请完成工作项「${workItem.title ?? "未命名"}」。`,
+    workItem.description ? `\n任务描述：\n${workItem.description}` : "",
+    objective?.acceptance_criteria ? `\n验收标准：\n${objective.acceptance_criteria}` : ""
+  ].filter(Boolean).join("\n");
+
+  const session = await createSessionThroughApplication(
+    providerId,
+    { cwd, title: workItem.title, prompt, agent: agent.name },
+    { source: "entity", actorId: agent.agentId }
+  );
+  return session;
+}
+
+// 实体 WorkItem 状态由「执行动作」自动驱动，不由用户手改：
+// 已绑定当前活跃 session → 依据 session 状态推进 work_items.status；无绑定则保持 todo。
+function settleEntityWorkItemFromSession(session) {
+  if (!session?.id) return null;
+  const workItem = store.getWorkItemBySessionId(session.id);
+  if (!workItem) return null;
+  const sessionStatus = session.status;
+  let nextStatus;
+  if (["running", "blocked"].includes(sessionStatus)) nextStatus = "in_progress";
+  else if (["complete", "completed", "done"].includes(sessionStatus)) nextStatus = "done";
+  else if (["failed", "cancelled"].includes(sessionStatus)) nextStatus = "todo";
+  if (!nextStatus || nextStatus === workItem.status) return workItem;
+  store.updateWorkItem(workItem.id, { status: nextStatus });
+  return store.getWorkItem(workItem.id);
+}
+
+// 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
+// 此处把每个已绑定当前活跃 session 的 WorkItem 状态对齐到 session 状态。
+function reconcileEntityWorkItemsAtStartup() {
+  let aligned = 0;
+  for (const workItem of store.listWorkItems()) {
+    if (!workItem.current_session_id) continue;
+    const session = store.getSession(workItem.current_session_id);
+    if (!session) continue;
+    const updated = settleEntityWorkItemFromSession(session);
+    if (updated && updated.status !== workItem.status) aligned += 1;
+  }
+  if (aligned > 0) {
+    console.log(`[entity-work] startup reconcile aligned ${aligned} work item(s)`);
+  }
+}
+
 async function createCodexProviderSession(input = {}) {
   if (activeCodexThreadCreation) {
     const error = new Error("Another Codex session is already being created. Wait for it to finish before trying again.");
@@ -2409,7 +2489,18 @@ async function createCodexProviderSession(input = {}) {
   const creationId = randomUUID();
   activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
   try {
-    const collaborationAgentId = input.toolHost?.actorId ?? `agent-${randomUUID()}`;
+    // Session 必须绑定已有 Agent（用户手动创建）；不静默创建、不注册/覆盖 agent。
+    const collaborationAgentId = input.toolHost?.actorId;
+    if (!collaborationAgentId) {
+      const error = new Error("A session must be bound to an existing Agent; toolHost.actorId is required.");
+      error.code = "AGENT_REQUIRED";
+      throw error;
+    }
+    if (!collaborationCore.getAgent(collaborationAgentId)) {
+      const error = new Error(`Agent not found: ${collaborationAgentId}`);
+      error.code = "AGENT_NOT_FOUND";
+      throw error;
+    }
     const runtime = await resolvedNewCodexRuntimeConfig(input);
     const permissions = {
       sandbox: normalizeCodexSandbox(input.sandbox),
@@ -2421,13 +2512,6 @@ async function createCodexProviderSession(input = {}) {
       model: runtime.model,
       modelProvider: input.modelProvider,
       ...(input.toolHost?.providerAttachment ?? collaborationThreadOptions(collaborationAgentId))
-    });
-    collaborationCore.registerAgent({
-      agentId: collaborationAgentId,
-      name: input.title,
-      description: `Independent Corptie Agent for ${input.cwd}.`,
-      status: "inactive",
-      capabilities: ["codex-session", "corptie-collaboration"]
     });
     const prompt = typeof input.prompt === "string" && input.prompt.trim()
       ? input.prompt.trim()
@@ -3601,6 +3685,7 @@ async function handleClaudeTurnSettled(event) {
   const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
   if (!logical) return;
   const sessionId = logical.legacySessionId;
+  settleEntityWorkItemFromSession(store.getSession(sessionId));
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   if (runningWork) {
     const updatedWork = store.updateAgentWorkItem(runningWork.workItemId, {
@@ -4302,6 +4387,20 @@ function route(request, response) {
       const { sessionId } = requireAgentLogicalSession(agentId);
       return switchSessionWorkspace(sessionId, input.target_worktree_id, undefined, input.continuation_checkpoint);
     }
+  })) {
+    return;
+  }
+
+  if (handleEntityHttpRequest({
+    request,
+    response,
+    url,
+    objectiveService,
+    hubService,
+    router: collaborationRouter,
+    memoryExtractor,
+    assistantService,
+    launchSession: launchWorkItemSession
   })) {
     return;
   }
@@ -5918,6 +6017,7 @@ for (const transition of store.listPendingWorkspaceTransitions()) {
   }
 }
 workspaceContinuationCoordinator.recover();
+reconcileEntityWorkItemsAtStartup();
 const knownActiveWorktrees = new Map();
 for (const storedSession of storedSessionsAtStartup) {
   const logical = store.getLogicalSessionByLegacySessionId(storedSession.id);

@@ -259,10 +259,12 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     const journal = new CollaborationHttpClient({ baseUrl, agentId: "journal-agent" });
 
     const discovered = await research.get("/internal/collaboration/agents");
-    assert.deepEqual(
-      discovered.agents.map((agent) => agent.agentId),
-      ["journal-agent", "research-agent"]
-    );
+    // agents 表已升级为通用 Agent（增 role 列），平台助手（role=assistant）与协作 Agent 同表，
+    // 但助手不入协作路由（设计 14）。故此处用「包含」断言：active 协作 Agent 均在、inactive 的不在。
+    const discoveredIds = discovered.agents.map((agent) => agent.agentId);
+    assert.ok(discoveredIds.includes("journal-agent"));
+    assert.ok(discoveredIds.includes("research-agent"));
+    assert.ok(!discoveredIds.includes("deleted-agent"));
     const inactive = await research.get("/internal/collaboration/agents", { status: "inactive" });
     assert.deepEqual(inactive.agents.map((agent) => agent.agentId), ["deleted-agent"]);
 
@@ -315,8 +317,10 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     const overviewResponse = await fetch(`${baseUrl}/collaboration/overview`);
     assert.equal(overviewResponse.status, 200);
     const overview = await overviewResponse.json();
-    assert.equal(overview.agents.length, 3);
-    assert.equal(overview.agents.find((agent) => agent.agentId === "deleted-agent").status, "inactive");
+    // agents 表含平台助手（agentId="assistant"），协作 overview 统计协作 Agent 数时排除之
+    const collaborationAgents = overview.agents.filter((agent) => agent.agentId !== "assistant");
+    assert.equal(collaborationAgents.length, 3);
+    assert.equal(collaborationAgents.find((agent) => agent.agentId === "deleted-agent").status, "inactive");
     assert.equal(overview.services.length, 1);
     assert.equal(overview.tasks[0].taskId, task.taskId);
 

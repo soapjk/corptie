@@ -9,6 +9,7 @@
     "mcp:collaboration": "node src/mcp/collaborationMcpServer.mjs",
     "start": "node src/server.mjs",
     "test": "node --test tests/*.test.mjs",
+    "build:native": "cargo build --release --manifest-path native/Cargo.toml && cp native/target/release/libcorptie_native.dylib native/corptie_native.node",
     "postinstall": "node scripts/fix-node-pty-permissions.mjs"
   },
   "engines": {

@@ -1,0 +1,366 @@
+import Combine
+import Foundation
+
+// 实体层轻量 API 客户端（15 Phase 5 净新增）。
+// 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/objectives、/work-items）。
+// 与 BackendClient 使用相同后端地址（CorptieAppEnvironment.backendBaseURL）与 URLSession 模式。
+
+@MainActor
+final class EntityAPIClient: ObservableObject {
+    static let shared = EntityAPIClient()
+
+    @Published var objectives: [Objective] = []
+    @Published var agents: [Agent] = []
+    @Published var repositories: [GitRepository] = []
+    @Published var isLoading = false
+    @Published var errorMessage: String?
+
+    private let baseURL = CorptieAppEnvironment.backendBaseURL
+
+    private let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
+
+    private init() {}
+
+    func refreshObjectives() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "objectives"))
+            objectives = try decoder.decode(ObjectiveListEnvelope.self, from: data).objectives
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshAgents() async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "agents"))
+            agents = try decoder.decode(AgentListEnvelope.self, from: data).agents
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshRepositories() async {
+        do {
+            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "repositories"))
+            repositories = try decoder.decode(RepositoryListEnvelope.self, from: data).repositories
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func workItems(for objective: Objective) async -> [WorkItem] {
+        do {
+            let url = baseURL.appending(path: "objectives/\(objective.id)/work-items")
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return try decoder.decode(WorkItemListEnvelope.self, from: data).workItems
+        } catch {
+            errorMessage = error.localizedDescription
+            return []
+        }
+    }
+
+    // 更新 WorkItem：PATCH /work-items/:id → workItem（直接返回对象，非 envelope）
+    @discardableResult
+    func updateWorkItem(workItemId: String, title: String? = nil, description: String? = nil,
+                        priority: String? = nil, status: String? = nil, mainWorkspaceId: String? = nil,
+                        mainAgentId: String? = nil) async -> WorkItem? {
+        var request = URLRequest(url: baseURL.appending(path: "work-items/\(workItemId)"))
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if let title { body["title"] = title }
+        if let description { body["description"] = description }
+        if let priority { body["priority"] = priority }
+        if let status { body["status"] = status }
+        if let mainWorkspaceId { body["mainWorkspaceId"] = mainWorkspaceId }
+        if let mainAgentId { body["mainAgentId"] = mainAgentId }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            return try decoder.decode(WorkItem.self, from: data)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 创建 WorkItem：POST /work-items { objectiveId, title, description?, mainWorkspaceId?, priority? } → workItem
+    @discardableResult
+    func createWorkItem(objectiveId: String, title: String, description: String? = nil,
+                        mainWorkspaceId: String? = nil, priority: String? = nil) async -> WorkItem? {
+        var request = URLRequest(url: baseURL.appending(path: "work-items"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["objectiveId": objectiveId, "title": title]
+        if let description, !description.isEmpty { body["description"] = description }
+        if let mainWorkspaceId, !mainWorkspaceId.isEmpty { body["mainWorkspaceId"] = mainWorkspaceId }
+        if let priority { body["priority"] = priority }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            return try decoder.decode(WorkItem.self, from: data)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // WorkItem 名下的 Session 历史：GET /work-items/:id/sessions → { sessions }
+    func sessions(for workItem: WorkItem) async -> [WorkItemSessionSummary] {
+        do {
+            let url = baseURL.appending(path: "work-items/\(workItem.id)/sessions")
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return try decoder.decode(WorkItemSessionListEnvelope.self, from: data).sessions
+        } catch {
+            errorMessage = error.localizedDescription
+            return []
+        }
+    }
+
+    // 删除会话：DELETE /sessions/:id → { ok }
+    func deleteSession(sessionId: String) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionId)"))
+        request.httpMethod = "DELETE"
+        do {
+            _ = try await URLSession.shared.data(for: request)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    // 查某 owner（如 work_item）的记忆：GET /memories?ownerType=&ownerId= → { memories }
+    func memories(ownerType: String, ownerId: String) async -> [MemoryItem] {
+        var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "ownerType", value: ownerType),
+            URLQueryItem(name: "ownerId", value: ownerId)
+        ]
+        guard let url = components?.url else { return [] }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            return try decoder.decode(MemoryListEnvelope.self, from: data).memories
+        } catch {
+            errorMessage = error.localizedDescription
+            return []
+        }
+    }
+
+    // 创建 Session（真正启动模型）：POST /sessions { workItemId, agentId, title? }。
+    // 返回 nil 表示成功；否则返回带错误码的失败结果（如「provider 暂不支持」「未绑定仓库」）。
+    @discardableResult
+    func createSession(workItemId: String, agentId: String, title: String? = nil) async -> EntityLaunchError? {
+        var request = URLRequest(url: baseURL.appending(path: "sessions"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId]
+        if let title { body["title"] = title }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                let message = envelope?.error ?? "执行失败（HTTP \(http.statusCode)）"
+                errorMessage = message
+                return EntityLaunchError(message: message, code: envelope?.code)
+            }
+            errorMessage = nil
+            return nil
+        } catch {
+            let message = error.localizedDescription
+            errorMessage = message
+            return EntityLaunchError(message: message, code: nil)
+        }
+    }
+
+    // 更新 Objective：PATCH /objectives/:id → objective（直接返回对象）
+    // priority/targetDate 传 "" 表示清除；tags/workspaceIds/relatedObjectiveIds/contributorAgentIds 传数组整体替换。
+    @discardableResult
+    func updateObjective(objectiveId: String, name: String? = nil, description: String? = nil,
+                         acceptanceCriteria: String? = nil, priority: String? = nil, targetDate: String? = nil,
+                         tags: [String]? = nil, workspaceIds: [String]? = nil,
+                         relatedObjectiveIds: [String]? = nil, contributorAgentIds: [String]? = nil) async -> Objective? {
+        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let description { body["description"] = description }
+        if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
+        if let priority { body["priority"] = priority }
+        if let targetDate { body["targetDate"] = targetDate }
+        if let tags { body["tags"] = tags }
+        if let workspaceIds { body["workspaceIds"] = workspaceIds }
+        if let relatedObjectiveIds { body["relatedObjectiveIds"] = relatedObjectiveIds }
+        if let contributorAgentIds { body["contributorAgentIds"] = contributorAgentIds }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let objective = try decoder.decode(Objective.self, from: data)
+            await refreshObjectives()
+            return objective
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 删除 Objective：DELETE /objectives/:id → { ok }
+    func deleteObjective(objectiveId: String) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
+        request.httpMethod = "DELETE"
+        do {
+            _ = try await URLSession.shared.data(for: request)
+            await refreshObjectives()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    // 助手对话：POST /assistant/chat { content, sessionId? } → 返回消息列表
+    func assistantChat(_ content: String, sessionId: String? = nil) async -> [AssistantMessage] {
+        var request = URLRequest(url: baseURL.appending(path: "assistant/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = ["content": content, "sessionId": sessionId as Any]
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            return try decoder.decode(AssistantChatResponse.self, from: data).messages
+        } catch {
+            errorMessage = error.localizedDescription
+            return [AssistantMessage(role: "assistant", content: "抱歉，请求失败：\(error.localizedDescription)")]
+        }
+    }
+
+    // 创建 Objective：POST /objectives { name, ... } → 直接返回 objective
+    @discardableResult
+    func createObjective(name: String, description: String? = nil, acceptanceCriteria: String? = nil,
+                         priority: String? = nil, targetDate: String? = nil, tags: [String] = [],
+                         workspaceIds: [String] = [], relatedObjectiveIds: [String] = [],
+                         contributorAgentIds: [String] = []) async -> Objective? {
+        var request = URLRequest(url: baseURL.appending(path: "objectives"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["name": name]
+        if let description { body["description"] = description }
+        if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
+        if let priority { body["priority"] = priority }
+        if let targetDate { body["targetDate"] = targetDate }
+        if !tags.isEmpty { body["tags"] = tags }
+        if !workspaceIds.isEmpty { body["workspaceIds"] = workspaceIds }
+        if !relatedObjectiveIds.isEmpty { body["relatedObjectiveIds"] = relatedObjectiveIds }
+        if !contributorAgentIds.isEmpty { body["contributorAgentIds"] = contributorAgentIds }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let objective = try decoder.decode(Objective.self, from: data)
+            await refreshObjectives()
+            return objective
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 手动注册一个 Git 仓库：POST /repositories/detect { dirPath } → { repository }
+    @discardableResult
+    func detectRepository(path: String) async -> GitRepository? {
+        var request = URLRequest(url: baseURL.appending(path: "repositories/detect"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["dirPath": path])
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let repository = try decoder.decode(RepositoryDetectEnvelope.self, from: data).repository
+            await refreshRepositories()
+            return repository
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 创建 Agent：POST /agents { name, description?, role?, provider?, systemPrompt?, capabilities? } → { agent }
+    @discardableResult
+    func createAgent(name: String, description: String? = nil, role: String = "independentContributor",
+                     provider: String? = nil, systemPrompt: String? = nil, capabilities: [String] = []) async -> Agent? {
+        var request = URLRequest(url: baseURL.appending(path: "agents"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["name": name, "role": role]
+        if let description, !description.isEmpty { body["description"] = description }
+        if let provider { body["provider"] = provider }
+        if let systemPrompt { body["systemPrompt"] = systemPrompt }
+        if !capabilities.isEmpty { body["capabilities"] = capabilities }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
+            await refreshAgents()
+            return agent
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 更新 Agent：PATCH /agents/:id → { agent }
+    @discardableResult
+    func updateAgent(agentId: String, name: String? = nil, description: String? = nil,
+                     provider: String? = nil, role: String? = nil, status: String? = nil,
+                     systemPrompt: String? = nil) async -> Agent? {
+        var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)"))
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let description { body["description"] = description }
+        if let provider { body["provider"] = provider }
+        if let role { body["role"] = role }
+        if let status { body["status"] = status }
+        if let systemPrompt { body["systemPrompt"] = systemPrompt }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
+            await refreshAgents()
+            return agent
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 删除 Agent：DELETE /agents/:id → { ok }
+    func deleteAgent(agentId: String) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)"))
+        request.httpMethod = "DELETE"
+        do {
+            _ = try await URLSession.shared.data(for: request)
+            await refreshAgents()
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+}
+
+// POST /agents 响应 envelope
+private struct AgentCreateEnvelope: Decodable {
+    let agent: Agent
+}

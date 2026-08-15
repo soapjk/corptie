@@ -6,6 +6,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
     let agent: String
+    let agentId: String?
     let status: TaskStatus
     let progress: Double
     let summary: String

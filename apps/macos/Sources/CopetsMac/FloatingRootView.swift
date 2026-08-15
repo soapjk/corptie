@@ -2,13 +2,25 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+// 液态玻璃环境开关：Sessions Tab 里设为 false，让复用的会话 UI 降级成系统原生风格；
+// 悬浮窗不注入（默认 true）保持液态玻璃。避免两套 UI 混在一起割裂。
+struct IsLiquidGlassEnvironmentKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    var isLiquidGlass: Bool {
+        get { self[IsLiquidGlassEnvironmentKey.self] }
+        set { self[IsLiquidGlassEnvironmentKey.self] = newValue }
+    }
+}
+
 struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var sessionListStore: SessionListStore
     @ObservedObject private var appLanguage = AppLanguageController.shared
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @EnvironmentObject private var panelFocusState: PanelFocusState
-    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
     @StateObject private var newSessionPanel = NewSessionPanelController()
     @StateObject private var externalMenuPanel = ExternalMenuPanelController()
     @State private var isShowingActionMenu = false
@@ -532,7 +544,6 @@ struct FloatingRootView: View {
             }
         )
         .environmentObject(backendClient)
-        .environmentObject(detachedSessionManager)
     }
 
     @ViewBuilder
@@ -549,14 +560,12 @@ struct FloatingRootView: View {
                         preheatRequested: { _ in }
                     )
                         .environmentObject(backendClient)
-                        .environmentObject(detachedSessionManager)
                 } else {
                     TaskCardView(
                         session: session,
                         showsProjectName: !groupsSessionsByProject
                     )
                         .environmentObject(backendClient)
-                        .environmentObject(detachedSessionManager)
                 }
             }
             .frame(width: dragFrame.width)
@@ -872,7 +881,7 @@ struct FloatingRootView: View {
 
 }
 
-private enum SessionDisplayMode: String {
+enum SessionDisplayMode: String {
     case cards
     case compact
 }
@@ -883,7 +892,7 @@ private struct SessionProjectGroup: Identifiable {
     let rows: [SessionRowModel]
 }
 
-private struct SessionListRowContent: View {
+struct SessionListRowContent: View {
     @ObservedObject var row: SessionRowModel
     let displayMode: SessionDisplayMode
     let showsProjectName: Bool
@@ -912,7 +921,7 @@ private struct SessionListRowContent: View {
     }
 }
 
-private struct DetailSessionRailRow: View {
+struct DetailSessionRailRow: View {
     @ObservedObject var row: SessionRowModel
     let selectedSessionID: String?
     let select: (TaskSession) -> Void
@@ -981,7 +990,7 @@ private struct ProjectGroupHeader: View {
     }
 }
 
-private struct CompactSessionRow: View {
+struct CompactSessionRow: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
     let session: TaskSession
@@ -1096,7 +1105,6 @@ private struct SessionAgentIdentity: View {
 
 private struct SessionContextMenuContent: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
 
     let session: TaskSession
     @Binding var isRenaming: Bool
@@ -1137,14 +1145,6 @@ private struct SessionContextMenuContent: View {
             } label: {
                 Label(L10n("Clear Avatar"), systemImage: "xmark.circle")
             }
-        }
-
-        Divider()
-
-        Button {
-            detachedSessionManager.float(session: session)
-        } label: {
-            Label(L10n("Float Session"), systemImage: "rectangle.on.rectangle.circle")
         }
 
         Divider()
@@ -1241,15 +1241,11 @@ private struct HoverRevealCloseButton: View {
 
 private struct MainPanelCloseButton: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @EnvironmentObject private var detachedSessionManager: DetachedSessionManager
     @State private var isHovering = false
 
     var body: some View {
         Button {
             let mainWindow = NSApp.keyWindow
-            if let selectedSession = backendClient.selectedSession {
-                detachedSessionManager.floatForMainWindowCloseIfNeeded(session: selectedSession)
-            }
             mainWindow?.orderOut(nil)
         } label: {
             ZStack {
@@ -2774,7 +2770,7 @@ private struct SheetPanelBackground: View {
     }
 }
 
-private struct TaskCardView: View {
+struct TaskCardView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var quickReply = ""
     @State private var lastQuickReplyInteractionAt = Date.distantPast
@@ -3139,11 +3135,16 @@ private struct Triangle: Shape {
 }
 
 private struct LiquidGlassCardBackground: View {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let cornerRadius: CGFloat
     let fillOpacity: Double
 
     var body: some View {
-        if !SessionListPerformanceFlags.current.glassEffectsEnabled {
+        if !isLiquidGlass {
+            // 原生降级：简洁卡片背景（Sessions Tab）
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        } else if !SessionListPerformanceFlags.current.glassEffectsEnabled {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         } else if #available(macOS 26.0, *) {
@@ -3184,6 +3185,7 @@ private struct LiquidGlassCardBackground: View {
 }
 
 private struct StandardSessionCardSurface: ViewModifier {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     private let cornerRadius: CGFloat = 18
     private let glassStrength: Double = 0.55
 
@@ -3196,14 +3198,19 @@ private struct StandardSessionCardSurface: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        content
-            .background(
-                LiquidGlassCardBackground(cornerRadius: cornerRadius, fillOpacity: fillOpacity)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: 1)
-            )
+        if isLiquidGlass {
+            content
+                .background(
+                    LiquidGlassCardBackground(cornerRadius: cornerRadius, fillOpacity: fillOpacity)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: 1)
+                }
+        } else {
+            // 原生（Sessions Tab）：去掉卡片外壳，退回普通行
+            content
+        }
     }
 }
 
@@ -3350,7 +3357,7 @@ private struct AnimatedAvatarImage: NSViewRepresentable {
     }
 }
 
-private struct DetailView: View {
+struct DetailView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @MainActor
@@ -3385,18 +3392,26 @@ private struct DetailView: View {
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
     let composerDraftRepository: ComposerDraftRepository
+    // 渲染管线覆盖：nil = 跟随全局 ChatTimelineFeatureFlags.current；Session Tab 传 .swiftUIVStack 走纯 SwiftUI，避开 AppKit 桥接。
+    let renderer: ChatTimelineRenderer?
 
     init(
         sessionId: String,
         preheatedDisplayCache: DetailDisplayCache?,
-        composerDraftRepository: ComposerDraftRepository
+        composerDraftRepository: ComposerDraftRepository,
+        renderer: ChatTimelineRenderer? = nil
     ) {
         self.sessionId = sessionId
         self.preheatedDisplayCache = preheatedDisplayCache
         self.composerDraftRepository = composerDraftRepository
+        self.renderer = renderer
         _visibleMessageLimit = State(
             initialValue: ChatTimelineFeatureFlags.current.initialDisplayWeight
         )
+    }
+
+    private var effectiveRenderer: ChatTimelineRenderer {
+        renderer ?? ChatTimelineFeatureFlags.current.renderer
     }
 
     var body: some View {
@@ -3427,8 +3442,8 @@ private struct DetailView: View {
 
                 Group {
                     if shouldRenderDetailMessages {
-                        if ChatTimelineFeatureFlags.current.renderer == .appKitTable
-                            || ChatTimelineFeatureFlags.current.renderer == .appKitNativeText {
+                        if effectiveRenderer == .appKitTable
+                            || effectiveRenderer == .appKitNativeText {
                             appKitCachedDetailMessages()
                         } else {
                             detailMessages(detail)
@@ -3693,7 +3708,7 @@ private struct DetailView: View {
             AppKitChatTimelineView(
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
-                usesNativeText: ChatTimelineFeatureFlags.current.renderer == .appKitNativeText,
+                usesNativeText: effectiveRenderer == .appKitNativeText,
                 followsLatest: $isFollowingLatest,
                 onToggleExpansion: toggleNativeProcessExpansion
             )
@@ -3739,7 +3754,7 @@ private struct DetailView: View {
         expansionSnapshot: Set<String>? = nil
     ) -> AppKitChatTimelineRow {
         let expandedTurnIds = expansionSnapshot ?? expandedProcessTurnIds
-        if ChatTimelineFeatureFlags.current.renderer == .appKitNativeText {
+        if effectiveRenderer == .appKitNativeText {
             return nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
         }
         let content = swiftUIAppKitContent(for: entry, expandedTurnIds: expandedTurnIds)
@@ -3914,7 +3929,7 @@ private struct DetailView: View {
     }
 
     private func toggleNativeProcessExpansion(_ turnId: String) {
-        if ChatTimelineFeatureFlags.current.renderer == .swiftUIVStack {
+        if effectiveRenderer == .swiftUIVStack {
             withAnimation(.easeOut(duration: 0.14)) {
                 setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
             }
@@ -4023,7 +4038,7 @@ private struct DetailView: View {
         // AppKit rows are independent NSHostingView roots. Parent state changes
         // do not invalidate a cached root by themselves, so rebuild rows with a
         // new content revision and let NSTableView remeasure the changed height.
-        if ChatTimelineFeatureFlags.current.renderer != .swiftUIVStack {
+        if effectiveRenderer != .swiftUIVStack {
             cachedAppKitRows = cachedDisplayEntries.map {
                 appKitRow($0, expansionSnapshot: nextExpandedTurnIds)
             }
@@ -4092,7 +4107,7 @@ private struct DetailView: View {
         previousRows: [AppKitChatTimelineRow],
         nextEntries: [ChatDisplayEntry]
     ) -> [AppKitChatTimelineRow] {
-        guard ChatTimelineFeatureFlags.current.renderer != .swiftUIVStack else { return [] }
+        guard effectiveRenderer != .swiftUIVStack else { return [] }
         guard ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
               previousEntries.count == previousRows.count,
               let nextTailTurnId = nextEntries.last.map(chatDisplayEntryTurnId),
@@ -4862,7 +4877,7 @@ struct ChatDisplayEntry: Identifiable {
     }
 }
 
-private struct DetailDisplayCache {
+struct DetailDisplayCache {
     let sessionId: String
     let displayItems: [CodexThreadItem]
     let displayEntries: [ChatDisplayEntry]
@@ -5116,25 +5131,28 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
     (item.fileChanges ?? []).map { "\($0.kind):\($0.path)" }.joined(separator: ",")
 }
 
-private struct DetailHeaderView: View {
+struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     @State private var didCopySessionName = false
     @State private var didCopyWorkspacePath = false
     @State private var gitHeadState: GitHeadState?
 
     var body: some View {
         HStack(spacing: 10) {
-            Button {
-                withAnimation(.easeOut(duration: 0.16)) {
-                    backendClient.closeDetail()
+            if isLiquidGlass {
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        backendClient.closeDetail()
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(width: 28, height: 28)
                 }
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 28, height: 28)
+                .buttonStyle(IconButtonStyle())
+                .help(L10n("Back to task list"))
             }
-            .buttonStyle(IconButtonStyle())
-            .help(L10n("Back to task list"))
 
             if let selectedSession = backendClient.selectedSession {
                 SessionAvatarView(session: selectedSession, avatarSize: 32)
@@ -7246,7 +7264,7 @@ private struct DetailMessagesPlaceholder: View {
     }
 }
 
-private struct ThreadMetaView: View {
+struct ThreadMetaView: View {
     @EnvironmentObject private var backendClient: BackendClient
     let status: TaskStatus
     let isConnecting: Bool
@@ -7401,6 +7419,7 @@ private func copySessionNameToPasteboard(_ rawName: String?) -> Bool {
 }
 
 private struct ThreadProcessGroupView: View {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let items: [CodexThreadItem]
     var isEmbeddedInUserCard = false
     let isExpanded: Bool
@@ -7442,11 +7461,18 @@ private struct ThreadProcessGroupView: View {
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .padding(.horizontal, isEmbeddedInUserCard ? 0 : 9)
                 .frame(height: isEmbeddedInUserCard ? 18 : 26)
-                .background(isEmbeddedInUserCard ? Color.clear : Color.white.opacity(0.42), in: Capsule())
+                .background(
+                    (isEmbeddedInUserCard || !isLiquidGlass)
+                        ? Color.clear
+                        : Color.white.opacity(0.42),
+                    in: Capsule()
+                )
                 .overlay(
                     Capsule()
                         .strokeBorder(
-                            isEmbeddedInUserCard ? Color.clear : Color.black.opacity(0.045),
+                            (isEmbeddedInUserCard || !isLiquidGlass)
+                                ? Color.clear
+                                : Color.black.opacity(0.045),
                             lineWidth: 1
                         )
                 )
@@ -7499,6 +7525,7 @@ private struct ThreadProcessGroupView: View {
 }
 
 private struct ProcessMiniCard: View {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let item: CodexThreadItem
 
     var body: some View {
@@ -7529,10 +7556,18 @@ private struct ProcessMiniCard: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.34), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(
+            isLiquidGlass
+                ? Color.white.opacity(0.34)
+                : Color.clear,
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.black.opacity(0.045), lineWidth: 1)
+                .strokeBorder(
+                    isLiquidGlass ? Color.black.opacity(0.045) : Color.clear,
+                    lineWidth: 1
+                )
         )
     }
 
@@ -7569,8 +7604,9 @@ private extension ISO8601DateFormatter {
     }
 }
 
-private struct ThreadItemView: View {
+struct ThreadItemView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     @State private var isActivityExpanded = false
     @State private var isCollaborationDetailsExpanded = false
     @State private var isHovering = false
@@ -8103,7 +8139,7 @@ private struct ThreadItemView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(itemBorder, lineWidth: 1)
         )
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
+        .shadow(color: Color.black.opacity(isLiquidGlass ? 0.04 : 0), radius: isLiquidGlass ? 8 : 0, y: isLiquidGlass ? 3 : 0)
         .onHover { hovering in
             isHovering = hovering
         }
@@ -8364,6 +8400,10 @@ private struct ThreadItemView: View {
     }
 
     private var itemBackground: Color {
+        // 原生（Sessions Tab）：去掉消息卡片外壳，直接文本流；协作卡保留淡底作功能提示
+        if !isLiquidGlass {
+            return isCollaborationItem ? CorptiePalette.collaborationSurface : Color.clear
+        }
         if isCollaborationItem {
             return CorptiePalette.collaborationSurface
         }
@@ -8371,6 +8411,9 @@ private struct ThreadItemView: View {
     }
 
     private var itemBorder: Color {
+        if !isLiquidGlass {
+            return Color.clear
+        }
         if isCollaborationItem {
             return CorptiePalette.collaborationBorder.opacity(0.62)
         }
@@ -8584,8 +8627,9 @@ private struct AgentMessageParts {
     }
 }
 
-private struct MessageComposer: View {
+struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let sessionId: String
     let draftRepository: ComposerDraftRepository
     @FocusState private var isFocused: Bool
@@ -8663,12 +8707,24 @@ private struct MessageComposer: View {
                 .help(L10n("Send instruction"))
                 .padding(.trailing, 4)
             }
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(
+                isLiquidGlass ? Color.white : Color(nsColor: .textBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+            )
             .overlay(
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(Color.black.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
+                    .strokeBorder(
+                        isLiquidGlass
+                            ? Color.black.opacity(isFocused ? 0.16 : 0.08)
+                            : Color(nsColor: .separatorColor).opacity(isFocused ? 0.9 : 0.5),
+                        lineWidth: 1
+                    )
             )
-            .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
+            .shadow(
+                color: Color.black.opacity(isLiquidGlass ? 0.04 : 0),
+                radius: isLiquidGlass ? 8 : 0,
+                y: isLiquidGlass ? 3 : 0
+            )
 
             if canSwitchModel {
                 CodexModelMenu(maxWidth: modelMenuMaxWidth)
@@ -8738,10 +8794,15 @@ private struct MessageComposer: View {
 }
 
 private struct ComposerGlassActionBackground: View {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let tint: Color
 
     var body: some View {
-        if #available(macOS 26.0, *) {
+        if !isLiquidGlass {
+            // 原生降级：简洁圆按钮
+            Circle()
+                .fill(tint.opacity(0.14))
+        } else if #available(macOS 26.0, *) {
             Circle()
                 .fill(.clear)
                 .glassEffect(.clear.tint(tint.opacity(0.11)), in: .circle)
@@ -9431,11 +9492,24 @@ private struct ReadyEmptyView: View {
 }
 
 private struct IconButtonStyle: ButtonStyle {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(.primary)
-            .background(Color.white.opacity(configuration.isPressed ? 0.24 : 0.13), in: Circle())
-            .overlay(Circle().strokeBorder(Color.white.opacity(0.16), lineWidth: 1))
+            .background(
+                isLiquidGlass
+                    ? Color.white.opacity(configuration.isPressed ? 0.24 : 0.13)
+                    : Color(nsColor: .controlBackgroundColor),
+                in: Circle()
+            )
+            .overlay(
+                Circle().strokeBorder(
+                    isLiquidGlass
+                        ? Color.white.opacity(0.16)
+                        : Color(nsColor: .separatorColor).opacity(0.6),
+                    lineWidth: 1
+                )
+            )
             .contentShape(Circle())
     }
 }

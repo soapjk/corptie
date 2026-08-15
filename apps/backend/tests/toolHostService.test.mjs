@@ -144,8 +144,32 @@ test("Session creation passes a prepared Tool Host attachment without knowing Pr
     resolveSessionReference: () => null
   });
 
-  await sessions.createSession("hosted", { cwd: "/repo" });
+  await sessions.createSession("hosted", { cwd: "/repo" }, { actorId: "agent-one" });
   assert.equal(calls.length, 1);
-  assert.match(calls[0].toolHost.actorId, /^agent-/);
-  assert.equal(calls[0].toolHost.providerAttachment.nativeIdentity, calls[0].toolHost.actorId);
+  assert.equal(calls[0].toolHost.actorId, "agent-one");
+  assert.equal(calls[0].toolHost.providerAttachment.nativeIdentity, "agent-one");
+});
+
+test("Session creation requires an existing Agent actorId (no silent actor generation)", async () => {
+  const registry = new AgentProviderRegistry([provider("hosted", [
+    AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+    AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+  ], {
+    attachTools: (attachment) => ({ nativeIdentity: attachment.actorId }),
+    createSession: () => ({ id: "native-session", title: "Created" })
+  })]);
+  const toolHostService = new ToolHostService({
+    registry,
+    catalog: new HostToolCatalog([{ id: "workspace", tools: [{ name: "corptie_list_workspaces" }], execute: () => ({}) }])
+  });
+  const sessions = new SessionApplicationService({
+    registry,
+    toolHostService,
+    resolveSessionReference: () => null
+  });
+
+  await assert.rejects(
+    () => sessions.createSession("hosted", { cwd: "/repo" }),
+    (error) => error.code === "AGENT_REQUIRED"
+  );
 });
