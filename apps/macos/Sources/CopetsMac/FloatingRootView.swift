@@ -1000,18 +1000,11 @@ struct CompactSessionRow: View {
     var body: some View {
         HStack(spacing: 10) {
             SessionAvatarView(session: session, avatarSize: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.title)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .lineLimit(1)
-                    .layoutPriority(1)
-                SessionIdentityLine(
-                    session: session,
-                    showsProjectName: showsProjectName,
-                    fontSize: 9.5
-                )
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(session.title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .lineLimit(1)
+                .layoutPriority(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
         }
         .padding(.horizontal, 10)
@@ -1134,22 +1127,6 @@ private struct SessionContextMenuContent: View {
         Divider()
 
         Button {
-            chooseAvatar()
-        } label: {
-            Label(L10n("Set Avatar"), systemImage: "person.crop.circle")
-        }
-
-        if session.avatarPath?.isEmpty == false {
-            Button {
-                backendClient.updateAvatar(session: session, avatarPath: nil)
-            } label: {
-                Label(L10n("Clear Avatar"), systemImage: "xmark.circle")
-            }
-        }
-
-        Divider()
-
-        Button {
             backendClient.setPinned(session.pinned != true, session: session)
         } label: {
             Label(
@@ -1172,17 +1149,6 @@ private struct SessionContextMenuContent: View {
             backendClient.delete(session: session)
         } label: {
             Label(L10n("Delete"), systemImage: "trash")
-        }
-    }
-
-    private func chooseAvatar() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
-        if panel.runModal() == .OK, let url = panel.url {
-            backendClient.updateAvatar(session: session, avatarPath: url.path)
         }
     }
 }
@@ -3221,19 +3187,27 @@ private extension View {
 }
 
 struct AgentAvatarView: View {
+    @ObservedObject private var client = EntityAPIClient.shared
+
     let session: TaskSession
     let size: CGFloat
     var showsChrome = true
 
+    // 会话统一继承其绑定 Agent 的头像：优先使用 Agent 自定义头像，否则用 Agent 级派生渐变+首字母。
+    private var boundAgent: Agent? {
+        guard let agentId = session.agentId, !agentId.isEmpty else { return nil }
+        return client.agents.first { $0.agentId == agentId }
+    }
+
     var body: some View {
         Group {
-            if let avatarPath = session.avatarPath, !avatarPath.isEmpty {
+            if let avatarPath = boundAgent?.avatarPath, !avatarPath.isEmpty {
                 AnimatedAvatarImage(path: avatarPath)
                     .background(Color.white.opacity(0.16))
             } else {
                 DefaultInitialAvatarView(
-                    familySeed: session.external?.cwd ?? session.agent,
-                    variationSeed: session.id,
+                    familySeed: familySeed,
+                    variationSeed: variationSeed,
                     initials: initials,
                     size: size
                 )
@@ -3249,12 +3223,18 @@ struct AgentAvatarView: View {
         .shadow(color: Color.black.opacity(showsChrome ? 0.08 : 0), radius: showsChrome ? 6 : 0, y: showsChrome ? 3 : 0)
     }
 
+    // 同一 Agent 下所有会话共用同一种子（familySeed = agent 名，variationSeed = agentId），保证头像一致。
+    private var familySeed: String {
+        boundAgent?.name ?? session.agent
+    }
+
+    private var variationSeed: String {
+        boundAgent?.agentId ?? session.agentId ?? session.agent
+    }
+
     private var initials: String {
-        let titleInitials = session.title
-            .filter { $0.isLetter || $0.isNumber }
-            .prefix(2)
-        if !titleInitials.isEmpty {
-            return String(titleInitials).uppercased()
+        if let agent = boundAgent {
+            return DefaultAvatarInitials.make(from: agent.name)
         }
         let words = session.agent
             .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
@@ -3300,7 +3280,7 @@ struct SessionAvatarView: View {
     }
 }
 
-private struct AnimatedAvatarImage: NSViewRepresentable {
+struct AnimatedAvatarImage: NSViewRepresentable {
     let path: String
 
     func makeNSView(context: Context) -> AspectFillAnimatedImageView {
@@ -5134,7 +5114,6 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @Environment(\.isLiquidGlass) private var isLiquidGlass
-    @State private var didCopySessionName = false
     @State private var didCopyWorkspacePath = false
     @State private var gitHeadState: GitHeadState?
 
@@ -5154,30 +5133,15 @@ struct DetailHeaderView: View {
                 .help(L10n("Back to task list"))
             }
 
-            if let selectedSession = backendClient.selectedSession {
-                SessionAvatarView(session: selectedSession, avatarSize: 32)
-            }
-
             VStack(alignment: .leading, spacing: 2) {
+                if !isLiquidGlass, let selectedSession = backendClient.selectedSession {
+                    Text(selectedSession.title)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Button(action: copySelectedSessionName) {
-                        HStack(spacing: 5) {
-                            Text(backendClient.selectedSession?.title ?? "Codex thread")
-                                .lineLimit(1)
-                            if didCopySessionName {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 9, weight: .bold))
-                                    .foregroundStyle(CorptiePalette.connected)
-                                    .transition(.opacity.combined(with: .scale))
-                            }
-                        }
-                        .font(.system(size: 15, weight: .semibold))
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n("Copy session name"))
-                    .accessibilityLabel(L10n("Copy session name"))
-
                     if backendClient.viewingHistoricalThreadId != nil {
                         Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
                             .font(.system(size: 9, weight: .bold))
@@ -5548,21 +5512,6 @@ struct DetailHeaderView: View {
     private var canInterruptCurrentRun: Bool {
         backendClient.selectedDetail?.status == .running
             && backendClient.selectedDetail?.canInterruptNow == true
-    }
-
-    private func copySelectedSessionName() {
-        guard copySessionNameToPasteboard(backendClient.selectedSession?.title) else {
-            return
-        }
-        withAnimation(.easeOut(duration: 0.12)) {
-            didCopySessionName = true
-        }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            withAnimation(.easeOut(duration: 0.12)) {
-                didCopySessionName = false
-            }
-        }
     }
 
     private func copyWorkspacePath() {
@@ -7456,7 +7405,9 @@ private struct ThreadProcessGroupView: View {
                         .padding(.horizontal, isEmbeddedInUserCard ? 4 : 5)
                         .frame(height: isEmbeddedInUserCard ? 13 : 16)
                         .background(Color.black.opacity(0.04), in: Capsule())
-                    Spacer(minLength: 0)
+                    if !isEmbeddedInUserCard {
+                        Spacer(minLength: 0)
+                    }
                 }
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .padding(.horizontal, isEmbeddedInUserCard ? 0 : 9)
@@ -7478,7 +7429,7 @@ private struct ThreadProcessGroupView: View {
                 )
             }
             .buttonStyle(.plain)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: isEmbeddedInUserCard ? nil : .infinity, alignment: .leading)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 6) {
@@ -8047,9 +7998,11 @@ struct ThreadItemView: View {
     private var fullItemView: some View {
         ZStack(alignment: .bottomTrailing) {
             VStack(alignment: .leading, spacing: 6) {
-                HStack {
+                HStack(spacing: 8) {
                     itemTitleView
-                    Spacer()
+                    if !isUserOrAgentMessage {
+                        Spacer()
+                    }
                     Text(itemMetadataLabel)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText)
@@ -8059,7 +8012,7 @@ struct ThreadItemView: View {
                     if item.type == "agentMessage" {
                         agentMessageTextView
                     } else {
-                        messageTextView(text: item.text, allowsSelection: true)
+                        messageTextView(text: item.text, allowsSelection: true, fillWidth: !isUserMessage)
                     }
                 }
 
@@ -8134,12 +8087,22 @@ struct ThreadItemView: View {
             bottom: processItems != nil && !isProcessExpanded ? 3 : 10,
             trailing: 10
         ))
+        // 参考 Rudder 的 `w-fit` + `max-width` 模型：气泡背景贴住「内容自然宽度」，
+        // 再用 frame 做「限宽 + 左右对齐」定位，避免背景被 .infinity 撑满整列。
         .background(itemBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(itemBorder, lineWidth: 1)
         )
         .shadow(color: Color.black.opacity(isLiquidGlass ? 0.04 : 0), radius: isLiquidGlass ? 8 : 0, y: isLiquidGlass ? 3 : 0)
+        .frame(
+            maxWidth: isUserOrAgentMessage ? messageBubbleMaxWidth : .infinity,
+            alignment: isUserMessage ? .trailing : .leading
+        )
+        .frame(
+            maxWidth: .infinity,
+            alignment: isUserMessage ? .trailing : .leading
+        )
         .onHover { hovering in
             isHovering = hovering
         }
@@ -8399,23 +8362,49 @@ struct ThreadItemView: View {
             }
     }
 
+    private var isUserMessage: Bool { item.type == "userMessage" }
+    private var isAgentMessage: Bool { item.type == "agentMessage" }
+    private var isUserOrAgentMessage: Bool { isUserMessage || isAgentMessage }
+    /// 消息气泡最大宽度，保留左右留白。
+    private var messageBubbleMaxWidth: CGFloat { 480 }
+
     private var itemBackground: Color {
-        // 原生（Sessions Tab）：去掉消息卡片外壳，直接文本流；协作卡保留淡底作功能提示
-        if !isLiquidGlass {
-            return isCollaborationItem ? CorptiePalette.collaborationSurface : Color.clear
-        }
+        // 协作卡统一淡底
         if isCollaborationItem {
             return CorptiePalette.collaborationSurface
+        }
+        // 会话页（Sessions Tab）：用户消息右侧、Agent 消息左侧的气泡
+        if !isLiquidGlass {
+            if item.type == "userMessage" {
+                return CorptiePalette.softBlue.opacity(0.16)
+            }
+            if item.type == "agentMessage" {
+                return Color(nsColor: .controlBackgroundColor).opacity(0.72)
+            }
+            if item.type == "approval" || item.type == "choice" {
+                return Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1))
+            }
+            return Color.clear
         }
         return item.type == "approval" || item.type == "choice" ? Color(nsColor: NSColor(calibratedRed: 1.0, green: 0.98, blue: 0.91, alpha: 1)) : Color.white
     }
 
     private var itemBorder: Color {
-        if !isLiquidGlass {
-            return Color.clear
-        }
         if isCollaborationItem {
             return CorptiePalette.collaborationBorder.opacity(0.62)
+        }
+        // 会话页：用户/Agent 消息气泡的细边框
+        if !isLiquidGlass {
+            if item.type == "userMessage" {
+                return CorptiePalette.softBlue.opacity(0.18)
+            }
+            if item.type == "agentMessage" {
+                return Color(nsColor: .separatorColor).opacity(0.55)
+            }
+            if item.type == "approval" || item.type == "choice" {
+                return CorptiePalette.amber.opacity(0.32)
+            }
+            return Color.clear
         }
         return item.type == "approval" || item.type == "choice" ? CorptiePalette.amber.opacity(0.32) : Color.black.opacity(0.08)
     }
@@ -8476,16 +8465,18 @@ struct ThreadItemView: View {
         }
 
         if !parsed.body.isEmpty {
-            messageTextView(text: parsed.body, allowsSelection: true)
+            messageTextView(text: parsed.body, allowsSelection: true, fillWidth: false)
         }
     }
 
     @ViewBuilder
-    private func messageTextView(text: String, allowsSelection: Bool) -> some View {
+    private func messageTextView(text: String, allowsSelection: Bool, fillWidth: Bool = true) -> some View {
         MarkdownMessageView(
             text: text,
             baseDirectory: backendClient.selectedDetail?.cwd,
-            allowsSelection: allowsSelection
+            allowsSelection: allowsSelection,
+            fillWidth: fillWidth,
+            maxContentWidth: fillWidth ? nil : (messageBubbleMaxWidth - 20)
         )
     }
 

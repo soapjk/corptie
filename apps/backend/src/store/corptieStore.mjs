@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -7,6 +6,7 @@ import { backup, DatabaseSync } from "node:sqlite";
 import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
+import { resolveAgentWorkDir } from "../runtime/agentWorkDir.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -222,8 +222,41 @@ export class CorptieStore {
     return this.settings();
   }
 
+  // 事件溯源层（session_logs/session_events）的 session_id 是独立游标键，
+  // 不依赖 sessions 元数据（feishu/遥测场景的 sessionId 非真实 sessions 记录）。
+  // 历史库中的 session_logs 曾误挂 FOREIGN KEY → 重建以移除。
+  migrateSessionLogsForeignKey() {
+    const table = this.selectOne(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'session_logs'"
+    );
+    if (!table?.sql || !/REFERENCES\s+sessions/i.test(table.sql)) return;
+
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run("ALTER TABLE session_logs RENAME TO session_logs_legacy");
+      this.db.run(`
+        CREATE TABLE session_logs (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `);
+      this.db.run(`
+        INSERT INTO session_logs (id, session_id, created_at)
+        SELECT id, session_id, created_at FROM session_logs_legacy
+      `);
+      this.db.run("DROP TABLE session_logs_legacy");
+      this.db.run("CREATE INDEX IF NOT EXISTS idx_session_logs_session_id ON session_logs(session_id)");
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
   migrate() {
     this.db.run("PRAGMA foreign_keys = ON");
+    this.migrateSessionLogsForeignKey();
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -278,6 +311,14 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_session_events_cursor
       ON session_events(session_id, sequence);
+
+      CREATE TABLE IF NOT EXISTS session_logs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_logs_session_id ON session_logs(session_id);
 
       CREATE TABLE IF NOT EXISTS runtime_state (
         key TEXT PRIMARY KEY,
@@ -355,6 +396,8 @@ export class CorptieStore {
           CHECK (status IN ('available', 'busy', 'offline', 'inactive')),
         provider TEXT,
         capabilities_json TEXT NOT NULL DEFAULT '[]',
+        work_dir TEXT,
+        avatar_path TEXT,
         current_session_id TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -733,6 +776,7 @@ export class CorptieStore {
         objective_id TEXT NOT NULL,
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
+        acceptance_criteria TEXT NOT NULL DEFAULT '',
         priority TEXT NOT NULL DEFAULT 'medium',
         status TEXT NOT NULL DEFAULT 'todo',
         main_workspace_id TEXT,
@@ -790,6 +834,28 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_type, owner_id);
       CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+    `);
+
+    // --- 晋升技能（13.7：Agent 能力类记忆晋升为可发现技能，对接 12 hub） ---
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS skills (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        scenario TEXT NOT NULL DEFAULT '',
+        trigger_condition TEXT NOT NULL DEFAULT '',
+        steps_json TEXT NOT NULL DEFAULT '[]',
+        risk_level TEXT NOT NULL DEFAULT 'moderate',
+        source_memory_id TEXT,
+        source_agent_id TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (source_memory_id) REFERENCES memories(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_skills_agent ON skills(source_agent_id);
+      CREATE INDEX IF NOT EXISTS idx_skills_status ON skills(status);
     `);
 
     // --- 合作调度中心（14：协作目录 + 协作会话 + 声誉缓存） ---
@@ -864,6 +930,8 @@ export class CorptieStore {
     this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("agents", "provider", "TEXT");
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("agents", "work_dir", "TEXT");
+    this.ensureColumn("agents", "avatar_path", "TEXT");
     this.ensureColumn("objectives", "priority", "TEXT");
     this.ensureColumn("objectives", "target_date", "TEXT");
     this.ensureColumn("objectives", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -871,6 +939,7 @@ export class CorptieStore {
     this.ensureColumn("objectives", "related_objective_ids_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("objectives", "contributor_agent_ids_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("work_items", "current_session_id", "TEXT");
+    this.ensureColumn("work_items", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("hub_intent_cache", "agent_id", "TEXT");
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -914,18 +983,39 @@ export class CorptieStore {
     this.ensureColumn("feishu_bots", "remote_avatar_url", "TEXT");
     this.ensureColumn("feishu_bots", "remote_open_id", "TEXT");
     this.ensureColumn("feishu_bots", "remote_activate_status", "INTEGER");
+    // --- 会话日志事件溯源（10）：补 session_logs + session_events 语义列 ---
+    this.ensureColumn("session_events", "log_id", "TEXT");
+    this.ensureColumn("session_events", "producer", "TEXT");
+    this.ensureColumn("session_events", "surface", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("session_events", "source_event_seqs_json", "TEXT");
+    this.ensureColumn("session_events", "call_id", "TEXT");
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_producer ON session_events(session_id, producer)");
+    this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_call_id ON session_events(session_id, call_id)");
+    // 回填：为每个已有 session 建立 1:1 的 session_log；并让既有事件指向该 log。
+    this.db.run(`
+      INSERT INTO session_logs (id, session_id, created_at)
+      SELECT 'log:' || id, id, COALESCE(created_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      FROM sessions
+      WHERE NOT EXISTS (SELECT 1 FROM session_logs WHERE session_logs.session_id = sessions.id)
+    `);
+    this.db.run(`
+      UPDATE session_events
+      SET log_id = 'log:' || session_id
+      WHERE log_id IS NULL
+    `);
+    // --- 三层记忆（13）：乐观应用/撤销语义字段 ---
+    this.ensureColumn("memories", "auto_applied", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("memories", "applied_at", "TEXT");
+    this.ensureColumn("memories", "revoked_at", "TEXT");
     this.initializeSortOrder();
     this.ensureAssistantAgent();
+    this.ensureSkillTables();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
 
     this.db.run(
       `UPDATE sessions
-       SET status = CASE
-             WHEN provider = 'codex-pty' THEN 'blocked'
-             ELSE 'cancelled'
-           END,
+       SET status = 'cancelled',
            summary = CASE
-             WHEN provider = 'codex-pty' THEN 'Codex is waiting for your next instruction.'
              WHEN summary = '' THEN 'Terminal process is no longer attached.'
              ELSE summary
            END
@@ -975,6 +1065,130 @@ export class CorptieStore {
              AND m.message_type = 'question'
          )`
     );
+  }
+
+  // 建立 Skill 维护中心（全局映射表）与 Agent↔Skill 多对多关联。
+  // skill_registry：记录所有成功安装过的 Skill（本地目录 / GitHub 仓库克隆缓存），
+  //         只维护「指向具体 Skill 位置」的映射，全局共享。
+  // agent_skill_links：每个 Agent 启用哪些 Skill 的元数据（启用≠复制，安装物化在运行时目录）。
+  // 「Skill 维护中心」使用独立的表名（skill_registry / agent_skill_links），
+  // 与旧「晋升技能」的 skills 表彻底分离，避免 schema 与方法名冲突。
+  ensureSkillTables() {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS skill_registry (
+        skill_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        source_type TEXT NOT NULL CHECK (source_type IN ('local', 'git')),
+        source TEXT NOT NULL,
+        cache_path TEXT,
+        installed_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_skill_links (
+        agent_id TEXT NOT NULL,
+        skill_id TEXT NOT NULL,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (agent_id, skill_id),
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (skill_id) REFERENCES skill_registry(skill_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_agent_skill_links_skill ON agent_skill_links(skill_id);
+    `);
+
+    // 迁移：删除旧「晋升技能」遗留的 agent_skills 关联表。
+    // 该表带 FOREIGN KEY (skill_id) REFERENCES skills(skill_id) ON DELETE CASCADE，
+    // 在 PRAGMA foreign_keys=ON 下删除 agents 时会触发 foreign key mismatch，
+    // 且其 schema（skills 表）已与 Skill 维护中心彻底分离、无任何调用者，属死表。
+    this.db.run(`DROP TABLE IF EXISTS agent_skills`);
+  }
+
+  // ===== Skill 维护中心 =====
+
+  listRegistrySkills() {
+    return this.selectAll(`SELECT * FROM skill_registry ORDER BY name ASC`).map(skillFromRow);
+  }
+
+  getRegistrySkill(skillId) {
+    const row = this.selectOne(`SELECT * FROM skill_registry WHERE skill_id = ?`, [skillId]);
+    return row ? skillFromRow(row) : null;
+  }
+
+  createRegistrySkill(input = {}) {
+    const id = input.id ?? `skill:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO skill_registry (skill_id, name, description, source_type, source, cache_path, installed_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        input.name,
+        input.description ?? "",
+        input.sourceType ?? "local",
+        input.source,
+        input.cachePath ?? null,
+        now,
+        now
+      ]
+    );
+    this.scheduleSave();
+    return this.getRegistrySkill(id);
+  }
+
+  updateRegistrySkill(skillId, input = {}) {
+    const existing = this.getRegistrySkill(skillId);
+    if (!existing) return null;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE skill_registry SET name = ?, description = ?, source_type = ?, source = ?, cache_path = ?, updated_at = ? WHERE skill_id = ?`,
+      [
+        input.name ?? existing.name,
+        input.description ?? existing.description,
+        input.sourceType ?? existing.sourceType,
+        input.source ?? existing.source,
+        input.cachePath ?? existing.cachePath,
+        now,
+        skillId
+      ]
+    );
+    this.scheduleSave();
+    return this.getRegistrySkill(skillId);
+  }
+
+  deleteRegistrySkill(skillId) {
+    this.db.run(`DELETE FROM skill_registry WHERE skill_id = ?`, [skillId]);
+    this.scheduleSave();
+    return true;
+  }
+
+  // ===== Agent ↔ Skill 关联 =====
+
+  listRegistrySkillIdsForAgent(agentId) {
+    return this.selectAll(
+      `SELECT skill_id FROM agent_skill_links WHERE agent_id = ? ORDER BY added_at ASC`,
+      [agentId]
+    ).map((row) => row.skill_id);
+  }
+
+  listRegistrySkillsForAgent(agentId) {
+    const ids = this.listRegistrySkillIdsForAgent(agentId);
+    return ids.map((id) => this.getRegistrySkill(id)).filter(Boolean);
+  }
+
+  setAgentRegistrySkills(agentId, skillIds = []) {
+    const normalized = [...new Set((skillIds ?? []).map((id) => String(id).trim()).filter(Boolean))];
+    const now = createdAtFromOrNow();
+    this.db.run(`DELETE FROM agent_skill_links WHERE agent_id = ?`, [agentId]);
+    for (const skillId of normalized) {
+      this.db.run(
+        `INSERT INTO agent_skill_links (agent_id, skill_id, added_at) VALUES (?, ?, ?)`,
+        [agentId, skillId, now]
+      );
+    }
+    this.scheduleSave();
+    return normalized;
   }
 
   migrateCanonicalSessionNames() {
@@ -1963,6 +2177,7 @@ export class CorptieStore {
         session.workItemId ?? null
       ]
     );
+    this.ensureSessionLog(session.id);
     this.scheduleSave();
   }
 
@@ -2023,6 +2238,8 @@ export class CorptieStore {
         [id, now, input.workItemId]
       );
     }
+    // 会话日志事件溯源（10）：新 session 建立 1:1 的 session_log。
+    this.ensureSessionLog(id);
     this.scheduleSave();
     return this.getSession(id);
   }
@@ -2039,6 +2256,10 @@ export class CorptieStore {
 
   appendItem(sessionId, item) {
     const createdAt = createdAtFromOrNow(item);
+    const existing = this.selectOne(
+      "SELECT 1 FROM session_items WHERE session_id = ? AND id = ?",
+      [sessionId, item.id]
+    );
     this.db.run(
       `INSERT OR REPLACE INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, status, created_at
@@ -2056,6 +2277,27 @@ export class CorptieStore {
         createdAt
       ]
     );
+    // 单一真相源（10）：模型可见消息在写入 session_items 的同时，同步进事件流。
+    // 仅在「新建」时写事件（append-only），同 id 的更新覆盖不产生重复正文事件。
+    if (!existing) {
+      const mapped = itemTypeToEventType(item.type);
+      if (mapped) {
+        try {
+          this.appendSessionEvent({
+            eventId: `item:${item.id}`,
+            sessionId,
+            type: mapped.type,
+            producer: mapped.producer,
+            surface: true,
+            payload: { text: item.text, itemType: item.type, title: item.title, status: item.status },
+            createdAt
+          });
+        } catch (error) {
+          // 事件流写入失败不得阻断消息列表写入；记录告警供对账。
+          console.error(`[session-events] item mirror failed for session=${sessionId} item=${item.id}: ${error.message}`);
+        }
+      }
+    }
     this.scheduleSave();
   }
 
@@ -2263,10 +2505,9 @@ export class CorptieStore {
       }))
       .filter((item) => item.text)
       .filter((item) => !isAgentNoise(item.text))
-      .filter((item) => !(provider === "codex-pty" && item.type === "userMessage" && item.status !== "sent"))
       .map((item) => normalizeStoredItem(item, provider))
       .filter((item, index, items) => !isAdjacentDuplicateUserMessage(item, items[index - 1]));
-    return cleanReplayItems(items, provider);
+    return items;
   }
 
   getDetail(id) {
@@ -2280,7 +2521,7 @@ export class CorptieStore {
       title: session.title,
       status: session.external?.provider === "claude-sdk" && session.status === "running" ? "failed" : session.status,
       source: session.external?.provider,
-      connectionStatus: session.external?.provider === "claude-sdk" ? "disconnected" : "pty disconnected",
+      connectionStatus: "disconnected",
       currentModel: session.external?.currentModel ?? session.rawStatus?.currentModel ?? session.rawStatus?.resume?.currentModel ?? null,
       cwd: session.external?.cwd,
       createdAt: session.createdAt,
@@ -2290,11 +2531,9 @@ export class CorptieStore {
         ? capabilitiesForStoredProvider(session.external?.provider, session.status)
         : session.rawStatus?.capabilities ?? capabilitiesForStoredProvider(session.external?.provider, session.status),
       canSend: false,
-      sendUnavailableReason: session.external?.provider === "codex-pty" && session.rawStatus?.canResume === false
-        ? "This Codex PTY session was not bound to a Codex session id and cannot be reconnected."
-        : session.external?.provider === "claude-sdk"
+      sendUnavailableReason: session.external?.provider === "claude-sdk"
           ? "This Claude Code session is no longer connected. Start a new Claude session to continue."
-        : "This session is not currently attached to a running terminal process.",
+        : "This session is not currently attached to a running process.",
       turnCount: 1,
       items: canonicalCodexItems(id, session) ?? this.getItems(id, 240, session.external?.provider)
     };
@@ -2336,7 +2575,7 @@ export class CorptieStore {
   }
 
   reorderSessions(sessionIds = []) {
-    const ids = sessionIds.map((id) => String(id).replace(/^pty:/, "")).filter(Boolean);
+    const ids = sessionIds.map((id) => String(id)).filter(Boolean);
     ids.forEach((id, index) => {
       this.db.run("UPDATE sessions SET sort_order = ? WHERE id = ?", [index, id]);
     });
@@ -2421,11 +2660,10 @@ export class CorptieStore {
 
   setActiveChoicePrompt(sessionId, prompt = "", options = []) {
     const rawId = String(sessionId);
-    const id = rawId.startsWith("pty:") ? rawId.replace(/^pty:/, "") : rawId;
     const activeChoice = serializeActiveChoicePrompt(options, prompt);
     this.db.run(
       "UPDATE sessions SET active_choice_json = ?, updated_at = ? WHERE id = ?",
-      [activeChoice, new Date().toISOString(), id]
+      [activeChoice, new Date().toISOString(), rawId]
     );
     this.scheduleSave();
     return this.getSession(rawId);
@@ -2433,10 +2671,9 @@ export class CorptieStore {
 
   clearActiveChoicePrompt(sessionId) {
     const rawId = String(sessionId);
-    const id = rawId.startsWith("pty:") ? rawId.replace(/^pty:/, "") : rawId;
     this.db.run(
       "UPDATE sessions SET active_choice_json = NULL, updated_at = ? WHERE id = ?",
-      [new Date().toISOString(), id]
+      [new Date().toISOString(), rawId]
     );
     this.scheduleSave();
     return this.getSession(rawId);
@@ -2453,31 +2690,77 @@ export class CorptieStore {
     if (!sessionId) {
       return null;
     }
-    const row = this.selectOne(
-      "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM session_events WHERE session_id = ?",
-      [sessionId]
-    );
-    const sequence = Number(row?.sequence ?? 0) + 1;
-    this.db.run(
-      `INSERT OR IGNORE INTO session_events (
-        event_id, session_id, sequence, type, source_json, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        event.eventId,
+    // 确保 session_log 存在（新 session 未经 migrate 回填时兜底建立 1:1 log）
+    this.ensureSessionLog(sessionId);
+
+    const surface = event.surface == null
+      ? surfaceForEventType(event.type)
+      : (event.surface ? 1 : 0);
+    const sourceEventSeqs = event.sourceEventSeqs ?? null;
+    const callId = event.callId ?? null;
+    const producer = event.producer ?? producerFromSource(event.source);
+
+    // 原子分配 sequence：BEGIN IMMEDIATE 取写锁，消除并发 seq 竞态。
+    // event_id 冲突时显式抛错，绝不静默丢弃或返回虚假 sequence。
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const existing = this.selectOne(
+        "SELECT 1 FROM session_events WHERE event_id = ?",
+        [event.eventId]
+      );
+      if (existing) {
+        throw new Error(`Duplicate event_id: ${event.eventId}`);
+      }
+      const row = this.selectOne(
+        "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM session_events WHERE session_id = ?",
+        [sessionId]
+      );
+      const sequence = Number(row?.sequence ?? 0) + 1;
+      this.db.run(
+        `INSERT INTO session_events (
+          event_id, session_id, log_id, sequence, type, producer, surface,
+          source_event_seqs_json, call_id, source_json, payload_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          event.eventId,
+          sessionId,
+          `log:${sessionId}`,
+          sequence,
+          event.type,
+          producer,
+          surface,
+          sourceEventSeqs ? JSON.stringify(sourceEventSeqs) : null,
+          callId,
+          event.source ? JSON.stringify(event.source) : null,
+          JSON.stringify(event.payload ?? {}),
+          event.createdAt || new Date().toISOString()
+        ]
+      );
+      this.db.run("COMMIT");
+      this.scheduleSave();
+      return {
+        ...event,
         sessionId,
+        logId: `log:${sessionId}`,
         sequence,
-        event.type,
-        event.source ? JSON.stringify(event.source) : null,
-        JSON.stringify(event.payload ?? {}),
-        event.createdAt || new Date().toISOString()
-      ]
+        producer,
+        surface: surface === 1,
+        sourceEventSeqs,
+        callId
+      };
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  ensureSessionLog(sessionId) {
+    this.db.run(
+      `INSERT INTO session_logs (id, session_id, created_at)
+       SELECT 'log:' || ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       WHERE NOT EXISTS (SELECT 1 FROM session_logs WHERE session_logs.session_id = ?)`,
+      [sessionId, sessionId, sessionId]
     );
-    this.scheduleSave();
-    return {
-      ...event,
-      sessionId,
-      sequence
-    };
   }
 
   listSessionEvents(sessionId, after = 0, limit = 200) {
@@ -2490,8 +2773,13 @@ export class CorptieStore {
     return rows.map((row) => ({
       eventId: row.event_id,
       sessionId: row.session_id,
+      logId: row.log_id,
       sequence: Number(row.sequence),
       type: row.type,
+      producer: row.producer,
+      surface: Number(row.surface) === 1,
+      sourceEventSeqs: parseJson(row.source_event_seqs_json, null),
+      callId: row.call_id,
       source: parseJson(row.source_json, null),
       payload: parseJson(row.payload_json, {}),
       createdAt: row.created_at
@@ -2753,35 +3041,67 @@ export class CorptieStore {
   }
 
   // 预种助手 Agent（role=assistant，单例，默认名 Corptie）。幂等：已存在则跳过。
+  // provider 使用真实的默认 provider（codex-app-server），而非占位字符串 "harness"。
+  // work_dir：首次播种时写默认工作目录路径（runtimes/assistant/workspace），
+  // 该助手下所有会话共用此目录；目录的物理创建由启动期异步 ensureAgentWorkDirs 完成。
   ensureAssistantAgent() {
-    const existing = this.selectOne(`SELECT * FROM agents WHERE role = 'assistant' LIMIT 1`);
-    if (existing) return existing;
-    const now = createdAtFromOrNow();
+    // 迁移：修正历史遗留的占位 provider（"harness" → 真实默认 provider）。
+    // 幂等，每次启动都会执行；仅影响误填了占位 provider 的记录，不动 provider 为 null 的普通 Agent。
     this.db.run(
-      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, current_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["assistant", "Corptie", "平台助手：负责协助用户使用 Corptie 平台本身（建目标/工作项、改配置等元操作）。", "assistant", "available", "harness", "[]", null, now, now]
+      `UPDATE agents SET provider = ? WHERE provider = ?`,
+      ["codex-app-server", "harness"]
+    );
+    // 迁移：修正历史遗留的平台助手旧名（仅限 "Copilot" 等已知旧值），幂等。
+    // 注意：不能对任意非 "Corptie" 名称做统一改写，否则会覆盖用户对助手的合法重命名。
+    this.db.run(
+      `UPDATE agents SET name = ? WHERE role = 'assistant' AND name IN ('Copilot')`,
+      ["Corptie"]
+    );
+    const existing = this.selectOne(`SELECT * FROM agents WHERE role = 'assistant' LIMIT 1`);
+    if (existing) {
+      // 幂等补齐历史助手缺失的 work_dir。
+      if (!existing.work_dir) {
+        const defaultDir = resolveAgentWorkDir({ agentId: existing.agent_id, role: "assistant" }, { environmentName });
+        this.db.run(`UPDATE agents SET work_dir = ? WHERE agent_id = ?`, [defaultDir, existing.agent_id]);
+        existing.work_dir = defaultDir;
+      }
+      return existing;
+    }
+    const now = createdAtFromOrNow();
+    const defaultDir = resolveAgentWorkDir({ agentId: "assistant", role: "assistant" }, { environmentName });
+    this.db.run(
+      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, work_dir, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["assistant", "Corptie", "平台助手：负责协助用户使用 Corptie 平台本身（建目标/工作项、改配置等元操作）。", "assistant", "available", "codex-app-server", "[]", defaultDir, null, now, now]
     );
     this.scheduleSave();
     return this.getAgent("assistant");
   }
 
   // 创建独立贡献者 Agent（role 默认 independentContributor；assistant 为平台预置单例，不由 UI 创建）
+  // work_dir：显式指定则用显式值；否则按约定生成默认目录（contributors/<agentId>）。
+  // 目录物理创建由启动期 / 会话创建期的 ensureAgentWorkDir 完成（store 仅存路径元数据）。
   createAgent(input = {}) {
     const id = input.id ?? `agent:${randomUUID()}`;
+    const role = input.role === "assistant" ? "assistant" : "independentContributor";
+    const workDir = typeof input.workDir === "string" && input.workDir.trim()
+      ? input.workDir.trim()
+      : resolveAgentWorkDir({ agentId: id, role }, { environmentName });
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, system_prompt, current_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
         input.description ?? "",
-        input.role ?? "independentContributor",
+        role,
         input.status ?? "available",
         input.provider ?? null,
         JSON.stringify(input.capabilities ?? []),
         input.systemPrompt ?? "",
+        workDir,
+        typeof input.avatarPath === "string" && input.avatarPath.trim() ? input.avatarPath.trim() : null,
         input.currentSessionId ?? null,
         now,
         now
@@ -2791,14 +3111,21 @@ export class CorptieStore {
     return this.getAgent(id);
   }
 
-  // 更新 Agent（name/description/provider/role/status/systemPrompt/capabilities；role 可自由切换 assistant↔independentContributor）
+  // 更新 Agent（name/description/provider/status/systemPrompt/capabilities/workDir）。
+  // 强约束：role 在创建后不可变更（assistant ↔ independentContributor 定型后不可切换），
+  // 因此这里忽略任何传入的 role，始终沿用 existing.role。
   updateAgent(agentId, input = {}) {
     const existing = this.getAgent(agentId);
     if (!existing) return null;
     const now = createdAtFromOrNow();
-    const role = input.role ?? existing.role;
+    const role = existing.role;
+    // avatarPath 需区分「未传」与「显式置空」：传入 null / 空串表示清除头像，
+    // 未传（不含该键）则保持原值。其余字段沿用 ?? 回退。
+    const avatarPath = Object.prototype.hasOwnProperty.call(input, "avatarPath")
+      ? (typeof input.avatarPath === "string" && input.avatarPath.trim() ? input.avatarPath.trim() : null)
+      : existing.avatarPath;
     this.db.run(
-      `UPDATE agents SET name = ?, description = ?, role = ?, status = ?, provider = ?, system_prompt = ?, capabilities_json = ?, updated_at = ? WHERE agent_id = ?`,
+      `UPDATE agents SET name = ?, description = ?, role = ?, status = ?, provider = ?, system_prompt = ?, capabilities_json = ?, work_dir = ?, avatar_path = ?, updated_at = ? WHERE agent_id = ?`,
       [
         input.name ?? existing.name,
         input.description ?? existing.description,
@@ -2807,6 +3134,8 @@ export class CorptieStore {
         input.provider ?? existing.provider,
         input.systemPrompt ?? existing.systemPrompt ?? "",
         input.capabilities != null ? JSON.stringify(input.capabilities) : JSON.stringify(existing.capabilities ?? []),
+        typeof input.workDir === "string" && input.workDir.trim() ? input.workDir.trim() : existing.workDir,
+        avatarPath,
         now,
         agentId
       ]
@@ -2913,13 +3242,14 @@ export class CorptieStore {
     const id = input.id ?? `work_item:${randomUUID()}`;
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO work_items (id, objective_id, title, description, priority, status, main_workspace_id, main_agent_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO work_items (id, objective_id, title, description, acceptance_criteria, priority, status, main_workspace_id, main_agent_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.objectiveId,
         input.title,
         input.description ?? "",
+        input.acceptanceCriteria ?? "",
         input.priority ?? "medium",
         input.status ?? "todo",
         input.mainWorkspaceId ?? null,
@@ -2959,10 +3289,11 @@ export class CorptieStore {
     const current = this.getWorkItem(id);
     if (!current) return null;
     this.db.run(
-      `UPDATE work_items SET title=?, description=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, updated_at=? WHERE id=?`,
+      `UPDATE work_items SET title=?, description=?, acceptance_criteria=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, updated_at=? WHERE id=?`,
       [
         patch.title ?? current.title,
         patch.description ?? current.description,
+        patch.acceptanceCriteria ?? current.acceptance_criteria,
         patch.priority ?? current.priority,
         patch.status ?? current.status,
         patch.mainWorkspaceId ?? current.main_workspace_id,
@@ -3020,8 +3351,9 @@ export class CorptieStore {
         id, owner_type, owner_id, kind, content, structured_json, tags_json,
         base_confidence, confidence, recency_score, usage_count, last_accessed_at,
         source_type, source_session_id, source_event_seqs_json,
-        promotion_status, promoted_skill_id, access_policy, version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        promotion_status, promoted_skill_id, access_policy, version,
+        auto_applied, applied_at, revoked_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.ownerType,
@@ -3042,6 +3374,9 @@ export class CorptieStore {
         input.promotedSkillId ?? null,
         JSON.stringify(input.accessPolicy ?? {}),
         input.version ?? 1,
+        input.autoApplied ? 1 : 0,
+        input.appliedAt ?? null,
+        input.revokedAt ?? null,
         now,
         now
       ]
@@ -3079,7 +3414,7 @@ export class CorptieStore {
       `UPDATE memories SET
         content=?, structured_json=?, tags_json=?, confidence=?, recency_score=?,
         usage_count=?, last_accessed_at=?, promotion_status=?, promoted_skill_id=?,
-        access_policy=?, version=?, updated_at=?
+        access_policy=?, version=?, auto_applied=?, applied_at=?, revoked_at=?, updated_at=?
        WHERE id=?`,
       [
         patch.content ?? current.content,
@@ -3093,6 +3428,9 @@ export class CorptieStore {
         patch.promotedSkillId ?? current.promoted_skill_id,
         JSON.stringify(patch.accessPolicy ?? JSON.parse(current.access_policy || "{}")),
         patch.version ?? current.version,
+        patch.autoApplied !== undefined ? (patch.autoApplied ? 1 : 0) : current.auto_applied,
+        patch.appliedAt !== undefined ? patch.appliedAt : current.applied_at,
+        patch.revokedAt !== undefined ? patch.revokedAt : current.revoked_at,
         createdAtFromOrNow(),
         id
       ]
@@ -3121,6 +3459,173 @@ export class CorptieStore {
       `UPDATE memories SET usage_count = usage_count + 1, recency_score = recency_score + 1, last_accessed_at = ? WHERE id = ?`,
       [createdAtFromOrNow(), id]
     );
+    this.scheduleSave();
+  }
+
+  // 置信度衰减（13.6）：confidence = clamp(base × recency_score × (1 + 0.1 × min(usage,10)), 0, 1)
+  // recency_score = exp(-λ·Δt_days)，λ 按 kind 衰减速度不同；confidence < 0.2 视为归档。
+  applyConfidenceDecay(ownerType, ownerId, now = new Date()) {
+    const mems = this.listMemoriesByOwner(ownerType, ownerId);
+    const LAMBDA = {
+      episodic: 0.05,
+      lesson: 0.02,
+      fact: 0.01,
+      preference: 0.005,
+      skill: 0.002,
+      procedure: 0.002,
+      dev_experience: 0.002
+    };
+    for (const m of mems) {
+      const base = Number(m.base_confidence ?? 0.5);
+      const usage = Number(m.usage_count ?? 0);
+      const updated = m.updated_at ? new Date(m.updated_at) : now;
+      const deltaDays = Math.max(0, (now - updated) / 86400000);
+      const lambda = LAMBDA[m.kind] ?? 0.01;
+      const recency = Math.exp(-lambda * deltaDays);
+      const confidence = Math.min(1, Math.max(0, base * recency * (1 + 0.1 * Math.min(usage, 10))));
+      const status = confidence < 0.2 ? "archived" : m.promotion_status ?? "active";
+      this.db.run(
+        `UPDATE memories SET confidence=?, recency_score=?, promotion_status=?, updated_at=? WHERE id=?`,
+        [confidence, recency, status, createdAtFromOrNow(), m.id]
+      );
+    }
+    this.scheduleSave();
+    return this.listMemoriesByOwner(ownerType, ownerId);
+  }
+
+  // 晋升候选（13.7）：仅 owner=agent 的 skill/procedure/dev_experience 类记忆，
+  // 且 confidence ≥ 0.7 且 usage_count ≥ 5。
+  listPromotionCandidates() {
+    return this.selectAll(
+      `SELECT * FROM memories
+        WHERE owner_type = 'agent'
+          AND kind IN ('skill', 'procedure', 'dev_experience')
+          AND confidence >= 0.7
+          AND usage_count >= 5
+          AND promotion_status != 'promoted_to_skill'
+          AND revoked_at IS NULL
+        ORDER BY confidence DESC`
+    );
+  }
+
+  // 晋升落库（13.7）：记忆 → SkillDraft → skills 表；保留溯源，原记忆标记 promoted_to_skill。
+  promoteMemoryToSkill(memoryId, draft = {}) {
+    const mem = this.getMemory(memoryId);
+    if (!mem) return null;
+    const id = draft.id ?? `skill:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO skills (
+        id, name, scenario, trigger_condition, steps_json, risk_level,
+        source_memory_id, source_agent_id, status, version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        draft.name ?? `skill_${memoryId.split(":")[1]}`,
+        draft.scenario ?? mem.content ?? "",
+        draft.trigger ?? "",
+        JSON.stringify(draft.steps ?? []),
+        draft.riskLevel ?? "moderate",
+        memoryId,
+        mem.owner_id ?? null,
+        draft.status ?? "draft",
+        draft.version ?? 1,
+        now,
+        now
+      ]
+    );
+    this.updateMemory(memoryId, {
+      promotionStatus: "promoted_to_skill",
+      promotedSkillId: id
+    });
+    this.scheduleSave();
+    return this.getSkill(id);
+  }
+
+  // 独立创建技能草稿（12.6 none 三岔路 proposeSkill 用，无 source_memory 溯源）。
+  createSkill(draft = {}) {
+    const id = draft.id ?? `skill:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO skills (
+        id, name, scenario, trigger_condition, steps_json, risk_level,
+        source_memory_id, source_agent_id, status, version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        draft.name,
+        draft.scenario ?? "",
+        draft.trigger ?? "",
+        JSON.stringify(draft.steps ?? []),
+        draft.riskLevel ?? "moderate",
+        draft.sourceMemoryId ?? null,
+        draft.sourceAgentId ?? null,
+        draft.status ?? "draft",
+        draft.version ?? 1,
+        now,
+        now
+      ]
+    );
+    this.scheduleSave();
+    return this.getSkill(id);
+  }
+
+  getSkill(id) {
+    return this.selectOne(`SELECT * FROM skills WHERE id = ?`, [id]);
+  }
+
+  listSkillsByAgent(agentId) {
+    return this.selectAll(`SELECT * FROM skills WHERE source_agent_id = ? ORDER BY updated_at DESC`, [agentId]);
+  }
+
+  // 供 hub 发现：仅返回已发布（approved/published）的技能
+  listDiscoverableSkills() {
+    return this.selectAll(`SELECT * FROM skills WHERE status IN ('approved', 'published') ORDER BY updated_at DESC`);
+  }
+
+  updateSkillStatus(id, status) {
+    this.db.run(`UPDATE skills SET status = ?, updated_at = ? WHERE id = ?`, [status, createdAtFromOrNow(), id]);
+    this.scheduleSave();
+    return this.getSkill(id);
+  }
+
+  // ===== 向量索引（12.7：embedding 语义召回；向量由 embedder 注入，存储只负责持久化）=====
+
+  setMemoryEmbedding(memoryId, vector) {
+    this.db.run(
+      `INSERT INTO memory_embeddings (memory_id, vector, created_at) VALUES (?, ?, ?)
+       ON CONFLICT(memory_id) DO UPDATE SET vector = excluded.vector, created_at = excluded.created_at`,
+      [memoryId, JSON.stringify(vector), createdAtFromOrNow()]
+    );
+    this.scheduleSave();
+  }
+
+  getMemoryEmbedding(memoryId) {
+    const row = this.selectOne(`SELECT vector FROM memory_embeddings WHERE memory_id = ?`, [memoryId]);
+    if (!row) return null;
+    try {
+      return JSON.parse(row.vector);
+    } catch {
+      return null;
+    }
+  }
+
+  // 返回 { memoryId, vector }[] 供 hub 做余弦相似度召回（内存中计算，万级片段 P95 < 20ms）
+  listMemoryEmbeddings() {
+    const rows = this.selectAll(`SELECT memory_id, vector FROM memory_embeddings`);
+    return rows
+      .map((row) => {
+        try {
+          return { memoryId: row.memory_id, vector: JSON.parse(row.vector) };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+
+  deleteMemoryEmbedding(memoryId) {
+    this.db.run(`DELETE FROM memory_embeddings WHERE memory_id = ?`, [memoryId]);
     this.scheduleSave();
   }
 
@@ -3249,6 +3754,16 @@ export class CorptieStore {
       `SELECT * FROM collab_reputation_cache WHERE entry_id = ?`,
       [entryId]
     );
+  }
+
+  // 当前在跑的协作数（load_penalty 用，14.6）：status 非 closed 的协作会话数。
+  countActiveCollaborations(entryId) {
+    const row = this.selectOne(
+      `SELECT COUNT(*) AS n FROM collaboration_sessions
+        WHERE candidate_entry_id = ? AND status != 'closed'`,
+      [entryId]
+    );
+    return row ? Number(row.n) : 0;
   }
 
   // ===== 统一检索 hub（12：去抖缓存 + 活跃工具集）=====
@@ -3442,25 +3957,11 @@ export class CorptieStore {
     const args = parseJson(row.args_json, []);
     const status = row.status;
     const isCodexAppServer = row.provider === "codex-app-server";
-    const publicId = isCodexAppServer || String(row.id).startsWith("codex:") ? row.id : `pty:${row.id}`;
+    const publicId = row.id;
     const threadId = isCodexAppServer
       ? rawStatus.threadId ?? String(row.id).replace(/^codex:/, "")
       : row.id;
-    const isUnsafeLegacyCodexResume = row.provider === "codex-pty"
-      && rawStatus.resume?.strategy === "codex-resume-last"
-      && !rawStatus.resume?.agentSessionId
-      && !rawStatus.agentSessionId;
-    const isMissingCodexSessionId = row.provider === "codex-pty"
-      && !rawStatus.resume?.agentSessionId
-      && !rawStatus.agentSessionId;
-    if (isUnsafeLegacyCodexResume || isMissingCodexSessionId) {
-      rawStatus.canResume = false;
-    }
-    const isWaitingForUser = row.provider === "codex-pty"
-      && (status === "running" || status === "blocked")
-      && (rawStatus.phase === "waiting_approval" || rawStatus.phase === "ready" || rawStatus.phase === "blocked");
-    const displayStatus = (isUnsafeLegacyCodexResume || isMissingCodexSessionId) ? "failed" : (isWaitingForUser ? "blocked" : status);
-    const latestAssistantSummary = latestCodexAssistantText(row.id, rawStatus, row.provider);
+    const displayStatus = status;
     const activeChoicePrompt = parseActiveChoicePrompt(row.active_choice_json);
     const suggestedOptions = activeChoicePrompt?.options ?? null;
     const logicalIdentity = this.selectOne(
@@ -3481,9 +3982,7 @@ export class CorptieStore {
       agentId: agentIdentity?.agent_id ?? null,
       status: displayStatus,
       progress: displayStatus === "running" || displayStatus === "blocked" ? Number(row.progress) : 1,
-      summary: isUnsafeLegacyCodexResume || isMissingCodexSessionId
-        ? "Codex session id was not bound; delete this task and start a new Codex session."
-        : latestAssistantSummary || row.summary,
+      summary: row.summary,
       suggestedOptions,
       updatedAt: row.updated_at,
       createdAt: row.created_at,
@@ -3509,7 +4008,7 @@ export class CorptieStore {
         workspace: rawStatus.workspace ?? null,
         routingVersion: Number(rawStatus.routingVersion ?? 0),
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
-        connectionStatus: isCodexAppServer ? null : "pty disconnected",
+        connectionStatus: isCodexAppServer ? null : "disconnected",
         currentModel: rawStatus.currentModel ?? rawStatus.resume?.currentModel ?? modelFromArgs(args),
         currentReasoningLevel: rawStatus.currentReasoningLevel ?? rawStatus.resume?.currentReasoningLevel ?? reasoningFromArgs(args),
         cwd: row.cwd,
@@ -3662,8 +4161,23 @@ function agentFromRow(row) {
     provider: row.provider ?? null,
     systemPrompt: row.system_prompt ?? "",
     capabilities: parseJson(row.capabilities_json, []),
+    workDir: row.work_dir ?? null,
+    avatarPath: row.avatar_path ?? null,
     currentSessionId: row.current_session_id ?? null,
     createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function skillFromRow(row) {
+  return {
+    skillId: row.skill_id,
+    name: row.name,
+    description: row.description ?? "",
+    sourceType: row.source_type ?? "local",
+    source: row.source,
+    cachePath: row.cache_path ?? null,
+    installedAt: row.installed_at,
     updatedAt: row.updated_at
   };
 }
@@ -3748,8 +4262,7 @@ function normalizeChoiceParserSettings(input = {}) {
 }
 
 function normalizeCodexBackendSettings(input = {}) {
-  const mode = input.mode === "pty" ? "pty" : "app-server";
-  return { mode };
+  return { mode: "app-server" };
 }
 
 function normalizeCodeDiffSettings(input = {}) {
@@ -3769,8 +4282,7 @@ function normalizeOpenAiCompatibleBaseURL(value) {
 function normalizeAgentProxySettings(input = {}) {
   return {
     codex: normalizeProxyProfile(input.codex),
-    choiceParser: normalizeProxyProfile(input.choiceParser),
-    pty: normalizeProxyProfile(input.pty)
+    choiceParser: normalizeProxyProfile(input.choiceParser)
   };
 }
 
@@ -3872,7 +4384,7 @@ function toRawStatus(session) {
     lastInputAt: session.lastInputAt ?? null,
     lastOutputAt: session.lastOutputAt ?? null,
     nextItemSeq: session.nextItemSeq ?? null,
-    canResume: session.provider === "codex-pty" && session.canResume === true && Boolean(agentSessionId),
+    canResume: session.canResume === true,
     threadId: session.external?.threadId ?? null,
     sessionId: session.external?.sessionId ?? null,
     activeTurnId: session.external?.activeTurnId ?? null,
@@ -3896,15 +4408,6 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
       canSwitchReasoning: false,
       canInterrupt: status === "running",
       canReconnect: false
-    };
-  }
-  if (provider === "codex-pty") {
-    return {
-      canSend: status === "running" || status === "blocked" || status === "complete",
-      canSwitchModel: true,
-      canSwitchReasoning: true,
-      canInterrupt: status === "running",
-      canReconnect: true
     };
   }
   if (provider === "claude-sdk") {
@@ -4041,210 +4544,12 @@ function isAgentNoise(text = "") {
   return /^现$|^your config\.toml:?$|^Started codex resume |You have \d+ usage limit resets available|10;\?11;\?.*>_ OpenAI Codex|^(?:10;\?11;\?|\[[0-9;?]*[a-zA-Z])$|^>_ OpenAI Codex|^model:\s|^directory:\s|features?.*web[_\s-]?search[_\s-]?request.*deprecated|web[_\s-]?search[_\s-]?request.*deprecated|set [`'"]?web[_\s-]?search[`'"]?.*(live|true|enabled)|falling back from web ?sockets? to https|websocket.*fallback|under a profile\) in config\.toml|Tip: Try the Codex App|HooksLifecycle hooks|EventInstalledActiveReviewDescription|MCP startup incomplete|MCP client .* timed out|Starting MCP servers|startup_timeout_sec|\[mcp_servers\.|0;[⠼⠴⠦⠧⠇⠏⠋⠙⠹⠸]/i.test(text);
 }
 
-function cleanReplayItems(items, provider) {
-  if (provider !== "codex-pty") {
-    return items;
-  }
-  const userTexts = new Set(
-    items
-      .filter((item) => item.type === "userMessage")
-      .map((item) => normalizeUserText(item.text))
-      .filter(Boolean)
-  );
-  const seenAgentTexts = new Set();
-  const cleaned = [];
-
-  for (const item of items) {
-    const normalizedText = normalizeUserText(item.text);
-    if (item.type !== "userMessage" && userTexts.has(normalizedText)) {
-      continue;
-    }
-    if (item.type !== "userMessage" && item.type !== "system") {
-      if (seenAgentTexts.has(normalizedText)) {
-        continue;
-      }
-      seenAgentTexts.add(normalizedText);
-    }
-    cleaned.push(item);
-  }
-
-  return cleaned;
-}
-
-function canonicalCodexItems(sessionId, session) {
-  const rolloutPath = session.rawStatus?.resume?.rolloutPath;
-  if (session.external?.provider !== "codex-pty" || !rolloutPath) {
-    return null;
-  }
-
-  let content = "";
-  try {
-    content = readFileSync(rolloutPath, "utf8");
-  } catch {
-    return null;
-  }
-
-  const completedCallIds = new Set();
-  const completedTurnIds = new Set();
-  let latestTaskStartedTurnId = null;
-  const lines = content.split("\n");
-  for (const line of lines) {
-    if (!line.trim()) {
-      continue;
-    }
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const payload = entry.payload ?? {};
-    if (entry.type === "event_msg" && payload.type === "task_started") {
-      latestTaskStartedTurnId = payload.turn_id ?? latestTaskStartedTurnId;
-    }
-    if (entry.type === "event_msg" && payload.type === "task_complete" && payload.turn_id) {
-      completedTurnIds.add(payload.turn_id);
-    }
-    if (entry.type === "response_item" && payload.type === "function_call_output" && payload.call_id) {
-      completedCallIds.add(payload.call_id);
-    }
-  }
-  const activeTurnId = latestTaskStartedTurnId && !completedTurnIds.has(latestTaskStartedTurnId)
-    ? latestTaskStartedTurnId
-    : null;
-
-  const items = [];
-  const seen = new Set();
-  for (const [index, line] of lines.entries()) {
-    if (!line.trim()) {
-      continue;
-    }
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const payload = entry.payload ?? {};
-    if (entry.type === "response_item" && payload.type === "function_call") {
-      const approval = approvalItemFromFunctionCall(sessionId, session, payload, index, completedCallIds, activeTurnId);
-      if (approval) {
-        items.push(approval);
-      }
-      continue;
-    }
-    const eventType = entry.type === "event_msg" ? payload.type : null;
-    if (eventType !== "user_message" && eventType !== "agent_message") {
-      continue;
-    }
-    const text = typeof payload.message === "string" ? payload.message.trim() : "";
-    if (!text || isAgentNoise(text)) {
-      continue;
-    }
-    const role = eventType === "user_message" ? "user" : "assistant";
-    const key = `${role}:${text}`;
-    if (role === "assistant") {
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-    }
-    items.push({
-      id: `${sessionId}:rollout:${index}`,
-      turnId: payload.turn_id ?? sessionId,
-      turnStatus: payload.phase === "final_answer" ? "complete" : "running",
-      type: role === "user" ? "userMessage" : "agentMessage",
-      title: role === "user" ? "User" : "Codex",
-      text,
-      status: role === "user" ? "sent" : payload.phase ?? null,
-      createdAt: createdAtFrom(entry, payload)
-    });
-  }
-
-  return items.length > 0 ? items.slice(-240) : null;
-}
-
-function approvalItemFromFunctionCall(sessionId, session, payload, index, completedCallIds, activeTurnId = null) {
-  if (!payload.call_id || completedCallIds.has(payload.call_id)) {
-    return null;
-  }
-  const turnId = payload.internal_chat_message_metadata_passthrough?.turn_id ?? sessionId;
-  if (activeTurnId && turnId !== activeTurnId) {
-    return null;
-  }
-  const args = parseToolArguments(payload.arguments);
-  if (args.sandbox_permissions !== "require_escalated") {
-    return null;
-  }
-  const command = typeof args.command === "string" ? args.command.trim() : "";
-  const reason = typeof args.justification === "string" ? args.justification.trim() : "";
-  const body = [
-    command ? `Codex wants approval to run this command:\n${command}` : "Codex wants approval to run a command.",
-    reason ? `Reason:\n${reason}` : ""
-  ].filter(Boolean).join("\n\n");
-  return {
-    id: `${sessionId}:approval:${payload.call_id}`,
-    turnId,
-    turnStatus: "waiting_approval",
-    type: "approval",
-    title: "Codex approval",
-    text: body,
-    options: [
-      { id: "approve", label: "Approve", role: "approve", index: 0, selected: true },
-      { id: "deny", label: "Deny", role: "deny", index: 1, selected: false }
-    ],
-    status: "pending",
-    createdAt: createdAtFrom(payload)
-  };
-}
-
-function parseToolArguments(value) {
-  try {
-    return typeof value === "string" ? JSON.parse(value) : value ?? {};
-  } catch {
-    return {};
-  }
-}
-
-function latestCodexAssistantText(sessionId, rawStatus, provider) {
-  const items = canonicalCodexItems(sessionId, {
-    rawStatus,
-    external: { provider }
-  });
-  for (const item of (items ?? []).slice().reverse()) {
-    if (item.type === "agentMessage" && item.text && !isAgentNoise(item.text)) {
-      return item.text.trim();
-    }
-  }
-  return "";
-}
-
 function normalizeStoredItem(item, provider) {
-  if (provider === "codex-pty" && item.type === "approval" && !isApprovalPrompt(item.text ?? "")) {
-    return {
-      ...item,
-      type: "agentMessage",
-      title: "Codex"
-    };
-  }
-  if (provider === "codex-pty" && item.title === "Codex approval" && !isApprovalPrompt(item.text ?? "")) {
-    return {
-      ...item,
-      title: "Codex"
-    };
-  }
   return item;
 }
 
 function normalizeStoredText(text = "", provider = "") {
-  if (provider !== "codex-pty") {
-    return text;
-  }
-  return text
-    .replace(/›[\s\S]*?(?:gpt-[\w.-]+.*?·\s*~?\/[^\n]*)$/i, "")
-    .replace(/\b(?:gpt-[\w.-]+.*?·\s*~?\/[^\n]*)$/i, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
+  return text;
 }
 
 function isAdjacentDuplicateUserMessage(item, previous) {
@@ -4255,11 +4560,6 @@ function isAdjacentDuplicateUserMessage(item, previous) {
 
 function normalizeUserText(text = "") {
   return text.replace(/^›\s*/, "").replace(/\s+/g, " ").trim();
-}
-
-function isApprovalPrompt(text = "") {
-  const compact = text.replace(/\s+/g, " ").trim();
-  return /requires? (your )?approval|needs? (your )?approval|permission required|wants to (run|execute)|run this command|execute this command|allow .*command|approve\?|confirm\?|proceed\?|continue\?|do you want .*\?|would you like .*\?|are you sure .*\?|\[y\/n\]|yes\/no|批准.*\?|允许.*\?|是否.*(批准|允许|继续)/i.test(compact);
 }
 
 async function defaultDataDir() {
@@ -4277,5 +4577,48 @@ async function exists(path) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// 会话日志事件溯源（10）：按事件类型推导 surface（是否投影为用户可见消息）。
+// surface=true 的事件才会被 deriveMessages 折叠进 UI 消息列表。
+const SURFACE_EVENT_TYPES = new Set([
+  "user/message",
+  "assistant/message",
+  "assistant/chunk",
+  "memory/inject"
+]);
+
+function surfaceForEventType(type) {
+  return SURFACE_EVENT_TYPES.has(type) ? 1 : 0;
+}
+
+// 从 source 元数据提取 producer 标签（source 可能是对象或字符串）。
+function producerFromSource(source) {
+  if (source == null) return null;
+  if (typeof source === "string") return source;
+  return source.producer ?? source.name ?? source.id ?? null;
+}
+
+// 会话日志事件溯源（10）：session_items 的 item.type → 事件类型 + producer。
+// 返回 null 表示该 item 是内部状态（非模型可见消息），不进事件流 surface。
+function itemTypeToEventType(itemType) {
+  switch (itemType) {
+    case "userMessage":
+    case "user":
+    case "inputText":
+      return { type: "user/message", producer: "user" };
+    case "agentMessage":
+    case "text":
+    case "reasoning":
+    case "taskComplete":
+    case "workspaceWrite":
+      return { type: "assistant/message", producer: "agent" };
+    case "mcpToolCall":
+      return { type: "tool/call", producer: "agent" };
+    case "approval":
+      return { type: "approval/request", producer: "agent" };
+    default:
+      return null;
   }
 }

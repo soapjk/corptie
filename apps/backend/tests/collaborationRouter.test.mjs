@@ -116,3 +116,56 @@ test("助手 Agent 不入协作目录：registerAgent 拒绝 + route 过滤", as
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("14.7 主动触发检测：前三类默认开、第四类默认关", async () => {
+  const { store, directory } = await createStore();
+  try {
+    const router = new CollaborationRouter({ store });
+
+    // 1) Agent 自申报：所需能力不在 capability_pool
+    const self = router.detectCollaborationTriggers({
+      capabilityPool: ["git", "build"],
+      requiredCapabilities: ["rust", "git"]
+    });
+    assert.equal(self.shouldCollaborate, true);
+    assert.ok(self.triggers.some((t) => t.type === "agent_self_report"));
+
+    // 2) 记忆指针：collaborator_ref 记忆
+    const pointer = router.detectCollaborationTriggers({
+      capabilityPool: ["git"],
+      requiredCapabilities: [],
+      memoryHits: [{ structured_json: { type: "collaborator_ref", collaborator_ref: "agentX" } }]
+    });
+    assert.ok(pointer.triggers.some((t) => t.type === "memory_pointer"));
+
+    // 3) guard 阻断
+    const guard = router.detectCollaborationTriggers({ capabilityPool: [], requiredCapabilities: [], guardBlocked: true });
+    assert.ok(guard.triggers.some((t) => t.type === "guard_block"));
+
+    // 4) 失败重试累积：默认关闭 → 即使超过阈值也不触发
+    const failureOff = router.detectCollaborationTriggers({
+      capabilityPool: [],
+      requiredCapabilities: [],
+      consecutiveFailures: 5,
+      failureThreshold: 3
+    });
+    assert.equal(failureOff.shouldCollaborate, false);
+
+    // 显式开启后触发
+    const failureOn = router.detectCollaborationTriggers({
+      capabilityPool: [],
+      requiredCapabilities: [],
+      consecutiveFailures: 5,
+      failureThreshold: 3,
+      enableFailureAccumulation: true
+    });
+    assert.ok(failureOn.triggers.some((t) => t.type === "failure_accumulation"));
+
+    // 无任何触发
+    const none = router.detectCollaborationTriggers({ capabilityPool: ["git"], requiredCapabilities: ["git"], memoryHits: [] });
+    assert.equal(none.shouldCollaborate, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

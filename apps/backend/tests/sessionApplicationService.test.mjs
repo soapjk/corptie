@@ -184,6 +184,19 @@ test("Session application service exposes Provider model catalogs through capabi
   assert.deepEqual(calls, [["listModels", { refresh: true }]]);
 });
 
+test("Session application service resolves model catalogs through the Session Provider", async () => {
+  const { calls, service } = fixture();
+  const result = await service.listModelsForSession("logical-a", { source: "dsh" });
+  assert.deepEqual(result, {
+    providerId: "fake.provider",
+    providerName: "Fake Provider",
+    models: [{ id: "fake-model" }],
+    currentModel: null,
+    currentReasoningLevel: null
+  });
+  assert.deepEqual(calls, [["listModels", { source: "dsh" }]]);
+});
+
 test("Session application service routes account and context usage through the active Provider", async () => {
   const { calls, service } = fixture();
   assert.deepEqual(await service.readAccountUsage("logical-a"), { provider: "fake", available: true });

@@ -61,7 +61,7 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
     store.appendSessionEvent({ eventId: "e3", sessionId: "s1", type: "summary", payload: { summary: "完成了实体层" } });
 
     const extractor = new MemoryExtractor({ store });
-    const memories = extractor.extractFromSession("s1", {
+    const memories = await extractor.extractFromSession("s1", {
       objectiveId: "o1",
       workItemId: "wi1",
       agentId: "a1"
@@ -123,7 +123,7 @@ test("extractFromSession 缺失 agentId 时跳过能力类事件（不撞 NOT NU
 
     const extractor = new MemoryExtractor({ store });
     // scope 无 agentId：procedure（能力类）应被跳过，summary（fact）落到 work_item
-    const memories = extractor.extractFromSession("s1", { objectiveId: "o1", workItemId: "wi1" });
+    const memories = await extractor.extractFromSession("s1", { objectiveId: "o1", workItemId: "wi1" });
     assert.equal(memories.length, 1);
     assert.equal(memories[0].kind, "fact");
     assert.equal(memories[0].owner_type, "work_item");

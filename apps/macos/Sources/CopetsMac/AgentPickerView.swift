@@ -18,12 +18,12 @@ struct AgentPickerView: View {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("搜索 Agent 名称", text: $searchText)
+                TextField(L10n("搜索 Agent 名称"), text: $searchText)
                     .textFieldStyle(.roundedBorder)
                 Button {
                     showCreate = true
                 } label: {
-                    Label("新建 Agent", systemImage: "plus")
+                    Label(L10n("新建 Agent"), systemImage: "plus")
                 }
             }
             .padding(12)
@@ -33,7 +33,7 @@ struct AgentPickerView: View {
             if filteredAgents.isEmpty {
                 VStack {
                     Spacer()
-                    Text(searchText.isEmpty ? "暂无 Agent" : "没有匹配的 Agent")
+                    Text(L10n(searchText.isEmpty ? "No Agents" : "No Matching Agents"))
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -60,11 +60,11 @@ struct AgentPickerView: View {
             Divider()
 
             HStack {
-                Text("已选 \(selectedIds.count) 个 Agent")
+                Text(L10nFormat("%lld Agents Selected", Int64(selectedIds.count)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("完成") {
+                Button(L10n("完成")) {
                     onDone?(selectedIds)
                     dismiss()
                 }

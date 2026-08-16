@@ -55,13 +55,8 @@ struct AgentOrbView: View {
 
     var body: some View {
         ZStack {
-            DefaultInitialAvatarView(
-                familySeed: agent.name,
-                variationSeed: agent.agentId,
-                initials: DefaultAvatarInitials.make(from: agent.name),
-                size: 52
-            )
-            .frame(width: 72, height: 72)
+            agentAvatar
+                .frame(width: 72, height: 72)
 
             AgentProviderBadge(provider: agent.provider)
                 .offset(x: 24, y: -24)
@@ -75,6 +70,22 @@ struct AgentOrbView: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 1) { onTap?() }
         .onTapGesture(count: 2) { onDoubleTap?() }
+    }
+
+    private var agentAvatar: some View {
+        Group {
+            if let avatarPath = agent.avatarPath, !avatarPath.isEmpty {
+                AnimatedAvatarImage(path: avatarPath)
+            } else {
+                DefaultInitialAvatarView(
+                    familySeed: agent.name,
+                    variationSeed: agent.agentId,
+                    initials: DefaultAvatarInitials.make(from: agent.name),
+                    size: 52
+                )
+            }
+        }
+        .clipShape(Circle())
     }
 }
 

@@ -9,6 +9,12 @@ struct MarkdownMessageView: View {
     var fontWeight: Font.Weight = .medium
     var foregroundColor: Color = CorptiePalette.secondaryText
     var allowsSelection = true
+    /// When `false`, the Markdown content sizes to its natural width instead of
+    /// expanding to fill the available width. Used for chat-bubble style
+    /// message cards that must hug their text.
+    var fillWidth = true
+    /// 当 `fillWidth == false` 时气泡收缩到的最大宽度（对应 Rudder `max-w-[72ch]`）。
+    var maxContentWidth: CGFloat? = nil
 
     @ViewBuilder
     var body: some View {
@@ -26,15 +32,24 @@ struct MarkdownMessageView: View {
             ChatPerformanceRecorder.shared.increment(.markdownCharacters, by: Int64(text.count))
             return ClickableMessageText.markdown(from: text, baseDirectory: baseDirectory)
         }
-        return Markdown(preparedMarkdown)
+        let content = Markdown(preparedMarkdown)
             .markdownTheme(.corptieMessage)
             .font(.system(size: fontSize, weight: fontWeight))
             .foregroundStyle(foregroundColor)
             .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .environment(\.openURL, OpenURLAction { url in
                 MessageLinkOpener.open(url, baseDirectory: baseDirectory)
             })
+        return Group {
+            if fillWidth {
+                content.frame(maxWidth: .infinity, alignment: .leading)
+            } else if let maxContentWidth {
+                // 气泡模式：收缩到内容自然宽度，但允许换行且不超过上限（等价 Rudder `w-fit` + `max-w`）。
+                content.frame(maxWidth: maxContentWidth, alignment: .leading)
+            } else {
+                content.fixedSize()
+            }
+        }
     }
 }
 

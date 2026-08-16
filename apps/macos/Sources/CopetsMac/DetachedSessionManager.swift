@@ -66,10 +66,9 @@ final class AgentOrbManager: ObservableObject {
             let agentSessions = sessions.filter { $0.agentId == agent.agentId }
             let hasActive = agentSessions.contains { Self.isActive($0.status) }
 
-            if agent.isAssistant {
-                // 助手永置顶、永不回收
-                float(agent: agent)
-            } else if hasActive {
+            // 浮球仅在 Agent 有活跃会话时自动浮出，否则回收；助手不再强制常驻。
+            // 用户可随时手动打开/关闭任意 Agent 的浮球。
+            if hasActive {
                 float(agent: agent)
             } else {
                 close(agentId: agent.agentId)

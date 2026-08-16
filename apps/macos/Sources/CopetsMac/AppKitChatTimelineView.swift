@@ -344,6 +344,33 @@ struct AppKitChatTimelineRow: Identifiable {
     }
 }
 
+@MainActor
+enum NativeTimelineCardLayout {
+    static let maximumWidth: CGFloat = 480
+    static let minimumWidth: CGFloat = 88
+    static let horizontalPadding: CGFloat = 20
+
+    static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat) -> CGFloat {
+        let available = max(minimumWidth, availableWidth - 4)
+        guard row.nativeStyle != .process else { return available }
+
+        let attributed = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+        let bodyWidth = ceil(attributed.boundingRect(
+            with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        ).width)
+        let titleWidth = ceil((row.title as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .bold)
+        ]).width)
+        let metadataWidth = ceil((row.metadata as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .semibold)
+        ]).width)
+        let headerWidth = titleWidth + metadataWidth + 12
+        let processWidth: CGFloat = row.processCount == nil ? 0 : 180
+        return min(available, maximumWidth, max(minimumWidth, max(bodyWidth, headerWidth, processWidth) + horizontalPadding))
+    }
+}
+
 struct AppKitChatTimelineView: NSViewRepresentable {
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
@@ -486,7 +513,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
             let columnWidth = max(120, tableView.tableColumns.first?.width ?? tableView.bounds.width)
             let availableWidth = usesNativeText && item.content == nil
-                ? max(120, columnWidth - 20)
+                ? max(120, NativeTimelineCardLayout.cardWidth(for: item, availableWidth: columnWidth) - NativeTimelineCardLayout.horizontalPadding)
                 : columnWidth
             let widthBucket = Int(availableWidth.rounded(.down))
             let key = HeightCacheKey(id: item.id, revision: item.contentRevision, widthBucket: widthBucket)
@@ -523,7 +550,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                         return AppKitChatNativeTextCell(identifier: Self.nativeCellIdentifier)
                     }()
                 ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
-                cell.setContent(rows[row], onToggleExpansion: onToggleExpansion)
+                cell.setContent(rows[row], availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width, onToggleExpansion: onToggleExpansion)
                 return cell
             }
             let cell = (tableView.makeView(withIdentifier: Self.cellIdentifier, owner: nil) as? AppKitChatHostingCell)
@@ -589,7 +616,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 } else if let nativeCell = currentCell as? AppKitChatNativeTextCell,
                           usesNativeText,
                           nextRows[row].content == nil {
-                    nativeCell.setContent(nextRows[row], onToggleExpansion: onToggleExpansion)
+                    nativeCell.setContent(nextRows[row], availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width, onToggleExpansion: onToggleExpansion)
                     noteHeightChange(for: row, rowID: nextRows[row].id, in: tableView)
                 } else {
                     rowsRequiringReplacement.insert(row)
@@ -762,6 +789,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private let processButton = NSButton()
     private var processSeparatorHeight: NSLayoutConstraint!
     private var processButtonHeight: NSLayoutConstraint!
+    private var cardWidthConstraint: NSLayoutConstraint!
+    private var cardLeadingConstraint: NSLayoutConstraint!
+    private var cardTrailingConstraint: NSLayoutConstraint!
     private var expandableTurnId: String?
     private var onToggleExpansion: ((String) -> Void)?
     private var copiedText = ""
@@ -813,9 +843,12 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         [titleLabel, metadataLabel, label, disclosureButton, copyButton, processSeparator, processButton].forEach(cardView.addSubview)
         processSeparatorHeight = processSeparator.heightAnchor.constraint(equalToConstant: 0)
         processButtonHeight = processButton.heightAnchor.constraint(equalToConstant: 0)
+        cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: NativeTimelineCardLayout.maximumWidth)
+        cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
+        cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
         NSLayoutConstraint.activate([
-            cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
-            cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            cardWidthConstraint,
+            cardLeadingConstraint,
             cardView.topAnchor.constraint(equalTo: topAnchor, constant: 1),
             cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
             disclosureButton.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
@@ -850,7 +883,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setContent(_ row: AppKitChatTimelineRow, onToggleExpansion: @escaping (String) -> Void) {
+    func setContent(_ row: AppKitChatTimelineRow, availableWidth: CGFloat, onToggleExpansion: @escaping (String) -> Void) {
         label.attributedStringValue = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
         label.allowsEditingTextAttributes = true
         titleLabel.stringValue = row.title
@@ -869,6 +902,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         expandableTurnId = row.expandableTurnId
         self.onToggleExpansion = onToggleExpansion
         copiedText = row.copyText
+        cardWidthConstraint.constant = NativeTimelineCardLayout.cardWidth(for: row, availableWidth: availableWidth)
+        cardLeadingConstraint.isActive = row.nativeStyle != .user
+        cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
         let isStandaloneProcess = row.nativeStyle == .process
         titleLabel.isHidden = isStandaloneProcess

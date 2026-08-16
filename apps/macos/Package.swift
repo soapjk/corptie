@@ -29,6 +29,9 @@ let package = Package(
                 .copy("Resources/AppIcon.png"),
                 .process("Resources/en.lproj"),
                 .process("Resources/zh-Hans.lproj")
+            ],
+            linkerSettings: [
+                .linkedFramework("WebKit")
             ]
         ),
         .testTarget(

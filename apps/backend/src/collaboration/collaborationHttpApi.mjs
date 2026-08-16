@@ -7,7 +7,8 @@ export function handleCollaborationHttpRequest({
   onConfirmationResolved,
   onListWorkspaces,
   onCreateWorktree,
-  onSwitchWorkspace
+  onSwitchWorkspace,
+  onSearchMemory
 }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
@@ -38,6 +39,13 @@ export function handleCollaborationHttpRequest({
       if (request.method === "POST" && url.pathname === "/internal/collaboration/workspaces/switch") {
         if (!onSwitchWorkspace) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
         return sendJson(response, 202, await onSwitchWorkspace(actorAgentId, await readJson(request)));
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/memory/search") {
+        if (!onSearchMemory) throw apiError("MEMORY_TOOLS_UNAVAILABLE", "Memory search is unavailable.", 503);
+        const intent = String(url.searchParams.get("intent") ?? "").trim();
+        if (!intent) throw apiError("INVALID_INPUT", "intent is required.", 400);
+        return sendJson(response, 200, await onSearchMemory(actorAgentId, intent));
       }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/agents") {

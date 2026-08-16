@@ -129,7 +129,11 @@ enum SessionCollectionDiffer {
         if previous.pinned != next.pinned || previous.sortOrder != next.sortOrder || previous.archived != next.archived {
             fields.insert(.ordering)
         }
-        if previous.external != next.external { fields.insert(.metadata) }
+        if previous.external != next.external
+            || previous.objectiveId != next.objectiveId
+            || previous.workItemId != next.workItemId {
+            fields.insert(.metadata)
+        }
         return fields
     }
 }
