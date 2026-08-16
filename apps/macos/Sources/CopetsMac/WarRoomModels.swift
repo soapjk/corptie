@@ -34,6 +34,7 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var objectiveId: String
     var title: String
     var description: String
+    var acceptanceCriteria: String
     var priority: String
     var status: String
     var mainWorkspaceId: String?
@@ -71,11 +72,11 @@ enum WorkItemColumn: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var title: String {
+    @MainActor var title: String {
         switch self {
-        case .todo: "待开始"
-        case .inProgress: "进行中"
-        case .done: "已完成"
+        case .todo: L10n("Not Started")
+        case .inProgress: L10n("In Progress")
+        case .done: L10n("Completed")
         }
     }
 

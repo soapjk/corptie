@@ -1,4 +1,4 @@
-import { AGENT_PROVIDER_CAPABILITIES } from "./contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
 
 export class SessionNotFoundError extends Error {
   constructor(sessionId) {
@@ -28,11 +28,36 @@ export class SessionApplicationService {
   }
 
   listModels(providerId, context = {}) {
-    return this.registry.invoke(
-      providerId,
-      AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
-      context
-    );
+    try {
+      return this.registry.invoke(
+        providerId,
+        AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
+        context
+      );
+    } catch (error) {
+      // Unknown providers must not crash the process. Frontends may still
+      // request models for a legacy / unregistered provider id; degrade to an
+      // empty model list so the caller can fall back gracefully.
+      if (error instanceof AgentProviderNotFoundError) {
+        return { models: [], currentModel: null, currentReasoningLevel: null };
+      }
+      throw error;
+    }
+  }
+
+  async listModelsForSession(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    const catalog = await this.listModels(reference.providerId, context);
+    const session = reference.metadata?.session ?? null;
+    return {
+      providerId: reference.providerId,
+      providerName: this.registry.get(reference.providerId).descriptor.displayName,
+      models: Array.isArray(catalog?.models) ? catalog.models : [],
+      currentModel: session?.external?.currentModel ?? catalog?.currentModel ?? null,
+      currentReasoningLevel: session?.external?.currentReasoningLevel
+        ?? catalog?.currentReasoningLevel
+        ?? null
+    };
   }
 
   async createSession(providerId, input = {}, context = {}) {

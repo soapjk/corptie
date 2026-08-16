@@ -17,6 +17,7 @@ struct ObjectiveResourcesEditor: View {
     var excludeObjectiveId: String?
 
     @State private var showAgentPicker = false
+    @State private var workspaceError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -26,6 +27,14 @@ struct ObjectiveResourcesEditor: View {
         }
         .sheet(isPresented: $showAgentPicker) {
             AgentPickerView(selectedIds: $contributorAgentIds)
+        }
+        .alert(L10n("无法添加 Workspace"), isPresented: Binding(
+            get: { workspaceError != nil },
+            set: { if !$0 { workspaceError = nil } }
+        )) {
+            Button(L10n("确定"), role: .cancel) {}
+        } message: {
+            Text(workspaceError ?? "")
         }
         .onAppear {
             Task {
@@ -41,7 +50,7 @@ struct ObjectiveResourcesEditor: View {
     private var workspaceSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Workspace（Git 仓库）")
+                Text(L10n("Workspace（Git 仓库）"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -49,10 +58,10 @@ struct ObjectiveResourcesEditor: View {
                     Image(systemName: "plus.circle")
                 }
                 .buttonStyle(.borderless)
-                .help("添加 Git 仓库")
+                .help(L10n("添加 Git 仓库"))
             }
             if selectedRepositories.isEmpty {
-                Text("尚未选择仓库")
+                Text(L10n("尚未选择仓库"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)
@@ -83,6 +92,8 @@ struct ObjectiveResourcesEditor: View {
             Task {
                 if let repo = await client.detectRepository(path: url.path) {
                     workspaceIds.insert(repo.id)
+                } else {
+                    workspaceError = client.errorMessage ?? "未能识别所选目录为有效的 Git 仓库。"
                 }
             }
         }
@@ -109,7 +120,7 @@ struct ObjectiveResourcesEditor: View {
     private var agentSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Contributor Agent")
+                Text(L10n("Contributor Agent"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -117,10 +128,10 @@ struct ObjectiveResourcesEditor: View {
                     Image(systemName: "plus.circle")
                 }
                 .buttonStyle(.borderless)
-                .help("分配 Agent")
+                .help(L10n("分配 Agent"))
             }
             if selectedAgents.isEmpty {
-                Text("尚未分配 Agent")
+                Text(L10n("尚未分配 Agent"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)

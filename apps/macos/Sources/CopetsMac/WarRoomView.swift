@@ -1,15 +1,13 @@
 import SwiftUI
 
-// 控制台主视图（03 §13.2 默认主视图：NavigationSplitView 三栏 + master-detail）。
+// 控制台主视图：三栏布局。
 // 净新增独立文件，不碰 FloatingRootView.swift 巨石。
 //
-// 三栏：
-//   sidebar  — Objective 导航列表
-//   content  — 选中 Objective 的 WorkItem 混合看板（按状态分四列）
-//   detail   — 选中 WorkItem 的详情（占位，后续替换为完整编辑 + Session 历史）
+// 左栏使用原生 Objective Sidebar；中栏平铺 WorkItem 看板；右栏是独立的详情卡片。
 
 struct WarRoomView: View {
     @StateObject private var client = EntityAPIClient.shared
+    @EnvironmentObject private var router: AppTabRouter
     @State private var selectedObjectiveId: String?
     @State private var selectedWorkItemId: String?
     @State private var workItems: [WorkItem] = []
@@ -17,25 +15,40 @@ struct WarRoomView: View {
     @State private var objectiveExpanded = true
     @State private var isCreatingObjective = false
     @State private var objectivePendingEdit: Objective?
+    /// 记录用户最后选中的 Objective，跨窗口/重启恢复，避免有 Objective 时看板空白。
+    private static let lastSelectedObjectiveKey = "warRoom.lastSelectedObjectiveId"
+    /// 记录用户最后选中的 WorkItem；与 Objective 一起恢复，重启后直接展示其详情。
+    private static let lastSelectedWorkItemKey = "warRoom.lastSelectedWorkItemId"
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
                 objectiveSidebar
-                    .navigationSplitViewColumnWidth(min: w * 0.22, ideal: w * 0.30, max: w * 0.42)
-            } content: {
-                warRoomContent
-                    .navigationSplitViewColumnWidth(min: w * 0.28, ideal: w * 0.40, max: w * 0.55)
+                    .toolbar(removing: .sidebarToggle)
+                    .navigationSplitViewColumnWidth(
+                        min: TwoPaneLayoutMetrics.sidebarWidth,
+                        ideal: TwoPaneLayoutMetrics.sidebarWidth,
+                        max: max(TwoPaneLayoutMetrics.sidebarWidth, w * 0.34)
+                    )
             } detail: {
-                workItemDetail
-                    .navigationSplitViewColumnWidth(min: w * 0.22, ideal: w * 0.30, max: w * 0.42)
+                consoleWorkspace
             }
+            .toolbar(removing: .sidebarToggle)
         }
         .task {
             if client.objectives.isEmpty {
                 await client.refreshObjectives()
             }
+            // WorkItem 只持久化绑定的 repository id；详情页需要仓库目录将其解析为名称。
+            // App 重启后 repositories 缓存为空，若不主动刷新会把有效绑定误显示为“未绑定”。
+            if client.repositories.isEmpty {
+                await client.refreshRepositories()
+            }
+        }
+        .onAppear {
+            // 切 Tab 会重建视图、@State 重置为 nil，这里恢复上次选中的 Objective。
+            restoreSelectionIfNeeded(client.objectives)
         }
         .task(id: selectedObjectiveId) {
             // 选中目标变化时拉取其工作项（三栏共享同一份 workItems）
@@ -55,16 +68,66 @@ struct WarRoomView: View {
             }
         }
         .onChange(of: client.objectives) { _, objectives in
-            if selectedObjectiveId == nil, let first = objectives.first {
-                selectedObjectiveId = first.id
+            // 优先恢复上次选中的 Objective；否则回退到第一个。
+            restoreSelectionIfNeeded(objectives)
+        }
+        .onChange(of: selectedObjectiveId) { _, newValue in
+            selectedWorkItemId = nil
+            if let newValue {
+                Self.recordObjectiveId(newValue)
             }
         }
-        .onChange(of: selectedObjectiveId) { _, _ in
-            selectedWorkItemId = nil
+        .onChange(of: workItems) { _, items in
+            restoreWorkItemSelectionIfNeeded(items)
+        }
+        .onChange(of: selectedWorkItemId) { _, newValue in
+            if let newValue {
+                Self.recordWorkItemId(newValue)
+            }
         }
         .sheet(item: $objectivePendingEdit) { objective in
             ObjectiveDetailView(objective: objective)
         }
+    }
+
+    // MARK: - 右侧 WorkItem 详情卡片
+
+    private var consoleWorkspace: some View {
+        HStack(spacing: TwoPaneLayoutMetrics.contentPadding) {
+            warRoomContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            workItemDetailCard
+        }
+        .padding(.trailing, TwoPaneLayoutMetrics.contentPadding)
+    }
+
+    private var workItemDetailCard: some View {
+        workItemDetail
+            .frame(width: TwoPaneLayoutMetrics.detailCardWidth)
+            .frame(maxHeight: .infinity)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                style: .continuous
+            )
+        )
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(
+                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                style: .continuous
+            )
+            .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
+        .padding(.vertical, TwoPaneLayoutMetrics.contentPadding)
     }
 
     // MARK: - Sidebar
@@ -77,13 +140,13 @@ struct WarRoomView: View {
                         ProgressView()
                             .frame(maxWidth: .infinity, alignment: .center)
                     } else if client.objectives.isEmpty {
-                        sidebarEmptyState("当前没有 Objective")
+                        sidebarEmptyState(L10n("No Objectives"))
                     } else {
                         ForEach(client.objectives) { objective in
                             Label(objective.name, systemImage: "target")
                                 .tag(objective.id)
                                 .contextMenu {
-                                    Button("编辑") {
+                                    Button(L10n("编辑")) {
                                         objectivePendingEdit = objective
                                     }
                                 }
@@ -118,7 +181,7 @@ struct WarRoomView: View {
                 Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .help("新建 \(title)")
+            .help(L10nFormat("New %@", title))
         }
     }
 
@@ -143,12 +206,12 @@ struct WarRoomView: View {
             )
         } else if client.objectives.isEmpty {
             ContentUnavailableView(
-                "暂无目标",
+                L10n("No Objectives"),
                 systemImage: "target",
-                description: Text("通过助手对话或快捷输入创建第一个目标")
+                description: Text(L10n("通过助手对话或快捷输入创建第一个目标"))
             )
         } else {
-            ContentUnavailableView("选择目标", systemImage: "sidebar.left")
+            ContentUnavailableView(L10n("选择目标"), systemImage: "sidebar.left")
         }
     }
 
@@ -163,8 +226,59 @@ struct WarRoomView: View {
                 onRequestReload: { workItemsReloadToken &+= 1 }
             )
         } else {
-            ContentUnavailableView("选择工作项", systemImage: "square.grid.2x2")
+            ContentUnavailableView(L10n("选择工作项"), systemImage: "square.grid.2x2")
         }
+    }
+
+    // MARK: - 上次选中 Objective 的持久化
+
+    private func restoreSelectionIfNeeded(_ objectives: [Objective]) {
+        guard selectedObjectiveId == nil, !objectives.isEmpty else { return }
+        let lastId = Self.restoredObjectiveId()
+        if let last = objectives.first(where: { $0.id == lastId }) {
+            selectedObjectiveId = last.id
+        } else if let first = objectives.first {
+            selectedObjectiveId = first.id
+        }
+    }
+
+    private static func recordObjectiveId(_ id: String) {
+        CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedObjectiveKey)
+    }
+
+    private static func restoredObjectiveId() -> String? {
+        CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedObjectiveKey)
+    }
+
+    // MARK: - 上次选中 WorkItem 的持久化
+
+    private func restoreWorkItemSelectionIfNeeded(_ items: [WorkItem]) {
+        guard !items.isEmpty else {
+            selectedWorkItemId = nil
+            return
+        }
+
+        // 刷新列表时保留仍然有效的当前选择；首次进入或切换 Objective 时，
+        // 优先恢复上次选择。若它已删除，则选择当前 Objective 的第一个工作项，
+        // 保证详情栏不会停留在无效的空状态。
+        if let selectedWorkItemId,
+           items.contains(where: { $0.id == selectedWorkItemId }) {
+            return
+        }
+        if let lastId = Self.restoredWorkItemId(),
+           let last = items.first(where: { $0.id == lastId }) {
+            selectedWorkItemId = last.id
+        } else {
+            selectedWorkItemId = items.first?.id
+        }
+    }
+
+    private static func recordWorkItemId(_ id: String) {
+        CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedWorkItemKey)
+    }
+
+    private static func restoredWorkItemId() -> String? {
+        CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedWorkItemKey)
     }
 }
 
@@ -188,7 +302,7 @@ struct WorkItemBoardView: View {
                 Button {
                     isCreating = true
                 } label: {
-                    Label("新建工作项", systemImage: "plus")
+                    Label(L10n("新建工作项"), systemImage: "plus")
                 }
             }
             HStack(alignment: .top, spacing: 12) {
@@ -221,27 +335,35 @@ struct WorkItemColumnView: View {
     @Binding var selectedWorkItemId: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label(column.title, systemImage: column.systemImage)
-                    .font(.headline)
+                    .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 Text("\(items.count)")
-                    .font(.caption)
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
             }
+            .padding(.horizontal, 8)
+
+            Divider()
+
             ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(items) { item in
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         WorkItemCard(item: item, isSelected: selectedWorkItemId == item.id)
                             .onTapGesture { selectedWorkItemId = item.id }
+
+                        if index < items.count - 1 {
+                            Divider()
+                                .padding(.leading, 12)
+                        }
                     }
                 }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(10)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, 4)
     }
 }
 
@@ -252,32 +374,33 @@ struct WorkItemCard: View {
     let isSelected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(item.title)
-                .font(.body.weight(.semibold))
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 4) {
-                Text(item.priority)
-                if let agentId = item.mainAgentId {
-                    Text("·")
-                    Text(agentId)
-                        .lineLimit(1)
+        HStack(spacing: 10) {
+            Capsule()
+                .fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.28))
+                .frame(width: 3, height: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .font(.body.weight(isSelected ? .semibold : .medium))
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 4) {
+                    Text(item.priority)
+                    if let agentId = item.mainAgentId {
+                        Text("·")
+                        Text(agentId)
+                            .lineLimit(1)
+                    }
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
         }
-        .padding(10)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.04))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 1)
-        )
+        .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+        .contentShape(Rectangle())
     }
 }
 
@@ -297,7 +420,7 @@ struct AgentRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(agent.name)
                     .font(.callout)
-                Text(agent.isAssistant ? "助手" : "独立贡献者")
+                Text(L10n(agent.isAssistant ? "Assistant" : "Independent Contributor"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -338,141 +461,69 @@ struct WorkItemDetailView: View {
     let workspaceIds: [String]
     var onRequestReload: () -> Void = {}
 
-    @State private var title: String
-    @State private var detail: String
-    @State private var priority: String
-    @State private var workspaceId: String?
-    @State private var didSave = false
     @State private var currentSession: WorkItemSessionSummary?
     @State private var memories: [MemoryItem] = []
     @State private var showAgentPicker = false
+    @State private var showAgentSwitch = false
     @State private var executionAgentIds = Set<String>()
     @State private var executionError: EntityLaunchError?
     @State private var showWorkspaceBind = false
-
-    init(workItem: WorkItem, workspaceIds: [String], onRequestReload: @escaping () -> Void = {}) {
-        self.workItem = workItem
-        self.workspaceIds = workspaceIds
-        self.onRequestReload = onRequestReload
-        _title = State(initialValue: workItem.title)
-        _detail = State(initialValue: workItem.description)
-        _priority = State(initialValue: workItem.priority)
-        _workspaceId = State(initialValue: workItem.mainWorkspaceId)
-    }
+    @State private var bindWorkspaceId: String?
+    @State private var showEdit = false
+    @State private var showCompleteConfirmation = false
+    @State private var reviewNotified = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                TextField("标题", text: $title)
-                    .font(.title3.bold())
-                    .textFieldStyle(.plain)
+        VStack(spacing: 0) {
+            detailHeader
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("描述")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextEditor(text: $detail)
-                        .font(.body)
-                        .frame(minHeight: 120)
-                        .padding(6)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            Divider()
+                .opacity(0.5)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    overviewSection
+
+                    detailTextSection(
+                        title: L10n("Description"),
+                        systemImage: "text.alignleft",
+                        text: workItem.description
+                    )
+
+                    detailTextSection(
+                        title: L10n("Acceptance Criteria"),
+                        systemImage: "checklist",
+                        text: workItem.acceptanceCriteria
+                    )
+
+                    Divider()
+
+                    executionSection
+
+                    Divider()
+
+                    memorySection
                 }
-
-                WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
-
-                HStack(spacing: 24) {
-                    // 状态由「执行/会话落定」自动驱动，用户不可手改；此处仅展示。
-                    statusBadge(workItem.status)
-                    pickerField("优先级", selection: $priority) {
-                        Text("低").tag("low")
-                        Text("中").tag("medium")
-                        Text("高").tag("high")
-                    }
-                }
-
-                HStack(spacing: 12) {
-                    Button("保存") {
-                        Task {
-                            await client.updateWorkItem(
-                                workItemId: workItem.id,
-                                title: title,
-                                description: detail,
-                                priority: priority,
-                                mainWorkspaceId: workspaceId
-                            )
-                        }
-                        didSave = true
-                        onRequestReload()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    if didSave {
-                        Text("已保存")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("当前执行")
-                            .font(.headline)
-                        Spacer()
-                        Button(currentSession == nil ? "执行" : "换 Agent") {
-                            executionAgentIds = []
-                            showAgentPicker = true
-                        }
-                        .buttonStyle(.borderless)
-                    }
-                    if let currentSession {
-                        HStack {
-                            Text(currentSession.title.isEmpty ? "未命名会话" : currentSession.title)
-                                .lineLimit(1)
-                            Spacer()
-                            Text(statusLabel(currentSession.status))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Button("打开对话") {
-                                router.openSession(currentSession.id)
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                        .padding(.vertical, 3)
-                    } else {
-                        Text("尚未开始执行")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("工作项记忆")
-                        .font(.headline)
-                    if memories.isEmpty {
-                        Text("暂无记忆")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(memories) { memory in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(memory.content)
-                                    .font(.callout)
-                                Text(kindLabel(memory.kind))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 3)
-                        }
-                    }
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
             }
-            .padding()
         }
-        .task {
+        .task(id: workItem) {
+            // 以 workItem 作为 task 标识：当父层重新拉取、currentSessionId 等字段变化时，
+            // 本视图会拿到新的 workItem 值并重新刷新「当前执行」，避免依赖陈旧的 currentSessionId。
             await refreshExecution()
+        }
+        .onChange(of: workItem.status) { _, newStatus in
+            // 进入「待确认完成」时自动弹一次确认通知（每个 workItem 只弹一次）。
+            if ["review", "reviewing"].contains(newStatus), !reviewNotified {
+                reviewNotified = true
+                showCompleteConfirmation = true
+            }
+        }
+        .sheet(isPresented: $showEdit) {
+            WorkItemEditView(workItem: workItem, workspaceIds: workspaceIds) {
+                onRequestReload()
+            }
         }
         .sheet(isPresented: $showAgentPicker) {
             AgentPickerView(selectedIds: $executionAgentIds, onDone: { selection in
@@ -486,95 +537,561 @@ struct WorkItemDetailView: View {
                 }
             })
         }
-        .alert("执行失败", isPresented: Binding(
+        .sheet(isPresented: $showAgentSwitch) {
+            AgentPickerView(selectedIds: $executionAgentIds, onDone: { selection in
+                if let agentId = selection.first {
+                    Task {
+                        _ = await client.updateWorkItem(workItemId: workItem.id, mainAgentId: agentId)
+                        await refreshExecution()
+                        onRequestReload()
+                    }
+                }
+            })
+        }
+        .alert(L10n("执行失败"), isPresented: Binding(
             get: { executionError != nil },
             set: { if !$0 { executionError = nil } }
         )) {
             if executionError?.code == "WORKSPACE_REQUIRED" {
-                Button("绑定 Workspace") {
+                Button(L10n("绑定 Workspace")) {
                     executionError = nil
                     showWorkspaceBind = true
                 }
             }
-            Button("好", role: .cancel) { executionError = nil }
+            Button(L10n("好"), role: .cancel) { executionError = nil }
         } message: {
             Text(executionError?.message ?? "")
         }
+        .alert(L10n("确认完成"), isPresented: $showCompleteConfirmation) {
+            Button(L10n("确认完成"), role: .none) {
+                Task { await confirmComplete() }
+            }
+            Button(L10n("取消"), role: .cancel) { }
+        } message: {
+            Text(L10n("Agent 的判定已满足验收标准，确认将该工作项标记为「已完成」？"))
+        }
         .sheet(isPresented: $showWorkspaceBind) {
-            WorkspaceBindSheet(workspaceId: $workspaceId, workspaceIds: workspaceIds) {
+            WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
                 Task {
-                    await client.updateWorkItem(workItemId: workItem.id, mainWorkspaceId: workspaceId)
+                    await client.updateWorkItem(workItemId: workItem.id, mainWorkspaceId: bindWorkspaceId)
                     await refreshExecution()
+                    onRequestReload()
                 }
             }
         }
     }
 
+    private var detailHeader: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.text.square")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+            Text(L10n("WorkItem 详情"))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button {
+                showEdit = true
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help(L10n("编辑工作项"))
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 10)
+        .padding(.vertical, 9)
+    }
+
+    private var overviewSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(workItem.title)
+                .font(.system(size: 16, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 7) {
+                compactStatusBadge(workItem.status)
+                metadataPill(priorityLabel, systemImage: "flag")
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 14)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n("WORKSPACE"))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                    Text(workspaceName ?? L10n("No Workspace Bound"))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(workspaceName == nil ? .secondary : .primary)
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    private func detailTextSection(title: String, systemImage: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(title, systemImage: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(text.isEmpty ? L10n("No Content") : text)
+                .font(.system(size: 12))
+                .foregroundStyle(text.isEmpty ? .tertiary : .secondary)
+                .lineSpacing(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+
+    private var executionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !isCompleted {
+                HStack {
+                    Label(L10n("执行"), systemImage: "play.circle")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    executionControlButton
+                }
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    executionAgentIds = []
+                    showAgentSwitch = true
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: currentAgent?.isAssistant == true ? "sparkles" : "person.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 22, height: 22)
+                            .background(currentAgent?.isAssistant == true ? Color.accentColor : Color.blue, in: Circle())
+                        Text(currentAgent?.name ?? L10n("Select an Agent"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(currentAgent == nil ? .secondary : .primary)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 4)
+
+                if let currentSession {
+                    Text(statusLabel(currentSession.status))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    Button {
+                        router.openSession(currentSession.id)
+                    } label: {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.accentColor)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help(currentSession.title.isEmpty ? L10n("Open Session") : L10nFormat("Open: %@", currentSession.title))
+                } else {
+                    Text(L10n("无会话"))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private var memorySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(L10n("工作项记忆"), systemImage: "brain.head.profile")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if !memories.isEmpty {
+                    Text("\(memories.count)")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if memories.isEmpty {
+                Text(L10n("暂无记忆"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(memories) { memory in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(memory.content)
+                            .font(.system(size: 11))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(kindLabel(memory.kind))
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+    }
+
+    // 当前 WorkItem 绑定的 Agent（依据 mainAgentId 从 agents 列表解析）。
+    private var currentAgent: Agent? {
+        guard let agentId = workItem.mainAgentId else { return nil }
+        return client.agents.first { $0.agentId == agentId }
+    }
+
+    // 是否已完成：只看 WorkItem 自身状态（session 完成后 WorkItem 进入 review 待确认，
+    // 只有用户确认后 status 才为 done；不能因 session.status==complete 而误判完成）。
+    private var isCompleted: Bool {
+        ["done", "complete", "completed"].contains(workItem.status)
+    }
+
+    // 是否处于「待确认完成」（session 判定满足验收标准，等用户确认）。
+    private var isPendingReview: Bool {
+        ["review", "reviewing"].contains(workItem.status)
+    }
+
+    // 是否正在运行（当前会话正在执行或等待输入）。
+    private var isRunning: Bool {
+        guard let s = currentSession?.status else { return false }
+        return ["running", "blocked"].contains(s)
+    }
+
+    // 执行/终止/确认完成控制按钮：圆形、仅图标。
+    // - 已完成 → 不显示控制按钮，完成状态由概览区的状态徽标表达。
+    // - 待确认完成（review）→ 绿色对勾按钮，点击弹确认框，确认后变已完成。
+    // - 运行中 → 终止按钮（红色停止图标）。
+    // - 其它（待开始 / 会话已存在但已停止）→ 执行按钮（播放图标）。
+    @ViewBuilder
+    private var executionControlButton: some View {
+        if isCompleted {
+            EmptyView()
+        } else if isPendingReview {
+            Button {
+                showCompleteConfirmation = true
+            } label: {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Color.green, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(L10n("确认完成"))
+        } else if isRunning {
+            Button {
+                Task { await interruptExecution() }
+            } label: {
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Color.red, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(L10n("终止执行"))
+        } else {
+            Button {
+                Task { await startOrResumeExecution() }
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Color.accentColor, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help(L10n(currentSession == nil ? "Run" : "Resume"))
+        }
+    }
+
+    // 开始执行：若已有会话则恢复，否则新建（需先选 Agent）。
+    private func startOrResumeExecution() async {
+        // 已有会话但已停止（如被终止/失败）→ 直接恢复，无需重新选 Agent。
+        if let session = currentSession {
+            if await client.resumeSession(sessionId: session.id) {
+                await refreshExecution()
+                onRequestReload()
+            } else {
+                executionError = EntityLaunchError(message: client.errorMessage ?? "恢复会话失败", code: nil)
+            }
+            return
+        }
+        // 无会话 → 新建：弹出 Agent 选择。
+        executionAgentIds = []
+        showAgentPicker = true
+    }
+
+    // 终止当前运行中的会话。
+    private func interruptExecution() async {
+        guard let session = currentSession else { return }
+        if await client.interruptSession(sessionId: session.id) {
+            await refreshExecution()
+            onRequestReload()
+        } else {
+            executionError = EntityLaunchError(message: client.errorMessage ?? "终止失败", code: nil)
+        }
+    }
+
+    // 用户确认「待确认完成」→ 真正标记为已完成。
+    private func confirmComplete() async {
+        _ = await client.updateWorkItem(workItemId: workItem.id, status: "done")
+        onRequestReload()
+    }
+
+    private var priorityLabel: String {
+        switch workItem.priority {
+        case "low": L10n("Low")
+        case "medium": L10n("Medium")
+        case "high": L10n("High")
+        default: workItem.priority
+        }
+    }
+
+    private var workspaceName: String? {
+        guard let id = workItem.mainWorkspaceId else { return nil }
+        return client.repositories.first(where: { $0.id == id })?.name
+    }
+
     private func refreshExecution() async {
+        if client.agents.isEmpty { await client.refreshAgents() }
         let sessions = await client.sessions(for: workItem)
-        currentSession = sessions.first { $0.id == workItem.currentSessionId } ?? sessions.last
+        // 优先用 workItem.currentSessionId 匹配；匹配不到（例如旧 workItem 值仍为 nil）时，
+        // 取后端返回列表里 updatedAt 最新的那一条，避免因陈旧 currentSessionId 导致「当前执行」显示为空。
+        currentSession = sessions.first { $0.id == workItem.currentSessionId }
+            ?? sessions.max(by: { $0.updatedAt < $1.updatedAt })
         memories = await client.memories(ownerType: "work_item", ownerId: workItem.id)
     }
 
     private func kindLabel(_ kind: String) -> String {
         switch kind {
-        case "fact": "事实"
-        case "lesson": "教训"
-        case "feedback": "反馈"
-        case "preference": "偏好"
-        case "procedure": "流程"
-        case "skill": "技能"
-        case "dev_experience": "开发经验"
-        case "episodic": "经历"
+        case "fact": L10n("Fact")
+        case "lesson": L10n("Lesson")
+        case "feedback": L10n("Feedback")
+        case "preference": L10n("Preference")
+        case "procedure": L10n("Procedure")
+        case "skill": L10n("Skill")
+        case "dev_experience": L10n("Development Experience")
+        case "episodic": L10n("Experience")
         default: kind
         }
     }
 
     private func statusLabel(_ status: String) -> String {
         switch status {
-        case "running": "运行中"
-        case "blocked": "待输入"
-        case "completed", "complete", "done": "完成"
-        case "failed": "失败"
+        case "running": L10n("Running")
+        case "blocked": L10n("Waiting for Input")
+        case "completed", "complete", "done": L10n("Complete")
+        case "failed": L10n("Failed")
         default: status
         }
     }
 
-    private func pickerField<SelectionValue: Hashable, Content: View>(
-        _ label: String,
-        selection: Binding<SelectionValue>,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Picker("", selection: selection, content: content)
+    // 只读紧凑状态徽标（状态由执行动作自动驱动；review=待确认完成）。
+    private func compactStatusBadge(_ status: String) -> some View {
+        let (label, color): (String, Color) = {
+            switch status {
+            case "in_progress": (L10n("In Progress"), .orange)
+            case "review", "reviewing": (L10n("Awaiting Completion Approval"), .blue)
+            case "done", "complete", "completed": (L10n("Completed"), .green)
+            case "failed": (L10n("Failed"), .red)
+            default: (L10n("Not Started"), .secondary)
+            }
+        }()
+        return Label(label, systemImage: "circle.fill")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.11), in: Capsule())
+    }
+
+    private func metadataPill(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.045), in: Capsule())
+    }
+}
+
+// MARK: - 工作项编辑（弹出小窗）
+
+struct WorkItemEditView: View {
+    @ObservedObject private var client = EntityAPIClient.shared
+    @Environment(\.dismiss) private var dismiss
+    let workItem: WorkItem
+    let workspaceIds: [String]
+    let onSaved: () -> Void
+
+    @State private var title: String
+    @State private var detail: String
+    @State private var acceptanceCriteria: String
+    @State private var priority: String
+    @State private var workspaceId: String?
+    @State private var status: String
+    @State private var showStatusConfirm = false
+    @State private var assistAgentId: String?
+
+    init(workItem: WorkItem, workspaceIds: [String], onSaved: @escaping () -> Void) {
+        self.workItem = workItem
+        self.workspaceIds = workspaceIds
+        self.onSaved = onSaved
+        _title = State(initialValue: workItem.title)
+        _detail = State(initialValue: workItem.description)
+        _acceptanceCriteria = State(initialValue: workItem.acceptanceCriteria)
+        _priority = State(initialValue: workItem.priority)
+        _workspaceId = State(initialValue: workItem.mainWorkspaceId)
+        _status = State(initialValue: workItem.status)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10n("编辑工作项"))
+                .font(.title3.bold())
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n("标题"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(L10n("工作项标题"), text: $title)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(L10n("描述"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)")
+                    Spacer()
+                }
+                TextEditor(text: $detail)
+                    .font(.body)
+                    .frame(height: 90)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(L10n("验收标准"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)；描述：\(detail)")
+                    Spacer()
+                }
+                TextEditor(text: $acceptanceCriteria)
+                    .font(.body)
+                    .frame(height: 90)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            }
+
+            WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n("优先级"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $priority) {
+                    Text(L10n("低")).tag("low")
+                    Text(L10n("中")).tag("medium")
+                    Text(L10n("高")).tag("high")
+                }
                 .labelsHidden()
                 .frame(maxWidth: 160, alignment: .leading)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n("状态"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(L10n("手动修改状态将覆盖由执行流程自动维护的状态，请谨慎操作。"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Picker("", selection: $status) {
+                    Text(L10n("待开始")).tag("todo")
+                    Text(L10n("进行中")).tag("in_progress")
+                    Text(L10n("已完成")).tag("done")
+                }
+                .labelsHidden()
+                .frame(maxWidth: 160, alignment: .leading)
+            }
+
+            HStack {
+                Spacer()
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("保存")) {
+                    save()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(trimmedTitle.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+        .alert(L10n("确认修改状态"), isPresented: $showStatusConfirm) {
+            Button(L10n("确认修改"), role: .destructive) {
+                persist()
+            }
+            Button(L10n("取消"), role: .cancel) { }
+        } message: {
+            Text(L10nFormat("You are manually overriding the WorkItem status (%@), bypassing execution-managed status. Continue?", statusLabel(status)))
         }
     }
 
-    // 只读状态徽标（状态由执行动作自动驱动）。
-    private func statusBadge(_ status: String) -> some View {
-        let (label, color): (String, Color) = {
-            switch status {
-            case "in_progress": ("进行中", .orange)
-            case "done", "complete", "completed": ("已完成", .green)
-            case "failed": ("失败", .red)
-            default: ("待开始", .secondary)
-            }
-        }()
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("状态")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(label)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(color)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(color.opacity(0.15), in: Capsule())
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // 是否强制修改了状态（与原始状态不同）。
+    private var statusChanged: Bool {
+        status != workItem.status
+    }
+
+    private func statusLabel(_ s: String) -> String {
+        switch s {
+        case "todo": L10n("Not Started")
+        case "in_progress": L10n("In Progress")
+        case "review", "reviewing": L10n("Awaiting Completion Approval")
+        case "done", "complete", "completed": L10n("Completed")
+        case "failed": L10n("Failed")
+        default: s
+        }
+    }
+
+    private func save() {
+        guard !trimmedTitle.isEmpty else { return }
+        // 强制改状态 → 先弹二次确认，确认后才真正落库。
+        if statusChanged {
+            showStatusConfirm = true
+            return
+        }
+        persist()
+    }
+
+    private func persist() {
+        Task {
+            await client.updateWorkItem(
+                workItemId: workItem.id,
+                title: trimmedTitle,
+                description: detail.trimmingCharacters(in: .whitespacesAndNewlines),
+                acceptanceCriteria: acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines),
+                priority: priority,
+                status: status,
+                mainWorkspaceId: workspaceId
+            )
+            onSaved()
+            dismiss()
         }
     }
 }

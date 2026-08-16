@@ -5,11 +5,6 @@ import {
   createCodexAppServerProvider
 } from "../providers/codexAppServerProvider.mjs";
 import { claudeToolHostAttachment } from "../providers/claudeAgentSdkProvider.mjs";
-import {
-  CODEX_PTY_PROVIDER_ID,
-  createPtyAgentProvider,
-  GENERIC_PTY_PROVIDER_ID
-} from "../providers/ptyAgentProvider.mjs";
 
 const CODEX_APP_SERVER_CAPABILITIES = Object.freeze([
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
@@ -43,17 +38,6 @@ export function createAgentProviderRuntimeRegistry(options = {}) {
     })
   ];
 
-  // PTY providers remain registered only as a compatibility surface and can be
-  // removed from this bootstrap without changing application services or UI.
-  if (options.ptyManager) {
-    providers.push(
-      createPtyAgentProvider(options.ptyManager, { providerId: GENERIC_PTY_PROVIDER_ID }),
-      createPtyAgentProvider(options.ptyManager, {
-        providerId: CODEX_PTY_PROVIDER_ID,
-        listModels: options.listCodexModels
-      })
-    );
-  }
   return new AgentProviderRegistry(providers);
 }
 

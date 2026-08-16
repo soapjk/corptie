@@ -1,7 +1,3 @@
-import {
-  CODEX_PTY_PROVIDER_ID,
-  GENERIC_PTY_PROVIDER_ID
-} from "./providers/ptyAgentProvider.mjs";
 import { CLAUDE_AGENT_SDK_PROVIDER_ID } from "./providers/claudeAgentSdkProvider.mjs";
 import { CODEX_APP_SERVER_PROVIDER_ID } from "./providers/codexAppServerProvider.mjs";
 
@@ -77,8 +73,7 @@ export function providerIdForLegacySession(session) {
   const provider = normalizedText(session?.external?.provider);
   if (provider === CLAUDE_AGENT_SDK_PROVIDER_ID) return CLAUDE_AGENT_SDK_PROVIDER_ID;
   if (provider === CODEX_APP_SERVER_PROVIDER_ID) return CODEX_APP_SERVER_PROVIDER_ID;
-  if (provider === CODEX_PTY_PROVIDER_ID) return CODEX_PTY_PROVIDER_ID;
-  return GENERIC_PTY_PROVIDER_ID;
+  return CODEX_APP_SERVER_PROVIDER_ID;
 }
 
 function defaultNormalizeLegacySessionId(sessionId) {

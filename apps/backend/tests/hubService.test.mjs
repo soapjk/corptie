@@ -42,11 +42,11 @@ test("retrieveMemory 按作用域聚合 + 关键词匹配", async () => {
     });
 
     const hub = new HubService({ store });
-    const results = hub.retrieveMemory("SQLite 外键", { workItemId: "wi1", agentId: "a1" });
+    const results = await hub.retrieveMemory("SQLite 外键", { workItemId: "wi1", agentId: "a1" });
     assert.equal(results.length, 1);
     assert.equal(results[0].content, "SQLite 外键要手动开");
 
-    const agentResults = hub.retrieveMemory("发布流程", { workItemId: "wi1", agentId: "a1" });
+    const agentResults = await hub.retrieveMemory("发布流程", { workItemId: "wi1", agentId: "a1" });
     assert.equal(agentResults[0].owner_type, "agent");
   } finally {
     await store.close();

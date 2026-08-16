@@ -1270,6 +1270,164 @@ function countTurnMarkers(items) {
   return Math.max(1, new Set(items.map((item) => item.turnId)).size);
 }
 
+/**
+ * 从 codex rollout JSONL 文本中提取干净的逐条对话消息。
+ *
+ * codex 的 rollout 是 app-server 的持久化事件流（每条一行 JSON），其中
+ * `response_item` type=message 承载了完整的 user/assistant 对话正文（role 为
+ * user / assistant / developer）。developer 是系统提示（应过滤），user 是用户
+ * 输入，assistant 是 agent 的逐条回复（含过程性播报与最终回复）。
+ *
+ * 与 readCodexRolloutDetail 的区别：这里只返回「对话消息」这一层（按 rollout
+ * 时间顺序、每条仅一次），不掺入 function_call / reasoning / warning 等内部 item，
+ * 适合作为 DSH session.history 在 surface 事件缺失时的干净回退数据源。
+ *
+ * 额外过滤两类非对话正文：
+ *   1. developer role（系统提示，如身份定义、multi-agent 模式说明）。
+ *   2. codex 注入的「系统上下文 user 消息」——codex 会在每个 turn 把
+ *      <recommended_plugins> / <environment_context> 等 XML 式上下文块以 role=user
+ *      的 message 注入对话流（不是用户真实输入）。这类块以 "<" 开头（首个非空白
+ *      字符是 "<"），据此过滤。
+ *
+ * @param {string} text - rollout 文件全文（JSONL）
+ * @returns {Array<{role: 'user'|'assistant', text: string, index: number}>}
+ *   按 rollout 原始顺序的对话消息；text 为空的消息会被跳过。
+ */
+export function parseCodexRolloutConversation(text) {
+  const messages = [];
+  if (typeof text !== "string" || !text) return messages;
+
+  for (const [index, line] of text.split("\n").entries()) {
+    if (!line.trim()) continue;
+
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    // 对话正文只存在于 response_item 的 message 类型（对应 mapRolloutEntry 的
+    // case "message"）。event_msg 的 agent_message/final_answer 是「状态播报」，
+    // 与 response_item 的 assistant message 正文重叠，跳过以避免重复。
+    if (entry.type !== "response_item") continue;
+    const payload = entry.payload ?? {};
+    if (payload.type !== "message") continue;
+
+    const role = payload.role;
+    if (role !== "user" && role !== "assistant") continue;
+
+    const text = contentText(payload.content);
+    if (!text) continue;
+
+    // codex 注入的系统上下文块（role=user 但内容是 <xxx> 标签，非用户真实输入）。
+    if (role === "user" && text.trimStart().startsWith("<")) continue;
+
+    messages.push({ role, text, index });
+  }
+
+  return messages;
+}
+
+/**
+ * 从 codex rollout JSONL 文本提取完整的有序时间线（对话 + 工具调用/结果）。
+ *
+ * 与 parseCodexRolloutConversation 相比，这里保留 rollout 里所有「可见」的
+ * response_item 条目，按原始顺序返回，供 DSH 轨迹（trajectory）视图还原原生
+ * DSH 的详细程度：agent 在一个 turn 内会交替产生 assistant message 与工具调用
+ * （custom_tool_call / custom_tool_call_output），这些正是 DSH 轨迹里
+ * tool/call + tool/result 事件的数据源。
+ *
+ * 条目 shape：
+ *   { kind:'message', role:'user'|'assistant', text, index }
+ *   { kind:'tool-call', callId, name, arguments, index }
+ *   { kind:'tool-output', callId, output, index }
+ *
+ * 过滤规则与 parseCodexRolloutConversation 一致：
+ *   - 只读 response_item；跳过 event_msg 状态播报。
+ *   - 跳过 developer 系统提示与 codex 注入的 "<xxx" 系统上下文 user 消息。
+ *   - reasoning 的 content 是 encrypted_content（不可读），summary 常为空，
+ *     故不产出 reasoning 条目（无明文可渲染）。
+ *
+ * 工具调用的 payload 有两套历史命名：新 rollout 用 custom_tool_call /
+ * custom_tool_call_output（含 call_id / name / input / output），旧 rollout 用
+ * function_call / function_call_output（含 name / arguments / output）。两者都支持。
+ *
+ * @param {string} text - rollout 文件全文（JSONL）
+ * @returns {Array<object>} 有序时间线条目。
+ */
+export function parseCodexRolloutTimeline(text) {
+  const items = [];
+  if (typeof text !== "string" || !text) return items;
+
+  for (const [index, line] of text.split("\n").entries()) {
+    if (!line.trim()) continue;
+
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (entry.type !== "response_item") continue;
+    const payload = entry.payload ?? {};
+    const ptype = payload.type;
+
+    if (ptype === "message") {
+      const role = payload.role;
+      if (role !== "user" && role !== "assistant") continue;
+      const text = contentText(payload.content);
+      if (!text) continue;
+      if (role === "user" && text.trimStart().startsWith("<")) continue;
+      items.push({ kind: "message", role, text, index, createdAt: rolloutEntryTimestamp(entry, payload) });
+      continue;
+    }
+
+    if (ptype === "custom_tool_call" || ptype === "function_call") {
+      const callId = payload.call_id ?? payload.callId ?? payload.id ?? "";
+      const name = payload.name ?? payload.tool ?? "";
+      const argumentsText = payload.input ?? payload.arguments ?? "";
+      items.push({
+        kind: "tool-call",
+        callId: String(callId),
+        name: String(name),
+        arguments: typeof argumentsText === "string" ? argumentsText : JSON.stringify(argumentsText ?? {}),
+        index,
+        createdAt: rolloutEntryTimestamp(entry, payload),
+      });
+      continue;
+    }
+
+    if (ptype === "custom_tool_call_output" || ptype === "function_call_output") {
+      const callId = payload.call_id ?? payload.callId ?? "";
+      const output = toolOutputText(payload.output);
+      items.push({ kind: "tool-output", callId: String(callId), output, index, createdAt: rolloutEntryTimestamp(entry, payload) });
+      continue;
+    }
+
+    // reasoning / 其它内部条目：无明文，跳过。
+  }
+
+  return items;
+}
+
+function rolloutEntryTimestamp(entry, payload) {
+  return entry?.timestamp ?? entry?.created_at ?? entry?.createdAt
+    ?? payload?.timestamp ?? payload?.created_at ?? payload?.createdAt
+    ?? null;
+}
+
+/** 归一化工具输出（字符串或 ContentPart 数组）为纯文本。 */
+function toolOutputText(output) {
+  if (typeof output === "string") return output;
+  if (!Array.isArray(output)) return output == null ? "" : String(output);
+  return output
+    .map((item) => item?.text ?? item?.output_text ?? item?.input_text ?? "")
+    .filter(Boolean)
+    .join("\n");
+}
+
 function mapThreadItem(turn, item) {
   const mapped = {
     id: item.id,

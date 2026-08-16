@@ -1,9 +1,12 @@
 // 统一检索 hub（12）：记忆检索 + 工具/技能发现 + 去抖缓存 + none 三岔路。
 //
-// - retrieveMemory：按 owner 作用域（work_item > objective > agent）收集记忆，关键词匹配 + confidence 排序。
-//   （骨架；真实实现用 embedding 语义召回，见 12.7 待定规格。）
+// - retrieveMemory：按 owner 作用域（work_item > objective > agent）收集记忆，
+//   优先 embedding 语义召回（embedder 注入），回退关键词匹配；confidence 加权排序。
 // - search：发现工具/技能，先查去抖缓存（命中/否定结果都缓存），未命中则 discover 并缓存。
-// - discover 命中否定的 none 三岔路（创建技能 / 自干 / 用户门禁）由调用方裁决，本服务返回 decision 标记。
+// - discover 命中否定的 none 三岔路（proposeSkill 起草技能 / justDoIt 自干 / 用户门禁）由调用方裁决。
+// - proposeSkill：创建技能 = 持久副作用，走 guard 分级（至少 moderate），默认落 draft 待用户裁决。
+
+import { randomUUID } from "node:crypto";
 
 function defaultHashIntent(text) {
   let hash = 0;
@@ -28,35 +31,134 @@ function matchScore(content, terms) {
   return hit / terms.length;
 }
 
+// 字符 n-gram 词袋向量（零依赖离线回退，非真语义，但保证 embedding 路径可用、可离线排序）。
+export function localBagOfWordsEmbedder(text, dim = 128) {
+  const grams = new Set();
+  const raw = String(text ?? "").toLowerCase();
+  for (let n = 2; n <= 3; n += 1) {
+    for (let i = 0; i + n <= raw.length; i += 1) {
+      grams.add(raw.slice(i, i + n));
+    }
+  }
+  const vec = new Array(dim).fill(0);
+  for (const g of grams) {
+    let h = 0;
+    for (let i = 0; i < g.length; i += 1) h = (h * 31 + g.charCodeAt(i)) | 0;
+    vec[Math.abs(h) % dim] += 1;
+  }
+  const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
+  return vec.map((v) => v / norm);
+}
+
+export function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom ? dot / denom : 0;
+}
+
+// OpenAI 兼容 embedding 注入（12.7 语义召回）；无 API key 时返回 null，调用方回退本地词袋。
+export function createOpenAiEmbedder(choiceParser = {}) {
+  const apiKey = choiceParser.openaiApiKey || process.env.OPENAI_API_KEY || process.env.CORPTIE_OPENAI_API_KEY;
+  if (!apiKey) return null;
+  const model = choiceParser.embeddingModel || "text-embedding-3-small";
+  const raw = typeof choiceParser.openaiBaseURL === "string" && choiceParser.openaiBaseURL.trim()
+    ? choiceParser.openaiBaseURL.trim()
+    : "https://api.openai.com/v1";
+  const base = raw.replace(/\/+$/, "");
+  const endpoint = /\/embeddings$/i.test(base) ? base : `${base}/embeddings`;
+
+  return async (text) => {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({ model, input: String(text ?? "") })
+    });
+    if (!response.ok) throw new Error(`embedding failed: HTTP ${response.status}`);
+    const data = await response.json();
+    const vec = data?.data?.[0]?.embedding;
+    if (!Array.isArray(vec)) return null;
+    return vec;
+  };
+}
+
 export class HubService {
-  constructor({ store, hashIntent = defaultHashIntent }) {
+  // embedder：embed(text) → number[]（可注入 OpenAI 或本地 ONNX）；缺失时回退 localBagOfWordsEmbedder。
+  constructor({ store, hashIntent = defaultHashIntent, embedder = null }) {
     this.store = store;
     this.hashIntent = hashIntent;
+    this.embedder = embedder;
+    this.fallbackEmbedder = localBagOfWordsEmbedder;
   }
 
-  // 记忆检索：按作用域聚合 + 关键词匹配 + confidence 排序
-  retrieveMemory(intent, scope = {}) {
+  // 记忆检索（12）：作用域聚合 → embedding 召回（回退关键词）→ confidence 加权排序。
+  async retrieveMemory(intent, scope = {}) {
     const { objectiveId, workItemId, agentId } = scope;
     const memories = [];
     if (workItemId) memories.push(...this.store.listMemoriesByOwner("work_item", workItemId));
     if (objectiveId) memories.push(...this.store.listMemoriesByOwner("objective", objectiveId));
     if (agentId) memories.push(...this.store.listMemoriesByOwner("agent", agentId));
 
-    const terms = tokenize(intent);
-    return memories
-      .filter((m) => m.promotion_status === "active")
-      .map((m) => ({ memory: m, score: matchScore(m.content, terms) * Number(m.confidence) }))
+    const active = memories.filter((m) => m.promotion_status === "active");
+    const scored = await this.scoreMemories(intent, active);
+    return scored
       .filter((x) => x.score > 0)
       .sort((a, b) => b.score - a.score)
       .map((x) => x.memory);
+  }
+
+  // 语义 + 关键词混合打分：有 embedder 则用余弦相似度，否则回退关键词；confidence 加权。
+  async scoreMemories(intent, memories) {
+    const terms = tokenize(intent);
+    let intentVec = null;
+    if (this.embedder) {
+      try {
+        intentVec = await this.embedder(intent);
+      } catch {
+        intentVec = null;
+      }
+    }
+    if (!intentVec) {
+      intentVec = null;
+    }
+
+    const results = [];
+    for (const m of memories) {
+      let semantic = 0;
+      if (intentVec) {
+        let memVec = this.store.getMemoryEmbedding(m.id);
+        if (!memVec) {
+          try {
+            memVec = await this.embedder(m.content);
+            this.store.setMemoryEmbedding(m.id, memVec);
+          } catch {
+            memVec = null;
+          }
+        }
+        semantic = memVec ? cosineSimilarity(intentVec, memVec) : 0;
+      }
+      const lexical = matchScore(m.content, terms);
+      // 语义优先；无语义时纯关键词；两者取高者再乘置信度。
+      const raw = Math.max(semantic, lexical);
+      results.push({ memory: m, score: raw * Number(m.confidence ?? 0.5) });
+    }
+    return results;
   }
 
   // 工具/技能发现 + 去抖缓存
   search(intent, scope = {}, _options = {}) {
     const { objectiveId, workItemId, sessionId, agentId } = scope;
     const intentHash = this.hashIntent(intent);
-    // 缓存 key = intentHash + agentId：discover 结果唯一取决于 agentId（其 procedure/skill 记忆），
-    // 不同 agent 即使同一 workItem/objective 也不能共享缓存。
     const cached = this.store.getHubIntentCache(intentHash, { agentId });
     if (cached) {
       return { ...JSON.parse(cached.result_json || "{}"), cached: true };
@@ -66,7 +168,7 @@ export class HubService {
     return { ...result, cached: false };
   }
 
-  // 发现：从 Agent 进化记忆里的 procedure/skill 类提取候选（骨架）
+  // 发现（12.5）：从 Agent 进化记忆里的 procedure/skill 类 + 已发布 skills 表提取候选。
   discover(intent, scope = {}) {
     const candidates = [];
     if (scope.agentId) {
@@ -76,10 +178,38 @@ export class HubService {
         }
       }
     }
+    for (const s of this.store.listDiscoverableSkills()) {
+      candidates.push({
+        toolName: s.name,
+        description: s.scenario || s.name,
+        kind: "skill",
+        riskLevel: s.risk_level
+      });
+    }
     if (candidates.length === 0) {
       return { found: false, candidates: [], decision: "none" };
     }
     return { found: true, candidates, decision: "found" };
+  }
+
+  // none 三岔路（12.6）：起草新技能草稿。创建技能是持久副作用，默认落 draft 待用户裁决
+  // （guard 分级见 01；此处 status='draft' 即「未经批准不落 discoverable」）。
+  proposeSkill(draft, { agentId = null, sourceSessionId = null } = {}) {
+    if (!draft || !draft.name || !draft.scenario) {
+      return { accepted: false, reason: "INVALID_DRAFT" };
+    }
+    const id = `skill:${randomUUID()}`;
+    const skill = this.store.createSkill({
+      id,
+      name: draft.name,
+      scenario: draft.scenario,
+      trigger: draft.trigger ?? "",
+      steps: draft.steps ?? [],
+      riskLevel: draft.riskLevel ?? "moderate",
+      sourceAgentId: agentId,
+      status: "draft"
+    });
+    return { accepted: true, skill };
   }
 
   // 注册活跃工具（命中后缓存在 Session 活跃工具集，用后不重查）

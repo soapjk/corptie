@@ -21,6 +21,7 @@ struct ObjectiveDetailView: View {
     @State private var contributorAgentIds = Set<String>()
     @State private var didSave = false
     @State private var showDeleteConfirm = false
+    @State private var assistAgentId: String?
 
     init(objective: Objective) {
         self.objective = objective
@@ -40,13 +41,13 @@ struct ObjectiveDetailView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("编辑 Objective")
+                    Text(L10n("编辑 Objective"))
                         .font(.title3.bold())
 
-                    field("名称 *") {
-                        TextField("目标名称", text: $name)
+                    field(L10n("名称 *")) {
+                        TextField(L10n("目标名称"), text: $name)
                     }
-                    field("描述") {
+                    field(L10n("描述")) {
                         TextEditor(text: $detail)
                             .font(.body)
                             .frame(height: 70)
@@ -54,8 +55,10 @@ struct ObjectiveDetailView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
+                    } trailing: {
+                        AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
                     }
-                    field("验收标准") {
+                    field(L10n("验收标准")) {
                         TextEditor(text: $acceptanceCriteria)
                             .font(.body)
                             .frame(height: 70)
@@ -63,25 +66,27 @@ struct ObjectiveDetailView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
+                    } trailing: {
+                        AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
                     }
 
                     HStack(spacing: 24) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("优先级")
+                            Text(L10n("优先级"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Picker("", selection: $priority) {
-                                Text("未设置").tag(String?.none)
-                                Text("低").tag(String?.some("low"))
-                                Text("中").tag(String?.some("medium"))
-                                Text("高").tag(String?.some("high"))
-                                Text("紧急").tag(String?.some("urgent"))
+                                Text(L10n("未设置")).tag(String?.none)
+                                Text(L10n("低")).tag(String?.some("low"))
+                                Text(L10n("中")).tag(String?.some("medium"))
+                                Text(L10n("高")).tag(String?.some("high"))
+                                Text(L10n("紧急")).tag(String?.some("urgent"))
                             }
                             .labelsHidden()
                             .frame(maxWidth: 160, alignment: .leading)
                         }
                         VStack(alignment: .leading, spacing: 4) {
-                            Toggle("设置目标日期", isOn: $hasTargetDate)
+                            Toggle(L10n("设置目标日期"), isOn: $hasTargetDate)
                                 .font(.caption)
                             if hasTargetDate {
                                 DatePicker("", selection: $targetDate, displayedComponents: .date)
@@ -99,10 +104,10 @@ struct ObjectiveDetailView: View {
                         excludeObjectiveId: objective.id
                     )
 
-                    DisclosureGroup("高级选项", isExpanded: $showAdvanced) {
+                    DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
-                            field("标签（逗号分隔）") {
-                                TextField("如：后端, 重构, 性能", text: $tagsText)
+                            field(L10n("标签（逗号分隔）")) {
+                                TextField(L10n("如：后端, 重构, 性能"), text: $tagsText)
                             }
                         }
                         .padding(.top, 4)
@@ -117,17 +122,17 @@ struct ObjectiveDetailView: View {
                 Button {
                     showDeleteConfirm = true
                 } label: {
-                    Label("删除", systemImage: "trash")
+                    Label(L10n("删除"), systemImage: "trash")
                         .foregroundStyle(.red)
                 }
                 if didSave {
-                    Text("已保存")
+                    Text(L10n("已保存"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("取消") { dismiss() }
-                Button("保存") {
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("保存")) {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -136,14 +141,14 @@ struct ObjectiveDetailView: View {
             .padding(16)
         }
         .frame(width: 500, height: 580)
-        .alert("删除 Objective", isPresented: $showDeleteConfirm) {
-            Button("删除", role: .destructive) {
+        .alert(L10n("删除 Objective"), isPresented: $showDeleteConfirm) {
+            Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteObjective(objectiveId: objective.id) }
                 dismiss()
             }
-            Button("取消", role: .cancel) {}
+            Button(L10n("取消"), role: .cancel) {}
         } message: {
-            Text("确定删除「\(objective.name)」吗？其下所有工作项将被删除，此操作不可撤销。")
+            Text(L10nFormat("Delete “%@”? All of its WorkItems will be deleted. This action cannot be undone.", objective.name))
         }
     }
 
@@ -186,11 +191,15 @@ struct ObjectiveDetailView: View {
         return formatter.date(from: value)
     }
 
-    private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {
+    private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                trailing()
+                Spacer()
+            }
             content()
         }
     }

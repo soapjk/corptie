@@ -58,6 +58,22 @@ struct SessionCollectionPatchTests {
         #expect(result.patch.updated.first?.changedFields.contains(SessionChangedFields.summary) == true)
     }
 
+    @Test
+    func processorPreservesWorkItemBindingMetadata() async throws {
+        let current = makeSession(id: "one")
+        let data = Data(
+            """
+            {"sessions":[{"id":"one","title":"one","agent":"Codex","objectiveId":"objective:1","workItemId":"work_item:1","status":"complete","progress":1,"summary":"Summary","updatedAt":"2026-08-12T00:00:00Z","accent":"cyan"}]}
+            """.utf8
+        )
+
+        let result = try await SessionPayloadProcessor().processSnapshot(data: data, current: [current])
+
+        #expect(result.sessions.first?.objectiveId == "objective:1")
+        #expect(result.sessions.first?.workItemId == "work_item:1")
+        #expect(result.patch.updated.first?.changedFields.contains(.metadata) == true)
+    }
+
 }
 
 struct SessionCollectionWirePatchTests {

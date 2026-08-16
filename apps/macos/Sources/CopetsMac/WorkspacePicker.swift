@@ -10,17 +10,17 @@ struct WorkspacePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Workspace（Git 仓库）")
+            Text(L10n("Workspace（Git 仓库）"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if candidates.isEmpty {
-                Text("所属 Objective 尚未挂靠仓库，请先在 Objective 中添加")
+                Text(L10n("所属 Objective 尚未挂靠仓库，请先在 Objective 中添加"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)
             } else {
                 Picker("", selection: $workspaceId) {
-                    Text("未选择").tag(String?.none)
+                    Text(L10n("未选择")).tag(String?.none)
                     ForEach(candidates) { repo in
                         Text(repo.name).tag(String?.some(repo.id))
                     }
@@ -48,13 +48,13 @@ struct WorkspaceBindSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("绑定 Workspace")
+            Text(L10n("绑定 Workspace"))
                 .font(.title3.bold())
             WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
-                Button("保存") {
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("保存")) {
                     onSave()
                     dismiss()
                 }

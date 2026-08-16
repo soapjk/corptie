@@ -17,18 +17,19 @@ struct ObjectiveCreateView: View {
     @State private var workspaceIds = Set<String>()
     @State private var relatedObjectiveIds = Set<String>()
     @State private var contributorAgentIds = Set<String>()
+    @State private var assistAgentId: String?
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("创建 Objective")
+                    Text(L10n("创建 Objective"))
                         .font(.title3.bold())
 
-                    field("名称 *") {
-                        TextField("目标名称", text: $name)
+                    field(L10n("名称 *")) {
+                        TextField(L10n("目标名称"), text: $name)
                     }
-                    field("描述") {
+                    field(L10n("描述")) {
                         TextEditor(text: $detail)
                             .font(.body)
                             .frame(height: 70)
@@ -36,8 +37,10 @@ struct ObjectiveCreateView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
+                    } trailing: {
+                        AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
                     }
-                    field("验收标准") {
+                    field(L10n("验收标准")) {
                         TextEditor(text: $acceptanceCriteria)
                             .font(.body)
                             .frame(height: 70)
@@ -45,25 +48,27 @@ struct ObjectiveCreateView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
+                    } trailing: {
+                        AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
                     }
 
                     HStack(spacing: 24) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("优先级")
+                            Text(L10n("优先级"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Picker("", selection: $priority) {
-                                Text("未设置").tag(String?.none)
-                                Text("低").tag(String?.some("low"))
-                                Text("中").tag(String?.some("medium"))
-                                Text("高").tag(String?.some("high"))
-                                Text("紧急").tag(String?.some("urgent"))
+                                Text(L10n("未设置")).tag(String?.none)
+                                Text(L10n("低")).tag(String?.some("low"))
+                                Text(L10n("中")).tag(String?.some("medium"))
+                                Text(L10n("高")).tag(String?.some("high"))
+                                Text(L10n("紧急")).tag(String?.some("urgent"))
                             }
                             .labelsHidden()
                             .frame(maxWidth: 160, alignment: .leading)
                         }
                         VStack(alignment: .leading, spacing: 4) {
-                            Toggle("设置目标日期", isOn: $hasTargetDate)
+                            Toggle(L10n("设置目标日期"), isOn: $hasTargetDate)
                                 .font(.caption)
                             if hasTargetDate {
                                 DatePicker("", selection: $targetDate, displayedComponents: .date)
@@ -81,10 +86,10 @@ struct ObjectiveCreateView: View {
                         excludeObjectiveId: nil
                     )
 
-                    DisclosureGroup("高级选项", isExpanded: $showAdvanced) {
+                    DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
-                            field("标签（逗号分隔）") {
-                                TextField("如：后端, 重构, 性能", text: $tagsText)
+                            field(L10n("标签（逗号分隔）")) {
+                                TextField(L10n("如：后端, 重构, 性能"), text: $tagsText)
                             }
                         }
                         .padding(.top, 4)
@@ -97,8 +102,8 @@ struct ObjectiveCreateView: View {
 
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
-                Button("创建") {
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("创建")) {
                     create()
                     dismiss()
                 }
@@ -140,11 +145,15 @@ struct ObjectiveCreateView: View {
         return formatter.string(from: date)
     }
 
-    private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {
+    private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                trailing()
+                Spacer()
+            }
             content()
         }
     }

@@ -15,6 +15,9 @@ struct Agent: Identifiable, Codable, Hashable {
     var provider: String?
     var systemPrompt: String
     var capabilities: [String]
+    var workDir: String?
+    var avatarPath: String?
+    var skillIds: [String]?
     var currentSessionId: String?
     var createdAt: String
     var updatedAt: String
@@ -29,4 +32,30 @@ struct Agent: Identifiable, Codable, Hashable {
 // 后端响应 envelope：GET /agents → { agents: [...] }
 struct AgentListEnvelope: Codable {
     let agents: [Agent]
+}
+
+// Skill（全局共享的 Skill 维护中心条目）。对齐后端 skills 表 + GET /skills 返回的 camelCase。
+// local 源 → source 为本地绝对目录；git 源 → source 为仓库 URL、cachePath 为克隆缓存目录。
+struct Skill: Identifiable, Codable, Hashable {
+    let skillId: String
+    var name: String
+    var description: String
+    var sourceType: String
+    var source: String
+    var cachePath: String?
+    var installedAt: String
+    var updatedAt: String
+
+    var id: String { skillId }
+    var isGit: Bool { sourceType == "git" }
+}
+
+// 后端响应 envelope：GET /skills → { skills: [...] }
+struct SkillListEnvelope: Codable {
+    let skills: [Skill]
+}
+
+// POST /skills 响应 envelope
+struct SkillEnvelope: Codable {
+    let skill: Skill
 }

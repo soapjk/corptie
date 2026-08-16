@@ -10,25 +10,45 @@ struct WorkItemCreateView: View {
 
     @State private var title = ""
     @State private var detail = ""
+    @State private var acceptanceCriteria = ""
     @State private var priority = "medium"
     @State private var workspaceId: String?
+    @State private var assistAgentId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("新建工作项")
+            Text(L10n("新建工作项"))
                 .font(.title3.bold())
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("标题 *")
+                Text(L10n("标题 *"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField("工作项标题", text: $title)
+                TextField(L10n("工作项标题"), text: $title)
             }
             VStack(alignment: .leading, spacing: 4) {
-                Text("描述")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(L10n("描述 *"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)")
+                    Spacer()
+                }
                 TextEditor(text: $detail)
+                    .font(.body)
+                    .frame(height: 70)
+                    .padding(6)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(L10n("验收标准"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)；描述：\(detail)")
+                    Spacer()
+                }
+                TextEditor(text: $acceptanceCriteria)
                     .font(.body)
                     .frame(height: 70)
                     .padding(6)
@@ -38,13 +58,13 @@ struct WorkItemCreateView: View {
             WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("优先级")
+                Text(L10n("优先级"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("", selection: $priority) {
-                    Text("低").tag("low")
-                    Text("中").tag("medium")
-                    Text("高").tag("high")
+                    Text(L10n("低")).tag("low")
+                    Text(L10n("中")).tag("medium")
+                    Text(L10n("高")).tag("high")
                 }
                 .labelsHidden()
                 .frame(maxWidth: 160, alignment: .leading)
@@ -52,12 +72,12 @@ struct WorkItemCreateView: View {
 
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
-                Button("创建") {
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("创建")) {
                     create()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(trimmedTitle.isEmpty || workspaceId == nil)
+                .disabled(trimmedTitle.isEmpty || trimmedDetail.isEmpty || workspaceId == nil)
             }
         }
         .padding(20)
@@ -68,13 +88,18 @@ struct WorkItemCreateView: View {
         title.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var trimmedDetail: String {
+        detail.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func create() {
-        guard !trimmedTitle.isEmpty else { return }
+        guard !trimmedTitle.isEmpty, !trimmedDetail.isEmpty else { return }
         Task {
             if let created = await client.createWorkItem(
                 objectiveId: objectiveId,
                 title: trimmedTitle,
-                description: detail.isEmpty ? nil : detail,
+                description: trimmedDetail,
+                acceptanceCriteria: acceptanceCriteria.isEmpty ? nil : acceptanceCriteria,
                 mainWorkspaceId: workspaceId,
                 priority: priority
             ) {

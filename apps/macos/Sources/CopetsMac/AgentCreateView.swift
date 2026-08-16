@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Agent 创建表单（模块 B 升级）：预设模板 + 基本信息 + 底层模型 + 人设与能力。
+// Agent 创建表单（模块 B 升级）：从已有 Agent 继承 + 基本信息 + 底层模型 + 人设与能力。
 // 侧栏 Agent 加号、AgentPickerView 的新建入口共用。
 
 struct AgentCreateView: View {
@@ -9,32 +9,38 @@ struct AgentCreateView: View {
     /// 创建成功后的回调（如 AgentPickerView 用来把新 Agent 加入已选集合）。
     var onCreated: ((Agent) -> Void)? = nil
 
-    @State private var selectedPresetId: String? = nil
+    @State private var selectedBaseAgentId: String? = nil
     @State private var name = ""
     @State private var detail = ""
     @State private var role = "independentContributor"
     @State private var provider = "codex"
     @State private var systemPrompt = ""
     @State private var capabilitiesText = ""
+    @State private var workDir = ""
     @State private var showAdvanced = false
+    @State private var selectedSkillIds: Set<String> = []
+    @State private var showSkillRegister = false
+    @State private var assistAgentId: String?
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text("创建 Agent")
+                    Text(L10n("创建 Agent"))
                         .font(.title3.bold())
 
                     presetSection
 
-                    field("名称 *") {
-                        TextField("Agent 名称", text: $name)
+                    field(L10n("名称 *")) {
+                        TextField(L10n("Agent 名称"), text: $name)
                     }
-                    field("职责描述") {
-                        TextField("如：后端接口与数据库专家", text: $detail)
+                    field(L10n("职责描述")) {
+                        TextField(L10n("如：后端接口与数据库专家"), text: $detail)
+                    } trailing: {
+                        AgentAssistButton(fieldLabel: "职责描述", text: $detail, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)")
                     }
 
-                    field("底层模型（Provider）") {
+                    field(L10n("底层模型（Provider）")) {
                         Picker("", selection: $provider) {
                             Text("Codex").tag("codex")
                             Text("Claude Code").tag("claude_code")
@@ -44,10 +50,10 @@ struct AgentCreateView: View {
                         .frame(maxWidth: 200, alignment: .leading)
                     }
 
-                    field("类型") {
+                    field(L10n("类型")) {
                         Picker("", selection: $role) {
-                            Text("独立贡献者（IC）").tag("independentContributor")
-                            Text("助手（Assistant）").tag("assistant")
+                            Text(L10n("独立贡献者（IC）")).tag("independentContributor")
+                            Text(L10n("助手（Assistant）")).tag("assistant")
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
@@ -68,15 +74,42 @@ struct AgentCreateView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
+                    } trailing: {
+                        AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)；职责：\(detail)；类型：\(role == "assistant" ? "助手" : "独立贡献者")")
                     }
 
-                    DisclosureGroup("高级选项", isExpanded: $showAdvanced) {
-                        VStack(alignment: .leading, spacing: 12) {
-                            field("能力标签（逗号分隔）") {
-                                TextField("如：backend, api, database", text: $capabilitiesText)
+                    // 高级选项：整行可点击展开/折叠（替代 DisclosureGroup，避免 macOS 下只能点小三角才能展开）。
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) { showAdvanced.toggle() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.bold())
+                                    .rotationEffect(.degrees(showAdvanced ? 90 : 0))
+                                Text(L10n("高级选项"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
                             }
+                            .contentShape(Rectangle())
                         }
-                        .padding(.top, 4)
+                        .buttonStyle(.plain)
+
+                        if showAdvanced {
+                            VStack(alignment: .leading, spacing: 12) {
+                                field(L10n("能力标签（逗号分隔）")) {
+                                    TextField(L10n("如：backend, api, database"), text: $capabilitiesText)
+                                }
+
+                                field(L10n("工作目录（可选）")) {
+                                    TextField(L10n("留空则自动生成（助手为共享工作区，贡献者为持久化目录）"), text: $workDir)
+                                }
+
+                                skillSection
+                            }
+                            .padding(.top, 4)
+                        }
                     }
                 }
                 .padding(24)
@@ -92,8 +125,8 @@ struct AgentCreateView: View {
                         .lineLimit(2)
                 }
                 Spacer()
-                Button("取消") { dismiss() }
-                Button("创建") {
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("创建")) {
                     create()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -101,31 +134,51 @@ struct AgentCreateView: View {
             }
             .padding(16)
         }
-        .frame(width: 500, height: 580)
+        .frame(width: 500)
+        .frame(minHeight: 460, maxHeight: 680)
+        .task {
+            if client.agents.isEmpty {
+                await client.refreshAgents()
+            }
+            if client.skills.isEmpty {
+                await client.refreshSkills()
+            }
+        }
+        .sheet(isPresented: $showSkillRegister) {
+            SkillRegisterView { skill in
+                if let skill { selectedSkillIds.insert(skill.skillId) }
+            }
+        }
     }
 
-    // MARK: - 预设模板
+    // MARK: - 从已有 Agent 继承
 
     private var presetSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("预设模板")
+            Text(L10n("从已有 Agent 继承（可选）"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    presetChip(id: nil, label: "空白", icon: "square.dashed")
-                    ForEach(AgentCreatePreset.all) { preset in
-                        presetChip(id: preset.id, label: preset.name, icon: preset.icon)
+            if client.agents.isEmpty {
+                Text(L10n("暂无已有 Agent，可直接填写下方信息。"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        baseAgentChip(id: nil, label: "不继承", icon: "square.dashed")
+                        ForEach(client.agents) { agent in
+                            baseAgentChip(id: agent.agentId, label: agent.name, icon: agent.isAssistant ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
+                        }
                     }
                 }
             }
         }
     }
 
-    private func presetChip(id: String?, label: String, icon: String) -> some View {
-        let isSelected = selectedPresetId == id
+    private func baseAgentChip(id: String?, label: String, icon: String) -> some View {
+        let isSelected = selectedBaseAgentId == id
         return Button {
-            selectPreset(id)
+            selectBaseAgent(id)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: icon)
@@ -140,20 +193,94 @@ struct AgentCreateView: View {
         .buttonStyle(.borderless)
     }
 
-    private func selectPreset(_ id: String?) {
-        selectedPresetId = id
-        guard let preset = AgentCreatePreset.all.first(where: { $0.id == id }) else {
+    private func selectBaseAgent(_ id: String?) {
+        selectedBaseAgentId = id
+        guard let base = client.agents.first(where: { $0.agentId == id }) else {
+            name = ""
             detail = ""
             systemPrompt = ""
             capabilitiesText = ""
+            workDir = ""
             provider = "codex"
+            role = "independentContributor"
+            selectedSkillIds = []
             return
         }
-        name = preset.suggestedName
-        detail = preset.description
-        provider = preset.provider
-        systemPrompt = preset.systemPrompt
-        capabilitiesText = preset.capabilities.joined(separator: ", ")
+        name = base.name
+        detail = base.description
+        provider = base.provider ?? "codex"
+        role = base.role.isEmpty ? "independentContributor" : base.role
+        systemPrompt = base.systemPrompt
+        capabilitiesText = base.capabilities.joined(separator: ", ")
+        workDir = base.workDir ?? ""
+        selectedSkillIds = Set(base.skillIds ?? [])
+    }
+
+    // MARK: - Skill 预装
+
+    private var skillSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(L10n("预装 Skill"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    showSkillRegister = true
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "plus")
+                        Text(L10n("登记"))
+                    }
+                    .font(.caption)
+                }
+                .buttonStyle(.borderless)
+            }
+
+            if client.skills.isEmpty {
+                Text(L10n("尚未登记任何 Skill，点「登记」从本地目录或 Git 仓库添加。"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(client.skills) { skill in
+                        let isSelected = selectedSkillIds.contains(skill.skillId)
+                        Button {
+                            if isSelected {
+                                selectedSkillIds.remove(skill.skillId)
+                            } else {
+                                selectedSkillIds.insert(skill.skillId)
+                            }
+                        } label: {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(skill.name)
+                                        .font(.callout)
+                                    if !skill.description.isEmpty {
+                                        Text(skill.description)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                Text(skill.isGit ? "git" : "本地")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.vertical, 2)
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15), lineWidth: 1))
+            }
+        }
     }
 
     // MARK: - 创建
@@ -173,7 +300,9 @@ struct AgentCreateView: View {
                 role: role,
                 provider: provider,
                 systemPrompt: systemPrompt,
-                capabilities: capabilities
+                capabilities: capabilities,
+                skillIds: Array(selectedSkillIds),
+                workDir: workDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : workDir.trimmingCharacters(in: .whitespacesAndNewlines)
             ) {
                 onCreated?(agent)
                 dismiss()
@@ -181,57 +310,16 @@ struct AgentCreateView: View {
         }
     }
 
-    private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {
+    private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                trailing()
+                Spacer()
+            }
             content()
         }
     }
-}
-
-// 预设模板：选一个自动填充创建表单。
-struct AgentCreatePreset: Identifiable {
-    let id: String
-    let name: String
-    let suggestedName: String
-    let description: String
-    let systemPrompt: String
-    let capabilities: [String]
-    let provider: String
-    let icon: String
-
-    static let all: [AgentCreatePreset] = [
-        AgentCreatePreset(
-            id: "backend", name: "后端开发", suggestedName: "后端开发",
-            description: "负责后端接口、数据库与服务端逻辑",
-            systemPrompt: "你是一名资深后端工程师，擅长 API 设计、数据库建模与服务端架构。产出健壮、可维护、带测试的代码，严格遵循项目既有规范。",
-            capabilities: ["backend", "api", "database"], provider: "codex", icon: "server.rack"
-        ),
-        AgentCreatePreset(
-            id: "frontend", name: "前端开发", suggestedName: "前端开发",
-            description: "负责界面、交互与前端工程",
-            systemPrompt: "你是一名资深前端工程师，擅长 UI 实现、状态管理与前端工程化。注重视觉还原度、可访问性与性能，产出整洁的组件化代码。",
-            capabilities: ["frontend", "ui"], provider: "claude_code", icon: "paintbrush"
-        ),
-        AgentCreatePreset(
-            id: "fullstack", name: "全栈", suggestedName: "全栈工程师",
-            description: "端到端交付功能，前后端都能上手",
-            systemPrompt: "你是一名全栈工程师，能独立完成从前端交互到后端接口再到数据库的完整链路。优先保证功能闭环，再逐步优化架构与性能。",
-            capabilities: ["backend", "frontend", "fullstack"], provider: "codex", icon: "square.stack"
-        ),
-        AgentCreatePreset(
-            id: "qa", name: "测试", suggestedName: "测试工程师",
-            description: "负责测试用例、自动化与质量把关",
-            systemPrompt: "你是一名测试工程师，擅长设计测试用例、编写自动化测试并定位缺陷。关注边界条件与回归风险，输出清晰可复现的问题报告。",
-            capabilities: ["testing", "qa"], provider: "codex", icon: "checkmark.seal"
-        ),
-        AgentCreatePreset(
-            id: "review", name: "代码审查", suggestedName: "代码审查",
-            description: "负责代码审查、风险与规范把关",
-            systemPrompt: "你是一名严格的代码审查者，聚焦正确性、安全性、可维护性与性能。指出具体问题并给出可执行的改进建议，而非泛泛而谈。",
-            capabilities: ["code-review"], provider: "claude_code", icon: "eye"
-        )
-    ]
 }

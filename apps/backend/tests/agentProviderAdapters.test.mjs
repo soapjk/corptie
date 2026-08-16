@@ -3,7 +3,6 @@ import test from "node:test";
 import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
-import { CODEX_PTY_PROVIDER_ID, createPtyAgentProvider } from "../src/agent-provider/providers/ptyAgentProvider.mjs";
 import { CodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
 
 function recordingManager(provider = "claude-sdk") {
@@ -23,8 +22,6 @@ function recordingManager(provider = "claude-sdk") {
     write: (id, message, options) => calls.push(["write", id, message, options]),
     interrupt: (id) => calls.push(["interrupt", id]),
     respondToChoice: (id, input) => calls.push(["choice", id, input]),
-    respondToCodexApproval: (id, input) => calls.push(["approval", id, input]),
-    respondToPtyChoice: (id, input) => calls.push(["pty-choice", id, input]),
     switchModel: (id, model) => calls.push(["model", id, model]),
     switchReasoning: (id, level) => calls.push(["reasoning", id, level])
   };
@@ -65,35 +62,6 @@ test("Claude manager is isolated behind the common Agent Provider contract", asy
     ["model", "claude-native-a", "claude-model"],
     ["rename", "claude-native-a", "Renamed"],
     ["avatar", "claude-native-a", "/tmp/avatar.png"]
-  ]);
-});
-
-test("Codex PTY protocol differences remain inside its Provider adapter", async () => {
-  const manager = recordingManager(CODEX_PTY_PROVIDER_ID);
-  const provider = createPtyAgentProvider(manager, { providerId: CODEX_PTY_PROVIDER_ID });
-  const registry = new AgentProviderRegistry([provider]);
-  const reference = { providerSessionId: "pty-native-a" };
-  await registry.invoke(
-    CODEX_PTY_PROVIDER_ID,
-    AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
-    reference,
-    { itemType: "approval", approved: true }
-  );
-  await registry.invoke(
-    CODEX_PTY_PROVIDER_ID,
-    AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
-    reference,
-    "high"
-  );
-  await registry.invoke(
-    CODEX_PTY_PROVIDER_ID,
-    AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
-    reference
-  );
-  assert.deepEqual(manager.calls, [
-    ["approval", "pty-native-a", { itemType: "approval", approved: true }],
-    ["reasoning", "pty-native-a", "high"],
-    ["disconnect", "pty-native-a"]
   ]);
 });
 

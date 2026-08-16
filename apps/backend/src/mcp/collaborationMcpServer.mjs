@@ -116,6 +116,16 @@ export function createCollaborationMcpServer(options) {
     handler: (input) => client.post("/internal/collaboration/task-confirmations", mapRequest(input))
   });
 
+  register(server, "corptie.memory.search", {
+    description:
+      "Search the Corptie memory hub for relevant past context, preferences, decisions, or procedures, scoped to the current Session's bound Agent, Objective, and Work Item. Call this when starting a new work item, encountering unfamiliar context, or needing to recall previously established preferences or conventions. The intent should describe what you are trying to recall in plain language.",
+    inputSchema: {
+      intent: z.string().min(1).describe("Plain-language description of what you are trying to recall (e.g. 'coding conventions for this project' or 'the user's preferred commit message style').")
+    },
+    readOnly: true,
+    handler: ({ intent }) => client.get("/internal/collaboration/memory/search", { intent })
+  });
+
   registerAction(server, client, "accept", "Accept a proposed task or resume requested revisions and begin working.", {
     task_id: z.string().min(1)
   });

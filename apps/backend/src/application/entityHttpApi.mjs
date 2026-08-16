@@ -2,6 +2,13 @@
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
 
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
+import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
+import os from "node:os";
+
+function normalizeEnvironment(value = "") {
+  const normalized = String(value || "").toLowerCase();
+  return normalized === "dev" || normalized === "development" ? "development" : "production";
+}
 
 export function handleEntityHttpRequest({
   request,
@@ -12,7 +19,10 @@ export function handleEntityHttpRequest({
   router,
   memoryExtractor,
   assistantService,
-  launchSession
+  launchSession,
+  launchAgentSession,
+  backgroundAgentService,
+  skillRegistryService
 }) {
   const path = url.pathname;
 
@@ -22,7 +32,8 @@ export function handleEntityHttpRequest({
     path === "/repositories" || path === "/repositories/detect" ||
     path === "/memories" || path === "/memories/extract" ||
     path === "/agents" || path.startsWith("/agents/") ||
-    path === "/assistant/chat" ||
+    path === "/skills" || path.startsWith("/skills/") ||
+    path === "/assistant/chat" || path === "/assist/draft" ||
     path === "/hub/search" || path === "/collaboration/route" ||
     // 只拦截 POST /sessions（创建，供 WorkItem 执行绑定）；
     // DELETE /sessions/:id 一律交给 server.mjs 的完整删除链路
@@ -42,6 +53,39 @@ export function handleEntityHttpRequest({
         return sendJson(response, 200, result);
       }
 
+      // ---- Agent 辅助填写（长文本字段的「帮我写」）----
+      // provider-neutral：复用 BackgroundAgentService（BACKGROUND_PROMPT 能力），
+      // 生成文本返回 { text }，不写文件、不产生会话历史。
+      if (request.method === "POST" && path === "/assist/draft") {
+        if (!backgroundAgentService) {
+          throw apiError("INTERNAL", "backgroundAgentService is not configured.", 500);
+        }
+        const input = await readJson(request);
+        const fieldLabel = String(input.fieldLabel ?? "").trim();
+        const prompt = String(input.prompt ?? "").trim();
+        if (!fieldLabel || !prompt) {
+          throw apiError("INVALID_INPUT", "fieldLabel and prompt are required.", 400);
+        }
+        const cwd = typeof input.cwd === "string" && input.cwd.trim()
+          ? input.cwd.trim()
+          : os.homedir();
+        const agentId = typeof input.agentId === "string" && input.agentId.trim()
+          ? input.agentId.trim()
+          : null;
+        const result = await backgroundAgentService.run({
+          purpose: "assist-draft",
+          cwd,
+          allowedRoots: [cwd],
+          permissionProfile: "read-only",
+          agentId,
+          intent: `${fieldLabel}: ${prompt}`,
+          developerInstructions: draftInstructions(fieldLabel),
+          prompt: draftPrompt(fieldLabel, prompt),
+          timeoutMs: input.timeoutMs ?? 120_000
+        });
+        return sendJson(response, 200, { text: result.text ?? "", providerId: result.providerId });
+      }
+
       // ---- Agent ----
       if (request.method === "GET" && path === "/agents") {
         return sendJson(response, 200, { agents: objectiveService.store.listAgents() });
@@ -58,30 +102,116 @@ export function handleEntityHttpRequest({
           systemPrompt: input.systemPrompt ?? "",
           capabilities: Array.isArray(input.capabilities) ? input.capabilities : []
         });
+        if (Array.isArray(input.skillIds)) {
+          objectiveService.store.setAgentRegistrySkills(agent.agentId, input.skillIds);
+        }
         return sendJson(response, 201, { agent });
       }
 
       const agentSessionsMatch = path.match(/^\/agents\/([^/]+)\/sessions$/);
-      if (request.method === "GET" && agentSessionsMatch) {
+      if (agentSessionsMatch) {
         const id = decodeURIComponent(agentSessionsMatch[1]);
-        return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByAgent(id) });
+        if (request.method === "GET") {
+          return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByAgent(id) });
+        }
+        // 自由对话：仅凭 Assistant Agent 开聊（可选标题/首条提示），不绑定工作项。
+        // 工作目录由该 Agent 的 work_dir 托管（assistant 下所有会话共用），客户端无需也不应传 cwd。
+        if (request.method === "POST") {
+          const agent = objectiveService.store.getAgent(id);
+          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+          if (agent.role !== "assistant") {
+            throw apiError("AGENT_NOT_ASSISTANT", "只有 Assistant 类型的 Agent 才能创建自由会话。", 400);
+          }
+          if (typeof launchAgentSession !== "function") {
+            throw apiError("INTERNAL", "launchAgentSession is not configured.", 500);
+          }
+          const input = await readJson(request);
+          const session = await launchAgentSession({
+            agent,
+            title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
+            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
+          });
+          return sendJson(response, 201, { session });
+        }
       }
 
       const agentMatch = path.match(/^\/agents\/([^/]+)$/);
       if (agentMatch) {
         const id = decodeURIComponent(agentMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, { agent: objectiveService.store.getAgent(id) });
+          const agent = objectiveService.store.getAgent(id);
+          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+          return sendJson(response, 200, {
+            agent: { ...agent, skillIds: objectiveService.store.listRegistrySkillIdsForAgent(id) }
+          });
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
+          // 头像：avatarPath 传源文件路径 → 复制到托管目录并落库；传 null/空串 → 清除。
+          // 未传 avatarPath 键则不动头像。
+          if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
+            const sourcePath = typeof input.avatarPath === "string" ? input.avatarPath.trim() : "";
+            if (sourcePath) {
+              const managedPath = await saveAgentAvatar(id, sourcePath, {
+                environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+              });
+              input.avatarPath = managedPath;
+            } else {
+              await clearAgentAvatar(id, { environmentName: normalizeEnvironment(process.env.CORPTIE_ENV) });
+              input.avatarPath = null;
+            }
+          }
           const agent = objectiveService.store.updateAgent(id, input);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+          if (Array.isArray(input.skillIds)) {
+            objectiveService.store.setAgentRegistrySkills(id, input.skillIds);
+          }
           return sendJson(response, 200, { agent });
         }
         if (request.method === "DELETE") {
           objectiveService.store.deleteAgent(id);
           return sendJson(response, 200, { ok: true });
+        }
+      }
+
+      // ---- Skill 维护中心 ----
+      if (path === "/skills" || path.startsWith("/skills/")) {
+        if (!skillRegistryService) {
+          throw apiError("INTERNAL", "skillRegistryService is not configured.", 500);
+        }
+        if (request.method === "GET" && path === "/skills") {
+          return sendJson(response, 200, { skills: skillRegistryService.list() });
+        }
+        if (request.method === "POST" && path === "/skills") {
+          const input = await readJson(request);
+          const sourceType = input.sourceType === "git" ? "git" : "local";
+          const source = String(input.source ?? "").trim();
+          if (!source) throw apiError("INVALID_INPUT", "source is required.", 400);
+          try {
+            const skill = await skillRegistryService.register({
+              name: input.name ?? "",
+              description: input.description ?? "",
+              sourceType,
+              source
+            });
+            return sendJson(response, 201, { skill });
+          } catch (error) {
+            throw apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。", 400);
+          }
+        }
+
+        const skillMatch = path.match(/^\/skills\/([^/]+)$/);
+        if (skillMatch) {
+          const id = decodeURIComponent(skillMatch[1]);
+          if (request.method === "GET") {
+            const skill = skillRegistryService.get(id);
+            if (!skill) throw apiError("SKILL_NOT_FOUND", "Skill not found.", 404);
+            return sendJson(response, 200, { skill });
+          }
+          if (request.method === "DELETE") {
+            await skillRegistryService.remove(id);
+            return sendJson(response, 200, { ok: true });
+          }
         }
       }
 
@@ -194,7 +324,7 @@ export function handleEntityHttpRequest({
         // 已有当前 session → 换 Agent / 重来：先提炼旧 session 记忆，再关闭旧 session。
         const previousSessionId = workItem.current_session_id ?? null;
         if (previousSessionId) {
-          memoryExtractor.extractFromSession(previousSessionId, {
+          await memoryExtractor.extractFromSession(previousSessionId, {
             objectiveId: workItem.objective_id,
             workItemId: workItem.id,
             agentId: workItem.main_agent_id
@@ -236,7 +366,7 @@ export function handleEntityHttpRequest({
         const input = await readJson(request);
         const sessionId = String(input.sessionId ?? "").trim();
         if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
-        const memories = memoryExtractor.extractFromSession(sessionId, {
+        const memories = await memoryExtractor.extractFromSession(sessionId, {
           objectiveId: input.objectiveId,
           workItemId: input.workItemId,
           agentId: input.agentId
@@ -302,6 +432,28 @@ function apiError(code, message, statusCode) {
   error.code = code;
   error.statusCode = statusCode;
   return error;
+}
+
+// 辅助填写：限制 Agent 只输出文本、只读、不写文件、不产生会话。
+function draftInstructions(fieldLabel) {
+  return [
+    "You are Corptie's one-time form drafting helper, not the user's ordinary development Agent.",
+    `You are helping fill a form field labelled "${fieldLabel}".`,
+    "Return ONLY the text that should go into that field — no headings, no commentary, no markdown fences.",
+    "Do not write files, modify Git, start services, or use collaboration, subagents, skills, or external uploads.",
+    "You may read files in the working directory to gather context, but do not modify anything."
+  ].join(" ");
+}
+
+function draftPrompt(fieldLabel, prompt) {
+  return [
+    `Fill in the form field "${fieldLabel}" based on the user's intent below.`,
+    "Write concise, specific, production-quality content in the language the user used.",
+    "If the field is an acceptance-criteria list, produce bullet points (one per line, leading dash).",
+    "",
+    "User intent:",
+    prompt
+  ].join("\n");
 }
 
 async function readJson(request) {

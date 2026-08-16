@@ -1,9 +1,10 @@
-// 合作调度中心路由（14）：协作目录注册 + 中央路由打分。
+// 合作调度中心路由（14）：协作目录注册 + 中央路由打分 + 主动触发检测。
 //
-// 设计 14 的 A 决策：Objective 域为一级路由（域相关性召回），Agent 能力契合为二级精排；
-// 叠加声誉（trust_score）与可用性（offline 排除、busy 惩罚）。
-// 本骨架聚焦可落地的「目录注册 + 打分排序」，Delegation/Consultation 执行层复用现有
-// collaborationCore 的 collaboration_tasks 状态机。
+// 14.6 路由（已决 A：Objective 一级路由）：
+//   score = w1·objective_relevance + w2·capability_match + w3·trust
+//         + w4·availability_weight - w5·load_penalty
+// 14.7 主动触发检测（四类，前三默认开、第四默认关）。
+// Delegation/Consultation 执行层复用 collaborationCore 的 collaboration_tasks 状态机。
 
 function parseJsonArray(json) {
   try {
@@ -22,6 +23,15 @@ function overlapRatio(candidateTags, requested) {
   return hit / requested.length;
 }
 
+// 14.6 五项权重（可调；objective 一级权重最高，已决 A）。
+const ROUTE_WEIGHTS = {
+  objective: 0.4,
+  capability: 0.3,
+  trust: 0.15,
+  availability: 0.15,
+  loadPenalty: 0.1
+};
+
 export class AssistantNotRoutableError extends Error {
   constructor(agentId) {
     super(`Assistant agent is not routable: ${agentId}`);
@@ -31,8 +41,9 @@ export class AssistantNotRoutableError extends Error {
 }
 
 export class CollaborationRouter {
-  constructor({ store }) {
+  constructor({ store, weights = ROUTE_WEIGHTS }) {
     this.store = store;
+    this.weights = { ...ROUTE_WEIGHTS, ...weights };
   }
 
   registerAgent({ agentId, role = "independentContributor", capabilityTags = [], description = "", availability = "idle", endpoint = {} }) {
@@ -62,10 +73,10 @@ export class CollaborationRouter {
     });
   }
 
-  // 路由：给定协作请求，召回可用 Agent 并按分数降序返回。
-  // request: { objectiveTags?, requiredCapabilities?, excludeAgentId? }
+  // 路由：给定协作请求，召回可用 Agent 并按分数降序返回（默认 top-k=3）。
+  // request: { objectiveTags?, requiredCapabilities?, excludeAgentId?, topK? }
   route(request = {}) {
-    const { objectiveTags = [], requiredCapabilities = [], excludeAgentId } = request;
+    const { objectiveTags = [], requiredCapabilities = [], excludeAgentId, topK = 3 } = request;
     return this.store
       .listCollaborators("agent")
       .filter(
@@ -76,23 +87,98 @@ export class CollaborationRouter {
       )
       .map((agent) => ({
         candidate: agent,
-        score: this.scoreAgent(agent, { objectiveTags, requiredCapabilities })
+        score: this.scoreAgent(agent, { objectiveTags, requiredCapabilities }),
+        reason: this.buildReason(agent, { objectiveTags, requiredCapabilities })
       }))
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.score - a.score)
+      .slice(0, topK);
   }
 
-  // 打分：能力契合 0.5 + 域相关 0.3 + 声誉 0.2，乘可用性系数
+  // 14.6 五项打分：objective 一级 + capability 二级 + trust + availability - load_penalty
   scoreAgent(agent, { objectiveTags, requiredCapabilities }) {
     const tags = parseJsonArray(agent.capability_tags_json);
-    const capabilityScore = overlapRatio(tags, requiredCapabilities);
+    const w = this.weights;
+
     const objectiveScore = overlapRatio(tags, objectiveTags);
+    const capabilityScore = overlapRatio(tags, requiredCapabilities);
     const trust = Number(agent.trust_score ?? 0.5);
-    const availability = agent.availability === "idle" ? 1 : 0.5;
-    return (capabilityScore * 0.5 + objectiveScore * 0.3 + trust * 0.2) * availability;
+
+    // 空闲>忙碌>离线；离线已在 route 过滤，busy 打 0.5
+    const availabilityWeight = agent.availability === "idle" ? 1 : 0.5;
+
+    // 当前在跑协作数，线性惩罚（封顶避免负分失控）
+    const load = this.store.countActiveCollaborations(agent.entry_id);
+    const loadPenalty = Math.min(load * w.loadPenalty, 0.5);
+
+    return (
+      w.objective * objectiveScore +
+      w.capability * capabilityScore +
+      w.trust * trust +
+      w.availability * availabilityWeight -
+      loadPenalty
+    );
+  }
+
+  buildReason(agent, { objectiveTags, requiredCapabilities }) {
+    const tags = parseJsonArray(agent.capability_tags_json);
+    const objectiveScore = overlapRatio(tags, objectiveTags);
+    const capabilityScore = overlapRatio(tags, requiredCapabilities);
+    return {
+      objective_relevance: objectiveScore,
+      capability_match: capabilityScore,
+      trust_score: Number(agent.trust_score ?? 0.5),
+      availability: agent.availability,
+      active_collaborations: this.store.countActiveCollaborations(agent.entry_id)
+    };
   }
 
   // 取最优候选
   routeBest(request = {}) {
     return this.route(request)[0] ?? null;
+  }
+
+  // 14.7 主动触发检测：返回应触发协作的候选建议（四类，前三默认开、第四默认关）。
+  // triggers: { agentSelfReport, memoryPointer, guardBlock, failureAccumulation }
+  detectCollaborationTriggers(input = {}) {
+    const {
+      capabilityPool = [],
+      requiredCapabilities = [],
+      memoryHits = [],
+      guardBlocked = false,
+      consecutiveFailures = 0,
+      failureThreshold = 3,
+      enableFailureAccumulation = false // 第四类默认关闭
+    } = input;
+
+    const triggers = [];
+
+    // 1. Agent 自申报：所需能力不在自身 capability_pool 内（最准，默认开）
+    const poolSet = new Set(capabilityPool);
+    const missing = (requiredCapabilities ?? []).filter((c) => !poolSet.has(c));
+    if (missing.length > 0) {
+      triggers.push({ type: "agent_self_report", missingCapabilities: missing });
+    }
+
+    // 2. 记忆指针：命中 structured_json.type='collaborator_ref' 的记忆（默认开）
+    for (const hit of memoryHits) {
+      const structured = hit?.structured_json ?? hit?.structuredJson ?? {};
+      const parsed = typeof structured === "string" ? parseJsonArray(structured) : structured;
+      if (parsed && parsed.type === "collaborator_ref") {
+        triggers.push({ type: "memory_pointer", collaboratorRef: parsed.collaborator_ref ?? parsed.collaboratorRef });
+        break;
+      }
+    }
+
+    // 3. guard 阻断：越出作用域被拦下（默认开）
+    if (guardBlocked) {
+      triggers.push({ type: "guard_block" });
+    }
+
+    // 4. 失败重试累积（默认关闭，防误触发）
+    if (enableFailureAccumulation && consecutiveFailures >= failureThreshold) {
+      triggers.push({ type: "failure_accumulation", consecutiveFailures });
+    }
+
+    return { shouldCollaborate: triggers.length > 0, triggers };
   }
 }

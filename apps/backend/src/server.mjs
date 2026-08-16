@@ -4,6 +4,7 @@ import { execFile, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { copyFile, mkdtemp, readdir, readFile, realpath, stat, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { deflateRawSync } from "node:zlib";
 import os from "node:os";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -11,11 +12,13 @@ import { startup } from "@anthropic-ai/claude-agent-sdk";
 import {
   mapCodexThreadToDetail,
   mapCodexThreadToSession,
+  parseCodexRolloutConversation,
+  parseCodexRolloutTimeline,
   readCodexRolloutDetail,
   readCodexRolloutTokenUsage
 } from "./adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
-import { PtyAgentManager, choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/ptyAgentManager.mjs";
+import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import {
@@ -43,11 +46,21 @@ import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDe
 import { formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { ObjectiveApplicationService } from "./application/objectiveApplicationService.mjs";
-import { HubService } from "./application/hubService.mjs";
+import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
+import { AgentContextService } from "./application/agentContextService.mjs";
+import { SkillRegistryService } from "./application/skillRegistryService.mjs";
 import { CollaborationRouter } from "./application/collaborationRouter.mjs";
-import { MemoryExtractor } from "./application/memoryExtractor.mjs";
+import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
+import { handleDshRpcRequest } from "./dsh-adapter/dshRpcAdapter.mjs";
+import { handleDshWebStatic, isDshWebStaticPath } from "./dsh-adapter/dshWebStatic.mjs";
+import {
+  handleDshWebSocketUpgrade,
+  broadcastDshMuxFrame,
+  broadcastDshHostFrame,
+} from "./dsh-adapter/dshWebSocket.mjs";
+import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
@@ -67,6 +80,7 @@ import {
   suggestAvailableSessionTitle
 } from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
+import { ensureAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
 import {
   codexPermissionsForSession,
@@ -137,6 +151,8 @@ const sessionCollectionRevisions = new SessionCollectionRevisionBuffer();
 let sessionCollectionPublishScheduled = false;
 let sessionCollectionConsistencyTimer = null;
 const sessionEventListeners = new Set();
+const dshLiveTurns = new Map();
+const dshLiveSequenceBySession = new Map();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
 const codexChoiceParseRetryAfter = new Map();
@@ -147,9 +163,16 @@ const store = new CorptieStore();
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
 const objectiveService = new ObjectiveApplicationService({ store });
-const hubService = new HubService({ store });
+const hubService = new HubService({
+  store,
+  embedder: createOpenAiEmbedder(store.choiceParserSettings())
+});
+const agentContextService = new AgentContextService({ store, hubService });
 const collaborationRouter = new CollaborationRouter({ store });
-const memoryExtractor = new MemoryExtractor({ store });
+const memoryExtractor = new MemoryExtractor({
+  store,
+  classifyMany: createMemoryClassifier(store.choiceParserSettings())
+});
 const assistantService = new AssistantService({
   store,
   objectiveService,
@@ -173,6 +196,18 @@ const bundledGitCommitProtectionPath = fileURLToPath(new URL(
 ));
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const corptieClaudeRuntimePaths = resolveCorptieClaudeRuntimePaths({ environmentName });
+// Skill 维护中心（provider-neutral）：全局共享的 Skill 映射表 + 物化到各 Provider 的 skills 目录。
+// skillsDirs 由组合根声明「各 Provider 的 skills 根目录」，SkillRegistryService 不感知 Provider 名语义，
+// 仅把 Skill 内容镜像到这些目录；Claude Code / Codex 运行时会自动扫描各自目录发现 Skill。
+const skillRegistryService = new SkillRegistryService({
+  store,
+  skillsDirs: {
+    codex: corptieCodexRuntimePaths.skillsDir,
+    claude: join(corptieClaudeRuntimePaths.pluginPath, "skills")
+  }
+});
+// 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
+agentContextService.resolveAgentSkills = (agentId) => skillRegistryService.skillsForAgent(agentId);
 const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   core: collaborationCore,
   runtime: {
@@ -245,9 +280,9 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   listModels: loadClaudeModels,
   onTurnSettled: handleClaudeTurnSettled,
   prepareWorkspaceTransition: switchClaudeProviderWorkspace,
-  attachTools: (attachment) => claudeToolHostAttachment(
+  attachTools: async (attachment) => claudeToolHostAttachment(
     attachment,
-    claudeCollaborationRuntimeOptions(attachment.actorId)
+    await claudeCollaborationRuntimeOptionsWithAgentContext(attachment.actorId)
   ),
   resolveRuntimeOptions: (providerSessionId) => claudeRuntimeOptionsForSession(providerSessionId)
 });
@@ -272,11 +307,8 @@ const gitWorkspaces = new GitWorkspaceManager({
 const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
-const ptyAgents = new PtyAgentManager({ store, settingsProvider: () => store.settings() });
 const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   claudeProvider: claudeProviderRuntime,
-  ptyManager: ptyAgents,
-  listCodexModels: loadCodexModels,
   codexOperations: {
     listSessions: listCodexProviderSessions,
     readSession: readCodexProviderSession,
@@ -302,9 +334,9 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     readAccountUsage: readCodexProviderAccountUsage,
     readSessionUsage: readCodexProviderSessionUsage,
     prepareWorkspaceTransition: switchCodexProviderWorkspace,
-    attachTools: (attachment) => codexToolHostAttachment(
+    attachTools: async (attachment) => codexToolHostAttachment(
       attachment,
-      collaborationProviderRuntimeOptions(attachment.actorId)
+      await collaborationProviderRuntimeOptionsWithAgentContext(attachment.actorId)
     ),
     runBackgroundPrompt: (input) => codexRuntime.runEphemeralPrompt({
       cwd: input.cwd,
@@ -364,6 +396,8 @@ const sessionApplicationService = new SessionApplicationService({
 const backgroundAgentService = new BackgroundAgentService({
   registry: agentProviderRegistry,
   defaultProviderId: "codex-app-server",
+  resolveProviderId: (provider) => resolveAgentProviderId(provider),
+  resolveAgentContext: (agentId, { intent } = {}) => agentContextService.buildAgentContext(agentId, { intent }),
   onOperationEvent: (type, payload) => emitEvent(type, payload)
 });
 const projectToolsetInitializer = new ProjectToolsetInitializer({
@@ -1064,19 +1098,126 @@ function emitEvent(type, payload, options = {}) {
 
   const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
   if (sessionId && store.db) {
-    const sessionEvent = store.appendSessionEvent({
-      eventId: randomUUID(),
-      sessionId,
-      type,
-      source: options.source || payload?.source || null,
-      payload,
-      createdAt: event.createdAt
-    });
-    if (sessionEvent) {
-      for (const listener of sessionEventListeners) {
-        listener(sessionEvent);
+    try {
+      const sessionEvent = store.appendSessionEvent({
+        eventId: randomUUID(),
+        sessionId,
+        type,
+        source: options.source || payload?.source || null,
+        payload,
+        createdAt: event.createdAt
+      });
+      if (sessionEvent) {
+        for (const listener of sessionEventListeners) {
+          listener(sessionEvent);
+        }
+        for (const dshEvent of dshLiveEvents(sessionEvent)) {
+          broadcastDshMuxFrame({ type: "session/event", sessionId, event: dshEvent });
+        }
+        const running = dshRunningStatusForEvent(type);
+        if (running !== null) {
+          broadcastDshHostFrame({ type: "host/session-status", sessionId, running });
+        }
       }
+    } catch (error) {
+      // 事件落库失败不得阻断 SSE 广播；记录告警供后续对账。
+      console.error(`[session-events] append failed for type=${type} session=${sessionId}: ${error.message}`);
     }
+  }
+}
+
+function dshLiveEvents(sessionEvent) {
+  const sourceSeq = Number(sessionEvent?.sequence ?? 0);
+
+  if (sessionEvent?.type === "SessionUserMessageCreated" || sessionEvent?.type === "user/message") {
+    if (dshLiveTurns.has(sessionEvent?.sessionId)) return [];
+    const mapped = mapDshEvent(sessionEvent) ?? mapDshFallbackEvent(sessionEvent);
+    if (!mapped) return [];
+    return [{ ...mapped, seq: sourceSeq }];
+  }
+
+  if (sessionEvent?.type === "CodexThreadCompleted" || sessionEvent?.type === "assistant/message") {
+    const mapped = mapDshEvent(sessionEvent) ?? mapDshFallbackEvent(sessionEvent);
+    if (!mapped) return [];
+    const live = dshLiveTurns.get(sessionEvent?.sessionId);
+    if (live) {
+      let seq = live.nextSeq;
+      const time = Date.parse(sessionEvent?.createdAt ?? "") || Date.now();
+      const message = mapped.data?.message;
+      const events = [
+        { ...mapped, seq: seq++, time, data: { turn: live.turn, step: 0, message } },
+        { type: "step/end", seq: seq++, time, data: { turn: live.turn, step: 0 } },
+        { type: "turn/end", seq: seq++, time, data: { turn: live.turn, reason: { kind: "completed" } } },
+      ];
+      dshLiveTurns.delete(sessionEvent.sessionId);
+      dshLiveSequenceBySession.set(sessionEvent.sessionId, seq - 1);
+      return events;
+    }
+    return [{ ...mapped, seq: sourceSeq }];
+  }
+
+  return [];
+}
+
+function publishDshPromptStart(sessionId, text) {
+  const storedTail = store.lastSessionEventSequence(sessionId);
+  let seq = Math.max(storedTail, dshLiveSequenceBySession.get(sessionId) ?? storedTail) + 1;
+  const turn = seq;
+  const time = Date.now();
+  const events = [
+    { type: "turn/start", seq: seq++, time, data: { turn } },
+    {
+      type: "user/message",
+      seq: seq++,
+      time,
+      surfaceOp: "append",
+      data: {
+        id: randomUUID(),
+        role: "user",
+        content: [{ type: "text", text }],
+        source: { kind: "user" },
+      },
+    },
+    { type: "step/start", seq: seq++, time, data: { turn, step: 0 } },
+  ];
+  dshLiveTurns.set(sessionId, { turn, nextSeq: seq });
+  dshLiveSequenceBySession.set(sessionId, seq - 1);
+  for (const event of events) {
+    broadcastDshMuxFrame({ type: "session/event", sessionId, event });
+  }
+  broadcastDshHostFrame({ type: "host/session-status", sessionId, running: true });
+}
+
+function publishDshPromptFailure(sessionId, message) {
+  const live = dshLiveTurns.get(sessionId);
+  if (!live) return;
+  let seq = live.nextSeq;
+  const time = Date.now();
+  const events = [
+    { type: "step/end", seq: seq++, time, data: { turn: live.turn, step: 0 } },
+    { type: "turn/end", seq: seq++, time, data: { turn: live.turn, reason: { kind: "error", message } } },
+  ];
+  dshLiveTurns.delete(sessionId);
+  dshLiveSequenceBySession.set(sessionId, seq - 1);
+  for (const event of events) {
+    broadcastDshMuxFrame({ type: "session/event", sessionId, event });
+  }
+  broadcastDshHostFrame({ type: "host/session-status", sessionId, running: false });
+}
+
+function dshRunningStatusForEvent(type) {
+  switch (type) {
+    case "SessionRunStarted":
+    case "AgentWorkStarted":
+      return true;
+    case "SessionRunInterrupted":
+    case "AgentWorkCompleted":
+    case "CodexThreadCompleted":
+    case "CodexThreadCancelled":
+    case "CodexThreadFailed":
+      return false;
+    default:
+      return null;
   }
 }
 
@@ -1118,13 +1259,13 @@ function updateSessionCollectionConsistencyTimer() {
 function sessionIdFromEventPayload(payload = {}) {
   const value = payload.session?.id || payload.sessionId || null;
   if (value) {
-    if (String(value).startsWith("pty:") || String(value).startsWith("codex:")) {
+    if (String(value).startsWith("codex:")) {
       return String(value);
     }
     if (payload.session?.external?.provider === "codex-app-server") {
       return `codex:${value}`;
     }
-    return `pty:${value}`;
+    return String(value);
   }
   if (payload.threadId) {
     return `codex:${payload.threadId}`;
@@ -1226,32 +1367,6 @@ function updateMockProgress() {
       session.summary = "Working in the background.";
       emitEvent("TaskProgressChanged", { session });
     }
-  }
-}
-
-async function resolveCodexPtySessionId(options) {
-  const rolloutMatch = await waitForCodexRolloutSession(options);
-  if (rolloutMatch) {
-    bindCodexPtySession({
-      ...options,
-      agentSessionId: rolloutMatch.id,
-      strategy: "codex-rollout-session-meta",
-      rolloutPath: rolloutMatch.path
-    });
-    return rolloutMatch;
-  }
-
-  throw new Error("No matching Codex rollout session_meta found after PTY launch");
-}
-
-async function bindCodexPtySessionWhenAvailable(options) {
-  try {
-    const match = await resolveCodexPtySessionId(options);
-    console.log(`[codex-pty] bound ${options.corptieSessionId} to ${match.id}`);
-    return match;
-  } catch (error) {
-    console.log(`[codex-pty] session id binding pending/failed for ${options.corptieSessionId}: ${error.message}`);
-    return null;
   }
 }
 
@@ -1446,7 +1561,7 @@ function upsertManagedCodexSession(session, preferredAgentId = null) {
 }
 
 function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
-  if (!store.db || !session?.id || session.external?.provider === "codex-pty") return null;
+  if (!store.db || !session?.id) return null;
   // 2026-08-15 决策：Agent 由用户手动创建，Session 必须绑定已有 Agent。
   // 只做绑定（bindSession 内部要求 agent 已存在），绝不注册/创建/覆盖 agent 信息。
   const bound = collaborationCore.getAgentForSession(session.id);
@@ -1464,6 +1579,33 @@ function collaborationThreadOptions(agentId) {
     actorId: agentId,
     tools: hostToolCatalog.definitions()
   }, collaborationProviderRuntimeOptions(agentId));
+}
+
+// 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
+async function collaborationThreadOptionsWithAgentContext(agentId) {
+  const base = collaborationThreadOptions(agentId);
+  if (!agentId) return base;
+  const agentContext = await collaborationAgentContextInstructions(agentId);
+  if (!agentContext) return base;
+  const developerInstructions = [agentContext, base.developerInstructions].filter(Boolean).join("\n\n");
+  return { ...base, developerInstructions };
+}
+
+async function collaborationProviderRuntimeOptionsWithAgentContext(agentId) {
+  const base = collaborationProviderRuntimeOptions(agentId);
+  if (!agentId) return base;
+  const agentContext = await collaborationAgentContextInstructions(agentId);
+  if (!agentContext) return base;
+  const developerInstructions = [agentContext, base.developerInstructions].filter(Boolean).join("\n\n");
+  return { ...base, developerInstructions };
+}
+
+// Agent 上下文（systemPrompt + description + per-agent 记忆），异步组装。
+// 仅用于会话创建时注入 Agent 身份；resume / workspace 切换沿用静态协议指令。
+async function collaborationAgentContextInstructions(agentId) {
+  if (!agentId) return "";
+  const context = await agentContextService.buildAgentContext(agentId, { intent: "" });
+  return context?.instructions ?? "";
 }
 
 function collaborationProviderRuntimeOptions(agentId) {
@@ -1511,6 +1653,19 @@ function claudeCollaborationRuntimeOptions(agentId) {
   };
 }
 
+// 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
+async function claudeCollaborationRuntimeOptionsWithAgentContext(agentId) {
+  const base = claudeCollaborationRuntimeOptions(agentId);
+  if (!agentId) return base;
+  const agentContext = await collaborationAgentContextInstructions(agentId);
+  if (!agentContext) return base;
+  const append = [agentContext, collaborationRuntimeInstructions(agentId)].filter(Boolean).join("\n\n");
+  return {
+    ...base,
+    systemPrompt: { ...base.systemPrompt, append }
+  };
+}
+
 function collaborationMcpProcessOptions(agentId) {
   return {
     command: process.execPath,
@@ -1523,8 +1678,8 @@ function collaborationMcpProcessOptions(agentId) {
   };
 }
 
-function claudeRuntimeOptionsForSession(providerSessionId) {
-  const sessionIds = [providerSessionId, `pty:${providerSessionId}`];
+async function claudeRuntimeOptionsForSession(providerSessionId) {
+  const sessionIds = [providerSessionId];
   let agent = sessionIds
     .map((sessionId) => collaborationCore.getAgentForSession(sessionId))
     .find(Boolean);
@@ -1537,7 +1692,7 @@ function claudeRuntimeOptionsForSession(providerSessionId) {
   return agent
     ? claudeToolHostAttachment(
         { actorId: agent.agentId, tools: hostToolCatalog.definitions() },
-        claudeCollaborationRuntimeOptions(agent.agentId)
+        await claudeCollaborationRuntimeOptionsWithAgentContext(agent.agentId)
       )
     : {};
 }
@@ -1896,48 +2051,6 @@ function codexAppServerSessionCapabilities(overrides = {}) {
   };
 }
 
-async function waitForCodexRolloutSession(options) {
-  for (let attempt = 0; attempt < 15; attempt += 1) {
-    await delay(attempt === 0 ? 4000 : 1000);
-    const match = await findCodexRolloutSession(options);
-    if (match) {
-      return match;
-    }
-  }
-  return null;
-}
-
-async function findCodexRolloutSession(options) {
-  const root = join(os.homedir(), ".codex", "sessions");
-  const startedAfterMs = Date.parse(options.startedAfter ?? 0);
-  const files = await listRolloutFiles(root);
-  const candidates = [];
-
-  for (const path of files) {
-    const info = await stat(path).catch(() => null);
-    if (!info || info.mtimeMs < startedAfterMs - 5000) {
-      continue;
-    }
-    candidates.push({ path, mtimeMs: info.mtimeMs });
-  }
-
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const matching = [];
-  for (const candidate of candidates.slice(0, 24)) {
-    const meta = await readSessionMeta(candidate.path).catch(() => null);
-    if (!meta?.id || meta.cwd !== options.cwd) {
-      continue;
-    }
-    const timestampMs = codexTimestampMs(meta.timestamp);
-    if (Number.isFinite(startedAfterMs) && timestampMs && timestampMs < startedAfterMs - 5000) {
-      continue;
-    }
-    matching.push({ id: meta.id, path: candidate.path, timestampMs });
-  }
-
-  return matching.sort((a, b) => b.timestampMs - a.timestampMs)[0] ?? null;
-}
-
 async function findCodexRolloutBySessionId(sessionId) {
   if (!sessionId) {
     return null;
@@ -1962,6 +2075,44 @@ async function findCodexRolloutBySessionId(sessionId) {
     }
   }
   return null;
+}
+
+/**
+ * 从 codex rollout 读取某个 Corptie session 的干净逐条对话消息。
+ *
+ * Corptie 的 session_events 溯源里，codex provider 的 assistant 逐条回复正文从未
+ * 以 assistant/message surface 事件持久化（只在 turn/completed 时把最后一个 agent
+ * message 写入 session.summary，随每个进度事件重复广播）。因此 DSH session.history
+ * 在 surface 事件缺失时，需要回退到 codex rollout JSONL（真正的正文持久化）读取
+ * 完整对话。sessionId 形如 "codex:<threadId>"，去掉前缀即 codex thread id。
+ *
+ * @param {string} sessionId - Corptie session id（"codex:<threadId>" 或裸 threadId）
+ * @returns {Promise<Array<{role:'user'|'assistant', text:string}>>}
+ *   对话消息数组；找不到 rollout 或读取失败时返回空数组（由调用方决定降级）。
+ */
+async function readCodexSessionConversation(sessionId) {
+  const threadId = String(sessionId ?? "").replace(/^codex:/, "");
+  if (!threadId) return [];
+  const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
+  if (!rollout?.path) return [];
+  const text = await readFile(rollout.path, "utf8").catch(() => "");
+  if (!text) return [];
+  return parseCodexRolloutConversation(text);
+}
+
+/**
+ * 读取某个 Corptie session 的完整 codex rollout 时间线（对话 + 工具调用/结果），
+ * 供 DSH 轨迹视图还原工具调用轨迹。与 readCodexSessionConversation 共用 rollout
+ * 定位逻辑，只是用 parseCodexRolloutTimeline 保留工具调用/结果条目。
+ */
+async function readCodexSessionTimeline(sessionId) {
+  const threadId = String(sessionId ?? "").replace(/^codex:/, "");
+  if (!threadId) return [];
+  const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
+  if (!rollout?.path) return [];
+  const text = await readFile(rollout.path, "utf8").catch(() => "");
+  if (!text) return [];
+  return parseCodexRolloutTimeline(text);
 }
 
 async function ensureCodexSessionPermissions(session) {
@@ -2017,30 +2168,6 @@ async function readSessionMeta(path) {
     return parsed.payload ?? null;
   }
   return null;
-}
-
-function bindCodexPtySession(options) {
-  const resume = {
-    command: options.command || resolveCodexCommand(),
-    args: ["resume", ...(options.resumeOptions ?? []), options.agentSessionId],
-    strategy: options.strategy,
-    agentSessionId: options.agentSessionId,
-    cwd: options.cwd,
-    resolvedAt: now(),
-    rolloutPath: options.rolloutPath
-  };
-
-  const session = ptyAgents.updateSession(options.corptieSessionId, {
-    agentSessionId: options.agentSessionId,
-    resume,
-    phase: "bound",
-    canResume: true,
-    summary: `Bound to Codex session ${options.agentSessionId}.`
-  });
-
-  if (session) {
-    emitEvent("CodexPtySessionBound", { session, agentSessionId: options.agentSessionId });
-  }
 }
 
 function codexTimestampMs(value) {
@@ -2168,21 +2295,15 @@ async function resolvedNewCodexRuntimeConfig(input = {}) {
 }
 
 function normalizeSessionId(id) {
-  return id.startsWith("pty:") ? id.slice(4) : id;
+  return id;
 }
 
 function requestedProviderId(value) {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  const aliases = {
-    "": "codex-app-server",
-    codex: "codex-app-server",
-    "codex-app-server": "codex-app-server",
-    claude: "claude-sdk",
-    "claude-sdk": "claude-sdk",
-    pty: "pty",
-    "codex-pty": "codex-pty"
-  };
-  return aliases[normalized] ?? normalized;
+  // 先走统一的 Agent provider id 规范化（覆盖 codex / claude / claude_code 等别名）。
+  const resolved = resolveAgentProviderId(normalized);
+  if (resolved) return resolved;
+  return normalized;
 }
 
 function titleFromPrompt(prompt) {
@@ -2270,6 +2391,164 @@ function sendJson(response, statusCode, body) {
   response.end(json);
 }
 
+/**
+ * 最小 ZIP 写入器（无第三方依赖），用 node:zlib 的 deflateRawSync 压缩每个条目，
+ * 手写 CRC32 与 local/central directory。仅支持 store 或 deflate 的普通文件条目，
+ * 足够满足 session.export 返回一个含 JSON 的 ZIP 的需求。
+ */
+function buildZip(files) {
+  const parts = [];
+  const central = [];
+  let offset = 0;
+
+  const crc32 = (buf) => {
+    let crc = 0xffffffff;
+    for (let i = 0; i < buf.length; i++) {
+      crc ^= buf[i];
+      for (let k = 0; k < 8; k++) {
+        crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+      }
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+
+  const u16 = (n) => {
+    const b = Buffer.alloc(2);
+    b.writeUInt16LE(n & 0xffff, 0);
+    return b;
+  };
+  const u32 = (n) => {
+    const b = Buffer.alloc(4);
+    b.writeUInt32LE(n >>> 0, 0);
+    return b;
+  };
+
+  const dosDateTime = () => {
+    const d = new Date();
+    const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+    const date = (((d.getFullYear() - 1980) & 0x7f) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+    return { time, date };
+  };
+
+  for (const file of files) {
+    const nameBuf = Buffer.from(file.name, "utf8");
+    const data = Buffer.from(file.data, "utf8");
+    const compressed = deflateRawSync(data);
+    const crc = crc32(data);
+    const { time, date } = dosDateTime();
+
+    // local file header
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); // version needed
+    local.writeUInt16LE(0x0800, 6); // UTF-8 flag
+    local.writeUInt16LE(8, 8); // deflate
+    local.writeUInt16LE(time, 10);
+    local.writeUInt16LE(date, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuf.length, 26);
+    local.writeUInt16LE(0, 28); // extra len
+
+    parts.push(local, nameBuf, compressed);
+    const localSize = 30 + nameBuf.length + compressed.length;
+
+    // central directory entry
+    const cent = Buffer.alloc(46);
+    cent.writeUInt32LE(0x02014b50, 0);
+    cent.writeUInt16LE(20, 4); // version made by
+    cent.writeUInt16LE(20, 6); // version needed
+    cent.writeUInt16LE(0x0800, 8);
+    cent.writeUInt16LE(8, 10);
+    cent.writeUInt16LE(time, 12);
+    cent.writeUInt16LE(date, 14);
+    cent.writeUInt32LE(crc, 16);
+    cent.writeUInt32LE(compressed.length, 20);
+    cent.writeUInt32LE(data.length, 24);
+    cent.writeUInt16LE(nameBuf.length, 28);
+    // extra/comment/disk/attrs zero
+    cent.writeUInt32LE(offset, 42); // local header offset
+
+    central.push(cent, nameBuf);
+    offset += localSize;
+  }
+
+  const centralOffset = offset;
+  const centralBuf = Buffer.concat(central);
+  const centralSize = centralBuf.length;
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4); // disk
+  end.writeUInt16LE(0, 6); // disk with cd
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(centralOffset, 16);
+  end.writeUInt16LE(0, 20); // comment len
+
+  return Buffer.concat([...parts, centralBuf, end]);
+}
+
+/**
+ * 处理 DSH session.export（HEAD/GET），返回包含 session 时间线与会话记录的 ZIP。
+ *
+ * 前端契约（dsh-session-log-export）：HEAD 必须 200（response.ok），随后 GET 下载
+ * ZIP。query 带 sessionId 与 includeDescendants。文件名由前端生成，后端无需设置
+ * content-disposition 的文件名，但设置也无害。ZIP 内容为 JSON 导出（对话 + 工具轨迹），
+ * 对用户有用的同时满足「可下载的合法 zip」这一前端唯一硬性要求。
+ */
+function handleSessionExport({ request, response, url, readCodexSessionConversation, readCodexSessionTimeline }) {
+  const sessionId = url.searchParams.get("sessionId") ?? "";
+  if (!sessionId) {
+    sendJson(response, 400, { error: "session.export requires sessionId" });
+    return;
+  }
+
+  Promise.all([
+    readCodexSessionConversation(sessionId).catch(() => []),
+    readCodexSessionTimeline(sessionId).catch(() => [])
+  ]).then(([conversation, timeline]) => {
+    const payload = JSON.stringify(
+      {
+        sessionId,
+        exportedAt: now(),
+        conversation: conversation ?? [],
+        timeline: timeline ?? []
+      },
+      null,
+      2
+    );
+
+    const zip = buildZip([
+      { name: "session.json", data: payload }
+    ]);
+
+    // HEAD 只回状态头（无 body），GET 回完整 ZIP。
+    if (request.method === "HEAD") {
+      response.writeHead(200, {
+        "content-type": "application/zip",
+        "content-length": zip.length
+      });
+      response.end();
+      return;
+    }
+
+    response.writeHead(200, {
+      "content-type": "application/zip",
+      "content-length": zip.length,
+      "content-disposition": `attachment; filename="dsh-session-${sessionId.replace(/[^A-Za-z0-9_-]/g, "_")}.zip"`
+    });
+    response.end(zip);
+  }).catch((error) => {
+    console.error("[dsh-adapter] session.export error:", error?.message ?? error);
+    if (!response.headersSent) {
+      sendJson(response, 500, { error: "session.export failed" });
+    }
+  });
+}
+
 async function readJson(request) {
   const chunks = [];
   for await (const chunk of request) {
@@ -2307,7 +2586,7 @@ function listGatewaySessions(options = {}) {
 
 function listCodexProviderSessions(options = {}) {
   const archived = options.archived === true;
-  const storedSessions = ptyAgents.list({ archived });
+  const storedSessions = store.listSessions({ archived });
   const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
   const managedById = new Map(
     Array.from(sessionPresentationCache.values())
@@ -2392,9 +2671,7 @@ async function createSessionThroughApplication(providerId, input = {}, context =
     });
     const legacyEvent = {
       "codex-app-server": "CodexThreadCreated",
-      "claude-sdk": "ClaudeSessionStarted",
-      "codex-pty": "CodexPtySessionStarted",
-      pty: "PtySessionStarted"
+      "claude-sdk": "ClaudeSessionStarted"
     }[providerId];
     if (legacyEvent) {
       emitEvent(legacyEvent, {
@@ -2412,11 +2689,25 @@ async function createSessionThroughApplication(providerId, input = {}, context =
 
 // 实体层 Agent.provider → providerId 映射。deepseek / harness 暂无执行 runtime，返回 null。
 function entityAgentProviderId(provider) {
+  return resolveAgentProviderId(provider);
+}
+
+// provider-neutral 的 Agent provider id 规范化：把前端展示 tag / 历史别名 / registry id
+// 统一映射为 registry id（codex-app-server / claude-sdk），未知值返回 null。
+// 所有需要从 agent.provider 解析 registry provider 的路径（WorkItem 执行、后台 Agent、
+// 会话启动）都应复用此函数，避免映射散落、不一致。
+function resolveAgentProviderId(provider) {
+  const normalized = typeof provider === "string" ? provider.trim().toLowerCase() : "";
   const aliases = {
+    "": "codex-app-server",
     codex: "codex-app-server",
-    claude_code: "claude-sdk"
+    "codex-app-server": "codex-app-server",
+    claude: "claude-sdk",
+    claude_code: "claude-sdk",
+    "claude-code": "claude-sdk",
+    "claude-sdk": "claude-sdk"
   };
-  return aliases[provider] ?? null;
+  return aliases[normalized] ?? null;
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
@@ -2448,8 +2739,36 @@ async function launchWorkItemSession({ agent, workItem }) {
   return session;
 }
 
+// 实体层「自由对话」入口：仅凭 Agent（role=assistant）开聊，不绑定具体工作项。
+// 与 launchWorkItemSession 复用同一 createSessionThroughApplication。
+// cwd 不再由客户端提供，而是取自该 Agent 的 work_dir（assistant 下所有会话共用此目录）；
+// 目录缺失时在此幂等创建。独立贡献者的会话应走 WorkItem 绑定路径（launchWorkItemSession），
+// 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
+async function launchAgentSession({ agent, title, prompt }) {
+  const providerId = entityAgentProviderId(agent.provider);
+  if (!providerId) {
+    const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
+    error.code = "PROVIDER_UNSUPPORTED";
+    throw error;
+  }
+  const cwd = await ensureAgentWorkDir(agent, { environmentName });
+  const session = await createSessionThroughApplication(
+    providerId,
+    { cwd, title, prompt, agent: agent.name },
+    { source: "agent", actorId: agent.agentId }
+  );
+  // 把自由会话归属到该 Agent，使 GET /agents/:id/sessions 与前端按 Agent 分组能定位到它。
+  collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
+  return session;
+}
+
 // 实体 WorkItem 状态由「执行动作」自动驱动，不由用户手改：
 // 已绑定当前活跃 session → 依据 session 状态推进 work_items.status；无绑定则保持 todo。
+//
+// 状态机（与前端 WorkItemColumn 对齐）：
+//   running/blocked              → in_progress（进行中，自然切换，无需确认）
+//   complete/completed/done      → review（待确认完成：Session 判定满足验收标准，等用户确认后才变 done）
+//   failed/cancelled             → todo（失败/取消回退待开始，用户可再次执行）
 function settleEntityWorkItemFromSession(session) {
   if (!session?.id) return null;
   const workItem = store.getWorkItemBySessionId(session.id);
@@ -2457,9 +2776,12 @@ function settleEntityWorkItemFromSession(session) {
   const sessionStatus = session.status;
   let nextStatus;
   if (["running", "blocked"].includes(sessionStatus)) nextStatus = "in_progress";
-  else if (["complete", "completed", "done"].includes(sessionStatus)) nextStatus = "done";
+  else if (["complete", "completed", "done"].includes(sessionStatus)) nextStatus = "review";
   else if (["failed", "cancelled"].includes(sessionStatus)) nextStatus = "todo";
+  // 用户已手动确认完成（done）后，不因会话状态回退；只有真正的推进才写库。
   if (!nextStatus || nextStatus === workItem.status) return workItem;
+  // 已完成的 WorkItem 不再被会话完成事件重新推进（用户已确认 done 是终态之一）。
+  if (workItem.status === "done" && nextStatus === "review") return workItem;
   store.updateWorkItem(workItem.id, { status: nextStatus });
   return store.getWorkItem(workItem.id);
 }
@@ -2511,7 +2833,7 @@ async function createCodexProviderSession(input = {}) {
       ...permissions,
       model: runtime.model,
       modelProvider: input.modelProvider,
-      ...(input.toolHost?.providerAttachment ?? collaborationThreadOptions(collaborationAgentId))
+      ...(input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(collaborationAgentId))
     });
     const prompt = typeof input.prompt === "string" && input.prompt.trim()
       ? input.prompt.trim()
@@ -3002,7 +3324,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
   }
 
-  if (isClearCommand(value) && before.external?.provider !== "codex-pty") {
+  if (isClearCommand(value)) {
     const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
     if (result?.cleared === true) return result;
     const session = {
@@ -3033,11 +3355,6 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
 
-  if (routedSessionId.startsWith("pty:")) {
-    const id = normalizeSessionId(routedSessionId);
-    bumpChoiceGeneration(routedSessionId);
-    store.clearActiveChoicePrompt(id);
-  }
   const result = await sessionApplicationService.sendMessage(sessionId, value, {
     before,
     options,
@@ -3066,10 +3383,9 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   }, { sessionId: routedSessionId, source });
   return {
     accepted: true,
-    cleared: isClearCommand(value) && before.external?.provider === "codex-pty",
+    cleared: false,
     sessionId: publicSessionId,
     legacySessionId: routedSessionId,
-    session: isClearCommand(value) && before.external?.provider === "codex-pty" ? before : undefined,
     result
   };
 }
@@ -3428,7 +3744,7 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
 }
 
 function unifiedErrorStatus(error) {
-  if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND"].includes(error.code)) return 404;
+  if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND", "AGENT_PROVIDER_NOT_FOUND"].includes(error.code)) return 404;
   if (error.code === "INVALID_PROJECT_ACTION") return 400;
   if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
@@ -4386,6 +4702,27 @@ function route(request, response) {
     onSwitchWorkspace: async (agentId, input) => {
       const { sessionId } = requireAgentLogicalSession(agentId);
       return switchSessionWorkspace(sessionId, input.target_worktree_id, undefined, input.continuation_checkpoint);
+    },
+    onSearchMemory: async (agentId, intent) => {
+      const { sessionId } = requireAgentLogicalSession(agentId);
+      const session = store.getSession(sessionId);
+      const objectiveId = session?.objectiveId ?? null;
+      const workItemId = session?.workItemId ?? null;
+      const memories = await hubService.retrieveMemory(intent, { agentId, objectiveId, workItemId });
+      return {
+        scopes: { agentId, objectiveId, workItemId },
+        count: memories.length,
+        memories: memories.map((m) => ({
+          id: m.id,
+          ownerType: m.owner_type,
+          ownerId: m.owner_id,
+          kind: m.kind,
+          content: m.content,
+          tags: (() => { try { return JSON.parse(m.tags_json || "[]"); } catch { return []; } })(),
+          confidence: Number(m.confidence ?? 0),
+          promotionStatus: m.promotion_status
+        }))
+      };
     }
   })) {
     return;
@@ -4400,8 +4737,84 @@ function route(request, response) {
     router: collaborationRouter,
     memoryExtractor,
     assistantService,
-    launchSession: launchWorkItemSession
+    launchSession: launchWorkItemSession,
+    launchAgentSession,
+    backgroundAgentService,
+    skillRegistryService
   })) {
+    return;
+  }
+
+  // DSH Session log 下载（路径 A 第 1 层）：/api/session.export 是 HTTP 端点而非 JSON-RPC，
+  // 前端先 HEAD 探活（要求 response.ok），再以 GET 触发浏览器下载 ZIP。
+  // 必须在 /api/session.* 的 JSON-RPC 分发之前拦截，否则会落到 session.export 的
+  // dispatch switch（未实现）而 404。文件名约定由前端 sessionLogZipFilename 决定，
+  // 后端只负责返回有效 ZIP 字节。
+  if (url.pathname === "/api/session.export") {
+    handleSessionExport({ request, response, url, readCodexSessionConversation, readCodexSessionTimeline });
+    return;
+  }
+
+  // DSH Session RPC 适配层（路径 A 第 1 层）：让 DSH web 前端渲染并驱动 Corptie 会话。
+  // 接管 /api/session.*、/api/subagent.*，以及 boot 握手宿主级端点
+  // host.describe / settings.describe / workspace.list，映射到 SessionApplicationService + store。
+  // handleDshRpcRequest 是 async（需 readJson），用 then 链；route 本身保持同步。
+  if (
+    url.pathname.startsWith("/api/session.")
+    || url.pathname.startsWith("/api/subagent.")
+    || url.pathname === "/api/host.describe"
+    || url.pathname === "/api/settings.describe"
+    || url.pathname === "/api/settings.mutate"
+    || url.pathname === "/api/workspace.list"
+  ) {
+    handleDshRpcRequest({
+      request,
+      response,
+      url,
+      sessionApplicationService,
+      store,
+      sendJson,
+      readJson,
+      readCodexSessionConversation,
+      readCodexSessionTimeline,
+      createSession: (input) => createSessionThroughApplication(
+        "codex-app-server",
+        input,
+        { source: "dsh" }
+      ),
+      sendSessionMessage: async (sessionId, text) => {
+        publishDshPromptStart(sessionId, text);
+        try {
+          return await sendUnifiedSessionMessage(sessionId, text, { type: "dsh" });
+        } catch (error) {
+          publishDshPromptFailure(sessionId, error?.message ?? "Send failed");
+          throw error;
+        }
+      }
+    }).then((handled) => {
+      if (!handled) {
+        sendJson(response, 404, { error: "dsh rpc not handled" });
+      }
+    }).catch((error) => {
+      console.error("[dsh-adapter] unhandled error:", error?.message ?? error);
+      if (!response.headersSent) {
+        sendJson(response, 500, { error: "internal error" });
+      }
+    });
+    return;
+  }
+
+  // DSH web 前端静态快照（路径 B2）：服务 DSH 的 React + Cordis 前端（脱离 DSH host），
+  // 让 WKWebView 加载 Corptie backend 直接提供的 index.html + 插件 bundle + assets，
+  // 而 /api/session.* 由上方 dshRpcAdapter 响应（同源，无需桥接）。
+  // 只接管 GET/HEAD 的 /、/assets/*、/plugins/*、/manifest.webmanifest、/favicon.svg。
+  if (isDshWebStaticPath(request, url.pathname)) {
+    handleDshWebStatic({ request, response, url }).catch((error) => {
+      console.error("[dsh-web-static] unhandled error:", error?.message ?? error);
+      if (!response.headersSent) {
+        sendJson(response, 500, { error: "internal error" });
+      }
+    });
     return;
   }
 
@@ -4423,9 +4836,13 @@ function route(request, response) {
   const providerModelsMatch = url.pathname.match(/^\/providers\/([^/]+)\/models$/);
   if (request.method === "GET" && providerModelsMatch) {
     const providerId = decodeURIComponent(providerModelsMatch[1]);
-    Promise.resolve(sessionApplicationService.listModels(providerId, {
-      refresh: url.searchParams.get("refresh") === "true"
-    }))
+    // listModels 在 provider 不存在时会同步抛 AgentProviderNotFoundError；
+    // 用 Promise.resolve().then() 包裹，把同步异常转为 rejection，交给 .catch 统一处理，
+    // 避免未捕获异常导致进程崩溃（例如前端仍引用已删除的 codex-pty provider）。
+    Promise.resolve()
+      .then(() => sessionApplicationService.listModels(providerId, {
+        refresh: url.searchParams.get("refresh") === "true"
+      }))
       .then((models) => sendJson(response, 200, models))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), {
         error: error.message,
@@ -4988,7 +5405,7 @@ function route(request, response) {
         }
 
         const id = normalizeSessionId(rawId);
-        const session = ptyAgents.archive(id, archived);
+        const session = store.archiveSession(id, archived);
         if (!session) {
           sendJson(response, 404, { error: "Session not found" });
           return;
@@ -5006,7 +5423,7 @@ function route(request, response) {
       .then((input) => {
         const id = normalizeSessionId(decodeURIComponent(sessionPinMatch[1]));
         const pinned = input.pinned !== false;
-        const session = ptyAgents.pin(id, pinned);
+        const session = store.pinSession(id, pinned);
         if (!session) {
           sendJson(response, 404, { error: "Session not found" });
           return;
@@ -5229,289 +5646,6 @@ function route(request, response) {
     return;
   }
 
-  const sessionDisconnectMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/disconnect$/);
-  if (request.method === "POST" && sessionDisconnectMatch) {
-    const rawId = decodeURIComponent(sessionDisconnectMatch[1]);
-    sessionApplicationService.disconnectSession(rawId, { source: "http" })
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/pty/sessions") {
-    readJson(request)
-      .then((input) => createSessionThroughApplication("pty", input, { source: "legacy-http" }))
-      .then((session) => {
-        sendJson(response, 201, { session });
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "pty" }));
-      });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/codex/pty-sessions") {
-    readJson(request)
-      .then((input) => {
-        const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-        const cwd = sessionWorkspacePath(input.cwd);
-        return assertDirectory(cwd).then(() => ({ input, prompt, cwd }));
-      })
-      .then(async ({ input, prompt, cwd }) => {
-        const title = sessionTitleForWorkspace(input.title, cwd);
-        const releaseTitle = reserveSessionTitle(title);
-        try {
-        const existingSessionId = typeof input.existingSessionId === "string" ? input.existingSessionId.trim() : "";
-        const launchPrompt = prompt || "Reply exactly: Ready";
-        const codexCommand = resolveCodexCommand(input.command);
-        const sandbox = normalizeCodexSandbox(input.sandbox);
-        const approvalMode = normalizeCodexApprovalPolicy(input.approvalPolicy);
-        const approval = codexApprovalPolicyForCli(approvalMode);
-        const runtime = await resolvedNewCodexRuntimeConfig(input);
-        const safetyArgs = [
-          "-c",
-          `approval_policy="${approval}"`,
-          "-c",
-          `sandbox_mode="${sandbox}"`,
-          "-c",
-          "auto_update=false"
-        ];
-        const hookArgs = ["--disable", "hooks"];
-        const mcpArgs = input.enableMcp === true
-          ? []
-          : ["-c", "features.rmcp_client=false", "-c", "mcp_servers={}"];
-        const args = [...safetyArgs, ...hookArgs, ...mcpArgs, "--no-alt-screen", "-C", cwd, "-s", sandbox, "-a", approval];
-        const resumeOptions = [...safetyArgs, ...hookArgs, ...mcpArgs, "--no-alt-screen", "-C", cwd, "-s", sandbox, "-a", approval];
-
-        const reasoningLevel = runtime.reasoningLevel ?? "";
-
-        if (runtime.model) {
-          args.push("-m", runtime.model);
-          resumeOptions.push("-m", runtime.model);
-        }
-        if (reasoningLevel) {
-          args.push("-c", `model_reasoning_effort="${reasoningLevel}"`);
-          resumeOptions.push("-c", `model_reasoning_effort="${reasoningLevel}"`);
-        }
-        if (input.search === true) {
-          args.push("--search");
-        }
-        if (existingSessionId) {
-          const rolloutMatch = await findCodexRolloutBySessionId(existingSessionId);
-          const resumeArgs = ["resume", ...resumeOptions, existingSessionId];
-          const session = ptyAgents.start({
-            title,
-            agentName: "Codex CLI",
-            provider: "codex-pty",
-            accent: "cyan",
-            command: codexCommand,
-            args: resumeArgs,
-            cwd,
-            initialPrompt: "",
-            resume: {
-              command: codexCommand,
-              args: resumeArgs,
-              strategy: "codex-resume-session-id",
-              agentSessionId: existingSessionId,
-              cwd,
-              currentModel: runtime.model,
-              currentReasoningLevel: reasoningLevel || null,
-              resumeOptions,
-              rolloutPath: rolloutMatch?.path ?? null
-            },
-            agentSessionId: existingSessionId,
-            currentModel: runtime.model,
-            currentReasoningLevel: reasoningLevel || null,
-            phase: "connecting",
-            connectionReady: false,
-            canResume: true
-          });
-          const logical = await ensureLogicalRouteForProviderSession(session, "codex-pty", {
-            approvalPolicy: approvalMode,
-            sandbox
-          });
-          const routedSession = sessionWithLogicalWorkspace(session, logical);
-          emitEvent("CodexPtySessionStarted", { session: routedSession });
-          sendJson(response, 201, { session: routedSession });
-          return;
-        }
-        if (launchPrompt) {
-          args.push(launchPrompt);
-        }
-
-        const launchWindowStartedAt = new Date(Date.now() - 5000).toISOString();
-        const session = ptyAgents.start({
-          title,
-          agentName: "Codex CLI",
-          provider: "codex-pty",
-          accent: "cyan",
-          command: codexCommand,
-          args,
-          cwd,
-          initialPrompt: prompt,
-          resume: {
-            command: codexCommand,
-            args: [],
-            strategy: "pending-codex-session-id",
-            cwd,
-            currentModel: runtime.model,
-            currentReasoningLevel: reasoningLevel || null,
-            resumeOptions
-          },
-          currentModel: runtime.model,
-          currentReasoningLevel: reasoningLevel || null,
-          phase: "starting",
-          canResume: false
-        });
-
-        bindCodexPtySessionWhenAvailable({
-          corptieSessionId: session.external.sessionId,
-          command: codexCommand,
-          cwd,
-          resumeOptions,
-          startedAfter: launchWindowStartedAt
-        });
-
-        const boundSession = ptyAgents.get(session.external.sessionId);
-        const responseSession = boundSession ? ptyAgents.toSessionSummary(boundSession) : session;
-        const logical = await ensureLogicalRouteForProviderSession(responseSession, "codex-pty", {
-          approvalPolicy: approvalMode,
-          sandbox
-        });
-        const routedSession = sessionWithLogicalWorkspace(responseSession, logical);
-        emitEvent("CodexPtySessionStarted", { session: routedSession });
-        sendJson(response, 201, { session: routedSession });
-        } finally {
-          releaseTitle();
-        }
-      })
-      .catch((error) => {
-        sendJson(response, errorStatus(error), sessionTitleErrorPayload(error, { adapter: "codex-pty" }));
-      });
-    return;
-  }
-
-  const ptyEventsMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/events$/);
-  if (request.method === "GET" && ptyEventsMatch) {
-    const sessionId = decodeURIComponent(ptyEventsMatch[1]);
-    if (!ptyAgents.subscribeDetail(sessionId, response)) {
-      sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
-    }
-    return;
-  }
-
-  const ptySessionMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)$/);
-  if (request.method === "GET" && ptySessionMatch) {
-    const sessionId = decodeURIComponent(ptySessionMatch[1]);
-    const detail = ptyAgents.detail(sessionId);
-    if (!detail) {
-      sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
-      return;
-    }
-    sendJson(response, 200, { thread: detail });
-    return;
-  }
-
-  const ptyInputMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/input$/);
-  if (request.method === "POST" && ptyInputMatch) {
-    const sessionId = decodeURIComponent(ptyInputMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const text = typeof input.text === "string" ? input.text : "";
-        if (!text.trim()) {
-          sendJson(response, 400, { error: "Input text is required", adapter: "pty" });
-          return;
-        }
-        const session = ptyAgents.get(sessionId);
-        if (isClearCommand(text) && session?.provider !== "codex-pty") {
-          const error = new Error("/clear is only available for Codex sessions.");
-          error.code = "UNSUPPORTED_COMMAND";
-          throw error;
-        }
-        store.clearActiveChoicePrompt(sessionId);
-        const shouldBindCodexSession = session?.provider === "codex-pty" && !session.agentSessionId;
-        const bindStartedAt = session?.createdAt ?? new Date(Date.now() - 5000).toISOString();
-        ptyAgents.write(sessionId, text, {
-          submit: input.submit !== false
-        });
-        if (shouldBindCodexSession) {
-          bindCodexPtySessionWhenAvailable({
-            corptieSessionId: sessionId,
-            command: session.command || "codex",
-            cwd: session.cwd,
-            resumeOptions: session.resume?.resumeOptions ?? [],
-            startedAfter: bindStartedAt
-          }).then((match) => {
-            if (!match) {
-              ptyAgents.updateSession(sessionId, {
-                phase: "binding_failed",
-                canResume: false,
-                summary: "Codex session id was not found yet; this task can continue while connected, but cannot be reconnected after restart until it binds."
-              });
-            }
-          });
-        }
-        emitEvent("PtySessionInputSent", { sessionId });
-        sendJson(response, 202, {
-          mode: "pty",
-          cleared: isClearCommand(text) && session?.provider === "codex-pty",
-          sessionId: `pty:${sessionId}`,
-          visibleInCodexDesktop: false
-        });
-      })
-      .catch((error) => {
-        sendJson(response, error.code === "UNSUPPORTED_COMMAND" ? 409 : 502, {
-          error: error.message,
-          code: error.code,
-          adapter: "pty"
-        });
-      });
-    return;
-  }
-
-  const ptyModelMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/model$/);
-  if (request.method === "POST" && ptyModelMatch) {
-    const sessionId = decodeURIComponent(ptyModelMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const model = typeof input.model === "string" ? input.model.trim() : "";
-        if (!model) {
-          sendJson(response, 400, { error: "Model is required", adapter: "pty" });
-          return;
-        }
-        const session = ptyAgents.switchModel(sessionId, model);
-        emitEvent("PtySessionModelChanged", { sessionId, model });
-        sendJson(response, 202, { session, model });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
-    return;
-  }
-
-  const ptyReasoningMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/reasoning$/);
-  if (request.method === "POST" && ptyReasoningMatch) {
-    const sessionId = decodeURIComponent(ptyReasoningMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const reasoningLevel = typeof input.reasoningLevel === "string" ? input.reasoningLevel.trim() : "";
-        if (!reasoningLevel) {
-          sendJson(response, 400, { error: "Reasoning level is required", adapter: "pty" });
-          return;
-        }
-        const session = ptyAgents.switchReasoning(sessionId, reasoningLevel);
-        emitEvent("PtySessionReasoningChanged", { sessionId, reasoningLevel });
-        sendJson(response, 202, { session, reasoningLevel });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
-    return;
-  }
-
   const ptyDisconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/disconnect$/);
   if (request.method === "POST" && ptyDisconnectMatch) {
     const sessionId = decodeURIComponent(ptyDisconnectMatch[1]);
@@ -5524,32 +5658,6 @@ function route(request, response) {
     return;
   }
 
-  const ptyTerminateMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/terminate$/);
-  if (request.method === "POST" && ptyTerminateMatch) {
-    const sessionId = decodeURIComponent(ptyTerminateMatch[1]);
-    const session = ptyAgents.terminate(sessionId);
-    if (!session) {
-      sendJson(response, 404, { error: "PTY session not found", adapter: "pty" });
-      return;
-    }
-    emitEvent("PtySessionTerminated", { session });
-    sendJson(response, 200, { session });
-    return;
-  }
-
-  const ptyInterruptMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/interrupt$/);
-  if (request.method === "POST" && ptyInterruptMatch) {
-    const sessionId = decodeURIComponent(ptyInterruptMatch[1]);
-    try {
-      const session = ptyAgents.interrupt(sessionId);
-      emitEvent("PtySessionInterrupted", { session });
-      sendJson(response, 200, { session });
-    } catch (error) {
-      sendJson(response, 502, { error: error.message, adapter: "pty" });
-    }
-    return;
-  }
-
   const ptyReconnectMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/reconnect$/);
   if (request.method === "POST" && ptyReconnectMatch) {
     const sessionId = decodeURIComponent(ptyReconnectMatch[1]);
@@ -5559,63 +5667,6 @@ function route(request, response) {
         error: error.message,
         code: error.code ?? null
       }));
-    return;
-  }
-
-  const ptyRawInputMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/raw-input$/);
-  if (request.method === "POST" && ptyRawInputMatch) {
-    const sessionId = decodeURIComponent(ptyRawInputMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const text = typeof input.text === "string" ? input.text : "";
-        ptyAgents.write(sessionId, text, {
-          submit: false,
-          echo: input.echo !== false
-        });
-        emitEvent("PtySessionRawInputSent", { sessionId });
-        sendJson(response, 202, { mode: "pty-raw" });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
-    return;
-  }
-
-  const ptyCodexApprovalMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/codex-approval$/);
-  if (request.method === "POST" && ptyCodexApprovalMatch) {
-    const sessionId = decodeURIComponent(ptyCodexApprovalMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const approved = input.approved === true;
-        const session = ptyAgents.respondToCodexApproval(sessionId, {
-          approved,
-          optionId: input.optionId,
-          optionIndex: input.optionIndex
-        });
-        emitEvent("PtySessionCodexApprovalResponded", { sessionId, approved });
-        sendJson(response, 202, { mode: "codex-approval", approved, session });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
-    return;
-  }
-
-  const ptyChoiceMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/choice$/);
-  if (request.method === "POST" && ptyChoiceMatch) {
-    const sessionId = decodeURIComponent(ptyChoiceMatch[1]);
-    readJson(request)
-      .then((input) => {
-        const session = ptyAgents.respondToPtyChoice(sessionId, {
-          optionId: input.optionId,
-          optionIndex: input.optionIndex
-        });
-        emitEvent("PtySessionChoiceSelected", { sessionId, choiceId: input.choiceId, optionId: input.optionId, optionIndex: input.optionIndex });
-        sendJson(response, 202, { mode: "pty-choice", session });
-      })
-      .catch((error) => {
-        sendJson(response, 502, { error: error.message, adapter: "pty" });
-      });
     return;
   }
 
@@ -5843,16 +5894,6 @@ function route(request, response) {
   const cancelMatch = url.pathname.match(/^\/tasks\/([^/]+)\/cancel$/);
   if (request.method === "POST" && cancelMatch) {
     const taskId = decodeURIComponent(cancelMatch[1]);
-    if (taskId.startsWith("pty:")) {
-      const session = ptyAgents.terminate(taskId.slice(4));
-      if (!session) {
-        sendJson(response, 404, { error: "PTY session not found" });
-        return;
-      }
-      sendJson(response, 200, { session });
-      return;
-    }
-
     if (taskId.startsWith("codex:")) {
       const previous = sessionPresentationCache.get(taskId) ?? store.getSession(taskId);
       if (!previous) {
@@ -5917,6 +5958,17 @@ function route(request, response) {
 
 const server = http.createServer(route);
 
+// DSH 前端实时事件下行通道（WebSocket downlink）：/api/events.mux 与 /api/events.host。
+// 这两个 WebSocket 的「onOpen」是 DSH 前端严格就绪握手的组成部分——不建立则前端
+// 陷入 reconnecting 死循环。最小实现：完成握手后保持连接打开（downlink-only）。
+server.on("upgrade", (request, socket, head) => {
+  const handled = handleDshWebSocketUpgrade({ request, socket, head });
+  if (!handled) {
+    // 非 DSH 路径的升级请求：销毁 socket，避免悬挂。
+    socket.destroy();
+  }
+});
+
 await store.initialize();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
@@ -5975,6 +6027,15 @@ process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir;
 console.log(`[agent-memory] ready shared=${corptieCodexRuntime.sharedMemoryPath}`);
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
 console.log(`[claude-runtime] ready home=${corptieClaudeRuntime.configDir} auth=${corptieClaudeRuntime.credentialsAvailable ? "available" : "missing"} memory=${corptieClaudeRuntime.memoryAvailable ? "ready" : "missing"} plugin=${corptieClaudeRuntime.pluginPath} skill=${corptieClaudeRuntime.skillAvailable ? "ready" : "missing"} mcp=ready`);
+// 确保每个 Agent 的工作目录（assistant workspace / contributor 持久化目录）物理存在。
+// 路径元数据已在 store 迁移期写入 agents.work_dir，这里只做幂等的 mkdir 兜底。
+for (const agent of store.listAgents()) {
+  try {
+    await ensureAgentWorkDir(agent, { environmentName });
+  } catch (error) {
+    console.warn(`[agent-workdir] failed to ensure work dir for ${agent.agentId}: ${error?.message ?? error}`);
+  }
+}
 if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
   const rebuilt = await codexRuntime.listThreads({
     limit: Math.max(100, corptieCodexRuntime.threadMigration.rolloutCount + 20),

@@ -15,6 +15,8 @@ struct CorptieMacApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: AppDelegate?
+
     private let backendClient = BackendClient.shared
     private let appLanguage = AppLanguageController.shared
     private var panelController: FloatingPanelController?
@@ -30,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isEvaluatingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.shared = self
+
         // Corptie is a menu-bar and floating-panel utility. Accessory apps can
         // still own key windows and text input, but don't appear in the Dock or
         // the Command-Tab application switcher.
@@ -87,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
 
         backendClient.start()
+        SessionDSHWebViewStore.shared.preload()
 
         Task { @MainActor in
             await EntityAPIClient.shared.refreshAgents()
@@ -231,11 +236,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController?.show()
     }
 
-    @objc private func openSettings() {
+    @objc func openSettings() {
         NSApp.activate(ignoringOtherApps: true)
 
         if let settingsWindow {
             settingsWindow.makeKeyAndOrderFront(nil)
+            settingsWindow.orderFrontRegardless()
             return
         }
 
@@ -254,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         ))
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
         settingsWindow = window
     }
 
@@ -291,11 +298,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "\(CorptieAppEnvironment.appName)"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: MainTabView())
