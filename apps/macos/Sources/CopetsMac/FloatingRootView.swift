@@ -6180,14 +6180,23 @@ private struct ProjectWorktreeManagerView: View {
                 }
             }
 
-            if let error = backendClient.lastError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            if let error = backendClient.projectWorktreeActionError {
+                HStack(alignment: .top, spacing: 8) {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button {
+                        backendClient.dismissProjectWorktreeActionError()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("Dismiss"))
+                }
+                .padding(10)
+                .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
             }
 
             if let status {

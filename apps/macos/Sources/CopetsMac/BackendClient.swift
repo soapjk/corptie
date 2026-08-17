@@ -95,6 +95,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isLoadingContextReferences = false
     @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
     @Published private(set) var projectWorktreeLoadError: String?
+    @Published private(set) var projectWorktreeActionError: String?
     @Published private(set) var isLoadingProjectWorktrees = false
     @Published private(set) var projectWorktreeActionIds = Set<String>()
     @Published private(set) var isCleaningMergedProjectWorktrees = false
@@ -361,7 +362,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private func markBackendConnectedFromSessionStream() {
+    func markBackendConnectedFromSessionStream() {
         if !isOnline {
             isOnline = true
         }
@@ -370,6 +371,20 @@ final class BackendClient: ObservableObject {
 
     private func reconcileConnectedPresentation() {
         guard isOnline, lastError != nil else { return }
+        lastError = nil
+    }
+
+    func dismissProjectWorktreeActionError() {
+        projectWorktreeActionError = nil
+    }
+
+    func recordProjectWorktreeActionError(_ message: String) {
+        projectWorktreeActionError = message
+        lastError = message
+    }
+
+    private func beginProjectWorktreeAction() {
+        projectWorktreeActionError = nil
         lastError = nil
     }
 
@@ -1857,6 +1872,7 @@ final class BackendClient: ObservableObject {
               let projectId = projectId(for: session) else { return }
         let action = update ? "update" : "initialize"
         Task {
+            beginProjectWorktreeAction()
             isLoadingProjectWorktrees = true
             defer { isLoadingProjectWorktrees = false }
             do {
@@ -1877,7 +1893,7 @@ final class BackendClient: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
                 await loadProjectWorktreeStatus(for: session)
             } catch {
-                lastError = error.localizedDescription
+                recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
     }
@@ -1887,6 +1903,7 @@ final class BackendClient: ObservableObject {
               let projectId = projectId(for: session) else { return }
         let actionId = "service:\(action)"
         Task {
+            beginProjectWorktreeAction()
             projectWorktreeActionIds.insert(actionId)
             defer { projectWorktreeActionIds.remove(actionId) }
             do {
@@ -1903,7 +1920,7 @@ final class BackendClient: ObservableObject {
                 }
                 await loadProjectWorktreeStatus(for: session)
             } catch {
-                lastError = error.localizedDescription
+                recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
     }
@@ -1913,6 +1930,7 @@ final class BackendClient: ObservableObject {
               let projectId = projectId(for: session) else { return }
         let actionId = "service:profile"
         Task {
+            beginProjectWorktreeAction()
             projectWorktreeActionIds.insert(actionId)
             defer { projectWorktreeActionIds.remove(actionId) }
             do {
@@ -1931,7 +1949,7 @@ final class BackendClient: ObservableObject {
                 }
                 await loadProjectWorktreeStatus(for: session)
             } catch {
-                lastError = error.localizedDescription
+                recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
     }
@@ -1971,7 +1989,7 @@ final class BackendClient: ObservableObject {
         }
         guard let session = selectedSession else { return }
         Task {
-            lastError = nil
+            beginProjectWorktreeAction()
             projectWorktreeActionIds.insert(worktree.worktreeId)
             defer { projectWorktreeActionIds.remove(worktree.worktreeId) }
             do {
@@ -1994,7 +2012,7 @@ final class BackendClient: ObservableObject {
                     operation: Self.commitReviewOperation(for: action)
                 )
             } catch {
-                lastError = error.localizedDescription
+                recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
     }
@@ -2029,7 +2047,7 @@ final class BackendClient: ObservableObject {
               let prompt = worktreeCommitReviewPrompt,
               !isGeneratingWorktreeCommitMessage else { return nil }
         isGeneratingWorktreeCommitMessage = true
-        lastError = nil
+        beginProjectWorktreeAction()
         defer { isGeneratingWorktreeCommitMessage = false }
         do {
             var request = URLRequest(url: baseURL.appending(
@@ -2049,7 +2067,7 @@ final class BackendClient: ObservableObject {
             guard worktreeCommitReviewPrompt?.id == prompt.id else { return nil }
             return result.commitMessage
         } catch {
-            lastError = error.localizedDescription
+            recordProjectWorktreeActionError(error.localizedDescription)
             return nil
         }
     }
@@ -2123,7 +2141,7 @@ final class BackendClient: ObservableObject {
               !isCleaningMergedProjectWorktrees else { return }
         let worktreeIds = Set(worktrees.map(\.worktreeId))
         Task {
-            lastError = nil
+            beginProjectWorktreeAction()
             isCleaningMergedProjectWorktrees = true
             projectWorktreeActionIds.formUnion(worktreeIds)
             defer {
@@ -2158,12 +2176,12 @@ final class BackendClient: ObservableObject {
             if failures.isEmpty {
                 sendStatusMessage = L10nFormat("Removed %d merged Worktrees", removedCount)
             } else {
-                lastError = L10nFormat(
+                recordProjectWorktreeActionError(L10nFormat(
                     "Removed %d Worktrees; %d could not be removed:\n%@",
                     removedCount,
                     failures.count,
                     failures.joined(separator: "\n")
-                )
+                ))
             }
             await refresh()
             if selectedSession?.id == session.id {
@@ -2179,7 +2197,7 @@ final class BackendClient: ObservableObject {
     ) {
         guard let session = selectedSession else { return }
         Task {
-            lastError = nil
+            beginProjectWorktreeAction()
             projectWorktreeActionIds.insert(worktree.worktreeId)
             defer { projectWorktreeActionIds.remove(worktree.worktreeId) }
             do {
@@ -2212,7 +2230,7 @@ final class BackendClient: ObservableObject {
                     await loadProjectWorktreeStatus(for: session)
                 }
             } catch {
-                lastError = error.localizedDescription
+                recordProjectWorktreeActionError(error.localizedDescription)
             }
         }
     }
