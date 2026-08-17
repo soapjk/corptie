@@ -117,10 +117,17 @@ struct SessionCreateEnvelope: Codable {
     let session: TaskSession
 }
 
-// 后端错误响应：{ error: String, code: String? }
+// 后端错误响应：关联校验失败时同时返回稳定 code、field 与 expected。
 struct EntityErrorEnvelope: Codable {
     let error: String
     let code: String?
+    let field: String?
+    let expected: String?
+
+    var displayMessage: String {
+        guard let field, let expected else { return error }
+        return "\(error)（字段：\(field)，期望：\(expected)）"
+    }
 }
 
 // 执行/操作失败的结果（含错误码，供 UI 做针对性引导，如「未绑定仓库」给绑定入口）

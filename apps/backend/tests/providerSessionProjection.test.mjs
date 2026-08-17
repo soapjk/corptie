@@ -16,7 +16,11 @@ test("a historical OpenClacky Work Session projection is repaired idempotently",
   try {
     await store.initialize();
     const agent = store.createAgent({ id: "agent:liang", name: "梁子", provider: "OpenClacky" });
-    const objective = store.createObjective({ id: "objective:poly", name: "PolyMarket" });
+    const objective = store.createObjective({
+      id: "objective:poly",
+      name: "PolyMarket",
+      contributorAgentIds: [agent.agentId]
+    });
     const workItem = store.createWorkItem({
       id: "work-item:poly",
       objectiveId: objective.id,

@@ -224,6 +224,7 @@ struct WarRoomView: View {
             WorkItemDetailView(
                 workItem: workItem,
                 workspaceIds: client.objectives.first(where: { $0.id == selectedObjectiveId })?.workspaceIds ?? [],
+                contributorAgentIds: client.objectives.first(where: { $0.id == selectedObjectiveId })?.contributorAgentIds ?? [],
                 onRequestReload: { workItemsReloadToken &+= 1 }
             )
         } else {
@@ -461,6 +462,7 @@ struct WorkItemDetailView: View {
     @EnvironmentObject private var router: AppTabRouter
     let workItem: WorkItem
     let workspaceIds: [String]
+    let contributorAgentIds: [String]
     var onRequestReload: () -> Void = {}
 
     @State private var currentSession: WorkItemSessionSummary?
@@ -531,6 +533,7 @@ struct WorkItemDetailView: View {
             AgentPickerView(
                 selectedIds: $executionAgentIds,
                 roleFilter: .independentContributor,
+                allowedAgentIds: Set(contributorAgentIds),
                 onDone: { selection in
                 if let agentId = selection.first {
                     Task {
@@ -550,7 +553,11 @@ struct WorkItemDetailView: View {
             })
         }
         .sheet(isPresented: $showAgentSwitch) {
-            AgentPickerView(selectedIds: $executionAgentIds, onDone: { selection in
+            AgentPickerView(
+                selectedIds: $executionAgentIds,
+                roleFilter: .independentContributor,
+                allowedAgentIds: Set(contributorAgentIds),
+                onDone: { selection in
                 if let agentId = selection.first {
                     Task {
                         _ = await client.updateWorkItem(workItemId: workItem.id, mainAgentId: agentId)
@@ -639,7 +646,7 @@ struct WorkItemDetailView: View {
                         .foregroundStyle(.tertiary)
                     Text(workspaceName ?? L10n("No Workspace Bound"))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(workspaceName == nil ? .secondary : .primary)
+                        .foregroundStyle(workspaceResolution.isUnresolved ? Color.orange : (workspaceName == nil ? Color.secondary : Color.primary))
                         .lineLimit(2)
                 }
             }
@@ -869,8 +876,14 @@ struct WorkItemDetailView: View {
     }
 
     private var workspaceName: String? {
-        guard let id = workItem.mainWorkspaceId else { return nil }
-        return client.repositories.first(where: { $0.id == id })?.name
+        workspaceResolution.displayName
+    }
+
+    private var workspaceResolution: WorkspaceAssociationResolution {
+        EntityAssociationResolver.workspace(
+            id: workItem.mainWorkspaceId,
+            repositories: client.repositories
+        )
     }
 
     private func refreshExecution() async {

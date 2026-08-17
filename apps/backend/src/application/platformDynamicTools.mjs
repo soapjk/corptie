@@ -14,7 +14,39 @@ function tool(name, description, properties, required = []) {
 }
 
 const id = (description) => ({ type: "string", minLength: 1, description });
-const patch = { type: "object", additionalProperties: true };
+const openObject = { type: "object", additionalProperties: true };
+const nullableString = { type: ["string", "null"] };
+const stringArray = { type: "array", items: { type: "string" } };
+const objectivePatch = {
+  type: "object",
+  properties: {
+    name: { type: "string", minLength: 1 },
+    description: { type: "string" },
+    acceptanceCriteria: { type: "string" },
+    status: { type: "string", minLength: 1 },
+    budgetConfig: { type: "object" },
+    priority: nullableString,
+    targetDate: nullableString,
+    tags: stringArray,
+    workspaceIds: stringArray,
+    relatedObjectiveIds: stringArray,
+    contributorAgentIds: stringArray
+  },
+  additionalProperties: false
+};
+const workItemPatch = {
+  type: "object",
+  properties: {
+    title: { type: "string", minLength: 1 },
+    description: { type: "string" },
+    acceptanceCriteria: { type: "string" },
+    priority: { type: "string", minLength: 1 },
+    status: { type: "string", minLength: 1 },
+    mainWorkspaceId: nullableString,
+    mainAgentId: nullableString
+  },
+  additionalProperties: false
+};
 
 export const platformDynamicTools = Object.freeze([
   tool(
@@ -47,7 +79,7 @@ export const platformDynamicTools = Object.freeze([
       action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
       objective_id: id("Objective id for get, update, or delete."),
       name: { type: "string", minLength: 1 },
-      patch
+      patch: objectivePatch
     },
     ["action"]
   ),
@@ -64,7 +96,7 @@ export const platformDynamicTools = Object.freeze([
       objective_id: id("Owning Objective id for create or list filtering."),
       title: { type: "string", minLength: 1 },
       dependency_type: { type: "string" },
-      patch
+      patch: workItemPatch
     },
     ["action"]
   ),
@@ -89,12 +121,12 @@ export const platformDynamicTools = Object.freeze([
       archived: { type: "boolean" },
       pinned: { type: "boolean" },
       include_archived: { type: "boolean" },
-      approval: patch,
+      approval: openObject,
       turn_id: id("Provider turn id for managing proposed changes."),
       change_action: { type: "string", enum: ["apply", "revert"] },
       model_id: { type: "string", minLength: 1 },
       reasoning_level: { type: "string", minLength: 1 },
-      permissions: patch
+      permissions: openObject
     },
     ["action"]
   )
