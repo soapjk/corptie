@@ -481,15 +481,6 @@ struct SessionDetailPanel: View {
                     if session.resolvedSessionKind == .assistantChat {
                         assistantSection
                         contextReferencesSection
-                    } else if !session.summary.isEmpty {
-                        detailSection(title: "摘要", systemImage: "text.alignleft") {
-                            Text(session.summary)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .lineSpacing(1)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
                     }
 
                     detailSection(title: "运行环境", systemImage: "cpu") {
