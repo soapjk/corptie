@@ -7276,7 +7276,6 @@ private func copySessionNameToPasteboard(_ rawName: String?) -> Bool {
 }
 
 private struct ThreadProcessGroupView: View {
-    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let items: [CodexThreadItem]
     let isExpanded: Bool
     let onToggle: () -> Void
@@ -7293,9 +7292,6 @@ private struct ThreadProcessGroupView: View {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .bold))
                         .frame(width: 12, height: 12)
-                    Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
                     Text(L10n("Execution process"))
                         .font(.system(size: 10.5, weight: .semibold))
                     if let durationText {
@@ -7304,15 +7300,11 @@ private struct ThreadProcessGroupView: View {
                             .foregroundStyle(CorptiePalette.mutedText)
                     }
                     Text("\(items.count)")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
                         .foregroundStyle(CorptiePalette.mutedText)
-                        .padding(.horizontal, 5)
-                        .frame(height: 16)
-                        .background(Color.black.opacity(0.04), in: Capsule())
-                    Spacer(minLength: 0)
                 }
                 .foregroundStyle(CorptiePalette.secondaryText)
-                .frame(height: 26)
+                .frame(height: 22)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -7321,30 +7313,23 @@ private struct ThreadProcessGroupView: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(items) { item in
-                        ProcessMiniCard(item: item)
+                        ProcessTimelineStep(item: item)
                             .transition(.asymmetric(
                                 insertion: .move(edge: .bottom).combined(with: .opacity),
                                 removal: .identity
                             ))
                     }
                 }
-                .padding(.leading, 22)
-                .padding(.top, 2)
+                .padding(.leading, 6)
+                .padding(.top, 1)
                 .clipped()
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, isExpanded ? 8 : 4)
-        .background(processBubbleBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.black.opacity(isLiquidGlass ? 0.06 : 0.08), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(isLiquidGlass ? 0.035 : 0), radius: 7, y: 3)
+        .padding(.vertical, 2)
         .frame(
-            idealWidth: processBubbleWidth,
-            maxWidth: processBubbleWidth,
+            idealWidth: processContentWidth,
+            maxWidth: processContentWidth,
             alignment: .leading
         )
         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -7352,17 +7337,10 @@ private struct ThreadProcessGroupView: View {
         .accessibilityLabel(L10n("Execution process"))
     }
 
-    private var processBubbleWidth: CGFloat {
+    private var processContentWidth: CGFloat {
         isExpanded
             ? ChatBubbleWidthPolicy.maximumWidth
             : ChatBubbleWidthPolicy.collapsedProcessWidth + ChatBubbleWidthPolicy.horizontalPadding
-    }
-
-    private var processBubbleBackground: Color {
-        if isLiquidGlass {
-            return Color.white.opacity(0.38)
-        }
-        return Color(nsColor: .controlBackgroundColor).opacity(0.72)
     }
 
     private var durationText: String? {
@@ -7386,51 +7364,49 @@ private struct ThreadProcessGroupView: View {
     }
 }
 
-private struct ProcessMiniCard: View {
-    @Environment(\.isLiquidGlass) private var isLiquidGlass
+private struct ProcessTimelineStep: View {
     let item: CodexThreadItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(spacing: 0) {
                 Circle()
                     .fill(dotColor)
                     .frame(width: 6, height: 6)
-                Text(item.title)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .lineLimit(1)
-                Spacer(minLength: 6)
-                Text(processTypeLabel)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(CorptiePalette.mutedText.opacity(0.78))
+                    .padding(.top, 4)
+                Rectangle()
+                    .fill(CorptiePalette.mutedText.opacity(0.18))
+                    .frame(width: 1)
+                    .frame(minHeight: hasText ? 24 : 8)
             }
 
-            if !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(item.text)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(CorptiePalette.mutedText)
-                    .lineSpacing(2)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(item.title)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                        .lineLimit(1)
+                    Text(processTypeLabel)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
+                    Spacer(minLength: 0)
+                }
+
+                if hasText {
+                    Text(item.text)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(CorptiePalette.mutedText)
+                        .lineSpacing(2)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            isLiquidGlass
-                ? Color.white.opacity(0.34)
-                : Color.clear,
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(
-                    isLiquidGlass ? Color.black.opacity(0.045) : Color.clear,
-                    lineWidth: 1
-                )
-        )
+    }
+
+    private var hasText: Bool {
+        !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var dotColor: Color {
