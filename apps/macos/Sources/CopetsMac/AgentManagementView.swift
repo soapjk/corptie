@@ -150,7 +150,7 @@ struct AgentCard: View {
                     .fill(statusColor)
                     .frame(width: 9, height: 9)
                     .padding(.top, 4)
-                    .help(statusText)
+                    .help(agent.statusReason ?? statusText)
             }
 
             // 描述
@@ -217,20 +217,15 @@ struct AgentCard: View {
 
     private var statusColor: Color {
         switch agent.status {
-        case "available": .green
-        case "busy": .orange
-        case "offline", "inactive": Color.secondary.opacity(0.5)
-        default: Color.secondary.opacity(0.5)
+        case "unavailable": .red
+        default: .green
         }
     }
 
     private var statusText: String {
         switch agent.status {
-        case "available": L10n("Available")
-        case "busy": L10n("Busy")
-        case "offline": L10n("Offline")
-        case "inactive": L10n("Inactive")
-        default: agent.status.isEmpty ? L10n("Unknown") : agent.status
+        case "unavailable": L10n("Unavailable")
+        default: L10n("Available")
         }
     }
 }

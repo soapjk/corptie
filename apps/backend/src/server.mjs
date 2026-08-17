@@ -4839,7 +4839,16 @@ function route(request, response) {
       return createSessionThroughApplication(providerId, input, { source: "http" });
     },
     backgroundAgentService,
-    skillRegistryService
+    skillRegistryService,
+    resolveAgentAvailability: (agent) => {
+      const providerId = entityAgentProviderId(agent.provider);
+      return providerId
+        ? { status: "available", reason: null }
+        : {
+            status: "unavailable",
+            reason: `Agent Provider is not registered: ${agent.provider ?? "default"}`
+          };
+    }
   })) {
     return;
   }

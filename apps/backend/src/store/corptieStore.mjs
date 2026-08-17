@@ -1029,7 +1029,7 @@ export class CorptieStore {
     this.ensureColumn("memories", "revoked_at", "TEXT");
     this.initializeSortOrder();
     this.ensureAssistantAgent();
-    this.migrateSessionDerivedAgentStatuses();
+    this.migrateAgentAvailability();
     this.migrateAssistantWorkDirs();
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_assistant_work_dir
       ON agents(work_dir COLLATE NOCASE)
@@ -3249,26 +3249,17 @@ export class CorptieStore {
     }
   }
 
-  // 旧版把“没有当前 Session”错误解释为 Agent 被停用。这个一次性迁移只修复
-  // 有历史 Session binding、没有活跃 binding 的遗留 inactive 状态；迁移完成后
-  // 用户未来显式设置的 inactive 不会在重启时被覆盖。
-  migrateSessionDerivedAgentStatuses() {
-    const migrationId = "decouple-agent-status-from-session-v1";
+  // Agent 是可复用的执行配置，不以 Session 是否存在、运行或结束作为生命周期。
+  // 旧版可能把 busy/offline/inactive 写入持久化状态，甚至在 current_session_id
+  // 仍指向已完成 Session 时遗留 inactive。新迁移无条件清理这些历史值；
+  // 真正的不可用由运行时诊断动态呈现，不写回该列。
+  migrateAgentAvailability() {
+    const migrationId = "agent-always-available-v1";
     if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
       return [];
     }
     const affected = this.selectAll(
-      `SELECT agent_id FROM agents
-       WHERE status = 'inactive'
-         AND current_session_id IS NULL
-         AND EXISTS (
-           SELECT 1 FROM agent_sessions history
-           WHERE history.agent_id = agents.agent_id
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_sessions active
-           WHERE active.agent_id = agents.agent_id AND active.unbound_at IS NULL
-         )`
+      `SELECT agent_id FROM agents WHERE status <> 'available'`
     ).map((row) => row.agent_id);
     const appliedAt = createdAtFromOrNow();
     this.db.run("BEGIN IMMEDIATE");
@@ -3312,7 +3303,7 @@ export class CorptieStore {
         input.name,
         input.description ?? "",
         role,
-        input.status ?? "available",
+        "available",
         input.provider ?? null,
         JSON.stringify(input.capabilities ?? []),
         input.systemPrompt ?? "",
@@ -3327,7 +3318,8 @@ export class CorptieStore {
     return this.getAgent(id);
   }
 
-  // 更新 Agent（name/description/provider/status/systemPrompt/capabilities/workDir）。
+  // 更新 Agent（name/description/provider/systemPrompt/capabilities/workDir）。
+  // status 是旧版兼容列，不再是可编辑字段；Agent 持久化状态恒为 available。
   // 强约束：role 在创建后不可变更（assistant ↔ independentContributor 定型后不可切换），
   // 因此这里忽略任何传入的 role，始终沿用 existing.role。
   updateAgent(agentId, input = {}) {
@@ -3350,7 +3342,7 @@ export class CorptieStore {
         input.name ?? existing.name,
         input.description ?? existing.description,
         role,
-        input.status ?? existing.status,
+        "available",
         input.provider ?? existing.provider,
         input.systemPrompt ?? existing.systemPrompt ?? "",
         input.capabilities != null ? JSON.stringify(input.capabilities) : JSON.stringify(existing.capabilities ?? []),
@@ -4399,7 +4391,9 @@ function agentFromRow(row) {
     name: row.name,
     description: row.description ?? "",
     role: row.role ?? "independentContributor",
-    status: row.status,
+    // 防御性规范化：即使旧客户端或外部 SQL 写入了历史值，
+    // 也不允许会话生命周期重新污染 Agent 可用性。
+    status: "available",
     provider: row.provider ?? null,
     systemPrompt: row.system_prompt ?? "",
     capabilities: parseJson(row.capabilities_json, []),

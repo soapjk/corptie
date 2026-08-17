@@ -15,10 +15,6 @@ export class CollaborationCore {
     const name = requiredText(input.name, "name");
     const timestamp = this.clock();
     const existing = this.getAgent(agentId);
-    const status = input.status ?? existing?.status ?? "available";
-    if (!["available", "busy", "offline", "inactive"].includes(status)) {
-      throw domainError("INVALID_AGENT_STATUS", `Unsupported agent status: ${status}`);
-    }
     this.store.db.run(
       `INSERT INTO agents (
         agent_id, name, description, status, capabilities_json, current_session_id, created_at, updated_at
@@ -33,7 +29,7 @@ export class CollaborationCore {
         agentId,
         name,
         optionalText(input.description) ?? "",
-        status,
+        "available",
         JSON.stringify(stringList(input.capabilities)),
         existing?.createdAt ?? timestamp,
         timestamp
@@ -76,11 +72,9 @@ export class CollaborationCore {
   }
 
   listAgents(options = {}) {
-    const params = [];
-    const where = options.status ? "WHERE status = ?" : "";
-    if (options.status) params.push(options.status);
-    return this.store.selectAll(`SELECT * FROM agents ${where} ORDER BY name ASC`, params)
+    const agents = this.store.selectAll("SELECT * FROM agents ORDER BY name ASC")
       .map((row) => agentFromRow(row, this.store));
+    return options.status ? agents.filter((agent) => agent.status === options.status) : agents;
   }
 
   bindSession(input) {
@@ -1120,7 +1114,7 @@ function agentFromRow(row, store) {
     role: row.role,
     provider: row.provider ?? null,
     systemPrompt: row.system_prompt ?? "",
-    status: row.status,
+    status: "available",
     capabilities: parseJson(row.capabilities_json, []),
     currentSessionId: row.current_session_id || null,
     createdAt: row.created_at,

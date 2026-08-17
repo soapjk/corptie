@@ -110,6 +110,12 @@ struct AgentDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if agent.status == "unavailable", let reason = agent.statusReason, !reason.isEmpty {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
             }
             Spacer()
         }
@@ -280,11 +286,8 @@ struct AgentDetailView: View {
 
     private var statusLabel: String {
         switch agent.status {
-        case "available": L10n("Available")
-        case "busy": L10n("Busy")
-        case "offline": L10n("Offline")
-        case "inactive": L10n("Inactive")
-        default: agent.status
+        case "unavailable": L10n("Unavailable")
+        default: L10n("Available")
         }
     }
 

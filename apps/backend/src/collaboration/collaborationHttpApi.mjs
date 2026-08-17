@@ -66,8 +66,7 @@ export function handleCollaborationHttpRequest({
       if (request.method === "GET" && url.pathname === "/internal/collaboration/agents") {
         const requestedStatus = url.searchParams.get("status") || undefined;
         return sendJson(response, 200, {
-          agents: core.listAgents({ status: requestedStatus })
-            .filter((agent) => requestedStatus || agent.status !== "inactive"),
+          agents: core.listAgents({ status: requestedStatus }),
           actorAgentId
         });
       }

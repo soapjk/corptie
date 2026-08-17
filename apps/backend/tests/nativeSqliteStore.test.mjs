@@ -132,7 +132,7 @@ test("legacy shared Assistant workspaces are split during store migration", asyn
   }
 });
 
-test("legacy Session-derived inactive status is repaired once without overriding future explicit inactivity", async () => {
+test("legacy Agent lifecycle status is repaired even with an active Session binding and cannot be reintroduced", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-agent-status-migration-"));
   const dbPath = join(directory, "corptie.sqlite");
   const configPath = join(directory, "config.json");
@@ -150,11 +150,10 @@ test("legacy Session-derived inactive status is repaired once without overriding
     });
     const core = new CollaborationCore(first);
     core.bindSession({ agentId: "agent:legacy-inactive", sessionId: "codex:deleted-session" });
-    core.detachSession("codex:deleted-session");
     first.db.run("UPDATE agents SET status = 'inactive' WHERE agent_id = ?", ["agent:legacy-inactive"]);
     first.db.run(
       "DELETE FROM data_migrations WHERE migration_id = ?",
-      ["decouple-agent-status-from-session-v1"]
+      ["agent-always-available-v1"]
     );
     await first.close();
 
@@ -162,11 +161,16 @@ test("legacy Session-derived inactive status is repaired once without overriding
     await migrated.initialize();
     assert.equal(migrated.getAgent("agent:legacy-inactive").status, "available");
     migrated.updateAgent("agent:legacy-inactive", { status: "inactive" });
+    assert.equal(migrated.getAgent("agent:legacy-inactive").status, "available");
     await migrated.close();
 
     const restarted = new CorptieStore({ dbPath, configPath });
     await restarted.initialize();
-    assert.equal(restarted.getAgent("agent:legacy-inactive").status, "inactive");
+    assert.equal(restarted.getAgent("agent:legacy-inactive").status, "available");
+    assert.equal(
+      restarted.getAgent("agent:legacy-inactive").currentSessionId,
+      "codex:deleted-session"
+    );
     await restarted.close();
   } finally {
     await rm(directory, { recursive: true, force: true });
