@@ -79,6 +79,7 @@ test("OpenClacky manager maps REST sessions and history to canonical models", as
   const manager = new OpenClackyManager({
     fetch: fixture.fetch,
     WebSocket: FakeWebSocket,
+    resolveOwnedSessionIds: () => ["clacky-1"],
     refreshIntervalMs: 0
   });
 
@@ -93,6 +94,30 @@ test("OpenClacky manager maps REST sessions and history to canonical models", as
   const models = await manager.listModels();
   assert.equal(models.currentModel, "model-1");
   assert.equal(models.models[0].name, "Clacky Model");
+});
+
+test("OpenClacky manager only restores Sessions owned by Corptie", async () => {
+  const requestedPaths = [];
+  const manager = new OpenClackyManager({
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      requestedPaths.push(path);
+      return Response.json({ session: {
+        id: "corptie-owned",
+        name: "Corptie Session",
+        status: "idle",
+        working_dir: "/tmp/project"
+      } });
+    },
+    WebSocket: FakeWebSocket,
+    resolveOwnedSessionIds: () => ["corptie-owned"],
+    refreshIntervalMs: 0
+  });
+
+  await manager.refresh();
+
+  assert.deepEqual(requestedPaths, ["/api/sessions/corptie-owned"]);
+  assert.deepEqual(manager.list().map((session) => session.external.sessionId), ["corptie-owned"]);
 });
 
 test("OpenClacky manager creates over REST and sends chat over a subscribed WebSocket", async () => {

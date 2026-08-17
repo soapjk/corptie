@@ -1730,6 +1730,16 @@ export class CorptieStore {
     ).map(providerThreadBindingFromRow);
   }
 
+  listActiveProviderSessionIds(providerId) {
+    const normalizedProviderId = requiredText(providerId, "providerId");
+    return this.selectAll(
+      `SELECT DISTINCT provider_session_id FROM provider_thread_bindings
+       WHERE provider_id = ? AND state = 'active' AND provider_session_id IS NOT NULL
+       ORDER BY provider_session_id ASC`,
+      [normalizedProviderId]
+    ).map((row) => row.provider_session_id);
+  }
+
   recordProviderThreadBinding(input) {
     const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
     const providerId = requiredText(input?.providerId ?? "codex-app-server", "providerId");
