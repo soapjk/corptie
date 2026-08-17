@@ -12,13 +12,20 @@ export class HostToolCatalog {
     for (const definition of namespace.tools) {
       const name = requiredText(definition?.name, "tool.name");
       if (this.toolsByName.has(name)) throw new TypeError(`Host tool is already registered: ${name}`);
-      this.toolsByName.set(name, Object.freeze({ id, definition: Object.freeze({ ...definition }), execute: namespace.execute }));
+      this.toolsByName.set(name, Object.freeze({
+        id,
+        definition: Object.freeze({ ...definition }),
+        execute: namespace.execute,
+        authorize: typeof namespace.authorize === "function" ? namespace.authorize : null
+      }));
     }
     return this;
   }
 
-  definitions() {
-    return Array.from(this.toolsByName.values(), ({ definition }) => definition);
+  definitions(context = {}) {
+    return Array.from(this.toolsByName.values())
+      .filter((registered) => this.#isAuthorized(registered, context))
+      .map(({ definition }) => definition);
   }
 
   async execute(input = {}) {
@@ -29,11 +36,32 @@ export class HostToolCatalog {
       error.code = "HOST_TOOL_UNSUPPORTED";
       throw error;
     }
+    if (!this.#isAuthorized(registered, input)) {
+      const error = new Error(`Agent ${input.actorId ?? "unknown"} is not allowed to use Corptie host tool ${name}.`);
+      error.code = "AGENT_TOOL_FORBIDDEN";
+      error.actorId = input.actorId ?? null;
+      error.tool = name;
+      throw error;
+    }
     return registered.execute({
       ...input,
       tool: name,
       arguments: input.arguments ?? {}
     });
+  }
+
+  #isAuthorized(registered, context) {
+    if (!registered.authorize) return true;
+    try {
+      return registered.authorize({
+        actorId: context.actorId ?? null,
+        tool: registered.definition.name,
+        namespaceId: registered.id,
+        metadata: context.metadata ?? null
+      }) === true;
+    } catch {
+      return false;
+    }
   }
 }
 

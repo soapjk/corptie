@@ -27,6 +27,8 @@ import {
 } from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
+import { PlatformOperationService } from "./application/platformOperationService.mjs";
+import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
@@ -66,6 +68,7 @@ import {
 import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
+import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
   mergeStoredSessionPresentation,
@@ -225,6 +228,7 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   },
   onEvent: (type, payload) => emitEvent(type, payload)
 });
+let platformOperationService = null;
 const hostToolCatalog = new HostToolCatalog([
   {
     id: "workspace",
@@ -246,6 +250,12 @@ const hostToolCatalog = new HostToolCatalog([
     id: "skills",
     tools: skillDynamicTools,
     execute: (input) => callSkillDynamicTool(skillRegistryService, input)
+  },
+  {
+    id: "platform",
+    tools: platformDynamicTools,
+    authorize: ({ actorId }) => isPlatformAssistant(store.getAgent(actorId)),
+    execute: (input) => callPlatformDynamicTool(platformOperationService, input)
   }
 ]);
 let toolHostService = null;
@@ -429,6 +439,25 @@ const sessionApplicationService = new SessionApplicationService({
       logicalSessionId: reference.logicalSessionId,
       provider: reference.providerId
     });
+  }
+});
+platformOperationService = new PlatformOperationService({
+  store,
+  objectiveService,
+  sessionService: sessionApplicationService,
+  listSessions: (input) => listGatewaySessions(input),
+  createSession: async ({ agentId, workItemId, title, prompt }) => {
+    const agent = store.getAgent(agentId);
+    if (!agent) {
+      const error = new Error(`Agent not found: ${agentId}`);
+      error.code = "AGENT_NOT_FOUND";
+      throw error;
+    }
+    if (workItemId) {
+      const workItem = objectiveService.getWorkItem(workItemId);
+      return launchWorkItemSession({ agent, workItem, title, prompt });
+    }
+    return launchAgentSession({ agent, title, prompt });
   }
 });
 const backgroundAgentService = new BackgroundAgentService({
@@ -1616,7 +1645,7 @@ function collaborationThreadOptions(agentId) {
   if (!agentId) return {};
   return codexToolHostAttachment({
     actorId: agentId,
-    tools: hostToolCatalog.definitions()
+    tools: hostToolCatalog.definitions({ actorId: agentId })
   }, collaborationProviderRuntimeOptions(agentId));
 }
 
@@ -1730,7 +1759,7 @@ async function claudeRuntimeOptionsForSession(providerSessionId) {
   }
   return agent
     ? claudeToolHostAttachment(
-        { actorId: agent.agentId, tools: hostToolCatalog.definitions() },
+        { actorId: agent.agentId, tools: hostToolCatalog.definitions({ actorId: agent.agentId }) },
         await claudeCollaborationRuntimeOptionsWithAgentContext(agent.agentId)
       )
     : {};
@@ -2786,7 +2815,7 @@ function resolveAgentProviderId(provider) {
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
-async function launchWorkItemSession({ agent, workItem, title, avatarPath }) {
+async function launchWorkItemSession({ agent, workItem, title, prompt: requestedPrompt, avatarPath }) {
   if (agent.role !== "independentContributor") {
     const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
     error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
@@ -2805,11 +2834,13 @@ async function launchWorkItemSession({ agent, workItem, title, avatarPath }) {
     throw error;
   }
   const objective = workItem.objective_id ? store.getObjective(workItem.objective_id) : null;
-  const prompt = [
-    `请完成工作项「${workItem.title ?? "未命名"}」。`,
-    workItem.description ? `\n任务描述：\n${workItem.description}` : "",
-    objective?.acceptance_criteria ? `\n验收标准：\n${objective.acceptance_criteria}` : ""
-  ].filter(Boolean).join("\n");
+  const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
+    ? requestedPrompt.trim()
+    : [
+        `请完成工作项「${workItem.title ?? "未命名"}」。`,
+        workItem.description ? `\n任务描述：\n${workItem.description}` : "",
+        objective?.acceptance_criteria ? `\n验收标准：\n${objective.acceptance_criteria}` : ""
+      ].filter(Boolean).join("\n");
 
   const session = await createSessionThroughApplication(
     providerId,

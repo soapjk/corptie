@@ -71,6 +71,28 @@ test("Host Tool Catalog dispatches by tool name without Provider knowledge", asy
   );
 });
 
+test("Host Tool Catalog hides and rejects actor-restricted tools at both authorization layers", async () => {
+  const catalog = new HostToolCatalog([{
+    id: "platform",
+    tools: [{ name: "corptie_platform_agents_list" }],
+    authorize: ({ actorId }) => actorId === "assistant",
+    execute: () => ({ ok: true })
+  }]);
+
+  assert.deepEqual(catalog.definitions({ actorId: "ordinary-agent" }), []);
+  assert.deepEqual(catalog.definitions({ actorId: "assistant" }).map((tool) => tool.name), [
+    "corptie_platform_agents_list"
+  ]);
+  await assert.rejects(
+    () => catalog.execute({ actorId: "ordinary-agent", tool: "corptie_platform_agents_list" }),
+    (error) => error.code === "AGENT_TOOL_FORBIDDEN"
+  );
+  assert.deepEqual(
+    await catalog.execute({ actorId: "assistant", tool: "corptie_platform_agents_list" }),
+    { ok: true }
+  );
+});
+
 test("Codex Provider maps the common attachment to its native dynamic-tool options", () => {
   const mapped = codexToolHostAttachment({
     actorId: "agent-one",

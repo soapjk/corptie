@@ -8,6 +8,7 @@ import Foundation
 
 struct Agent: Identifiable, Codable, Hashable {
     let agentId: String
+    var agentKind: String? = nil
     var name: String
     var description: String
     var role: String
@@ -28,6 +29,7 @@ struct Agent: Identifiable, Codable, Hashable {
     // role 语义（容错：未知值视为普通独立贡献者）
     var isAssistant: Bool { role == "assistant" }
     var isIndependentContributor: Bool { role != "assistant" }
+    var isPlatformAssistant: Bool { agentKind == "platformAssistant" || agentId == "assistant" }
 }
 
 // 后端响应 envelope：GET /agents → { agents: [...] }

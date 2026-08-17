@@ -8,6 +8,14 @@ import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { resolveAgentWorkDir } from "../runtime/agentWorkDir.mjs";
 import { inferSessionKind, normalizeSessionKind, SESSION_KIND } from "../utils/sessionKinds.mjs";
+import {
+  AGENT_KIND,
+  PLATFORM_ASSISTANT_ID,
+  PLATFORM_ASSISTANT_MANIFEST,
+  assertPlatformAssistantPatch,
+  isPlatformAssistant,
+  platformAssistantProtectionError
+} from "../utils/platformAssistantIdentity.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -390,6 +398,7 @@ export class CorptieStore {
 
       CREATE TABLE IF NOT EXISTS agents (
         agent_id TEXT PRIMARY KEY,
+        agent_kind TEXT NOT NULL DEFAULT 'user',
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         role TEXT NOT NULL DEFAULT 'independentContributor',
@@ -936,6 +945,7 @@ export class CorptieStore {
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_pair
       ON agent_sessions(agent_id, session_id) WHERE unbound_at IS NULL`);
     this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
+    this.ensureColumn("agents", "agent_kind", "TEXT NOT NULL DEFAULT 'user'");
     this.ensureColumn("agents", "provider", "TEXT");
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("agents", "work_dir", "TEXT");
@@ -1028,13 +1038,13 @@ export class CorptieStore {
     this.ensureColumn("memories", "applied_at", "TEXT");
     this.ensureColumn("memories", "revoked_at", "TEXT");
     this.initializeSortOrder();
-    this.ensureAssistantAgent();
     this.migrateAgentAvailability();
+    this.ensureSkillTables();
+    this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_assistant_work_dir
       ON agents(work_dir COLLATE NOCASE)
       WHERE role = 'assistant' AND work_dir IS NOT NULL AND TRIM(work_dir) <> ''`);
-    this.ensureSkillTables();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
 
     this.db.run(
@@ -1240,6 +1250,9 @@ export class CorptieStore {
   }
 
   updateAgentWithRegistrySkills(agentId, agentInput, skillIds) {
+    if (isPlatformAssistant(agentId) && skillIds != null) {
+      throw platformAssistantProtectionError("The built-in Corptie Assistant Skill assignment is managed by the product.");
+    }
     const normalized = skillIds == null ? null : this.#validateRegistrySkillIds(skillIds);
     this.db.run("BEGIN IMMEDIATE");
     try {
@@ -1260,6 +1273,9 @@ export class CorptieStore {
   }
 
   setAgentRegistrySkills(agentId, skillIds = []) {
+    if (isPlatformAssistant(agentId)) {
+      throw platformAssistantProtectionError("The built-in Corptie Assistant Skill assignment is managed by the product.");
+    }
     const normalized = this.#validateRegistrySkillIds(skillIds);
     if (!this.getAgent(agentId)) {
       const error = new Error(`Agent not found: ${agentId}`);
@@ -3172,10 +3188,8 @@ export class CorptieStore {
     return row ? agentFromRow(row) : null;
   }
 
-  // 预种平台助手 Agent（role=assistant，默认名 Corptie）。幂等：已存在则跳过。
-  // provider 使用真实的默认 provider（codex-app-server），而非占位字符串 "harness"。
-  // work_dir：首次播种时写该 Agent 独占的默认工作目录；同一助手下的会话共享，
-  // 不同 Assistant 不共享。目录的物理创建由启动期异步 ensureAgentWorkDirs 完成。
+  // 预种并自愈固定 id 的平台助手。名称和头像属于用户外观配置；
+  // 角色、Provider、Prompt、capabilities、Workspace 和 Skill 则以代码 manifest 为权威来源。
   ensureAssistantAgent() {
     // 迁移：修正历史遗留的占位 provider（"harness" → 真实默认 provider）。
     // 幂等，每次启动都会执行；仅影响误填了占位 provider 的记录，不动 provider 为 null 的普通 Agent。
@@ -3186,28 +3200,53 @@ export class CorptieStore {
     // 迁移：修正历史遗留的平台助手旧名（仅限 "Copilot" 等已知旧值），幂等。
     // 注意：不能对任意非 "Corptie" 名称做统一改写，否则会覆盖用户对助手的合法重命名。
     this.db.run(
-      `UPDATE agents SET name = ? WHERE role = 'assistant' AND name IN ('Copilot')`,
-      ["Corptie"]
+      `UPDATE agents SET name = ? WHERE agent_id = ? AND name IN ('Copilot')`,
+      [PLATFORM_ASSISTANT_MANIFEST.defaultName, PLATFORM_ASSISTANT_ID]
     );
-    const existing = this.selectOne(`SELECT * FROM agents WHERE role = 'assistant' LIMIT 1`);
+    const existing = this.selectOne(`SELECT * FROM agents WHERE agent_id = ?`, [PLATFORM_ASSISTANT_ID]);
+    const defaultDir = resolveAgentWorkDir({ agentId: PLATFORM_ASSISTANT_ID, role: "assistant" }, { environmentName });
     if (existing) {
-      // 幂等补齐历史助手缺失的 work_dir。
-      if (!existing.work_dir) {
-        const defaultDir = resolveAgentWorkDir({ agentId: existing.agent_id, role: "assistant" }, { environmentName });
-        this.db.run(`UPDATE agents SET work_dir = ? WHERE agent_id = ?`, [defaultDir, existing.agent_id]);
-        existing.work_dir = defaultDir;
-      }
-      return existing;
+      this.db.run(
+        `UPDATE agents SET
+           agent_kind = ?, description = ?, role = ?, status = 'available', provider = ?,
+           capabilities_json = ?, system_prompt = ?, work_dir = ?
+         WHERE agent_id = ?`,
+        [
+          AGENT_KIND.PLATFORM_ASSISTANT,
+          PLATFORM_ASSISTANT_MANIFEST.description,
+          PLATFORM_ASSISTANT_MANIFEST.role,
+          PLATFORM_ASSISTANT_MANIFEST.provider,
+          JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
+          PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
+          defaultDir,
+          PLATFORM_ASSISTANT_ID
+        ]
+      );
+      this.db.run("DELETE FROM agent_skill_links WHERE agent_id = ?", [PLATFORM_ASSISTANT_ID]);
+      return this.getAgent(PLATFORM_ASSISTANT_ID);
     }
     const now = createdAtFromOrNow();
-    const defaultDir = resolveAgentWorkDir({ agentId: "assistant", role: "assistant" }, { environmentName });
     this.db.run(
-      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, work_dir, current_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["assistant", "Corptie", "平台助手：负责协助用户使用 Corptie 平台本身（建目标/工作项、改配置等元操作）。", "assistant", "available", "codex-app-server", "[]", defaultDir, null, now, now]
+      `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        PLATFORM_ASSISTANT_ID,
+        AGENT_KIND.PLATFORM_ASSISTANT,
+        PLATFORM_ASSISTANT_MANIFEST.defaultName,
+        PLATFORM_ASSISTANT_MANIFEST.description,
+        PLATFORM_ASSISTANT_MANIFEST.role,
+        "available",
+        PLATFORM_ASSISTANT_MANIFEST.provider,
+        JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
+        PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
+        defaultDir,
+        null,
+        now,
+        now
+      ]
     );
     this.scheduleSave();
-    return this.getAgent("assistant");
+    return this.getAgent(PLATFORM_ASSISTANT_ID);
   }
 
   // 旧版本把所有 Assistant 指向同一路径。升级时保留第一个占用者的目录，
@@ -3296,10 +3335,11 @@ export class CorptieStore {
     if (role === "assistant") this.assertAssistantWorkDirAvailable(workDir);
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
+        AGENT_KIND.USER,
         input.name,
         input.description ?? "",
         role,
@@ -3325,6 +3365,7 @@ export class CorptieStore {
   updateAgent(agentId, input = {}) {
     const existing = this.getAgent(agentId);
     if (!existing) return null;
+    if (isPlatformAssistant(existing)) assertPlatformAssistantPatch(input);
     const now = createdAtFromOrNow();
     const role = existing.role;
     const workDir = typeof input.workDir === "string" && input.workDir.trim()
@@ -3372,6 +3413,9 @@ export class CorptieStore {
 
   // 删除 Agent：有活跃（running）session 时抛错阻止；无则解绑保留历史 session（agent_sessions 级联删除）
   deleteAgent(agentId) {
+    if (isPlatformAssistant(agentId)) {
+      throw platformAssistantProtectionError("The built-in Corptie Assistant cannot be deleted.");
+    }
     const sessionIds = this.selectAll(
       `SELECT session_id FROM agent_sessions WHERE agent_id = ? AND unbound_at IS NULL`,
       [agentId]
@@ -4388,6 +4432,7 @@ function objectiveFromRow(row) {
 function agentFromRow(row) {
   return {
     agentId: row.agent_id,
+    agentKind: row.agent_kind ?? AGENT_KIND.USER,
     name: row.name,
     description: row.description ?? "",
     role: row.role ?? "independentContributor",
