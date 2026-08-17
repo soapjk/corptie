@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { forkSession, getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
+import { providerMessageWithSessionContext, userMessageWithoutSessionContext } from "../utils/sessionContextMessage.mjs";
 
 export class ClaudeAgentManager {
   constructor(options = {}) {
@@ -234,7 +235,8 @@ export class ClaudeAgentManager {
     }
     this.persistSession(session);
     console.log(`[claude-sdk] send queued id=${id} chars=${value.length}`);
-    this.enqueueInput(session, makeUserMessage(value));
+    const providerValue = providerMessageWithSessionContext(value, options.contextPrompt);
+    this.enqueueInput(session, makeUserMessage(providerValue));
     return this.toSessionSummary(session);
   }
 
@@ -1227,7 +1229,7 @@ export function claudeTranscriptItems(session, messages = []) {
     if (message?.type === "user") {
       // Claude's SDK also represents tool results as user-role messages. Only
       // an actual text message starts a new conversation turn.
-      const text = userMessageText(message.message);
+      const text = userMessageWithoutSessionContext(userMessageText(message.message));
       if (!text) continue;
       currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
       turnIds.add(currentTurnId);

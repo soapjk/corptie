@@ -53,6 +53,8 @@ final class BackendClient: ObservableObject {
     @Published private(set) var undoneCodexTurnIds = Set<String>()
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var selectedSessionUsage: SessionUsageResponse?
+    @Published private(set) var selectedContextReferences: [SessionContextReference] = []
+    @Published private(set) var isLoadingContextReferences = false
     @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
     @Published private(set) var projectWorktreeLoadError: String?
     @Published private(set) var isLoadingProjectWorktrees = false
@@ -1369,6 +1371,7 @@ final class BackendClient: ObservableObject {
         selectedSession = session
         resetDetailTimelineState()
         selectedSessionUsage = nil
+        selectedContextReferences = []
         usageRefreshTask?.cancel()
         // 轻量场景（如 Sessions Tab）置了 suppressBackgroundPolling，跳过轮询以减少刷新。
         usageRefreshTask = suppressBackgroundPolling ? nil : Task { [weak self] in
@@ -1401,7 +1404,112 @@ final class BackendClient: ObservableObject {
             }
             selectedDetail = detailCacheBySessionId[session.id]
             startDetailStream(for: session)
+            if session.resolvedSessionKind == .assistantChat {
+                await loadContextReferences(for: session)
+            }
             await loadDetail(for: session, showLoading: selectedDetail == nil)
+        }
+    }
+
+    func loadContextReferences(for session: TaskSession? = nil) async {
+        guard let target = session ?? selectedSession,
+              target.resolvedSessionKind == .assistantChat else {
+            selectedContextReferences = []
+            return
+        }
+        isLoadingContextReferences = true
+        defer { isLoadingContextReferences = false }
+        do {
+            let url = baseURL.appending(path: "sessions/\(target.id)/context-references")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try Self.requireSuccess(response, data: data)
+            let references = try JSONDecoder().decode(SessionContextReferenceListEnvelope.self, from: data).references
+            if selectedSession?.id == target.id {
+                selectedContextReferences = references
+            }
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func addContextReference(
+        to session: TaskSession,
+        type: SessionContextReferenceType,
+        targetId: String? = nil,
+        locator: String? = nil,
+        displayName: String? = nil
+    ) async -> Bool {
+        var body: [String: Any] = ["targetType": type.rawValue]
+        if let targetId { body["targetId"] = targetId }
+        if let locator { body["locator"] = locator }
+        if let displayName, !displayName.isEmpty { body["displayName"] = displayName }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/context-references"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireSuccess(response, data: data)
+            await loadContextReferences(for: session)
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+    }
+
+    func setContextReferenceEnabled(_ reference: SessionContextReference, enabled: Bool) async {
+        await updateContextReference(reference, body: ["enabled": enabled])
+    }
+
+    func refreshContextReference(_ reference: SessionContextReference) async {
+        guard let session = selectedSession else { return }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/context-references/\(reference.referenceId)/refresh"))
+            request.httpMethod = "POST"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireSuccess(response, data: data)
+            await loadContextReferences(for: session)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func deleteContextReference(_ reference: SessionContextReference) async {
+        guard let session = selectedSession else { return }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/context-references/\(reference.referenceId)"))
+            request.httpMethod = "DELETE"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireSuccess(response, data: data)
+            await loadContextReferences(for: session)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private func updateContextReference(_ reference: SessionContextReference, body: [String: Any]) async {
+        guard let session = selectedSession else { return }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/context-references/\(reference.referenceId)"))
+            request.httpMethod = "PATCH"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireSuccess(response, data: data)
+            await loadContextReferences(for: session)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    private static func requireSuccess(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+        guard (200..<300).contains(http.statusCode) else {
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            throw BackendError.message(payload?["error"] as? String ?? "Context reference request failed (HTTP \(http.statusCode)).")
         }
     }
 
@@ -1422,6 +1530,7 @@ final class BackendClient: ObservableObject {
         selectedDetail = nil
         viewingHistoricalThreadId = nil
         selectedSessionUsage = nil
+        selectedContextReferences = []
         selectedProjectWorktreeStatus = nil
         projectWorktreeLoadError = nil
         projectStatusRequestSequence &+= 1
