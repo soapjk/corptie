@@ -11,10 +11,6 @@ struct SessionDSHView: View {
     // /api/session.* 由 dshRpcAdapter 响应（同源，无需桥接）。
     var body: some View {
         DSHWebView(store: .shared)
-            .ignoresSafeArea()
-            .onAppear {
-                SessionDSHWebViewStore.shared.didBecomeVisible()
-            }
     }
 }
 
@@ -28,6 +24,7 @@ final class SessionDSHWebViewStore {
     private let coordinator: DSHWebView.Coordinator
     private let url = CorptieAppEnvironment.backendBaseURL
     private var retryWorkItem: DispatchWorkItem?
+    private var presentationWorkItem: DispatchWorkItem?
     private var retryAttempt = 0
 
     private init() {
@@ -59,27 +56,20 @@ final class SessionDSHWebViewStore {
         webView.load(URLRequest(url: url))
     }
 
-    // 预加载时 WKWebView 还没有可见尺寸。第一次挂进 Tab 的 SwiftUI 转场期间，
-    // WebKit 偶尔不会主动提交首帧，直到滚轮等输入事件触发下一次合成。
-    // 在挂载当帧、下一帧和转场布局稳定后各刷新一次，不改变页面滚动位置。
+    // Preloading happens before the WKWebView has a visible size. Ask WebKit
+    // for one presentation refresh after SwiftUI has attached it to a window.
+    // Never force layoutSubtreeIfNeeded/displayIfNeeded here: doing so from a
+    // representable lifecycle callback can recursively enter AppKit's display
+    // cycle while NSHostingView is updating safe-area constraints.
     func didBecomeVisible() {
-        refreshVisiblePresentation()
-        DispatchQueue.main.async { [weak self] in
-            self?.refreshVisiblePresentation()
+        presentationWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.webView.window != nil else { return }
+            self.webView.needsDisplay = true
+            self.webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))") { _, _ in }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
-            self?.refreshVisiblePresentation()
-        }
-    }
-
-    private func refreshVisiblePresentation() {
-        webView.needsLayout = true
-        webView.layoutSubtreeIfNeeded()
-        webView.needsDisplay = true
-        webView.layer?.setNeedsLayout()
-        webView.layer?.setNeedsDisplay()
-        webView.window?.displayIfNeeded()
-        webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))") { _, _ in }
+        presentationWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
     }
 
     private func scheduleRetry() {
@@ -100,7 +90,9 @@ struct DSHWebView: NSViewRepresentable {
     let store: SessionDSHWebViewStore
 
     func makeNSView(context: Context) -> WKWebView {
-        store.didBecomeVisible()
+        DispatchQueue.main.async {
+            store.didBecomeVisible()
+        }
         return store.webView
     }
 
