@@ -996,6 +996,7 @@ struct CompactSessionRow: View {
     let session: TaskSession
     var showsProjectName = true
     var preheatRequested: (TaskSession) -> Void = { _ in }
+    var selectionRequested: ((TaskSession) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1012,7 +1013,13 @@ struct CompactSessionRow: View {
         .standardSessionCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onHover { if $0 { preheatRequested(session) } }
-        .onTapGesture { backendClient.select(session: session) }
+        .onTapGesture {
+            if let selectionRequested {
+                selectionRequested(session)
+            } else {
+                backendClient.select(session: session)
+            }
+        }
         .contextMenu {
             SessionContextMenuContent(session: session, isRenaming: $isRenaming)
         }
@@ -3358,7 +3365,8 @@ struct DetailView: View {
     let sessionId: String
     let preheatedDisplayCache: DetailDisplayCache?
     let composerDraftRepository: ComposerDraftRepository
-    // 渲染管线覆盖：nil = 跟随全局 ChatTimelineFeatureFlags.current；Session Tab 传 .swiftUIVStack 走纯 SwiftUI，避开 AppKit 桥接。
+    // 渲染管线覆盖：nil = 跟随全局 ChatTimelineFeatureFlags.current；
+    // Sessions Tab 使用原生时间线，复杂卡片仍由行路由自动回退 SwiftUI。
     let renderer: ChatTimelineRenderer?
 
     init(
@@ -4805,7 +4813,7 @@ private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
 }
 
 @MainActor
-private func makeDetailDisplayCache(
+func makeDetailDisplayCache(
     for detail: CodexThreadDetail,
     sessionId: String,
     visibleMessageLimit: Int
@@ -8408,7 +8416,7 @@ struct ThreadItemView: View {
     }
 }
 
-private struct AgentMessageParts {
+struct AgentMessageParts {
     let activity: String
     let body: String
 

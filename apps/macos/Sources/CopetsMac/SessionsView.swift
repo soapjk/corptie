@@ -19,6 +19,11 @@ struct SessionsView: View {
     @StateObject private var layoutState = PanelLayoutState()
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var detailRenderTask: Task<Void, Never>?
+    @State private var presentationPreheatTasks: [String: Task<Void, Never>] = [:]
+    @State private var presentationPreheatTokens: [String: UUID] = [:]
+    @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @State private var visuallySelectedSessionID: String?
+    @State private var pendingSelectionTask: Task<Void, Never>?
     @EnvironmentObject private var router: AppTabRouter
     /// 「+」新建会话：明确选择 Assistant Chat 或 Worker Session。
     @State private var showNewSessionCreation = false
@@ -56,6 +61,11 @@ struct SessionsView: View {
         .onDisappear {
             detailRenderTask?.cancel()
             detailRenderTask = nil
+            pendingSelectionTask?.cancel()
+            pendingSelectionTask = nil
+            presentationPreheatTasks.values.forEach { $0.cancel() }
+            presentationPreheatTasks.removeAll()
+            presentationPreheatTokens.removeAll()
             layoutState.canRenderDetailMessages = false
             backendClient.suppressBackgroundPolling = false
         }
@@ -70,6 +80,7 @@ struct SessionsView: View {
         .onChange(of: backendClient.selectedSession?.id) { _, newValue in
             if let newValue {
                 Self.recordSessionId(newValue)
+                visuallySelectedSessionID = newValue
             }
             preloadSessionMessages(backendClient.sessions)
         }
@@ -120,6 +131,101 @@ struct SessionsView: View {
             sessions,
             centeredOn: backendClient.selectedSession?.id
         )
+        prunePresentationCaches(to: Set(sessions.map(\.id)))
+        let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let prioritizedIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
+            sessions.map(\.id),
+            selectedSessionID: backendClient.selectedSession?.id
+        )
+        for sessionID in prioritizedIDs {
+            guard let session = sessionsByID[sessionID] else { continue }
+            preheatPresentation(for: session)
+        }
+    }
+
+    private func preheatPresentation(for session: TaskSession) {
+        guard detailDisplayCacheBySessionId[session.id] == nil,
+              presentationPreheatTasks[session.id] == nil else { return }
+
+        let token = UUID()
+        presentationPreheatTokens[session.id] = token
+        presentationPreheatTasks[session.id] = Task { @MainActor in
+            defer {
+                if presentationPreheatTokens[session.id] == token {
+                    presentationPreheatTasks[session.id] = nil
+                    presentationPreheatTokens[session.id] = nil
+                }
+            }
+            guard let detail = await backendClient.detailForPreheating(session),
+                  !Task.isCancelled,
+                  presentationPreheatTokens[session.id] == token else { return }
+
+            // Publish the cheap display grouping first. Markdown parsing then
+            // advances one card at a time so preheating never monopolizes a run loop.
+            let displayCache = makeDetailDisplayCache(
+                for: detail,
+                sessionId: session.id,
+                visibleMessageLimit: DetailView.initialVisibleMessageLimit
+            )
+            detailDisplayCacheBySessionId[session.id] = displayCache
+            for (text, style) in markdownContentForPreheating(displayCache.displayEntries) {
+                guard !Task.isCancelled else { return }
+                _ = MarkdownRenderCache.shared.content(text: text, baseDirectory: detail.cwd)
+                if let style {
+                    _ = NativeMarkdownTextCache.shared.value(text: text, style: style)
+                }
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+        }
+    }
+
+    private func prunePresentationCaches(to validSessionIDs: Set<String>) {
+        let removedSessionIDs = presentationPreheatTasks.keys.filter { !validSessionIDs.contains($0) }
+        for sessionID in removedSessionIDs {
+            presentationPreheatTasks[sessionID]?.cancel()
+            presentationPreheatTasks[sessionID] = nil
+            presentationPreheatTokens[sessionID] = nil
+        }
+        detailDisplayCacheBySessionId = detailDisplayCacheBySessionId.filter {
+            validSessionIDs.contains($0.key)
+        }
+    }
+
+    private func markdownContentForPreheating(
+        _ entries: [ChatDisplayEntry]
+    ) -> [(text: String, style: AppKitChatTimelineRow.NativeStyle?)] {
+        entries.compactMap { entry in
+            guard case .message(let item) = entry.kind else { return nil }
+            let text: String
+            if item.presentationRole == "collaboration" || item.sourceType == "collaboration" {
+                text = item.presentationText ?? item.text
+            } else if item.type == "agentMessage" {
+                text = AgentMessageParts.parse(item.text).body
+            } else {
+                text = item.text
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let style: AppKitChatTimelineRow.NativeStyle? = switch item.type {
+            case "userMessage": .user
+            case "agentMessage": .agent
+            default: nil
+            }
+            return (text, style)
+        }
+    }
+
+    private func selectSessionAfterHighlight(_ session: TaskSession) {
+        pendingSelectionTask?.cancel()
+        visuallySelectedSessionID = session.id
+        pendingSelectionTask = Task { @MainActor in
+            // Give AppKit one display frame to paint the row selection before
+            // SwiftUI reconciles the conversation subtree.
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
+            backendClient.select(session: session)
+            pendingSelectionTask = nil
+        }
     }
 
     // MARK: - 左：会话列表（原生 sidebar）
@@ -181,8 +287,11 @@ struct SessionsView: View {
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
-        let isSelected = backendClient.selectedSession?.id == row.session.id
-        return CompactSessionRow(session: row.session)
+        let isSelected = (visuallySelectedSessionID ?? backendClient.selectedSession?.id) == row.session.id
+        return CompactSessionRow(
+            session: row.session,
+            selectionRequested: selectSessionAfterHighlight
+        )
             .onHover { isHovering in
                 guard isHovering else { return }
                 backendClient.prefetchDetail(for: row.session)
@@ -235,9 +344,9 @@ struct SessionsView: View {
                 // 主对话区：直接平铺，吃满剩余宽度（参考 Rudder 聊天主区）
                 DetailView(
                     sessionId: session.id,
-                    preheatedDisplayCache: nil,
+                    preheatedDisplayCache: detailDisplayCacheBySessionId[session.id],
                     composerDraftRepository: composerDraftRepository,
-                    renderer: .swiftUIVStack
+                    renderer: .appKitNativeText
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 

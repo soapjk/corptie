@@ -253,7 +253,7 @@ enum ChatTimelineRowRouting {
 }
 
 @MainActor
-private final class NativeMarkdownTextCache {
+final class NativeMarkdownTextCache {
     private struct Key: Hashable {
         let text: String
         let style: AppKitChatTimelineRow.NativeStyle
