@@ -3,6 +3,12 @@
 // 职责：封装业务规则（字段校验、Objective 存在性、依赖环检测），
 // 数据访问全部委托给 store（corptieStore.mjs 的 CRUD 方法）。
 
+import {
+  buildAcceptanceAssessment,
+  completionSuggestionForWorkItem,
+  WorkItemAcceptanceError
+} from "./workItemAcceptance.mjs";
+
 export class ObjectiveNotFoundError extends Error {
   constructor(objectiveId) {
     super(`Objective not found: ${objectiveId}`);
@@ -137,8 +143,63 @@ export class ObjectiveApplicationService {
   }
 
   updateWorkItem(id, patch = {}) {
-    this.getWorkItem(id);
-    return this.emit("WorkItemChanged", this.store.updateWorkItem(id, patch), "updated");
+    const current = this.getWorkItem(id);
+    if (Object.prototype.hasOwnProperty.call(patch, "acceptanceAssessment")
+      || Object.prototype.hasOwnProperty.call(patch, "executionStatus")) {
+      throw new WorkItemAcceptanceError(
+        "WORK_ITEM_STATE_READ_ONLY",
+        "acceptanceAssessment and executionStatus are managed by their dedicated workflows."
+      );
+    }
+    if (["review", "reviewing"].includes(patch.status)) {
+      throw new WorkItemAcceptanceError(
+        "ACCEPTANCE_ASSESSMENT_REQUIRED",
+        "A WorkItem can enter review only through a passing acceptance assessment."
+      );
+    }
+    if (["done", "complete", "completed"].includes(patch.status)
+      && !completionSuggestionForWorkItem(current)) {
+      throw new WorkItemAcceptanceError(
+        "ACCEPTANCE_NOT_PROVEN",
+        "The WorkItem cannot be completed because its current acceptance criteria have not been proven."
+      );
+    }
+
+    const nextPatch = { ...patch };
+    if (Object.prototype.hasOwnProperty.call(patch, "acceptanceCriteria")
+      && String(patch.acceptanceCriteria ?? "").trim() !== String(current.acceptance_criteria ?? "").trim()) {
+      nextPatch.acceptanceAssessment = null;
+      if (["review", "reviewing"].includes(current.status)) {
+        nextPatch.status = current.current_session_id ? "in_progress" : "todo";
+      }
+    }
+    return this.emit("WorkItemChanged", this.store.updateWorkItem(id, nextPatch), "updated");
+  }
+
+  recordAcceptanceAssessment(id, input = {}) {
+    const workItem = this.getWorkItem(id);
+    const sourceSessionId = String(input.sourceSessionId ?? "").trim();
+    const session = sourceSessionId ? this.store.getSession(sourceSessionId) : null;
+    if (!session) throw new SessionNotFoundError(sourceSessionId);
+    if (session.workItemId !== id) {
+      throw new WorkItemAcceptanceError(
+        "ACCEPTANCE_SOURCE_MISMATCH",
+        "The acceptance source Session is not bound to this WorkItem."
+      );
+    }
+
+    const assessment = buildAcceptanceAssessment(workItem, input);
+    const patch = {
+      acceptanceAssessment: assessment,
+      status: assessment.status === "passed"
+        ? "review"
+        : (["review", "reviewing"].includes(workItem.status) ? "in_progress" : workItem.status)
+    };
+    return this.emit(
+      "WorkItemChanged",
+      this.store.updateWorkItem(id, patch),
+      assessment.status === "passed" ? "acceptance-passed" : "acceptance-not-proven"
+    );
   }
 
   deleteWorkItem(id) {

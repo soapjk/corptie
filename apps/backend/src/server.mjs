@@ -54,6 +54,15 @@ import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDe
 import { formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { ObjectiveApplicationService } from "./application/objectiveApplicationService.mjs";
+import {
+  presentWorkItemAcceptance,
+  workItemExecutionPatch,
+  workItemExecutionPrompt
+} from "./application/workItemAcceptance.mjs";
+import {
+  callWorkItemAcceptanceDynamicTool,
+  workItemAcceptanceDynamicTools
+} from "./application/workItemAcceptanceDynamicTools.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
 import { SkillRegistryService } from "./application/skillRegistryService.mjs";
@@ -262,6 +271,11 @@ const hostToolCatalog = new HostToolCatalog([
     id: "skills",
     tools: skillDynamicTools,
     execute: (input) => callSkillDynamicTool(skillRegistryService, input)
+  },
+  {
+    id: "work-item-acceptance",
+    tools: workItemAcceptanceDynamicTools,
+    execute: (input) => callWorkItemAcceptanceDynamicTool(reportWorkItemAcceptanceForAgent, input)
   },
   {
     id: "platform",
@@ -2867,14 +2881,9 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
     error.code = "WORKSPACE_REQUIRED";
     throw error;
   }
-  const objective = workItem.objective_id ? store.getObjective(workItem.objective_id) : null;
   const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
     ? requestedPrompt.trim()
-    : [
-        `请完成工作项「${workItem.title ?? "未命名"}」。`,
-        workItem.description ? `\n任务描述：\n${workItem.description}` : "",
-        objective?.acceptance_criteria ? `\n验收标准：\n${objective.acceptance_criteria}` : ""
-      ].filter(Boolean).join("\n");
+    : workItemExecutionPrompt(workItem);
 
   const session = await createSessionThroughApplication(
     providerId,
@@ -2926,30 +2935,36 @@ async function launchAgentSession({ agent, title, prompt }) {
   return store.getSession(session.id) ?? session;
 }
 
-// 实体 WorkItem 状态由「执行动作」自动驱动，不由用户手改：
-// 已绑定当前活跃 session → 依据 session 状态推进 work_items.status；无绑定则保持 todo。
-//
-// 状态机（与前端 WorkItemColumn 对齐）：
-//   running/blocked              → in_progress（进行中，自然切换，无需确认）
-//   complete/completed/done      → review（待确认完成：Session 判定满足验收标准，等用户确认后才变 done）
-//   failed/cancelled             → todo（失败/取消回退待开始，用户可再次执行）
+// Session 生命周期只投影到 WorkItem.execution_status。WorkItem.status 的 review
+// 必须由独立验收评估产生，绝不能从一次 turn/session 落定推断。
 function settleEntityWorkItemFromSession(session) {
   if (!session?.id) return null;
   const workItem = store.getWorkItemBySessionId(session.id);
   if (!workItem) return null;
-  const sessionStatus = session.status;
-  let nextStatus;
-  if (["running", "blocked"].includes(sessionStatus)) nextStatus = "in_progress";
-  else if (["complete", "completed", "done"].includes(sessionStatus)) nextStatus = "review";
-  else if (["failed", "cancelled"].includes(sessionStatus)) nextStatus = "todo";
-  // 用户已手动确认完成（done）后，不因会话状态回退；只有真正的推进才写库。
-  if (!nextStatus || nextStatus === workItem.status) return workItem;
-  // 已完成的 WorkItem 不再被会话完成事件重新推进（用户已确认 done 是终态之一）。
-  if (workItem.status === "done" && nextStatus === "review") return workItem;
-  store.updateWorkItem(workItem.id, { status: nextStatus });
+  const patch = workItemExecutionPatch(workItem, session.status);
+  if (!patch) return workItem;
+  const statusChanged = patch.status && patch.status !== workItem.status;
+  const executionChanged = patch.executionStatus !== (workItem.execution_status ?? "idle");
+  if (!statusChanged && !executionChanged) return workItem;
+  store.updateWorkItem(workItem.id, patch);
   const updated = store.getWorkItem(workItem.id);
-  emitEvent("WorkItemChanged", { action: "status-updated", entity: updated });
+  emitEvent("WorkItemChanged", { action: "execution-status-updated", entity: updated });
   return updated;
+}
+
+function reportWorkItemAcceptanceForAgent(agentId, input = {}) {
+  const { sessionId } = requireAgentLogicalSession(agentId);
+  const session = store.getSession(sessionId);
+  const workItemId = session?.workItemId;
+  if (!workItemId) {
+    const error = new Error("The active Agent Session is not bound to a WorkItem.");
+    error.code = "WORK_ITEM_REQUIRED";
+    throw error;
+  }
+  return presentWorkItemAcceptance(objectiveService.recordAcceptanceAssessment(workItemId, {
+    sourceSessionId: sessionId,
+    results: input.results
+  }));
 }
 
 // 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
@@ -2961,7 +2976,8 @@ function reconcileEntityWorkItemsAtStartup() {
     const session = store.getSession(workItem.current_session_id);
     if (!session) continue;
     const updated = settleEntityWorkItemFromSession(session);
-    if (updated && updated.status !== workItem.status) aligned += 1;
+    if (updated && (updated.status !== workItem.status
+      || updated.execution_status !== workItem.execution_status)) aligned += 1;
   }
   if (aligned > 0) {
     console.log(`[entity-work] startup reconcile aligned ${aligned} work item(s)`);
@@ -4887,7 +4903,8 @@ function route(request, response) {
       };
     },
     onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
-    onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId)
+    onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId),
+    onReportWorkItemAcceptance: reportWorkItemAcceptanceForAgent
   })) {
     return;
   }
