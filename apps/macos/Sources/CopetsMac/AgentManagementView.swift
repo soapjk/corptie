@@ -67,9 +67,7 @@ struct AgentManagementView: View {
             }
         }
         .task {
-            if client.agents.isEmpty {
-                await client.refreshAgents()
-            }
+            await client.refreshAgents()
             if backendClient.agentProviders.isEmpty {
                 await backendClient.loadProviders()
             }

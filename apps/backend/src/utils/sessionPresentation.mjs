@@ -7,6 +7,8 @@ export function mergeStoredSessionPresentation(session, stored) {
     title: nonEmptyText(stored.title) || session.title,
     agentId: nonEmptyText(stored.agentId) || session.agentId || null,
     sessionKind: stored.sessionKind ?? session.sessionKind ?? "legacy",
+    objectiveId: nonEmptyText(stored.objectiveId) || session.objectiveId || null,
+    workItemId: nonEmptyText(stored.workItemId) || session.workItemId || null,
     archived: stored.archived,
     pinned: stored.pinned,
     sortOrder: stored.sortOrder,

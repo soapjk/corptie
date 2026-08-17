@@ -38,8 +38,14 @@ export class DependencyCycleError extends Error {
 }
 
 export class ObjectiveApplicationService {
-  constructor({ store }) {
+  constructor({ store, onEntityChanged = null }) {
     this.store = store;
+    this.onEntityChanged = onEntityChanged;
+  }
+
+  emit(type, entity, action) {
+    this.onEntityChanged?.(type, { action, entity });
+    return entity;
   }
 
   // ---- Objective ----
@@ -52,7 +58,7 @@ export class ObjectiveApplicationService {
     for (const targetId of related) {
       this.addReverseRelation(objective.id, targetId);
     }
-    return objective;
+    return this.emit("ObjectiveChanged", objective, "created");
   }
 
   listObjectives() {
@@ -74,7 +80,7 @@ export class ObjectiveApplicationService {
       for (const targetId of next) if (!old.has(targetId)) this.addReverseRelation(id, targetId);
       for (const targetId of old) if (!next.has(targetId)) this.removeReverseRelation(id, targetId);
     }
-    return this.store.updateObjective(id, patch);
+    return this.emit("ObjectiveChanged", this.store.updateObjective(id, patch), "updated");
   }
 
   // 对称关联维护：把 fromId 注入 targetId 的 relatedObjectiveIds（忽略自身/不存在）。
@@ -100,7 +106,9 @@ export class ObjectiveApplicationService {
 
   deleteObjective(id) {
     this.getObjective(id);
-    return this.store.deleteObjective(id);
+    const deleted = this.store.deleteObjective(id);
+    this.emit("ObjectiveChanged", { id }, "deleted");
+    return deleted;
   }
 
   // ---- WorkItem ----
@@ -111,7 +119,7 @@ export class ObjectiveApplicationService {
     if (!objectiveId) throw new TypeError("WorkItem objectiveId is required.");
     if (!title) throw new TypeError("WorkItem title is required.");
     this.getObjective(objectiveId);
-    return this.store.createWorkItem({ ...input, objectiveId, title });
+    return this.emit("WorkItemChanged", this.store.createWorkItem({ ...input, objectiveId, title }), "created");
   }
 
   listWorkItems() {
@@ -130,12 +138,14 @@ export class ObjectiveApplicationService {
 
   updateWorkItem(id, patch = {}) {
     this.getWorkItem(id);
-    return this.store.updateWorkItem(id, patch);
+    return this.emit("WorkItemChanged", this.store.updateWorkItem(id, patch), "updated");
   }
 
   deleteWorkItem(id) {
     this.getWorkItem(id);
-    return this.store.deleteWorkItem(id);
+    const deleted = this.store.deleteWorkItem(id);
+    this.emit("WorkItemChanged", { id }, "deleted");
+    return deleted;
   }
 
   // ---- Session 归属（打通 Objective → WorkItem → Session 最后一环）----
@@ -144,9 +154,11 @@ export class ObjectiveApplicationService {
   // 返回更新后的 Session（含 objectiveId / workItemId）。
   bindSession(sessionId, workItemId) {
     const workItem = this.getWorkItem(workItemId);
-    const session = this.store.getSession(sessionId);
-    if (!session) throw new SessionNotFoundError(sessionId);
-    return this.store.bindSessionToWorkItem(sessionId, workItemId, workItem.objective_id);
+    const existingSession = this.store.getSession(sessionId);
+    if (!existingSession) throw new SessionNotFoundError(sessionId);
+    const session = this.store.bindSessionToWorkItem(sessionId, workItemId, workItem.objective_id);
+    this.emit("WorkItemChanged", this.store.getWorkItem(workItemId), "session-bound");
+    return session;
   }
 
   // 列出某 WorkItem 名下所有 Session（按创建时间升序）。
@@ -165,11 +177,17 @@ export class ObjectiveApplicationService {
     if (this.wouldCreateCycle(workItemId, targetWorkItemId)) {
       throw new DependencyCycleError(workItemId, targetWorkItemId);
     }
-    return this.store.addWorkItemDependency(workItemId, targetWorkItemId, type);
+    return this.emit(
+      "WorkItemChanged",
+      this.store.addWorkItemDependency(workItemId, targetWorkItemId, type),
+      "dependency-added"
+    );
   }
 
   removeDependency(workItemId, targetWorkItemId) {
-    return this.store.removeWorkItemDependency(workItemId, targetWorkItemId);
+    const removed = this.store.removeWorkItemDependency(workItemId, targetWorkItemId);
+    this.emit("WorkItemChanged", { id: workItemId, targetWorkItemId }, "dependency-removed");
+    return removed;
   }
 
   listDependencies(workItemId) {

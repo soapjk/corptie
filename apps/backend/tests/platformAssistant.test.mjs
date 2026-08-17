@@ -94,7 +94,9 @@ test("platform operations are denied to user Agents and use product services for
   const { directory, store } = await fixture();
   try {
     const userAgent = store.createAgent({ name: "普通 Agent" });
-    const objectiveService = new ObjectiveApplicationService({ store });
+    const entityEvents = [];
+    const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
+    const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
     const sessionCalls = [];
     const service = new PlatformOperationService({
       store,
@@ -104,7 +106,8 @@ test("platform operations are denied to user Agents and use product services for
         readSession: async () => null,
         sendMessage: async (...args) => sessionCalls.push(args)
       },
-      createSession: async (input) => ({ id: "session-1", ...input })
+      createSession: async (input) => ({ id: "session-1", ...input }),
+      onEntityChanged
     });
 
     await assert.rejects(
@@ -123,6 +126,21 @@ test("platform operations are denied to user Agents and use product services for
     });
     assert.equal(created.result.name, "研究员");
     assert.equal(created.result.agentKind, "user");
+
+    const objective = await service.execute({
+      actorId: "assistant",
+      tool: "corptie_platform_objectives_manage",
+      arguments: { action: "create", name: "平台事件目标" }
+    });
+    await service.execute({
+      actorId: "assistant",
+      tool: "corptie_platform_work_items_manage",
+      arguments: { action: "create", objective_id: objective.result.id, title: "平台事件任务" }
+    });
+    assert.deepEqual(
+      entityEvents.map((event) => event.type),
+      ["AgentChanged", "ObjectiveChanged", "WorkItemChanged"]
+    );
 
     await assert.rejects(
       service.execute({

@@ -28,7 +28,7 @@ test("canonical session ids and Provider fields remain unchanged", () => {
   ));
 
   assert.equal(session.id, source.id);
-  assert.equal(session.external, source.external);
+  assert.equal(session.external.provider, source.external.provider);
   assert.equal(session.sortOrder, 4);
 });
 
@@ -36,4 +36,31 @@ test("Provider order remains available when no persisted order exists", () => {
   const source = { id: "provider-session", sortOrder: 7 };
   const [session] = applyPersistedSessionOrder([source], () => null);
   assert.equal(session, source);
+});
+
+test("third-party Provider sessions receive all persisted Corptie bindings", () => {
+  const [session] = applyPersistedSessionOrder([
+    {
+      id: "openclacky:owned",
+      title: "Provider title",
+      sessionKind: "legacy",
+      external: { provider: "openclacky" }
+    }
+  ], () => ({
+    id: "openclacky:owned",
+    title: "Corptie title",
+    agentId: "agent:liang",
+    objectiveId: "objective:poly",
+    workItemId: "work-item:poly",
+    sessionKind: "worker",
+    sortOrder: 3,
+    archived: false,
+    pinned: false,
+    external: {}
+  }));
+
+  assert.equal(session.external.provider, "openclacky");
+  assert.equal(session.agentId, "agent:liang");
+  assert.equal(session.workItemId, "work-item:poly");
+  assert.equal(session.sessionKind, "worker");
 });

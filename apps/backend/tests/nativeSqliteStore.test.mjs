@@ -93,10 +93,19 @@ test("Session kind persists explicitly and WorkItem binding classifies worker se
       provider: "codex-app-server",
       status: "complete"
     });
+    store.createObjective({ id: "objective:1", name: "Objective" });
+    store.createWorkItem({ id: "work-item:1", objectiveId: "objective:1", title: "Work item" });
     store.bindSessionToWorkItem("worker-session", "work-item:1", "objective:1");
     const worker = store.getSession("worker-session");
     assert.equal(worker.sessionKind, "worker");
     assert.equal(worker.workItemId, "work-item:1");
+    assert.equal(store.getWorkItem("work-item:1").current_session_id, "worker-session");
+
+    assert.throws(
+      () => store.bindSessionToWorkItem("missing-session", "work-item:1", "objective:1"),
+      (error) => error?.code === "SESSION_NOT_FOUND"
+    );
+    assert.equal(store.getWorkItem("work-item:1").current_session_id, "worker-session");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
