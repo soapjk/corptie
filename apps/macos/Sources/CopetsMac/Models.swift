@@ -8,6 +8,44 @@ enum SessionKind: String, Codable, Equatable, Sendable {
     case legacy
 }
 
+enum SessionContextReferenceType: String, Codable, CaseIterable, Sendable {
+    case localFile
+    case webURL
+    case objective
+    case workItem
+    case agent
+    case session
+}
+
+struct SessionContextReference: Identifiable, Codable, Equatable, Sendable {
+    let referenceId: String
+    let ownerSessionId: String
+    let targetType: SessionContextReferenceType
+    let targetKey: String
+    let targetId: String?
+    let locator: String?
+    let displayName: String
+    let inclusionMode: String
+    let enabled: Bool
+    let priority: Int
+    let status: String
+    let snapshotTitle: String?
+    let snapshotAt: String?
+    let contentHash: String?
+    let createdAt: String
+    let updatedAt: String
+
+    var id: String { referenceId }
+}
+
+struct SessionContextReferenceListEnvelope: Decodable {
+    let references: [SessionContextReference]
+}
+
+struct SessionContextReferenceEnvelope: Decodable {
+    let reference: SessionContextReference
+}
+
 struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String

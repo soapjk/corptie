@@ -58,6 +58,8 @@ import { CollaborationRouter } from "./application/collaborationRouter.mjs";
 import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
+import { SessionContextReferenceService } from "./application/sessionContextReferenceService.mjs";
+import { handleSessionContextReferenceHttpRequest } from "./application/sessionContextReferenceHttpApi.mjs";
 import { handleDshRpcRequest } from "./dsh-adapter/dshRpcAdapter.mjs";
 import { handleDshWebStatic, isDshWebStaticPath } from "./dsh-adapter/dshWebStatic.mjs";
 import {
@@ -405,6 +407,9 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
+  resolveMessageContext: (reference) => store.getSession(reference.sessionId)?.sessionKind === "assistantChat"
+    ? sessionContextReferenceService.resolve(reference.sessionId)
+    : null,
   bindCreatedSession: async ({ providerId, session, input, context }) => {
     ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
     const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
@@ -459,6 +464,10 @@ platformOperationService = new PlatformOperationService({
     }
     return launchAgentSession({ agent, title, prompt });
   }
+});
+const sessionContextReferenceService = new SessionContextReferenceService({
+  store,
+  readSessionDetail: (sessionId) => sessionApplicationService.readSession(sessionId)
 });
 const backgroundAgentService = new BackgroundAgentService({
   registry: agentProviderRegistry,
@@ -3299,6 +3308,13 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
       cwd: activeCwd,
       model: managed?.external?.currentModel ?? options.model ?? undefined,
       reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
+      additionalContext: context.sessionContext?.prompt ? {
+        ...(options.additionalContext ?? {}),
+        "corptie-session-context": {
+          kind: "application",
+          value: context.sessionContext.prompt
+        }
+      } : options.additionalContext,
       ...codexTurnPermissionOptions(managed)
     });
     upsertManagedCodexSession({
@@ -4850,6 +4866,15 @@ function route(request, response) {
     },
     onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
     onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId)
+  })) {
+    return;
+  }
+
+  if (handleSessionContextReferenceHttpRequest({
+    request,
+    response,
+    url,
+    service: sessionContextReferenceService
   })) {
     return;
   }

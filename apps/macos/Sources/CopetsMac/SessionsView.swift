@@ -1,4 +1,5 @@
 import Combine
+import AppKit
 import SwiftUI
 
 // Sessions Tab：两栏布局（参考 Rudder 的三栏设计哲学，但对话页收敛为两栏）。
@@ -292,6 +293,7 @@ struct SessionDetailPanel: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     let session: TaskSession
+    @State private var contextReferenceAddMode: ContextReferenceAddMode?
 
     /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
     private static let railWidth: CGFloat = 280
@@ -311,6 +313,13 @@ struct SessionDetailPanel: View {
             if backendClient.agentProviders.isEmpty {
                 await backendClient.loadProviders()
             }
+            if session.resolvedSessionKind == .assistantChat {
+                await entityClient.refreshAgents()
+                await backendClient.loadContextReferences(for: session)
+            }
+        }
+        .sheet(item: $contextReferenceAddMode) { mode in
+            ContextReferenceAddSheet(session: session, mode: mode)
         }
     }
 
@@ -332,7 +341,10 @@ struct SessionDetailPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     statusCard
 
-                    if !session.summary.isEmpty {
+                    if session.resolvedSessionKind == .assistantChat {
+                        assistantSection
+                        contextReferencesSection
+                    } else if !session.summary.isEmpty {
                         detailSection(title: "摘要", systemImage: "text.alignleft") {
                             Text(session.summary)
                                 .font(.system(size: 12))
@@ -389,6 +401,130 @@ struct SessionDetailPanel: View {
         .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    private var assistantSection: some View {
+        detailSection(title: "Assistant", systemImage: "person.crop.circle") {
+            HStack(alignment: .top, spacing: 9) {
+                SessionAvatarView(session: session, avatarSize: 32)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(agentDisplayName)
+                        .font(.system(size: 12, weight: .semibold))
+                    if let description = assistantAgent?.description, !description.isEmpty {
+                        Text(description)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private var contextReferencesSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("上下文引用", systemImage: "link")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                Menu {
+                    Button("本地文件…", systemImage: "doc") { chooseLocalFile() }
+                    Button("网页链接…", systemImage: "globe") { contextReferenceAddMode = .webURL }
+                    Divider()
+                    Button("Objective…", systemImage: "scope") { contextReferenceAddMode = .objective }
+                    Button("WorkItem…", systemImage: "checklist") { contextReferenceAddMode = .workItem }
+                    Button("Agent…", systemImage: "person.2") { contextReferenceAddMode = .agent }
+                    Button("其他会话…", systemImage: "bubble.left.and.bubble.right") { contextReferenceAddMode = .session }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 20, height: 18)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .help("添加上下文引用")
+            }
+
+            if backendClient.isLoadingContextReferences && backendClient.selectedContextReferences.isEmpty {
+                ProgressView().controlSize(.small)
+            } else if backendClient.selectedContextReferences.isEmpty {
+                Text("添加文件、网页或 Corptie 对象，作为这个会话的持续上下文。")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(backendClient.selectedContextReferences) { reference in
+                        contextReferenceRow(reference)
+                    }
+                }
+            }
+        }
+    }
+
+    private func contextReferenceRow(_ reference: SessionContextReference) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: reference.targetType.systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(reference.enabled ? Color.accentColor : Color.secondary)
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(reference.displayName)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Text(reference.status.contextReferenceStatusLabel)
+                    .font(.system(size: 9))
+                    .foregroundStyle(reference.status == "available" ? Color.secondary.opacity(0.65) : Color.orange)
+            }
+            Spacer(minLength: 2)
+            Toggle("", isOn: Binding(
+                get: { reference.enabled },
+                set: { enabled in Task { await backendClient.setContextReferenceEnabled(reference, enabled: enabled) } }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            Menu {
+                if reference.targetType == .webURL {
+                    Button("刷新快照", systemImage: "arrow.clockwise") {
+                        Task { await backendClient.refreshContextReference(reference) }
+                    }
+                }
+                if reference.targetType == .localFile, let path = reference.locator {
+                    Button("在 Finder 中显示", systemImage: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                    }
+                } else if reference.targetType == .webURL, let locator = reference.locator, let url = URL(string: locator) {
+                    Button("打开网页", systemImage: "safari") { NSWorkspace.shared.open(url) }
+                }
+                Divider()
+                Button("移除引用", systemImage: "trash", role: .destructive) {
+                    Task { await backendClient.deleteContextReference(reference) }
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 16, height: 18)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .opacity(reference.enabled ? 1 : 0.55)
+    }
+
+    private func chooseLocalFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        Task {
+            _ = await backendClient.addContextReference(to: session, type: .localFile, locator: url.path)
+        }
+    }
+
     private func detailSection<Content: View>(
         title: String,
         systemImage: String,
@@ -442,6 +578,11 @@ struct SessionDetailPanel: View {
         sessionAgentDisplayName(session: session, agents: entityClient.agents)
     }
 
+    private var assistantAgent: Agent? {
+        guard let agentId = session.agentId else { return nil }
+        return entityClient.agents.first { $0.agentId == agentId }
+    }
+
     private var friendlyUpdatedAt: String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -463,6 +604,202 @@ struct SessionDetailPanel: View {
         return "…/" + components.suffix(3).joined(separator: "/")
     }
 
+}
+
+private enum ContextReferenceAddMode: String, Identifiable {
+    case webURL
+    case objective
+    case workItem
+    case agent
+    case session
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .webURL: "添加网页链接"
+        case .objective: "引用 Objective"
+        case .workItem: "引用 WorkItem"
+        case .agent: "引用 Agent"
+        case .session: "引用其他会话"
+        }
+    }
+    var referenceType: SessionContextReferenceType {
+        switch self {
+        case .webURL: .webURL
+        case .objective: .objective
+        case .workItem: .workItem
+        case .agent: .agent
+        case .session: .session
+        }
+    }
+}
+
+private struct ContextReferenceCandidate: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let systemImage: String
+}
+
+private struct ContextReferenceAddSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var backendClient = BackendClient.shared
+    @ObservedObject private var entityClient = EntityAPIClient.shared
+    let session: TaskSession
+    let mode: ContextReferenceAddMode
+    @State private var urlText = ""
+    @State private var searchText = ""
+    @State private var workItems: [WorkItem] = []
+    @State private var isSubmitting = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(mode.title).font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Button("取消") { dismiss() }.buttonStyle(.plain)
+            }
+
+            if mode == .webURL {
+                Text("网页会在添加时保存正文快照；之后可以从引用菜单手动刷新。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                TextField("https://example.com/document", text: $urlText)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addWebURL() }
+                Spacer()
+                HStack {
+                    Spacer()
+                    Button("添加") { addWebURL() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSubmitting)
+                }
+            } else {
+                TextField("搜索", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                if candidates.isEmpty {
+                    ContentUnavailableView("没有可引用的对象", systemImage: mode.referenceType.systemImage)
+                } else {
+                    List(filteredCandidates) { candidate in
+                        Button {
+                            add(candidate)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: candidate.systemImage)
+                                    .frame(width: 20)
+                                    .foregroundStyle(Color.accentColor)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(candidate.title).font(.system(size: 12, weight: .medium))
+                                    if !candidate.subtitle.isEmpty {
+                                        Text(candidate.subtitle)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "plus.circle")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSubmitting)
+                    }
+                    .listStyle(.inset)
+                }
+            }
+
+            if let error = backendClient.lastError, !error.isEmpty {
+                Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
+            }
+        }
+        .padding(18)
+        .frame(width: 430, height: mode == .webURL ? 230 : 460)
+        .task {
+            switch mode {
+            case .objective: await entityClient.refreshObjectives()
+            case .workItem: workItems = await entityClient.allWorkItems()
+            case .agent: await entityClient.refreshAgents()
+            case .session, .webURL: break
+            }
+        }
+    }
+
+    private var candidates: [ContextReferenceCandidate] {
+        switch mode {
+        case .objective:
+            entityClient.objectives.map { .init(id: $0.id, title: $0.name, subtitle: $0.status, systemImage: "scope") }
+        case .workItem:
+            workItems.map { .init(id: $0.id, title: $0.title, subtitle: $0.status, systemImage: "checklist") }
+        case .agent:
+            entityClient.agents
+                .filter { $0.agentId != session.agentId }
+                .map { .init(id: $0.agentId, title: $0.name, subtitle: $0.description, systemImage: "person.2") }
+        case .session:
+            backendClient.sessions
+                .filter { $0.id != session.id }
+                .map { .init(id: $0.id, title: $0.title, subtitle: $0.agent, systemImage: "bubble.left.and.bubble.right") }
+        case .webURL:
+            []
+        }
+    }
+
+    private var filteredCandidates: [ContextReferenceCandidate] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return candidates }
+        return candidates.filter { $0.title.localizedCaseInsensitiveContains(query) || $0.subtitle.localizedCaseInsensitiveContains(query) }
+    }
+
+    private func addWebURL() {
+        let locator = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !locator.isEmpty else { return }
+        isSubmitting = true
+        Task {
+            let added = await backendClient.addContextReference(to: session, type: .webURL, locator: locator)
+            isSubmitting = false
+            if added { dismiss() }
+        }
+    }
+
+    private func add(_ candidate: ContextReferenceCandidate) {
+        isSubmitting = true
+        Task {
+            let added = await backendClient.addContextReference(
+                to: session,
+                type: mode.referenceType,
+                targetId: candidate.id,
+                displayName: candidate.title
+            )
+            isSubmitting = false
+            if added { dismiss() }
+        }
+    }
+}
+
+private extension SessionContextReferenceType {
+    var systemImage: String {
+        switch self {
+        case .localFile: "doc"
+        case .webURL: "globe"
+        case .objective: "scope"
+        case .workItem: "checklist"
+        case .agent: "person.2"
+        case .session: "bubble.left.and.bubble.right"
+        }
+    }
+}
+
+private extension String {
+    var contextReferenceStatusLabel: String {
+        switch self {
+        case "available": "可用"
+        case "changed": "内容已变更"
+        case "missing": "文件不存在"
+        case "unavailable": "暂不可用"
+        default: self
+        }
+    }
 }
 
 func sessionAgentDisplayName(session: TaskSession, agents: [Agent]) -> String {

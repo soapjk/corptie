@@ -1,3 +1,5 @@
+import { providerMessageWithSessionContext, userMessageWithoutSessionContext } from "../utils/sessionContextMessage.mjs";
+
 const DEFAULT_BASE_URL = "http://127.0.0.1:7070";
 
 export class OpenClackyManager {
@@ -137,11 +139,13 @@ export class OpenClackyManager {
     return this.refreshOne(sessionId);
   }
 
-  async send(sessionId, message) {
+  async send(sessionId, message, context = {}) {
+    const userMessage = requiredText(message, "message");
+    const contextPrompt = optionalText(context.sessionContext?.prompt);
     this.sendSocket(sessionId, {
       type: "message",
       session_id: sessionId,
-      content: requiredText(message, "message")
+      content: providerMessageWithSessionContext(userMessage, contextPrompt)
     });
     return { queued: true };
   }
@@ -370,7 +374,7 @@ function openClackyEventItems(sessionId, event, index) {
     createdAt: isoTimestamp(event?.created_at)
   };
   if (type === "history_user_message" || type === "user_message") {
-    return [{ ...base, type: "userMessage", title: "You", text: String(event.content ?? "") }];
+    return [{ ...base, type: "userMessage", title: "You", text: userMessageWithoutSessionContext(event.content) }];
   }
   if (type === "assistant_message") {
     return [{ ...base, type: "agentMessage", text: String(event.content ?? "") }];
