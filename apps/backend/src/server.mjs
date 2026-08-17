@@ -292,6 +292,7 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
 const openClackyManager = new OpenClackyManager({
   baseURL: process.env.OPENCLACKY_BASE_URL,
   accessKey: process.env.OPENCLACKY_ACCESS_KEY,
+  resolveOwnedSessionIds: () => store.listActiveProviderSessionIds("openclacky"),
   onSessionChanged: (change) => {
     emitEvent("ProviderSessionChanged", {
       provider: "openclacky",
@@ -371,7 +372,6 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   additionalProviders: [createOpenClackyProvider(openClackyManager)]
 });
-openClackyManager.start();
 toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
 const sessionBindingRepository = new SessionBindingRepository({
   store,
@@ -5997,6 +5997,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
   store,
@@ -6147,6 +6148,7 @@ function shutdown() {
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
     codexResetForecastMonitor?.stop();
+    openClackyManager.stop();
     await feishuGateway.close();
     await codexRuntime.close();
     await store.close();
