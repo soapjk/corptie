@@ -13,7 +13,8 @@ import {
   annotateAgentWorkDetailItems,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
-  shouldReportAgentWorkQueued
+  shouldReportAgentWorkQueued,
+  userMessageStatusForAgentWork
 } from "../src/utils/agentWorkQueue.mjs";
 
 async function fixture() {
@@ -143,6 +144,29 @@ test("a Feishu work item hides its matching session user message during turn sta
   assert.equal(item.workItemId, "message-a");
   assert.equal(item.sourceChannel, "feishu");
   assert.equal(item.feishuVisibility, "hidden");
+  assert.equal(item.userMessageStatus, "processing");
+});
+
+test("durable work lifecycle maps to provider-neutral user message status", () => {
+  assert.equal(userMessageStatusForAgentWork("queued"), "queued");
+  assert.equal(userMessageStatusForAgentWork("running"), "processing");
+  assert.equal(userMessageStatusForAgentWork("completed"), "consumed");
+  assert.equal(userMessageStatusForAgentWork("failed"), "failed");
+  assert.equal(userMessageStatusForAgentWork("cancelled"), "cancelled");
+  assert.equal(userMessageStatusForAgentWork("future-state"), null);
+
+  const [consumed] = annotateAgentWorkDetailItems([
+    { id: "input-complete", turnId: "turn-complete", type: "userMessage", text: "done" }
+  ], [{
+    workItemId: "message-complete",
+    kind: "user",
+    status: "completed",
+    targetTurnId: "turn-complete",
+    text: "done",
+    source: { type: "desktop" },
+    localVisibility: "normal"
+  }]);
+  assert.equal(consumed.userMessageStatus, "consumed");
 });
 
 test("user instructions are selected before older collaboration work", async () => {
@@ -203,6 +227,31 @@ test("a lone running work item remains discoverable for restart recovery", async
     assert.deepEqual(store.listAgentIdsWithUnsettledWork(), ["agent-b"]);
   } finally {
     await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("clearing or deleting a Session cancels every unsettled queued message", async () => {
+  const { directory, store } = await fixture();
+  try {
+    store.upsertSession({
+      id: "codex:thread-b",
+      title: "Agent B",
+      status: "complete",
+      progress: 1,
+      summary: "Ready",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+      accent: "cyan"
+    });
+    enqueue(store, { workItemId: "queued-before-clear", kind: "user", priority: 100 });
+
+    store.deleteSession("codex:thread-b");
+
+    const cancelled = store.getAgentWorkItem("queued-before-clear");
+    assert.equal(cancelled.status, "cancelled");
+    assert.match(cancelled.lastError, /cleared or deleted/);
+  } finally {
+    if (store.saveTimer) clearTimeout(store.saveTimer);
     await rm(directory, { recursive: true, force: true });
   }
 });

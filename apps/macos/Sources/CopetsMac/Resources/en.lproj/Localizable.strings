@@ -32,6 +32,11 @@
 "这个会话无需手动连接，当前可用。" = "This session is available and does not require a manual connection.";
 "正在切换连接状态。" = "The connection state is changing.";
 "排队中" = "Queued";
+"Queued for processing" = "Queued for processing";
+"Queued · position %lld" = "Queued · position %lld";
+"Processing" = "Processing";
+"Processing failed" = "Processing failed";
+"Cancelled before processing" = "Cancelled before processing";
 "A session with this name already exists." = "A session with this name already exists.";
 "Could not rename session." = "Could not rename session.";
 "Create as “%@”" = "Create as “%@”";

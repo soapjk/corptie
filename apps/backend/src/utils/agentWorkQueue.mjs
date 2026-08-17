@@ -77,6 +77,9 @@ export function annotateAgentWorkDetailItems(detailItems = [], workItems = []) {
     if (!work) return item;
     return {
       ...item,
+      userMessageStatus: item.type === "userMessage"
+        ? userMessageStatusForAgentWork(work.status)
+        : item.userMessageStatus,
       sourceType: work.kind,
       sourceChannel: work.source?.type ?? null,
       localVisibility: work.localVisibility,
@@ -86,6 +89,17 @@ export function annotateAgentWorkDetailItems(detailItems = [], workItems = []) {
         : item.feishuVisibility
     };
   });
+}
+
+export function userMessageStatusForAgentWork(status) {
+  switch (status) {
+    case "queued": return "queued";
+    case "running": return "processing";
+    case "completed": return "consumed";
+    case "failed": return "failed";
+    case "cancelled": return "cancelled";
+    default: return null;
+  }
 }
 
 function normalizedText(value) {

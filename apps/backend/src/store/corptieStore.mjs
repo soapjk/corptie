@@ -3071,6 +3071,14 @@ export class CorptieStore {
   }
 
   deleteSession(id) {
+    const timestamp = new Date().toISOString();
+    this.db.run(
+      `UPDATE agent_work_items
+       SET status = 'cancelled', completed_at = ?, updated_at = ?,
+           last_error = COALESCE(last_error, 'Target Session was cleared or deleted before this message was processed.')
+       WHERE session_id = ? AND status IN ('queued', 'running')`,
+      [timestamp, timestamp, id]
+    );
     this.db.run("DELETE FROM session_items WHERE session_id = ?", [id]);
     this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
     this.scheduleSave();
