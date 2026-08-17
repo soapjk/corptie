@@ -1,12 +1,72 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyWorkspaceContinuationPresentation,
   composeStoredSessionList,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
-  reconcileAuthoritativeRunState
+  reconcileAuthoritativeRunState,
+  sessionHasActiveRun,
+  workspaceContinuationKeepsSessionActive
 } from "../src/utils/sessionPresentation.mjs";
+
+test("a queued workspace continuation keeps the Work Session active", () => {
+  const presented = applyWorkspaceContinuationPresentation(
+    { id: "worker", status: "complete", progress: 1, activityStatus: null },
+    { continuationState: "queued" }
+  );
+
+  assert.equal(presented.status, "running");
+  assert.equal(presented.progress, 0.5);
+  assert.match(presented.activityStatus, /Waiting to continue/);
+});
+
+test("a queued continuation presentation does not block its own Provider turn", () => {
+  assert.equal(sessionHasActiveRun({
+    status: "running",
+    external: {
+      activeTurnId: null,
+      workspace: { continuationState: "queued" }
+    }
+  }), false);
+  assert.equal(sessionHasActiveRun({
+    status: "running",
+    external: {
+      activeTurnId: "turn:continuation",
+      workspace: { continuationState: "running" }
+    }
+  }), true);
+});
+
+test("a failed workspace continuation does not look complete", () => {
+  const presented = applyWorkspaceContinuationPresentation(
+    { id: "worker", status: "complete", progress: 1, activityStatus: null },
+    { continuationState: "failed", continuationError: "Target binding disappeared." }
+  );
+
+  assert.equal(presented.status, "failed");
+  assert.equal(presented.activityStatus, "Target binding disappeared.");
+});
+
+test("WorkItem completion waits for the workspace continuation to settle", () => {
+  assert.equal(workspaceContinuationKeepsSessionActive(
+    { phase: "waitingForTurn" },
+    null
+  ), true);
+  assert.equal(workspaceContinuationKeepsSessionActive(
+    null,
+    { phase: "committed", continuationState: "queued" }
+  ), true);
+  assert.equal(workspaceContinuationKeepsSessionActive(
+    null,
+    { phase: "committed", continuationState: "completed" }
+  ), false);
+  assert.equal(workspaceContinuationKeepsSessionActive(
+    null,
+    { phase: "committed", continuationState: "failed" }
+  ), false);
+});
 
 test("a locally saved custom title wins over the Codex thread preview after restart", () => {
   const merged = mergeStoredSessionPresentation(

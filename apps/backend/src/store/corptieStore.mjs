@@ -1997,6 +1997,7 @@ export class CorptieStore {
     if (!logicalSession?.activeBinding) {
       throw new Error(`Logical session ${logicalSessionId} has no active binding.`);
     }
+    this.assertLogicalWorkSessionBinding(logicalSessionId);
     const sourceRoutingVersion = Number(input.sourceRoutingVersion);
     if (sourceRoutingVersion !== logicalSession.routingVersion) {
       throw new Error(`Logical session routing version changed from ${sourceRoutingVersion} to ${logicalSession.routingVersion}.`);
@@ -2152,6 +2153,7 @@ export class CorptieStore {
     const timestamp = binding.createdAt || new Date().toISOString();
     this.db.run("BEGIN IMMEDIATE");
     try {
+      this.assertLogicalWorkSessionBinding(transition.logicalSessionId);
       const logical = this.selectOne(
         "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
         [transition.logicalSessionId]
@@ -2230,6 +2232,7 @@ export class CorptieStore {
         [newThreadId, timestamp, transitionId]
       );
       this.assertLogicalSessionRoute(transition.logicalSessionId);
+      this.assertLogicalWorkSessionBinding(transition.logicalSessionId);
       this.db.run("COMMIT");
     } catch (error) {
       this.db.run("ROLLBACK");
@@ -2322,6 +2325,63 @@ export class CorptieStore {
       throw new Error(`Logical session ${logicalSessionId} has mismatched thread and workspace bindings.`);
     }
     return true;
+  }
+
+  // A Work Session keeps one stable product Session identity while its Provider
+  // binding is replaced during a workspace transition. The WorkItem ownership
+  // must therefore remain intact before and after every route commit.
+  assertLogicalWorkSessionBinding(logicalSessionId) {
+    const logical = this.getLogicalSession(logicalSessionId);
+    if (!logical?.legacySessionId) {
+      // Provider-only routes can exist during migration/recovery. They are not
+      // Work Sessions and therefore have no WorkItem ownership to preserve.
+      return { logicalSessionId, sessionId: null, workItemId: null, agentId: null };
+    }
+    const session = this.getSession(logical.legacySessionId);
+    if (!session) {
+      const error = new Error(`Product Session not found: ${logical.legacySessionId}`);
+      error.code = "WORK_SESSION_BINDING_INVALID";
+      throw error;
+    }
+    const isWorkSession = session.sessionKind === SESSION_KIND.worker || Boolean(session.workItemId);
+    if (!isWorkSession) {
+      return { logicalSessionId, sessionId: session.id, workItemId: null };
+    }
+    if (!session.workItemId) {
+      const error = new Error(`Worker Session ${session.id} is not bound to a WorkItem.`);
+      error.code = "WORK_SESSION_BINDING_INVALID";
+      throw error;
+    }
+    const workItem = this.getWorkItem(session.workItemId);
+    if (!workItem) {
+      const error = new Error(`WorkItem not found for Worker Session ${session.id}: ${session.workItemId}`);
+      error.code = "WORK_SESSION_BINDING_INVALID";
+      throw error;
+    }
+    if (workItem.current_session_id !== session.id) {
+      const error = new Error(
+        `WorkItem ${workItem.id} points to ${workItem.current_session_id ?? "no Session"}, not active Worker Session ${session.id}.`
+      );
+      error.code = "WORK_SESSION_BINDING_STALE";
+      throw error;
+    }
+    if (session.objectiveId !== workItem.objective_id) {
+      const error = new Error(`Worker Session ${session.id} and WorkItem ${workItem.id} have different Objectives.`);
+      error.code = "WORK_SESSION_BINDING_INVALID";
+      throw error;
+    }
+    if (workItem.main_agent_id && session.agentId !== workItem.main_agent_id) {
+      const error = new Error(`Worker Session ${session.id} and WorkItem ${workItem.id} have different Agents.`);
+      error.code = "WORK_SESSION_BINDING_INVALID";
+      throw error;
+    }
+    return {
+      logicalSessionId,
+      sessionId: session.id,
+      workItemId: workItem.id,
+      objectiveId: workItem.objective_id,
+      agentId: workItem.main_agent_id ?? session.agentId ?? null
+    };
   }
 
   upsertSession(session) {
@@ -2709,6 +2769,14 @@ export class CorptieStore {
     return row ? agentWorkItemFromRow(row) : null;
   }
 
+  getRunningAgentWorkItem(agentId) {
+    const row = this.selectOne(
+      "SELECT * FROM agent_work_items WHERE agent_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1",
+      [agentId]
+    );
+    return row ? agentWorkItemFromRow(row) : null;
+  }
+
   listAgentWorkItemsForSession(sessionId, options = {}) {
     const statuses = Array.isArray(options.statuses) && options.statuses.length > 0
       ? options.statuses
@@ -2763,13 +2831,14 @@ export class CorptieStore {
       : (["completed", "failed", "cancelled"].includes(status) ? timestamp : item.completedAt);
     this.db.run(
       `UPDATE agent_work_items SET status = ?, target_turn_id = ?, last_error = ?,
-       started_at = ?, completed_at = ?, updated_at = ? WHERE work_item_id = ?`,
+       started_at = ?, completed_at = ?, source_json = ?, updated_at = ? WHERE work_item_id = ?`,
       [
         status,
         Object.hasOwn(patch, "targetTurnId") ? patch.targetTurnId : item.targetTurnId,
         Object.hasOwn(patch, "lastError") ? patch.lastError : item.lastError,
         Object.hasOwn(patch, "startedAt") ? patch.startedAt : item.startedAt,
         completedAt,
+        JSON.stringify(Object.hasOwn(patch, "source") ? (patch.source ?? {}) : item.source),
         timestamp,
         workItemId
       ]

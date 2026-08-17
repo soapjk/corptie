@@ -112,6 +112,74 @@ test("Session kind persists explicitly and WorkItem binding classifies worker se
   }
 });
 
+test("workspace route replacement preserves the stable Work Session and WorkItem ownership", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-work-session-transition-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "worker-session",
+      title: "Worker",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    store.createObjective({ id: "objective:one", name: "Objective" });
+    store.createWorkItem({ id: "work-item:one", objectiveId: "objective:one", title: "Work item" });
+    store.bindSessionToWorkItem("worker-session", "work-item:one", "objective:one");
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:worker",
+      legacySessionId: "worker-session",
+      providerThreadId: "provider:source",
+      providerSessionId: "provider:source",
+      providerId: "codex-app-server",
+      boundCwd: "/repo/main",
+      title: "Worker"
+    });
+
+    assert.equal(store.assertLogicalWorkSessionBinding("logical:worker").workItemId, "work-item:one");
+    store.beginWorkspaceTransition({
+      transitionId: "transition:worker",
+      logicalSessionId: "logical:worker",
+      targetCwd: "/repo/feature",
+      sourceRoutingVersion: 1,
+      phase: "forking"
+    });
+    store.updateWorkspaceTransition("transition:worker", {
+      phase: "validatingInstructions",
+      newThreadId: "provider:feature"
+    });
+    store.commitWorkspaceTransition("transition:worker", {
+      providerThreadId: "provider:feature",
+      providerSessionId: "provider:feature",
+      providerId: "codex-app-server",
+      boundCwd: "/repo/feature"
+    });
+
+    assert.equal(store.getLogicalSession("logical:worker").legacySessionId, "worker-session");
+    assert.equal(store.getWorkItem("work-item:one").current_session_id, "worker-session");
+    assert.equal(store.getSession("worker-session").workItemId, "work-item:one");
+
+    store.db.run("UPDATE work_items SET current_session_id = 'worker-session:replacement' WHERE id = 'work-item:one'");
+    assert.throws(
+      () => store.beginWorkspaceTransition({
+        transitionId: "transition:stale-worker",
+        logicalSessionId: "logical:worker",
+        targetCwd: "/repo/other",
+        sourceRoutingVersion: 2,
+        phase: "forking"
+      }),
+      (error) => error.code === "WORK_SESSION_BINDING_STALE"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Assistant agents receive distinct workspaces and reject explicit reuse", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-assistant-workspaces-"));
   const store = new CorptieStore({
