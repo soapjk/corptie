@@ -4082,7 +4082,9 @@ struct DetailView: View {
         guard tailItems.lazy.filter({ $0.type == "userMessage" }).prefix(2).count < 2 else {
             return nil
         }
-        let nextTailEntries = makeChatDisplayEntriesForTurn(Array(tailItems))
+        let nextTailEntries = makeChatDisplayEntriesForTurn(
+            stableChronologicalChatItems(Array(tailItems))
+        )
         guard let oldTailStart = cachedDisplayEntries.firstIndex(where: {
             chatDisplayEntryTurnId($0) == nextLast.turnId
         }) else {
@@ -4903,6 +4905,7 @@ func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry]
     var entries: [ChatDisplayEntry] = []
     var currentItems: [CodexThreadItem] = []
     var segmentCountsByTurnId: [String: Int] = [:]
+    let orderedItems = stableChronologicalChatItems(items)
 
     func appendCurrentSegment() {
         guard let sourceTurnId = currentItems.first?.turnId else { return }
@@ -4918,7 +4921,7 @@ func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry]
         currentItems.removeAll(keepingCapacity: true)
     }
 
-    for item in items {
+    for item in orderedItems {
         let startsNewSourceTurn = currentItems.last.map { $0.turnId != item.turnId } ?? false
         // Some provider histories omit turn_id or reuse one value for the
         // complete Session. Once a turn has emitted non-user content, the next
@@ -4934,6 +4937,35 @@ func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry]
     }
     appendCurrentSegment()
     return entries
+}
+
+/// Orders a fully timestamped provider timeline chronologically while retaining
+/// source order for ties. A partial or malformed timestamp set stays untouched:
+/// provider order is safer than inventing positions for undated process items.
+func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadItem] {
+    var datedItems: [(index: Int, item: CodexThreadItem, date: Date)] = []
+    datedItems.reserveCapacity(items.count)
+    var previousDate: Date?
+    var requiresSorting = false
+
+    for (index, item) in items.enumerated() {
+        guard let createdAt = item.createdAt,
+              let date = try? Date(createdAt, strategy: .iso8601) else {
+            return items
+        }
+        if let previousDate, previousDate > date {
+            requiresSorting = true
+        }
+        datedItems.append((index: index, item: item, date: date))
+        previousDate = date
+    }
+    guard requiresSorting else { return items }
+    return datedItems.sorted { left, right in
+        guard left.date != right.date else {
+            return left.index < right.index
+        }
+        return left.date < right.date
+    }.map(\.item)
 }
 
 func makeChatDisplayEntriesForTurn(
