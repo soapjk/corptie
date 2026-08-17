@@ -1907,7 +1907,7 @@ private struct NewPtyAgentTaskSheet: View {
     @AppStorage("newTask.defaultCodexReasoningLevel", store: CorptieAppEnvironment.userDefaults) private var defaultCodexReasoningLevel = ""
     @AppStorage("newTask.defaultClaudeModel", store: CorptieAppEnvironment.userDefaults) private var defaultClaudeModel = ""
     @State private var title = ""
-    @State private var selectedProviderId = "codex-app-server"
+    @State private var selectedProviderId = ""
     @State private var existingSessionId = ""
     @State private var cwd = ""
     @State private var sandboxMode = "workspace-write"
@@ -2066,44 +2066,47 @@ private struct NewPtyAgentTaskSheet: View {
                         }
                     }
 
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(L10n("Permission"))
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color.black)
-                            Picker(L10n(""), selection: $sandboxMode) {
-                                Text(L10n("Workspace Write")).tag("workspace-write")
-                                Text(L10n("Full Access")).tag("danger-full-access")
-                                Text(L10n("Read Only")).tag("read-only")
+                    if supportsPermissionConfiguration {
+                        HStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(L10n("Permission"))
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(Color.black)
+                                Picker(L10n(""), selection: $sandboxMode) {
+                                    Text(L10n("Workspace Write")).tag("workspace-write")
+                                    Text(L10n("Full Access")).tag("danger-full-access")
+                                    Text(L10n("Read Only")).tag("read-only")
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .help(L10n("Controls the Agent filesystem sandbox mode"))
                             }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .help(L10n("Controls Codex CLI filesystem sandbox mode"))
-                        }
 
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(L10n("Approvals"))
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color.black)
-                            Picker(L10n(""), selection: $approvalPolicy) {
-                                Text(L10n("Ask")).tag("on-request")
-                                Text(L10n("Ask for Risky Actions")).tag("ask-risky")
-                                Text(L10n("Never Ask")).tag("never")
-                                Text(L10n("On Failure")).tag("on-failure")
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(L10n("Approvals"))
+                                    .font(.system(size: 13, weight: .bold))
+                                    .foregroundStyle(Color.black)
+                                Picker(L10n(""), selection: $approvalPolicy) {
+                                    Text(L10n("Ask")).tag("on-request")
+                                    Text(L10n("Ask for Risky Actions")).tag("ask-risky")
+                                    Text(L10n("Never Ask")).tag("never")
+                                    Text(L10n("On Failure")).tag("on-failure")
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .help(L10n("Controls when the Agent asks before running privileged actions"))
                             }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .help(L10n("Controls when Codex asks before running privileged actions"))
+                        }
+                        if sandboxMode == "danger-full-access" {
+                            Label(L10n("Full Access lets the Agent operate outside the workspace. Use it only for trusted tasks."), systemImage: "exclamationmark.triangle")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(CorptiePalette.amber)
                         }
                     }
-                    if sandboxMode == "danger-full-access" {
-                        Label(L10n("Full Access lets Codex operate outside the workspace. Use it only for trusted tasks."), systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(CorptiePalette.amber)
-                    }
-                    HStack(spacing: 8) {
+                    if selectedProvider?.runtime.lifecycle == "managed" {
+                        HStack(spacing: 8) {
                         Button {
                             saveNewSessionDefaults()
                         } label: {
@@ -2119,6 +2122,7 @@ private struct NewPtyAgentTaskSheet: View {
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                                 .transition(.opacity)
+                        }
                         }
                     }
 
@@ -2186,10 +2190,13 @@ private struct NewPtyAgentTaskSheet: View {
             }
             sandboxMode = validatedSandboxMode(defaultSandboxMode)
             approvalPolicy = validatedApprovalPolicy(defaultApprovalPolicy)
-            if backendClient.agentProviders.isEmpty {
-                Task { await backendClient.loadProviders() }
+            Task {
+                if backendClient.agentProviders.isEmpty {
+                    await backendClient.loadProviders()
+                }
+                reconcileProviderSelection()
+                loadModelsForCurrentAgent()
             }
-            loadModelsForCurrentAgent()
         }
         .onDisappear {
             sessionLookupTask?.cancel()
@@ -2200,11 +2207,11 @@ private struct NewPtyAgentTaskSheet: View {
             loadModelsForCurrentAgent()
         }
         .onChange(of: backendClient.agentProviders) { _, providers in
-            if !providers.contains(where: { $0.id == selectedProviderId }),
-               let first = providers.first(where: { $0.supports("session.create") }) {
-                selectedProviderId = first.id
-            }
+            reconcileProviderSelection()
             loadModelsForCurrentAgent()
+        }
+        .onChange(of: backendClient.defaultAgentProviderId) { _, _ in
+            reconcileProviderSelection()
         }
         .onChange(of: backendClient.codexDefaultModel) { _, value in
             applyDefaultModelIfNeeded(value)
@@ -2310,6 +2317,10 @@ private struct NewPtyAgentTaskSheet: View {
         selectedProvider?.supports("configuration.reasoning.switch") == true
     }
 
+    private var supportsPermissionConfiguration: Bool {
+        selectedProvider?.supports("configuration.permissions.update") == true
+    }
+
     private var modelProviderForCurrentAgent: String {
         selectedProviderId
     }
@@ -2320,6 +2331,16 @@ private struct NewPtyAgentTaskSheet: View {
 
     private var selectedProvider: AgentProviderDescriptor? {
         backendClient.agentProviders.first(where: { $0.id == selectedProviderId })
+    }
+
+    private func reconcileProviderSelection() {
+        guard !creatableProviders.contains(where: { $0.id == selectedProviderId }) else { return }
+        if let defaultProviderId = backendClient.defaultAgentProviderId,
+           creatableProviders.contains(where: { $0.id == defaultProviderId }) {
+            selectedProviderId = defaultProviderId
+        } else {
+            selectedProviderId = creatableProviders.first?.id ?? ""
+        }
     }
 
     private var currentReasoningLevels: [String] {
@@ -3525,17 +3546,6 @@ struct DetailView: View {
                                     isCollaborationExpanded: collaborationExpansionBinding(for: item),
                                     isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
                                 )
-                            case .userTurn(let item, let turnId, let processItems):
-                                ThreadItemView(
-                                    item: item,
-                                    processItems: processItems,
-                                    isProcessExpanded: expandedProcessTurnIds.contains(turnId),
-                                    onToggleProcess: {
-                                        toggleNativeProcessExpansion(turnId)
-                                    },
-                                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
-                                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
-                                )
                             case .process(let turnId, let items):
                                 ThreadProcessGroupView(
                                     items: items,
@@ -3732,21 +3742,6 @@ struct DetailView: View {
                 )
                 .environmentObject(backendClient)
             )
-        case .userTurn(let item, let turnId, let processItems):
-            let isExpanded = expandedTurnIds.contains(turnId)
-            return AnyView(
-                ThreadItemView(
-                    item: item,
-                    processItems: processItems,
-                    isProcessExpanded: isExpanded,
-                    onToggleProcess: {
-                        setProcessExpansion(!isExpanded, for: turnId)
-                    },
-                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
-                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
-                )
-                .environmentObject(backendClient)
-            )
         case .process(let turnId, let items):
             let isExpanded = expandedTurnIds.contains(turnId)
             return AnyView(
@@ -3767,7 +3762,7 @@ struct DetailView: View {
         expandedTurnIds: Set<String>
     ) -> AppKitChatTimelineRow {
         let isExpandedProcessEntry: Bool = switch entry.kind {
-        case .userTurn(_, let turnId, _), .process(let turnId, _): expandedTurnIds.contains(turnId)
+        case .process(let turnId, _): expandedTurnIds.contains(turnId)
         case .message: false
         }
         if shouldUseSwiftUIHosting(for: entry) || isExpandedProcessEntry {
@@ -3808,20 +3803,6 @@ struct DetailView: View {
             isExpanded = false
             processCount = nil
             processDuration = nil
-        case .userTurn(let item, let turnId, let processItems):
-            let expanded = expandedTurnIds.contains(turnId)
-            copyText = nativeTimelineText(for: item)
-            text = ClickableMessageText.markdown(
-                from: copyText,
-                baseDirectory: backendClient.selectedDetail?.cwd
-            )
-            style = .user
-            title = item.title
-            metadata = nativeTimelineMetadata(for: item)
-            expandableTurnId = turnId
-            isExpanded = expanded
-            processCount = processItems.count
-            processDuration = nativeProcessDuration(for: processItems)
         case .process(let turnId, let items):
             let expanded = expandedTurnIds.contains(turnId)
             copyText = items.map { nativeTimelineText(for: $0) }.joined(separator: "\n")
@@ -3866,7 +3847,7 @@ struct DetailView: View {
         expandedTurnIds: Set<String>
     ) -> (turnId: String?, isExpanded: Bool) {
         switch entry.kind {
-        case .userTurn(_, let turnId, _), .process(let turnId, _):
+        case .process(let turnId, _):
             return (turnId, expandedTurnIds.contains(turnId))
         case .message:
             return (nil, false)
@@ -3909,13 +3890,6 @@ struct DetailView: View {
         switch entry.kind {
         case .message(let item):
             hasher.combine(itemSignature(item))
-        case .userTurn(let item, let turnId, let items):
-            hasher.combine(itemSignature(item))
-            hasher.combine(turnId)
-            hasher.combine(expandedTurnIds.contains(turnId))
-            if expandedTurnIds.contains(turnId) {
-                items.forEach { hasher.combine(itemSignature($0)) }
-            }
         case .process(let turnId, let items):
             hasher.combine(turnId)
             hasher.combine(expandedTurnIds.contains(turnId))
@@ -4126,8 +4100,6 @@ struct DetailView: View {
         let tailSignature = tailEntries.map { entry in
             switch entry.kind {
             case .message(let item): return detailItemSignature(item)
-            case .userTurn(let item, let turnId, let items):
-                return detailItemSignature(item) + ":" + turnId + ":" + items.suffix(1).map(detailItemSignature).joined()
             case .process(let turnId, let items):
                 return turnId + ":" + items.suffix(1).map(detailItemSignature).joined()
             }
@@ -4215,8 +4187,6 @@ struct DetailView: View {
             switch entry.kind {
             case .message(let item):
                 return itemSignature(item)
-            case .userTurn(let item, let turnId, let items):
-                return itemSignature(item) + ":" + turnId + ":" + items.map(itemSignature).joined(separator: ",")
             case .process(let turnId, let items):
                 return turnId + ":" + items.map(itemSignature).joined(separator: ",")
             }
@@ -4321,12 +4291,6 @@ struct DetailView: View {
             switch entry.kind {
             case .message(let item):
                 return "message:" + itemSignature(item)
-            case .userTurn(let item, let turnId, let items):
-                let messageSignature = "userTurn:" + itemSignature(item) + ":" + turnId
-                guard expandedProcessTurnIds.contains(turnId) else {
-                    return messageSignature
-                }
-                return messageSignature + ":" + items.map(itemSignature).joined(separator: ",")
             case .process(let turnId, let items):
                 // A collapsed process row has fixed height. Its count, duration,
                 // and hidden items can update without changing visible layout.
@@ -4343,7 +4307,7 @@ struct DetailView: View {
         for entry in entries {
             let processGroup: (turnId: String, items: [CodexThreadItem])?
             switch entry.kind {
-            case .userTurn(_, let turnId, let items), .process(let turnId, let items):
+            case .process(let turnId, let items):
                 processGroup = (turnId, items)
             case .message:
                 processGroup = nil
@@ -4786,7 +4750,6 @@ private struct UsageProgressRing: View {
 struct ChatDisplayEntry: Identifiable {
     enum Kind {
         case message(CodexThreadItem)
-        case userTurn(message: CodexThreadItem, turnId: String, processItems: [CodexThreadItem])
         case process(turnId: String, items: [CodexThreadItem])
     }
 
@@ -4796,8 +4759,6 @@ struct ChatDisplayEntry: Identifiable {
         switch kind {
         case .message(let item):
             return "message:\(item.id)"
-        case .userTurn(let item, _, _):
-            return "message:\(item.id)"
         case .process(let turnId, _):
             return "process:\(turnId)"
         }
@@ -4805,7 +4766,7 @@ struct ChatDisplayEntry: Identifiable {
 
     var isProcessGroup: Bool {
         switch kind {
-        case .message, .userTurn:
+        case .message:
             return false
         case .process:
             return true
@@ -4813,12 +4774,7 @@ struct ChatDisplayEntry: Identifiable {
     }
 
     var displayWeight: Int {
-        switch kind {
-        case .userTurn:
-            return 2
-        case .message, .process:
-            return 1
-        }
+        1
     }
 }
 
@@ -4835,7 +4791,6 @@ struct DetailDisplayCache {
 private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
     switch entry.kind {
     case .message(let item): item.turnId
-    case .userTurn(_, let turnId, _): turnId
     case .process(let turnId, _): turnId
     }
 }
@@ -4960,15 +4915,10 @@ func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEn
     var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
     if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
        let turnId = items.first?.turnId {
-        if userMessages.count == 1,
-           let userMessage = userMessages.first,
-           !isCollaborationUserMessage(userMessage) {
-            entries[entries.count - 1] = ChatDisplayEntry(
-                kind: .userTurn(message: userMessage, turnId: turnId, processItems: processItems)
-            )
-        } else {
-            entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
-        }
+        // Keep execution lifecycle independent from the user's authored message.
+        // The process row owns its disclosure state and remains a separate bubble
+        // even for the common one-message turn.
+        entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
     }
     if let presentedAgentMessage {
         entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
@@ -4993,11 +4943,6 @@ private func preferredPresentedAgentMessage(from messages: [CodexThreadItem]) ->
         return nil
     }
     return legacyMessage
-}
-
-private func isCollaborationUserMessage(_ item: CodexThreadItem) -> Bool {
-    item.type == "userMessage"
-        && (item.presentationRole == "collaboration" || item.sourceType == "collaboration")
 }
 
 private func isTerminalTurnStatus(_ status: String) -> Bool {
@@ -5044,8 +4989,6 @@ private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visi
         switch entry.kind {
         case .message(let item):
             return detailItemSignature(item)
-        case .userTurn(let item, let turnId, let items):
-            return detailItemSignature(item) + ":" + turnId + ":" + items.map(detailItemSignature).joined(separator: ",")
         case .process(let turnId, let items):
             return turnId + ":" + items.map(detailItemSignature).joined(separator: ",")
         }
@@ -7335,7 +7278,6 @@ private func copySessionNameToPasteboard(_ rawName: String?) -> Bool {
 private struct ThreadProcessGroupView: View {
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     let items: [CodexThreadItem]
-    var isEmbeddedInUserCard = false
     let isExpanded: Bool
     let onToggle: () -> Void
 
@@ -7347,54 +7289,34 @@ private struct ThreadProcessGroupView: View {
                 // transition while NSTableView is updating row geometry.
                 onToggle()
             } label: {
-                HStack(spacing: isEmbeddedInUserCard ? 4 : 6) {
+                HStack(spacing: 6) {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: isEmbeddedInUserCard ? 7.5 : 9, weight: .bold))
-                        .frame(
-                            width: isEmbeddedInUserCard ? 9 : 12,
-                            height: isEmbeddedInUserCard ? 9 : 12
-                        )
+                        .font(.system(size: 9, weight: .bold))
+                        .frame(width: 12, height: 12)
                     Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: isEmbeddedInUserCard ? 8 : 10, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText.opacity(0.72))
                     Text(L10n("Execution process"))
-                        .font(.system(size: isEmbeddedInUserCard ? 9.5 : 10.5, weight: .semibold))
+                        .font(.system(size: 10.5, weight: .semibold))
                     if let durationText {
                         Text(durationText)
-                            .font(.system(size: isEmbeddedInUserCard ? 9 : 10, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(CorptiePalette.mutedText)
                     }
                     Text("\(items.count)")
-                        .font(.system(size: isEmbeddedInUserCard ? 8 : 9, weight: .bold, design: .rounded))
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
                         .foregroundStyle(CorptiePalette.mutedText)
-                        .padding(.horizontal, isEmbeddedInUserCard ? 4 : 5)
-                        .frame(height: isEmbeddedInUserCard ? 13 : 16)
+                        .padding(.horizontal, 5)
+                        .frame(height: 16)
                         .background(Color.black.opacity(0.04), in: Capsule())
-                    if !isEmbeddedInUserCard {
-                        Spacer(minLength: 0)
-                    }
+                    Spacer(minLength: 0)
                 }
                 .foregroundStyle(CorptiePalette.secondaryText)
-                .padding(.horizontal, isEmbeddedInUserCard ? 0 : 9)
-                .frame(height: isEmbeddedInUserCard ? 18 : 26)
-                .background(
-                    (isEmbeddedInUserCard || !isLiquidGlass)
-                        ? Color.clear
-                        : Color.white.opacity(0.42),
-                    in: Capsule()
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(
-                            (isEmbeddedInUserCard || !isLiquidGlass)
-                                ? Color.clear
-                                : Color.black.opacity(0.045),
-                            lineWidth: 1
-                        )
-                )
+                .frame(height: 26)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .frame(maxWidth: isEmbeddedInUserCard ? nil : .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if isExpanded {
                 VStack(alignment: .leading, spacing: 6) {
@@ -7409,14 +7331,38 @@ private struct ThreadProcessGroupView: View {
                 .padding(.leading, 22)
                 .padding(.top, 2)
                 .clipped()
-                .transition(
-                    isEmbeddedInUserCard
-                        ? .opacity.combined(with: .scale(scale: 0.985, anchor: .top))
-                        : .opacity.combined(with: .move(edge: .top))
-                )
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.vertical, 1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, isExpanded ? 8 : 4)
+        .background(processBubbleBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.black.opacity(isLiquidGlass ? 0.06 : 0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(isLiquidGlass ? 0.035 : 0), radius: 7, y: 3)
+        .frame(
+            idealWidth: processBubbleWidth,
+            maxWidth: processBubbleWidth,
+            alignment: .leading
+        )
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n("Execution process"))
+    }
+
+    private var processBubbleWidth: CGFloat {
+        isExpanded
+            ? ChatBubbleWidthPolicy.maximumWidth
+            : ChatBubbleWidthPolicy.collapsedProcessWidth + ChatBubbleWidthPolicy.horizontalPadding
+    }
+
+    private var processBubbleBackground: Color {
+        if isLiquidGlass {
+            return Color.white.opacity(0.38)
+        }
+        return Color(nsColor: .controlBackgroundColor).opacity(0.72)
     }
 
     private var durationText: String? {
@@ -7531,24 +7477,15 @@ struct ThreadItemView: View {
     @State private var diffActionError: String?
     @State private var didCopySessionName = false
     let item: CodexThreadItem
-    let processItems: [CodexThreadItem]?
-    private let isProcessExpanded: Bool
-    private let onToggleProcess: () -> Void
     @Binding private var isCollaborationExpanded: Bool
     @Binding private var isCollaborationConfirmationExpanded: Bool
 
     init(
         item: CodexThreadItem,
-        processItems: [CodexThreadItem]? = nil,
-        isProcessExpanded: Bool = false,
-        onToggleProcess: @escaping () -> Void = {},
         isCollaborationExpanded: Binding<Bool>,
         isCollaborationConfirmationExpanded: Binding<Bool>
     ) {
         self.item = item
-        self.processItems = processItems
-        self.isProcessExpanded = isProcessExpanded
-        self.onToggleProcess = onToggleProcess
         _isCollaborationExpanded = isCollaborationExpanded
         _isCollaborationConfirmationExpanded = isCollaborationConfirmationExpanded
     }
@@ -8029,31 +7966,14 @@ struct ThreadItemView: View {
                         .padding(.top, 4)
                 }
 
-                if let processItems {
-                    VStack(spacing: 0) {
-                        Divider()
-                            .overlay(Color.black.opacity(0.045))
-                        ThreadProcessGroupView(
-                            items: processItems,
-                            isEmbeddedInUserCard: true,
-                            isExpanded: isProcessExpanded,
-                            onToggle: onToggleProcess
-                        )
-                    }
-                }
             }
 
             CopyTextButton(text: item.text, isVisible: isHovering && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .padding(4)
         }
-        .padding(EdgeInsets(
-            top: 10,
-            leading: 10,
-            bottom: processItems != nil && !isProcessExpanded ? 3 : 10,
-            trailing: 10
-        ))
-        // 参考 Rudder 的 `w-fit` + `max-width` 模型：气泡背景贴住「内容自然宽度」，
-        // 再用 frame 做「限宽 + 左右对齐」定位，避免背景被 .infinity 撑满整列。
+        .padding(10)
+        // 气泡本身采用共享策略算出的明确内容宽度；外层 frame 只负责左右定位。
+        // 不能用 maxWidth 模拟 CSS w-fit：Markdown 会接受宽度提议并把短消息撑到上限。
         .background(itemBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -8061,7 +7981,8 @@ struct ThreadItemView: View {
         )
         .shadow(color: Color.black.opacity(isLiquidGlass ? 0.04 : 0), radius: isLiquidGlass ? 8 : 0, y: isLiquidGlass ? 3 : 0)
         .frame(
-            maxWidth: isUserOrAgentMessage ? messageBubbleMaxWidth : .infinity,
+            idealWidth: isUserOrAgentMessage ? preferredMessageBubbleWidth : nil,
+            maxWidth: isUserOrAgentMessage ? preferredMessageBubbleWidth : .infinity,
             alignment: isUserMessage ? .trailing : .leading
         )
         .frame(
@@ -8331,7 +8252,24 @@ struct ThreadItemView: View {
     private var isAgentMessage: Bool { item.type == "agentMessage" }
     private var isUserOrAgentMessage: Bool { isUserMessage || isAgentMessage }
     /// 消息气泡最大宽度，保留左右留白。
-    private var messageBubbleMaxWidth: CGFloat { 480 }
+    private var messageBubbleMaxWidth: CGFloat { ChatBubbleWidthPolicy.maximumWidth }
+
+    private var preferredMessageBubbleWidth: CGFloat {
+        let style: AppKitChatTimelineRow.NativeStyle = isUserMessage ? .user : .agent
+        let measurementText: String
+        if isAgentMessage {
+            let parsed = AgentMessageParts.parse(item.text)
+            measurementText = parsed.body.isEmpty ? item.text : parsed.body
+        } else {
+            measurementText = item.text
+        }
+        return ChatBubbleWidthPolicy.preferredWidth(
+            text: measurementText,
+            style: style,
+            title: item.title,
+            metadata: itemMetadataLabel
+        )
+    }
 
     private var itemBackground: Color {
         // 协作卡统一淡底

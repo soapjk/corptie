@@ -6,6 +6,7 @@ import {
   deduplicateSessionTitles,
   findSessionTitleConflict,
   normalizeSessionTitle,
+  resolveAvailableSessionTitle,
   suggestAvailableSessionTitle
 } from "../src/utils/sessionTitles.mjs";
 
@@ -44,6 +45,21 @@ test("the next available title starts at one and skips occupied suffixes", () =>
   ];
 
   assert.equal(suggestAvailableSessionTitle(sessions, "Dashboard"), "Dashboard 3");
+});
+
+test("an automatically generated title keeps its base when available and increments on conflicts", () => {
+  assert.equal(resolveAvailableSessionTitle([], "workspace_agent"), "workspace_agent");
+  assert.equal(
+    resolveAvailableSessionTitle(
+      [{ id: "one", title: "workspace_agent" }],
+      "workspace_agent"
+    ),
+    "workspace_agent 1"
+  );
+  assert.equal(
+    resolveAvailableSessionTitle([], "workspace_agent", null, new Set(["workspace_agent"])),
+    "workspace_agent 1"
+  );
 });
 
 test("historical duplicate titles receive deterministic numeric suffixes", () => {

@@ -126,6 +126,26 @@ export function createCollaborationMcpServer(options) {
     handler: ({ intent }) => client.get("/internal/collaboration/memory/search", { intent })
   });
 
+  register(server, "corptie_skill_search", {
+    description:
+      "Search the compact index of Skills assigned to the authenticated Corptie Agent. Call this when a reusable workflow may help; results do not include full instructions.",
+    inputSchema: {
+      intent: z.string().min(1).describe("Plain-language description of the capability or workflow needed.")
+    },
+    readOnly: true,
+    handler: ({ intent }) => client.get("/internal/collaboration/skills/search", { intent })
+  });
+
+  register(server, "corptie_skill_load", {
+    description:
+      "Load the complete SKILL.md instructions for one Skill returned by corptie_skill_search. Only Skills assigned to this Agent can be loaded.",
+    inputSchema: {
+      skill_id: z.string().min(1).describe("Opaque Skill id returned by corptie_skill_search.")
+    },
+    readOnly: true,
+    handler: ({ skill_id }) => client.get(`/internal/collaboration/skills/${encodeURIComponent(skill_id)}`)
+  });
+
   registerAction(server, client, "accept", "Accept a proposed task or resume requested revisions and begin working.", {
     task_id: z.string().min(1)
   });

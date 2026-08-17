@@ -8,7 +8,9 @@ export function handleCollaborationHttpRequest({
   onListWorkspaces,
   onCreateWorktree,
   onSwitchWorkspace,
-  onSearchMemory
+  onSearchMemory,
+  onSearchSkills,
+  onLoadSkill
 }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
@@ -46,6 +48,19 @@ export function handleCollaborationHttpRequest({
         const intent = String(url.searchParams.get("intent") ?? "").trim();
         if (!intent) throw apiError("INVALID_INPUT", "intent is required.", 400);
         return sendJson(response, 200, await onSearchMemory(actorAgentId, intent));
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/skills/search") {
+        if (!onSearchSkills) throw apiError("SKILL_TOOLS_UNAVAILABLE", "Skill search is unavailable.", 503);
+        const intent = String(url.searchParams.get("intent") ?? "").trim();
+        if (!intent) throw apiError("INVALID_INPUT", "intent is required.", 400);
+        return sendJson(response, 200, await onSearchSkills(actorAgentId, intent));
+      }
+
+      const skillLoadMatch = url.pathname.match(/^\/internal\/collaboration\/skills\/([^/]+)$/);
+      if (request.method === "GET" && skillLoadMatch) {
+        if (!onLoadSkill) throw apiError("SKILL_TOOLS_UNAVAILABLE", "Skill loading is unavailable.", 503);
+        return sendJson(response, 200, await onLoadSkill(actorAgentId, decodeURIComponent(skillLoadMatch[1])));
       }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/agents") {

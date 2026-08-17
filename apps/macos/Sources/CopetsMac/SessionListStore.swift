@@ -51,7 +51,8 @@ final class SessionListStore: ObservableObject {
         }
         for contentPatch in patch.updated {
             if contentPatch.changedFields.contains(.workspace)
-                || contentPatch.changedFields.contains(.ordering) {
+                || contentPatch.changedFields.contains(.ordering)
+                || contentPatch.changedFields.contains(.metadata) {
                 groupingChanged = true
             }
             if contentPatch.changedFields.contains(.identity)

@@ -18,6 +18,9 @@ struct SkillRegisterView: View {
     @State private var description = ""
     @State private var isBusy = false
     @State private var errorMessage: String?
+    @State private var candidates: [SkillCandidate] = []
+    @State private var selectedCandidateID = ""
+    @State private var discoveredSource = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -30,6 +33,41 @@ struct SkillRegisterView: View {
             }
             .pickerStyle(.segmented)
             .frame(maxWidth: 320, alignment: .leading)
+
+            if !candidates.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L10n("选择具体 Skill"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach(candidates) { candidate in
+                        Button {
+                            selectedCandidateID = candidate.id
+                        } label: {
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: selectedCandidateID == candidate.id ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedCandidateID == candidate.id ? Color.accentColor : Color.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(candidate.manifestName)
+                                    Text(candidate.relativePath.isEmpty ? "." : candidate.relativePath)
+                                        .font(.caption2.monospaced())
+                                        .foregroundStyle(.secondary)
+                                    if !candidate.manifestDescription.isEmpty {
+                                        Text(candidate.manifestDescription)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+            }
 
             if sourceType == "local" {
                 VStack(alignment: .leading, spacing: 4) {
@@ -93,6 +131,10 @@ struct SkillRegisterView: View {
         panel.prompt = "选择"
         if panel.runModal() == .OK, let url = panel.url {
             localPath = url.path
+            candidates = []
+            selectedCandidateID = ""
+            discoveredSource = ""
+            Task { await discover(source: url.path) }
         }
     }
 
@@ -105,13 +147,25 @@ struct SkillRegisterView: View {
         isBusy = true
         errorMessage = nil
         Task {
+            if discoveredSource != source || candidates.isEmpty {
+                guard await discover(source: source) else {
+                    isBusy = false
+                    return
+                }
+            }
+            guard let candidate = selectedCandidate else {
+                errorMessage = "该来源包含多个 Skill，请先选择一个具体 Skill。"
+                isBusy = false
+                return
+            }
             let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
             let trimmedDesc = description.trimmingCharacters(in: .whitespacesAndNewlines)
             let skill = await client.registerSkill(
                 name: trimmedName.isEmpty ? nil : trimmedName,
                 description: trimmedDesc.isEmpty ? nil : trimmedDesc,
                 sourceType: sourceType,
-                source: source
+                source: source,
+                sourceSubpath: candidate.relativePath
             )
             isBusy = false
             if let skill {
@@ -121,6 +175,33 @@ struct SkillRegisterView: View {
                 errorMessage = client.errorMessage ?? "登记失败。"
             }
         }
+    }
+
+    private var selectedCandidate: SkillCandidate? {
+        candidates.first(where: { $0.id == selectedCandidateID })
+    }
+
+    @MainActor
+    private func discover(source: String) async -> Bool {
+        errorMessage = nil
+        guard let found = await client.discoverSkills(sourceType: sourceType, source: source) else {
+            errorMessage = client.errorMessage ?? "发现 Skill 失败。"
+            return false
+        }
+        candidates = found
+        discoveredSource = source
+        if found.count == 1 {
+            selectedCandidateID = found[0].id
+            if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                name = found[0].manifestName
+            }
+            if description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                description = found[0].manifestDescription
+            }
+        } else if !found.contains(where: { $0.id == selectedCandidateID }) {
+            selectedCandidateID = ""
+        }
+        return !found.isEmpty
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View) -> some View {

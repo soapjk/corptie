@@ -16,6 +16,7 @@ export class SessionApplicationService {
     this.resolveSessionBinding = options.resolveSessionBinding ?? null;
     this.bindCreatedSession = options.bindCreatedSession ?? null;
     this.removeSessionBinding = options.removeSessionBinding ?? null;
+    this.persistRenamedSession = options.persistRenamedSession ?? null;
     this.toolHostService = options.toolHostService ?? null;
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
@@ -133,13 +134,17 @@ export class SessionApplicationService {
 
   async renameSession(sessionId, title, context = {}) {
     const reference = await this.referenceFor(sessionId);
-    return this.registry.invoke(
+    const normalizedTitle = requiredText(title, "title");
+    const providerSession = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
       reference,
-      requiredText(title, "title"),
+      normalizedTitle,
       context
     );
+    return this.persistRenamedSession
+      ? await this.persistRenamedSession({ reference, title: normalizedTitle, providerSession, context })
+      : providerSession;
   }
 
   async updateAvatar(sessionId, avatarPath, context = {}) {

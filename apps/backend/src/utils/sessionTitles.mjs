@@ -40,6 +40,17 @@ export function suggestAvailableSessionTitle(sessions, title, excludingSessionId
   return `${base} ${suffix}`;
 }
 
+export function resolveAvailableSessionTitle(sessions, title, excludingSessionId = null, additionalKeys = new Set()) {
+  const base = String(title ?? "").trim() || "Agent";
+  if (
+    !findSessionTitleConflict(sessions, base, excludingSessionId)
+    && !additionalKeys.has(normalizeSessionTitle(base))
+  ) {
+    return base;
+  }
+  return suggestAvailableSessionTitle(sessions, base, excludingSessionId, additionalKeys);
+}
+
 export function deduplicateSessionTitles(sessions) {
   const used = new Set();
   return (sessions ?? []).map((session) => {

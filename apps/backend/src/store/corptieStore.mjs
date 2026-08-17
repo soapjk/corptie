@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
 import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { resolveAgentWorkDir } from "../runtime/agentWorkDir.mjs";
+import { inferSessionKind, normalizeSessionKind, SESSION_KIND } from "../utils/sessionKinds.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -403,6 +404,11 @@ export class CorptieStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS data_migrations (
+        migration_id TEXT PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS agent_sessions (
         binding_id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -411,9 +417,6 @@ export class CorptieStore {
         unbound_at TEXT,
         FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE
       );
-
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_current_agent
-      ON agent_sessions(agent_id) WHERE unbound_at IS NULL;
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_current_session
       ON agent_sessions(session_id) WHERE unbound_at IS NULL;
@@ -927,6 +930,11 @@ export class CorptieStore {
 
     this.ensureColumn("sessions", "objective_id", "TEXT");
     this.ensureColumn("sessions", "work_item_id", "TEXT");
+    this.ensureColumn("sessions", "session_kind", "TEXT NOT NULL DEFAULT 'legacy'");
+    this.ensureColumn("sessions", "agent_id", "TEXT");
+    this.db.run("DROP INDEX IF EXISTS idx_agent_sessions_current_agent");
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_pair
+      ON agent_sessions(agent_id, session_id) WHERE unbound_at IS NULL`);
     this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("agents", "provider", "TEXT");
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
@@ -973,6 +981,18 @@ export class CorptieStore {
     this.ensureColumn("workspace_transitions", "continuation_prompt", "TEXT");
     this.ensureColumn("workspace_transitions", "continuation_state", "TEXT NOT NULL DEFAULT 'none'");
     this.ensureColumn("workspace_transitions", "continuation_turn_id", "TEXT");
+    this.db.run(`UPDATE sessions SET agent_id = (
+        SELECT bindings.agent_id FROM agent_sessions bindings
+        WHERE bindings.session_id = sessions.id
+        ORDER BY bindings.bound_at DESC LIMIT 1
+      ) WHERE agent_id IS NULL OR TRIM(agent_id) = ''`);
+    this.db.run(`UPDATE sessions SET session_kind = 'worker'
+      WHERE work_item_id IS NOT NULL AND TRIM(work_item_id) <> ''
+        AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+    this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
+      WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
+        AND EXISTS (SELECT 1 FROM agents
+          WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
     this.ensureColumn("workspace_transitions", "continuation_error", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
@@ -1009,6 +1029,11 @@ export class CorptieStore {
     this.ensureColumn("memories", "revoked_at", "TEXT");
     this.initializeSortOrder();
     this.ensureAssistantAgent();
+    this.migrateSessionDerivedAgentStatuses();
+    this.migrateAssistantWorkDirs();
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_assistant_work_dir
+      ON agents(work_dir COLLATE NOCASE)
+      WHERE role = 'assistant' AND work_dir IS NOT NULL AND TRIM(work_dir) <> ''`);
     this.ensureSkillTables();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
 
@@ -1081,7 +1106,11 @@ export class CorptieStore {
         description TEXT NOT NULL DEFAULT '',
         source_type TEXT NOT NULL CHECK (source_type IN ('local', 'git')),
         source TEXT NOT NULL,
+        source_subpath TEXT NOT NULL DEFAULT '',
         cache_path TEXT,
+        manifest_name TEXT NOT NULL DEFAULT '',
+        manifest_description TEXT NOT NULL DEFAULT '',
+        content_hash TEXT NOT NULL DEFAULT '',
         installed_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
@@ -1097,6 +1126,11 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_agent_skill_links_skill ON agent_skill_links(skill_id);
     `);
+
+    this.ensureColumn("skill_registry", "source_subpath", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("skill_registry", "manifest_name", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("skill_registry", "manifest_description", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("skill_registry", "content_hash", "TEXT NOT NULL DEFAULT ''");
 
     // 迁移：删除旧「晋升技能」遗留的 agent_skills 关联表。
     // 该表带 FOREIGN KEY (skill_id) REFERENCES skills(skill_id) ON DELETE CASCADE，
@@ -1120,15 +1154,21 @@ export class CorptieStore {
     const id = input.id ?? `skill:${randomUUID()}`;
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO skill_registry (skill_id, name, description, source_type, source, cache_path, installed_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO skill_registry (
+         skill_id, name, description, source_type, source, source_subpath, cache_path,
+         manifest_name, manifest_description, content_hash, installed_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
         input.description ?? "",
         input.sourceType ?? "local",
         input.source,
+        input.sourceSubpath ?? "",
         input.cachePath ?? null,
+        input.manifestName ?? input.name ?? "",
+        input.manifestDescription ?? input.description ?? "",
+        input.contentHash ?? "",
         now,
         now
       ]
@@ -1142,13 +1182,20 @@ export class CorptieStore {
     if (!existing) return null;
     const now = createdAtFromOrNow();
     this.db.run(
-      `UPDATE skill_registry SET name = ?, description = ?, source_type = ?, source = ?, cache_path = ?, updated_at = ? WHERE skill_id = ?`,
+      `UPDATE skill_registry
+       SET name = ?, description = ?, source_type = ?, source = ?, source_subpath = ?, cache_path = ?,
+           manifest_name = ?, manifest_description = ?, content_hash = ?, updated_at = ?
+       WHERE skill_id = ?`,
       [
         input.name ?? existing.name,
         input.description ?? existing.description,
         input.sourceType ?? existing.sourceType,
         input.source ?? existing.source,
+        input.sourceSubpath ?? existing.sourceSubpath ?? "",
         input.cachePath ?? existing.cachePath,
+        input.manifestName ?? existing.manifestName ?? existing.name,
+        input.manifestDescription ?? existing.manifestDescription ?? existing.description,
+        input.contentHash ?? existing.contentHash ?? "",
         now,
         skillId
       ]
@@ -1177,18 +1224,81 @@ export class CorptieStore {
     return ids.map((id) => this.getRegistrySkill(id)).filter(Boolean);
   }
 
+  createAgentWithRegistrySkills(agentInput, skillIds = []) {
+    const normalized = this.#validateRegistrySkillIds(skillIds);
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const agent = this.createAgent(agentInput);
+      this.#replaceAgentRegistrySkills(agent.agentId, normalized);
+      this.db.run("COMMIT");
+      this.scheduleSave();
+      return agent;
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  updateAgentWithRegistrySkills(agentId, agentInput, skillIds) {
+    const normalized = skillIds == null ? null : this.#validateRegistrySkillIds(skillIds);
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const agent = this.updateAgent(agentId, agentInput);
+      if (!agent) {
+        const error = new Error(`Agent not found: ${agentId}`);
+        error.code = "AGENT_NOT_FOUND";
+        throw error;
+      }
+      if (normalized) this.#replaceAgentRegistrySkills(agentId, normalized);
+      this.db.run("COMMIT");
+      this.scheduleSave();
+      return agent;
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
   setAgentRegistrySkills(agentId, skillIds = []) {
+    const normalized = this.#validateRegistrySkillIds(skillIds);
+    if (!this.getAgent(agentId)) {
+      const error = new Error(`Agent not found: ${agentId}`);
+      error.code = "AGENT_NOT_FOUND";
+      throw error;
+    }
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.#replaceAgentRegistrySkills(agentId, normalized);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return normalized;
+  }
+
+  #validateRegistrySkillIds(skillIds) {
     const normalized = [...new Set((skillIds ?? []).map((id) => String(id).trim()).filter(Boolean))];
+    const missing = normalized.filter((skillId) => !this.getRegistrySkill(skillId));
+    if (missing.length > 0) {
+      const error = new Error(`Skill not found: ${missing.join(", ")}`);
+      error.code = "SKILL_NOT_FOUND";
+      throw error;
+    }
+    return normalized;
+  }
+
+  #replaceAgentRegistrySkills(agentId, skillIds) {
     const now = createdAtFromOrNow();
     this.db.run(`DELETE FROM agent_skill_links WHERE agent_id = ?`, [agentId]);
-    for (const skillId of normalized) {
+    for (const skillId of skillIds) {
       this.db.run(
         `INSERT INTO agent_skill_links (agent_id, skill_id, added_at) VALUES (?, ?, ?)`,
         [agentId, skillId, now]
       );
     }
-    this.scheduleSave();
-    return normalized;
+    this.db.run(`DELETE FROM hub_intent_cache WHERE agent_id = ?`, [agentId]);
   }
 
   migrateCanonicalSessionNames() {
@@ -2141,8 +2251,8 @@ export class CorptieStore {
     const summary = toSessionSummary(session);
     this.db.run(
       `INSERT INTO sessions (
-        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json, objective_id, work_item_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json, objective_id, work_item_id, session_kind, agent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
         agent=excluded.agent,
@@ -2162,7 +2272,12 @@ export class CorptieStore {
         active_choice_json=excluded.active_choice_json,
         raw_json=excluded.raw_json,
         objective_id=COALESCE(excluded.objective_id, sessions.objective_id),
-        work_item_id=COALESCE(excluded.work_item_id, sessions.work_item_id)`,
+        work_item_id=COALESCE(excluded.work_item_id, sessions.work_item_id),
+        agent_id=COALESCE(excluded.agent_id, sessions.agent_id),
+        session_kind=CASE
+          WHEN excluded.session_kind = 'legacy' THEN sessions.session_kind
+          ELSE excluded.session_kind
+        END`,
       [
         session.id,
         session.title,
@@ -2184,7 +2299,9 @@ export class CorptieStore {
         serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
         JSON.stringify(toRawStatus(session)),
         session.objectiveId ?? null,
-        session.workItemId ?? null
+        session.workItemId ?? null,
+        normalizeSessionKind(session.sessionKind),
+        session.agentId ?? null
       ]
     );
     this.ensureSessionLog(session.id);
@@ -2194,7 +2311,7 @@ export class CorptieStore {
   // 将已有 Session 归属到某个 WorkItem（及其 Objective），只更新归属两列，不覆盖其它字段。
   bindSessionToWorkItem(sessionId, workItemId, objectiveId) {
     this.db.run(
-      `UPDATE sessions SET objective_id = ?, work_item_id = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE sessions SET objective_id = ?, work_item_id = ?, session_kind = 'worker', updated_at = ? WHERE id = ?`,
       [objectiveId ?? null, workItemId ?? null, createdAtFromOrNow(), sessionId]
     );
     // 1:1 语义：work_item 记录当前活跃 session（换 Agent/重来时覆盖为新的）
@@ -2208,6 +2325,16 @@ export class CorptieStore {
     return this.getSession(sessionId);
   }
 
+  setSessionKind(sessionId, sessionKind, agentId = null) {
+    const normalized = normalizeSessionKind(sessionKind);
+    this.db.run(
+      "UPDATE sessions SET session_kind = ?, agent_id = COALESCE(?, agent_id), updated_at = ? WHERE id = ?",
+      [normalized, agentId, createdAtFromOrNow(), sessionId]
+    );
+    this.scheduleSave();
+    return this.getSession(sessionId);
+  }
+
   // 创建 Session 记录（绑定 work_item + agent；1:1 更新 work_item.current_session_id）。
   createSession(input = {}) {
     const id = input.id ?? `session:${randomUUID()}`;
@@ -2216,8 +2343,8 @@ export class CorptieStore {
       `INSERT INTO sessions (
         id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent,
         created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json,
-        objective_id, work_item_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        objective_id, work_item_id, session_kind, agent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.title ?? "新会话",
@@ -2239,7 +2366,9 @@ export class CorptieStore {
         input.activeChoiceJson ?? null,
         JSON.stringify(input.raw ?? {}),
         input.objectiveId ?? null,
-        input.workItemId ?? null
+        input.workItemId ?? null,
+        input.workItemId ? SESSION_KIND.worker : normalizeSessionKind(input.sessionKind),
+        input.agentId ?? null
       ]
     );
     if (input.workItemId) {
@@ -2488,10 +2617,12 @@ export class CorptieStore {
   listSessionsByAgent(agentId) {
     const rows = this.selectAll(
       `SELECT s.* FROM sessions s
-       JOIN agent_sessions a ON a.session_id = s.id AND a.unbound_at IS NULL
-       WHERE a.agent_id = ?
+       WHERE s.agent_id = ? OR EXISTS (
+         SELECT 1 FROM agent_sessions bindings
+         WHERE bindings.session_id = s.id AND bindings.agent_id = ?
+       )
        ORDER BY s.created_at ASC`,
-      [agentId]
+      [agentId, agentId]
     );
     return rows.map((row) => this.rowToSession(row));
   }
@@ -2641,15 +2772,6 @@ export class CorptieStore {
            SET session_name = ?, session_name_key = ?, title = ?, updated_at = ?
            WHERE logical_session_id = ?`,
           [sessionName, sessionNameKey, sessionName, updatedAt, logical.logicalSessionId]
-        );
-        this.db.run(
-          `UPDATE agents SET name = ?, updated_at = ?
-           WHERE current_session_id = ?
-              OR agent_id IN (
-                SELECT agent_id FROM agent_sessions
-                WHERE session_id = ? AND unbound_at IS NULL
-              )`,
-          [sessionName, updatedAt, logical.legacySessionId, logical.legacySessionId]
         );
       }
       this.db.run("COMMIT");
@@ -3050,10 +3172,10 @@ export class CorptieStore {
     return row ? agentFromRow(row) : null;
   }
 
-  // 预种助手 Agent（role=assistant，单例，默认名 Corptie）。幂等：已存在则跳过。
+  // 预种平台助手 Agent（role=assistant，默认名 Corptie）。幂等：已存在则跳过。
   // provider 使用真实的默认 provider（codex-app-server），而非占位字符串 "harness"。
-  // work_dir：首次播种时写默认工作目录路径（runtimes/assistant/workspace），
-  // 该助手下所有会话共用此目录；目录的物理创建由启动期异步 ensureAgentWorkDirs 完成。
+  // work_dir：首次播种时写该 Agent 独占的默认工作目录；同一助手下的会话共享，
+  // 不同 Assistant 不共享。目录的物理创建由启动期异步 ensureAgentWorkDirs 完成。
   ensureAssistantAgent() {
     // 迁移：修正历史遗留的占位 provider（"harness" → 真实默认 provider）。
     // 幂等，每次启动都会执行；仅影响误填了占位 provider 的记录，不动 provider 为 null 的普通 Agent。
@@ -3088,15 +3210,99 @@ export class CorptieStore {
     return this.getAgent("assistant");
   }
 
-  // 创建独立贡献者 Agent（role 默认 independentContributor；assistant 为平台预置单例，不由 UI 创建）
-  // work_dir：显式指定则用显式值；否则按约定生成默认目录（contributors/<agentId>）。
+  // 旧版本把所有 Assistant 指向同一路径。升级时保留第一个占用者的目录，
+  // 其余冲突者切换到各自的默认目录；不复制共享目录内容，避免把一个助手的
+  // 历史文件继续扩散给其他助手。旧目录本身不会被删除。
+  migrateAssistantWorkDirs() {
+    const assistants = this.selectAll(
+      `SELECT * FROM agents WHERE role = 'assistant' ORDER BY created_at ASC, agent_id ASC`
+    );
+    const defaults = new Map(assistants.map((row) => [
+      row.agent_id,
+      resolveAgentWorkDir({ agentId: row.agent_id, role: "assistant" }, { environmentName })
+    ]));
+    const reservedDefaults = new Map(
+      Array.from(defaults, ([agentId, path]) => [path.toLowerCase(), agentId])
+    );
+    const claimed = new Set();
+
+    for (const row of assistants) {
+      const configured = typeof row.work_dir === "string" && row.work_dir.trim()
+        ? resolve(row.work_dir.trim())
+        : defaults.get(row.agent_id);
+      const configuredKey = configured.toLowerCase();
+      const reservedFor = reservedDefaults.get(configuredKey);
+      const target = claimed.has(configuredKey) || (reservedFor && reservedFor !== row.agent_id)
+        ? defaults.get(row.agent_id)
+        : configured;
+      const targetKey = target.toLowerCase();
+      if (claimed.has(targetKey)) {
+        throw new Error(`Unable to isolate workspace for Assistant ${row.agent_id}.`);
+      }
+      claimed.add(targetKey);
+      if (row.work_dir !== target) {
+        this.db.run(
+          `UPDATE agents SET work_dir = ?, updated_at = ? WHERE agent_id = ?`,
+          [target, createdAtFromOrNow(), row.agent_id]
+        );
+      }
+    }
+  }
+
+  // 旧版把“没有当前 Session”错误解释为 Agent 被停用。这个一次性迁移只修复
+  // 有历史 Session binding、没有活跃 binding 的遗留 inactive 状态；迁移完成后
+  // 用户未来显式设置的 inactive 不会在重启时被覆盖。
+  migrateSessionDerivedAgentStatuses() {
+    const migrationId = "decouple-agent-status-from-session-v1";
+    if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
+      return [];
+    }
+    const affected = this.selectAll(
+      `SELECT agent_id FROM agents
+       WHERE status = 'inactive'
+         AND current_session_id IS NULL
+         AND EXISTS (
+           SELECT 1 FROM agent_sessions history
+           WHERE history.agent_id = agents.agent_id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_sessions active
+           WHERE active.agent_id = agents.agent_id AND active.unbound_at IS NULL
+         )`
+    ).map((row) => row.agent_id);
+    const appliedAt = createdAtFromOrNow();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      if (affected.length > 0) {
+        const placeholders = affected.map(() => "?").join(",");
+        this.db.run(
+          `UPDATE agents SET status = 'available', updated_at = ?
+           WHERE agent_id IN (${placeholders})`,
+          [appliedAt, ...affected]
+        );
+      }
+      this.db.run(
+        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+        [migrationId, appliedAt]
+      );
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    return affected;
+  }
+
+  // 创建 Agent（role 默认 independentContributor）。
+  // work_dir：显式指定则用显式值；否则按角色和 agentId 生成隔离的默认目录。
   // 目录物理创建由启动期 / 会话创建期的 ensureAgentWorkDir 完成（store 仅存路径元数据）。
   createAgent(input = {}) {
     const id = input.id ?? `agent:${randomUUID()}`;
     const role = input.role === "assistant" ? "assistant" : "independentContributor";
     const workDir = typeof input.workDir === "string" && input.workDir.trim()
-      ? input.workDir.trim()
+      ? resolve(input.workDir.trim())
       : resolveAgentWorkDir({ agentId: id, role }, { environmentName });
+    if (role === "assistant") this.assertAssistantWorkDirAvailable(workDir);
     const now = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO agents (agent_id, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
@@ -3129,6 +3335,10 @@ export class CorptieStore {
     if (!existing) return null;
     const now = createdAtFromOrNow();
     const role = existing.role;
+    const workDir = typeof input.workDir === "string" && input.workDir.trim()
+      ? resolve(input.workDir.trim())
+      : existing.workDir;
+    if (role === "assistant") this.assertAssistantWorkDirAvailable(workDir, agentId);
     // avatarPath 需区分「未传」与「显式置空」：传入 null / 空串表示清除头像，
     // 未传（不含该键）则保持原值。其余字段沿用 ?? 回退。
     const avatarPath = Object.prototype.hasOwnProperty.call(input, "avatarPath")
@@ -3144,7 +3354,7 @@ export class CorptieStore {
         input.provider ?? existing.provider,
         input.systemPrompt ?? existing.systemPrompt ?? "",
         input.capabilities != null ? JSON.stringify(input.capabilities) : JSON.stringify(existing.capabilities ?? []),
-        typeof input.workDir === "string" && input.workDir.trim() ? input.workDir.trim() : existing.workDir,
+        workDir,
         avatarPath,
         now,
         agentId
@@ -3152,6 +3362,20 @@ export class CorptieStore {
     );
     this.scheduleSave();
     return this.getAgent(agentId);
+  }
+
+  assertAssistantWorkDirAvailable(workDir, excludingAgentId = null) {
+    const existing = this.selectOne(
+      `SELECT agent_id FROM agents
+       WHERE role = 'assistant' AND work_dir = ? COLLATE NOCASE
+         AND (? IS NULL OR agent_id <> ?)
+       LIMIT 1`,
+      [resolve(workDir), excludingAgentId, excludingAgentId]
+    );
+    if (!existing) return;
+    const error = new Error("每个 Assistant 必须使用独立的 Workspace，该目录已被另一个 Assistant 占用。");
+    error.code = "ASSISTANT_WORKSPACE_CONFLICT";
+    throw error;
   }
 
   // 删除 Agent：有活跃（running）session 时抛错阻止；无则解绑保留历史 session（agent_sessions 级联删除）
@@ -3980,7 +4204,10 @@ export class CorptieStore {
       [row.id]
     );
     const agentIdentity = this.selectOne(
-      `SELECT agent_id FROM agent_sessions WHERE session_id = ? AND unbound_at IS NULL LIMIT 1`,
+      `SELECT bindings.agent_id, agents.role
+       FROM agent_sessions bindings
+       LEFT JOIN agents ON agents.agent_id = bindings.agent_id
+       WHERE bindings.session_id = ? AND bindings.unbound_at IS NULL LIMIT 1`,
       [row.id]
     );
     return {
@@ -3989,7 +4216,12 @@ export class CorptieStore {
       sessionName: logicalIdentity?.session_name || row.title,
       logicalSessionId: logicalIdentity?.logical_session_id ?? null,
       agent: row.agent,
-      agentId: agentIdentity?.agent_id ?? null,
+      agentId: row.agent_id ?? agentIdentity?.agent_id ?? null,
+      sessionKind: inferSessionKind({
+        sessionKind: row.session_kind,
+        workItemId: row.work_item_id,
+        agentRole: agentIdentity?.role
+      }),
       status: displayStatus,
       progress: displayStatus === "running" || displayStatus === "blocked" ? Number(row.progress) : 1,
       summary: row.summary,
@@ -4186,7 +4418,11 @@ function skillFromRow(row) {
     description: row.description ?? "",
     sourceType: row.source_type ?? "local",
     source: row.source,
+    sourceSubpath: row.source_subpath ?? "",
     cachePath: row.cache_path ?? null,
+    manifestName: row.manifest_name || row.name,
+    manifestDescription: row.manifest_description || row.description || "",
+    contentHash: row.content_hash ?? "",
     installedAt: row.installed_at,
     updatedAt: row.updated_at
   };

@@ -9,21 +9,23 @@
 //   不 import 任何具体 Provider 适配器、也不按 provider 名分支业务逻辑。
 //
 // 全局共享语义：Skill 内容只有一份（local 目录 或 git 缓存目录），
-// 各 Provider 的 skills 目录只是它的「物化挂载点」。Agent 通过 agent_skills 关联表
+// 各 Provider 的 skills 目录只是它的「物化挂载点」。Agent 通过 agent_skill_links 关联表
 // 声明自己启用哪些 Skill（元数据），物化仍发生在全局目录，不按 Agent 隔离。
 
 import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import {
   cp,
   mkdir,
   readFile,
+  realpath,
   readdir,
+  rename,
   rm,
   stat
 } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,39 +54,128 @@ export class SkillRegistryService {
     return this.store.getRegistrySkill(skillId);
   }
 
-  // 登记一个 Skill（local 目录 或 git URL），并完成物化安装。
-  // 返回登记后的 skill 记录。
-  async register({ name, description = "", sourceType, source }) {
+  async discover({ sourceType, source }) {
     const type = sourceType === "git" ? "git" : "local";
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
-    const resolvedName = String(name ?? "").trim() || defaultSkillName(type, rawSource);
+    let cachePath = null;
+    try {
+      const rootDir = type === "git"
+        ? (cachePath = await this.#cloneGitSource(rawSource))
+        : resolve(rawSource);
+      const candidates = await this.#discoverCandidates(rootDir);
+      if (candidates.length === 0) {
+        throw skillError("INVALID_SKILL", `所选来源不含 SKILL.md（或 skill.md）：${rawSource}`);
+      }
+      return { sourceType: type, source: rawSource, candidates };
+    } finally {
+      if (cachePath) await rm(cachePath, { recursive: true, force: true });
+    }
+  }
+
+  // 登记一个 Skill。启动上下文只使用 manifest 索引；完整正文由 loadForAgent() 按需读取。
+  async register({ name, description = "", sourceType, source, sourceSubpath = "" }) {
+    const type = sourceType === "git" ? "git" : "local";
+    const rawSource = String(source ?? "").trim();
+    if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
 
     let cachePath = null;
-    if (type === "git") {
-      // git 源：先克隆到全局缓存目录，再登记；后续物化从缓存复制。
-      cachePath = await this.#cloneGitSource(rawSource);
-    } else {
-      // local 源：校验目录存在且（递归）含 SKILL.md（标准 Skill 形态）。
-      const localPath = resolve(rawSource);
-      const marker = await this.#locateSkillMarker(localPath);
-      if (!marker) {
-        throw skillError("INVALID_SKILL", `所选目录（含子目录）不含 SKILL.md（或 skill.md）：${localPath}`);
+    try {
+      const sourceRoot = type === "git"
+        ? (cachePath = await this.#cloneGitSource(rawSource))
+        : resolve(rawSource);
+      const candidate = await this.#selectCandidate(sourceRoot, sourceSubpath);
+      const resolvedName = String(name ?? "").trim() || candidate.manifestName;
+      const resolvedDescription = String(description ?? "").trim() || candidate.manifestDescription;
+
+      const skill = this.store.createRegistrySkill({
+        name: resolvedName,
+        description: resolvedDescription,
+        sourceType: type,
+        source: rawSource,
+        sourceSubpath: candidate.relativePath,
+        cachePath,
+        manifestName: candidate.manifestName,
+        manifestDescription: candidate.manifestDescription,
+        contentHash: candidate.contentHash
+      });
+
+      try {
+        await this.materialize(skill);
+      } catch (error) {
+        this.store.deleteRegistrySkill(skill.skillId);
+        throw error;
+      }
+
+      return this.store.getRegistrySkill(skill.skillId);
+    } catch (error) {
+      if (cachePath && !this.store.listRegistrySkills().some((skill) => skill.cachePath === cachePath)) {
+        await rm(cachePath, { recursive: true, force: true });
+      }
+      throw error;
+    }
+  }
+
+  // 保留 skillId 和 Agent 绑定，重新指向一个经过验证的具体 Skill。
+  async update(skillId, input = {}) {
+    const existing = this.store.getRegistrySkill(skillId);
+    if (!existing) throw skillError("NOT_FOUND", `Skill not found: ${skillId}`);
+    const type = input.sourceType === "git" ? "git" : (input.sourceType ?? existing.sourceType);
+    const source = String(input.source ?? existing.source).trim();
+    let cachePath = type === "git" && source === existing.source ? existing.cachePath : null;
+    const createdCache = type === "git" && !cachePath;
+    try {
+      if (createdCache) cachePath = await this.#cloneGitSource(source);
+      const sourceRoot = type === "git" ? cachePath : resolve(source);
+      const candidate = await this.#selectCandidate(sourceRoot, input.sourceSubpath ?? existing.sourceSubpath ?? "");
+      const next = {
+        ...existing,
+        name: String(input.name ?? existing.name).trim() || candidate.manifestName,
+        description: String(input.description ?? existing.description).trim() || candidate.manifestDescription,
+        sourceType: type,
+        source,
+        sourceSubpath: candidate.relativePath,
+        cachePath,
+        manifestName: candidate.manifestName,
+        manifestDescription: candidate.manifestDescription,
+        contentHash: candidate.contentHash
+      };
+      await this.materialize(next);
+      const updated = this.store.updateRegistrySkill(skillId, next);
+      if (existing.sourceType === "git" && existing.cachePath && existing.cachePath !== cachePath) {
+        await rm(existing.cachePath, { recursive: true, force: true });
+      }
+      return updated;
+    } catch (error) {
+      if (createdCache && cachePath) await rm(cachePath, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  // 旧版本只保存来源根目录，并递归取第一个 SKILL.md。若登记名称能唯一匹配
+  // manifest name，则可无歧义地补齐精确子路径；无法唯一判断的记录保持不变。
+  async repairLegacyRegistrations() {
+    const repaired = [];
+    const skipped = [];
+    for (const skill of this.store.listRegistrySkills()) {
+      if (skill.sourceSubpath && skill.manifestName && skill.contentHash) continue;
+      try {
+        const sourceRoot = await this.#sourceDir(skill);
+        const candidates = await this.#discoverCandidates(sourceRoot);
+        const expected = String(skill.name ?? "").trim().toLowerCase();
+        const matches = candidates.filter((candidate) => candidate.manifestName.toLowerCase() === expected);
+        const selected = matches.length === 1 ? matches[0] : (candidates.length === 1 ? candidates[0] : null);
+        if (!selected) {
+          skipped.push({ skillId: skill.skillId, reason: "ambiguous", candidates });
+          continue;
+        }
+        const updated = await this.update(skill.skillId, { sourceSubpath: selected.relativePath });
+        repaired.push(updated);
+      } catch (error) {
+        skipped.push({ skillId: skill.skillId, reason: error.code ?? "repair_failed" });
       }
     }
-
-    const skill = this.store.createRegistrySkill({
-      name: resolvedName,
-      description,
-      sourceType: type,
-      source: rawSource,
-      cachePath
-    });
-
-    // 物化到各 Provider 的共享 skills 目录。
-    await this.materialize(skill);
-
-    return skill;
+    return { repaired, skipped };
   }
 
   // 物化安装：把 skill 内容落到每个 Provider 的 skills 目录（skill_id 命名子目录）。
@@ -96,7 +187,6 @@ export class SkillRegistryService {
     const results = [];
     for (const [providerId, skillsRoot] of Object.entries(this.skillsDirs)) {
       const targetDir = join(skillsRoot, skill.skillId);
-      await mkdir(targetDir, { recursive: true, mode: 0o700 });
       await this.#mirrorDirectory(rootDir, targetDir);
       results.push({ providerId, installedAt: targetDir });
     }
@@ -131,34 +221,48 @@ export class SkillRegistryService {
     return skill;
   }
 
-  // 解析某 Agent 启用的 Skill 列表（provider-neutral，供 AgentContextService 注入）。
-  // 返回 [{ name, description, content }]，content 为 SKILL.md 正文（截断到合理长度）。
+  // 启动时仅返回轻量索引；完整 Skill 由会话工具按需加载。
   async skillsForAgent(agentId) {
     if (!agentId) return [];
-    const skills = this.store.listRegistrySkillsForAgent(agentId);
-    const result = [];
-    for (const skill of skills) {
-      const content = await this.#readSkillSummary(skill);
-      result.push({
-        name: skill.name,
-        description: skill.description ?? "",
-        content
-      });
-    }
-    return result;
+    return this.store.listRegistrySkillsForAgent(agentId).map((skill) => ({
+      skillId: skill.skillId,
+      name: skill.manifestName || skill.name,
+      displayName: skill.name,
+      description: skill.manifestDescription || skill.description || "",
+      contentHash: skill.contentHash || ""
+    }));
   }
 
-  // 读取 Skill 的 SKILL.md 正文摘要（用于上下文注入，不做完整内容注入，避免撑爆 prompt）。
-  async #readSkillSummary(skill, maxLength = 2000) {
-    try {
-      const { markerPath } = await this.#resolveSkillRoot(skill);
-      if (!markerPath) return "";
-      const text = await readFile(markerPath, "utf8");
-      const trimmed = text.trim();
-      return trimmed.length > maxLength ? `${trimmed.slice(0, maxLength)}…` : trimmed;
-    } catch {
-      return "";
+  async searchForAgent(agentId, intent = "") {
+    if (!agentId || !this.store.getAgent(agentId)) throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
+    const terms = tokenize(intent);
+    const candidates = (await this.skillsForAgent(agentId))
+      .map((skill) => ({ ...skill, score: skillSearchScore(skill, terms) }))
+      .filter((skill) => terms.length === 0 || skill.score > 0)
+      .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    return { found: candidates.length > 0, candidates };
+  }
+
+  async loadForAgent(agentId, skillId) {
+    if (!agentId || !this.store.getAgent(agentId)) throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
+    const allowed = this.store.listRegistrySkillIdsForAgent(agentId);
+    if (!allowed.includes(skillId)) {
+      throw skillError("SKILL_NOT_ASSIGNED", `Skill is not assigned to Agent ${agentId}: ${skillId}`);
     }
+    const skill = this.store.getRegistrySkill(skillId);
+    if (!skill) throw skillError("NOT_FOUND", `Skill not found: ${skillId}`);
+    const { markerPath } = await this.#resolveSkillRoot(skill);
+    if (!markerPath) throw skillError("INVALID_SKILL", `Skill marker is missing: ${skill.name}`);
+    const content = await readFile(markerPath, "utf8");
+    const contentHash = hashContent(content);
+    return {
+      skillId,
+      name: skill.manifestName || skill.name,
+      description: skill.manifestDescription || skill.description || "",
+      content,
+      contentHash,
+      changedSinceRegistration: Boolean(skill.contentHash && skill.contentHash !== contentHash)
+    };
   }
 
   // 解析 Skill 的实际内容目录。
@@ -180,32 +284,99 @@ export class SkillRegistryService {
   // 支持 SKILL.md 藏在子目录里（递归搜索），优先取「最浅」命中。
   async #resolveSkillRoot(skill) {
     const sourceRoot = await this.#sourceDir(skill);
-    const markerPath = await this.#locateSkillMarker(sourceRoot);
-    if (!markerPath) return { rootDir: sourceRoot, markerPath: null };
-    return { rootDir: dirname(markerPath), markerPath };
+    const selectedRoot = await this.#resolveSubpath(sourceRoot, skill.sourceSubpath ?? "");
+    const markerPath = await this.#markerAtRoot(selectedRoot);
+    if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${selectedRoot}`);
+    return { rootDir: selectedRoot, markerPath };
+  }
+
+  async #selectCandidate(sourceRoot, requestedSubpath = "") {
+    const normalizedSubpath = normalizeSubpath(requestedSubpath);
+    if (normalizedSubpath) {
+      const selectedRoot = await this.#resolveSubpath(sourceRoot, normalizedSubpath);
+      const markerPath = await this.#markerAtRoot(selectedRoot);
+      if (!markerPath) throw skillError("INVALID_SKILL_SUBPATH", `所选子目录根部不含 SKILL.md：${normalizedSubpath}`);
+      return this.#candidateFromMarker(sourceRoot, markerPath);
+    }
+    const candidates = await this.#discoverCandidates(sourceRoot);
+    if (candidates.length === 0) throw skillError("INVALID_SKILL", `来源不含 SKILL.md：${sourceRoot}`);
+    if (candidates.length > 1) {
+      const error = skillError("AMBIGUOUS_SKILL_SOURCE", "该来源包含多个 Skill，请选择一个具体 Skill。");
+      error.candidates = candidates;
+      throw error;
+    }
+    return candidates[0];
+  }
+
+  async #discoverCandidates(sourceRoot) {
+    if (!(await isDirectory(sourceRoot))) throw skillError("SOURCE_MISSING", `Skill 来源目录不存在：${sourceRoot}`);
+    const markers = await this.#locateSkillMarkers(sourceRoot);
+    return Promise.all(markers.map((markerPath) => this.#candidateFromMarker(sourceRoot, markerPath)));
+  }
+
+  async #candidateFromMarker(sourceRoot, markerPath) {
+    const content = await readFile(markerPath, "utf8");
+    const manifest = parseSkillManifest(content, basename(dirname(markerPath)));
+    const [resolvedSourceRoot, resolvedSkillRoot] = await Promise.all([
+      realpath(sourceRoot),
+      realpath(dirname(markerPath))
+    ]);
+    return {
+      relativePath: normalizeSubpath(relative(resolvedSourceRoot, resolvedSkillRoot)),
+      manifestName: manifest.name,
+      manifestDescription: manifest.description,
+      contentHash: hashContent(content)
+    };
+  }
+
+  async #resolveSubpath(sourceRoot, subpath) {
+    const normalized = normalizeSubpath(subpath);
+    const selected = resolve(sourceRoot, normalized || ".");
+    let resolvedRoot;
+    let resolvedSelected;
+    try {
+      [resolvedRoot, resolvedSelected] = await Promise.all([realpath(sourceRoot), realpath(selected)]);
+    } catch {
+      throw skillError("INVALID_SKILL_SUBPATH", `Skill 子目录不存在：${normalized || "."}`);
+    }
+    const rel = relative(resolvedRoot, resolvedSelected);
+    if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw skillError("INVALID_SKILL_SUBPATH", "Skill 子目录不能超出来源根目录。");
+    }
+    return resolvedSelected;
+  }
+
+  async #markerAtRoot(dir) {
+    if (!(await isDirectory(dir))) return null;
+    for (const name of ["SKILL.md", "skill.md", "SKILL.MD"]) {
+      if (await isFile(join(dir, name))) return join(dir, name);
+    }
+    return null;
   }
 
   // 定位 SKILL.md（大小写不敏感，递归搜索子目录，优先最浅命中）。
   // 返回 SKILL.md 绝对路径，找不到返回 null。
   async #locateSkillMarker(dir, depth = 0) {
-    if (!(await isDirectory(dir))) return null;
-    for (const name of ["SKILL.md", "skill.md", "SKILL.MD"]) {
-      if (await isFile(join(dir, name))) return join(dir, name);
-    }
-    // 递归搜索子目录（限制深度，避免误匹配太深层的无关 SKILL.md）。
-    if (depth >= MAX_SKILL_SEARCH_DEPTH) return null;
+    return (await this.#locateSkillMarkers(dir, depth))[0] ?? null;
+  }
+
+  async #locateSkillMarkers(dir, depth = 0) {
+    if (!(await isDirectory(dir))) return [];
+    const marker = await this.#markerAtRoot(dir);
+    if (marker) return [marker];
+    if (depth >= MAX_SKILL_SEARCH_DEPTH) return [];
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
-      return null;
+      return [];
     }
-    for (const sub of entries) {
+    const found = [];
+    for (const sub of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       if (!sub.isDirectory()) continue;
-      const found = await this.#locateSkillMarker(join(dir, sub.name), depth + 1);
-      if (found) return found;
+      found.push(...await this.#locateSkillMarkers(join(dir, sub.name), depth + 1));
     }
-    return null;
+    return found;
   }
 
   async #cloneGitSource(url) {
@@ -228,9 +399,17 @@ export class SkillRegistryService {
 
   // 把 srcDir 的内容镜像到 targetDir（先清空 targetDir，再整体复制）。
   async #mirrorDirectory(srcDir, targetDir) {
+    const parent = dirname(targetDir);
+    const temporary = join(parent, `.${basename(targetDir)}.tmp-${randomUUID()}`);
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    await rm(temporary, { recursive: true, force: true });
+    await cp(srcDir, temporary, { recursive: true });
+    if (!(await this.#markerAtRoot(temporary))) {
+      await rm(temporary, { recursive: true, force: true });
+      throw skillError("INVALID_SKILL", "物化后的 Skill 根目录缺少 SKILL.md。");
+    }
     await rm(targetDir, { recursive: true, force: true });
-    await mkdir(targetDir, { recursive: true, mode: 0o700 });
-    await cp(srcDir, targetDir, { recursive: true });
+    await rename(temporary, targetDir);
   }
 }
 
@@ -241,12 +420,44 @@ function skillError(code, message) {
   return error;
 }
 
-function defaultSkillName(type, source) {
-  if (type === "git") {
-    const cleaned = source.replace(/\/+$/, "").replace(/\.git$/, "");
-    return basename(cleaned) || "skill";
+function normalizeSubpath(value) {
+  const normalized = String(value ?? "").trim().replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
+  if (!normalized || normalized === ".") return "";
+  if (normalized.startsWith("/") || normalized.split("/").includes("..")) {
+    throw skillError("INVALID_SKILL_SUBPATH", "Skill 子目录必须是来源目录内的相对路径。");
   }
-  return basename(source) || "skill";
+  return normalized;
+}
+
+function parseSkillManifest(content, fallbackName) {
+  const frontmatter = String(content).match(/^---\s*\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1] ?? "";
+  const field = (name) => {
+    const match = frontmatter.match(new RegExp(`^${name}:\\s*(.+?)\\s*$`, "mi"));
+    return match ? match[1].trim().replace(/^(["'])(.*)\1$/, "$2") : "";
+  };
+  return {
+    name: field("name") || fallbackName || "skill",
+    description: field("description")
+  };
+}
+
+function hashContent(content) {
+  return createHash("sha256").update(String(content)).digest("hex");
+}
+
+function tokenize(text) {
+  return String(text ?? "").toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(Boolean);
+}
+
+function skillSearchScore(skill, terms) {
+  if (terms.length === 0) return 1;
+  const name = String(skill.name ?? "").toLowerCase();
+  const displayName = String(skill.displayName ?? "").toLowerCase();
+  const description = String(skill.description ?? "").toLowerCase();
+  return terms.reduce((score, term) => score
+    + (name === term ? 5 : name.includes(term) || term.includes(name) ? 3 : 0)
+    + (displayName.includes(term) || term.includes(displayName) ? 2 : 0)
+    + (description.includes(term) ? 1 : 0), 0);
 }
 
 function homedirFallback() {

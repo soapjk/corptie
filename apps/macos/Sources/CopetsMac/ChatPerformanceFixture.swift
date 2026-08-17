@@ -23,6 +23,7 @@ struct ChatPerformanceFixture: Sendable {
             title: "Chat Timeline Performance",
             agent: "Fixture",
             agentId: nil,
+            sessionKind: nil,
             status: .complete,
             progress: 1,
             summary: "Local deterministic performance fixture",

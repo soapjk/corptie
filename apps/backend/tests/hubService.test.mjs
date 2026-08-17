@@ -124,3 +124,34 @@ test("缓存 key 含 agentId：同 workItem 不同 agent 不误命中", async ()
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("hub search indexes only Registry Skills assigned to the Agent and invalidates on replacement", async () => {
+  const { store, directory } = await createStore();
+  try {
+    const agent = store.createAgent({ name: "Investor", provider: "codex-app-server" });
+    const other = store.createAgent({ name: "Other", provider: "codex-app-server" });
+    const skill = store.createRegistrySkill({
+      name: "investrace",
+      description: "Investment decisions",
+      sourceType: "local",
+      source: directory,
+      manifestName: "investrace",
+      manifestDescription: "Investment decisions"
+    });
+    store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+    const hub = new HubService({ store });
+
+    const assigned = hub.search("investment", { agentId: agent.agentId });
+    assert.equal(assigned.found, true);
+    assert.equal(assigned.candidates.find((item) => item.skillId === skill.skillId)?.toolName, "investrace");
+    assert.equal(hub.search("investment", { agentId: other.agentId }).found, false);
+
+    store.setAgentRegistrySkills(agent.agentId, []);
+    const afterRemoval = hub.search("investment", { agentId: agent.agentId });
+    assert.equal(afterRemoval.cached, false);
+    assert.equal(afterRemoval.found, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

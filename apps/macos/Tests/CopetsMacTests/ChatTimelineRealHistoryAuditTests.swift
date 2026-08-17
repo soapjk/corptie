@@ -88,8 +88,6 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
         switch entry.kind {
         case .message(let item):
             [item]
-        case .userTurn(let item, _, let processItems):
-            [item] + processItems
         case .process(_, let items):
             items
         }
@@ -169,7 +167,7 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
         let route = ChatTimelineRowRouting.route(for: entry)
         let text: String
         switch entry.kind {
-        case .message(let message), .userTurn(let message, _, _):
+        case .message(let message):
             text = ChatTimelineRowRouting.displayText(for: message)
         case .process(_, let items):
             text = "\(items.count) execution items"

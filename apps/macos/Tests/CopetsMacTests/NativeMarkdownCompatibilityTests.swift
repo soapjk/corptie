@@ -23,27 +23,35 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertFalse(NativeMarkdownCompatibility.requiresSwiftUIRenderer(markdown))
     }
 
-    func testUserTurnWithReasoningAndStandaloneProcessKeepEstablishedSwiftUICard() {
-        let user = item(id: "user", type: "userMessage", text: "hi")
+    func testStandaloneProcessKeepsEstablishedSwiftUICard() {
         let reasoning = item(id: "reasoning", type: "reasoning", text: "Thinking")
-        XCTAssertEqual(
-            ChatTimelineRowRouting.route(
-                for: ChatDisplayEntry(kind: .userTurn(message: user, turnId: "turn", processItems: [reasoning]))
-            ),
-            .swiftUI
-        )
-        XCTAssertEqual(
-            ChatTimelineRowRouting.route(
-                for: ChatDisplayEntry(kind: .userTurn(message: user, turnId: "empty-turn", processItems: []))
-            ),
-            .swiftUI
-        )
         XCTAssertEqual(
             ChatTimelineRowRouting.route(
                 for: ChatDisplayEntry(kind: .process(turnId: "turn", items: [reasoning]))
             ),
             .swiftUI
         )
+    }
+
+    func testUserMessageAndExecutionProcessBecomeSeparateDisplayEntries() {
+        let user = item(id: "user", type: "userMessage", text: "hi")
+        let reasoning = item(id: "reasoning", type: "reasoning", text: "Thinking")
+
+        let entries = makeChatDisplayEntriesForTurn([user, reasoning])
+
+        XCTAssertEqual(entries.count, 2)
+        guard entries.count == 2 else { return }
+        if case .message(let message) = entries[0].kind {
+            XCTAssertEqual(message.id, user.id)
+        } else {
+            XCTFail("The first entry should remain the user message")
+        }
+        if case .process(let turnId, let items) = entries[1].kind {
+            XCTAssertEqual(turnId, "turn")
+            XCTAssertEqual(items.map(\.id), [reasoning.id])
+        } else {
+            XCTFail("The execution process should be its own display entry")
+        }
     }
 
     func testPlainUserAndAgentMessagesRemainNative() {

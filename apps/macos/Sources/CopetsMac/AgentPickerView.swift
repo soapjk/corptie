@@ -4,8 +4,15 @@ import SwiftUI
 // 由 ObjectiveResourcesEditor 的 Contributor Agent 加号打开；选中的 id 直接写入 selectedIds。
 
 struct AgentPickerView: View {
+    enum RoleFilter {
+        case all
+        case independentContributor
+    }
+
     @ObservedObject private var client = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
     @Binding var selectedIds: Set<String>
+    var roleFilter: RoleFilter = .all
     /// 完成回调（可选）：点「完成」时把最终选中集合交回调用方；不传则仅关闭。
     var onDone: ((Set<String>) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
@@ -46,7 +53,7 @@ struct AgentPickerView: View {
                         Label(agent.name, systemImage: agent.isAssistant ? "sparkles" : "person")
                         Spacer()
                         if let provider = agent.provider {
-                            Text(provider)
+                            Text(backendClient.providerDisplayName(for: provider) ?? provider)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -76,6 +83,7 @@ struct AgentPickerView: View {
         .onAppear {
             Task {
                 if client.agents.isEmpty { await client.refreshAgents() }
+                if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
             }
         }
         .sheet(isPresented: $showCreate) {
@@ -86,9 +94,12 @@ struct AgentPickerView: View {
     }
 
     private var filteredAgents: [Agent] {
+        let roleFiltered = roleFilter == .independentContributor
+            ? client.agents.filter(\.isIndependentContributor)
+            : client.agents
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return client.agents }
-        return client.agents.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        guard !trimmed.isEmpty else { return roleFiltered }
+        return roleFiltered.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
     private func toggle(_ id: String) {

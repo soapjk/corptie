@@ -74,6 +74,98 @@ struct SessionCollectionPatchTests {
         #expect(result.patch.updated.first?.changedFields.contains(.metadata) == true)
     }
 
+    @Test
+    func pendingSelectionMatchesWhenTheSessionSnapshotArrivesFirst() {
+        let session = makeSession(id: "codex:new-session")
+
+        #expect(sessionMatchingPendingSelection("codex:new-session", in: [session])?.id == session.id)
+        #expect(sessionMatchingPendingSelection("codex:missing", in: [session]) == nil)
+        #expect(sessionMatchingPendingSelection(nil, in: [session]) == nil)
+    }
+
+    @Test
+    func sessionDetailResolvesTheBoundAgentInsteadOfTheProviderLabel() {
+        let session = makeSession(id: "codex:thread", agentId: "research-agent")
+        let agent = Agent(
+            agentId: "research-agent",
+            name: "研究员",
+            description: "",
+            role: "independentContributor",
+            status: "active",
+            provider: "codex",
+            systemPrompt: "",
+            capabilities: [],
+            workDir: nil,
+            avatarPath: nil,
+            skillIds: nil,
+            currentSessionId: session.id,
+            createdAt: "2026-08-12T00:00:00Z",
+            updatedAt: "2026-08-12T00:00:00Z"
+        )
+
+        #expect(sessionAgentDisplayName(session: session, agents: [agent]) == "研究员")
+        #expect(sessionAgentDisplayName(session: session, agents: []) == "research-agent")
+        #expect(sessionAgentDisplayName(session: makeSession(id: "unbound"), agents: [agent]) == "未挂载")
+    }
+
+    @Test
+    func assistantChatGroupingDoesNotDependOnAgentCache() {
+        let assistant = SessionRowModel(session: makeSession(
+            id: "assistant-chat",
+            agentId: "assistant",
+            sessionKind: .assistantChat
+        ))
+        let worker = SessionRowModel(session: makeSession(
+            id: "worker",
+            agentId: "contributor",
+            sessionKind: .worker,
+            workItemId: "work-item:1"
+        ))
+        let legacy = SessionRowModel(session: makeSession(id: "legacy", agentId: "unknown"))
+
+        let groups = makeSessionGroups(rows: [worker, legacy, assistant], agents: [])
+
+        #expect(groups.map(\.key) == ["assistant:assistant", "__worker__", "__legacy__"])
+        #expect(groups[0].rows.map(\.id) == ["assistant-chat"])
+        #expect(groups[1].rows.map(\.id) == ["worker"])
+        #expect(groups[2].rows.map(\.id) == ["legacy"])
+    }
+
+    @Test
+    func sessionKindChangeInvalidatesGrouping() {
+        let legacy = makeSession(id: "one")
+        let assistant = makeSession(id: "one", agentId: "assistant", sessionKind: .assistantChat)
+        let patch = SessionCollectionDiffer.patch(from: [legacy], to: [assistant], revision: 2)
+        let store = SessionListStore()
+        store.apply(
+            SessionCollectionDiffer.patch(from: [], to: [legacy], revision: 1),
+            authoritativeSessions: [legacy]
+        )
+        let previousGroupingRevision = store.groupingRevision
+
+        store.apply(patch, authoritativeSessions: [assistant])
+
+        #expect(patch.updated.first?.changedFields.contains(.metadata) == true)
+        #expect(store.groupingRevision == previousGroupingRevision + 1)
+    }
+
+    @Test
+    func commandResponseInsertionIsImmediateAndIdempotent() {
+        let existing = makeSession(id: "existing", summary: "old")
+        let created = makeSession(
+            id: "created",
+            agentId: "assistant",
+            sessionKind: .assistantChat
+        )
+
+        let inserted = BackendClient.insertingCreatedSession(created, into: [existing])
+        let repeated = BackendClient.insertingCreatedSession(created, into: inserted)
+
+        #expect(inserted.map(\.id) == ["created", "existing"])
+        #expect(repeated.map(\.id) == ["created", "existing"])
+        #expect(repeated.first?.summary == created.summary)
+    }
+
 }
 
 struct SessionCollectionWirePatchTests {
@@ -113,11 +205,20 @@ struct SessionCollectionWirePatchTests {
     }
 }
 
-private func makeSession(id: String, summary: String = "Summary") -> TaskSession {
+private func makeSession(
+    id: String,
+    summary: String = "Summary",
+    agentId: String? = nil,
+    sessionKind: SessionKind? = nil,
+    workItemId: String? = nil
+) -> TaskSession {
     TaskSession(
         id: id,
         title: id,
         agent: "Codex",
+        agentId: agentId,
+        sessionKind: sessionKind,
+        workItemId: workItemId,
         status: .complete,
         progress: 1,
         summary: summary,

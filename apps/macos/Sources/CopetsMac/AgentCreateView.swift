@@ -14,7 +14,7 @@ struct AgentCreateView: View {
     @State private var name = ""
     @State private var detail = ""
     @State private var role = "independentContributor"
-    @State private var provider = "codex-app-server"
+    @State private var provider = ""
     @State private var systemPrompt = ""
     @State private var capabilitiesText = ""
     @State private var workDir = ""
@@ -43,10 +43,11 @@ struct AgentCreateView: View {
 
                     field(L10n("底层模型（Provider）")) {
                         Picker("", selection: $provider) {
-                            if !backendClient.agentProviders.contains(where: { $0.id == provider }) {
-                                Text(provider).tag(provider)
+                            if !provider.isEmpty,
+                               !creatableProviders.contains(where: { $0.matches(provider) }) {
+                                Text(backendClient.providerDisplayName(for: provider) ?? provider).tag(provider)
                             }
-                            ForEach(backendClient.agentProviders) { descriptor in
+                            ForEach(creatableProviders) { descriptor in
                                 Text(descriptor.displayName).tag(descriptor.id)
                             }
                         }
@@ -107,7 +108,7 @@ struct AgentCreateView: View {
                                 }
 
                                 field(L10n("工作目录（可选）")) {
-                                    TextField(L10n("留空则自动生成（助手为共享工作区，贡献者为持久化目录）"), text: $workDir)
+                                    TextField(L10n("留空则自动生成（每个助手独立，贡献者为持久化目录）"), text: $workDir)
                                 }
 
                                 skillSection
@@ -134,7 +135,11 @@ struct AgentCreateView: View {
                     create()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || (!selectedSkillIds.isEmpty && !providerSupportsSkillLoading)
+                )
             }
             .padding(16)
         }
@@ -150,7 +155,10 @@ struct AgentCreateView: View {
             if backendClient.agentProviders.isEmpty {
                 await backendClient.loadProviders()
             }
+            reconcileProviderSelection()
         }
+        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
+        .onChange(of: backendClient.defaultAgentProviderId) { _, _ in reconcileProviderSelection() }
         .sheet(isPresented: $showSkillRegister) {
             SkillRegisterView { skill in
                 if let skill { selectedSkillIds.insert(skill.skillId) }
@@ -208,14 +216,14 @@ struct AgentCreateView: View {
             systemPrompt = ""
             capabilitiesText = ""
             workDir = ""
-            provider = "codex-app-server"
+            provider = defaultProviderId ?? ""
             role = "independentContributor"
             selectedSkillIds = []
             return
         }
         name = base.name
         detail = base.description
-        provider = canonicalProviderId(base.provider) ?? "codex-app-server"
+        provider = canonicalProviderId(base.provider) ?? base.provider ?? defaultProviderId ?? ""
         role = base.role.isEmpty ? "independentContributor" : base.role
         systemPrompt = base.systemPrompt
         capabilitiesText = base.capabilities.joined(separator: ", ")
@@ -224,78 +232,44 @@ struct AgentCreateView: View {
     }
 
     private func canonicalProviderId(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return backendClient.agentProviders.first(where: {
-            $0.id.lowercased() == normalized || $0.aliases.contains(normalized)
-        })?.id ?? (normalized.isEmpty ? nil : value)
+        backendClient.agentProviders.canonicalProviderId(for: value)
+    }
+
+    private var creatableProviders: [AgentProviderDescriptor] {
+        backendClient.agentProviders.filter { $0.supports("session.create") }
+    }
+
+    private var defaultProviderId: String? {
+        if let defaultId = backendClient.defaultAgentProviderId,
+           creatableProviders.contains(where: { $0.id == defaultId }) {
+            return defaultId
+        }
+        return creatableProviders.first?.id
+    }
+
+    private func reconcileProviderSelection() {
+        if let canonical = canonicalProviderId(provider),
+           creatableProviders.contains(where: { $0.id == canonical }) {
+            provider = canonical
+        } else if provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            provider = defaultProviderId ?? ""
+        }
     }
 
     // MARK: - Skill 预装
 
     private var skillSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Text(L10n("预装 Skill"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    showSkillRegister = true
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: "plus")
-                        Text(L10n("登记"))
-                    }
-                    .font(.caption)
-                }
-                .buttonStyle(.borderless)
-            }
+        AgentSkillSelectionView(
+            skills: client.skills,
+            selectedSkillIds: $selectedSkillIds,
+            isEnabled: providerSupportsSkillLoading,
+            onRegister: { showSkillRegister = true }
+        )
+    }
 
-            if client.skills.isEmpty {
-                Text(L10n("尚未登记任何 Skill，点「登记」从本地目录或 Git 仓库添加。"))
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(client.skills) { skill in
-                        let isSelected = selectedSkillIds.contains(skill.skillId)
-                        Button {
-                            if isSelected {
-                                selectedSkillIds.remove(skill.skillId)
-                            } else {
-                                selectedSkillIds.insert(skill.skillId)
-                            }
-                        } label: {
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(skill.name)
-                                        .font(.callout)
-                                    if !skill.description.isEmpty {
-                                        Text(skill.description)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                Spacer()
-                                Text(skill.isGit ? "git" : "本地")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .padding(.vertical, 2)
-                    }
-                }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.15), lineWidth: 1))
-            }
-        }
+    private var providerSupportsSkillLoading: Bool {
+        guard let descriptor = backendClient.agentProviders.first(where: { $0.matches(provider) }) else { return false }
+        return descriptor.supports("agent.skills.lazyLoad")
     }
 
     // MARK: - 创建

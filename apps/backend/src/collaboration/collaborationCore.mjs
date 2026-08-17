@@ -95,10 +95,6 @@ export class CollaborationCore {
       if (other && other.agent_id !== agent.agentId) {
         throw domainError("SESSION_ALREADY_BOUND", `Session ${sessionId} is already bound to agent ${other.agent_id}.`);
       }
-      this.store.db.run(
-        "UPDATE agent_sessions SET unbound_at = ? WHERE agent_id = ? AND unbound_at IS NULL AND session_id <> ?",
-        [timestamp, agent.agentId, sessionId]
-      );
       const current = this.store.selectOne(
         "SELECT binding_id FROM agent_sessions WHERE agent_id = ? AND session_id = ? AND unbound_at IS NULL",
         [agent.agentId, sessionId]
@@ -109,6 +105,17 @@ export class CollaborationCore {
           [this.idFactory(), agent.agentId, sessionId, timestamp]
         );
       }
+      this.store.db.run(
+        `UPDATE sessions SET
+           agent_id = ?,
+           session_kind = CASE
+             WHEN session_kind = 'legacy' AND ? = 'assistant' THEN 'assistantChat'
+             ELSE session_kind
+           END,
+           updated_at = ?
+         WHERE id = ?`,
+        [agent.agentId, agent.role, timestamp, sessionId]
+      );
       this.store.db.run(
         "UPDATE agents SET current_session_id = ?, updated_at = ? WHERE agent_id = ?",
         [sessionId, timestamp, agent.agentId]
@@ -134,7 +141,7 @@ export class CollaborationCore {
     return this.getAgent(agent.agentId);
   }
 
-  deactivateAgentForSession(sessionId) {
+  detachSession(sessionId) {
     const normalizedSessionId = requiredId(sessionId, "sessionId");
     const agent = this.store.selectOne(
       `SELECT a.agent_id
@@ -156,17 +163,22 @@ export class CollaborationCore {
         [timestamp, normalizedSessionId]
       );
       this.store.db.run(
-        `UPDATE agents
-         SET current_session_id = NULL, status = 'inactive', updated_at = ?
+        `UPDATE agents SET
+           current_session_id = (
+             SELECT session_id FROM agent_sessions
+             WHERE agent_id = ? AND unbound_at IS NULL
+             ORDER BY bound_at DESC LIMIT 1
+           ),
+           updated_at = ?
          WHERE agent_id = ?`,
-        [timestamp, agent.agent_id]
+        [agent.agent_id, timestamp, agent.agent_id]
       );
     });
     this.store.scheduleSave();
     return this.getAgent(agent.agent_id);
   }
 
-  deactivateAgentsWithMissingSessions() {
+  detachMissingSessionBindings() {
     const sessionIds = this.store.selectAll(
       `SELECT DISTINCT session_id
        FROM (
@@ -182,7 +194,7 @@ export class CollaborationCore {
     ).map((row) => row.session_id);
 
     return sessionIds
-      .map((sessionId) => this.deactivateAgentForSession(sessionId))
+      .map((sessionId) => this.detachSession(sessionId))
       .filter(Boolean);
   }
 

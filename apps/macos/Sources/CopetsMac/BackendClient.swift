@@ -40,6 +40,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isUpdatingFeishu = false
     @Published private(set) var codexModels: [CodexModel] = []
     @Published private(set) var agentProviders: [AgentProviderDescriptor] = []
+    @Published private(set) var defaultAgentProviderId: String?
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
     @Published private(set) var loadedModelProvider: String?
@@ -133,7 +134,10 @@ final class BackendClient: ObservableObject {
         Task {
             await loadSettings()
             await loadProviders()
-            await loadModels(for: "codex-app-server")
+            if let providerId = defaultAgentProviderId,
+               agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
+                await loadModels(for: providerId)
+            }
         }
         startEventStream()
         startSessionCollectionStream()
@@ -759,11 +763,20 @@ final class BackendClient: ObservableObject {
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
-            agentProviders = try JSONDecoder().decode(AgentProvidersResponse.self, from: data).providers
+            let catalog = try JSONDecoder().decode(AgentProvidersResponse.self, from: data)
+            agentProviders = catalog.providers
+            defaultAgentProviderId = catalog.providers.canonicalProviderId(for: catalog.defaultProviderId)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    func providerDisplayName(for providerIdentity: String?) -> String? {
+        guard let providerIdentity else { return nil }
+        let fallback = providerIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fallback.isEmpty else { return nil }
+        return agentProviders.displayName(for: fallback) ?? fallback
     }
 
     func loadModels(for provider: String, forceRefresh: Bool = false) async {
@@ -840,6 +853,25 @@ final class BackendClient: ObservableObject {
                 lastError = message
             }
         }
+    }
+
+    /// HTTP 创建响应提供 read-your-write：本地按 id 幂等 upsert，不推进 SSE revision。
+    /// 随后的 collection patch/snapshot 仍是排序、状态与能力字段的权威来源。
+    func acceptCreatedSession(_ session: TaskSession, selectImmediately: Bool = true) {
+        let nextSessions = Self.insertingCreatedSession(session, into: sessions)
+        let patch = SessionCollectionDiffer.patch(from: sessions, to: nextSessions, revision: 0)
+        applySessionSnapshot(nextSessions, patch: patch, allowDuringReorder: true)
+        if selectImmediately {
+            select(session: nextSessions.first(where: { $0.id == session.id }) ?? session)
+        }
+    }
+
+    nonisolated static func insertingCreatedSession(
+        _ created: TaskSession,
+        into current: [TaskSession]
+    ) -> [TaskSession] {
+        if current.contains(where: { $0.id == created.id }) { return current }
+        return [created] + current
     }
 
     func fetchSessionsForShutdown() async throws -> [TaskSession] {
@@ -2245,6 +2277,7 @@ final class BackendClient: ObservableObject {
                 title: existing.title,
                 agent: existing.agent,
                 agentId: existing.agentId,
+                sessionKind: existing.sessionKind,
                 objectiveId: existing.objectiveId,
                 workItemId: existing.workItemId,
                 status: existing.status == .complete || existing.status == .blocked ? .running : existing.status,
@@ -3260,6 +3293,7 @@ final class BackendClient: ObservableObject {
                 title: session.title,
                 agent: session.agent,
                 agentId: session.agentId,
+                sessionKind: session.sessionKind,
                 objectiveId: session.objectiveId,
                 workItemId: session.workItemId,
                 status: detail.status,

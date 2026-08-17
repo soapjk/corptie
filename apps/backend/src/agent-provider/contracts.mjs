@@ -19,6 +19,7 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   ACCOUNT_USAGE_READ: "usage.account.read",
   SESSION_USAGE_READ: "usage.session.read",
   TOOL_HOST_ATTACH: "tools.attach",
+  SKILL_LAZY_LOAD: "agent.skills.lazyLoad",
   TURN_CHANGES_MANAGE: "turn.changes.manage"
 });
 

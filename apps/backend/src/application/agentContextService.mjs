@@ -60,10 +60,12 @@ export class AgentContextService {
     if (Array.isArray(skills) && skills.length > 0) {
       const skillLines = skills.map((skill) => {
         const desc = skill.description ? ` — ${skill.description}` : "";
-        return `- ${skill.name}${desc}`;
+        return `- ${skill.name} (id: ${skill.skillId})${desc}`;
       });
       parts.push(
-        `You have the following Skills preloaded. Invoke them by name when relevant; each Skill's full instructions are available in your skill directory:\n${skillLines.join("\n")}`
+        `The following Skills are assigned to this Agent and available through lazy loading:\n${skillLines.join("\n")}\n` +
+        "When a Skill may be relevant, call corptie_skill_search with the current intent, then call corptie_skill_load with the returned skill id before following its instructions. " +
+        "The list above is only a compact index; do not assume the full instructions or unlisted Skills are available."
       );
     }
 

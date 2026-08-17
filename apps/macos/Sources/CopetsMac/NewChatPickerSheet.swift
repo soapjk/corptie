@@ -1,70 +1,357 @@
+import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
-// Sessions 侧栏「新建会话」选择弹窗：列出所有 Assistant 类 Agent（会话只能由 Assistant 创建）。
-// 选中后由调用方直接开新会话。若无任何 Assistant，展示引导提示。
-struct NewChatPickerSheet: View {
+enum NewSessionKind: String, CaseIterable, Identifiable {
+    case assistantChat
+    case worker
+
+    var id: String { rawValue }
+
+    @MainActor var title: String {
+        switch self {
+        case .assistantChat: L10n("Assistant Chat")
+        case .worker: L10n("Worker Session")
+        }
+    }
+}
+
+/// 统一 Session 创建入口。
+/// Assistant Chat 只绑定 Assistant；Worker Session 强制同时绑定 WorkItem 与 IC Agent。
+struct NewSessionCreationSheet: View {
     @ObservedObject private var client = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
 
-    var onSelect: (Agent) -> Void
+    let fixedAgent: Agent?
+    var onCreated: (TaskSession) -> Void
+
+    @State private var kind: NewSessionKind
+    @State private var selectedAgentId: String?
+    @State private var selectedWorkItemId: String?
+    @State private var sessionTitle = ""
+    @State private var avatarPath: String?
+    @State private var workItems: [WorkItem] = []
+    @State private var isLoadingWorkItems = false
+    @State private var isCreating = false
+    @State private var creationError: String?
+
+    init(fixedAgent: Agent? = nil, onCreated: @escaping (TaskSession) -> Void = { _ in }) {
+        self.fixedAgent = fixedAgent
+        self.onCreated = onCreated
+        _kind = State(initialValue: fixedAgent?.isAssistant == false ? .worker : .assistantChat)
+        _selectedAgentId = State(initialValue: fixedAgent?.agentId)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(L10n("新建会话"))
                 .font(.title3.bold())
 
-            if client.assistantAgents.isEmpty {
-                ContentUnavailableView(
-                    "暂无可用 Assistant",
-                    systemImage: "sparkles",
-                    description: Text(L10n("请先在 Agent 管理页创建一个 Assistant 类 Agent。"))
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Text(L10n("选择一个 Assistant 开始对话"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                List(client.assistantAgents) { agent in
-                    Button {
-                        onSelect(agent)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Text(agent.name.prefix(1).uppercased())
-                                .font(.headline)
-                                .foregroundStyle(.white)
-                                .frame(width: 36, height: 36)
-                                .background(Color.accentColor, in: Circle())
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(agent.name)
-                                    .font(.body.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                if !agent.description.isEmpty {
-                                    Text(agent.description)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
+            if fixedAgent == nil {
+                Picker(L10n("会话类型"), selection: $kind) {
+                    ForEach(NewSessionKind.allCases) { option in
+                        Text(option.title).tag(option)
                     }
-                    .buttonStyle(.plain)
                 }
-                .listStyle(.inset)
+                .pickerStyle(.segmented)
+            } else if let fixedAgent {
+                selectedRow(
+                    title: fixedAgent.name,
+                    subtitle: fixedAgent.isAssistant ? L10n("Assistant") : L10n("Independent Contributor"),
+                    systemImage: fixedAgent.isAssistant ? "sparkles" : "person.fill"
+                )
+            }
+
+            sessionIdentitySection
+
+            switch kind {
+            case .assistantChat:
+                assistantSection
+            case .worker:
+                workerSection
+            }
+
+            Spacer(minLength: 0)
+            Divider()
+
+            HStack(spacing: 12) {
+                if let creationError {
+                    Text(creationError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                }
+                Spacer()
+                Button(L10n("取消")) { dismiss() }
+                    .disabled(isCreating)
+                Button {
+                    createSession()
+                } label: {
+                    if isCreating {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text(L10n("创建"))
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canCreate || isCreating)
             }
         }
         .padding(20)
-        .frame(width: 420, height: 360)
+        .frame(width: 500, height: 620)
         .task {
-            if client.agents.isEmpty {
-                await client.refreshAgents()
+            await client.refreshAgents()
+            normalizeAgentSelection()
+        }
+        .task(id: kind) {
+            creationError = nil
+            normalizeAgentSelection()
+            if kind == .worker, workItems.isEmpty {
+                isLoadingWorkItems = true
+                workItems = await client.allWorkItems()
+                isLoadingWorkItems = false
+                if selectedWorkItemId == nil {
+                    selectedWorkItemId = workItems.first?.id
+                }
             }
+        }
+    }
+
+    private var sessionIdentitySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField(L10n("会话名称（可选）"), text: $sessionTitle)
+                .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 12) {
+                Group {
+                    if let avatarPath, let image = NSImage(contentsOfFile: avatarPath) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "person.crop.circle")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(.secondary)
+                            .padding(5)
+                    }
+                }
+                .frame(width: 42, height: 42)
+                .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n("会话头像（可选）"))
+                        .font(.callout.weight(.medium))
+                    Text(avatarPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? L10n("未选择时使用默认头像"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if avatarPath != nil {
+                    Button(L10n("清除")) { avatarPath = nil }
+                }
+                Button(L10n("选择图片")) { chooseAvatar() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var assistantSection: some View {
+        if fixedAgent == nil {
+            choiceSection(
+                title: L10n("选择 Assistant"),
+                emptyTitle: L10n("暂无可用 Assistant"),
+                emptyDescription: L10n("请先在 Agent 管理页创建 Assistant。"),
+                rows: client.assistantAgents
+            ) { agent in
+                agentChoiceRow(agent)
+            }
+        } else {
+            Text(L10n("Assistant Chat Session 不绑定 WorkItem。"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var workerSection: some View {
+        if fixedAgent == nil {
+            choiceSection(
+                title: L10n("选择 Independent Contributor"),
+                emptyTitle: L10n("暂无可用 Independent Contributor"),
+                emptyDescription: L10n("请先在 Agent 管理页创建 Independent Contributor。"),
+                rows: independentContributors
+            ) { agent in
+                agentChoiceRow(agent)
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n("选择 WorkItem"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            if isLoadingWorkItems {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 100)
+            } else if workItems.isEmpty {
+                ContentUnavailableView(
+                    L10n("暂无 WorkItem"),
+                    systemImage: "checklist",
+                    description: Text(L10n("Worker Session 必须绑定一个 WorkItem。"))
+                )
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                List(workItems, selection: $selectedWorkItemId) { workItem in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(workItem.title)
+                            .font(.body.weight(.medium))
+                        HStack(spacing: 6) {
+                            Text(workItem.status)
+                            if workItem.mainWorkspaceId == nil {
+                                Text(L10n("未绑定 Workspace"))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .tag(workItem.id)
+                }
+                .listStyle(.inset)
+                .frame(minHeight: 150)
+            }
+        }
+    }
+
+    private var independentContributors: [Agent] {
+        client.agents.filter(\.isIndependentContributor)
+    }
+
+    private var canCreate: Bool {
+        guard selectedAgentId != nil else { return false }
+        return kind == .assistantChat || selectedWorkItemId != nil
+    }
+
+    @ViewBuilder
+    private func choiceSection<Row: View>(
+        title: String,
+        emptyTitle: String,
+        emptyDescription: String,
+        rows: [Agent],
+        @ViewBuilder row: @escaping (Agent) -> Row
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            if rows.isEmpty {
+                ContentUnavailableView(
+                    emptyTitle,
+                    systemImage: "person.crop.circle.badge.exclamationmark",
+                    description: Text(emptyDescription)
+                )
+                .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                List(rows, selection: $selectedAgentId) { agent in
+                    row(agent).tag(agent.agentId)
+                }
+                .listStyle(.inset)
+                .frame(minHeight: 150)
+            }
+        }
+    }
+
+    private func agentChoiceRow(_ agent: Agent) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: agent.isAssistant ? "sparkles" : "person.fill")
+                .foregroundStyle(agent.isAssistant ? Color.accentColor : Color.blue)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(agent.name).font(.body.weight(.medium))
+                if !agent.description.isEmpty {
+                    Text(agent.description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func selectedRow(title: String, subtitle: String, systemImage: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage).foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.body.weight(.semibold))
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func normalizeAgentSelection() {
+        if let fixedAgent {
+            selectedAgentId = fixedAgent.agentId
+            kind = fixedAgent.isAssistant ? .assistantChat : .worker
+            return
+        }
+        let candidates = kind == .assistantChat ? client.assistantAgents : independentContributors
+        if !candidates.contains(where: { $0.agentId == selectedAgentId }) {
+            selectedAgentId = candidates.first?.agentId
+        }
+    }
+
+    private func createSession() {
+        guard let agentId = selectedAgentId, !isCreating else { return }
+        let trimmedTitle = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestedTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
+        isCreating = true
+        creationError = nil
+        Task {
+            let result: EntitySessionLaunchResult
+            switch kind {
+            case .assistantChat:
+                result = await client.startAgentSession(
+                    agentId: agentId,
+                    title: requestedTitle,
+                    avatarPath: avatarPath
+                )
+            case .worker:
+                guard let workItemId = selectedWorkItemId else {
+                    isCreating = false
+                    return
+                }
+                result = await client.createSession(
+                    workItemId: workItemId,
+                    agentId: agentId,
+                    title: requestedTitle,
+                    avatarPath: avatarPath
+                )
+            }
+            isCreating = false
+            if let session = result.session {
+                backendClient.acceptCreatedSession(session)
+                onCreated(session)
+                dismiss()
+            } else {
+                creationError = result.error?.message ?? L10n("创建会话失败")
+            }
+        }
+    }
+
+    private func chooseAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        if panel.runModal() == .OK, let url = panel.url {
+            avatarPath = url.path
         }
     }
 }
