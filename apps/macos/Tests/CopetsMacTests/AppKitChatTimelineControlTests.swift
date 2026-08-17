@@ -362,6 +362,35 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(processButton.attributedTitle.string.contains("3"))
     }
 
+    func testOrdinaryNativeMessageHidesInternalHeaderAndKeepsHoverTimestampOutsideCard() throws {
+        let harness = makeHarness(followsLatest: true)
+        let message = row(
+            id: "ordinary-message",
+            text: "Ready",
+            showsHeader: false,
+            hoverTimestamp: "08/17 20:30"
+        )
+        harness.coordinator.apply(rows: [message])
+
+        let cell = try XCTUnwrap(
+            harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 0)
+                as? AppKitChatNativeTextCell
+        )
+        let title = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.title"))
+        let metadata = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.metadata"))
+        let hoverTimestamp = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.hover-timestamp"))
+
+        XCTAssertTrue(title.isHidden)
+        XCTAssertTrue(metadata.isHidden)
+        XCTAssertFalse(hoverTimestamp.isHidden)
+        XCTAssertEqual(hoverTimestamp.stringValue, "08/17 20:30")
+        XCTAssertEqual(hoverTimestamp.alphaValue, 0)
+        XCTAssertLessThan(
+            harness.coordinator.tableView(harness.tableView, heightOfRow: 0),
+            38
+        )
+    }
+
     func testSingleColumnTracksTheFullScrollViewportWidth() async {
         let harness = makeHarness(followsLatest: true)
         harness.coordinator.apply(rows: [row(id: "message", text: "Ready")])
@@ -485,7 +514,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         copyText: String? = nil,
         content: AnyView? = nil,
         expandableTurnId: String? = nil,
-        isExpanded: Bool = false
+        isExpanded: Bool = false,
+        showsHeader: Bool = true,
+        hoverTimestamp: String = ""
     ) -> AppKitChatTimelineRow {
         AppKitChatTimelineRow(
             id: id,
@@ -497,13 +528,20 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             title: "Agent",
             metadata: "10:20",
             expandableTurnId: expandableTurnId,
-            isExpanded: isExpanded
+            isExpanded: isExpanded,
+            showsHeader: showsHeader,
+            hoverTimestamp: hoverTimestamp
         )
     }
 
     private func button(in view: NSView, identifier: String) -> NSButton? {
         if let button = view as? NSButton, button.identifier?.rawValue == identifier { return button }
         return view.subviews.lazy.compactMap { self.button(in: $0, identifier: identifier) }.first
+    }
+
+    private func textField(in view: NSView, identifier: String) -> NSTextField? {
+        if let textField = view as? NSTextField, textField.identifier?.rawValue == identifier { return textField }
+        return view.subviews.lazy.compactMap { self.textField(in: $0, identifier: identifier) }.first
     }
 
     private func assertDescendantsStayInsideVerticalBounds(
