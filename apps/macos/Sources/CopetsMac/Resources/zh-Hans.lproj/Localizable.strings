@@ -252,6 +252,11 @@
 "Choice failed: %@" = "选择失败：%@";
 "Confirmation failed: %@" = "确认失败：%@";
 "Queued%@" = "已排队%@";
+"Queued for processing" = "排队中，等待处理";
+"Queued · position %lld" = "排队中 · 第 %lld 位";
+"Processing" = "处理中";
+"Processing failed" = "处理失败";
+"Cancelled before processing" = "处理前已取消";
 "Send failed: %@" = "发送失败：%@";
 "Interrupt failed: %@" = "中断失败：%@";
 "Reconnect failed: %@" = "重新连接失败：%@";

@@ -83,6 +83,30 @@ test("unsafe historical changes fall back to snapshot", () => {
   assert.equal(nextTimelineEvent(first.state, rewritten).event.name, "snapshot");
 });
 
+test("queued lifecycle and queue order changes produce authoritative frames", () => {
+  const queued = session("codex-app-server");
+  queued.items = [
+    { ...item("work:a", "userMessage", "first"), userMessageStatus: "queued", queuePosition: 1 },
+    { ...item("work:b", "userMessage", "second"), userMessageStatus: "queued", queuePosition: 2 }
+  ];
+  const initial = initialTimelineSnapshot(queued);
+
+  const processing = structuredClone(queued);
+  processing.items[0].userMessageStatus = "processing";
+  processing.items[0].queuePosition = null;
+  processing.items[1].queuePosition = 1;
+  const lifecycle = nextTimelineEvent(initial.state, processing);
+  assert.equal(lifecycle.event.name, "snapshot");
+  assert.equal(lifecycle.event.data.session.items[0].userMessageStatus, "processing");
+  assert.equal(lifecycle.event.data.session.items[1].queuePosition, 1);
+
+  const reordered = structuredClone(processing);
+  reordered.items.reverse();
+  const reorder = nextTimelineEvent(lifecycle.state, reordered);
+  assert.equal(reorder.event.name, "snapshot");
+  assert.deepEqual(reorder.event.data.session.items.map((entry) => entry.id), ["work:b", "work:a"]);
+});
+
 test("raw diagnostics do not emit timeline frames", () => {
   const initial = session("claude-sdk");
   const first = initialTimelineSnapshot(initial);
