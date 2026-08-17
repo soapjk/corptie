@@ -70,6 +70,26 @@ test("binding repository maps an unbound Claude Session to its Provider", () => 
   assert.equal(reference.providerSessionId, "claude-a");
 });
 
+test("binding repository delegates legacy Provider aliases to the Registry resolver", () => {
+  const session = {
+    id: "legacy-openclacky",
+    external: { provider: "clacky", sessionId: "native-clacky-a" }
+  };
+  const repository = new SessionBindingRepository({
+    store: {
+      getLogicalSession: () => null,
+      getLogicalSessionByLegacySessionId: () => null,
+      getSession: () => session
+    },
+    findSession: () => session,
+    resolveProviderId: (identity) => identity === "clacky" ? "openclacky" : null
+  });
+
+  const reference = repository.resolve(session.id);
+  assert.equal(reference.providerId, "openclacky");
+  assert.equal(reference.providerSessionId, "native-clacky-a");
+});
+
 test("binding repository returns null for unknown Sessions", () => {
   assert.equal(fixture().resolve("missing"), null);
 });

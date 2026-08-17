@@ -5,6 +5,7 @@ import SwiftUI
 
 struct AgentCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
     /// 创建成功后的回调（如 AgentPickerView 用来把新 Agent 加入已选集合）。
     var onCreated: ((Agent) -> Void)? = nil
@@ -13,7 +14,7 @@ struct AgentCreateView: View {
     @State private var name = ""
     @State private var detail = ""
     @State private var role = "independentContributor"
-    @State private var provider = "codex"
+    @State private var provider = "codex-app-server"
     @State private var systemPrompt = ""
     @State private var capabilitiesText = ""
     @State private var workDir = ""
@@ -42,9 +43,12 @@ struct AgentCreateView: View {
 
                     field(L10n("底层模型（Provider）")) {
                         Picker("", selection: $provider) {
-                            Text("Codex").tag("codex")
-                            Text("Claude Code").tag("claude_code")
-                            Text("DeepSeek").tag("deepseek")
+                            if !backendClient.agentProviders.contains(where: { $0.id == provider }) {
+                                Text(provider).tag(provider)
+                            }
+                            ForEach(backendClient.agentProviders) { descriptor in
+                                Text(descriptor.displayName).tag(descriptor.id)
+                            }
                         }
                         .labelsHidden()
                         .frame(maxWidth: 200, alignment: .leading)
@@ -143,6 +147,9 @@ struct AgentCreateView: View {
             if client.skills.isEmpty {
                 await client.refreshSkills()
             }
+            if backendClient.agentProviders.isEmpty {
+                await backendClient.loadProviders()
+            }
         }
         .sheet(isPresented: $showSkillRegister) {
             SkillRegisterView { skill in
@@ -201,19 +208,27 @@ struct AgentCreateView: View {
             systemPrompt = ""
             capabilitiesText = ""
             workDir = ""
-            provider = "codex"
+            provider = "codex-app-server"
             role = "independentContributor"
             selectedSkillIds = []
             return
         }
         name = base.name
         detail = base.description
-        provider = base.provider ?? "codex"
+        provider = canonicalProviderId(base.provider) ?? "codex-app-server"
         role = base.role.isEmpty ? "independentContributor" : base.role
         systemPrompt = base.systemPrompt
         capabilitiesText = base.capabilities.joined(separator: ", ")
         workDir = base.workDir ?? ""
         selectedSkillIds = Set(base.skillIds ?? [])
+    }
+
+    private func canonicalProviderId(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return backendClient.agentProviders.first(where: {
+            $0.id.lowercased() == normalized || $0.aliases.contains(normalized)
+        })?.id ?? (normalized.isEmpty ? nil : value)
     }
 
     // MARK: - Skill 预装

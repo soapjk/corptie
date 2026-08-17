@@ -177,6 +177,56 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("Session application service lets each Provider prepare create input", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "third-party",
+    displayName: "Third Party",
+    transport: "http",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE]
+  }, {
+    prepareSessionInput: async (input, context) => {
+      calls.push(["prepareSessionInput", input, context]);
+      return { ...input, model: "provider-default", normalized: true };
+    },
+    createSession: async (input, context) => {
+      calls.push(["createSession", input, context]);
+      return { id: "third-party-session" };
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => null,
+    bindCreatedSession: async (input) => {
+      calls.push(["bindCreatedSession", input]);
+      return { logicalSessionId: "logical-third-party" };
+    }
+  });
+
+  const session = await service.createSession(
+    "third-party",
+    { cwd: "/tmp/project" },
+    { source: "desktop" }
+  );
+
+  assert.equal(session.logicalSessionId, "logical-third-party");
+  assert.deepEqual(calls[0], [
+    "prepareSessionInput",
+    { cwd: "/tmp/project" },
+    { source: "desktop" }
+  ]);
+  assert.deepEqual(calls[1], [
+    "createSession",
+    { cwd: "/tmp/project", model: "provider-default", normalized: true },
+    { source: "desktop" }
+  ]);
+  assert.deepEqual(calls[2][1].input, {
+    cwd: "/tmp/project",
+    model: "provider-default",
+    normalized: true
+  });
+});
+
 test("Session application service exposes Provider model catalogs through capability dispatch", async () => {
   const { calls, service } = fixture();
   const result = await service.listModels("fake.provider", { refresh: true });

@@ -13,6 +13,8 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     id: CLAUDE_AGENT_SDK_PROVIDER_ID,
     displayName: "Claude Code",
     transport: "agent-sdk",
+    aliases: ["claude", "claude-code", "claude_code"],
+    runtime: { lifecycle: "managed" },
     metadata: { backgroundPermissionProfiles: ["read-only"] },
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
@@ -38,6 +40,9 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
     ]
   }, {
+    ...(typeof options.prepareSessionInput === "function"
+      ? { prepareSessionInput: options.prepareSessionInput }
+      : {}),
     listSessions: (options) => manager.list(options),
     readSession: (reference) => manager.read(reference.providerSessionId),
     createSession: (input) => manager.start(input),

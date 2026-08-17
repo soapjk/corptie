@@ -3,6 +3,7 @@ import test from "node:test";
 import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
+import { createAgentProviderRuntimeRegistry } from "../src/agent-provider/bootstrap/agentProviderBootstrap.mjs";
 import { CodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
 
 function recordingManager(provider = "claude-sdk") {
@@ -83,3 +84,58 @@ test("Codex bootstrap owns the concrete client behind a Provider runtime port", 
     ["delete", "thread-a"]
   ]);
 });
+
+test("Provider bootstrap accepts external Provider factories without knowing their ids", async () => {
+  const claude = createClaudeAgentSdkProvider(recordingManager());
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: claude,
+    codexOperations: recordingCodexOperations(),
+    providerContext: { marker: "context-value" },
+    additionalProviders: [
+      (context) => ({
+        descriptor: {
+          id: "external.provider",
+          displayName: context.marker,
+          transport: "test",
+          aliases: ["external"]
+        },
+        listSessions: () => [],
+        readSession: (reference) => ({ id: reference.providerSessionId })
+      })
+    ]
+  });
+
+  assert.equal(registry.get("external").descriptor.displayName, "context-value");
+  assert.deepEqual(registry.descriptors().map((descriptor) => descriptor.id), [
+    "claude-sdk",
+    "codex-app-server",
+    "external.provider"
+  ]);
+});
+
+function recordingCodexOperations() {
+  return {
+    listSessions: () => [],
+    readSession: (reference) => ({ id: reference.providerSessionId }),
+    createSession: () => ({}),
+    resumeSession: () => ({}),
+    deleteSession: () => true,
+    restartSession: () => ({}),
+    renameSession: () => ({}),
+    updateAvatar: () => ({}),
+    send: () => ({}),
+    clearConversation: () => ({}),
+    interrupt: () => ({}),
+    respondToApproval: () => ({}),
+    listModels: () => ({ models: [] }),
+    switchModel: () => ({}),
+    switchReasoning: () => ({}),
+    updatePermissions: () => ({}),
+    prepareWorkspaceTransition: () => ({}),
+    runBackgroundPrompt: () => ({}),
+    readAccountUsage: () => ({}),
+    readSessionUsage: () => ({}),
+    attachTools: () => ({}),
+    manageTurnChanges: () => ({})
+  };
+}

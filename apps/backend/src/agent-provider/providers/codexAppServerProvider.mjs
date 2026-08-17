@@ -8,6 +8,8 @@ export function createCodexAppServerProvider(operations, options = {}) {
     id: CODEX_APP_SERVER_PROVIDER_ID,
     displayName: "Codex",
     transport: "app-server",
+    aliases: ["codex"],
+    runtime: { lifecycle: "managed" },
     metadata: options.metadata ?? {},
     capabilities: options.capabilities ?? [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
