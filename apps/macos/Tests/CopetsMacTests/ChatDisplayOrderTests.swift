@@ -57,7 +57,77 @@ final class ChatDisplayOrderTests: XCTestCase {
         XCTAssertEqual(underlyingItemIDs(in: visible), ["user-2", "tool-2", "agent-2"])
     }
 
-    private func item(id: String, type: String, turnId: String) -> CodexThreadItem {
+    func testMessagesAreOrderedByTimestampAcrossTurns() {
+        let items = [
+            item(
+                id: "agent-late",
+                type: "agentMessage",
+                turnId: "turn-2",
+                createdAt: "2026-08-17T00:02:00Z"
+            ),
+            item(
+                id: "user-early",
+                type: "userMessage",
+                turnId: "turn-1",
+                createdAt: "2026-08-17T00:00:00Z"
+            ),
+            item(
+                id: "agent-middle",
+                type: "agentMessage",
+                turnId: "turn-1",
+                createdAt: "2026-08-17T00:01:00Z"
+            )
+        ]
+
+        XCTAssertEqual(
+            underlyingItemIDs(in: makeChatDisplayEntries(from: items)),
+            ["user-early", "agent-middle", "agent-late"]
+        )
+    }
+
+    func testEqualTimestampsKeepStableProviderOrder() {
+        let timestamp = "2026-08-17T00:00:00Z"
+        let items = [
+            item(id: "agent-first", type: "agentMessage", turnId: "turn-a", createdAt: timestamp),
+            item(id: "system-second", type: "system", turnId: "turn-b", createdAt: timestamp),
+            item(id: "user-third", type: "userMessage", turnId: "turn-c", createdAt: timestamp)
+        ]
+
+        XCTAssertEqual(
+            underlyingItemIDs(in: makeChatDisplayEntries(from: items)),
+            ["agent-first", "system-second", "user-third"]
+        )
+    }
+
+    func testMissingTimestampPreservesProviderOrder() {
+        let items = [
+            item(
+                id: "later-dated",
+                type: "agentMessage",
+                turnId: "turn-a",
+                createdAt: "2026-08-17T00:02:00Z"
+            ),
+            item(id: "undated", type: "system", turnId: "turn-b", createdAt: nil),
+            item(
+                id: "earlier-dated",
+                type: "userMessage",
+                turnId: "turn-c",
+                createdAt: "2026-08-17T00:00:00Z"
+            )
+        ]
+
+        XCTAssertEqual(
+            underlyingItemIDs(in: makeChatDisplayEntries(from: items)),
+            ["later-dated", "undated", "earlier-dated"]
+        )
+    }
+
+    private func item(
+        id: String,
+        type: String,
+        turnId: String,
+        createdAt: String? = "2026-08-17T00:00:00Z"
+    ) -> CodexThreadItem {
         var result = CodexThreadItem(
             id: id,
             turnId: turnId,
@@ -67,7 +137,7 @@ final class ChatDisplayOrderTests: XCTestCase {
             text: id,
             options: nil,
             status: type == "commandExecution" ? "complete" : nil,
-            createdAt: "2026-08-17T00:00:00Z"
+            createdAt: createdAt
         )
         if type == "agentMessage" {
             result.presentationRole = "final_answer"
