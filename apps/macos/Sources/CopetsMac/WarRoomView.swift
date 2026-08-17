@@ -37,9 +37,7 @@ struct WarRoomView: View {
             .toolbar(removing: .sidebarToggle)
         }
         .task {
-            if client.objectives.isEmpty {
-                await client.refreshObjectives()
-            }
+            await client.refreshObjectives()
             // WorkItem 只持久化绑定的 repository id；详情页需要仓库目录将其解析为名称。
             // App 重启后 repositories 缓存为空，若不主动刷新会把有效绑定误显示为“未绑定”。
             if client.repositories.isEmpty {
@@ -79,6 +77,9 @@ struct WarRoomView: View {
         }
         .onChange(of: workItems) { _, items in
             restoreWorkItemSelectionIfNeeded(items)
+        }
+        .onChange(of: client.workItemsRevision) { _, _ in
+            workItemsReloadToken &+= 1
         }
         .onChange(of: selectedWorkItemId) { _, newValue in
             if let newValue {

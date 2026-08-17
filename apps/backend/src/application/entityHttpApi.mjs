@@ -26,7 +26,8 @@ export function handleEntityHttpRequest({
   backgroundAgentService,
   skillRegistryService,
   resolveAgentAvailability,
-  suggestAgentSessionTitle
+  suggestAgentSessionTitle,
+  onEntityChanged
 }) {
   const path = url.pathname;
   const presentAgent = (agent) => {
@@ -140,6 +141,7 @@ export function handleEntityHttpRequest({
           capabilities: Array.isArray(input.capabilities) ? input.capabilities : [],
           workDir: input.workDir
         }, skillIds);
+        onEntityChanged?.("AgentChanged", { action: "created", entity: agent });
         return sendJson(response, 201, { agent: presentAgent(agent) });
       }
 
@@ -202,10 +204,12 @@ export function handleEntityHttpRequest({
             }
           }
           const agent = objectiveService.store.updateAgentWithRegistrySkills(id, input, skillIds);
+          onEntityChanged?.("AgentChanged", { action: "updated", entity: agent });
           return sendJson(response, 200, { agent: presentAgent(objectiveService.store.getAgent(id) ?? agent) });
         }
         if (request.method === "DELETE") {
           objectiveService.store.deleteAgent(id);
+          onEntityChanged?.("AgentChanged", { action: "deleted", entity: { agentId: id } });
           return sendJson(response, 200, { ok: true });
         }
       }
@@ -425,6 +429,10 @@ export function handleEntityHttpRequest({
         if (Object.keys(executionPatch).length > 0) {
           objectiveService.store.updateWorkItem(workItemId, executionPatch);
         }
+        onEntityChanged?.("WorkItemChanged", {
+          action: "session-bound",
+          entity: objectiveService.store.getWorkItem(workItemId)
+        });
         return sendJson(response, 201, { session: boundSession ?? session });
       }
 
