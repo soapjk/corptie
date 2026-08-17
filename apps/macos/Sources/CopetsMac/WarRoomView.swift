@@ -455,6 +455,30 @@ struct AgentRow: View {
 
 // MARK: - 工作项详情（占位）
 
+enum WorkItemExecutionStartDecision: Equatable {
+    case resume(sessionId: String)
+    case createSession(agentId: String)
+    case chooseAgent
+
+    static func resolve(currentSessionId: String?, mainAgentId: String?) -> Self {
+        if let currentSessionId = normalized(currentSessionId) {
+            return .resume(sessionId: currentSessionId)
+        }
+        if let mainAgentId = normalized(mainAgentId) {
+            return .createSession(agentId: mainAgentId)
+        }
+        return .chooseAgent
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+}
+
 struct WorkItemDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -474,6 +498,7 @@ struct WorkItemDetailView: View {
     @State private var showEdit = false
     @State private var showCompleteConfirmation = false
     @State private var reviewNotified = false
+    @State private var isLaunchingExecution = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -534,17 +559,7 @@ struct WorkItemDetailView: View {
                 onDone: { selection in
                 if let agentId = selection.first {
                     Task {
-                        let result = await client.createSession(
-                            workItemId: workItem.id,
-                            agentId: agentId,
-                            title: workItem.title
-                        )
-                        if let session = result.session {
-                            backendClient.acceptCreatedSession(session, selectImmediately: false)
-                        }
-                        if let error = result.error { executionError = error }
-                        await refreshExecution()
-                        onRequestReload()
+                        await createExecutionSession(agentId: agentId)
                     }
                 }
             })
@@ -822,25 +837,53 @@ struct WorkItemDetailView: View {
                     .background(Color.accentColor, in: Circle())
             }
             .buttonStyle(.plain)
+            .disabled(isLaunchingExecution)
             .help(L10n(currentSession == nil ? "Run" : "Resume"))
         }
     }
 
-    // 开始执行：若已有会话则恢复，否则新建（需先选 Agent）。
+    // 开始执行：已有会话则恢复；否则优先使用 WorkItem 已绑定的 Agent，未绑定时才让用户选择。
     private func startOrResumeExecution() async {
-        // 已有会话但已停止（如被终止/失败）→ 直接恢复，无需重新选 Agent。
-        if let session = currentSession {
-            if await client.resumeSession(sessionId: session.id) {
+        switch WorkItemExecutionStartDecision.resolve(
+            currentSessionId: currentSession?.id,
+            mainAgentId: workItem.mainAgentId
+        ) {
+        case .resume(let sessionId):
+            guard !isLaunchingExecution else { return }
+            isLaunchingExecution = true
+            defer { isLaunchingExecution = false }
+            if await client.resumeSession(sessionId: sessionId) {
                 await refreshExecution()
                 onRequestReload()
             } else {
                 executionError = EntityLaunchError(message: client.errorMessage ?? "恢复会话失败", code: nil)
             }
-            return
+        case .createSession(let agentId):
+            await createExecutionSession(agentId: agentId)
+        case .chooseAgent:
+            executionAgentIds = []
+            showAgentPicker = true
         }
-        // 无会话 → 新建：弹出 Agent 选择。
-        executionAgentIds = []
-        showAgentPicker = true
+    }
+
+    private func createExecutionSession(agentId: String) async {
+        guard !isLaunchingExecution else { return }
+        isLaunchingExecution = true
+        defer { isLaunchingExecution = false }
+
+        let result = await client.createSession(
+            workItemId: workItem.id,
+            agentId: agentId,
+            title: workItem.title
+        )
+        if let session = result.session {
+            backendClient.acceptCreatedSession(session, selectImmediately: false)
+        }
+        if let error = result.error {
+            executionError = error
+        }
+        await refreshExecution()
+        onRequestReload()
     }
 
     // 终止当前运行中的会话。
