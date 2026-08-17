@@ -180,6 +180,10 @@ final class BackendClient: ObservableObject {
                agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
                 await loadModels(for: providerId)
             }
+            // Startup requests race the production launch agent. If the
+            // canonical Session stream is already connected, an earlier
+            // transport error is stale and must not remain in the UI.
+            reconcileConnectedPresentation()
         }
         startEventStream()
         startSessionCollectionStream()
@@ -285,6 +289,7 @@ final class BackendClient: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     self.isSessionCollectionStreamConnected = true
+                    self.markBackendConnectedFromSessionStream()
                     var eventName = ""
                     var dataLines: [String] = []
                     for try await line in bytes.lines {
@@ -318,6 +323,7 @@ final class BackendClient: ObservableObject {
                 let envelope = try await Task.detached(priority: .userInitiated) {
                     try JSONDecoder().decode(SessionCollectionSnapshotEnvelope.self, from: payload)
                 }.value
+                markBackendConnectedFromSessionStream()
                 let nextSessions = envelope.sessions
                 let patch = await sessionPayloadProcessor.processSnapshot(
                     sessions: nextSessions,
@@ -347,11 +353,24 @@ final class BackendClient: ObservableObject {
                 sessions: next,
                 current: sessions
             )
+            markBackendConnectedFromSessionStream()
             applySessionSnapshot(next, patch: collectionPatch)
             sessionCollectionRevision = envelope.revision
         } catch {
             sessionCollectionRevision = nil
         }
+    }
+
+    private func markBackendConnectedFromSessionStream() {
+        if !isOnline {
+            isOnline = true
+        }
+        reconcileConnectedPresentation()
+    }
+
+    private func reconcileConnectedPresentation() {
+        guard isOnline, lastError != nil else { return }
+        lastError = nil
     }
 
     nonisolated static func applyingSessionCollectionPatch(
