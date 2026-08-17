@@ -28,7 +28,6 @@ test("a historical OpenClacky Work Session projection is repaired idempotently",
       workItem.id
     ]);
     const collaboration = new CollaborationCore(store);
-    collaboration.bindSession({ agentId: agent.agentId, sessionId: "openclacky:owned" });
     const providerSession = {
       id: "openclacky:owned",
       title: "PolyMarket 实盘",
@@ -39,20 +38,34 @@ test("a historical OpenClacky Work Session projection is repaired idempotently",
     const first = ensureProviderSessionProjection({
       store,
       session: providerSession,
-      resolveAgentForSession: (sessionId) => collaboration.getAgentForSession(sessionId)
+      resolveAgentForSession: (sessionId) => collaboration.getAgentForSession(sessionId),
+      bindAgentToSession: (binding) => collaboration.bindSession(binding)
     });
     assert.equal(first.repaired, true);
     assert.equal(first.session.sessionKind, "worker");
     assert.equal(first.session.agentId, agent.agentId);
     assert.equal(first.session.objectiveId, objective.id);
     assert.equal(first.session.workItemId, workItem.id);
+    assert.equal(store.getAgent(agent.agentId).currentSessionId, providerSession.id);
 
+    collaboration.unbindSession(agent.agentId);
+    assert.equal(store.getAgent(agent.agentId).currentSessionId, null);
     const second = ensureProviderSessionProjection({
       store,
       session: providerSession,
-      resolveAgentForSession: (sessionId) => collaboration.getAgentForSession(sessionId)
+      resolveAgentForSession: (sessionId) => collaboration.getAgentForSession(sessionId),
+      bindAgentToSession: (binding) => collaboration.bindSession(binding)
     });
-    assert.equal(second.repaired, false);
+    assert.equal(second.repaired, true);
+    assert.equal(store.getAgent(agent.agentId).currentSessionId, providerSession.id);
+
+    const third = ensureProviderSessionProjection({
+      store,
+      session: providerSession,
+      resolveAgentForSession: (sessionId) => collaboration.getAgentForSession(sessionId),
+      bindAgentToSession: (binding) => collaboration.bindSession(binding)
+    });
+    assert.equal(third.repaired, false);
     assert.equal(store.listSessionsByWorkItem(workItem.id).length, 1);
   } finally {
     await store.close();
