@@ -17,6 +17,16 @@ enum AppTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    // Tab 在栏中的顺序，用于判断页面切换的滑动方向（前进/后退）。
+    var index: Int {
+        switch self {
+        case .console: 0
+        case .sessions: 1
+        case .sessionDSH: 2
+        case .agents: 3
+        }
+    }
+
     @MainActor var title: String {
         switch self {
         case .console: L10n("Console")
@@ -37,106 +47,85 @@ enum AppTab: String, CaseIterable, Identifiable {
 }
 
 // MARK: - 胶囊式 Tab 栏
-// 图标在上、文字在下（竖排）；选中项使用内嵌的小胶囊和反色前景。
+// 固定尺寸的纯图标 Tab；选中项使用内嵌的小胶囊和反色前景。
 
 struct UnderlineTabBar: View {
     @Binding var selection: AppTab
-    @State private var isExpanded = false
+
+    private let selectionAnimation = Animation.timingCurve(
+        0.22,
+        0.9,
+        0.24,
+        1.0,
+        duration: 0.32
+    )
 
     var body: some View {
         HStack(spacing: 0) {
             ForEach(AppTab.allCases) { tab in
                 UnderlineTabButton(
                     tab: tab,
-                    isSelected: selection == tab,
-                    isExpanded: isExpanded
+                    isSelected: selection == tab
                 ) {
                     select(tab)
                 }
-                .frame(width: isExpanded ? 88 : 42)
+                .frame(width: 42)
             }
         }
-        .frame(height: isExpanded ? 54 : 30)
+        .frame(height: 30)
         .contentShape(Rectangle())
         .background {
             Capsule()
-                .fill(Color.primary.opacity(isExpanded ? 0.055 : 0.035))
+                .fill(Color.primary.opacity(0.035))
         }
         .overlay {
             Capsule()
-                .stroke(Color(nsColor: .separatorColor).opacity(isExpanded ? 0.28 : 0.18), lineWidth: 0.5)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 0.5)
         }
         .shadow(
-            color: Color.black.opacity(isExpanded ? 0.065 : 0.025),
-            radius: isExpanded ? 8 : 3,
+            color: Color.black.opacity(0.025),
+            radius: 3,
             x: 0,
-            y: isExpanded ? 3 : 1
+            y: 1
         )
-        .onHover { hovering in
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                isExpanded = hovering
-            }
-        }
-        .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isExpanded)
     }
 
     private func select(_ tab: AppTab) {
-        // Each tab owns a substantial native view hierarchy. Driving the
-        // selection itself with an animation keeps both hierarchies alive in
-        // the same layout pass and makes NavigationSplitView/WKWebView compete
-        // with the tab chrome for the main thread. The buttons animate their
-        // own selected state below, so the chrome stays responsive without
-        // animating the page replacement.
-        selection = tab
+        withAnimation(selectionAnimation) {
+            selection = tab
+        }
     }
 }
 
 private struct UnderlineTabButton: View {
     let tab: AppTab
     let isSelected: Bool
-    let isExpanded: Bool
     let action: () -> Void
-    @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: isExpanded ? 5 : 0) {
-                Image(systemName: tab.systemImage)
-                    .font(.system(
-                        size: isExpanded ? 17 : 13,
-                        weight: isSelected ? .semibold : .regular
-                    ))
-                    .frame(height: isExpanded ? 20 : 16)
-                if isExpanded {
-                    Text(tab.title)
-                        .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
-                        .lineLimit(1)
-                        .transition(.opacity.combined(with: .scale(scale: 0.92, anchor: .top)))
+            Image(systemName: tab.systemImage)
+                .font(.system(
+                    size: 13,
+                    weight: isSelected ? .semibold : .regular
+                ))
+                .frame(height: 16)
+                .foregroundStyle(
+                    isSelected
+                        ? Color(nsColor: .windowBackgroundColor)
+                        : Color.secondary
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    Capsule()
+                        .fill(isSelected ? Color.primary : Color.clear)
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 2)
                 }
-            }
-            .foregroundStyle(
-                isSelected
-                    ? Color(nsColor: .windowBackgroundColor)
-                    : Color.secondary
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background {
-                Capsule()
-                    .fill(isSelected ? Color.primary : Color.clear)
-                    .padding(.horizontal, isExpanded ? 5 : 3)
-                    .padding(.vertical, isExpanded ? 4 : 2)
-            }
-            .contentShape(Rectangle())
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(isExpanded ? "" : tab.title)
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.12)) {
-                isHovered = hovering
-            }
-        }
-        .scaleEffect(isHovered && !isSelected ? 1.04 : 1.0)
-        .animation(.easeInOut(duration: 0.15), value: isHovered)
+        .help(tab.title)
         .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
 }
@@ -196,6 +185,13 @@ struct MainTabView: View {
 
             ZStack {
                 content(for: router.selectedTab)
+                    .id(router.selectedTab)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: router.slideForward ? .trailing : .leading)
+                            .combined(with: .opacity),
+                        removal: .move(edge: router.slideForward ? .leading : .trailing)
+                            .combined(with: .opacity)
+                    ))
             }
             .clipped()
         }
@@ -226,6 +222,8 @@ struct MainTabView: View {
 @MainActor
 final class AppTabRouter: ObservableObject {
     @Published private(set) var selectedTab: AppTab = .console
+    // 必须先于 selectedTab 更新，确保 SwiftUI 创建 transition 时读到本次切换的方向。
+    @Published private(set) var slideForward = true
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
 
@@ -241,6 +239,7 @@ final class AppTabRouter: ObservableObject {
 
     func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
+        slideForward = tab.index > selectedTab.index
         selectedTab = tab
     }
 
