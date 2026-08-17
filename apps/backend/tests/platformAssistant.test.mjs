@@ -133,7 +133,7 @@ test("platform operations are denied to user Agents and use product services for
       tool: "corptie_platform_objectives_manage",
       arguments: { action: "create", name: "平台事件目标" }
     });
-    await service.execute({
+    const workItem = await service.execute({
       actorId: "assistant",
       tool: "corptie_platform_work_items_manage",
       arguments: { action: "create", objective_id: objective.result.id, title: "平台事件任务" }
@@ -145,7 +145,15 @@ test("platform operations are denied to user Agents and use product services for
         tool: "corptie_platform_objectives_manage",
         arguments: { action: "update", objective_id: objective.result.id, patch: { workspacePath: "/tmp" } }
       }),
-      { code: "UNKNOWN_FIELD", field: "workspacePath" }
+      { code: "UNKNOWN_PATCH_FIELD", field: "workspacePath" }
+    );
+    await assert.rejects(
+      service.execute({
+        actorId: "assistant",
+        tool: "corptie_platform_work_items_manage",
+        arguments: { action: "update", work_item_id: workItem.result.id, patch: { assigneeAgentId: "agent:missing" } }
+      }),
+      { code: "UNKNOWN_PATCH_FIELD", field: "assigneeAgentId" }
     );
     await assert.rejects(
       service.execute({

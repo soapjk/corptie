@@ -200,9 +200,26 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
       ...services
     });
     assert.equal(invalidPatch.statusCode, 400);
-    assert.equal(invalidPatch.body.code, "UNKNOWN_FIELD");
+    assert.equal(invalidPatch.body.code, "UNKNOWN_PATCH_FIELD");
     assert.equal(invalidPatch.body.field, "agentId");
     assert.equal(services.store.getObjective(objective.body.id).name, "Valid");
+
+    const workItem = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: { objectiveId: objective.body.id, title: "Valid item" },
+      ...services
+    });
+    const invalidWorkItemPatch = await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${workItem.body.id}`,
+      body: { main_agent_id: "agent:missing" },
+      ...services
+    });
+    assert.equal(invalidWorkItemPatch.statusCode, 400);
+    assert.equal(invalidWorkItemPatch.body.code, "UNKNOWN_PATCH_FIELD");
+    assert.equal(invalidWorkItemPatch.body.field, "main_agent_id");
+    assert.equal(services.store.getWorkItem(workItem.body.id).title, "Valid item");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

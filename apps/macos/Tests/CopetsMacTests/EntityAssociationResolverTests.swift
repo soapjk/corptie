@@ -32,14 +32,14 @@ struct EntityAssociationResolverTests {
         let data = Data(#"""
         {
           "error":"Field only accepts repository IDs.",
-          "code":"INVALID_ID_FORMAT",
+          "code":"INVALID_WORKSPACE_ID_TYPE",
           "field":"mainWorkspaceId",
           "expected":"registered repository: ID",
           "received":{"type":"string","value":"worktree:legacy"}
         }
         """#.utf8)
         let envelope = try JSONDecoder().decode(EntityErrorEnvelope.self, from: data)
-        #expect(envelope.code == "INVALID_ID_FORMAT")
+        #expect(envelope.code == "INVALID_WORKSPACE_ID_TYPE")
         #expect(envelope.field == "mainWorkspaceId")
         #expect(envelope.displayMessage.contains("registered repository: ID"))
     }
