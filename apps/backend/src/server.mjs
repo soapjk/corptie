@@ -2670,7 +2670,8 @@ function listGatewaySessions(options = {}) {
     const projection = ensureProviderSessionProjection({
       store,
       session,
-      resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId)
+      resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId),
+      bindAgentToSession: (binding) => collaborationCore.bindSession(binding)
     });
     if (projection.repaired) {
       console.log(`[session-projection] repaired provider session=${session.id}`);
