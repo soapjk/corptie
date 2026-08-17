@@ -3767,8 +3767,6 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
 
 async function drainAgentWork(agentId) {
   if (drainingAgentWorkIds.has(agentId)) return;
-  const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
-  if (!next) return;
   const agent = collaborationCore.getAgent(agentId);
   if (!agent) return;
 
@@ -3789,10 +3787,14 @@ async function drainAgentWork(agentId) {
         sessionId: runningWork.sessionId,
         source: runningWork.source
       });
+      workspaceContinuationCoordinator.recordWorkRequeued(recoveredWork);
     }
     console.log(`[agent-work] recovered orphaned work agent=${agentId} session=${runningWork.sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
     return;
   }
+
+  const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
+  if (!next) return;
 
   const sessionId = next.sessionId;
   const boundAgent = collaborationCore.getAgentForSession(sessionId);
@@ -3867,7 +3869,10 @@ async function drainAgentWork(agentId) {
 
 async function tickAgentWorkQueue() {
   await syncCollaborationDeliveriesIntoAgentWorkQueue();
-  for (const agentId of store.listAgentIdsWithQueuedWork()) await drainAgentWork(agentId);
+  // A process can die after claiming the final item, leaving no queued row to
+  // wake recovery. Poll both queued and running durable work so that a lone
+  // orphaned run is reconciled after restart as well.
+  for (const agentId of store.listAgentIdsWithUnsettledWork()) await drainAgentWork(agentId);
 }
 
 async function inspectCollaborationSession(sessionId) {

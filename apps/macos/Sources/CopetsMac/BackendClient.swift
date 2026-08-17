@@ -2509,8 +2509,11 @@ final class BackendClient: ObservableObject {
                 sessionKind: existing.sessionKind,
                 objectiveId: existing.objectiveId,
                 workItemId: existing.workItemId,
-                status: existing.status == .complete || existing.status == .blocked ? .running : existing.status,
-                progress: existing.status == .complete || existing.status == .blocked ? 0.5 : existing.progress,
+                // Sending can enqueue behind another Work Session owned by the
+                // same Agent. The backend's Provider lifecycle events are the
+                // authority for whether this Session is actually running.
+                status: existing.status,
+                progress: existing.progress,
                 summary: existing.summary,
                 suggestedOptions: nil,
                 suggestedPrompt: nil,

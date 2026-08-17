@@ -105,6 +105,27 @@ export class WorkspaceContinuationCoordinator {
         });
         continue;
       }
+      try {
+        this.requireCommittedRoute(transition);
+        this.store.assertLogicalWorkSessionBinding(transition.logicalSessionId);
+      } catch (error) {
+        if (workItem && ["queued", "running"].includes(workItem.status)) {
+          this.store.updateAgentWorkItem(workItem.workItemId, {
+            status: "failed",
+            lastError: error.message
+          });
+        }
+        this.store.updateWorkspaceTransitionContinuation(transition.transitionId, {
+          state: "failed",
+          turnId: workItem?.targetTurnId ?? null,
+          error: error.message
+        });
+        this.onEvent("WorkspaceContinuationSuperseded", {
+          transitionId: transition.transitionId,
+          error: error.message
+        });
+        continue;
+      }
       if (workItem?.status === "failed" || workItem?.status === "cancelled") {
         this.store.updateAgentWorkItem(workItem.workItemId, {
           status: "queued",
@@ -124,6 +145,17 @@ export class WorkspaceContinuationCoordinator {
       }
     }
     return results.filter(Boolean);
+  }
+
+  recordWorkRequeued(workItem) {
+    const transitionId = continuationTransitionId(workItem);
+    if (!transitionId) return;
+    this.store.updateWorkspaceTransitionContinuation(transitionId, {
+      state: "queued",
+      turnId: null,
+      error: workItem.lastError ?? null
+    });
+    this.onEvent("WorkspaceContinuationQueued", { transitionId, workItem });
   }
 
   recordWorkStarted(workItem) {

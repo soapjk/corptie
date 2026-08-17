@@ -11,15 +11,15 @@ import {
   workspaceContinuationKeepsSessionActive
 } from "../src/utils/sessionPresentation.mjs";
 
-test("a queued workspace continuation keeps the Work Session active", () => {
+test("a queued workspace continuation is waiting rather than Provider-running", () => {
   const presented = applyWorkspaceContinuationPresentation(
     { id: "worker", status: "complete", progress: 1, activityStatus: null },
     { continuationState: "queued" }
   );
 
-  assert.equal(presented.status, "running");
+  assert.equal(presented.status, "blocked");
   assert.equal(presented.progress, 0.5);
-  assert.match(presented.activityStatus, /Waiting to continue/);
+  assert.match(presented.activityStatus, /Queued to continue/);
 });
 
 test("a queued continuation presentation does not block its own Provider turn", () => {
@@ -37,6 +37,29 @@ test("a queued continuation presentation does not block its own Provider turn", 
       workspace: { continuationState: "running" }
     }
   }), true);
+  assert.equal(sessionHasActiveRun({
+    status: "running",
+    external: {
+      activeTurnId: null,
+      workspace: { continuationState: "running" }
+    }
+  }), false);
+});
+
+test("a stale durable running continuation is presented as recovering", () => {
+  const presented = applyWorkspaceContinuationPresentation(
+    {
+      id: "worker",
+      status: "complete",
+      progress: 1,
+      activityStatus: null,
+      external: { activeTurnId: null }
+    },
+    { continuationState: "running" }
+  );
+
+  assert.equal(presented.status, "blocked");
+  assert.match(presented.activityStatus, /Recovering continuation/);
 });
 
 test("a failed workspace continuation does not look complete", () => {

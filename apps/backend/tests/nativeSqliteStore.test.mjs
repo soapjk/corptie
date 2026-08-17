@@ -573,6 +573,36 @@ test("logical session route commits switch the active thread and workspace atomi
       boundCwd: "/repo/feature worktree"
     });
     assert.equal(retried.routingVersion, 2);
+
+    store.beginWorkspaceTransition({
+      transitionId: "transition:two",
+      logicalSessionId: "logical:one",
+      targetWorktreeId: "worktree:main",
+      sourceRoutingVersion: 2,
+      lastCompletedTurnId: "turn-8",
+      strategy: "fork",
+      phase: "forking",
+      createdAt: "2026-07-28T00:04:00.000Z"
+    });
+    store.updateWorkspaceTransition("transition:two", {
+      phase: "validatingInstructions",
+      newThreadId: "thread-main-again",
+      updatedAt: "2026-07-28T00:05:00.000Z"
+    });
+    store.commitWorkspaceTransition("transition:two", {
+      providerThreadId: "thread-main-again",
+      boundCwd: "/repo/main",
+      createdAt: "2026-07-28T00:06:00.000Z"
+    });
+    store.updateWorkspaceTransitionContinuation("transition:one", {
+      state: "failed",
+      error: "Late failure from a superseded route.",
+      updatedAt: "2026-07-28T00:07:00.000Z"
+    });
+    assert.equal(
+      store.getLatestCommittedWorkspaceTransition("logical:one").transitionId,
+      "transition:two"
+    );
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

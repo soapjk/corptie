@@ -12,6 +12,14 @@ export function shouldReportAgentWorkQueued({
 
 export function interruptedAgentWorkRecoveryPatch(workItem) {
   if (!workItem || workItem.status !== "running") return null;
+  if (workItem.source?.type === "workspace-continuation") {
+    return {
+      status: "queued",
+      startedAt: null,
+      targetTurnId: null,
+      lastError: "Provider stopped before the workspace continuation settled; it was requeued."
+    };
+  }
   if (workItem.targetTurnId) {
     return {
       status: "cancelled",
