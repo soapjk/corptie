@@ -823,6 +823,8 @@ export class CorptieStore {
         status TEXT NOT NULL DEFAULT 'todo',
         main_workspace_id TEXT,
         main_agent_id TEXT,
+        execution_status TEXT NOT NULL DEFAULT 'idle',
+        acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
@@ -1004,6 +1006,8 @@ export class CorptieStore {
     this.ensureColumn("objectives", "contributor_agent_ids_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("work_items", "current_session_id", "TEXT");
     this.ensureColumn("work_items", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("work_items", "execution_status", "TEXT NOT NULL DEFAULT 'idle'");
+    this.ensureColumn("work_items", "acceptance_assessment_json", "TEXT NOT NULL DEFAULT '{}'");
     this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("hub_intent_cache", "agent_id", "TEXT");
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -4074,7 +4078,17 @@ export class CorptieStore {
   updateWorkItem(id, patch = {}) {
     const current = this.getWorkItem(id);
     if (!current) return null;
-    const normalized = validateWorkItemInput(patch, "update");
+    const internalPatch = {};
+    if (Object.prototype.hasOwnProperty.call(patch, "executionStatus")) {
+      internalPatch.executionStatus = patch.executionStatus;
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "acceptanceAssessment")) {
+      internalPatch.acceptanceAssessment = patch.acceptanceAssessment;
+    }
+    const publicPatch = Object.fromEntries(
+      Object.entries(patch).filter(([key]) => !["executionStatus", "acceptanceAssessment"].includes(key))
+    );
+    const normalized = validateWorkItemInput(publicPatch, "update");
     const prospective = {
       title: current.title,
       description: current.description,
@@ -4095,7 +4109,7 @@ export class CorptieStore {
     this.assertWorkItemAssociations(prospective, objective);
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
-      `UPDATE work_items SET title=?, description=?, acceptance_criteria=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, updated_at=? WHERE id=?`,
+      `UPDATE work_items SET title=?, description=?, acceptance_criteria=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, execution_status=?, acceptance_assessment_json=?, updated_at=? WHERE id=?`,
       [
         has("title") ? normalized.title : current.title,
         has("description") ? normalized.description : current.description,
@@ -4104,6 +4118,12 @@ export class CorptieStore {
         has("status") ? normalized.status : current.status,
         has("mainWorkspaceId") ? normalized.mainWorkspaceId : current.main_workspace_id,
         has("mainAgentId") ? normalized.mainAgentId : current.main_agent_id,
+        Object.prototype.hasOwnProperty.call(internalPatch, "executionStatus")
+          ? internalPatch.executionStatus
+          : (current.execution_status ?? "idle"),
+        Object.prototype.hasOwnProperty.call(internalPatch, "acceptanceAssessment")
+          ? JSON.stringify(internalPatch.acceptanceAssessment ?? {})
+          : (current.acceptance_assessment_json ?? "{}"),
         createdAtFromOrNow(),
         id,
       ]

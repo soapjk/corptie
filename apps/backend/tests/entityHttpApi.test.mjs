@@ -543,6 +543,165 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
   }
 });
 
+test("WorkItem completion requires a passing evidence-backed acceptance assessment", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "验收目标" }, ...services
+    });
+    const created = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: {
+        objectiveId: objective.body.id,
+        title: "验收任务",
+        acceptanceCriteria: "- Tests pass\n- App starts"
+      },
+      ...services
+    });
+    services.store.upsertSession({
+      id: "acceptance-session",
+      title: "执行验收任务",
+      agent: "worker",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    services.objectiveService.bindSession("acceptance-session", created.body.id);
+
+    const rejectedCompletion = await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${created.body.id}`,
+      body: { status: "done" },
+      ...services
+    });
+    assert.equal(rejectedCompletion.statusCode, 400);
+    assert.equal(rejectedCompletion.body.code, "ACCEPTANCE_NOT_PROVEN");
+
+    const assessed = await callApi({
+      method: "PUT",
+      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      body: {
+        sourceSessionId: "acceptance-session",
+        results: [
+          {
+            criterion: "Tests pass",
+            verdict: "passed",
+            evidence: [{ summary: "Backend tests passed", reference: "npm test" }]
+          },
+          {
+            criterion: "App starts",
+            verdict: "passed",
+            evidence: [{ summary: "Development processes healthy", reference: "dev-rebuild-restart" }]
+          }
+        ]
+      },
+      ...services
+    });
+    assert.equal(assessed.statusCode, 200);
+    assert.equal(assessed.body.status, "review");
+    assert.equal(assessed.body.completionSuggestion.recommended, true);
+    assert.equal(assessed.body.completionSuggestion.results.length, 2);
+
+    const completed = await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${created.body.id}`,
+      body: { status: "done" },
+      ...services
+    });
+    assert.equal(completed.statusCode, 200);
+    assert.equal(completed.body.status, "done");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("multiple Sessions can contribute evidence without any Session lifecycle proving acceptance", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "联合验收目标" }, ...services
+    });
+    const created = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: {
+        objectiveId: objective.body.id,
+        title: "联合验收任务",
+        acceptanceCriteria: "- Implementation verified\n- Runtime verified"
+      },
+      ...services
+    });
+
+    for (const [id, status] of [["implementation-session", "complete"], ["verification-session", "paused"]]) {
+      services.store.upsertSession({
+        id,
+        title: id,
+        agent: "worker",
+        provider: "codex-app-server",
+        status
+      });
+      services.objectiveService.bindSession(id, created.body.id);
+    }
+
+    const beforeAssessment = await callApi({
+      method: "GET", pathname: `/work-items/${created.body.id}`, ...services
+    });
+    assert.equal(beforeAssessment.body.completionSuggestion, null);
+
+    const failed = await callApi({
+      method: "PUT",
+      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      body: {
+        sourceSessionId: "verification-session",
+        results: [
+          {
+            criterion: "Implementation verified",
+            verdict: "passed",
+            evidence: [{ summary: "Session A produced the implementation", reference: "session:implementation-session" }]
+          },
+          { criterion: "Runtime verified", verdict: "unknown", evidence: [] }
+        ]
+      },
+      ...services
+    });
+    assert.equal(failed.statusCode, 200);
+    assert.equal(failed.body.acceptanceAssessment.status, "not_proven");
+    assert.equal(failed.body.completionSuggestion, null);
+
+    const passed = await callApi({
+      method: "PUT",
+      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      body: {
+        sourceSessionId: "verification-session",
+        results: [
+          {
+            criterion: "Implementation verified",
+            verdict: "passed",
+            evidence: [{ summary: "Session A produced the implementation", reference: "session:implementation-session" }]
+          },
+          {
+            criterion: "Runtime verified",
+            verdict: "passed",
+            evidence: [{ summary: "Session B verified the runtime", reference: "session:verification-session" }]
+          }
+        ]
+      },
+      ...services
+    });
+    assert.equal(passed.statusCode, 200);
+    assert.equal(passed.body.status, "review");
+    assert.equal(passed.body.completionSuggestion.recommended, true);
+    assert.deepEqual(
+      passed.body.completionSuggestion.results.map((result) => result.evidence[0].reference),
+      ["session:implementation-session", "session:verification-session"]
+    );
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("GET /memories + GET /hub/search 走通", async () => {
   const services = await createServices();
   try {

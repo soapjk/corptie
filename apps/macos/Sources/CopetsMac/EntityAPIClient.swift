@@ -155,6 +155,42 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: WorkItem.self)
     }
 
+    // 提交独立的验收评估。该接口要求逐条标准、结论和可核验证据；
+    // Session 生命周期状态不能通过此方法隐式转换为验收通过。
+    @discardableResult
+    func submitAcceptanceAssessment(
+        workItemId: String,
+        sourceSessionId: String,
+        results: [WorkItemAcceptanceResult]
+    ) async -> WorkItem? {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItemId)/acceptance-assessment")
+        )
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let encoder = JSONEncoder()
+        request.httpBody = try? encoder.encode(AcceptanceAssessmentRequest(
+            sourceSessionId: sourceSessionId,
+            results: results
+        ))
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(
+                    message: envelope?.error ?? "提交验收评估失败（HTTP \(http.statusCode)）",
+                    code: envelope?.code
+                )
+            }
+            let workItem = try decoder.decode(WorkItem.self, from: data)
+            errorMessage = nil
+            return workItem
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return nil
+        }
+    }
+
     // 创建 WorkItem：POST /work-items { objectiveId, title, description?, mainWorkspaceId?, priority? } → workItem
     @discardableResult
     func createWorkItem(objectiveId: String, title: String, description: String? = nil,
@@ -724,4 +760,9 @@ private struct AgentCreateEnvelope: Decodable {
 private struct AssistDraftResponse: Decodable {
     let text: String
     let providerId: String?
+}
+
+private struct AcceptanceAssessmentRequest: Encodable {
+    let sourceSessionId: String
+    let results: [WorkItemAcceptanceResult]
 }
