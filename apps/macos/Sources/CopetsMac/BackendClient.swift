@@ -13,6 +13,44 @@ struct SessionRestartActivity: Equatable {
     let isActive: Bool
 }
 
+enum SessionDetailPreloadPolicy {
+    static let batchLimit = 8
+
+    /// Prefer the rows nearest to the current selection so normal up/down
+    /// browsing hits memory. With no selection, warm the first visible page.
+    static func prioritizedSessionIDs(
+        _ sessionIDs: [String],
+        selectedSessionID: String?,
+        limit: Int = batchLimit
+    ) -> [String] {
+        guard limit > 0 else { return [] }
+        let uniqueIDs = sessionIDs.reduce(into: [String]()) { result, id in
+            guard !result.contains(id) else { return }
+            result.append(id)
+        }
+        guard let selectedSessionID,
+              let selectedIndex = uniqueIDs.firstIndex(of: selectedSessionID) else {
+            return Array(uniqueIDs.prefix(limit))
+        }
+
+        var prioritized: [String] = []
+        var offset = 1
+        while prioritized.count < limit,
+              selectedIndex + offset < uniqueIDs.count || selectedIndex - offset >= 0 {
+            let nextIndex = selectedIndex + offset
+            if nextIndex < uniqueIDs.count {
+                prioritized.append(uniqueIDs[nextIndex])
+            }
+            let previousIndex = selectedIndex - offset
+            if prioritized.count < limit, previousIndex >= 0 {
+                prioritized.append(uniqueIDs[previousIndex])
+            }
+            offset += 1
+        }
+        return prioritized
+    }
+}
+
 @MainActor
 final class BackendClient: ObservableObject {
     static let shared = BackendClient()
@@ -93,7 +131,9 @@ final class BackendClient: ObservableObject {
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
     private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
-    private var detailPrefetchTasks: [String: Task<Void, Never>] = [:]
+    private var detailCacheRecency: [String] = []
+    private var detailPrefetchTasks: [String: Task<CodexThreadDetail?, Never>] = [:]
+    private static let detailCacheCapacity = 12
     private var usageRefreshTask: Task<Void, Never>?
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
@@ -184,6 +224,8 @@ final class BackendClient: ObservableObject {
         usageRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
+        detailPrefetchTasks.values.forEach { $0.cancel() }
+        detailPrefetchTasks.removeAll()
     }
 
     private func startEventStream() {
@@ -1368,6 +1410,12 @@ final class BackendClient: ObservableObject {
     func select(session: TaskSession) {
         viewingHistoricalThreadId = nil
         selectedSession = session
+        let cachedDetail = cachedDetail(for: session.id)
+        // Publish a cache hit in the same event turn as the row selection. If
+        // this waits for the selection Task below, SwiftUI briefly enters the
+        // empty/loading branch even though the messages are already resident.
+        selectedDetail = cachedDetail
+        isLoadingDetail = cachedDetail == nil
         resetDetailTimelineState()
         selectedSessionUsage = nil
         selectedContextReferences = []
@@ -1401,12 +1449,13 @@ final class BackendClient: ObservableObject {
             guard selectedSession?.id == session.id else {
                 return
             }
-            selectedDetail = detailCacheBySessionId[session.id]
             startDetailStream(for: session)
             if session.resolvedSessionKind == .assistantChat {
-                await loadContextReferences(for: session)
+                // References are supplementary metadata. Do not put them in
+                // front of the message snapshot on the critical click path.
+                Task { await loadContextReferences(for: session) }
             }
-            await loadDetail(for: session, showLoading: selectedDetail == nil)
+            await loadDetail(for: session, showLoading: cachedDetail == nil)
         }
     }
 
@@ -2172,7 +2221,31 @@ final class BackendClient: ObservableObject {
     }
 
     func cachedDetail(for sessionId: String) -> CodexThreadDetail? {
-        detailCacheBySessionId[sessionId]
+        guard let detail = detailCacheBySessionId[sessionId] else { return nil }
+        touchCachedDetail(sessionId)
+        return detail
+    }
+
+    private func storeCachedDetail(_ detail: CodexThreadDetail, for sessionId: String) {
+        detailCacheBySessionId[sessionId] = detail
+        touchCachedDetail(sessionId)
+        while detailCacheBySessionId.count > Self.detailCacheCapacity {
+            guard let evictionIndex = detailCacheRecency.firstIndex(where: {
+                $0 != selectedSession?.id
+            }) else { break }
+            let evictedSessionID = detailCacheRecency.remove(at: evictionIndex)
+            detailCacheBySessionId.removeValue(forKey: evictedSessionID)
+        }
+    }
+
+    private func touchCachedDetail(_ sessionId: String) {
+        detailCacheRecency.removeAll { $0 == sessionId }
+        detailCacheRecency.append(sessionId)
+    }
+
+    private func removeCachedDetail(for sessionId: String) {
+        detailCacheBySessionId.removeValue(forKey: sessionId)
+        detailCacheRecency.removeAll { $0 == sessionId }
     }
 
     func prefetchDetail(for session: TaskSession) {
@@ -2181,14 +2254,26 @@ final class BackendClient: ObservableObject {
             return
         }
 
-        detailPrefetchTasks[session.id] = Task { [weak self] in
+        detailPrefetchTasks[session.id] = Task { @MainActor [weak self] in
             guard let self else {
-                return
+                return nil
             }
             defer {
                 self.detailPrefetchTasks[session.id] = nil
             }
-            _ = await self.fetchDetail(for: session)
+            return await self.fetchDetail(for: session, reportsErrors: false)
+        }
+    }
+
+    func preloadSessionDetails(_ sessions: [TaskSession], centeredOn selectedSessionId: String?) {
+        let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+        let candidateIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
+            sessions.map(\.id),
+            selectedSessionID: selectedSessionId
+        )
+        for sessionID in candidateIDs {
+            guard let session = sessionsByID[sessionID] else { continue }
+            prefetchDetail(for: session)
         }
     }
 
@@ -3042,7 +3127,7 @@ final class BackendClient: ObservableObject {
         select(session: selectedSession)
     }
 
-    func fetchDetail(for session: TaskSession) async -> CodexThreadDetail? {
+    func fetchDetail(for session: TaskSession, reportsErrors: Bool = true) async -> CodexThreadDetail? {
         let threadId = session.external?.threadId ?? session.id
 
         do {
@@ -3057,13 +3142,15 @@ final class BackendClient: ObservableObject {
 
             let detail = try await decodeDetail(data, for: session, threadId: threadId)
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
-            detailCacheBySessionId[session.id] = mergedDetail
-            if lastError != nil {
+            storeCachedDetail(mergedDetail, for: session.id)
+            if reportsErrors, lastError != nil {
                 lastError = nil
             }
             return mergedDetail
         } catch {
-            lastError = error.localizedDescription
+            if reportsErrors {
+                lastError = error.localizedDescription
+            }
             return nil
         }
     }
@@ -3216,7 +3303,7 @@ final class BackendClient: ObservableObject {
             markDetailStreamHealthy(for: expectedSession)
             publishSelectedDetailIfSafe(mergedDetail)
             if let selectedSession {
-                detailCacheBySessionId[selectedSession.id] = mergedDetail
+                storeCachedDetail(mergedDetail, for: selectedSession.id)
             }
             syncSessionSummary(from: mergedDetail)
             if lastError != nil {
@@ -3257,7 +3344,7 @@ final class BackendClient: ObservableObject {
                 let mergedDetail = presentationDetail(from: canonicalDetail)
                 markDetailStreamHealthy(for: expectedSession)
                 publishSelectedDetailIfSafe(mergedDetail)
-                detailCacheBySessionId[expectedSession.id] = mergedDetail
+                storeCachedDetail(mergedDetail, for: expectedSession.id)
                 syncSessionSummary(from: mergedDetail)
                 lastError = nil
             case .duplicate:
@@ -3313,38 +3400,32 @@ final class BackendClient: ObservableObject {
     }
 
     private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
-        let threadId = session.external?.threadId ?? session.id
-
         if showLoading {
             isLoadingDetail = true
         }
         defer {
-            if showLoading {
+            if showLoading, selectedSession?.id == session.id {
                 isLoadingDetail = false
             }
         }
 
-        do {
-            let url = baseURL.appending(path: "sessions/\(session.id)/snapshot")
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw URLError(.badServerResponse)
+        let detail: CodexThreadDetail?
+        if let prefetchTask = detailPrefetchTasks[session.id] {
+            if let prefetchedDetail = await prefetchTask.value {
+                detail = prefetchedDetail
+            } else {
+                // A speculative request is intentionally silent. Once the user
+                // selects the row, retry through the foreground path so the UI
+                // gets a real result or a visible error instead of an endless
+                // empty placeholder.
+                detail = await fetchDetail(for: session)
             }
-            guard httpResponse.statusCode == 200 else {
-                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
-            }
-
-            let detail = try await decodeDetail(data, for: session, threadId: threadId)
-            let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
-            publishSelectedDetailIfSafe(mergedDetail)
-            detailCacheBySessionId[session.id] = mergedDetail
-            syncSessionSummary(from: mergedDetail)
-            if lastError != nil {
-                lastError = nil
-            }
-        } catch {
-            lastError = error.localizedDescription
+        } else {
+            detail = await fetchDetail(for: session)
         }
+        guard selectedSession?.id == session.id, let detail else { return }
+        publishSelectedDetailIfSafe(detail)
+        syncSessionSummary(from: detail)
     }
 
     private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) async throws -> CodexThreadDetail {
@@ -3426,7 +3507,7 @@ final class BackendClient: ObservableObject {
         if routeChanged {
             viewingHistoricalThreadId = nil
             selectedDetail = nil
-            detailCacheBySessionId.removeValue(forKey: refreshed.id)
+            removeCachedDetail(for: refreshed.id)
             Task { [weak self] in
                 guard let self, self.selectedSession?.id == refreshed.id else { return }
                 self.startDetailStream(for: refreshed)
@@ -3579,6 +3660,7 @@ final class BackendClient: ObservableObject {
         selectedSession = fixture.session
         selectedDetail = fixture.detail
         detailCacheBySessionId = [fixture.session.id: fixture.detail]
+        detailCacheRecency = [fixture.session.id]
         isLoadingDetail = false
         isOnline = true
         lastError = nil
