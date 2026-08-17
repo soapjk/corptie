@@ -3,6 +3,11 @@
 // 职责：封装业务规则（字段校验、Objective 存在性、依赖环检测），
 // 数据访问全部委托给 store（corptieStore.mjs 的 CRUD 方法）。
 
+import {
+  validateObjectiveInput,
+  validateWorkItemInput
+} from "../domain/objectiveWorkItemValidation.mjs";
+
 export class ObjectiveNotFoundError extends Error {
   constructor(objectiveId) {
     super(`Objective not found: ${objectiveId}`);
@@ -51,13 +56,14 @@ export class ObjectiveApplicationService {
   // ---- Objective ----
 
   createObjective(input = {}) {
-    const name = String(input.name ?? "").trim();
-    if (!name) throw new TypeError("Objective name is required.");
-    const objective = this.store.createObjective({ ...input, name });
-    const related = Array.isArray(input.relatedObjectiveIds) ? input.relatedObjectiveIds : [];
-    for (const targetId of related) {
-      this.addReverseRelation(objective.id, targetId);
-    }
+    const normalized = validateObjectiveInput(input, "create");
+    const objective = this.store.runInTransaction(() => {
+      const created = this.store.createObjective(normalized);
+      for (const targetId of normalized.relatedObjectiveIds ?? []) {
+        this.addReverseRelation(created.id, targetId);
+      }
+      return created;
+    });
     return this.emit("ObjectiveChanged", objective, "created");
   }
 
@@ -73,21 +79,26 @@ export class ObjectiveApplicationService {
 
   updateObjective(id, patch = {}) {
     const current = this.getObjective(id);
+    const normalized = validateObjectiveInput(patch, "update");
     // relatedObjectiveIds 为对称关联：A 关联 B ⟺ B 关联 A。diff 出新增/移除，同步对侧。
-    if (Array.isArray(patch.relatedObjectiveIds)) {
-      const old = new Set(current.relatedObjectiveIds ?? []);
-      const next = new Set(patch.relatedObjectiveIds);
-      for (const targetId of next) if (!old.has(targetId)) this.addReverseRelation(id, targetId);
-      for (const targetId of old) if (!next.has(targetId)) this.removeReverseRelation(id, targetId);
-    }
-    return this.emit("ObjectiveChanged", this.store.updateObjective(id, patch), "updated");
+    const updated = this.store.runInTransaction(() => {
+      const entity = this.store.updateObjective(id, normalized);
+      if (Object.prototype.hasOwnProperty.call(normalized, "relatedObjectiveIds")) {
+        const old = new Set(current.relatedObjectiveIds ?? []);
+        const next = new Set(normalized.relatedObjectiveIds);
+        for (const targetId of next) if (!old.has(targetId)) this.addReverseRelation(id, targetId);
+        for (const targetId of old) if (!next.has(targetId)) this.removeReverseRelation(id, targetId);
+      }
+      return entity;
+    });
+    return this.emit("ObjectiveChanged", updated, "updated");
   }
 
-  // 对称关联维护：把 fromId 注入 targetId 的 relatedObjectiveIds（忽略自身/不存在）。
+  // 对称关联维护：调用前已经完成自身与资源存在性校验。
   addReverseRelation(fromId, targetId) {
     if (!targetId || targetId === fromId) return;
     const target = this.store.getObjective(targetId);
-    if (!target) return;
+    if (!target) throw new ObjectiveNotFoundError(targetId);
     const ids = new Set(target.relatedObjectiveIds ?? []);
     if (ids.has(fromId)) return;
     ids.add(fromId);
@@ -114,12 +125,8 @@ export class ObjectiveApplicationService {
   // ---- WorkItem ----
 
   createWorkItem(input = {}) {
-    const objectiveId = String(input.objectiveId ?? "").trim();
-    const title = String(input.title ?? "").trim();
-    if (!objectiveId) throw new TypeError("WorkItem objectiveId is required.");
-    if (!title) throw new TypeError("WorkItem title is required.");
-    this.getObjective(objectiveId);
-    return this.emit("WorkItemChanged", this.store.createWorkItem({ ...input, objectiveId, title }), "created");
+    const normalized = validateWorkItemInput(input, "create");
+    return this.emit("WorkItemChanged", this.store.createWorkItem(normalized), "created");
   }
 
   listWorkItems() {
@@ -138,7 +145,8 @@ export class ObjectiveApplicationService {
 
   updateWorkItem(id, patch = {}) {
     this.getWorkItem(id);
-    return this.emit("WorkItemChanged", this.store.updateWorkItem(id, patch), "updated");
+    const normalized = validateWorkItemInput(patch, "update");
+    return this.emit("WorkItemChanged", this.store.updateWorkItem(id, normalized), "updated");
   }
 
   deleteWorkItem(id) {

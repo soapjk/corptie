@@ -152,13 +152,7 @@ final class EntityAPIClient: ObservableObject {
         if let mainWorkspaceId { body["mainWorkspaceId"] = mainWorkspaceId }
         if let mainAgentId { body["mainAgentId"] = mainAgentId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            return try decoder.decode(WorkItem.self, from: data)
-        } catch {
-            errorMessage = error.localizedDescription
-            return nil
-        }
+        return await performEntityMutation(request, as: WorkItem.self)
     }
 
     // 创建 WorkItem：POST /work-items { objectiveId, title, description?, mainWorkspaceId?, priority? } → workItem
@@ -175,13 +169,7 @@ final class EntityAPIClient: ObservableObject {
         if let mainWorkspaceId, !mainWorkspaceId.isEmpty { body["mainWorkspaceId"] = mainWorkspaceId }
         if let priority { body["priority"] = priority }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            return try decoder.decode(WorkItem.self, from: data)
-        } catch {
-            errorMessage = error.localizedDescription
-            return nil
-        }
+        return await performEntityMutation(request, as: WorkItem.self)
     }
 
     // WorkItem 名下的 Session 历史：GET /work-items/:id/sessions → { sessions }
@@ -348,15 +336,11 @@ final class EntityAPIClient: ObservableObject {
         if let relatedObjectiveIds { body["relatedObjectiveIds"] = relatedObjectiveIds }
         if let contributorAgentIds { body["contributorAgentIds"] = contributorAgentIds }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let objective = try decoder.decode(Objective.self, from: data)
+        if let objective = await performEntityMutation(request, as: Objective.self) {
             await refreshObjectives()
             return objective
-        } catch {
-            errorMessage = error.localizedDescription
-            return nil
         }
+        return nil
     }
 
     // 删除 Objective：DELETE /objectives/:id → { ok }
@@ -434,15 +418,11 @@ final class EntityAPIClient: ObservableObject {
         if !relatedObjectiveIds.isEmpty { body["relatedObjectiveIds"] = relatedObjectiveIds }
         if !contributorAgentIds.isEmpty { body["contributorAgentIds"] = contributorAgentIds }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let objective = try decoder.decode(Objective.self, from: data)
+        if let objective = await performEntityMutation(request, as: Objective.self) {
             await refreshObjectives()
             return objective
-        } catch {
-            errorMessage = error.localizedDescription
-            return nil
         }
+        return nil
     }
 
     // 手动注册一个 Git 仓库：POST /repositories/detect { dirPath } → { repository }
@@ -644,6 +624,23 @@ final class EntityAPIClient: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    private func performEntityMutation<T: Decodable>(_ request: URLRequest, as type: T.Type) async -> T? {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.displayMessage ?? "操作失败（HTTP \(http.statusCode)）"
+                return nil
+            }
+            let value = try decoder.decode(type, from: data)
+            errorMessage = nil
+            return value
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
         }
     }
 }

@@ -63,7 +63,7 @@ test("WorkItem 挂 Objective，缺 objective 或 title 报错", async () => {
     );
     assert.throws(
       () => service.createWorkItem({ objectiveId: "missing", title: "x" }),
-      ObjectiveNotFoundError
+      { code: "OBJECTIVE_NOT_FOUND", field: "objectiveId" }
     );
 
     const item = service.createWorkItem({ objectiveId: objective.id, title: "建实体表" });
