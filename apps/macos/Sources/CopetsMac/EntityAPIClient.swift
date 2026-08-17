@@ -255,15 +255,13 @@ final class EntityAPIClient: ObservableObject {
     func createSession(
         workItemId: String,
         agentId: String,
-        title: String? = nil,
-        avatarPath: String? = nil
+        title: String? = nil
     ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId]
         if let title { body["title"] = title }
-        if let avatarPath { body["avatarPath"] = avatarPath }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -288,8 +286,7 @@ final class EntityAPIClient: ObservableObject {
     func startAgentSession(
         agentId: String,
         title: String? = nil,
-        prompt: String? = nil,
-        avatarPath: String? = nil
+        prompt: String? = nil
     ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)/sessions"))
         request.httpMethod = "POST"
@@ -297,7 +294,6 @@ final class EntityAPIClient: ObservableObject {
         var body: [String: Any] = [:]
         if let title, !title.isEmpty { body["title"] = title }
         if let prompt, !prompt.isEmpty { body["prompt"] = prompt }
-        if let avatarPath, !avatarPath.isEmpty { body["avatarPath"] = avatarPath }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)

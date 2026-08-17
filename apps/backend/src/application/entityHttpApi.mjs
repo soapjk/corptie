@@ -25,7 +25,8 @@ export function handleEntityHttpRequest({
   createSession,
   backgroundAgentService,
   skillRegistryService,
-  resolveAgentAvailability
+  resolveAgentAvailability,
+  suggestAgentSessionTitle
 }) {
   const path = url.pathname;
   const presentAgent = (agent) => {
@@ -39,13 +40,17 @@ export function handleEntityHttpRequest({
       availability = { status: "unavailable", reason: error?.message ?? "Agent availability check failed." };
     }
     const unavailable = availability?.status === "unavailable";
+    const suggestedSessionTitle = typeof suggestAgentSessionTitle === "function"
+      ? suggestAgentSessionTitle(agent)
+      : null;
     return {
       ...agent,
       status: unavailable ? "unavailable" : "available",
       statusReason: unavailable && typeof availability?.reason === "string"
         ? availability.reason.trim() || null
         : null,
-      skillIds: objectiveService.store.listRegistrySkillIdsForAgent(agent.agentId)
+      skillIds: objectiveService.store.listRegistrySkillIdsForAgent(agent.agentId),
+      suggestedSessionTitle
     };
   };
   const normalizeSkillIds = (value) => [...new Set((Array.isArray(value) ? value : [])
@@ -157,13 +162,11 @@ export function handleEntityHttpRequest({
             throw apiError("INTERNAL", "launchAgentSession is not configured.", 500);
           }
           const input = await readJson(request);
+          rejectSessionAvatarInput(input);
           const session = await launchAgentSession({
             agent,
             title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined,
-            avatarPath: typeof input.avatarPath === "string" && input.avatarPath.trim()
-              ? input.avatarPath.trim()
-              : undefined
+            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
           });
           return sendJson(response, 201, { session });
         }
@@ -365,6 +368,7 @@ export function handleEntityHttpRequest({
       // ---- Session（执行：真正启动模型 + 绑定 work_item + agent，1:1；换 Agent/重来时先提炼旧记忆）----
       if (request.method === "POST" && path === "/sessions") {
         const input = await readJson(request);
+        rejectSessionAvatarInput(input);
         const workItemId = String(input.workItemId ?? "").trim();
         const agentId = String(input.agentId ?? "").trim();
         if (!workItemId && !agentId) {
@@ -406,10 +410,7 @@ export function handleEntityHttpRequest({
         const session = await launchSession({
           agent,
           workItem,
-          title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-          avatarPath: typeof input.avatarPath === "string" && input.avatarPath.trim()
-            ? input.avatarPath.trim()
-            : undefined
+          title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined
         });
         // 1:1 归属：把启动后的 session 绑定到 work_item（更新 current_session_id），并把状态推进到「进行中」，
         // 同时记录实际执行 Agent（main_agent_id），让看板卡片能显示执行主体。
@@ -486,6 +487,15 @@ export function handleEntityHttpRequest({
     });
 
   return true;
+}
+
+function rejectSessionAvatarInput(input) {
+  if (!Object.prototype.hasOwnProperty.call(input ?? {}, "avatarPath")) return;
+  throw apiError(
+    "SESSION_AVATAR_UNSUPPORTED",
+    "Session 不支持独立头像；会话统一继承绑定 Agent 的头像。",
+    400
+  );
 }
 
 function statusForCode(code) {

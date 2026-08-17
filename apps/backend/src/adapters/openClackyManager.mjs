@@ -309,7 +309,6 @@ export function openClackySessionSummary(row = {}) {
     archived: false,
     pinned: row.pinned === true,
     sortOrder: 0,
-    avatarPath: null,
     external: {
       provider: "openclacky",
       threadId: id,

@@ -63,6 +63,11 @@ export class SessionApplicationService {
   }
 
   async createSession(providerId, input = {}, context = {}) {
+    if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
+      const error = new TypeError("Session avatars are not supported; sessions inherit their Agent avatar.");
+      error.code = "SESSION_AVATAR_UNSUPPORTED";
+      throw error;
+    }
     const provider = this.registry.get(providerId);
     const preparedInput = typeof provider.prepareSessionInput === "function"
       ? await provider.prepareSessionInput(input, context)
@@ -146,17 +151,6 @@ export class SessionApplicationService {
     return this.persistRenamedSession
       ? await this.persistRenamedSession({ reference, title: normalizedTitle, providerSession, context })
       : providerSession;
-  }
-
-  async updateAvatar(sessionId, avatarPath, context = {}) {
-    const reference = await this.referenceFor(sessionId);
-    return this.registry.invoke(
-      reference.providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_AVATAR_UPDATE,
-      reference,
-      typeof avatarPath === "string" && avatarPath.trim() ? avatarPath.trim() : null,
-      context
-    );
   }
 
   async readSession(sessionId) {

@@ -1,6 +1,4 @@
-import AppKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 enum NewSessionKind: String, CaseIterable, Identifiable {
     case assistantChat
@@ -30,7 +28,7 @@ struct NewSessionCreationSheet: View {
     @State private var selectedAgentId: String?
     @State private var selectedWorkItemId: String?
     @State private var sessionTitle = ""
-    @State private var avatarPath: String?
+    @State private var titleWasEdited = false
     @State private var workItems: [WorkItem] = []
     @State private var isLoadingWorkItems = false
     @State private var isCreating = false
@@ -41,6 +39,7 @@ struct NewSessionCreationSheet: View {
         self.onCreated = onCreated
         _kind = State(initialValue: fixedAgent?.isAssistant == false ? .worker : .assistantChat)
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
+        _sessionTitle = State(initialValue: fixedAgent?.suggestedSessionTitle ?? Self.fallbackTitle(for: fixedAgent))
     }
 
     var body: some View {
@@ -103,6 +102,7 @@ struct NewSessionCreationSheet: View {
         .task {
             await client.refreshAgents()
             normalizeAgentSelection()
+            applySuggestedTitle()
         }
         .task(id: kind) {
             creationError = nil
@@ -116,45 +116,18 @@ struct NewSessionCreationSheet: View {
                 }
             }
         }
+        .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
     }
 
     private var sessionIdentitySection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField(L10n("会话名称（可选）"), text: $sessionTitle)
-                .textFieldStyle(.roundedBorder)
-
-            HStack(spacing: 12) {
-                Group {
-                    if let avatarPath, let image = NSImage(contentsOfFile: avatarPath) {
-                        Image(nsImage: image)
-                            .resizable()
-                            .scaledToFill()
-                    } else {
-                        Image(systemName: "person.crop.circle")
-                            .resizable()
-                            .scaledToFit()
-                            .foregroundStyle(.secondary)
-                            .padding(5)
-                    }
-                }
-                .frame(width: 42, height: 42)
-                .clipShape(Circle())
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L10n("会话头像（可选）"))
-                        .font(.callout.weight(.medium))
-                    Text(avatarPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? L10n("未选择时使用默认头像"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if avatarPath != nil {
-                    Button(L10n("清除")) { avatarPath = nil }
-                }
-                Button(L10n("选择图片")) { chooseAvatar() }
+        TextField(L10n("会话名称"), text: Binding(
+            get: { sessionTitle },
+            set: {
+                sessionTitle = $0
+                titleWasEdited = true
             }
-        }
+        ))
+            .textFieldStyle(.roundedBorder)
     }
 
     @ViewBuilder
@@ -306,10 +279,25 @@ struct NewSessionCreationSheet: View {
         }
     }
 
+    private func applySuggestedTitle() {
+        guard !titleWasEdited, let agent = selectedAgent else { return }
+        sessionTitle = agent.suggestedSessionTitle ?? Self.fallbackTitle(for: agent)
+    }
+
+    private var selectedAgent: Agent? {
+        if let fixedAgent { return client.agents.first(where: { $0.agentId == fixedAgent.agentId }) ?? fixedAgent }
+        return client.agents.first(where: { $0.agentId == selectedAgentId })
+    }
+
+    private static func fallbackTitle(for agent: Agent?) -> String {
+        let name = agent?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return "\(name.isEmpty ? "Agent" : name)_Session"
+    }
+
     private func createSession() {
         guard let agentId = selectedAgentId, !isCreating else { return }
         let trimmedTitle = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let requestedTitle = trimmedTitle.isEmpty ? nil : trimmedTitle
+        let requestedTitle = titleWasEdited && !trimmedTitle.isEmpty ? trimmedTitle : nil
         isCreating = true
         creationError = nil
         Task {
@@ -318,8 +306,7 @@ struct NewSessionCreationSheet: View {
             case .assistantChat:
                 result = await client.startAgentSession(
                     agentId: agentId,
-                    title: requestedTitle,
-                    avatarPath: avatarPath
+                    title: requestedTitle
                 )
             case .worker:
                 guard let workItemId = selectedWorkItemId else {
@@ -329,8 +316,7 @@ struct NewSessionCreationSheet: View {
                 result = await client.createSession(
                     workItemId: workItemId,
                     agentId: agentId,
-                    title: requestedTitle,
-                    avatarPath: avatarPath
+                    title: requestedTitle
                 )
             }
             isCreating = false
@@ -344,14 +330,4 @@ struct NewSessionCreationSheet: View {
         }
     }
 
-    private func chooseAvatar() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
-        if panel.runModal() == .OK, let url = panel.url {
-            avatarPath = url.path
-        }
-    }
 }

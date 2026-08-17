@@ -230,7 +230,6 @@ private func makeSession(
         archived: false,
         pinned: false,
         sortOrder: nil,
-        avatarPath: nil,
         capabilities: nil,
         external: nil,
         actions: nil,

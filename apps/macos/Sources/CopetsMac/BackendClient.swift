@@ -400,7 +400,6 @@ final class BackendClient: ObservableObject {
             "SessionUnarchived",
             "SessionDeleted",
             "SessionRenamed",
-            "SessionAvatarUpdated",
             "PtySessionStarted",
             "ClaudeSessionStarted",
             "PtySessionInputSent",
@@ -2400,7 +2399,6 @@ final class BackendClient: ObservableObject {
                 archived: existing.archived,
                 pinned: existing.pinned,
                 sortOrder: existing.sortOrder,
-                avatarPath: existing.avatarPath,
                 capabilities: existing.capabilities,
                 external: existing.external,
                 pendingCollaborationConfirmation: existing.pendingCollaborationConfirmation
@@ -2767,28 +2765,6 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not rename session."))
                 }
                 onSuccess()
-                await refresh()
-                if selectedSession?.id == session.id {
-                    selectedSession = sessions.first(where: { $0.id == session.id }) ?? selectedSession
-                }
-            } catch {
-                lastError = error.localizedDescription
-            }
-        }
-    }
-
-    func updateAvatar(session: TaskSession, avatarPath: String?) {
-        Task {
-            do {
-                var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)"))
-                request.httpMethod = "PATCH"
-                request.setValue("application/json", forHTTPHeaderField: "content-type")
-                let payload: [String: Any] = ["avatarPath": avatarPath ?? NSNull()]
-                request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-                let (_, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
-                    throw URLError(.badServerResponse)
-                }
                 await refresh()
                 if selectedSession?.id == session.id {
                     selectedSession = sessions.first(where: { $0.id == session.id }) ?? selectedSession
@@ -3416,7 +3392,6 @@ final class BackendClient: ObservableObject {
                 archived: session.archived,
                 pinned: session.pinned,
                 sortOrder: session.sortOrder,
-                avatarPath: session.avatarPath,
                 capabilities: detail.capabilities ?? session.capabilities,
                 external: ExternalSession(
                     provider: session.external?.provider ?? detail.source ?? "",

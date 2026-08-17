@@ -40,7 +40,6 @@ export class ClaudeAgentManager {
       archived: input.archived === true,
       pinned: input.pinned === true,
       sortOrder: input.sortOrder ?? null,
-      avatarPath: input.avatarPath ?? null,
       agentSessionId: input.agentSessionId ?? null,
       currentModel: input.model ?? null,
       currentReasoningLevel: null,
@@ -109,18 +108,6 @@ export class ClaudeAgentManager {
     }
     const stored = this.store?.getSession(id) ?? null;
     return stored ? { ...stored, title: nextTitle, updatedAt: new Date().toISOString() } : null;
-  }
-
-  updateAvatar(id, avatarPath = null) {
-    const nextAvatarPath = typeof avatarPath === "string" && avatarPath.trim() ? avatarPath.trim() : null;
-    const session = this.get(id);
-    if (session) {
-      session.avatarPath = nextAvatarPath;
-      this.persistSession(session);
-      this.store?.updateSessionAvatar(id, nextAvatarPath);
-      return this.toSessionSummary(session);
-    }
-    return this.store?.updateSessionAvatar(id, nextAvatarPath) ?? null;
   }
 
   detail(id) {
@@ -523,7 +510,6 @@ export class ClaudeAgentManager {
       archived: stored.archived === true,
       pinned: stored.pinned === true,
       sortOrder: stored.sortOrder ?? null,
-      avatarPath: stored.avatarPath ?? null,
       agentSessionId,
       currentModel: stored.external?.currentModel ?? raw.currentModel ?? null,
       currentReasoningLevel: null,
@@ -1032,7 +1018,6 @@ export class ClaudeAgentManager {
       archived: session.archived === true,
       pinned: session.pinned === true || storedSession?.pinned === true,
       sortOrder: Number.isFinite(session.sortOrder) ? session.sortOrder : (storedSession?.sortOrder ?? 0),
-      avatarPath: session.avatarPath ?? storedSession?.avatarPath ?? null,
       external: {
         provider: session.provider,
         threadId: session.id,

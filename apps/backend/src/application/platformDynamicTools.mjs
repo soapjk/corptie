@@ -77,8 +77,7 @@ export const platformDynamicTools = Object.freeze([
         enum: [
           "list", "get", "create", "send", "interrupt", "resume", "disconnect", "rename", "archive", "pin",
           "delete", "clear", "restart", "respond_to_approval", "manage_turn_changes", "list_models",
-          "read_account_usage", "read_session_usage", "switch_model", "switch_reasoning", "update_permissions",
-          "update_avatar"
+          "read_account_usage", "read_session_usage", "switch_model", "switch_reasoning", "update_permissions"
         ]
       },
       session_id: id("Session id for all operations except list and create."),
@@ -95,8 +94,7 @@ export const platformDynamicTools = Object.freeze([
       change_action: { type: "string", enum: ["apply", "revert"] },
       model_id: { type: "string", minLength: 1 },
       reasoning_level: { type: "string", minLength: 1 },
-      permissions: patch,
-      avatar_path: { type: ["string", "null"] }
+      permissions: patch
     },
     ["action"]
   )

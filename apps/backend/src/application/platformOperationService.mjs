@@ -9,7 +9,7 @@ const PLATFORM_OPERATIONS = Object.freeze({
   corptie_platform_sessions_manage: [
     "list", "get", "create", "send", "interrupt", "resume", "disconnect", "rename", "archive", "pin", "delete",
     "clear", "restart", "respond_to_approval", "manage_turn_changes", "list_models", "read_account_usage",
-    "read_session_usage", "switch_model", "switch_reasoning", "update_permissions", "update_avatar"
+    "read_session_usage", "switch_model", "switch_reasoning", "update_permissions"
   ]
 });
 
@@ -198,9 +198,6 @@ export class PlatformOperationService {
       );
       case "update_permissions": return this.sessionService.updatePermissions(
         required(args.session_id, "session_id"), args.permissions ?? {}, context
-      );
-      case "update_avatar": return this.sessionService.updateAvatar(
-        required(args.session_id, "session_id"), args.avatar_path ?? null, context
       );
       default: throw unsupported("Session", args.action);
     }

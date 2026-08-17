@@ -7,6 +7,33 @@ import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 
+test("Session tables do not own avatar columns while Agents still do", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-avatar-schema-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const initialStore = new CorptieStore({ dbPath, configPath });
+
+  try {
+    await initialStore.initialize();
+    await initialStore.close();
+
+    const legacyDatabase = new DatabaseSync(dbPath);
+    legacyDatabase.exec("ALTER TABLE sessions ADD COLUMN avatar_path TEXT");
+    legacyDatabase.exec("ALTER TABLE logical_sessions ADD COLUMN avatar_path TEXT");
+    legacyDatabase.close();
+
+    const migratedStore = new CorptieStore({ dbPath, configPath });
+    await migratedStore.initialize();
+    assert.equal(migratedStore.selectAll("PRAGMA table_info(sessions)").some((column) => column.name === "avatar_path"), false);
+    assert.equal(migratedStore.selectAll("PRAGMA table_info(logical_sessions)").some((column) => column.name === "avatar_path"), false);
+    assert.equal(migratedStore.selectAll("PRAGMA table_info(agents)").some((column) => column.name === "avatar_path"), true);
+    await migratedStore.close();
+  } finally {
+    await initialStore.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("native SQLite persists committed writes immediately in WAL mode", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-native-sqlite-"));
   const dbPath = join(directory, "corptie.sqlite");

@@ -4,8 +4,7 @@ function stableSessionFields(previous, next) {
   const fields = [];
   if (previous.title !== next.title
     || previous.agent !== next.agent
-    || previous.accent !== next.accent
-    || previous.avatarPath !== next.avatarPath) fields.push("identity");
+    || previous.accent !== next.accent) fields.push("identity");
   if (previous.summary !== next.summary) fields.push("summary");
   if (previous.status !== next.status || previous.progress !== next.progress) fields.push("status");
   if (previous.activityStatus !== next.activityStatus || previous.updatedAt !== next.updatedAt) fields.push("activity");

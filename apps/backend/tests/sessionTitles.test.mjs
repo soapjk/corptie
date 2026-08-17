@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertSessionTitleAvailable,
+  defaultSessionTitleForAgent,
   defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   findSessionTitleConflict,
   normalizeSessionTitle,
+  resolveAvailableAgentSessionTitle,
   resolveAvailableSessionTitle,
   suggestAvailableSessionTitle
 } from "../src/utils/sessionTitles.mjs";
@@ -13,6 +15,21 @@ import {
 test("the default session title appends the agent suffix to the workspace folder", () => {
   assert.equal(defaultSessionTitleForWorkspace("/Volumes/T9/projects/corptie"), "corptie_agent");
   assert.equal(defaultSessionTitleForWorkspace("/Volumes/T9/projects/corptie/"), "corptie_agent");
+});
+
+test("Agent session defaults use underscore suffixes and skip every occupied number", () => {
+  assert.equal(defaultSessionTitleForAgent(" Corptie "), "Corptie_Session");
+  assert.equal(defaultSessionTitleForAgent(""), "Agent_Session");
+  const sessions = [
+    { id: "base", title: "Corptie_Session" },
+    { id: "one", title: "corptie_session_1" },
+    { id: "three", title: "Corptie_Session_3" }
+  ];
+  assert.equal(resolveAvailableAgentSessionTitle(sessions, "Corptie"), "Corptie_Session_2");
+  assert.equal(
+    resolveAvailableAgentSessionTitle([], "Corptie", null, new Set(["corptie_session"])),
+    "Corptie_Session_1"
+  );
 });
 
 test("session title matching ignores surrounding whitespace, case and Unicode width", () => {
