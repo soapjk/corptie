@@ -3,6 +3,8 @@
 "Preview" = "Preview";
 "Preview the selected completion sound" = "Preview the selected completion sound";
 "Off" = "Off";
+"Expand" = "Expand";
+"Collapse" = "Collapse";
 "Workspace missing" = "Workspace missing";
 "Git status unavailable" = "Git status unavailable";
 "Git branch: %@" = "Git branch: %@";
