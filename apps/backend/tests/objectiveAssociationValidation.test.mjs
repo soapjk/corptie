@@ -65,11 +65,22 @@ test("Objective and WorkItem inputs reject unknown fields and invalid types befo
     assert.equal(store.listObjectives().length, 0);
 
     const objective = service.createObjective({ name: "Strict" });
+    const objectiveUpdatedAt = store.getObjective(objective.id).updatedAt;
     assert.throws(
       () => store.updateObjective(objective.id, { main_agent_id: "agent:any" }),
-      { code: "UNKNOWN_FIELD", field: "main_agent_id" }
+      { code: "UNKNOWN_PATCH_FIELD", field: "main_agent_id" }
     );
     assert.equal(store.getObjective(objective.id).name, "Strict");
+    assert.equal(store.getObjective(objective.id).updatedAt, objectiveUpdatedAt);
+
+    const item = service.createWorkItem({ objectiveId: objective.id, title: "Strict item" });
+    const itemUpdatedAt = store.getWorkItem(item.id).updated_at;
+    assert.throws(
+      () => store.updateWorkItem(item.id, { assigneeAgentId: "agent:any" }),
+      { code: "UNKNOWN_PATCH_FIELD", field: "assigneeAgentId" }
+    );
+    assert.equal(store.getWorkItem(item.id).title, "Strict item");
+    assert.equal(store.getWorkItem(item.id).updated_at, itemUpdatedAt);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -86,7 +97,11 @@ test("repository and assignable Agent associations must exist and remain inside 
 
     assert.throws(
       () => service.createObjective({ name: "Bad prefix", workspaceIds: ["worktree:scope"] }),
-      { code: "INVALID_ID_FORMAT", field: "workspaceIds[0]" }
+      { code: "INVALID_WORKSPACE_ID_TYPE", field: "workspaceIds[0]" }
+    );
+    assert.throws(
+      () => service.createObjective({ name: "Missing worktree prefix", workspaceIds: ["missing-worktree:scope"] }),
+      { code: "INVALID_WORKSPACE_ID_TYPE", field: "workspaceIds[0]" }
     );
     assert.throws(
       () => service.createObjective({ name: "Missing", workspaceIds: ["repository:missing"] }),
@@ -108,7 +123,15 @@ test("repository and assignable Agent associations must exist and remain inside 
         title: "Wrong workspace",
         mainWorkspaceId: "worktree:scope"
       }),
-      { code: "INVALID_ID_FORMAT", field: "mainWorkspaceId" }
+      { code: "INVALID_WORKSPACE_ID_TYPE", field: "mainWorkspaceId" }
+    );
+    assert.throws(
+      () => service.createWorkItem({
+        objectiveId: objective.id,
+        title: "Missing worktree workspace",
+        mainWorkspaceId: "missing-worktree:scope"
+      }),
+      { code: "INVALID_WORKSPACE_ID_TYPE", field: "mainWorkspaceId" }
     );
     assert.throws(
       () => service.createWorkItem({
@@ -154,7 +177,7 @@ test("Objective relation updates are atomic when another field fails validation"
         relatedObjectiveIds: [second.id],
         workspaceIds: ["worktree:unregistered"]
       }),
-      { code: "INVALID_ID_FORMAT" }
+      { code: "INVALID_WORKSPACE_ID_TYPE" }
     );
     assert.deepEqual(store.getObjective(first.id).relatedObjectiveIds, []);
     assert.deepEqual(store.getObjective(second.id).relatedObjectiveIds, []);
