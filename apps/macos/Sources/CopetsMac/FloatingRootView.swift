@@ -4224,6 +4224,8 @@ struct DetailView: View {
             item.id,
             item.type,
             item.status ?? "",
+            item.userMessageStatus ?? "",
+            item.queuePosition.map(String.init) ?? "",
             item.turnStatus,
             item.presentationRole ?? "",
             item.collaborationProcessingStatus ?? "",
@@ -4865,6 +4867,8 @@ private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMes
             item.id,
             item.type,
             item.status ?? "",
+            item.userMessageStatus ?? "",
+            item.queuePosition.map(String.init) ?? "",
             item.turnStatus,
             item.presentationRole ?? "",
             item.collaborationProcessingStatus ?? "",
@@ -5007,7 +5011,13 @@ private func shouldShowProcessGroup(
     if !processItems.isEmpty {
         return true
     }
-    return !userMessages.isEmpty && items.contains { !isTerminalTurnStatus($0.turnStatus) }
+    return !userMessages.isEmpty && items.contains { item in
+        guard !isTerminalTurnStatus(item.turnStatus) else { return false }
+        switch item.authoritativeUserMessageState {
+        case .queued, .failed, .cancelled: return false
+        case .processing, .consumed, .none: return true
+        }
+    }
 }
 
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
@@ -5048,6 +5058,8 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.id,
         item.type,
         item.status ?? "",
+        item.userMessageStatus ?? "",
+        item.queuePosition.map(String.init) ?? "",
         item.turnStatus,
         item.presentationRole ?? "",
         item.collaborationProcessingStatus ?? "",
@@ -7949,6 +7961,16 @@ struct ThreadItemView: View {
                 }
             }
 
+            if let userMessageStatusLabel {
+                Label(userMessageStatusLabel, systemImage: userMessageStatusIcon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(userMessageStatusColor)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(userMessageStatusColor.opacity(0.11), in: Capsule())
+                    .accessibilityLabel(userMessageStatusAccessibilityLabel)
+            }
+
             if item.type == "choice",
                item.status == "selected",
                let selected = item.options?.first(where: { $0.selected == true }) {
@@ -8269,6 +8291,43 @@ struct ThreadItemView: View {
     private var isUserOrAgentMessage: Bool { isUserMessage || isAgentMessage }
     /// 消息气泡最大宽度，保留左右留白。
     private var messageBubbleMaxWidth: CGFloat { ChatBubbleWidthPolicy.maximumWidth }
+
+    private var userMessageStatusLabel: String? {
+        switch item.authoritativeUserMessageState {
+        case .queued:
+            if let position = item.queuePosition {
+                return L10nFormat("Queued · position %lld", Int64(position))
+            }
+            return L10n("Queued for processing")
+        case .processing: return L10n("Processing")
+        case .failed: return L10n("Processing failed")
+        case .cancelled: return L10n("Cancelled before processing")
+        case .consumed, .none: return nil
+        }
+    }
+
+    private var userMessageStatusAccessibilityLabel: String {
+        userMessageStatusLabel ?? ""
+    }
+
+    private var userMessageStatusIcon: String {
+        switch item.authoritativeUserMessageState {
+        case .queued: "clock.fill"
+        case .processing: "clock.arrow.circlepath"
+        case .failed: "exclamationmark.circle.fill"
+        case .cancelled: "xmark.circle.fill"
+        case .consumed, .none: ""
+        }
+    }
+
+    private var userMessageStatusColor: Color {
+        switch item.authoritativeUserMessageState {
+        case .queued: CorptiePalette.amber
+        case .processing: CorptiePalette.running
+        case .failed, .cancelled: .red
+        case .consumed, .none: CorptiePalette.secondaryText
+        }
+    }
 
     private var preferredMessageBubbleWidth: CGFloat {
         let style: AppKitChatTimelineRow.NativeStyle = isUserMessage ? .user : .agent

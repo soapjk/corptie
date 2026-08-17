@@ -128,7 +128,8 @@ import {
   annotateAgentWorkDetailItems,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
-  shouldReportAgentWorkQueued
+  shouldReportAgentWorkQueued,
+  userMessageStatusForAgentWork
 } from "./utils/agentWorkQueue.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
 import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTransitionManager.mjs";
@@ -1321,6 +1322,7 @@ function dshRunningStatusForEvent(type) {
       return true;
     case "SessionRunInterrupted":
     case "AgentWorkCompleted":
+    case "AgentWorkFailed":
     case "CodexThreadCompleted":
     case "CodexThreadCancelled":
     case "CodexThreadFailed":
@@ -1399,7 +1401,11 @@ function streamCanonicalSessionSnapshots(request, response, requestedSessionId, 
 
   const readAndPublish = async ({ fullConsistency = true } = {}) => {
     try {
-      const session = await sessionApplicationService.readSession(requestedSessionId);
+      // The unified snapshot overlays Corptie's durable Agent work queue onto
+      // the Provider transcript. Both HTTP recovery and the live event stream
+      // must read the same authority or reconnects can incorrectly erase the
+      // queued state until the next explicit snapshot request.
+      const session = await getUnifiedSessionSnapshot(requestedSessionId);
       lastSession = session;
       if (usesTimelineDelta) {
         const result = streamState
@@ -3406,18 +3412,40 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
       ...presentation
     };
   });
-  const queued = workItems
-    .filter((item) => item.status === "queued")
+  const matchedWorkItemIds = new Set(annotated.map((item) => item.workItemId).filter(Boolean));
+  const queuePositionByWorkItemId = new Map();
+  for (const agentId of new Set(workItems.map((item) => item.agentId))) {
+    store.listQueuedAgentWorkItems(agentId, 1_000).forEach((item, index) => {
+      queuePositionByWorkItemId.set(item.workItemId, index + 1);
+    });
+  }
+  const pending = workItems
+    .filter((item) => !matchedWorkItemIds.has(item.workItemId))
+    .filter((item) => item.status === "queued"
+      || item.status === "running"
+      || (["failed", "cancelled"].includes(item.status) && !item.targetTurnId))
+    .sort((left, right) => {
+      const leftPosition = queuePositionByWorkItemId.get(left.workItemId);
+      const rightPosition = queuePositionByWorkItemId.get(right.workItemId);
+      if (leftPosition != null && rightPosition != null) return leftPosition - rightPosition;
+      if (leftPosition != null) return 1;
+      if (rightPosition != null) return -1;
+      return String(left.createdAt).localeCompare(String(right.createdAt));
+    })
     .map((item) => {
       const presentation = collaborationPresentationForWorkItem(item);
+      const userMessageStatus = userMessageStatusForAgentWork(item.status);
       return {
         id: `work:${item.workItemId}`,
-        turnId: `queued:${item.workItemId}`,
-        turnStatus: "queued",
+        turnId: `work:${item.workItemId}`,
+        turnStatus: userMessageStatus,
         type: "userMessage",
         title: item.kind === "collaboration" ? "Agent Collaboration" : (item.source?.type === "feishu" ? "Feishu" : "User"),
         text: item.text,
-        status: "queued",
+        status: item.status,
+        userMessageStatus,
+        queuePosition: queuePositionByWorkItemId.get(item.workItemId) ?? null,
+        processingError: item.lastError ?? null,
         createdAt: item.createdAt,
         sourceType: item.kind,
         localVisibility: item.localVisibility,
@@ -3449,7 +3477,7 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
     collaborationConfirmationStatus: confirmation.status,
     collaborationTaskId: confirmation.taskId
   }));
-  return [...mergeSupplementalTimelineItems(annotated, confirmations), ...queued];
+  return [...mergeSupplementalTimelineItems(annotated, confirmations), ...pending];
 }
 
 function collaborationPresentationForWorkItem(workItem) {
@@ -3813,6 +3841,10 @@ async function drainAgentWork(agentId) {
       status: "failed",
       lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${agentId}.`
     });
+    emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
+      sessionId,
+      source: next.source
+    });
     workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     return;
   }
@@ -3870,7 +3902,13 @@ async function drainAgentWork(agentId) {
       startedAt: error.code === "SESSION_BUSY" ? null : claimed.startedAt,
       lastError: error.message
     });
-    if (error.code !== "SESSION_BUSY") workspaceContinuationCoordinator.recordWorkSettled(failedWork);
+    if (error.code !== "SESSION_BUSY") {
+      emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, workItem: failedWork }, {
+        sessionId: claimed.sessionId,
+        source: claimed.source
+      });
+      workspaceContinuationCoordinator.recordWorkSettled(failedWork);
+    }
     if (error.code !== "SESSION_BUSY") throw error;
   } finally {
     drainingAgentWorkIds.delete(agentId);

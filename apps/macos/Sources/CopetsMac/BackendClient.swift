@@ -476,6 +476,10 @@ final class BackendClient: ObservableObject {
             "WorkspaceContinuationCompleted",
             "WorkspaceContinuationFailed",
             "WorkspaceContinuationDeferred",
+            "AgentWorkQueued",
+            "AgentWorkStarted",
+            "AgentWorkCompleted",
+            "AgentWorkFailed",
             "SessionArchived",
             "SessionUnarchived",
             "SessionDeleted",
@@ -504,7 +508,11 @@ final class BackendClient: ObservableObject {
             || eventName == "CodexThreadApprovalRequested"
             || eventName == "CodexThreadApprovalResponded"
             || eventName == "CollaborationConfirmationRequested"
-            || eventName == "CollaborationConfirmationResolved" {
+            || eventName == "CollaborationConfirmationResolved"
+            || eventName == "AgentWorkQueued"
+            || eventName == "AgentWorkStarted"
+            || eventName == "AgentWorkCompleted"
+            || eventName == "AgentWorkFailed" {
             await refreshSelectedDetailFromPolling()
         }
     }

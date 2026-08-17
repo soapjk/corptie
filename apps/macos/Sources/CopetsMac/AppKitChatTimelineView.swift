@@ -230,6 +230,8 @@ enum ChatTimelineRowRouting {
         let text = displayText(for: item)
         return item.type == "approval"
             || item.type == "choice"
+            || (item.authoritativeUserMessageState != nil
+                && item.authoritativeUserMessageState != .consumed)
             || item.presentationRole == "collaboration"
             || item.sourceType == "collaboration"
             || !(item.fileChanges ?? []).isEmpty
