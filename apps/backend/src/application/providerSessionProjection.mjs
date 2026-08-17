@@ -20,21 +20,28 @@ export function persistProviderSessionProjection(store, session, {
 export function ensureProviderSessionProjection({
   store,
   session,
-  resolveAgentForSession = () => null
+  resolveAgentForSession = () => null,
+  bindAgentToSession = () => null
 } = {}) {
   if (!store?.db || !session?.id) return { session: null, repaired: false };
   const existing = store.getSession(session.id);
-  if (existing) return { session: existing, repaired: false };
-
   const workItem = store.getWorkItemBySessionId(session.id);
   const boundAgent = resolveAgentForSession(session.id);
+  const agentId = boundAgent?.agentId ?? workItem?.main_agent_id ?? existing?.agentId ?? null;
+  if (existing) {
+    const bindingRepaired = Boolean(agentId && !boundAgent);
+    if (bindingRepaired) bindAgentToSession({ agentId, sessionId: session.id });
+    return { session: existing, repaired: bindingRepaired };
+  }
+
   persistProviderSessionProjection(store, session, {
     providerId: session.external?.provider,
-    agentId: boundAgent?.agentId ?? workItem?.main_agent_id ?? null,
+    agentId,
     sessionKind: workItem ? "worker" : (boundAgent?.role === "assistant" ? "assistantChat" : "legacy")
   });
   if (workItem) {
     store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);
   }
+  if (agentId && !boundAgent) bindAgentToSession({ agentId, sessionId: session.id });
   return { session: store.getSession(session.id), repaired: true };
 }
