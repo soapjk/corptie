@@ -24,6 +24,7 @@ const expectedTools = [
   "corptie.memory.search",
   "corptie_skill_search",
   "corptie_skill_load",
+  "corptie_work_item_report_acceptance",
   "corptie.collaboration.accept",
   "corptie.collaboration.reject",
   "corptie.collaboration.ask",
@@ -164,6 +165,27 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
         idempotencyKey: "request-1"
       }
     }]);
+
+    await client.callTool({
+      name: "corptie_work_item_report_acceptance",
+      arguments: {
+        results: [{
+          criterion: "Show completed after the run finishes",
+          verdict: "passed",
+          evidence: [{ summary: "Test passed", reference: "npm test" }]
+        }]
+      }
+    });
+    assert.deepEqual(calls[3], {
+      path: "/internal/collaboration/work-items/acceptance",
+      body: {
+        results: [{
+          criterion: "Show completed after the run finishes",
+          verdict: "passed",
+          evidence: [{ summary: "Test passed", reference: "npm test" }]
+        }]
+      }
+    });
 
     await client.callTool({
       name: "corptie.collaboration.get_task",

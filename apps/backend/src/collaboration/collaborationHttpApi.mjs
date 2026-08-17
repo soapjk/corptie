@@ -10,7 +10,8 @@ export function handleCollaborationHttpRequest({
   onSwitchWorkspace,
   onSearchMemory,
   onSearchSkills,
-  onLoadSkill
+  onLoadSkill,
+  onReportWorkItemAcceptance
 }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
@@ -41,6 +42,17 @@ export function handleCollaborationHttpRequest({
       if (request.method === "POST" && url.pathname === "/internal/collaboration/workspaces/switch") {
         if (!onSwitchWorkspace) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
         return sendJson(response, 202, await onSwitchWorkspace(actorAgentId, await readJson(request)));
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-items/acceptance") {
+        if (!onReportWorkItemAcceptance) {
+          throw apiError("WORK_ITEM_ACCEPTANCE_UNAVAILABLE", "WorkItem acceptance reporting is unavailable.", 503);
+        }
+        return sendJson(
+          response,
+          200,
+          await onReportWorkItemAcceptance(actorAgentId, await readJson(request))
+        );
       }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/memory/search") {

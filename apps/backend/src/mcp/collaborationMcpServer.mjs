@@ -150,6 +150,26 @@ export function createCollaborationMcpServer(options) {
 
   if (objectiveId) registerObjectiveChatTools(server, client, objectiveId, objectiveSessionId);
 
+  register(server, "corptie_work_item_report_acceptance", {
+    description:
+      "Report a criterion-by-criterion acceptance assessment for the WorkItem bound to this Session. Call only after verification. A passed criterion requires reproducible evidence; Session completion alone is never evidence.",
+    inputSchema: {
+      results: z.array(z.object({
+        criterion: z.string().min(1),
+        verdict: z.enum(["passed", "failed", "unknown"]),
+        evidence: z.array(z.object({
+          summary: z.string().min(1),
+          reference: z.string().min(1).describe(
+            "A reproducible command, local artifact URI, or file/result locator that lets the user verify the evidence."
+          )
+        }).strict()).min(0)
+      }).strict()).min(1).describe(
+        "Results for every current WorkItem acceptance criterion, exactly once and in the original order."
+      )
+    },
+    handler: ({ results }) => client.post("/internal/collaboration/work-items/acceptance", { results })
+  });
+
   registerAction(server, client, "accept", "Accept a proposed task or resume requested revisions and begin working.", {
     task_id: z.string().min(1)
   });

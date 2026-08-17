@@ -508,8 +508,8 @@ struct WorkItemDetailView: View {
     @State private var bindWorkspaceId: String?
     @State private var showEdit = false
     @State private var showCompleteConfirmation = false
-    @State private var reviewNotified = false
     @State private var isLaunchingExecution = false
+    @State private var notifiedSuggestionKey: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -550,13 +550,10 @@ struct WorkItemDetailView: View {
             // 以 workItem 作为 task 标识：当父层重新拉取、currentSessionId 等字段变化时，
             // 本视图会拿到新的 workItem 值并重新刷新「当前执行」，避免依赖陈旧的 currentSessionId。
             await refreshExecution()
+            presentCompletionSuggestionIfEligible()
         }
-        .onChange(of: workItem.status) { _, newStatus in
-            // 进入「待确认完成」时自动弹一次确认通知（每个 workItem 只弹一次）。
-            if ["review", "reviewing"].contains(newStatus), !reviewNotified {
-                reviewNotified = true
-                showCompleteConfirmation = true
-            }
+        .onChange(of: workItem.completionSuggestion) { _, _ in
+            presentCompletionSuggestionIfEligible()
         }
         .sheet(isPresented: $showEdit) {
             WorkItemEditView(workItem: workItem, workspaceIds: workspaceIds) {
@@ -611,7 +608,7 @@ struct WorkItemDetailView: View {
             }
             Button(L10n("取消"), role: .cancel) { }
         } message: {
-            Text(L10n("Agent 的判定已满足验收标准，确认将该工作项标记为「已完成」？"))
+            Text(completionSuggestionMessage)
         }
         .sheet(isPresented: $showWorkspaceBind) {
             WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
@@ -792,15 +789,15 @@ struct WorkItemDetailView: View {
         return client.agents.first { $0.agentId == agentId }
     }
 
-    // 是否已完成：只看 WorkItem 自身状态（session 完成后 WorkItem 进入 review 待确认，
-    // 只有用户确认后 status 才为 done；不能因 session.status==complete 而误判完成）。
+    // 是否已完成：只看 WorkItem 自身状态。Session complete 只代表一次执行落定，
+    // 只有证据支持的验收建议经用户确认后 status 才为 done。
     private var isCompleted: Bool {
         ["done", "complete", "completed"].contains(workItem.status)
     }
 
-    // 是否处于「待确认完成」（session 判定满足验收标准，等用户确认）。
+    // 是否存在有逐条证据支撑的完成建议。Session complete 本身永远不满足该条件。
     private var isPendingReview: Bool {
-        ["review", "reviewing"].contains(workItem.status)
+        workItem.completionSuggestion?.recommended == true
     }
 
     // 是否正在运行（当前会话正在执行或等待输入）。
@@ -915,8 +912,33 @@ struct WorkItemDetailView: View {
 
     // 用户确认「待确认完成」→ 真正标记为已完成。
     private func confirmComplete() async {
-        _ = await client.updateWorkItem(workItemId: workItem.id, status: "done")
-        onRequestReload()
+        if await client.updateWorkItem(workItemId: workItem.id, status: "done") != nil {
+            onRequestReload()
+        } else {
+            executionError = EntityLaunchError(
+                message: client.errorMessage ?? L10n("当前验收结果不足以证明该工作项已完成。"),
+                code: "ACCEPTANCE_NOT_PROVEN"
+            )
+        }
+    }
+
+    private func presentCompletionSuggestionIfEligible() {
+        guard let suggestion = workItem.completionSuggestion, suggestion.recommended else { return }
+        let key = "\(workItem.id):\(suggestion.assessedAt)"
+        guard notifiedSuggestionKey != key else { return }
+        notifiedSuggestionKey = key
+        showCompleteConfirmation = true
+    }
+
+    private var completionSuggestionMessage: String {
+        guard let suggestion = workItem.completionSuggestion, suggestion.recommended else {
+            return L10n("当前没有足够证据证明验收标准已满足。")
+        }
+        let evidence = suggestion.results.enumerated().map { index, result in
+            let entries = result.evidence.map { "• \($0.summary)\n  \($0.reference)" }.joined(separator: "\n")
+            return "\(index + 1). \(result.criterion)\n\(entries)"
+        }.joined(separator: "\n\n")
+        return "\(L10n("以下验收标准已有可核验证据。请人工确认是否标记为完成："))\n\n\(evidence)"
     }
 
     private var priorityLabel: String {
@@ -973,7 +995,7 @@ struct WorkItemDetailView: View {
         }
     }
 
-    // 只读紧凑状态徽标（状态由执行动作自动驱动；review=待确认完成）。
+    // 只读紧凑状态徽标（review 仅由证据支持的独立验收评估产生）。
     private func compactStatusBadge(_ status: String) -> some View {
         let (label, color): (String, Color) = {
             switch status {
