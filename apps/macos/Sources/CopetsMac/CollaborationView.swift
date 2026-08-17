@@ -387,7 +387,11 @@ private struct CollaborationTaskDetailView: View {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(task.title).font(.title2.bold())
-                        Text(task.summary).foregroundStyle(.secondary)
+                        CollapsibleDetailText(
+                            text: task.summary,
+                            font: .body,
+                            lineSpacing: 1
+                        )
                     }
                     Spacer()
                     CollaborationStatusBadge(status: task.status)
@@ -401,11 +405,12 @@ private struct CollaborationTaskDetailView: View {
                 }
 
                 GroupBox(L10n("Acceptance criteria")) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(task.acceptanceCriteria, id: \.self) { criterion in
-                            Label(criterion, systemImage: "checkmark.circle")
-                        }
-                    }
+                    CollapsibleDetailText(
+                        text: task.acceptanceCriteria.map { "• \($0)" }.joined(separator: "\n"),
+                        font: .body,
+                        color: .primary,
+                        lineSpacing: 2
+                    )
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
@@ -423,7 +428,12 @@ private struct CollaborationTaskDetailView: View {
                                 Text(entry.createdAt).font(.caption).foregroundStyle(.tertiary)
                             }
                             if let body = entry.body {
-                                Text(body).textSelection(.enabled)
+                                CollapsibleDetailText(
+                                    text: body,
+                                    font: .body,
+                                    color: .primary,
+                                    lineSpacing: 1
+                                )
                             }
                         }
                     }
