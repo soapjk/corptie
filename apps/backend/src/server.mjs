@@ -36,6 +36,7 @@ import { platformDynamicTools, callPlatformDynamicTool } from "./application/pla
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
+import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
@@ -424,9 +425,17 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  resolveMessageContext: (reference) => store.getSession(reference.sessionId)?.sessionKind === "assistantChat"
-    ? sessionContextReferenceService.resolve(reference.sessionId)
-    : null,
+  resolveMessageContext: (reference) => {
+    const session = store.getSession(reference.sessionId);
+    if (session?.sessionKind === "assistantChat") {
+      return sessionContextReferenceService.resolve(reference.sessionId);
+    }
+    if (session?.sessionKind !== "worker") return null;
+    const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
+    const workItem = store.getWorkItem(ownership.workItemId);
+    const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
+    return buildWorkSessionContext({ session, workItem, objective });
+  },
   bindCreatedSession: async ({ providerId, session, input, context }) => {
     persistProviderSessionProjection(store, session, {
       providerId,
@@ -2882,7 +2891,8 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
     : [
         `请完成工作项「${workItem.title ?? "未命名"}」。`,
         workItem.description ? `\n任务描述：\n${workItem.description}` : "",
-        objective?.acceptance_criteria ? `\n验收标准：\n${objective.acceptance_criteria}` : ""
+        workItem.acceptance_criteria ? `\n工作项验收标准：\n${workItem.acceptance_criteria}` : "",
+        objective?.acceptance_criteria ? `\n目标验收标准：\n${objective.acceptance_criteria}` : ""
       ].filter(Boolean).join("\n");
 
   const session = await createSessionThroughApplication(
