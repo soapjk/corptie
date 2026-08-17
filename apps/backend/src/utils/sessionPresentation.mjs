@@ -58,7 +58,11 @@ export function reconcileAuthoritativeRunState(session, status) {
 export function sessionHasActiveRun(session) {
   const continuationState = session?.external?.workspace?.continuationState;
   const activeTurnId = session?.external?.activeTurnId || session?.rawStatus?.activeTurnId;
-  if (["pending", "queued"].includes(continuationState) && !activeTurnId) return false;
+  // Workspace continuation state is orchestration state, not Provider runtime
+  // state. In particular, a durable `running` value can survive a process
+  // restart after its Provider turn has already stopped. Never let that
+  // synthetic presentation keep the queue blocked without an active turn.
+  if (["pending", "queued", "running"].includes(continuationState) && !activeTurnId) return false;
   return ["running", "blocked"].includes(session?.status)
     || Boolean(activeTurnId);
 }
@@ -69,12 +73,21 @@ export function applyWorkspaceContinuationPresentation(session, transition) {
   if (["pending", "queued"].includes(state)) {
     return {
       ...session,
-      status: "running",
+      status: "blocked",
       progress: Math.min(Number(session.progress) || 0, 0.5),
-      activityStatus: "Waiting to continue in the switched Worktree"
+      activityStatus: "Queued to continue in the switched Worktree"
     };
   }
   if (state === "running") {
+    const activeTurnId = session.external?.activeTurnId || session.rawStatus?.activeTurnId;
+    if (!activeTurnId) {
+      return {
+        ...session,
+        status: "blocked",
+        progress: Math.min(Number(session.progress) || 0, 0.5),
+        activityStatus: "Recovering continuation in the switched Worktree"
+      };
+    }
     return {
       ...session,
       status: "running",

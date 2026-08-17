@@ -68,6 +68,16 @@ test("orphaned dispatched work is cancelled while pre-dispatch work is requeued"
     targetTurnId: null,
     lastError: "Provider stopped before dispatch; work was requeued."
   });
+  assert.deepEqual(interruptedAgentWorkRecoveryPatch({
+    status: "running",
+    targetTurnId: "turn-interrupted",
+    source: { type: "workspace-continuation" }
+  }), {
+    status: "queued",
+    startedAt: null,
+    targetTurnId: null,
+    lastError: "Provider stopped before the workspace continuation settled; it was requeued."
+  });
 });
 
 test("queued work remains routed to its own Session when the Agent current Session changes", () => {
@@ -174,6 +184,25 @@ test("an Agent can claim only one work item at a time", async () => {
     assert.equal(store.claimAgentWorkItem("user-2")?.status, "running");
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a lone running work item remains discoverable for restart recovery", async () => {
+  const { directory, store } = await fixture();
+  try {
+    enqueue(store, {
+      workItemId: "only-running",
+      kind: "user",
+      priority: 100,
+      createdAt: "2026-07-17T00:00:00.000Z"
+    });
+    store.claimAgentWorkItem("only-running");
+
+    assert.deepEqual(store.listAgentIdsWithQueuedWork(), []);
+    assert.deepEqual(store.listAgentIdsWithUnsettledWork(), ["agent-b"]);
+  } finally {
+    await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

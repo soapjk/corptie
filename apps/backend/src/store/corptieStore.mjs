@@ -2262,9 +2262,14 @@ export class CorptieStore {
 
   getLatestCommittedWorkspaceTransition(logicalSessionId) {
     const row = this.selectOne(
-      `SELECT * FROM workspace_transitions
-       WHERE logical_session_id = ? AND phase = 'committed'
-       ORDER BY updated_at DESC LIMIT 1`,
+      `SELECT transition.* FROM workspace_transitions transition
+       JOIN logical_sessions logical
+         ON logical.logical_session_id = transition.logical_session_id
+       WHERE transition.logical_session_id = ?
+         AND transition.phase = 'committed'
+         AND transition.new_thread_id = logical.active_thread_id
+         AND transition.source_routing_version + 1 = logical.routing_version
+       ORDER BY transition.created_at DESC LIMIT 1`,
       [logicalSessionId]
     );
     return row ? workspaceTransitionFromRow(row) : null;
@@ -2800,6 +2805,12 @@ export class CorptieStore {
   listAgentIdsWithQueuedWork() {
     return this.selectAll(
       "SELECT DISTINCT agent_id FROM agent_work_items WHERE status = 'queued' ORDER BY agent_id ASC"
+    ).map((row) => row.agent_id);
+  }
+
+  listAgentIdsWithUnsettledWork() {
+    return this.selectAll(
+      "SELECT DISTINCT agent_id FROM agent_work_items WHERE status IN ('queued', 'running') ORDER BY agent_id ASC"
     ).map((row) => row.agent_id);
   }
 

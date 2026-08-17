@@ -70,6 +70,35 @@ test("restart recovery enriches legacy queued continuation work with the committ
   assert.equal(fixture.coordinator.assertWorkTarget(fixture.work.get(id)).logical.activeThreadId, "route:next");
 });
 
+test("restart recovery retires a continuation superseded by a newer route", () => {
+  const fixture = coordinatorFixture();
+  const id = continuationWorkItemId("transition:one");
+  fixture.coordinator.enqueueForTransition("transition:one");
+  fixture.logical.routingVersion = 3;
+  fixture.logical.activeThreadId = "route:newer";
+
+  fixture.coordinator.recover();
+
+  assert.equal(fixture.work.get(id).status, "failed");
+  assert.equal(fixture.transition.continuationState, "failed");
+  assert.match(fixture.transition.continuationError, /does not match its continuation checkpoint/);
+});
+
+test("requeued interrupted continuation returns its durable transition to queued", () => {
+  const fixture = coordinatorFixture();
+  const workItem = fixture.coordinator.enqueueForTransition("transition:one");
+  workItem.status = "queued";
+  workItem.targetTurnId = null;
+  workItem.lastError = "Provider restarted.";
+  fixture.transition.continuationState = "running";
+
+  fixture.coordinator.recordWorkRequeued(workItem);
+
+  assert.equal(fixture.transition.continuationState, "queued");
+  assert.equal(fixture.transition.continuationTurnId, null);
+  assert.equal(fixture.transition.continuationError, "Provider restarted.");
+});
+
 test("continuation delivery fails closed when the logical route no longer matches", () => {
   const fixture = coordinatorFixture();
   fixture.logical.routingVersion = 3;
