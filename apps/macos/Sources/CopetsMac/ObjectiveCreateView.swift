@@ -17,7 +17,6 @@ struct ObjectiveCreateView: View {
     @State private var workspaceIds = Set<String>()
     @State private var relatedObjectiveIds = Set<String>()
     @State private var contributorAgentIds = Set<String>()
-    @State private var assistAgentId: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,6 +24,22 @@ struct ObjectiveCreateView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(L10n("创建 Objective"))
                         .font(.title3.bold())
+
+                    FormAssistPanel(
+                        formType: .objective,
+                        promptHint: L10n("例如：统一三个创建页的一键填充体验，并确保生成内容可检查、可编辑。"),
+                        currentValues: {
+                            [
+                                "name": name,
+                                "description": detail,
+                                "acceptanceCriteria": acceptanceCriteria,
+                                "priority": priority ?? "",
+                                "targetDate": hasTargetDate ? Self.dateString(targetDate) : "",
+                                "tags": tagsText
+                            ]
+                        },
+                        onApply: applyGeneratedFields
+                    )
 
                     field(L10n("名称 *")) {
                         TextField(L10n("目标名称"), text: $name)
@@ -37,8 +52,6 @@ struct ObjectiveCreateView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                    } trailing: {
-                        AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
                     }
                     field(L10n("验收标准")) {
                         TextEditor(text: $acceptanceCriteria)
@@ -48,8 +61,6 @@ struct ObjectiveCreateView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                    } trailing: {
-                        AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
                     }
 
                     HStack(spacing: 24) {
@@ -139,10 +150,37 @@ struct ObjectiveCreateView: View {
         }
     }
 
+    private func applyGeneratedFields(_ fields: [String: String]) {
+        name = fields["name"] ?? name
+        detail = fields["description"] ?? detail
+        acceptanceCriteria = fields["acceptanceCriteria"] ?? acceptanceCriteria
+        if let generatedPriority = fields["priority"] {
+            priority = generatedPriority.isEmpty ? nil : generatedPriority
+        }
+        if let dateText = fields["targetDate"] {
+            if dateText.isEmpty {
+                hasTargetDate = false
+            } else if let date = Self.parseDate(dateText) {
+                targetDate = date
+                hasTargetDate = true
+            }
+        }
+        tagsText = fields["tags"] ?? tagsText
+        if !tagsText.isEmpty { showAdvanced = true }
+    }
+
     private static func dateString(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+
+    private static func parseDate(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: value)
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {

@@ -70,7 +70,7 @@ export function handleEntityHttpRequest({
     path === "/memories" || path === "/memories/extract" ||
     path === "/agents" || path.startsWith("/agents/") ||
     path === "/skills" || path.startsWith("/skills/") ||
-    path === "/assistant/chat" || path === "/assist/draft" ||
+    path === "/assistant/chat" || path === "/assist/draft" || path === "/assist/form-draft" ||
     path === "/hub/search" || path === "/collaboration/route" ||
     // 只拦截 POST /sessions（创建，供 WorkItem 执行绑定）；
     // DELETE /sessions/:id 一律交给 server.mjs 的完整删除链路
@@ -121,6 +121,41 @@ export function handleEntityHttpRequest({
           timeoutMs: input.timeoutMs ?? 120_000
         });
         return sendJson(response, 200, { text: result.text ?? "", providerId: result.providerId });
+      }
+
+      // ---- 创建表单统一辅助填写 ----
+      // 一次后台生成该实体表单的全部可生成字段。结果只返回给客户端回填，绝不创建实体。
+      if (request.method === "POST" && path === "/assist/form-draft") {
+        if (!backgroundAgentService) {
+          throw apiError("INTERNAL", "backgroundAgentService is not configured.", 500);
+        }
+        const input = await readJson(request);
+        const formType = String(input.formType ?? "").trim();
+        const intent = String(input.prompt ?? "").trim();
+        const schema = FORM_DRAFT_SCHEMAS[formType];
+        if (!schema || !intent) {
+          throw apiError("INVALID_INPUT", "A supported formType and prompt are required.", 400);
+        }
+        const currentValues = validateCurrentFormValues(input.currentValues, schema);
+        const cwd = typeof input.cwd === "string" && input.cwd.trim()
+          ? input.cwd.trim()
+          : os.homedir();
+        const agentId = typeof input.agentId === "string" && input.agentId.trim()
+          ? input.agentId.trim()
+          : null;
+        const result = await backgroundAgentService.run({
+          purpose: "assist-form-draft",
+          cwd,
+          allowedRoots: [cwd],
+          permissionProfile: "read-only",
+          agentId,
+          intent: `${formType}: ${intent}`,
+          developerInstructions: formDraftInstructions(formType, schema),
+          prompt: formDraftPrompt(formType, intent, currentValues, schema),
+          timeoutMs: input.timeoutMs ?? 120_000
+        });
+        const fields = parseGeneratedFormDraft(result.text, schema);
+        return sendJson(response, 200, { formType, fields, providerId: result.providerId });
       }
 
       // ---- Agent ----
@@ -555,6 +590,145 @@ function draftPrompt(fieldLabel, prompt) {
     "User intent:",
     prompt
   ].join("\n");
+}
+
+const FORM_DRAFT_SCHEMAS = Object.freeze({
+  agent: Object.freeze({
+    name: "Short Agent name",
+    description: "Concise responsibility description",
+    role: 'Exactly "independentContributor" or "assistant"',
+    systemPrompt: "Detailed operating instructions for the Agent",
+    capabilities: "Comma-separated capability tags"
+  }),
+  objective: Object.freeze({
+    name: "Short objective name",
+    description: "Objective scope and desired outcome",
+    acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
+    priority: 'Empty, or exactly one of "low", "medium", "high", "urgent"',
+    targetDate: "Empty, or an ISO calendar date in YYYY-MM-DD format",
+    tags: "Comma-separated tags"
+  }),
+  workItem: Object.freeze({
+    title: "Short work-item title",
+    description: "Concrete implementation requirements and scope",
+    acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
+    priority: 'Exactly one of "low", "medium", "high"'
+  })
+});
+
+function validateCurrentFormValues(value, schema) {
+  if (value == null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw apiError("INVALID_INPUT", "currentValues must be an object of strings.", 400);
+  }
+  const allowed = new Set(Object.keys(schema));
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw apiError("INVALID_INPUT", `Unknown currentValues fields: ${unknown.join(", ")}.`, 400);
+  }
+  const normalized = {};
+  for (const [key, fieldValue] of Object.entries(value)) {
+    if (typeof fieldValue !== "string") {
+      throw apiError("INVALID_INPUT", `currentValues.${key} must be a string.`, 400);
+    }
+    normalized[key] = fieldValue;
+  }
+  return normalized;
+}
+
+function formDraftInstructions(formType, schema) {
+  return [
+    "You are Corptie's one-time structured form drafting helper, not the user's ordinary development Agent.",
+    `You are filling a ${formType} creation form with exactly these JSON string fields: ${Object.keys(schema).join(", ")}.`,
+    "Return ONLY one valid JSON object. Include every listed field exactly once, even when its value is an empty string.",
+    "Do not add fields, markdown fences, headings, commentary, or trailing text.",
+    "Do not write files, modify Git, start services, or use collaboration, subagents, skills, or external uploads.",
+    "You may read files in the working directory for context, but do not modify anything."
+  ].join(" ");
+}
+
+function formDraftPrompt(formType, intent, currentValues, schema) {
+  const fieldGuide = Object.entries(schema).map(([key, description]) => `- ${key}: ${description}`).join("\n");
+  return [
+    `Draft all fields for the Corptie ${formType} creation form.`,
+    "Preserve useful non-empty current values unless the user's request clearly replaces or improves them.",
+    "Use the language of the user's request. Keep names concise and acceptance criteria objectively verifiable.",
+    "",
+    "Field contract:",
+    fieldGuide,
+    "",
+    "Current form values:",
+    JSON.stringify(currentValues),
+    "",
+    "User request:",
+    intent
+  ].join("\n");
+}
+
+function parseGeneratedFormDraft(text, schema) {
+  const raw = typeof text === "string" ? text.trim() : "";
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw apiError("INVALID_GENERATED_DRAFT", "The Agent returned malformed structured form data.", 502);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw apiError("INVALID_GENERATED_DRAFT", "The Agent must return a JSON object.", 502);
+  }
+  const expected = Object.keys(schema);
+  const actual = Object.keys(parsed);
+  const missing = expected.filter((key) => !Object.prototype.hasOwnProperty.call(parsed, key));
+  const unknown = actual.filter((key) => !Object.prototype.hasOwnProperty.call(schema, key));
+  if (missing.length > 0 || unknown.length > 0) {
+    throw apiError(
+      "INVALID_GENERATED_DRAFT",
+      `Generated fields do not match the form contract (missing: ${missing.join(", ") || "none"}; unknown: ${unknown.join(", ") || "none"}).`,
+      502
+    );
+  }
+  for (const key of expected) {
+    if (typeof parsed[key] !== "string") {
+      throw apiError("INVALID_GENERATED_DRAFT", `Generated field ${key} must be a string.`, 502);
+    }
+  }
+  validateGeneratedFormEnums(parsed, schema);
+  if (Object.hasOwn(schema, "name") && !parsed.name.trim()) {
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated name must not be empty.", 502);
+  }
+  if (Object.hasOwn(schema, "title") && !parsed.title.trim()) {
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated title must not be empty.", 502);
+  }
+  if (Object.hasOwn(schema, "title") && !parsed.description.trim()) {
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated work-item description must not be empty.", 502);
+  }
+  return Object.fromEntries(expected.map((key) => [key, parsed[key].trim()]));
+}
+
+function validateGeneratedFormEnums(fields, schema) {
+  if (Object.hasOwn(schema, "role") && !["independentContributor", "assistant"].includes(fields.role)) {
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated role is invalid.", 502);
+  }
+  if (Object.hasOwn(schema, "priority")) {
+    const allowed = Object.hasOwn(schema, "targetDate")
+      ? ["", "low", "medium", "high", "urgent"]
+      : ["low", "medium", "high"];
+    if (!allowed.includes(fields.priority)) {
+      throw apiError("INVALID_GENERATED_DRAFT", "Generated priority is invalid.", 502);
+    }
+  }
+  if (Object.hasOwn(schema, "targetDate") && fields.targetDate && !isValidISODate(fields.targetDate)) {
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated targetDate must use YYYY-MM-DD.", 502);
+  }
+}
+
+function isValidISODate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
 }
 
 async function readJson(request) {

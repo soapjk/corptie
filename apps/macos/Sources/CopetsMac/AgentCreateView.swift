@@ -21,7 +21,6 @@ struct AgentCreateView: View {
     @State private var showAdvanced = false
     @State private var selectedSkillIds: Set<String> = []
     @State private var showSkillRegister = false
-    @State private var assistAgentId: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,6 +29,21 @@ struct AgentCreateView: View {
                     Text(L10n("创建 Agent"))
                         .font(.title3.bold())
 
+                    FormAssistPanel(
+                        formType: .agent,
+                        promptHint: L10n("例如：创建一名负责 SwiftUI 客户端、重视测试和兼容性的独立贡献者。"),
+                        currentValues: {
+                            [
+                                "name": name,
+                                "description": detail,
+                                "role": role,
+                                "systemPrompt": systemPrompt,
+                                "capabilities": capabilitiesText
+                            ]
+                        },
+                        onApply: applyGeneratedFields
+                    )
+
                     presetSection
 
                     field(L10n("名称 *")) {
@@ -37,8 +51,6 @@ struct AgentCreateView: View {
                     }
                     field(L10n("职责描述")) {
                         TextField(L10n("如：后端接口与数据库专家"), text: $detail)
-                    } trailing: {
-                        AgentAssistButton(fieldLabel: "职责描述", text: $detail, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)")
                     }
 
                     field(L10n("底层模型（Provider）")) {
@@ -79,8 +91,6 @@ struct AgentCreateView: View {
                             .padding(6)
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                    } trailing: {
-                        AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)；职责：\(detail)；类型：\(role == "assistant" ? "助手" : "独立贡献者")")
                     }
 
                     // 高级选项：整行可点击展开/折叠（替代 DisclosureGroup，避免 macOS 下只能点小三角才能展开）。
@@ -273,6 +283,15 @@ struct AgentCreateView: View {
     }
 
     // MARK: - 创建
+
+    private func applyGeneratedFields(_ fields: [String: String]) {
+        name = fields["name"] ?? name
+        detail = fields["description"] ?? detail
+        role = fields["role"] ?? role
+        systemPrompt = fields["systemPrompt"] ?? systemPrompt
+        capabilitiesText = fields["capabilities"] ?? capabilitiesText
+        if !capabilitiesText.isEmpty { showAdvanced = true }
+    }
 
     private func create() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
