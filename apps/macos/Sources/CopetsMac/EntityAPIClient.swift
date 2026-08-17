@@ -413,6 +413,45 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
+    // 创建页统一辅助填写：一次生成全部结构化字段，只返回草稿，不创建实体。
+    func assistFormDraft(
+        formType: AssistFormType,
+        prompt: String,
+        currentValues: [String: String],
+        cwd: String? = nil,
+        agentId: String? = nil
+    ) async -> AssistFormDraft? {
+        var request = URLRequest(url: baseURL.appending(path: "assist/form-draft"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "formType": formType.rawValue,
+            "prompt": prompt,
+            "currentValues": currentValues
+        ]
+        if let cwd, !cwd.isEmpty { body["cwd"] = cwd }
+        if let agentId, !agentId.isEmpty { body["agentId"] = agentId }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.error ?? "表单生成失败（HTTP \(http.statusCode)）"
+                return nil
+            }
+            let result = try decoder.decode(AssistFormDraft.self, from: data)
+            guard result.formType == formType.rawValue else {
+                errorMessage = "生成结果的表单类型不匹配。"
+                return nil
+            }
+            errorMessage = nil
+            return result
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     // 助手对话：POST /assistant/chat { content, sessionId? } → 返回消息列表
     func assistantChat(_ content: String, sessionId: String? = nil) async -> [AssistantMessage] {
         var request = URLRequest(url: baseURL.appending(path: "assistant/chat"))
