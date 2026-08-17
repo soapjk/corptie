@@ -7,7 +7,9 @@ export class OpenClackyManager {
     this.fetch = options.fetch ?? globalThis.fetch;
     this.WebSocket = options.WebSocket ?? globalThis.WebSocket;
     this.onSessionChanged = options.onSessionChanged ?? null;
+    this.resolveOwnedSessionIds = options.resolveOwnedSessionIds ?? (() => []);
     this.refreshIntervalMs = options.refreshIntervalMs ?? 10_000;
+    this.ownedSessionIds = new Set();
     this.sessions = new Map();
     this.details = new Map();
     this.sockets = new Map();
@@ -42,14 +44,28 @@ export class OpenClackyManager {
   }
 
   async refresh() {
-    const payload = await this.request("/api/sessions?limit=50");
-    const rows = Array.isArray(payload) ? payload : payload?.sessions;
-    if (!Array.isArray(rows)) throw new Error("OpenClacky returned an invalid Session list.");
+    const persistedIds = await this.resolveOwnedSessionIds();
+    if (!Array.isArray(persistedIds)) {
+      throw new Error("OpenClacky Session ownership resolver returned an invalid result.");
+    }
+    const ownedIds = new Set([
+      ...this.ownedSessionIds,
+      ...persistedIds.map(optionalText).filter(Boolean)
+    ]);
     const seen = new Set();
-    for (const row of rows) {
-      const summary = openClackySessionSummary(row);
-      seen.add(summary.external.sessionId);
-      this.sessions.set(summary.external.sessionId, summary);
+    for (const sessionId of ownedIds) {
+      try {
+        const payload = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
+        const summary = openClackySessionSummary(payload?.session ?? payload);
+        if (summary.external.sessionId !== sessionId) {
+          throw new Error(`OpenClacky returned Session ${summary.external.sessionId} for ${sessionId}.`);
+        }
+        seen.add(sessionId);
+        this.sessions.set(sessionId, summary);
+      } catch (error) {
+        if (error.statusCode === 404) continue;
+        throw error;
+      }
     }
     for (const id of this.sessions.keys()) {
       if (!seen.has(id)) this.sessions.delete(id);
@@ -73,6 +89,7 @@ export class OpenClackyManager {
     const row = payload?.session ?? payload;
     const summary = openClackySessionSummary(row);
     const sessionId = summary.external.sessionId;
+    this.ownedSessionIds.add(sessionId);
     this.sessions.set(sessionId, summary);
     this.ensureSocket(sessionId);
     const prompt = optionalText(input.prompt);
@@ -105,6 +122,7 @@ export class OpenClackyManager {
     await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     this.sockets.get(sessionId)?.close?.();
     this.sockets.delete(sessionId);
+    this.ownedSessionIds.delete(sessionId);
     this.sessions.delete(sessionId);
     this.details.delete(sessionId);
     this.onSessionChanged?.({ type: "deleted", sessionId });
@@ -247,7 +265,9 @@ export class OpenClackyManager {
     const text = await response.text();
     const payload = text ? safeJson(text) : {};
     if (!response.ok) {
-      throw new Error(payload?.error ?? `OpenClacky request failed (${response.status}).`);
+      const error = new Error(payload?.error ?? `OpenClacky request failed (${response.status}).`);
+      error.statusCode = response.status;
+      throw error;
     }
     return payload;
   }
