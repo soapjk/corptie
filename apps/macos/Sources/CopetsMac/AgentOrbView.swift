@@ -135,7 +135,7 @@ struct AgentOrbDemoView: View {
     )
     static let claude = Agent(
         agentId: "frontend-dev", name: "前端开发", description: "", role: "independentContributor",
-        status: "busy", provider: "claude-sdk", systemPrompt: "", capabilities: [],
+        status: "available", provider: "claude-sdk", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
 }

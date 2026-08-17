@@ -23,13 +23,30 @@ export function handleEntityHttpRequest({
   launchAgentSession,
   createSession,
   backgroundAgentService,
-  skillRegistryService
+  skillRegistryService,
+  resolveAgentAvailability
 }) {
   const path = url.pathname;
-  const presentAgent = (agent) => agent ? {
-    ...agent,
-    skillIds: objectiveService.store.listRegistrySkillIdsForAgent(agent.agentId)
-  } : null;
+  const presentAgent = (agent) => {
+    if (!agent) return null;
+    let availability = null;
+    try {
+      availability = typeof resolveAgentAvailability === "function"
+        ? resolveAgentAvailability(agent)
+        : null;
+    } catch (error) {
+      availability = { status: "unavailable", reason: error?.message ?? "Agent availability check failed." };
+    }
+    const unavailable = availability?.status === "unavailable";
+    return {
+      ...agent,
+      status: unavailable ? "unavailable" : "available",
+      statusReason: unavailable && typeof availability?.reason === "string"
+        ? availability.reason.trim() || null
+        : null,
+      skillIds: objectiveService.store.listRegistrySkillIdsForAgent(agent.agentId)
+    };
+  };
   const normalizeSkillIds = (value) => [...new Set((Array.isArray(value) ? value : [])
     .map((id) => String(id).trim()).filter(Boolean))];
   const validateSkillIds = (value) => {

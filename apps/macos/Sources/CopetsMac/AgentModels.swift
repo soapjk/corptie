@@ -12,6 +12,7 @@ struct Agent: Identifiable, Codable, Hashable {
     var description: String
     var role: String
     var status: String
+    var statusReason: String? = nil
     var provider: String?
     var systemPrompt: String
     var capabilities: [String]

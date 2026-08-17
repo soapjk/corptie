@@ -40,7 +40,7 @@ function tool(name, description, properties = {}, required = []) {
 
 export const collaborationDynamicTools = Object.freeze([
   tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities.", {
-    status: { type: "string", enum: ["available", "busy", "offline", "inactive"] }
+    status: { type: "string", enum: ["available", "unavailable"] }
   }),
   tool("corptie_agents_get", "Get one registered Agent, including its current Session binding.", {
     agent_id: { type: "string", minLength: 1 }

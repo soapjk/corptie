@@ -72,7 +72,8 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     assistantService: services.assistantService,
     createSession: services.createSession,
     launchSession: services.launchSession,
-    launchAgentSession: services.launchAgentSession
+    launchAgentSession: services.launchAgentSession,
+    resolveAgentAvailability: services.resolveAgentAvailability
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
@@ -604,11 +605,32 @@ test("PATCH /agents/:id 编辑 Agent", async () => {
     assert.equal(updated.body.agent.name, "后端开发 2");
     assert.equal(updated.body.agent.description, "负责后端");
     assert.equal(updated.body.agent.systemPrompt, "你是后端专家");
-    assert.equal(updated.body.agent.status, "inactive");
+    assert.equal(updated.body.agent.status, "available");
 
     // 不存在的 id → 404
     const missing = await callApi({ method: "PATCH", pathname: "/agents/nope", body: { name: "x" }, ...services });
     assert.equal(missing.statusCode, 404);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("GET /agents dynamically reports an unregistered Provider without persisting an Agent lifecycle state", async () => {
+  const services = await createServices();
+  try {
+    const created = await callApi({
+      method: "POST",
+      pathname: "/agents",
+      body: { name: "Unavailable Provider Agent", provider: "removed-provider" },
+      resolveAgentAvailability: (agent) => agent.provider === "removed-provider"
+        ? { status: "unavailable", reason: "Agent Provider is not registered: removed-provider" }
+        : { status: "available" },
+      ...services
+    });
+    assert.equal(created.body.agent.status, "unavailable");
+    assert.equal(created.body.agent.statusReason, "Agent Provider is not registered: removed-provider");
+    assert.equal(services.store.getAgent(created.body.agent.agentId).status, "available");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
