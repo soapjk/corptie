@@ -13,12 +13,25 @@ struct WorkItemCreateView: View {
     @State private var acceptanceCriteria = ""
     @State private var priority = "medium"
     @State private var workspaceId: String?
-    @State private var assistAgentId: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(L10n("新建工作项"))
                 .font(.title3.bold())
+
+            FormAssistPanel(
+                formType: .workItem,
+                promptHint: L10n("例如：重构三个创建页，共享一键生成协议和错误处理，并补充测试。"),
+                currentValues: {
+                    [
+                        "title": title,
+                        "description": detail,
+                        "acceptanceCriteria": acceptanceCriteria,
+                        "priority": priority
+                    ]
+                },
+                onApply: applyGeneratedFields
+            )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("标题 *"))
@@ -27,13 +40,9 @@ struct WorkItemCreateView: View {
                 TextField(L10n("工作项标题"), text: $title)
             }
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(L10n("描述 *"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)")
-                    Spacer()
-                }
+                Text(L10n("描述 *"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextEditor(text: $detail)
                     .font(.body)
                     .frame(height: 70)
@@ -41,13 +50,9 @@ struct WorkItemCreateView: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
             }
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(L10n("验收标准"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "工作项标题：\(title)；描述：\(detail)")
-                    Spacer()
-                }
+                Text(L10n("验收标准"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 TextEditor(text: $acceptanceCriteria)
                     .font(.body)
                     .frame(height: 70)
@@ -107,5 +112,12 @@ struct WorkItemCreateView: View {
                 dismiss()
             }
         }
+    }
+
+    private func applyGeneratedFields(_ fields: [String: String]) {
+        title = fields["title"] ?? title
+        detail = fields["description"] ?? detail
+        acceptanceCriteria = fields["acceptanceCriteria"] ?? acceptanceCriteria
+        priority = fields["priority"] ?? priority
     }
 }
