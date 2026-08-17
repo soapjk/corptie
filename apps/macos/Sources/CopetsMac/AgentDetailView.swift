@@ -146,40 +146,47 @@ struct AgentDetailView: View {
             field(L10n("名称")) {
                 TextField(L10n("名称"), text: $name)
             }
-            field(L10n("描述")) {
-                TextField(L10n("描述"), text: $detail)
-            } trailing: {
-                AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)")
-            }
-            field("Provider") {
-                Picker("", selection: $provider) {
-                    Text(L10n("无")).tag("")
-                    if !provider.isEmpty,
-                       !creatableProviders.contains(where: { $0.matches(provider) }) {
-                        Text(backendClient.providerDisplayName(for: provider) ?? provider).tag(provider)
-                    }
-                    ForEach(creatableProviders) { descriptor in
-                        Text(descriptor.displayName).tag(descriptor.id)
-                    }
+            if agent.isPlatformAssistant {
+                Text(L10n("这是 Corptie 内置的平台助手。它的 Provider、提示词、Skill 和平台权限由应用管理，不能由用户修改。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                field(L10n("描述")) {
+                    TextField(L10n("描述"), text: $detail)
+                } trailing: {
+                    AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)")
                 }
-                .labelsHidden()
-                .frame(maxWidth: 200, alignment: .leading)
+                field("Provider") {
+                    Picker("", selection: $provider) {
+                        Text(L10n("无")).tag("")
+                        if !provider.isEmpty,
+                           !creatableProviders.contains(where: { $0.matches(provider) }) {
+                            Text(backendClient.providerDisplayName(for: provider) ?? provider).tag(provider)
+                        }
+                        ForEach(creatableProviders) { descriptor in
+                            Text(descriptor.displayName).tag(descriptor.id)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 200, alignment: .leading)
+                }
+                field("System Prompt") {
+                    TextEditor(text: $systemPrompt)
+                        .font(.body)
+                        .frame(height: 80)
+                        .padding(6)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
+                } trailing: {
+                    AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)；描述：\(detail)")
+                }
+                AgentSkillSelectionView(
+                    skills: client.skills,
+                    selectedSkillIds: $selectedSkillIds,
+                    isEnabled: providerSupportsSkillLoading,
+                    onRegister: { showSkillRegister = true }
+                )
             }
-            field("System Prompt") {
-                TextEditor(text: $systemPrompt)
-                    .font(.body)
-                    .frame(height: 80)
-                    .padding(6)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-            } trailing: {
-                AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)；描述：\(detail)")
-            }
-            AgentSkillSelectionView(
-                skills: client.skills,
-                selectedSkillIds: $selectedSkillIds,
-                isEnabled: providerSupportsSkillLoading,
-                onRegister: { showSkillRegister = true }
-            )
             if let saveError {
                 Text(saveError)
                     .font(.caption)
@@ -227,14 +234,19 @@ struct AgentDetailView: View {
                 Task {
                     isSaving = true
                     saveError = nil
-                    let updated = await client.updateAgent(
-                        agentId: agent.agentId,
-                        name: name,
-                        description: detail,
-                        provider: provider.isEmpty ? nil : provider,
-                        systemPrompt: systemPrompt,
-                        skillIds: Array(selectedSkillIds)
-                    )
+                    let updated: Agent?
+                    if agent.isPlatformAssistant {
+                        updated = await client.updateAgent(agentId: agent.agentId, name: name)
+                    } else {
+                        updated = await client.updateAgent(
+                            agentId: agent.agentId,
+                            name: name,
+                            description: detail,
+                            provider: provider.isEmpty ? nil : provider,
+                            systemPrompt: systemPrompt,
+                            skillIds: Array(selectedSkillIds)
+                        )
+                    }
                     isSaving = false
                     if updated != nil {
                         dismiss()
@@ -244,7 +256,8 @@ struct AgentDetailView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSaving || (!selectedSkillIds.isEmpty && !providerSupportsSkillLoading))
+            .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (!agent.isPlatformAssistant && !selectedSkillIds.isEmpty && !providerSupportsSkillLoading))
         }
     }
 
@@ -263,13 +276,17 @@ struct AgentDetailView: View {
     // MARK: - 删除（红色，底部）
 
     private var deleteButton: some View {
-        HStack {
-            Spacer()
-            Button {
-                showDeleteConfirm = true
-            } label: {
-                Label(L10n("删除 Agent"), systemImage: "trash")
-                    .foregroundStyle(.red)
+        Group {
+            if !agent.isPlatformAssistant {
+                HStack {
+                    Spacer()
+                    Button {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label(L10n("删除 Agent"), systemImage: "trash")
+                            .foregroundStyle(.red)
+                    }
+                }
             }
         }
     }

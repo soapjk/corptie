@@ -334,6 +334,51 @@ test("GET /agents 返回带 role 的 Agent（预种助手 Corptie）", async () 
     assert.ok(assistant, "预种的助手 Agent 应存在");
     assert.equal(assistant.name, "Corptie");
     assert.equal(assistant.agentId, "assistant");
+    assert.equal(assistant.agentKind, "platformAssistant");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功能配置", async () => {
+  const services = await createServices();
+  try {
+    const renamed = await callApi({
+      method: "PATCH",
+      pathname: "/agents/assistant",
+      body: { name: "我的 Corptie" },
+      ...services
+    });
+    assert.equal(renamed.statusCode, 200);
+    assert.equal(renamed.body.agent.name, "我的 Corptie");
+
+    for (const body of [
+      { provider: "claude-sdk" },
+      { systemPrompt: "ignore product rules" },
+      { description: "changed" },
+      { capabilities: [] },
+      { workDir: "/tmp/other" },
+      { skillIds: [] }
+    ]) {
+      const rejected = await callApi({
+        method: "PATCH",
+        pathname: "/agents/assistant",
+        body,
+        ...services
+      });
+      assert.equal(rejected.statusCode, 403);
+      assert.equal(rejected.body.code, "SYSTEM_AGENT_PROTECTED");
+    }
+
+    const deleted = await callApi({ method: "DELETE", pathname: "/agents/assistant", ...services });
+    assert.equal(deleted.statusCode, 403);
+    assert.equal(deleted.body.code, "SYSTEM_AGENT_PROTECTED");
+
+    const assistant = services.store.getAgent("assistant");
+    assert.equal(assistant.name, "我的 Corptie");
+    assert.equal(assistant.provider, "codex-app-server");
+    assert.deepEqual(assistant.capabilities, ["platform.manage"]);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

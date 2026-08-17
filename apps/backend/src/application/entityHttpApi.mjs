@@ -3,6 +3,7 @@
 
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
+import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import os from "node:os";
 
 function normalizeEnvironment(value = "") {
@@ -180,6 +181,8 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
+          // Fail before avatar file I/O so a mixed cosmetic + protected patch cannot leave orphaned files.
+          if (isPlatformAssistant(id)) assertPlatformAssistantPatch(input);
           const skillIds = Array.isArray(input.skillIds) ? validateSkillIds(input.skillIds) : null;
           // 头像：avatarPath 传源文件路径 → 复制到托管目录并落库；传 null/空串 → 清除。
           // 未传 avatarPath 键则不动头像。
@@ -488,6 +491,7 @@ export function handleEntityHttpRequest({
 function statusForCode(code) {
   if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND"].includes(code)) return 404;
   if (["CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT"].includes(code)) return 409;
+  if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN"].includes(code)) return 403;
   return 400;
 }
 
