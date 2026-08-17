@@ -77,6 +77,7 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     createSession: services.createSession,
     launchSession: services.launchSession,
     launchAgentSession: services.launchAgentSession,
+    launchObjectiveChatSession: services.launchObjectiveChatSession,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     onEntityChanged: services.onEntityChanged
@@ -122,6 +123,38 @@ test("POST /objectives → 创建，GET /objectives → 列表", async () => {
     const listed = await callApi({ method: "GET", pathname: "/objectives", ...services });
     assert.equal(listed.statusCode, 200);
     assert.equal(listed.body.objectives.length, 1);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /objectives/:id/sessions creates a distinct Objective Chat with an Assistant", async () => {
+  const services = await createServices();
+  try {
+    const objective = services.objectiveService.createObjective({ name: "Objective Chat" });
+    const assistant = services.store.createAgent({ name: "Planner", role: "assistant", provider: "codex" });
+    const calls = [];
+    const result = await callApi({
+      method: "POST",
+      pathname: `/objectives/${objective.id}/sessions`,
+      body: { agentId: assistant.agentId, title: "Planning" },
+      launchObjectiveChatSession: async (input) => {
+        calls.push(input);
+        return {
+          id: "objective-chat:1", title: "Planning", agent: "Planner", agentId: assistant.agentId,
+          sessionKind: "objectiveChat", objectiveId: objective.id, workItemId: null,
+          status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
+        };
+      },
+      ...services
+    });
+    assert.equal(result.statusCode, 201);
+    assert.equal(result.body.session.sessionKind, "objectiveChat");
+    assert.equal(result.body.session.objectiveId, objective.id);
+    assert.equal(result.body.session.workItemId, null);
+    assert.equal(calls[0].agent.agentId, assistant.agentId);
+    assert.equal(calls[0].objective.id, objective.id);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

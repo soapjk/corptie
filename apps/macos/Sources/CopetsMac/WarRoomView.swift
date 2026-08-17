@@ -293,6 +293,7 @@ struct WorkItemBoardView: View {
     var onRequestReload: () -> Void = {}
     @State private var boardItems: [WorkItem] = []
     @State private var isCreating = false
+    @State private var isCreatingObjectiveChat = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -300,6 +301,11 @@ struct WorkItemBoardView: View {
                 Text(objective.name)
                     .font(.title3.bold())
                 Spacer()
+                Button {
+                    isCreatingObjectiveChat = true
+                } label: {
+                    Label(L10n("讨论 Objective"), systemImage: "bubble.left.and.bubble.right")
+                }
                 Button {
                     isCreating = true
                 } label: {
@@ -324,6 +330,9 @@ struct WorkItemBoardView: View {
                 boardItems.append(created)
                 onRequestReload()
             }
+        }
+        .sheet(isPresented: $isCreatingObjectiveChat) {
+            NewSessionCreationSheet(fixedObjective: objective)
         }
     }
 }

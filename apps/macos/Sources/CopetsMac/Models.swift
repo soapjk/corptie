@@ -4,6 +4,7 @@ import SwiftUI
 
 enum SessionKind: String, Codable, Equatable, Sendable {
     case assistantChat
+    case objectiveChat
     case worker
     case legacy
 }
@@ -79,7 +80,8 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
 
     var resolvedSessionKind: SessionKind {
         if let sessionKind { return sessionKind }
-        return workItemId?.isEmpty == false ? .worker : .legacy
+        if workItemId?.isEmpty == false { return .worker }
+        return objectiveId?.isEmpty == false ? .objectiveChat : .legacy
     }
 
     var isConnecting: Bool {

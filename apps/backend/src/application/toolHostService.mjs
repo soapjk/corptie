@@ -20,7 +20,7 @@ export class ToolHostService {
     const attachment = Object.freeze({
       actorId,
       tools: Object.freeze([...this.catalog.definitions({ actorId, metadata: context })]),
-      metadata: Object.freeze({ purpose: context.purpose ?? "session" })
+      metadata: Object.freeze({ ...context, purpose: context.purpose ?? "session" })
     });
     const providerAttachment = await this.registry.invoke(
       providerId,

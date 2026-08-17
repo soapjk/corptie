@@ -385,6 +385,7 @@ func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGrou
     var assistantOrder: [String] = []
     var assistantRows: [String: [SessionRowModel]] = [:]
     var workerRows: [SessionRowModel] = []
+    var objectiveRows: [SessionRowModel] = []
     var legacyRows: [SessionRowModel] = []
 
     for row in rows {
@@ -393,6 +394,8 @@ func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGrou
             let key = row.session.agentId ?? "__assistant_unbound__"
             if assistantRows[key] == nil { assistantOrder.append(key) }
             assistantRows[key, default: []].append(row)
+        case .objectiveChat:
+            objectiveRows.append(row)
         case .worker:
             workerRows.append(row)
         case .legacy:
@@ -414,6 +417,14 @@ func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGrou
             title: L10n("Worker Session"),
             isAssistant: false,
             rows: workerRows
+        ))
+    }
+    if !objectiveRows.isEmpty {
+        groups.append(SessionGroup(
+            key: "__objective__",
+            title: L10n("Objective Chat"),
+            isAssistant: true,
+            rows: objectiveRows
         ))
     }
     if !legacyRows.isEmpty {
@@ -478,7 +489,7 @@ struct SessionDetailPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     statusCard
 
-                    if session.resolvedSessionKind == .assistantChat {
+                    if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
                         assistantSection
                         contextReferencesSection
                     }

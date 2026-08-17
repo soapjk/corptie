@@ -20,6 +20,7 @@ import {
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
+import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import {
   applyPersistedSessionOrder,
@@ -33,6 +34,12 @@ import {
   persistProviderSessionProjection
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
+import { ObjectiveChatContextService } from "./application/objectiveChatContextService.mjs";
+import {
+  ObjectiveChatOperationService,
+  objectiveChatDynamicTools,
+  callObjectiveChatDynamicTool
+} from "./application/objectiveChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
@@ -181,6 +188,13 @@ const objectiveService = new ObjectiveApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
+const objectiveChatContextService = new ObjectiveChatContextService({ store });
+const objectiveChatOperationService = new ObjectiveChatOperationService({
+  store,
+  objectiveService,
+  contextService: objectiveChatContextService,
+  startWorkItem: ({ workItem, agent, title }) => launchAndBindWorkItemSession({ workItem, agent, title })
+});
 const hubService = new HubService({
   store,
   embedder: createOpenAiEmbedder(store.choiceParserSettings())
@@ -268,6 +282,12 @@ const hostToolCatalog = new HostToolCatalog([
     tools: platformDynamicTools,
     authorize: ({ actorId }) => isPlatformAssistant(store.getAgent(actorId)),
     execute: (input) => callPlatformDynamicTool(platformOperationService, input)
+  },
+  {
+    id: "objective-chat",
+    tools: objectiveChatDynamicTools,
+    authorize: ({ metadata }) => metadata?.sessionKind === "objectiveChat" && Boolean(metadata?.objectiveId),
+    execute: (input) => callObjectiveChatDynamicTool(objectiveChatOperationService, input)
   }
 ]);
 let toolHostService = null;
@@ -284,7 +304,8 @@ const codexRuntime = createCodexProviderRuntime({
   },
   onDynamicToolCall: (params) => toolHostService.execute({
     ...params,
-    actorId: params.agentId
+    actorId: params.agentId,
+    metadata: params.metadata
   })
 });
 const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
@@ -318,7 +339,10 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   prepareWorkspaceTransition: switchClaudeProviderWorkspace,
   attachTools: async (attachment) => claudeToolHostAttachment(
     attachment,
-    await claudeCollaborationRuntimeOptionsWithAgentContext(attachment.actorId)
+    withObjectiveChatClaudeContext(
+      await claudeCollaborationRuntimeOptionsWithAgentContext(attachment.actorId, attachment.metadata),
+      attachment.metadata
+    )
   ),
   resolveRuntimeOptions: (providerSessionId) => claudeRuntimeOptionsForSession(providerSessionId)
 });
@@ -385,7 +409,10 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     prepareWorkspaceTransition: switchCodexProviderWorkspace,
     attachTools: async (attachment) => codexToolHostAttachment(
       attachment,
-      await collaborationProviderRuntimeOptionsWithAgentContext(attachment.actorId)
+      withObjectiveChatCodexContext(
+        await collaborationProviderRuntimeOptionsWithAgentContext(attachment.actorId),
+        attachment.metadata
+      )
     ),
     runBackgroundPrompt: (input) => codexRuntime.runEphemeralPrompt({
       cwd: input.cwd,
@@ -416,9 +443,15 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  resolveMessageContext: (reference) => store.getSession(reference.sessionId)?.sessionKind === "assistantChat"
-    ? sessionContextReferenceService.resolve(reference.sessionId)
-    : null,
+  resolveMessageContext: (reference) => {
+    const stored = store.getSession(reference.sessionId);
+    if (stored?.sessionKind === "objectiveChat" && stored.objectiveId) {
+      return objectiveChatContextService.build(stored.objectiveId);
+    }
+    return stored?.sessionKind === "assistantChat"
+      ? sessionContextReferenceService.resolve(reference.sessionId)
+      : null;
+  },
   bindCreatedSession: async ({ providerId, session, input, context }) => {
     persistProviderSessionProjection(store, session, {
       providerId,
@@ -1718,8 +1751,8 @@ function collaborationProviderRuntimeOptions(agentId) {
   };
 }
 
-function claudeCollaborationRuntimeOptions(agentId) {
-  const mcp = collaborationMcpProcessOptions(agentId);
+function claudeCollaborationRuntimeOptions(agentId, metadata = null) {
+  const mcp = collaborationMcpProcessOptions(agentId, metadata);
   return {
     mcpServers: {
       [collaborationMcpServerName(agentId)]: {
@@ -1745,8 +1778,8 @@ function claudeCollaborationRuntimeOptions(agentId) {
 }
 
 // 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
-async function claudeCollaborationRuntimeOptionsWithAgentContext(agentId) {
-  const base = claudeCollaborationRuntimeOptions(agentId);
+async function claudeCollaborationRuntimeOptionsWithAgentContext(agentId, metadata = null) {
+  const base = claudeCollaborationRuntimeOptions(agentId, metadata);
   if (!agentId) return base;
   const agentContext = await collaborationAgentContextInstructions(agentId);
   if (!agentContext) return base;
@@ -1757,14 +1790,20 @@ async function claudeCollaborationRuntimeOptionsWithAgentContext(agentId) {
   };
 }
 
-function collaborationMcpProcessOptions(agentId) {
+function collaborationMcpProcessOptions(agentId, metadata = null) {
   return {
     command: process.execPath,
     args: [collaborationMcpServerPath],
     env: {
       CORPTIE_AGENT_ID: agentId,
       CORPTIE_BACKEND_URL: `http://127.0.0.1:${port}`,
-      CORPTIE_ENV: environmentName
+      CORPTIE_ENV: environmentName,
+      ...(metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
+        ? {
+            CORPTIE_OBJECTIVE_CHAT_ID: metadata.objectiveId,
+            CORPTIE_OBJECTIVE_CHAT_SESSION_ID: metadata.sessionId ?? ""
+          }
+        : {})
     }
   };
 }
@@ -1780,10 +1819,19 @@ async function claudeRuntimeOptionsForSession(providerSessionId) {
       .find(Boolean);
     agent = ensureCollaborationAgentForSession(session);
   }
+  const session = store.getSession(providerSessionId);
+  const metadata = sessionToolMetadata(session);
   return agent
     ? claudeToolHostAttachment(
-        { actorId: agent.agentId, tools: hostToolCatalog.definitions({ actorId: agent.agentId }) },
-        await claudeCollaborationRuntimeOptionsWithAgentContext(agent.agentId)
+        {
+          actorId: agent.agentId,
+          tools: hostToolCatalog.definitions({ actorId: agent.agentId, metadata }),
+          metadata
+        },
+        withObjectiveChatClaudeContext(
+          await claudeCollaborationRuntimeOptionsWithAgentContext(agent.agentId, metadata),
+          metadata
+        )
       )
     : {};
 }
@@ -1793,7 +1841,50 @@ function collaborationThreadOptionsForSession(sessionId) {
   const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const agent = collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(session);
-  return collaborationThreadOptions(agent?.agentId);
+  if (!agent?.agentId) return {};
+  const metadata = sessionToolMetadata(session);
+  return codexToolHostAttachment({
+    actorId: agent.agentId,
+    tools: hostToolCatalog.definitions({ actorId: agent.agentId, metadata }),
+    metadata
+  }, withObjectiveChatCodexContext(collaborationProviderRuntimeOptions(agent.agentId), metadata));
+}
+
+function sessionToolMetadata(session) {
+  return {
+    purpose: "session",
+    sessionKind: session?.sessionKind ?? "legacy",
+    objectiveId: session?.objectiveId ?? null,
+    sessionId: session?.id ?? null
+  };
+}
+
+function objectiveChatInstructions(metadata) {
+  return metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
+    ? objectiveChatContextService.build(metadata.objectiveId).prompt
+    : "";
+}
+
+function withObjectiveChatCodexContext(options, metadata) {
+  const context = objectiveChatInstructions(metadata);
+  if (!context) return options;
+  return {
+    ...options,
+    developerInstructions: [options?.developerInstructions, context].filter(Boolean).join("\n\n")
+  };
+}
+
+function withObjectiveChatClaudeContext(options, metadata) {
+  const context = objectiveChatInstructions(metadata);
+  if (!context) return options;
+  const systemPrompt = options?.systemPrompt ?? { type: "preset", preset: "claude_code", append: "" };
+  return {
+    ...options,
+    systemPrompt: {
+      ...systemPrompt,
+      append: [systemPrompt.append, context].filter(Boolean).join("\n\n")
+    }
+  };
 }
 
 function workspaceInventory(logical) {
@@ -2924,6 +3015,59 @@ async function launchAgentSession({ agent, title, prompt }) {
   // 把自由会话归属到该 Agent，使 GET /agents/:id/sessions 与前端按 Agent 分组能定位到它。
   collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
   return store.getSession(session.id) ?? session;
+}
+
+async function launchObjectiveChatSession({ agent, objective, title, prompt: requestedPrompt }) {
+  if (agent.role !== "assistant") {
+    const error = new Error("只有 Assistant 才能创建 Objective Chat Session。");
+    error.code = "AGENT_NOT_ASSISTANT";
+    throw error;
+  }
+  const providerId = entityAgentProviderId(agent.provider);
+  if (!providerId) {
+    const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
+    error.code = "PROVIDER_UNSUPPORTED";
+    throw error;
+  }
+  const workspacePaths = objective.workspaceIds.map((id) => store.resolveWorkspacePath(id)).filter(Boolean);
+  const cwd = workspacePaths[0] ?? await ensureAgentWorkDir(agent, { environmentName });
+  const openingPrompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
+    ? requestedPrompt.trim()
+    : `Review the current Objective context for ${objective.name} and reply exactly: Ready`;
+  const prompt = agentProviderRegistry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)
+    ? openingPrompt
+    : `${objectiveChatContextService.build(objective.id).prompt}\n\nUser opening message:\n${openingPrompt}`;
+  const session = await createSessionThroughApplication(
+    providerId,
+    {
+      cwd,
+      title,
+      defaultTitle: `${objective.name}_Objective_Chat`,
+      prompt,
+      agent: agent.name,
+      sessionKind: "objectiveChat",
+      runtimeWorkspaceRoots: workspacePaths.length > 0 ? workspacePaths : [cwd]
+    },
+    { source: "objective", actorId: agent.agentId, objectiveId: objective.id, sessionKind: "objectiveChat" }
+  );
+  collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
+  return store.bindSessionToObjective(session.id, objective.id);
+}
+
+async function launchAndBindWorkItemSession({ workItem, agent, title }) {
+  if (workItem.current_session_id) {
+    await memoryExtractor.extractFromSession(workItem.current_session_id, {
+      objectiveId: workItem.objective_id,
+      workItemId: workItem.id,
+      agentId: workItem.main_agent_id
+    });
+    store.closeSession(workItem.current_session_id);
+  }
+  const session = await launchWorkItemSession({ agent, workItem, title });
+  const bound = store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);
+  store.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
+  emitEvent("WorkItemChanged", { action: "execution-started", entity: store.getWorkItem(workItem.id) });
+  return bound;
 }
 
 // 实体 WorkItem 状态由「执行动作」自动驱动，不由用户手改：
@@ -4844,6 +4988,40 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
+  if (request.method === "POST" && url.pathname === "/internal/objective-chat/tool") {
+    readJson(request)
+      .then(async (input) => {
+        const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
+          ? request.headers["x-corptie-agent-id"].trim()
+          : "";
+        const requestedSessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
+        const session = (requestedSessionId ? store.getSession(requestedSessionId) : null)
+          ?? store.listSessionsByAgent(actorId).find((candidate) =>
+            candidate.sessionKind === "objectiveChat" && candidate.objectiveId === input.objectiveId
+          );
+        const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
+        if (!actorId || !session || session.sessionKind !== "objectiveChat"
+          || session.objectiveId !== input.objectiveId
+          || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
+          const error = new Error("Objective Chat tool scope is invalid or no longer active.");
+          error.code = "OBJECTIVE_CHAT_SCOPE_REQUIRED";
+          throw error;
+        }
+        const result = await toolHostService.execute({
+          actorId,
+          tool: input.tool,
+          arguments: input.arguments ?? {},
+          metadata: sessionToolMetadata(session)
+        });
+        sendJson(response, 200, result);
+      })
+      .catch((error) => sendJson(response, errorStatus(error, 403), {
+        error: error.message,
+        code: error.code ?? "OBJECTIVE_CHAT_TOOL_FAILED"
+      }));
+    return;
+  }
+
   if (handleCollaborationHttpRequest({
     request,
     response,
@@ -4912,6 +5090,7 @@ function route(request, response) {
     assistantService,
     launchSession: launchWorkItemSession,
     launchAgentSession,
+    launchObjectiveChatSession,
     createSession: (input) => {
       const providerId = requestedProviderId(input.providerId ?? input.agent);
       return createSessionThroughApplication(providerId, input, { source: "http" });
