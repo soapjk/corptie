@@ -26,6 +26,26 @@ export function interruptedAgentWorkRecoveryPatch(workItem) {
   };
 }
 
+export function assertAgentWorkSessionReference(workItem, reference) {
+  if (!workItem?.sessionId || !reference?.sessionId || workItem.sessionId !== reference.sessionId) {
+    const error = new Error("Queued Agent work resolved to a different product Session.");
+    error.code = "AGENT_WORK_ROUTE_MISMATCH";
+    throw error;
+  }
+  if (workItem.source?.type !== "workspace-continuation") return reference;
+  const source = workItem.source;
+  if (source.productSessionId !== reference.sessionId
+    || source.logicalSessionId !== reference.logicalSessionId
+    || source.bindingId !== reference.bindingId
+    || source.providerSessionId !== reference.providerSessionId
+    || source.routingVersion !== reference.routingVersion) {
+    const error = new Error("Queued workspace continuation resolved to a stale Provider binding.");
+    error.code = "STALE_WORKSPACE_CONTINUATION";
+    throw error;
+  }
+  return reference;
+}
+
 export function annotateAgentWorkDetailItems(detailItems = [], workItems = []) {
   const workByTurnId = new Map(
     workItems.filter((item) => item.targetTurnId).map((item) => [item.targetTurnId, item])

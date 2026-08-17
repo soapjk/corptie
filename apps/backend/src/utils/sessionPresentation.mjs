@@ -56,9 +56,45 @@ export function reconcileAuthoritativeRunState(session, status) {
 }
 
 export function sessionHasActiveRun(session) {
+  const continuationState = session?.external?.workspace?.continuationState;
+  const activeTurnId = session?.external?.activeTurnId || session?.rawStatus?.activeTurnId;
+  if (["pending", "queued"].includes(continuationState) && !activeTurnId) return false;
   return ["running", "blocked"].includes(session?.status)
-    || Boolean(session?.external?.activeTurnId)
-    || Boolean(session?.rawStatus?.activeTurnId);
+    || Boolean(activeTurnId);
+}
+
+export function applyWorkspaceContinuationPresentation(session, transition) {
+  if (!session || !transition) return session;
+  const state = transition.continuationState;
+  if (["pending", "queued"].includes(state)) {
+    return {
+      ...session,
+      status: "running",
+      progress: Math.min(Number(session.progress) || 0, 0.5),
+      activityStatus: "Waiting to continue in the switched Worktree"
+    };
+  }
+  if (state === "running") {
+    return {
+      ...session,
+      status: "running",
+      progress: Math.max(Number(session.progress) || 0, 0.5),
+      activityStatus: session.activityStatus || "Continuing in the switched Worktree"
+    };
+  }
+  if (state === "failed") {
+    return {
+      ...session,
+      status: "failed",
+      activityStatus: transition.continuationError || "Failed to continue after switching Worktrees"
+    };
+  }
+  return session;
+}
+
+export function workspaceContinuationKeepsSessionActive(pendingTransition, committedTransition) {
+  if (pendingTransition && !["committed", "failed"].includes(pendingTransition.phase)) return true;
+  return ["pending", "queued", "running"].includes(committedTransition?.continuationState);
 }
 
 export function composeStoredSessionList({

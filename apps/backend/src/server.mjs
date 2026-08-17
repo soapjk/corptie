@@ -77,11 +77,13 @@ import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
+  applyWorkspaceContinuationPresentation,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
   reconcileAuthoritativeRunState,
-  sessionHasActiveRun
+  sessionHasActiveRun,
+  workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
 import {
@@ -123,6 +125,7 @@ import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import {
   annotateAgentWorkDetailItems,
+  assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued
 } from "./utils/agentWorkQueue.mjs";
@@ -295,10 +298,15 @@ const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
     ),
   enqueueWork: (workItem) => store.enqueueAgentWorkItem(workItem),
   scheduleDrain: (agentId) => scheduleAgentWorkDrain(agentId),
-  onEvent: (type, payload) => emitEvent(type, payload, {
-    sessionId: payload.logicalSession?.legacySessionId ?? payload.workItem?.sessionId ?? null,
-    source: { type: "workspace-continuation" }
-  })
+  onEvent: (type, payload) => {
+    const sessionId = payload.logicalSession?.legacySessionId ?? payload.workItem?.sessionId ?? null;
+    emitEvent(type, payload, {
+      sessionId,
+      source: { type: "workspace-continuation" }
+    });
+    const transitionId = payload.transitionId ?? payload.transition?.transitionId ?? null;
+    if (transitionId) settleWorkItemForWorkspaceContinuation(transitionId);
+  }
 });
 const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   store,
@@ -666,13 +674,14 @@ function sessionWithLogicalWorkspace(session, logical) {
     : null;
   const cwd = worktree?.canonicalPath || worktree?.path || logical.activeBinding?.boundCwd || session.external?.cwd;
   const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
+  const presented = applyWorkspaceContinuationPresentation(session, latestTransition);
   return {
-    ...session,
-    sessionId: logical.legacySessionId ?? session.id,
+    ...presented,
+    sessionId: logical.legacySessionId ?? presented.id,
     logicalSessionId: logical.logicalSessionId,
     publicSessionId: logical.logicalSessionId,
     external: {
-      ...(session.external ?? {}),
+      ...(presented.external ?? {}),
       threadId: logical.activeThreadId,
       cwd,
       logicalSessionId: logical.logicalSessionId,
@@ -2069,7 +2078,6 @@ function handleCodexAppServerNotification(message) {
         }
       };
       upsertManagedCodexSession(nextSession);
-      settleEntityWorkItemFromSession(nextSession);
       if (!failed && !cancelled && latestAgentMessage?.text) {
         scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
       }
@@ -2088,6 +2096,7 @@ function handleCodexAppServerNotification(message) {
         });
         workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
       }
+      settleEntityWorkItemFromSession(nextSession);
       const agent = collaborationCore.getAgentForSession(nextSession.id);
       if (!failed && !cancelled) {
         refreshWorkspaceInventoryAfterTurn(logicalRoute);
@@ -2940,7 +2949,14 @@ function settleEntityWorkItemFromSession(session) {
   const sessionStatus = session.status;
   let nextStatus;
   if (["running", "blocked"].includes(sessionStatus)) nextStatus = "in_progress";
-  else if (["complete", "completed", "done"].includes(sessionStatus)) nextStatus = "review";
+  else if (["complete", "completed", "done"].includes(sessionStatus)) {
+    const logical = store.getLogicalSessionByLegacySessionId(session.id);
+    const pendingTransition = logical ? store.getPendingWorkspaceTransition(logical.logicalSessionId) : null;
+    const committedTransition = logical ? store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId) : null;
+    nextStatus = workspaceContinuationKeepsSessionActive(pendingTransition, committedTransition)
+      ? "in_progress"
+      : "review";
+  }
   else if (["failed", "cancelled"].includes(sessionStatus)) nextStatus = "todo";
   // 用户已手动确认完成（done）后，不因会话状态回退；只有真正的推进才写库。
   if (!nextStatus || nextStatus === workItem.status) return workItem;
@@ -2950,6 +2966,14 @@ function settleEntityWorkItemFromSession(session) {
   const updated = store.getWorkItem(workItem.id);
   emitEvent("WorkItemChanged", { action: "status-updated", entity: updated });
   return updated;
+}
+
+function settleWorkItemForWorkspaceContinuation(transitionId) {
+  const transition = store.getWorkspaceTransition(transitionId);
+  const logical = transition ? store.getLogicalSession(transition.logicalSessionId) : null;
+  const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+  if (!session) return null;
+  return settleEntityWorkItemFromSession(sessionWithLogicalWorkspace(session, logical));
 }
 
 // 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
@@ -3470,6 +3494,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
   const reference = requireSessionReference(sessionId);
+  if (options.agentWorkItem) assertAgentWorkSessionReference(options.agentWorkItem, reference);
   const routedSessionId = reference.sessionId;
   const publicSessionId = reference.logicalSessionId ?? routedSessionId;
   const before = reference.metadata.session;
@@ -3742,44 +3767,54 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
 
 async function drainAgentWork(agentId) {
   if (drainingAgentWorkIds.has(agentId)) return;
-  const agent = collaborationCore.getAgent(agentId);
-  const sessionId = agent?.currentSessionId ?? null;
-  if (!sessionId) return;
-  const session = listGatewaySessions().find((item) => item.id === sessionId);
-  if (!session) return;
-  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
-  if (sessionHasActiveRun(session) || runningWork) {
-    // Persisted activeTurnId values can outlive an interrupted turn when the
-    // completion notification was missed. A running work item can likewise
-    // outlive a Provider process when only the desktop app is force-quit while
-    // the backend remains alive. Reconcile both before leaving queued work
-    // blocked indefinitely.
-    const liveState = await inspectCollaborationSession(sessionId);
-    if (liveState === "running" || liveState === "missing") return;
-    if (sessionHasActiveRun(session)) {
-      console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
-    }
-    if (runningWork) {
-      const patch = interruptedAgentWorkRecoveryPatch(runningWork);
-      const recoveredWork = patch ? store.updateAgentWorkItem(runningWork.workItemId, patch) : null;
-      if (recoveredWork?.status === "cancelled") {
-        emitEvent("AgentWorkCompleted", { sessionId, workItem: recoveredWork }, {
-          sessionId,
-          source: runningWork.source
-        });
-        workspaceContinuationCoordinator.recordWorkSettled(recoveredWork);
-      } else if (recoveredWork?.status === "queued") {
-        emitEvent("AgentWorkQueued", { sessionId, workItem: recoveredWork, queuePosition: null, source: runningWork.source }, {
-          sessionId,
-          source: runningWork.source
-        });
-      }
-      console.log(`[agent-work] recovered orphaned work agent=${agentId} session=${sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
-    }
-  }
-  if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
   const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
   if (!next) return;
+  const agent = collaborationCore.getAgent(agentId);
+  if (!agent) return;
+
+  const runningWork = store.getRunningAgentWorkItem(agentId);
+  if (runningWork) {
+    const liveState = await inspectCollaborationSession(runningWork.sessionId);
+    if (liveState === "running" || liveState === "missing") return;
+    const patch = interruptedAgentWorkRecoveryPatch(runningWork);
+    const recoveredWork = patch ? store.updateAgentWorkItem(runningWork.workItemId, patch) : null;
+    if (recoveredWork?.status === "cancelled") {
+      emitEvent("AgentWorkCompleted", { sessionId: runningWork.sessionId, workItem: recoveredWork }, {
+        sessionId: runningWork.sessionId,
+        source: runningWork.source
+      });
+      workspaceContinuationCoordinator.recordWorkSettled(recoveredWork);
+    } else if (recoveredWork?.status === "queued") {
+      emitEvent("AgentWorkQueued", { sessionId: runningWork.sessionId, workItem: recoveredWork, queuePosition: null, source: runningWork.source }, {
+        sessionId: runningWork.sessionId,
+        source: runningWork.source
+      });
+    }
+    console.log(`[agent-work] recovered orphaned work agent=${agentId} session=${runningWork.sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
+    return;
+  }
+
+  const sessionId = next.sessionId;
+  const boundAgent = collaborationCore.getAgentForSession(sessionId);
+  if (!boundAgent || boundAgent.agentId !== agentId) {
+    const failedWork = store.updateAgentWorkItem(next.workItemId, {
+      status: "failed",
+      lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${agentId}.`
+    });
+    workspaceContinuationCoordinator.recordWorkSettled(failedWork);
+    return;
+  }
+  const session = listGatewaySessions().find((item) => item.id === sessionId);
+  if (!session) return;
+  if (sessionHasActiveRun(session)) {
+    // Persisted activeTurnId values can outlive an interrupted turn when the
+    // completion notification was missed. Reconcile it before leaving queued
+    // work blocked indefinitely.
+    const liveState = await inspectCollaborationSession(sessionId);
+    if (liveState === "running" || liveState === "missing") return;
+    console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
+  }
+  if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
 
   drainingAgentWorkIds.add(agentId);
   const claimed = store.claimAgentWorkItem(next.workItemId);
@@ -3801,13 +3836,20 @@ async function drainAgentWork(agentId) {
       }
       turnId = delivered.targetTurnId;
     } else {
-      const response = await sendUnifiedSessionMessage(sessionId, claimed.text, claimed.source, { fromAgentWorkQueue: true });
+      workspaceContinuationCoordinator.assertWorkTarget(claimed);
+      const response = await sendUnifiedSessionMessage(claimed.sessionId, claimed.text, claimed.source, {
+        fromAgentWorkQueue: true,
+        agentWorkItem: claimed
+      });
       turnId = response.result?.turn?.id ?? null;
     }
     if (store.getAgentWorkItem(claimed.workItemId)?.status === "running") {
       store.updateAgentWorkItem(claimed.workItemId, { status: "running", targetTurnId: turnId, lastError: null });
       const startedWork = store.getAgentWorkItem(claimed.workItemId);
-      emitEvent("AgentWorkStarted", { sessionId, workItem: startedWork }, { sessionId, source: claimed.source });
+      emitEvent("AgentWorkStarted", { sessionId: claimed.sessionId, workItem: startedWork }, {
+        sessionId: claimed.sessionId,
+        source: claimed.source
+      });
       workspaceContinuationCoordinator.recordWorkStarted(startedWork);
     }
   } catch (error) {
@@ -4163,7 +4205,6 @@ async function handleClaudeTurnSettled(event) {
   const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
   if (!logical) return;
   const sessionId = logical.legacySessionId;
-  settleEntityWorkItemFromSession(store.getSession(sessionId));
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   if (runningWork) {
     const updatedWork = store.updateAgentWorkItem(runningWork.workItemId, {
@@ -4177,6 +4218,7 @@ async function handleClaudeTurnSettled(event) {
     });
     workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
   }
+  settleEntityWorkItemFromSession(store.getSession(sessionId));
   const agent = collaborationCore.getAgentForSession(sessionId);
   if (event.status === "completed") {
     refreshWorkspaceInventoryAfterTurn(logical);

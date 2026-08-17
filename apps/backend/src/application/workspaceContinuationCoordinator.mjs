@@ -15,32 +15,39 @@ export class WorkspaceContinuationCoordinator {
     const transition = this.store.getWorkspaceTransition(transitionId);
     if (!transition?.continuationPrompt || transition.phase !== "committed") return null;
     if (transition.continuationState === "completed") return null;
-    const logical = this.store.getLogicalSession(transition.logicalSessionId);
-    if (!logical?.activeBinding
-      || logical.routingVersion !== transition.sourceRoutingVersion + 1
-      || logical.activeThreadId !== transition.newThreadId) {
-      throw new Error("The committed workspace route does not match its continuation checkpoint.");
-    }
+    const logical = this.requireCommittedRoute(transition);
+    const ownership = this.store.assertLogicalWorkSessionBinding(transition.logicalSessionId);
     const sessionId = logical.legacySessionId;
     const agent = this.resolveAgent(sessionId);
     if (!agent) throw new Error(`Session ${sessionId} has no Agent identity for workspace continuation.`);
-    const workItem = this.enqueueWork({
+    if (ownership.agentId && ownership.agentId !== agent.agentId) {
+      throw new Error(`Session ${sessionId} is no longer bound to the WorkItem Agent.`);
+    }
+    const source = {
+      type: "workspace-continuation",
+      transitionId,
+      logicalSessionId: transition.logicalSessionId,
+      routingVersion: logical.routingVersion,
+      bindingId: logical.activeBinding.bindingId,
+      providerSessionId: logical.activeBinding.providerSessionId,
+      productSessionId: sessionId,
+      workItemId: ownership.workItemId,
+      localVisibility: "status_only"
+    };
+    let workItem = this.enqueueWork({
       workItemId: continuationWorkItemId(transitionId),
       agentId: agent.agentId,
       sessionId,
       kind: "user",
       priority: 200,
       text: transition.continuationPrompt,
-      source: {
-        type: "workspace-continuation",
-        transitionId,
-        logicalSessionId: transition.logicalSessionId,
-        routingVersion: logical.routingVersion,
-        localVisibility: "status_only"
-      },
+      source,
       localVisibility: "status_only",
       createdAt: transition.updatedAt
     });
+    if (workItem && !sameWorkTarget(workItem.source, source)) {
+      workItem = this.store.updateAgentWorkItem(workItem.workItemId, { source });
+    }
     const state = workItem?.status === "running" ? "running" : "queued";
     this.store.updateWorkspaceTransitionContinuation(transitionId, {
       state,
@@ -50,6 +57,40 @@ export class WorkspaceContinuationCoordinator {
     this.onEvent("WorkspaceContinuationQueued", { transition, logicalSession: logical, workItem });
     this.scheduleDrain(agent.agentId);
     return workItem;
+  }
+
+  assertWorkTarget(workItem) {
+    const transitionId = continuationTransitionId(workItem);
+    if (!transitionId) return null;
+    const transition = this.store.getWorkspaceTransition(transitionId);
+    if (!transition || transition.phase !== "committed") {
+      throw new Error(`Workspace continuation ${transitionId} no longer has a committed transition.`);
+    }
+    const logical = this.requireCommittedRoute(transition);
+    const ownership = this.store.assertLogicalWorkSessionBinding(transition.logicalSessionId);
+    const source = workItem.source ?? {};
+    if (workItem.sessionId !== logical.legacySessionId
+      || source.productSessionId !== logical.legacySessionId
+      || source.logicalSessionId !== logical.logicalSessionId
+      || source.routingVersion !== logical.routingVersion
+      || source.bindingId !== logical.activeBinding.bindingId
+      || source.providerSessionId !== logical.activeBinding.providerSessionId
+      || (source.workItemId ?? null) !== (ownership.workItemId ?? null)) {
+      const error = new Error("The workspace continuation target changed before dispatch.");
+      error.code = "STALE_WORKSPACE_CONTINUATION";
+      throw error;
+    }
+    return { logical, ownership };
+  }
+
+  requireCommittedRoute(transition) {
+    const logical = this.store.getLogicalSession(transition.logicalSessionId);
+    if (!logical?.activeBinding
+      || logical.routingVersion !== transition.sourceRoutingVersion + 1
+      || logical.activeThreadId !== transition.newThreadId) {
+      throw new Error("The committed workspace route does not match its continuation checkpoint.");
+    }
+    return logical;
   }
 
   recover() {
@@ -120,4 +161,15 @@ function continuationTransitionId(workItem) {
   return workItem?.source?.type === "workspace-continuation"
     ? workItem.source.transitionId
     : null;
+}
+
+function sameWorkTarget(actual, expected) {
+  return actual?.type === expected.type
+    && actual.transitionId === expected.transitionId
+    && actual.logicalSessionId === expected.logicalSessionId
+    && actual.routingVersion === expected.routingVersion
+    && actual.bindingId === expected.bindingId
+    && actual.providerSessionId === expected.providerSessionId
+    && actual.productSessionId === expected.productSessionId
+    && (actual.workItemId ?? null) === (expected.workItemId ?? null);
 }

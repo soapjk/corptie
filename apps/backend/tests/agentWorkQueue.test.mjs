@@ -11,6 +11,7 @@ import {
 } from "../src/utils/sessionPresentation.mjs";
 import {
   annotateAgentWorkDetailItems,
+  assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued
 } from "../src/utils/agentWorkQueue.mjs";
@@ -69,6 +70,53 @@ test("orphaned dispatched work is cancelled while pre-dispatch work is requeued"
   });
 });
 
+test("queued work remains routed to its own Session when the Agent current Session changes", () => {
+  const workItem = {
+    sessionId: "codex:work-item-session",
+    source: { type: "desktop" }
+  };
+  const reference = {
+    sessionId: "codex:work-item-session",
+    providerSessionId: "provider:work-item"
+  };
+
+  assert.equal(assertAgentWorkSessionReference(workItem, reference), reference);
+  assert.throws(
+    () => assertAgentWorkSessionReference(workItem, {
+      sessionId: "codex:agent-current-session",
+      providerSessionId: "provider:other"
+    }),
+    (error) => error.code === "AGENT_WORK_ROUTE_MISMATCH"
+  );
+});
+
+test("workspace continuation is locked to the committed Provider binding and routing version", () => {
+  const workItem = {
+    sessionId: "codex:stable-work-session",
+    source: {
+      type: "workspace-continuation",
+      productSessionId: "codex:stable-work-session",
+      logicalSessionId: "logical:work-session",
+      bindingId: "binding:new-worktree",
+      providerSessionId: "provider:new-worktree",
+      routingVersion: 2
+    }
+  };
+  const reference = {
+    sessionId: "codex:stable-work-session",
+    logicalSessionId: "logical:work-session",
+    bindingId: "binding:new-worktree",
+    providerSessionId: "provider:new-worktree",
+    routingVersion: 2
+  };
+
+  assert.equal(assertAgentWorkSessionReference(workItem, reference), reference);
+  assert.throws(
+    () => assertAgentWorkSessionReference(workItem, { ...reference, routingVersion: 3 }),
+    (error) => error.code === "STALE_WORKSPACE_CONTINUATION"
+  );
+});
+
 test("a Feishu work item hides its matching session user message during turn startup", () => {
   const [item] = annotateAgentWorkDetailItems([
     { id: "input-a", turnId: "turn-a", type: "userMessage", text: "开始处理" }
@@ -120,6 +168,7 @@ test("an Agent can claim only one work item at a time", async () => {
     enqueue(store, { workItemId: "user-2", kind: "user", priority: 100 });
 
     assert.equal(store.claimAgentWorkItem("user-1")?.status, "running");
+    assert.equal(store.getRunningAgentWorkItem("agent-b")?.workItemId, "user-1");
     assert.equal(store.claimAgentWorkItem("user-2"), null);
     store.updateAgentWorkItem("user-1", { status: "completed" });
     assert.equal(store.claimAgentWorkItem("user-2")?.status, "running");

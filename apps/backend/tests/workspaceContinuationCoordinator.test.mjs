@@ -15,7 +15,13 @@ test("a committed transition queues one hidden continuation with a stable idempo
   assert.equal(fixture.work.size, 1);
   assert.equal(first.localVisibility, "status_only");
   assert.equal(first.source.type, "workspace-continuation");
+  assert.equal(first.sessionId, "session:one");
+  assert.equal(first.source.productSessionId, "session:one");
+  assert.equal(first.source.workItemId, "work-item:one");
+  assert.equal(first.source.bindingId, "binding:next");
+  assert.equal(first.source.providerSessionId, "provider:next");
   assert.equal(fixture.transition.continuationState, "queued");
+  assert.equal(fixture.coordinator.assertWorkTarget(first).logical.activeThreadId, "route:next");
 });
 
 test("restart recovery completes an intent whose durable work item already finished", () => {
@@ -41,6 +47,29 @@ test("restart recovery requeues a failed continuation for a bounded new delivery
   assert.equal(fixture.transition.continuationState, "queued");
 });
 
+test("restart recovery enriches legacy queued continuation work with the committed target binding", () => {
+  const fixture = coordinatorFixture();
+  const id = continuationWorkItemId("transition:one");
+  fixture.work.set(id, {
+    workItemId: id,
+    agentId: "agent:one",
+    sessionId: "session:one",
+    status: "queued",
+    source: {
+      type: "workspace-continuation",
+      transitionId: "transition:one",
+      logicalSessionId: "logical:one",
+      routingVersion: 2
+    }
+  });
+
+  fixture.coordinator.recover();
+
+  assert.equal(fixture.work.get(id).source.bindingId, "binding:next");
+  assert.equal(fixture.work.get(id).source.productSessionId, "session:one");
+  assert.equal(fixture.coordinator.assertWorkTarget(fixture.work.get(id)).logical.activeThreadId, "route:next");
+});
+
 test("continuation delivery fails closed when the logical route no longer matches", () => {
   const fixture = coordinatorFixture();
   fixture.logical.routingVersion = 3;
@@ -49,6 +78,16 @@ test("continuation delivery fails closed when the logical route no longer matche
     /does not match its continuation checkpoint/
   );
   assert.equal(fixture.work.size, 0);
+});
+
+test("continuation delivery fails closed when the WorkItem points to another Work Session", () => {
+  const fixture = coordinatorFixture();
+  const workItem = fixture.coordinator.enqueueForTransition("transition:one");
+  fixture.ownership.workItemId = "work-item:replacement";
+  assert.throws(
+    () => fixture.coordinator.assertWorkTarget(workItem),
+    /target changed before dispatch/
+  );
 });
 
 function coordinatorFixture() {
@@ -67,12 +106,24 @@ function coordinatorFixture() {
     legacySessionId: "session:one",
     activeThreadId: "route:next",
     routingVersion: 2,
-    activeBinding: { providerThreadId: "route:next" }
+    activeBinding: {
+      bindingId: "binding:next",
+      providerThreadId: "route:next",
+      providerSessionId: "provider:next"
+    }
+  };
+  const ownership = {
+    logicalSessionId: "logical:one",
+    sessionId: "session:one",
+    workItemId: "work-item:one",
+    objectiveId: "objective:one",
+    agentId: "agent:one"
   };
   const work = new Map();
   const store = {
     getWorkspaceTransition: () => transition,
     getLogicalSession: () => logical,
+    assertLogicalWorkSessionBinding: () => ownership,
     getAgentWorkItem: (id) => work.get(id) ?? null,
     listWorkspaceTransitionsAwaitingContinuation: () => [transition],
     updateWorkspaceTransitionContinuation(_id, update) {
@@ -95,5 +146,5 @@ function coordinatorFixture() {
     },
     scheduleDrain() {}
   });
-  return { coordinator, logical, store, transition, work };
+  return { coordinator, logical, ownership, store, transition, work };
 }
