@@ -37,7 +37,7 @@ export function ensureProviderSessionProjection({
   persistProviderSessionProjection(store, session, {
     providerId: session.external?.provider,
     agentId,
-    sessionKind: workItem ? "worker" : (boundAgent?.role === "assistant" ? "assistantChat" : "legacy")
+    sessionKind: workItem ? "worker" : (session.objectiveId ? "objectiveChat" : (boundAgent?.role === "assistant" ? "assistantChat" : "legacy"))
   });
   if (workItem) {
     store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);

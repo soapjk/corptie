@@ -164,6 +164,24 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func objectiveChatIsGroupedSeparatelyFromAssistantAndWorkerSessions() {
+        let objective = SessionRowModel(session: makeSession(
+            id: "objective-chat",
+            agentId: "assistant",
+            sessionKind: .objectiveChat
+        ))
+        let assistant = SessionRowModel(session: makeSession(
+            id: "assistant-chat",
+            agentId: "assistant",
+            sessionKind: .assistantChat
+        ))
+        let groups = makeSessionGroups(rows: [objective, assistant], agents: [])
+
+        #expect(groups.map(\.key) == ["assistant:assistant", "__objective__"])
+        #expect(groups[1].rows.map(\.id) == ["objective-chat"])
+    }
+
+    @Test
     func sessionKindChangeInvalidatesGrouping() {
         let legacy = makeSession(id: "one")
         let assistant = makeSession(id: "one", agentId: "assistant", sessionKind: .assistantChat)
