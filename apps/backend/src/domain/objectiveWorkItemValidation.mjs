@@ -38,7 +38,7 @@ export function validateObjectiveInput(input, operation = "create") {
     ? ENTITY_FIELD_ALLOWLISTS.objectiveUpdate
     : ENTITY_FIELD_ALLOWLISTS.objectiveCreate;
   assertRecord(input, operation === "update" ? "patch" : "input");
-  assertKnownFields(input, allowed);
+  assertKnownFields(input, allowed, operation);
 
   const normalized = { ...input };
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
@@ -65,7 +65,7 @@ export function validateWorkItemInput(input, operation = "create") {
     ? ENTITY_FIELD_ALLOWLISTS.workItemUpdate
     : ENTITY_FIELD_ALLOWLISTS.workItemCreate;
   assertRecord(input, operation === "update" ? "patch" : "input");
-  assertKnownFields(input, allowed);
+  assertKnownFields(input, allowed, operation);
 
   const normalized = { ...input };
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
@@ -90,7 +90,7 @@ export function validateWorkItemInput(input, operation = "create") {
 export function assertRepositoryId(value, field) {
   if (!value.startsWith("repository:")) {
     throw new EntityValidationError(
-      "INVALID_ID_FORMAT",
+      "INVALID_WORKSPACE_ID_TYPE",
       field,
       "registered repository: ID",
       value,
@@ -110,12 +110,12 @@ function assertRecord(value, field) {
   }
 }
 
-function assertKnownFields(input, allowed) {
+function assertKnownFields(input, allowed, operation) {
   const allowedSet = new Set(allowed);
   const unknown = Object.keys(input).find((field) => !allowedSet.has(field));
   if (!unknown) return;
   throw new EntityValidationError(
-    "UNKNOWN_FIELD",
+    operation === "update" ? "UNKNOWN_PATCH_FIELD" : "UNKNOWN_FIELD",
     unknown,
     `one of: ${allowed.join(", ")}`,
     input[unknown],
