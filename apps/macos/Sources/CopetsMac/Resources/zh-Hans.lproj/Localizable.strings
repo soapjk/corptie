@@ -40,6 +40,8 @@
 "Preview" = "试听";
 "Preview the selected completion sound" = "试听所选的完成提示音";
 "Off" = "关闭";
+"Expand" = "展开";
+"Collapse" = "收起";
 "Workspace missing" = "工作区已丢失";
 "Git status unavailable" = "Git 状态不可用";
 "Git branch: %@" = "Git 分支：%@";
