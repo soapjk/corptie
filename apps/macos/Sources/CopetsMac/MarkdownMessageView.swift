@@ -26,12 +26,11 @@ struct MarkdownMessageView: View {
     }
 
     private var markdownContent: some View {
-        let preparedMarkdown = ChatPerformanceTrace.measure("markdown.preprocess") {
-            ChatPerformanceRecorder.shared.increment(.markdownPreprocesses)
-            ChatPerformanceRecorder.shared.increment(.markdownCharacters, by: Int64(text.count))
-            return ClickableMessageText.markdown(from: text, baseDirectory: baseDirectory)
-        }
-        let content = Markdown(preparedMarkdown)
+        let preparedContent = MarkdownRenderCache.shared.content(
+            text: text,
+            baseDirectory: baseDirectory
+        )
+        let content = Markdown(preparedContent)
             .markdownTheme(.corptieMessage)
             .font(.system(size: fontSize, weight: fontWeight))
             .foregroundStyle(foregroundColor)
@@ -48,6 +47,88 @@ struct MarkdownMessageView: View {
             } else {
                 content.fixedSize()
             }
+        }
+    }
+}
+
+/// Caches both Corptie's link preparation and MarkdownUI's parsed block tree.
+///
+/// Keeping only the session snapshot warm still leaves Markdown parsing on the
+/// main-thread click path. SessionsView preheats this cache incrementally, and
+/// normal rendering uses the same entry point so a miss is still correct.
+@MainActor
+final class MarkdownRenderCache {
+    private struct Key: Hashable {
+        let text: String
+        let baseDirectory: String?
+    }
+
+    private struct Entry {
+        let content: MarkdownContent
+        let characterCost: Int
+    }
+
+    static let shared = MarkdownRenderCache()
+
+    private var entries: [Key: Entry] = [:]
+    private var recency: [Key] = []
+    private var totalCharacterCost = 0
+    private let entryLimit = 512
+    private let characterLimit = 2_000_000
+
+    func content(text: String, baseDirectory: String?) -> MarkdownContent {
+        let key = Key(text: text, baseDirectory: normalized(baseDirectory))
+        if let entry = entries[key] {
+            touch(key)
+            return entry.content
+        }
+
+        let content = ChatPerformanceTrace.measure("markdown.preprocess") {
+            ChatPerformanceRecorder.shared.increment(.markdownPreprocesses)
+            ChatPerformanceRecorder.shared.increment(.markdownCharacters, by: Int64(text.count))
+            let preparedMarkdown = ClickableMessageText.markdown(
+                from: text,
+                baseDirectory: key.baseDirectory
+            )
+            return MarkdownContent(preparedMarkdown)
+        }
+        // The source and parsed tree are both retained. A conservative source
+        // multiplier bounds the cache without walking the parsed tree again.
+        let characterCost = max(1, text.count * 2)
+        entries[key] = Entry(content: content, characterCost: characterCost)
+        recency.append(key)
+        totalCharacterCost += characterCost
+        evictIfNeeded()
+        return content
+    }
+
+    func contains(text: String, baseDirectory: String?) -> Bool {
+        entries[Key(text: text, baseDirectory: normalized(baseDirectory))] != nil
+    }
+
+    func removeAllForTesting() {
+        entries.removeAll(keepingCapacity: false)
+        recency.removeAll(keepingCapacity: false)
+        totalCharacterCost = 0
+    }
+
+    private func normalized(_ baseDirectory: String?) -> String? {
+        guard let value = baseDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func touch(_ key: Key) {
+        recency.removeAll { $0 == key }
+        recency.append(key)
+    }
+
+    private func evictIfNeeded() {
+        while recency.count > entryLimit || totalCharacterCost > characterLimit,
+              let oldest = recency.first {
+            recency.removeFirst()
+            guard let removed = entries.removeValue(forKey: oldest) else { continue }
+            totalCharacterCost = max(0, totalCharacterCost - removed.characterCost)
         }
     }
 }

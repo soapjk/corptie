@@ -2265,6 +2265,19 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    /// Returns the same provider-neutral snapshot used by speculative prefetch.
+    /// Callers can build presentation caches without issuing a duplicate request.
+    func detailForPreheating(_ session: TaskSession) async -> CodexThreadDetail? {
+        if let cached = cachedDetail(for: session.id) {
+            return cached
+        }
+        prefetchDetail(for: session)
+        if let task = detailPrefetchTasks[session.id] {
+            return await task.value ?? cachedDetail(for: session.id)
+        }
+        return cachedDetail(for: session.id)
+    }
+
     func preloadSessionDetails(_ sessions: [TaskSession], centeredOn selectedSessionId: String?) {
         let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         let candidateIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
