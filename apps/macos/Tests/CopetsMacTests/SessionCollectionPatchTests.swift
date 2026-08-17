@@ -5,6 +5,38 @@ import Testing
 @MainActor
 struct SessionCollectionPatchTests {
     @Test
+    func detailPreloadWarmsTheFirstVisiblePageWithoutASelection() {
+        let ids = (0..<12).map { "session-\($0)" }
+
+        let prioritized = SessionDetailPreloadPolicy.prioritizedSessionIDs(ids, selectedSessionID: nil)
+
+        #expect(prioritized == Array(ids.prefix(SessionDetailPreloadPolicy.batchLimit)))
+    }
+
+    @Test
+    func detailPreloadPrioritizesNeighborsAndExcludesTheSelection() {
+        let prioritized = SessionDetailPreloadPolicy.prioritizedSessionIDs(
+            ["one", "two", "three", "four", "five"],
+            selectedSessionID: "three",
+            limit: 4
+        )
+
+        #expect(prioritized == ["four", "two", "five", "one"])
+        #expect(!prioritized.contains("three"))
+    }
+
+    @Test
+    func detailPreloadDeduplicatesSessionIdentifiers() {
+        let prioritized = SessionDetailPreloadPolicy.prioritizedSessionIDs(
+            ["one", "one", "two", "three"],
+            selectedSessionID: nil,
+            limit: 8
+        )
+
+        #expect(prioritized == ["one", "two", "three"])
+    }
+
+    @Test
     func contentUpdatePreservesStableRowAndDoesNotPublishStructure() {
         let original = makeSession(id: "one", summary: "Before")
         let updated = makeSession(id: "one", summary: "After")
