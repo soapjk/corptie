@@ -1048,6 +1048,10 @@ export class CorptieStore {
     this.db.run(`UPDATE sessions SET session_kind = 'worker'
       WHERE work_item_id IS NOT NULL AND TRIM(work_item_id) <> ''
         AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+    this.db.run(`UPDATE sessions SET session_kind = 'objectiveChat'
+      WHERE objective_id IS NOT NULL AND TRIM(objective_id) <> ''
+        AND (work_item_id IS NULL OR TRIM(work_item_id) = '')
+        AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
       WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
         AND EXISTS (SELECT 1 FROM agents
@@ -2486,6 +2490,25 @@ export class CorptieStore {
     return this.getSession(sessionId);
   }
 
+  bindSessionToObjective(sessionId, objectiveId) {
+    if (!this.getSession(sessionId)) {
+      const error = new Error(`Session not found: ${sessionId}`);
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    if (!this.getObjective(objectiveId)) {
+      const error = new Error(`Objective not found: ${objectiveId}`);
+      error.code = "OBJECTIVE_NOT_FOUND";
+      throw error;
+    }
+    this.db.run(
+      "UPDATE sessions SET objective_id = ?, work_item_id = NULL, session_kind = 'objectiveChat', updated_at = ? WHERE id = ?",
+      [objectiveId, createdAtFromOrNow(), sessionId]
+    );
+    this.scheduleSave();
+    return this.getSession(sessionId);
+  }
+
   setSessionKind(sessionId, sessionKind, agentId = null) {
     const normalized = normalizeSessionKind(sessionKind);
     this.db.run(
@@ -2876,6 +2899,14 @@ export class CorptieStore {
     const rows = this.selectAll(
       "SELECT * FROM sessions WHERE work_item_id = ? ORDER BY created_at ASC",
       [workItemId]
+    );
+    return rows.map((row) => this.rowToSession(row));
+  }
+
+  listSessionsByObjective(objectiveId) {
+    const rows = this.selectAll(
+      "SELECT * FROM sessions WHERE objective_id = ? ORDER BY created_at ASC",
+      [objectiveId]
     );
     return rows.map((row) => this.rowToSession(row));
   }
@@ -4868,6 +4899,7 @@ export class CorptieStore {
       agentId: row.agent_id ?? agentIdentity?.agent_id ?? null,
       sessionKind: inferSessionKind({
         sessionKind: row.session_kind,
+        objectiveId: row.objective_id,
         workItemId: row.work_item_id,
         agentRole: agentIdentity?.role
       }),

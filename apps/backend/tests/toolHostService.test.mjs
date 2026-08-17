@@ -45,6 +45,26 @@ test("Tool Host attaches one product-owned catalog through a Provider capability
   assert.equal(prepared.providerAttachment.identity, "agent-one");
 });
 
+test("Tool Host carries immutable Session scope metadata into authorization and Provider attachment", async () => {
+  const calls = [];
+  const catalog = new HostToolCatalog([{
+    id: "objective-chat",
+    tools: [{ name: "corptie_objective_context" }],
+    authorize: ({ metadata }) => metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId === "objective:1",
+    execute: () => ({})
+  }]);
+  const registry = new AgentProviderRegistry([provider("hosted", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+    attachTools(attachment) { calls.push(attachment); return attachment; }
+  })]);
+  const service = new ToolHostService({ registry, catalog });
+  const prepared = await service.prepareSession("hosted", {
+    actorId: "assistant", sessionKind: "objectiveChat", objectiveId: "objective:1"
+  });
+  assert.equal(prepared.providerAttachment.tools[0].name, "corptie_objective_context");
+  assert.equal(calls[0].metadata.objectiveId, "objective:1");
+  assert.ok(Object.isFrozen(calls[0].metadata));
+});
+
 test("Tool Host does not attach tools when a Provider does not declare support", async () => {
   const registry = new AgentProviderRegistry([provider("plain", [])]);
   const service = new ToolHostService({ registry, catalog: new HostToolCatalog() });

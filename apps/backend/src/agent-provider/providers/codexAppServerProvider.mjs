@@ -43,6 +43,7 @@ export function codexToolHostAttachment(attachment, providerOptions = {}) {
   return {
     ...providerOptions,
     dynamicTools: attachment.tools.map((tool) => ({ ...tool })),
-    dynamicToolAgentId: attachment.actorId
+    dynamicToolAgentId: attachment.actorId,
+    dynamicToolMetadata: attachment.metadata ?? null
   };
 }
