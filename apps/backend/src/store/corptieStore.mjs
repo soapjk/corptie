@@ -2349,16 +2349,37 @@ export class CorptieStore {
 
   // 将已有 Session 归属到某个 WorkItem（及其 Objective），只更新归属两列，不覆盖其它字段。
   bindSessionToWorkItem(sessionId, workItemId, objectiveId) {
-    this.db.run(
-      `UPDATE sessions SET objective_id = ?, work_item_id = ?, session_kind = 'worker', updated_at = ? WHERE id = ?`,
-      [objectiveId ?? null, workItemId ?? null, createdAtFromOrNow(), sessionId]
-    );
-    // 1:1 语义：work_item 记录当前活跃 session（换 Agent/重来时覆盖为新的）
-    if (workItemId) {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      const error = new Error(`Session not found: ${sessionId}`);
+      error.name = "SessionNotFoundError";
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    if (workItemId && !this.getWorkItem(workItemId)) {
+      const error = new Error(`WorkItem not found: ${workItemId}`);
+      error.name = "WorkItemNotFoundError";
+      error.code = "WORK_ITEM_NOT_FOUND";
+      throw error;
+    }
+    const timestamp = createdAtFromOrNow();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
       this.db.run(
-        `UPDATE work_items SET current_session_id = ?, updated_at = ? WHERE id = ?`,
-        [sessionId, createdAtFromOrNow(), workItemId]
+        `UPDATE sessions SET objective_id = ?, work_item_id = ?, session_kind = 'worker', updated_at = ? WHERE id = ?`,
+        [objectiveId ?? null, workItemId ?? null, timestamp, sessionId]
       );
+      // 1:1 语义：work_item 记录当前活跃 session（换 Agent/重来时覆盖为新的）
+      if (workItemId) {
+        this.db.run(
+          `UPDATE work_items SET current_session_id = ?, updated_at = ? WHERE id = ?`,
+          [sessionId, timestamp, workItemId]
+        );
+      }
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
     }
     this.scheduleSave();
     return this.getSession(sessionId);

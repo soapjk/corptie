@@ -35,6 +35,31 @@ test("a stored provider-neutral session kind survives provider refresh", () => {
   assert.equal(merged.sessionKind, "assistantChat");
 });
 
+test("stored WorkItem, Objective, and Agent bindings survive a third-party Provider refresh", () => {
+  const merged = mergeStoredSessionPresentation(
+    {
+      id: "openclacky:session-a",
+      title: "Provider",
+      sessionKind: "legacy",
+      external: { provider: "openclacky" }
+    },
+    {
+      id: "openclacky:session-a",
+      title: "Stored",
+      agentId: "agent:liang",
+      objectiveId: "objective:poly",
+      workItemId: "work-item:poly",
+      sessionKind: "worker",
+      external: {}
+    }
+  );
+
+  assert.equal(merged.agentId, "agent:liang");
+  assert.equal(merged.objectiveId, "objective:poly");
+  assert.equal(merged.workItemId, "work-item:poly");
+  assert.equal(merged.sessionKind, "worker");
+});
+
 test("stored Codex permissions survive merging with a resumed thread", () => {
   const merged = mergeStoredSessionPresentation(
     {

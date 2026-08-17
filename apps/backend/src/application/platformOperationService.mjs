@@ -20,12 +20,18 @@ export class PlatformOperationService {
     this.sessionService = options.sessionService;
     this.listSessions = options.listSessions ?? ((input) => this.sessionService.listSessions(input));
     this.createSession = options.createSession;
+    this.onEntityChanged = options.onEntityChanged ?? null;
     if (!this.store || !this.objectiveService || !this.sessionService) {
       throw new TypeError("PlatformOperationService requires store, objectiveService, and sessionService.");
     }
     if (typeof this.createSession !== "function") {
       throw new TypeError("PlatformOperationService requires createSession().");
     }
+  }
+
+  emitEntityChanged(type, entity, action) {
+    this.onEntityChanged?.(type, { action, entity });
+    return entity;
   }
 
   capabilities() {
@@ -70,7 +76,7 @@ export class PlatformOperationService {
     switch (required(args.action, "action")) {
       case "list": return this.store.listAgents();
       case "get": return found(this.store.getAgent(required(args.agent_id, "agent_id")), "AGENT_NOT_FOUND");
-      case "create": return this.store.createAgentWithRegistrySkills({
+      case "create": return this.emitEntityChanged("AgentChanged", this.store.createAgentWithRegistrySkills({
         name: required(args.name, "name"),
         description: args.description ?? "",
         role: args.role,
@@ -79,7 +85,7 @@ export class PlatformOperationService {
         capabilities: array(args.capabilities),
         workDir: optional(args.work_dir),
         avatarPath: optional(args.avatar_path)
-      }, array(args.skill_ids));
+      }, array(args.skill_ids)), "created");
       case "update": {
         const id = required(args.agent_id, "agent_id");
         const patch = compact({
@@ -91,16 +97,17 @@ export class PlatformOperationService {
           workDir: args.work_dir,
           avatarPath: args.avatar_path
         });
-        return found(this.store.updateAgentWithRegistrySkills(
+        return this.emitEntityChanged("AgentChanged", found(this.store.updateAgentWithRegistrySkills(
           id,
           patch,
           Array.isArray(args.skill_ids) ? args.skill_ids : null
-        ), "AGENT_NOT_FOUND");
+        ), "AGENT_NOT_FOUND"), "updated");
       }
       case "delete": {
         const id = required(args.agent_id, "agent_id");
         found(this.store.getAgent(id), "AGENT_NOT_FOUND");
         this.store.deleteAgent(id);
+        this.emitEntityChanged("AgentChanged", { agentId: id }, "deleted");
         return { deleted: true };
       }
       default: throw unsupported("Agent", args.action);
