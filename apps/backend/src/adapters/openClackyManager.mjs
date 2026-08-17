@@ -325,7 +325,17 @@ export function openClackySessionSummary(row = {}) {
 
 export function openClackySessionDetail(summary, events = []) {
   const sessionId = summary.external.sessionId;
-  const items = events.flatMap((event, index) => openClackyEventItems(sessionId, event, index));
+  const items = [];
+  let currentTurnId = null;
+  for (const [index, event] of events.entries()) {
+    const explicitTurnId = optionalText(event?.turn_id);
+    if (explicitTurnId) {
+      currentTurnId = explicitTurnId;
+    } else if (!currentTurnId || isOpenClackyUserEvent(event)) {
+      currentTurnId = fallbackOpenClackyTurnId(sessionId, index);
+    }
+    items.push(...openClackyEventItems(sessionId, event, index, currentTurnId));
+  }
   return {
     id: sessionId,
     title: summary.title,
@@ -347,7 +357,13 @@ export function openClackySessionDetail(summary, events = []) {
 }
 
 function appendOpenClackyEvent(detail, event) {
-  const items = openClackyEventItems(detail.id, event, detail.items.length);
+  const index = detail.items.length;
+  const explicitTurnId = optionalText(event?.turn_id);
+  const fallbackTurnId = explicitTurnId
+    ?? (isOpenClackyUserEvent(event)
+      ? fallbackOpenClackyTurnId(detail.id, index)
+      : detail.items.at(-1)?.turnId ?? fallbackOpenClackyTurnId(detail.id, index));
+  const items = openClackyEventItems(detail.id, event, index, fallbackTurnId);
   const status = event.type === "session_update"
     ? openClackyStatus(event.session?.status ?? event.status)
     : event.type === "request_confirmation"
@@ -363,11 +379,11 @@ function appendOpenClackyEvent(detail, event) {
   };
 }
 
-function openClackyEventItems(sessionId, event, index) {
+function openClackyEventItems(sessionId, event, index, fallbackTurnId) {
   const type = String(event?.type ?? "");
   const base = {
     id: String(event?.id ?? `${sessionId}:${index}:${type || "event"}`),
-    turnId: String(event?.turn_id ?? `${sessionId}:turn`),
+    turnId: String(event?.turn_id ?? fallbackTurnId ?? fallbackOpenClackyTurnId(sessionId, index)),
     turnStatus: "complete",
     title: "OpenClacky",
     createdAt: isoTimestamp(event?.created_at)
@@ -397,6 +413,14 @@ function openClackyEventItems(sessionId, event, index) {
     return [{ ...base, type: "system", title: type, text: String(event.message ?? event.error ?? "") }];
   }
   return [];
+}
+
+function isOpenClackyUserEvent(event) {
+  return event?.type === "history_user_message" || event?.type === "user_message";
+}
+
+function fallbackOpenClackyTurnId(sessionId, index) {
+  return `${sessionId}:turn:${index + 1}`;
 }
 
 function openClackyStatus(value) {

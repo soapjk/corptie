@@ -96,6 +96,45 @@ test("OpenClacky manager maps REST sessions and history to canonical models", as
   assert.equal(models.models[0].name, "Clacky Model");
 });
 
+test("OpenClacky history infers distinct turns when upstream turn ids are missing", () => {
+  const summary = openClackySessionSummary({
+    id: "clacky-1",
+    name: "Task",
+    status: "idle",
+    created_at: "2026-08-17T00:00:00Z"
+  });
+  const detail = openClackySessionDetail(summary, [
+    { type: "history_user_message", content: "First" },
+    { type: "tool_call", name: "read" },
+    { type: "assistant_message", content: "First answer" },
+    { type: "history_user_message", content: "Second" },
+    { type: "assistant_message", content: "Second answer" }
+  ]);
+
+  assert.deepEqual(detail.items.map((item) => item.turnId), [
+    "clacky-1:turn:1",
+    "clacky-1:turn:1",
+    "clacky-1:turn:1",
+    "clacky-1:turn:4",
+    "clacky-1:turn:4"
+  ]);
+});
+
+test("OpenClacky history preserves explicit turn ids across following events", () => {
+  const summary = openClackySessionSummary({
+    id: "clacky-1",
+    name: "Task",
+    status: "idle",
+    created_at: "2026-08-17T00:00:00Z"
+  });
+  const detail = openClackySessionDetail(summary, [
+    { type: "history_user_message", turn_id: "upstream-turn", content: "First" },
+    { type: "assistant_message", content: "Answer" }
+  ]);
+
+  assert.deepEqual(detail.items.map((item) => item.turnId), ["upstream-turn", "upstream-turn"]);
+});
+
 test("OpenClacky manager only restores Sessions owned by Corptie", async () => {
   const requestedPaths = [];
   const manager = new OpenClackyManager({
