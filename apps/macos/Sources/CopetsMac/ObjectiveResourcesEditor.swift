@@ -26,7 +26,7 @@ struct ObjectiveResourcesEditor: View {
             agentSection
         }
         .sheet(isPresented: $showAgentPicker) {
-            AgentPickerView(selectedIds: $contributorAgentIds)
+            AgentPickerView(selectedIds: $contributorAgentIds, roleFilter: .independentContributor)
         }
         .alert(L10n("无法添加 Workspace"), isPresented: Binding(
             get: { workspaceError != nil },
@@ -60,7 +60,7 @@ struct ObjectiveResourcesEditor: View {
                 .buttonStyle(.borderless)
                 .help(L10n("添加 Git 仓库"))
             }
-            if selectedRepositories.isEmpty {
+            if selectedRepositories.isEmpty && unresolvedWorkspaceIds.isEmpty {
                 Text(L10n("尚未选择仓库"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -72,6 +72,11 @@ struct ObjectiveResourcesEditor: View {
                             workspaceIds.remove(repo.id)
                         }
                     }
+                    ForEach(unresolvedWorkspaceIds, id: \.self) { id in
+                        resourceRow(label: id, icon: "exclamationmark.triangle") {
+                            workspaceIds.remove(id)
+                        }
+                    }
                 }
             }
         }
@@ -79,6 +84,11 @@ struct ObjectiveResourcesEditor: View {
 
     private var selectedRepositories: [GitRepository] {
         client.repositories.filter { workspaceIds.contains($0.id) }
+    }
+
+    private var unresolvedWorkspaceIds: [String] {
+        let registered = Set(client.repositories.map(\.id))
+        return workspaceIds.filter { !registered.contains($0) }.sorted()
     }
 
     private func chooseWorkspace() {
@@ -130,7 +140,7 @@ struct ObjectiveResourcesEditor: View {
                 .buttonStyle(.borderless)
                 .help(L10n("分配 Agent"))
             }
-            if selectedAgents.isEmpty {
+            if selectedAgents.isEmpty && unresolvedAgentIds.isEmpty {
                 Text(L10n("尚未分配 Agent"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -142,6 +152,11 @@ struct ObjectiveResourcesEditor: View {
                             contributorAgentIds.remove(agent.agentId)
                         }
                     }
+                    ForEach(unresolvedAgentIds, id: \.self) { id in
+                        resourceRow(label: id, icon: "exclamationmark.triangle") {
+                            contributorAgentIds.remove(id)
+                        }
+                    }
                 }
             }
         }
@@ -149,6 +164,11 @@ struct ObjectiveResourcesEditor: View {
 
     private var selectedAgents: [Agent] {
         client.agents.filter { contributorAgentIds.contains($0.agentId) }
+    }
+
+    private var unresolvedAgentIds: [String] {
+        let assignable = Set(client.agents.filter(\.isIndependentContributor).map(\.agentId))
+        return contributorAgentIds.filter { !assignable.contains($0) }.sorted()
     }
 
     // MARK: - 通用行

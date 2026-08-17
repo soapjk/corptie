@@ -89,6 +89,40 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
   };
 }
 
+function registerRepository(store, repositoryId = "repository:test", worktreeId = "worktree:test") {
+  const observedAt = "2026-08-17T00:00:00.000Z";
+  store.upsertGitWorkspaceSnapshot({
+    repository: {
+      id: repositoryId,
+      commonGitDirCanonicalPath: `/tmp/${repositoryId.slice("repository:".length)}/.git`,
+      discoveredAt: observedAt,
+      lastValidatedAt: observedAt
+    },
+    worktrees: [{
+      worktreeId,
+      repositoryId,
+      path: `/tmp/${repositoryId.slice("repository:".length)}`,
+      canonicalPath: `/tmp/${repositoryId.slice("repository:".length)}`,
+      gitDirCanonicalPath: `/tmp/${repositoryId.slice("repository:".length)}/.git`,
+      isMain: true,
+      availability: "available",
+      headOid: "a".repeat(40),
+      branchRef: "refs/heads/main",
+      branchName: "main",
+      isDetached: false,
+      isLocked: false,
+      lockReason: null,
+      isPrunable: false,
+      pruneReason: null,
+      inventoryVersion: "inventory:test",
+      observedAt
+    }],
+    inventoryVersion: "inventory:test",
+    observedAt
+  });
+  return repositoryId;
+}
+
 test("POST /sessions delegates Provider-only creation when no WorkItem binding is requested", async () => {
   const services = await createServices();
   try {
@@ -128,6 +162,53 @@ test("POST /objectives → 创建，GET /objectives → 列表", async () => {
   }
 });
 
+test("Objective/WorkItem HTTP validation returns structured errors without SQLite details", async () => {
+  const services = await createServices();
+  try {
+    const unknown = await callApi({
+      method: "POST",
+      pathname: "/objectives",
+      body: { name: "Invalid", workspacePath: "/tmp/repo" },
+      ...services
+    });
+    assert.equal(unknown.statusCode, 400);
+    assert.equal(unknown.body.code, "UNKNOWN_FIELD");
+    assert.equal(unknown.body.field, "workspacePath");
+    assert.match(unknown.body.expected, /workspaceIds/);
+    assert.equal(unknown.body.received.type, "string");
+
+    const wrongType = await callApi({
+      method: "POST",
+      pathname: "/objectives",
+      body: { name: "Invalid", acceptanceCriteria: { invalid: true } },
+      ...services
+    });
+    assert.equal(wrongType.statusCode, 400);
+    assert.equal(wrongType.body.code, "INVALID_FIELD_TYPE");
+    assert.equal(wrongType.body.field, "acceptanceCriteria");
+    assert.equal(wrongType.body.expected, "string");
+    assert.doesNotMatch(wrongType.body.error, /SQLite|bind|constraint/i);
+    assert.equal(services.store.listObjectives().length, 0);
+
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "Valid" }, ...services
+    });
+    const invalidPatch = await callApi({
+      method: "PATCH",
+      pathname: `/objectives/${objective.body.id}`,
+      body: { agentId: "agent:missing" },
+      ...services
+    });
+    assert.equal(invalidPatch.statusCode, 400);
+    assert.equal(invalidPatch.body.code, "UNKNOWN_FIELD");
+    assert.equal(invalidPatch.body.field, "agentId");
+    assert.equal(services.store.getObjective(objective.body.id).name, "Valid");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("entity mutations publish provider-neutral refresh events", async () => {
   const services = await createServices();
   try {
@@ -155,16 +236,17 @@ test("entity mutations publish provider-neutral refresh events", async () => {
 test("Objective 挂靠资源：workspace/关联/contributor + 对称关联", async () => {
   const services = await createServices();
   try {
+    const repositoryId = registerRepository(services.store);
     const agent = await callApi({ method: "POST", pathname: "/agents", body: { name: "后端开发" }, ...services });
     const agentId = agent.body.agent.agentId;
 
     const a = await callApi({
       method: "POST", pathname: "/objectives",
-      body: { name: "目标 A", workspaceIds: ["repo:1"], contributorAgentIds: [agentId] },
+      body: { name: "目标 A", workspaceIds: [repositoryId], contributorAgentIds: [agentId] },
       ...services
     });
     assert.equal(a.statusCode, 201);
-    assert.deepEqual(a.body.workspaceIds, ["repo:1"]);
+    assert.deepEqual(a.body.workspaceIds, [repositoryId]);
     assert.deepEqual(a.body.contributorAgentIds, [agentId]);
     assert.deepEqual(a.body.relatedObjectiveIds, []);
 
@@ -601,17 +683,19 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
 test("Session 创建响应返回可直接增量写入客户端的完整分类与归属", async () => {
   const services = await createServices();
   try {
+    const contributor = await callApi({
+      method: "POST", pathname: "/agents", body: { name: "贡献者" }, ...services
+    });
     const objective = await callApi({
-      method: "POST", pathname: "/objectives", body: { name: "目标" }, ...services
+      method: "POST", pathname: "/objectives",
+      body: { name: "目标", contributorAgentIds: [contributor.body.agent.agentId] },
+      ...services
     });
     const workItem = await callApi({
       method: "POST",
       pathname: "/work-items",
       body: { objectiveId: objective.body.id, title: "任务" },
       ...services
-    });
-    const contributor = await callApi({
-      method: "POST", pathname: "/agents", body: { name: "贡献者" }, ...services
     });
     const worker = await callApi({
       ...services,

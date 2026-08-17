@@ -395,6 +395,14 @@ export function handleEntityHttpRequest({
             400
           );
         }
+        const objective = objectiveService.getObjective(workItem.objective_id);
+        objectiveService.store.assertWorkItemAssociations(
+          {
+            mainWorkspaceId: workItem.main_workspace_id,
+            mainAgentId: agent.agentId
+          },
+          objective
+        );
         if (typeof launchSession !== "function") {
           throw apiError("INTERNAL", "launchSession is not configured.", 500);
         }
@@ -487,9 +495,13 @@ export function handleEntityHttpRequest({
       throw apiError("NOT_FOUND", "Entity endpoint not found.", 404);
     })
     .catch((error) => {
-      sendJson(response, error.statusCode ?? statusForCode(error.code), {
-        error: error.message,
-        code: error.code ?? null,
+      const code = error.code ?? "INTERNAL";
+      sendJson(response, error.statusCode ?? statusForCode(code), {
+        error: error.code ? error.message : "Entity operation failed.",
+        code,
+        ...(typeof error.field === "string" ? { field: error.field } : {}),
+        ...(typeof error.expected === "string" ? { expected: error.expected } : {}),
+        ...(error.received && typeof error.received === "object" ? { received: error.received } : {}),
         ...(Array.isArray(error.candidates) ? { candidates: error.candidates } : {})
       });
     });
@@ -508,7 +520,11 @@ function rejectSessionAvatarInput(input) {
 
 function statusForCode(code) {
   if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND"].includes(code)) return 404;
-  if (["CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT"].includes(code)) return 409;
+  if (code === "INTERNAL") return 500;
+  if ([
+    "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
+    "ASSOCIATION_OUT_OF_SCOPE", "OBJECTIVE_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR"
+  ].includes(code)) return 409;
   if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN"].includes(code)) return 403;
   return 400;
 }
