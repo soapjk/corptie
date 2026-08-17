@@ -13,6 +13,7 @@ struct AgentPickerView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @Binding var selectedIds: Set<String>
     var roleFilter: RoleFilter = .all
+    var allowedAgentIds: Set<String>? = nil
     /// 完成回调（可选）：点「完成」时把最终选中集合交回调用方；不传则仅关闭。
     var onDone: ((Set<String>) -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
@@ -27,10 +28,12 @@ struct AgentPickerView: View {
                     .foregroundStyle(.secondary)
                 TextField(L10n("搜索 Agent 名称"), text: $searchText)
                     .textFieldStyle(.roundedBorder)
-                Button {
-                    showCreate = true
-                } label: {
-                    Label(L10n("新建 Agent"), systemImage: "plus")
+                if allowedAgentIds == nil {
+                    Button {
+                        showCreate = true
+                    } label: {
+                        Label(L10n("新建 Agent"), systemImage: "plus")
+                    }
                 }
             }
             .padding(12)
@@ -97,9 +100,12 @@ struct AgentPickerView: View {
         let roleFiltered = roleFilter == .independentContributor
             ? client.agents.filter(\.isIndependentContributor)
             : client.agents
+        let scopeFiltered = allowedAgentIds.map { allowed in
+            roleFiltered.filter { allowed.contains($0.agentId) }
+        } ?? roleFiltered
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return roleFiltered }
-        return roleFiltered.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
+        guard !trimmed.isEmpty else { return scopeFiltered }
+        return scopeFiltered.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
     }
 
     private func toggle(_ id: String) {

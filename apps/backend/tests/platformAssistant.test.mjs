@@ -7,6 +7,7 @@ import { AgentContextService } from "../src/application/agentContextService.mjs"
 import { HubService } from "../src/application/hubService.mjs";
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
 import { PlatformOperationService } from "../src/application/platformOperationService.mjs";
+import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { PLATFORM_ASSISTANT_MANIFEST } from "../src/utils/platformAssistantIdentity.mjs";
 
@@ -137,6 +138,23 @@ test("platform operations are denied to user Agents and use product services for
       tool: "corptie_platform_work_items_manage",
       arguments: { action: "create", objective_id: objective.result.id, title: "平台事件任务" }
     });
+
+    await assert.rejects(
+      service.execute({
+        actorId: "assistant",
+        tool: "corptie_platform_objectives_manage",
+        arguments: { action: "update", objective_id: objective.result.id, patch: { workspacePath: "/tmp" } }
+      }),
+      { code: "UNKNOWN_FIELD", field: "workspacePath" }
+    );
+    await assert.rejects(
+      service.execute({
+        actorId: "assistant",
+        tool: "corptie_platform_work_items_manage",
+        arguments: { action: "create", objective_id: objective.result.id, title: "Bad", patch: { acceptanceCriteria: [] } }
+      }),
+      { code: "INVALID_FIELD_TYPE", field: "acceptanceCriteria" }
+    );
     assert.deepEqual(
       entityEvents.map((event) => event.type),
       ["AgentChanged", "ObjectiveChanged", "WorkItemChanged"]
@@ -153,5 +171,15 @@ test("platform operations are denied to user Agents and use product services for
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("platform Objective and WorkItem tool patch schemas reject additional properties", () => {
+  for (const name of ["corptie_platform_objectives_manage", "corptie_platform_work_items_manage"]) {
+    const schema = platformDynamicTools.find((tool) => tool.name === name).inputSchema.properties.patch;
+    assert.equal(schema.additionalProperties, false);
+    assert.ok(schema.properties.acceptanceCriteria);
+    assert.equal(Object.hasOwn(schema.properties, "workspacePath"), false);
+    assert.equal(Object.hasOwn(schema.properties, "main_agent_id"), false);
   }
 });

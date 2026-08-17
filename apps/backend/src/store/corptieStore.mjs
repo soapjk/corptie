@@ -16,6 +16,12 @@ import {
   isPlatformAssistant,
   platformAssistantProtectionError
 } from "../utils/platformAssistantIdentity.mjs";
+import {
+  associationError,
+  assertRepositoryId,
+  validateObjectiveInput,
+  validateWorkItemInput
+} from "../domain/objectiveWorkItemValidation.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -833,6 +839,22 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_work_items_objective_id ON work_items(objective_id);
       CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
+
+      CREATE TABLE IF NOT EXISTS objective_work_item_association_audit (
+        audit_id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        received_value TEXT,
+        status TEXT NOT NULL CHECK (status IN ('migrated', 'unresolved')),
+        reason TEXT NOT NULL,
+        migrated_value TEXT,
+        first_audited_at TEXT NOT NULL,
+        last_audited_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_entity_association_audit_status
+      ON objective_work_item_association_audit(status, entity_type, entity_id);
     `);
 
     // --- 三层记忆（13：Objective/WorkItem 工作记忆 + Agent 进化记忆） ---
@@ -1069,6 +1091,7 @@ export class CorptieStore {
     this.ensureSkillTables();
     this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
+    this.auditObjectiveWorkItemAssociations({ migrate: true });
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_assistant_work_dir
       ON agents(work_dir COLLATE NOCASE)
       WHERE role = 'assistant' AND work_dir IS NOT NULL AND TRIM(work_dir) <> ''`);
@@ -1422,6 +1445,18 @@ export class CorptieStore {
     // full in-memory database export.
   }
 
+  runInTransaction(operation) {
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const result = operation();
+      this.db.run("COMMIT");
+      return result;
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
   async close() {
     if (!this.db) return;
     await this.save();
@@ -1514,6 +1549,7 @@ export class CorptieStore {
       throw error;
     }
     this.scheduleSave();
+    this.auditObjectiveWorkItemAssociations({ migrate: true });
     return this.listGitWorktrees(repository.id);
   }
 
@@ -3566,25 +3602,249 @@ export class CorptieStore {
 
   // ===== 实体层：Objective / WorkItem / 依赖 DAG（15 Phase 1，净新增）=====
 
+  auditObjectiveWorkItemAssociations(options = {}) {
+    const migrate = options.migrate !== false;
+    const auditedAt = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      // Unresolved rows describe the current state and are recomputed. Migrated rows are retained as an audit trail.
+      this.db.run("DELETE FROM objective_work_item_association_audit WHERE status = 'unresolved'");
+
+      const objectives = this.selectAll(
+        `SELECT id, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json
+         FROM objectives ORDER BY id ASC`
+      );
+      for (const row of objectives) {
+        let workspaceIds;
+        try {
+          workspaceIds = JSON.parse(row.workspace_ids_json ?? "[]");
+        } catch {
+          workspaceIds = null;
+        }
+        if (!Array.isArray(workspaceIds)) {
+          this.recordAssociationAudit({
+            entityType: "objective", entityId: row.id, field: "workspaceIds",
+            receivedValue: row.workspace_ids_json, status: "unresolved", reason: "invalid_json_type", auditedAt
+          });
+          continue;
+        }
+
+        let changed = false;
+        const migratedWorkspaceIds = [];
+        for (const workspaceId of workspaceIds) {
+          if (typeof workspaceId !== "string") {
+            this.recordAssociationAudit({
+              entityType: "objective", entityId: row.id, field: "workspaceIds",
+              receivedValue: workspaceId, status: "unresolved", reason: "invalid_id_type", auditedAt
+            });
+            migratedWorkspaceIds.push(workspaceId);
+            continue;
+          }
+          if (workspaceId.startsWith("worktree:")) {
+            const worktree = this.getGitWorktree(workspaceId);
+            if (worktree?.repositoryId && this.getGitRepository(worktree.repositoryId)) {
+              migratedWorkspaceIds.push(worktree.repositoryId);
+              changed = true;
+              this.recordAssociationAudit({
+                entityType: "objective", entityId: row.id, field: "workspaceIds",
+                receivedValue: workspaceId, status: "migrated", reason: "worktree_resolved",
+                migratedValue: worktree.repositoryId, auditedAt
+              });
+            } else {
+              migratedWorkspaceIds.push(workspaceId);
+              this.recordAssociationAudit({
+                entityType: "objective", entityId: row.id, field: "workspaceIds",
+                receivedValue: workspaceId, status: "unresolved", reason: "worktree_not_registered", auditedAt
+              });
+            }
+            continue;
+          }
+          migratedWorkspaceIds.push(workspaceId);
+          if (!workspaceId.startsWith("repository:") || !this.getGitRepository(workspaceId)) {
+            this.recordAssociationAudit({
+              entityType: "objective", entityId: row.id, field: "workspaceIds",
+              receivedValue: workspaceId, status: "unresolved", reason: "repository_not_registered", auditedAt
+            });
+          }
+        }
+        const deduped = [...new Set(migratedWorkspaceIds)];
+        if (migrate && (changed || deduped.length !== workspaceIds.length)) {
+          this.db.run(
+            "UPDATE objectives SET workspace_ids_json = ?, updated_at = ? WHERE id = ?",
+            [JSON.stringify(deduped), auditedAt, row.id]
+          );
+        }
+
+        for (const [field, rawJson, resourceType] of [
+          ["relatedObjectiveIds", row.related_objective_ids_json, "objective"],
+          ["contributorAgentIds", row.contributor_agent_ids_json, "agent"]
+        ]) {
+          let ids;
+          try {
+            ids = JSON.parse(rawJson ?? "[]");
+          } catch {
+            ids = null;
+          }
+          if (!Array.isArray(ids)) {
+            this.recordAssociationAudit({
+              entityType: "objective", entityId: row.id, field,
+              receivedValue: rawJson, status: "unresolved", reason: "invalid_json_type", auditedAt
+            });
+            continue;
+          }
+          for (const id of ids) {
+            if (typeof id !== "string" || !id.trim()) {
+              this.recordAssociationAudit({
+                entityType: "objective", entityId: row.id, field,
+                receivedValue: id, status: "unresolved", reason: "invalid_id_type", auditedAt
+              });
+              continue;
+            }
+            const resource = resourceType === "objective" ? this.getObjective(id) : this.getAgent(id);
+            const assignable = resourceType !== "agent" || resource?.role === "independentContributor";
+            if (!resource || !assignable || (resourceType === "objective" && id === row.id)) {
+              this.recordAssociationAudit({
+                entityType: "objective", entityId: row.id, field,
+                receivedValue: id, status: "unresolved",
+                reason: !resource ? `${resourceType}_not_found` : resourceType === "agent" ? "agent_not_assignable" : "self_relation",
+                auditedAt
+              });
+            }
+          }
+        }
+      }
+
+      const workItems = this.selectAll(
+        `SELECT id, objective_id, main_workspace_id, main_agent_id FROM work_items ORDER BY id ASC`
+      );
+      for (const row of workItems) {
+        const objective = this.getObjective(row.objective_id);
+        if (!objective) {
+          this.recordAssociationAudit({
+            entityType: "workItem", entityId: row.id, field: "objectiveId",
+            receivedValue: row.objective_id, status: "unresolved", reason: "objective_not_found", auditedAt
+          });
+          continue;
+        }
+
+        const workspaceId = row.main_workspace_id;
+        if (workspaceId?.startsWith("worktree:")) {
+          const worktree = this.getGitWorktree(workspaceId);
+          const repositoryId = worktree?.repositoryId;
+          if (repositoryId && this.getGitRepository(repositoryId) && objective.workspaceIds.includes(repositoryId)) {
+            if (migrate) {
+              this.db.run(
+                "UPDATE work_items SET main_workspace_id = ?, updated_at = ? WHERE id = ?",
+                [repositoryId, auditedAt, row.id]
+              );
+            }
+            this.recordAssociationAudit({
+              entityType: "workItem", entityId: row.id, field: "mainWorkspaceId",
+              receivedValue: workspaceId, status: "migrated", reason: "worktree_resolved_in_objective_scope",
+              migratedValue: repositoryId, auditedAt
+            });
+          } else {
+            this.recordAssociationAudit({
+              entityType: "workItem", entityId: row.id, field: "mainWorkspaceId",
+              receivedValue: workspaceId, status: "unresolved",
+              reason: repositoryId ? "repository_outside_objective_scope" : "worktree_not_registered", auditedAt
+            });
+          }
+        } else if (workspaceId && (
+          !workspaceId.startsWith("repository:") || !this.getGitRepository(workspaceId) || !objective.workspaceIds.includes(workspaceId)
+        )) {
+          this.recordAssociationAudit({
+            entityType: "workItem", entityId: row.id, field: "mainWorkspaceId",
+            receivedValue: workspaceId, status: "unresolved", reason: "repository_invalid_or_outside_objective_scope", auditedAt
+          });
+        }
+
+        if (row.main_agent_id) {
+          const agent = this.getAgent(row.main_agent_id);
+          const valid = agent?.role === "independentContributor"
+            && objective.contributorAgentIds.includes(row.main_agent_id);
+          if (!valid) {
+            this.recordAssociationAudit({
+              entityType: "workItem", entityId: row.id, field: "mainAgentId",
+              receivedValue: row.main_agent_id, status: "unresolved",
+              reason: !agent ? "agent_not_found" : agent.role !== "independentContributor"
+                ? "agent_not_assignable" : "agent_outside_objective_scope",
+              auditedAt
+            });
+          }
+        }
+      }
+    });
+    return this.listObjectiveWorkItemAssociationAudit();
+  }
+
+  recordAssociationAudit(input) {
+    const receivedValue = input.receivedValue == null
+      ? null
+      : typeof input.receivedValue === "string" ? input.receivedValue : JSON.stringify(input.receivedValue);
+    const auditId = [input.entityType, input.entityId, input.field, receivedValue ?? "<null>"].join("|");
+    this.db.run(
+      `INSERT INTO objective_work_item_association_audit (
+         audit_id, entity_type, entity_id, field, received_value, status, reason,
+         migrated_value, first_audited_at, last_audited_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(audit_id) DO UPDATE SET
+         status=excluded.status,
+         reason=excluded.reason,
+         migrated_value=excluded.migrated_value,
+         last_audited_at=excluded.last_audited_at`,
+      [
+        auditId, input.entityType, input.entityId, input.field, receivedValue,
+        input.status, input.reason, input.migratedValue ?? null, input.auditedAt, input.auditedAt
+      ]
+    );
+  }
+
+  listObjectiveWorkItemAssociationAudit(options = {}) {
+    const rows = options.status
+      ? this.selectAll(
+        `SELECT * FROM objective_work_item_association_audit WHERE status = ?
+         ORDER BY entity_type, entity_id, field, received_value`,
+        [options.status]
+      )
+      : this.selectAll(
+        `SELECT * FROM objective_work_item_association_audit
+         ORDER BY status, entity_type, entity_id, field, received_value`
+      );
+    return rows.map((row) => ({
+      auditId: row.audit_id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      field: row.field,
+      receivedValue: row.received_value,
+      status: row.status,
+      reason: row.reason,
+      migratedValue: row.migrated_value,
+      firstAuditedAt: row.first_audited_at,
+      lastAuditedAt: row.last_audited_at
+    }));
+  }
+
   createObjective(input = {}) {
-    const id = input.id ?? `objective:${randomUUID()}`;
+    const normalized = validateObjectiveInput(input, "create");
+    const id = normalized.id ?? `objective:${randomUUID()}`;
+    this.assertObjectiveAssociations(normalized, { objectiveId: id });
     const now = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO objectives (id, name, description, acceptance_criteria, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
-        input.name,
-        input.description ?? "",
-        input.acceptanceCriteria ?? "",
-        input.status ?? "active",
-        JSON.stringify(input.budgetConfig ?? {}),
-        input.priority ?? null,
-        input.targetDate ?? null,
-        JSON.stringify(input.tags ?? []),
-        JSON.stringify(input.workspaceIds ?? []),
-        JSON.stringify(input.relatedObjectiveIds ?? []),
-        JSON.stringify(input.contributorAgentIds ?? []),
+        normalized.name,
+        normalized.description ?? "",
+        normalized.acceptanceCriteria ?? "",
+        normalized.status ?? "active",
+        JSON.stringify(normalized.budgetConfig ?? {}),
+        normalized.priority ?? null,
+        normalized.targetDate ?? null,
+        JSON.stringify(normalized.tags ?? []),
+        JSON.stringify(normalized.workspaceIds ?? []),
+        JSON.stringify(normalized.relatedObjectiveIds ?? []),
+        JSON.stringify(normalized.contributorAgentIds ?? []),
         now,
         now,
       ]
@@ -3605,23 +3865,24 @@ export class CorptieStore {
   updateObjective(id, patch = {}) {
     const current = this.getObjective(id);
     if (!current) return null;
+    const normalized = validateObjectiveInput(patch, "update");
+    const prospective = { ...current, ...normalized };
+    this.assertObjectiveAssociations(prospective, { objectiveId: id, validateWorkItemScope: true });
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
-    // priority/targetDate 传 "" 或 null 视为清除（写 NULL）
-    const normalizeOptional = (value) => (value === "" || value == null ? null : value);
     this.db.run(
       `UPDATE objectives SET name=?, description=?, acceptance_criteria=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
       [
-        has("name") ? patch.name : current.name,
-        has("description") ? (patch.description ?? "") : current.description,
-        has("acceptanceCriteria") ? (patch.acceptanceCriteria ?? "") : current.acceptanceCriteria,
-        has("status") ? patch.status : current.status,
-        has("budgetConfig") ? JSON.stringify(patch.budgetConfig ?? {}) : JSON.stringify(current.budgetConfig ?? {}),
-        has("priority") ? normalizeOptional(patch.priority) : current.priority,
-        has("targetDate") ? normalizeOptional(patch.targetDate) : current.targetDate,
-        has("tags") ? JSON.stringify(patch.tags ?? []) : JSON.stringify(current.tags ?? []),
-        has("workspaceIds") ? JSON.stringify(patch.workspaceIds ?? []) : JSON.stringify(current.workspaceIds ?? []),
-        has("relatedObjectiveIds") ? JSON.stringify(patch.relatedObjectiveIds ?? []) : JSON.stringify(current.relatedObjectiveIds ?? []),
-        has("contributorAgentIds") ? JSON.stringify(patch.contributorAgentIds ?? []) : JSON.stringify(current.contributorAgentIds ?? []),
+        has("name") ? normalized.name : current.name,
+        has("description") ? normalized.description : current.description,
+        has("acceptanceCriteria") ? normalized.acceptanceCriteria : current.acceptanceCriteria,
+        has("status") ? normalized.status : current.status,
+        has("budgetConfig") ? JSON.stringify(normalized.budgetConfig) : JSON.stringify(current.budgetConfig ?? {}),
+        has("priority") ? normalized.priority : current.priority,
+        has("targetDate") ? normalized.targetDate : current.targetDate,
+        has("tags") ? JSON.stringify(normalized.tags) : JSON.stringify(current.tags ?? []),
+        has("workspaceIds") ? JSON.stringify(normalized.workspaceIds) : JSON.stringify(current.workspaceIds ?? []),
+        has("relatedObjectiveIds") ? JSON.stringify(normalized.relatedObjectiveIds) : JSON.stringify(current.relatedObjectiveIds ?? []),
+        has("contributorAgentIds") ? JSON.stringify(normalized.contributorAgentIds) : JSON.stringify(current.contributorAgentIds ?? []),
         createdAtFromOrNow(),
         id,
       ]
@@ -3636,21 +3897,30 @@ export class CorptieStore {
   }
 
   createWorkItem(input = {}) {
-    const id = input.id ?? `work_item:${randomUUID()}`;
+    const normalized = validateWorkItemInput(input, "create");
+    const objective = this.getObjective(normalized.objectiveId);
+    if (!objective) {
+      throw associationError(
+        "OBJECTIVE_NOT_FOUND", "objectiveId", "existing Objective ID", normalized.objectiveId,
+        `Objective not found: ${normalized.objectiveId}`
+      );
+    }
+    this.assertWorkItemAssociations(normalized, objective);
+    const id = normalized.id ?? `work_item:${randomUUID()}`;
     const now = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO work_items (id, objective_id, title, description, acceptance_criteria, priority, status, main_workspace_id, main_agent_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
-        input.objectiveId,
-        input.title,
-        input.description ?? "",
-        input.acceptanceCriteria ?? "",
-        input.priority ?? "medium",
-        input.status ?? "todo",
-        input.mainWorkspaceId ?? null,
-        input.mainAgentId ?? null,
+        normalized.objectiveId,
+        normalized.title,
+        normalized.description ?? "",
+        normalized.acceptanceCriteria ?? "",
+        normalized.priority ?? "medium",
+        normalized.status ?? "todo",
+        normalized.mainWorkspaceId ?? null,
+        normalized.mainAgentId ?? null,
         now,
         now,
       ]
@@ -3685,22 +3955,142 @@ export class CorptieStore {
   updateWorkItem(id, patch = {}) {
     const current = this.getWorkItem(id);
     if (!current) return null;
+    const normalized = validateWorkItemInput(patch, "update");
+    const prospective = {
+      title: current.title,
+      description: current.description,
+      acceptanceCriteria: current.acceptance_criteria,
+      priority: current.priority,
+      status: current.status,
+      mainWorkspaceId: current.main_workspace_id,
+      mainAgentId: current.main_agent_id,
+      ...normalized
+    };
+    const objective = this.getObjective(current.objective_id);
+    if (!objective) {
+      throw associationError(
+        "OBJECTIVE_NOT_FOUND", "objectiveId", "existing Objective ID", current.objective_id,
+        `Objective not found: ${current.objective_id}`
+      );
+    }
+    this.assertWorkItemAssociations(prospective, objective);
+    const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
       `UPDATE work_items SET title=?, description=?, acceptance_criteria=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, updated_at=? WHERE id=?`,
       [
-        patch.title ?? current.title,
-        patch.description ?? current.description,
-        patch.acceptanceCriteria ?? current.acceptance_criteria,
-        patch.priority ?? current.priority,
-        patch.status ?? current.status,
-        patch.mainWorkspaceId ?? current.main_workspace_id,
-        patch.mainAgentId ?? current.main_agent_id,
+        has("title") ? normalized.title : current.title,
+        has("description") ? normalized.description : current.description,
+        has("acceptanceCriteria") ? normalized.acceptanceCriteria : current.acceptance_criteria,
+        has("priority") ? normalized.priority : current.priority,
+        has("status") ? normalized.status : current.status,
+        has("mainWorkspaceId") ? normalized.mainWorkspaceId : current.main_workspace_id,
+        has("mainAgentId") ? normalized.mainAgentId : current.main_agent_id,
         createdAtFromOrNow(),
         id,
       ]
     );
     this.scheduleSave();
     return this.getWorkItem(id);
+  }
+
+  assertObjectiveAssociations(input, options = {}) {
+    const objectiveId = options.objectiveId ?? input.id ?? null;
+    const workspaceIds = input.workspaceIds ?? [];
+    const contributorAgentIds = input.contributorAgentIds ?? [];
+    for (const [index, repositoryId] of workspaceIds.entries()) {
+      const field = `workspaceIds[${index}]`;
+      assertRepositoryId(repositoryId, field);
+      if (!this.getGitRepository(repositoryId)) {
+        throw associationError(
+          "WORKSPACE_NOT_FOUND", field, "registered repository: ID", repositoryId,
+          `Repository not found: ${repositoryId}`
+        );
+      }
+    }
+    for (const [index, relatedId] of (input.relatedObjectiveIds ?? []).entries()) {
+      const field = `relatedObjectiveIds[${index}]`;
+      if (relatedId === objectiveId) {
+        throw associationError(
+          "ASSOCIATION_INTEGRITY_ERROR", field, "another existing Objective ID", relatedId,
+          "An Objective cannot relate to itself."
+        );
+      }
+      if (!this.getObjective(relatedId)) {
+        throw associationError(
+          "OBJECTIVE_NOT_FOUND", field, "existing Objective ID", relatedId,
+          `Objective not found: ${relatedId}`
+        );
+      }
+    }
+    for (const [index, agentId] of contributorAgentIds.entries()) {
+      this.assertAssignableAgent(agentId, `contributorAgentIds[${index}]`);
+    }
+
+    if (!options.validateWorkItemScope || !objectiveId) return;
+    const workspaceScope = new Set(workspaceIds);
+    const agentScope = new Set(contributorAgentIds);
+    for (const workItem of this.listWorkItemsByObjective(objectiveId)) {
+      if (workItem.main_workspace_id && !workspaceScope.has(workItem.main_workspace_id)) {
+        throw associationError(
+          "OBJECTIVE_SCOPE_CONFLICT", "workspaceIds", "must include every WorkItem mainWorkspaceId",
+          workItem.main_workspace_id,
+          `Workspace is still assigned to WorkItem ${workItem.id}.`
+        );
+      }
+      if (workItem.main_agent_id && !agentScope.has(workItem.main_agent_id)) {
+        throw associationError(
+          "OBJECTIVE_SCOPE_CONFLICT", "contributorAgentIds", "must include every WorkItem mainAgentId",
+          workItem.main_agent_id,
+          `Agent is still assigned to WorkItem ${workItem.id}.`
+        );
+      }
+    }
+  }
+
+  assertWorkItemAssociations(input, objective) {
+    if (input.mainWorkspaceId) {
+      assertRepositoryId(input.mainWorkspaceId, "mainWorkspaceId");
+      if (!this.getGitRepository(input.mainWorkspaceId)) {
+        throw associationError(
+          "WORKSPACE_NOT_FOUND", "mainWorkspaceId", "registered repository: ID", input.mainWorkspaceId,
+          `Repository not found: ${input.mainWorkspaceId}`
+        );
+      }
+      if (!(objective.workspaceIds ?? []).includes(input.mainWorkspaceId)) {
+        throw associationError(
+          "ASSOCIATION_OUT_OF_SCOPE", "mainWorkspaceId", "repository in owning Objective.workspaceIds",
+          input.mainWorkspaceId,
+          "WorkItem mainWorkspaceId is outside its Objective workspace scope."
+        );
+      }
+    }
+    if (input.mainAgentId) {
+      this.assertAssignableAgent(input.mainAgentId, "mainAgentId");
+      if (!(objective.contributorAgentIds ?? []).includes(input.mainAgentId)) {
+        throw associationError(
+          "ASSOCIATION_OUT_OF_SCOPE", "mainAgentId", "Agent in owning Objective.contributorAgentIds",
+          input.mainAgentId,
+          "WorkItem mainAgentId is outside its Objective contributor scope."
+        );
+      }
+    }
+  }
+
+  assertAssignableAgent(agentId, field) {
+    const agent = this.getAgent(agentId);
+    if (!agent) {
+      throw associationError(
+        "AGENT_NOT_FOUND", field, "existing assignable Agent ID", agentId,
+        `Agent not found: ${agentId}`
+      );
+    }
+    if (agent.role !== "independentContributor" || agent.status !== "available") {
+      throw associationError(
+        "AGENT_NOT_ASSIGNABLE", field, "available independentContributor Agent ID", agentId,
+        `Agent is not assignable: ${agentId}`
+      );
+    }
+    return agent;
   }
 
   deleteWorkItem(id) {
