@@ -308,7 +308,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarSeparatorStyle = .none
         window.center()
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: MainTabView())
+        let hostingView = NSHostingView(rootView: MainTabView())
+        // This is a user-resizable AppKit-owned window. The SwiftUI root must
+        // follow its bounds, not feed its ideal size back into NSWindow. The
+        // default sizing options can call updateAnimatedWindowSize during a
+        // tab replacement, producing a safe-area/constraint feedback loop.
+        hostingView.sizingOptions = []
+        hostingView.autoresizingMask = [.width, .height]
+        hostingView.frame = window.contentView?.bounds ?? NSRect(
+            origin: .zero,
+            size: window.contentRect(forFrameRect: window.frame).size
+        )
+        window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window
     }

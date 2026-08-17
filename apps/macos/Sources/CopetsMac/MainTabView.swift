@@ -17,16 +17,6 @@ enum AppTab: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    // Tab 在栏中的顺序，用于判断页面切换的滑动方向（前进/后退）。
-    var index: Int {
-        switch self {
-        case .console: 0
-        case .sessions: 1
-        case .sessionDSH: 2
-        case .agents: 3
-        }
-    }
-
     @MainActor var title: String {
         switch self {
         case .console: L10n("Console")
@@ -90,16 +80,14 @@ struct UnderlineTabBar: View {
         .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isExpanded)
     }
 
-    // 速度曲线：先快后缓的回弹曲线（custom cubic-bezier），营造"滑入并轻弹"的手感。
-    private var underlineAnimation: Animation {
-        .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.32)
-    }
-
     private func select(_ tab: AppTab) {
-        // 用与下划线一致的动画驱动 selection，使下划线滑动与页面切换同步。
-        withAnimation(underlineAnimation) {
-            selection = tab
-        }
+        // Each tab owns a substantial native view hierarchy. Driving the
+        // selection itself with an animation keeps both hierarchies alive in
+        // the same layout pass and makes NavigationSplitView/WKWebView compete
+        // with the tab chrome for the main thread. The buttons animate their
+        // own selected state below, so the chrome stays responsive without
+        // animating the page replacement.
+        selection = tab
     }
 }
 
@@ -208,13 +196,6 @@ struct MainTabView: View {
 
             ZStack {
                 content(for: router.selectedTab)
-                    .id(router.selectedTab)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: router.slideForward ? .trailing : .leading)
-                            .combined(with: .opacity),
-                        removal: .move(edge: router.slideForward ? .leading : .trailing)
-                            .combined(with: .opacity)
-                    ))
             }
             .clipped()
         }
@@ -245,8 +226,6 @@ struct MainTabView: View {
 @MainActor
 final class AppTabRouter: ObservableObject {
     @Published private(set) var selectedTab: AppTab = .console
-    // 必须先于 selectedTab 更新，确保 SwiftUI 创建 transition 时读到本次切换的方向。
-    @Published private(set) var slideForward = true
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
 
@@ -262,7 +241,6 @@ final class AppTabRouter: ObservableObject {
 
     func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
-        slideForward = tab.index > selectedTab.index
         selectedTab = tab
     }
 

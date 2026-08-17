@@ -18,6 +18,7 @@ struct SessionsView: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     @StateObject private var layoutState = PanelLayoutState()
     @State private var composerDraftRepository = ComposerDraftRepository()
+    @State private var detailRenderTask: Task<Void, Never>?
     @EnvironmentObject private var router: AppTabRouter
     /// 「+」新建会话：明确选择 Assistant Chat 或 Worker Session。
     @State private var showNewSessionCreation = false
@@ -45,13 +46,16 @@ struct SessionsView: View {
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
         .onAppear {
-            layoutState.canRenderDetailMessages = true
+            scheduleDetailRendering()
             backendClient.suppressBackgroundPolling = true
             attemptPendingSelection(backendClient.sessions)
             restoreLastSelectedSession(backendClient.sessions)
             Task { await entityClient.refreshAgents() }
         }
         .onDisappear {
+            detailRenderTask?.cancel()
+            detailRenderTask = nil
+            layoutState.canRenderDetailMessages = false
             backendClient.suppressBackgroundPolling = false
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
@@ -65,6 +69,20 @@ struct SessionsView: View {
             if let newValue {
                 Self.recordSessionId(newValue)
             }
+        }
+    }
+
+    private func scheduleDetailRendering() {
+        detailRenderTask?.cancel()
+        layoutState.canRenderDetailMessages = false
+        detailRenderTask = Task { @MainActor in
+            // Let NavigationSplitView establish its columns and paint the
+            // lightweight shell before constructing Markdown/process cards.
+            // This keeps the tab click responsive without adding a visible
+            // loading delay on a normal display refresh.
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled, router.selectedTab == .sessions else { return }
+            layoutState.canRenderDetailMessages = true
         }
     }
 
@@ -309,13 +327,9 @@ struct SessionDetailPanel: View {
             }
         }
         .frame(width: Self.railWidth)
-        .task {
+        .task(id: session.id) {
             if backendClient.agentProviders.isEmpty {
                 await backendClient.loadProviders()
-            }
-            if session.resolvedSessionKind == .assistantChat {
-                await entityClient.refreshAgents()
-                await backendClient.loadContextReferences(for: session)
             }
         }
         .sheet(item: $contextReferenceAddMode) { mode in
