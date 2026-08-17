@@ -4076,6 +4076,12 @@ struct DetailView: View {
         }
 
         let tailItems = detail.items.reversed().prefix { $0.turnId == nextLast.turnId }.reversed()
+        // Reused or missing provider turn IDs need the full ordered projection
+        // so user-message boundaries can be recovered. The tail-only fast path
+        // would otherwise collapse those recovered turns back into one group.
+        guard tailItems.lazy.filter({ $0.type == "userMessage" }).prefix(2).count < 2 else {
+            return nil
+        }
         let nextTailEntries = makeChatDisplayEntriesForTurn(Array(tailItems))
         guard let oldTailStart = cachedDisplayEntries.firstIndex(where: {
             chatDisplayEntryTurnId($0) == nextLast.turnId
@@ -4808,7 +4814,7 @@ struct DetailDisplayCache {
 private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
     switch entry.kind {
     case .message(let item): item.turnId
-    case .process(let turnId, _): turnId
+    case .process(let turnId, let items): items.first?.turnId ?? turnId
     }
 }
 
@@ -4891,26 +4897,45 @@ func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -
 
 func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
     var entries: [ChatDisplayEntry] = []
-    var turnIds: [String] = []
-    var itemsByTurnId: [String: [CodexThreadItem]] = [:]
+    var currentItems: [CodexThreadItem] = []
+    var segmentCountsByTurnId: [String: Int] = [:]
+
+    func appendCurrentSegment() {
+        guard let sourceTurnId = currentItems.first?.turnId else { return }
+        let segmentIndex = segmentCountsByTurnId[sourceTurnId, default: 0]
+        segmentCountsByTurnId[sourceTurnId] = segmentIndex + 1
+        let displayTurnId = segmentIndex == 0
+            ? sourceTurnId
+            : "\(sourceTurnId):display-segment:\(segmentIndex)"
+        entries.append(contentsOf: makeChatDisplayEntriesForTurn(
+            currentItems,
+            displayTurnId: displayTurnId
+        ))
+        currentItems.removeAll(keepingCapacity: true)
+    }
 
     for item in items {
-        if itemsByTurnId[item.turnId] == nil {
-            turnIds.append(item.turnId)
-            itemsByTurnId[item.turnId] = []
+        let startsNewSourceTurn = currentItems.last.map { $0.turnId != item.turnId } ?? false
+        // Some provider histories omit turn_id or reuse one value for the
+        // complete Session. Once a turn has emitted non-user content, the next
+        // authored user message is the only reliable boundary. Segmenting here
+        // preserves provider order and prevents all user cards from being
+        // projected ahead of every assistant/process card in the Session.
+        let startsRecoveredTurn = item.type == "userMessage"
+            && currentItems.contains { $0.type != "userMessage" }
+        if startsNewSourceTurn || startsRecoveredTurn {
+            appendCurrentSegment()
         }
-        itemsByTurnId[item.turnId]?.append(item)
+        currentItems.append(item)
     }
-
-    for turnId in turnIds {
-        if let turnItems = itemsByTurnId[turnId] {
-            entries.append(contentsOf: makeChatDisplayEntriesForTurn(turnItems))
-        }
-    }
+    appendCurrentSegment()
     return entries
 }
 
-func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEntry] {
+func makeChatDisplayEntriesForTurn(
+    _ items: [CodexThreadItem],
+    displayTurnId: String? = nil
+) -> [ChatDisplayEntry] {
     let userMessages = items.filter { $0.type == "userMessage" }
     if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
         return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
@@ -4931,11 +4956,14 @@ func makeChatDisplayEntriesForTurn(_ items: [CodexThreadItem]) -> [ChatDisplayEn
 
     var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
     if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
-       let turnId = items.first?.turnId {
+       let sourceTurnId = items.first?.turnId {
         // Keep execution lifecycle independent from the user's authored message.
         // The process row owns its disclosure state and remains a separate bubble
         // even for the common one-message turn.
-        entries.append(ChatDisplayEntry(kind: .process(turnId: turnId, items: processItems)))
+        entries.append(ChatDisplayEntry(kind: .process(
+            turnId: displayTurnId ?? sourceTurnId,
+            items: processItems
+        )))
     }
     if let presentedAgentMessage {
         entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
