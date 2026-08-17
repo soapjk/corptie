@@ -73,10 +73,11 @@ function openAiCompatibleChatCompletionsURL(baseURL) {
 }
 
 export class AssistantService {
-  constructor({ store, objectiveService, intentResolver = null }) {
+  constructor({ store, objectiveService, intentResolver = null, onEntityChanged = null }) {
     this.store = store;
     this.objectiveService = objectiveService;
     this.intentResolver = intentResolver;
+    this.onEntityChanged = onEntityChanged;
   }
 
   // 对话主入口：{ content, sessionId? } → { sessionId, messages }
@@ -178,6 +179,7 @@ export class AssistantService {
           name: args.name || "未命名 Agent",
           provider: args.provider ?? null
         });
+        this.onEntityChanged?.("AgentChanged", { action: "created", entity: agent });
         return [
           { role: "user", content },
           {
@@ -211,6 +213,7 @@ export class AssistantService {
           ];
         }
         this.store.deleteAgent(agent.agentId);
+        this.onEntityChanged?.("AgentChanged", { action: "deleted", entity: { agentId: agent.agentId } });
         return [
           { role: "user", content },
           {

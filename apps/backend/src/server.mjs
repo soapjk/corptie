@@ -28,6 +28,10 @@ import {
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
+import {
+  ensureProviderSessionProjection,
+  persistProviderSessionProjection
+} from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
@@ -173,7 +177,10 @@ const choiceGenerations = new Map();
 const store = new CorptieStore();
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
-const objectiveService = new ObjectiveApplicationService({ store });
+const objectiveService = new ObjectiveApplicationService({
+  store,
+  onEntityChanged: (type, payload) => emitEvent(type, payload)
+});
 const hubService = new HubService({
   store,
   embedder: createOpenAiEmbedder(store.choiceParserSettings())
@@ -187,7 +194,8 @@ const memoryExtractor = new MemoryExtractor({
 const assistantService = new AssistantService({
   store,
   objectiveService,
-  intentResolver: createAssistantIntentResolver(store.choiceParserSettings())
+  intentResolver: createAssistantIntentResolver(store.choiceParserSettings()),
+  onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 const collaborationMcpServerPath = fileURLToPath(new URL("./mcp/collaborationMcpServer.mjs", import.meta.url));
 const bundledAgentMemoryPath = fileURLToPath(new URL(
@@ -412,6 +420,11 @@ const sessionApplicationService = new SessionApplicationService({
     ? sessionContextReferenceService.resolve(reference.sessionId)
     : null,
   bindCreatedSession: async ({ providerId, session, input, context }) => {
+    persistProviderSessionProjection(store, session, {
+      providerId,
+      agentId: input.toolHost?.actorId ?? context.actorId ?? null,
+      sessionKind: input.sessionKind
+    });
     ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
     const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
       instructionSources: input.instructionSources,
@@ -464,7 +477,8 @@ platformOperationService = new PlatformOperationService({
       return launchWorkItemSession({ agent, workItem, title, prompt });
     }
     return launchAgentSession({ agent, title, prompt });
-  }
+  },
+  onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
   store,
@@ -2653,6 +2667,14 @@ async function assertDirectory(path) {
 
 function listGatewaySessions(options = {}) {
   const sessions = agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).map((session) => {
+    const projection = ensureProviderSessionProjection({
+      store,
+      session,
+      resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId)
+    });
+    if (projection.repaired) {
+      console.log(`[session-projection] repaired provider session=${session.id}`);
+    }
     const logical = store.getLogicalSessionByLegacySessionId(session.id);
     return logical ? sessionWithLogicalWorkspace(session, logical) : session;
   });
@@ -2924,7 +2946,9 @@ function settleEntityWorkItemFromSession(session) {
   // 已完成的 WorkItem 不再被会话完成事件重新推进（用户已确认 done 是终态之一）。
   if (workItem.status === "done" && nextStatus === "review") return workItem;
   store.updateWorkItem(workItem.id, { status: nextStatus });
-  return store.getWorkItem(workItem.id);
+  const updated = store.getWorkItem(workItem.id);
+  emitEvent("WorkItemChanged", { action: "status-updated", entity: updated });
+  return updated;
 }
 
 // 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
@@ -4907,7 +4931,8 @@ function route(request, response) {
       agent.name,
       null,
       reservedSessionTitleKeys
-    )
+    ),
+    onEntityChanged: (type, payload) => emitEvent(type, payload)
   })) {
     return;
   }

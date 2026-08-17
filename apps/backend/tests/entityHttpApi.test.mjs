@@ -45,15 +45,19 @@ async function createServices() {
     configPath: join(directory, "config.json")
   });
   await store.initialize();
-  const objectiveService = new ObjectiveApplicationService({ store });
+  const entityEvents = [];
+  const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
+  const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
   return {
     store,
     directory,
+    entityEvents,
+    onEntityChanged,
     objectiveService,
     hubService: new HubService({ store }),
     router: new CollaborationRouter({ store }),
     memoryExtractor: new MemoryExtractor({ store }),
-    assistantService: new AssistantService({ store, objectiveService })
+    assistantService: new AssistantService({ store, objectiveService, onEntityChanged })
   };
 }
 
@@ -74,7 +78,8 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     launchSession: services.launchSession,
     launchAgentSession: services.launchAgentSession,
     resolveAgentAvailability: services.resolveAgentAvailability,
-    suggestAgentSessionTitle: services.suggestAgentSessionTitle
+    suggestAgentSessionTitle: services.suggestAgentSessionTitle,
+    onEntityChanged: services.onEntityChanged
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
@@ -117,6 +122,30 @@ test("POST /objectives → 创建，GET /objectives → 列表", async () => {
     const listed = await callApi({ method: "GET", pathname: "/objectives", ...services });
     assert.equal(listed.statusCode, 200);
     assert.equal(listed.body.objectives.length, 1);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("entity mutations publish provider-neutral refresh events", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "事件目标" }, ...services
+    });
+    await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: { objectiveId: objective.body.id, title: "事件任务" },
+      ...services
+    });
+    await callApi({ method: "POST", pathname: "/agents", body: { name: "事件 Agent" }, ...services });
+
+    assert.deepEqual(
+      services.entityEvents.map((event) => event.type),
+      ["ObjectiveChanged", "WorkItemChanged", "AgentChanged"]
+    );
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

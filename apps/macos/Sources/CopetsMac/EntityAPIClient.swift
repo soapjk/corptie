@@ -11,6 +11,7 @@ final class EntityAPIClient: ObservableObject {
 
     @Published var objectives: [Objective] = []
     @Published var agents: [Agent] = []
+    @Published private(set) var workItemsRevision: UInt64 = 0
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
     var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
@@ -28,6 +29,19 @@ final class EntityAPIClient: ObservableObject {
     }()
 
     private init() {}
+
+    func handleEntityChangeEvent(_ eventName: String) async {
+        switch eventName {
+        case "ObjectiveChanged":
+            await refreshObjectives()
+        case "AgentChanged":
+            await refreshAgents()
+        case "WorkItemChanged":
+            workItemsRevision &+= 1
+        default:
+            break
+        }
+    }
 
     func refreshObjectives() async {
         isLoading = true

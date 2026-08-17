@@ -377,6 +377,10 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if ["ObjectiveChanged", "WorkItemChanged", "AgentChanged"].contains(eventName) {
+            await EntityAPIClient.shared.handleEntityChangeEvent(eventName)
+            return
+        }
         if eventName == "SessionWorkspaceSwitched" {
             if let payload = data.data(using: .utf8),
                let event = try? JSONDecoder().decode(SessionWorkspaceSwitchedEventEnvelope.self, from: payload),
