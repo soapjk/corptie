@@ -50,6 +50,7 @@ struct SessionsView: View {
             backendClient.suppressBackgroundPolling = true
             attemptPendingSelection(backendClient.sessions)
             restoreLastSelectedSession(backendClient.sessions)
+            preloadSessionMessages(backendClient.sessions)
             Task { await entityClient.refreshAgents() }
         }
         .onDisappear {
@@ -61,6 +62,7 @@ struct SessionsView: View {
         .onReceive(backendClient.sessionsDidChange) { sessions in
             attemptPendingSelection(sessions)
             restoreLastSelectedSession(sessions)
+            preloadSessionMessages(sessions)
         }
         .onChange(of: router.pendingSessionId) { _, _ in
             attemptPendingSelection(backendClient.sessions)
@@ -69,6 +71,7 @@ struct SessionsView: View {
             if let newValue {
                 Self.recordSessionId(newValue)
             }
+            preloadSessionMessages(backendClient.sessions)
         }
     }
 
@@ -110,6 +113,13 @@ struct SessionsView: View {
 
     private static func restoredSessionId() -> String? {
         CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedSessionKey)
+    }
+
+    private func preloadSessionMessages(_ sessions: [TaskSession]) {
+        backendClient.preloadSessionDetails(
+            sessions,
+            centeredOn: backendClient.selectedSession?.id
+        )
     }
 
     // MARK: - 左：会话列表（原生 sidebar）
@@ -173,6 +183,10 @@ struct SessionsView: View {
     private func sessionRow(_ row: SessionRowModel) -> some View {
         let isSelected = backendClient.selectedSession?.id == row.session.id
         return CompactSessionRow(session: row.session)
+            .onHover { isHovering in
+                guard isHovering else { return }
+                backendClient.prefetchDetail(for: row.session)
+            }
             .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 8))
             .listRowSeparator(.hidden)
             .listRowBackground(

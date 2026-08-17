@@ -3789,6 +3789,8 @@ struct DetailView: View {
         let isExpanded: Bool
         var processCount: Int?
         var processDuration: String?
+        var showsHeader: Bool
+        var hoverTimestamp: String
         switch entry.kind {
         case .message(let item):
             style = item.type == "userMessage" ? .user : .agent
@@ -3797,8 +3799,11 @@ struct DetailView: View {
                 from: copyText,
                 baseDirectory: backendClient.selectedDetail?.cwd
             )
-            title = item.title
-            metadata = nativeTimelineMetadata(for: item)
+            let isOrdinaryMessage = item.type == "userMessage" || item.type == "agentMessage"
+            title = isOrdinaryMessage ? "" : item.title
+            metadata = isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item)
+            showsHeader = !isOrdinaryMessage
+            hoverTimestamp = isOrdinaryMessage ? nativeTimelineMetadata(for: item) : ""
             expandableTurnId = nil
             isExpanded = false
             processCount = nil
@@ -3814,6 +3819,8 @@ struct DetailView: View {
             isExpanded = expanded
             processCount = items.count
             processDuration = nativeProcessDuration(for: items)
+            showsHeader = false
+            hoverTimestamp = ""
         }
         return AppKitChatTimelineRow(
             id: entry.id,
@@ -3827,7 +3834,9 @@ struct DetailView: View {
             expandableTurnId: expandableTurnId,
             isExpanded: isExpanded,
             processCount: processCount,
-            processDuration: processDuration
+            processDuration: processDuration,
+            showsHeader: showsHeader,
+            hoverTimestamp: hoverTimestamp
         )
     }
 
@@ -7332,7 +7341,10 @@ private struct ThreadProcessGroupView: View {
             maxWidth: processContentWidth,
             alignment: .leading
         )
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        // Execution belongs to the Agent side of the turn, not to the user's
+        // prompt. Keep the standalone disclosure card on the same leading edge
+        // as the Agent reply in both the SwiftUI and AppKit-hosted timelines.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n("Execution process"))
     }
@@ -7451,7 +7463,6 @@ struct ThreadItemView: View {
     @State private var isConfirmingUndo = false
     @State private var isDiffActionRunning = false
     @State private var diffActionError: String?
-    @State private var didCopySessionName = false
     let item: CodexThreadItem
     @Binding private var isCollaborationExpanded: Bool
     @Binding private var isCollaborationConfirmationExpanded: Bool
@@ -7874,78 +7885,72 @@ struct ThreadItemView: View {
     }
 
     private var fullItemView: some View {
-        ZStack(alignment: .bottomTrailing) {
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            if !isUserOrAgentMessage {
                 HStack(spacing: 8) {
                     itemTitleView
-                    if !isUserOrAgentMessage {
-                        Spacer()
-                    }
+                    Spacer()
                     Text(itemMetadataLabel)
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(CorptiePalette.mutedText)
                 }
-
-                if !item.text.isEmpty {
-                    if item.type == "agentMessage" {
-                        agentMessageTextView
-                    } else {
-                        messageTextView(text: item.text, allowsSelection: true, fillWidth: !isUserMessage)
-                    }
-                }
-
-                if item.type == "choice",
-                   item.status == "selected",
-                   let selected = item.options?.first(where: { $0.selected == true }) {
-                    Label(L10nFormat("Selected: %@", selected.label), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(CorptiePalette.connected)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
-                }
-
-                if shouldShowOptions {
-                    optionButtonStack {
-                        ForEach(approvalOptions) { option in
-                            Button {
-                                if item.type == "approval" {
-                                    backendClient.respondToCodexApproval(option: option)
-                                } else if item.type == "choice" {
-                                    backendClient.respondToPtyChoice(option: option, choiceId: item.id)
-                                } else {
-                                    backendClient.sendMessage(option.label)
-                                }
-                            } label: {
-                                Label(option.label, systemImage: iconName(for: option))
-                                    .font(.system(size: 11, weight: .bold))
-                                    .padding(.horizontal, 10)
-                                    .frame(maxWidth: item.type == "agentMessage" ? .infinity : nil, minHeight: 28, alignment: .leading)
-                                    .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                            .background(optionBackground(for: option), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .strokeBorder(optionBorder(for: option), lineWidth: 1)
-                            )
-                            .help(option.label)
-                        }
-                    }
-                    .padding(.top, 2)
-                    .disabled(backendClient.isSendingMessage)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
-                }
-
-                if hasFileChanges {
-                    codeChangeSummary
-                        .padding(.top, 4)
-                }
-
             }
 
-            CopyTextButton(text: item.text, isVisible: isHovering && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .padding(4)
+            if !item.text.isEmpty {
+                if item.type == "agentMessage" {
+                    agentMessageTextView
+                } else {
+                    messageTextView(text: item.text, allowsSelection: true, fillWidth: !isUserMessage)
+                }
+            }
+
+            if item.type == "choice",
+               item.status == "selected",
+               let selected = item.options?.first(where: { $0.selected == true }) {
+                Label(L10nFormat("Selected: %@", selected.label), systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CorptiePalette.connected)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
+            }
+
+            if shouldShowOptions {
+                optionButtonStack {
+                    ForEach(approvalOptions) { option in
+                        Button {
+                            if item.type == "approval" {
+                                backendClient.respondToCodexApproval(option: option)
+                            } else if item.type == "choice" {
+                                backendClient.respondToPtyChoice(option: option, choiceId: item.id)
+                            } else {
+                                backendClient.sendMessage(option.label)
+                            }
+                        } label: {
+                            Label(option.label, systemImage: iconName(for: option))
+                                .font(.system(size: 11, weight: .bold))
+                                .padding(.horizontal, 10)
+                                .frame(maxWidth: item.type == "agentMessage" ? .infinity : nil, minHeight: 28, alignment: .leading)
+                                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .background(optionBackground(for: option), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(optionBorder(for: option), lineWidth: 1)
+                        )
+                        .help(option.label)
+                    }
+                }
+                .padding(.top, 2)
+                .disabled(backendClient.isSendingMessage)
+                .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .topLeading)))
+            }
+
+            if hasFileChanges {
+                codeChangeSummary
+                    .padding(.top, 4)
+            }
         }
         .padding(10)
         // 气泡本身采用共享策略算出的明确内容宽度；外层 frame 只负责左右定位。
@@ -7955,12 +7960,37 @@ struct ThreadItemView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(itemBorder, lineWidth: 1)
         )
+        .overlay(alignment: .bottomTrailing) {
+            // A transparent button must not participate in the bubble's ideal
+            // size. Keeping it as an overlay lets short messages measure only
+            // their text and padding.
+            CopyTextButton(
+                text: item.text,
+                isVisible: isHovering && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            )
+            .padding(4)
+        }
         .shadow(color: Color.black.opacity(isLiquidGlass ? 0.04 : 0), radius: isLiquidGlass ? 8 : 0, y: isLiquidGlass ? 3 : 0)
         .frame(
             idealWidth: isUserOrAgentMessage ? preferredMessageBubbleWidth : nil,
             maxWidth: isUserOrAgentMessage ? preferredMessageBubbleWidth : .infinity,
             alignment: isUserMessage ? .trailing : .leading
         )
+        .overlay(alignment: isUserMessage ? .leading : .trailing) {
+            if isUserOrAgentMessage, let itemTimeLabel {
+                Text(itemTimeLabel)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(CorptiePalette.mutedText)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(width: 76, alignment: isUserMessage ? .trailing : .leading)
+                    .offset(x: isUserMessage ? -84 : 84)
+                    .opacity(isHovering ? 1 : 0)
+                    .animation(.easeOut(duration: 0.12), value: isHovering)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(!isHovering)
+            }
+        }
         .frame(
             maxWidth: .infinity,
             alignment: isUserMessage ? .trailing : .leading
@@ -7993,44 +8023,9 @@ struct ThreadItemView: View {
 
     @ViewBuilder
     private var itemTitleView: some View {
-        if item.type == "agentMessage" {
-            Button(action: copySelectedSessionName) {
-                HStack(spacing: 4) {
-                    Text(item.title)
-                    if didCopySessionName {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(CorptiePalette.connected)
-                            .transition(.opacity.combined(with: .scale))
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(L10n("Copy session name"))
-            .accessibilityLabel(L10n("Copy session name"))
+        Text(item.title)
             .font(.system(size: 11, weight: .bold))
             .foregroundStyle(itemColor)
-        } else {
-            Text(item.title)
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(itemColor)
-        }
-    }
-
-    private func copySelectedSessionName() {
-        guard copySessionNameToPasteboard(backendClient.selectedSession?.title) else {
-            return
-        }
-        withAnimation(.easeOut(duration: 0.12)) {
-            didCopySessionName = true
-        }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 900_000_000)
-            withAnimation(.easeOut(duration: 0.12)) {
-                didCopySessionName = false
-            }
-        }
     }
 
     private var hasFileChanges: Bool {
@@ -8242,8 +8237,8 @@ struct ThreadItemView: View {
         return ChatBubbleWidthPolicy.preferredWidth(
             text: measurementText,
             style: style,
-            title: item.title,
-            metadata: itemMetadataLabel
+            title: "",
+            metadata: ""
         )
     }
 

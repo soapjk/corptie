@@ -3,10 +3,11 @@ import XCTest
 
 @MainActor
 final class ChatBubbleWidthPolicyTests: XCTestCase {
-    func testShortUserMessageHugsHeaderInsteadOfMaximumWidth() {
+    func testShortUserMessageHugsBodyInsteadOfMaximumWidth() {
         let width = preferredWidth(text: "Hi")
 
         XCTAssertGreaterThanOrEqual(width, ChatBubbleWidthPolicy.minimumWidth)
+        XCTAssertLessThanOrEqual(width, 48)
         XCTAssertLessThan(width, 220)
         XCTAssertLessThan(width, ChatBubbleWidthPolicy.maximumWidth)
     }
@@ -64,8 +65,8 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         ChatBubbleWidthPolicy.preferredWidth(
             text: text,
             style: .user,
-            title: "User",
-            metadata: "用户 08/16 12:53",
+            title: "",
+            metadata: "",
             processWidth: processWidth,
             availableWidth: availableWidth
         )
