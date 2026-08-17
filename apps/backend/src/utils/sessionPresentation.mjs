@@ -10,7 +10,6 @@ export function mergeStoredSessionPresentation(session, stored) {
     archived: stored.archived,
     pinned: stored.pinned,
     sortOrder: stored.sortOrder,
-    avatarPath: stored.avatarPath ?? session.avatarPath ?? null,
     suggestedOptions: stored.suggestedOptions ?? session.suggestedOptions ?? null,
     external: {
       ...(session.external ?? {}),

@@ -284,7 +284,6 @@ export class CorptieStore {
         archived INTEGER NOT NULL DEFAULT 0,
         pinned INTEGER NOT NULL DEFAULT 0,
         sort_order REAL,
-        avatar_path TEXT,
         active_choice_json TEXT,
         raw_json TEXT NOT NULL DEFAULT '{}'
       );
@@ -705,7 +704,6 @@ export class CorptieStore {
         transition_state TEXT,
         title TEXT,
         pinned INTEGER NOT NULL DEFAULT 0,
-        avatar_path TEXT,
         archived INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -989,8 +987,11 @@ export class CorptieStore {
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "sort_order", "REAL");
-    this.ensureColumn("sessions", "avatar_path", "TEXT");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
+    // Session identity belongs to its Agent. Remove the retired per-session
+    // avatar columns without touching agents.avatar_path.
+    this.dropColumnIfExists("sessions", "avatar_path");
+    this.dropColumnIfExists("logical_sessions", "avatar_path");
     this.ensureColumn("logical_sessions", "session_name", "TEXT");
     this.ensureColumn("logical_sessions", "session_name_key", "TEXT");
     this.ensureColumn("collaboration_tasks", "initiator_session_id", "TEXT");
@@ -1646,9 +1647,9 @@ export class CorptieStore {
       this.db.run(
         `INSERT INTO logical_sessions (
           logical_session_id, legacy_session_id, active_thread_id, active_workspace_id,
-          repository_id, routing_version, transition_state, title, pinned, avatar_path,
+          repository_id, routing_version, transition_state, title, pinned,
           archived, created_at, updated_at, session_name, session_name_key
-        ) VALUES (?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?)`,
         [
           logicalSessionId,
           input.legacySessionId || null,
@@ -1656,7 +1657,6 @@ export class CorptieStore {
           input.repositoryId || null,
           input.title || null,
           input.pinned ? 1 : 0,
-          input.avatarPath || null,
           input.archived ? 1 : 0,
           timestamp,
           timestamp,
@@ -1719,7 +1719,6 @@ export class CorptieStore {
       sessionName,
       title: sessionName,
       pinned: Boolean(row.pinned),
-      avatarPath: row.avatar_path,
       archived: Boolean(row.archived),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -2293,8 +2292,8 @@ export class CorptieStore {
     const summary = toSessionSummary(session);
     this.db.run(
       `INSERT INTO sessions (
-        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json, objective_id, work_item_id, session_kind, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, active_choice_json, raw_json, objective_id, work_item_id, session_kind, agent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
         agent=excluded.agent,
@@ -2310,7 +2309,6 @@ export class CorptieStore {
         archived=excluded.archived,
         pinned=excluded.pinned,
         sort_order=excluded.sort_order,
-        avatar_path=excluded.avatar_path,
         active_choice_json=excluded.active_choice_json,
         raw_json=excluded.raw_json,
         objective_id=COALESCE(excluded.objective_id, sessions.objective_id),
@@ -2337,7 +2335,6 @@ export class CorptieStore {
         session.archived ? 1 : 0,
         session.pinned ? 1 : 0,
         Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
-        session.avatarPath ?? session.external?.avatarPath ?? null,
         serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
         JSON.stringify(toRawStatus(session)),
         session.objectiveId ?? null,
@@ -2475,9 +2472,9 @@ export class CorptieStore {
     this.db.run(
       `INSERT INTO sessions (
         id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent,
-        created_at, updated_at, archived, pinned, sort_order, avatar_path, active_choice_json, raw_json,
+        created_at, updated_at, archived, pinned, sort_order, active_choice_json, raw_json,
         objective_id, work_item_id, session_kind, agent_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.title ?? "新会话",
@@ -2495,7 +2492,6 @@ export class CorptieStore {
         input.archived ? 1 : 0,
         input.pinned ? 1 : 0,
         input.sortOrder ?? null,
-        input.avatarPath ?? null,
         input.activeChoiceJson ?? null,
         JSON.stringify(input.raw ?? {}),
         input.objectiveId ?? null,
@@ -2914,13 +2910,6 @@ export class CorptieStore {
     }
     this.scheduleSave();
     return this.getSession(storageSessionId);
-  }
-
-  updateSessionAvatar(id, avatarPath = null) {
-    const nextAvatarPath = typeof avatarPath === "string" && avatarPath.trim() ? avatarPath.trim() : null;
-    this.db.run("UPDATE sessions SET avatar_path = ? WHERE id = ?", [nextAvatarPath, id]);
-    this.scheduleSave();
-    return this.getSession(id);
   }
 
   setActiveChoicePrompt(sessionId, prompt = "", options = []) {
@@ -4225,6 +4214,14 @@ export class CorptieStore {
     this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
+  dropColumnIfExists(table, column) {
+    const columns = this.selectAll(`PRAGMA table_info(${table})`);
+    if (!columns.some((entry) => entry.name === column)) {
+      return;
+    }
+    this.db.run(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  }
+
   migrateAgentProviderBindings() {
     this.db.run(
       `UPDATE provider_thread_bindings
@@ -4385,7 +4382,6 @@ export class CorptieStore {
       archived: Boolean(row.archived),
       pinned: Boolean(row.pinned),
       sortOrder: Number(row.sort_order ?? 0),
-      avatarPath: row.avatar_path || null,
       objectiveId: row.objective_id ?? null,
       workItemId: row.work_item_id ?? null,
       capabilities: row.provider === "claude-sdk"

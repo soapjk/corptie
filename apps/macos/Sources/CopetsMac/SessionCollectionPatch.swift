@@ -99,8 +99,7 @@ enum SessionCollectionDiffer {
         var fields: SessionChangedFields = []
         if previous.title != next.title
             || previous.agent != next.agent
-            || previous.accent != next.accent
-            || previous.avatarPath != next.avatarPath {
+            || previous.accent != next.accent {
             fields.insert(.identity)
         }
         if previous.summary != next.summary { fields.insert(.summary) }

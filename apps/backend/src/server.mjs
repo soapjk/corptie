@@ -82,9 +82,11 @@ import {
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
 import {
   assertSessionTitleAvailable,
+  defaultSessionTitleForAgent,
   defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   normalizeSessionTitle,
+  resolveAvailableAgentSessionTitle,
   resolveAvailableSessionTitle,
   suggestAvailableSessionTitle
 } from "./utils/sessionTitles.mjs";
@@ -357,7 +359,6 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     deleteSession: deleteCodexProviderSession,
     restartSession: restartCodexProviderSession,
     renameSession: renameCodexProviderSession,
-    updateAvatar: updateCodexProviderAvatar,
     listModels: loadCodexModels,
     send: sendCodexProviderMessage,
     clearConversation: (reference, context = {}) => clearCodexAppServerSession(
@@ -627,7 +628,6 @@ async function ensureLogicalRouteForProviderSession(session, providerId, options
       providerMetadata: options.providerMetadata ?? {},
       title: session.title,
       pinned: session.pinned,
-      avatarPath: session.avatarPath,
       archived: session.archived
     });
   } catch (error) {
@@ -2740,7 +2740,8 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   const cwd = sessionWorkspacePath(input.cwd);
   await assertDirectory(cwd);
   const requestedTitle = typeof input.title === "string" ? input.title.trim() : "";
-  const baseTitle = sessionTitleForWorkspace(requestedTitle, cwd);
+  const defaultTitle = typeof input.defaultTitle === "string" ? input.defaultTitle.trim() : "";
+  const baseTitle = requestedTitle || defaultTitle || sessionTitleForWorkspace("", cwd);
   const title = requestedTitle
     ? baseTitle
     : resolveAvailableSessionTitle(
@@ -2749,8 +2750,9 @@ async function createSessionThroughApplication(providerId, input = {}, context =
         null,
         reservedSessionTitleKeys
       );
+  const { defaultTitle: _defaultTitle, ...providerInput } = input;
   const prepared = {
-    ...input,
+    ...providerInput,
     cwd,
     title
   };
@@ -2824,7 +2826,7 @@ function resolveAgentProviderId(provider) {
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
-async function launchWorkItemSession({ agent, workItem, title, prompt: requestedPrompt, avatarPath }) {
+async function launchWorkItemSession({ agent, workItem, title, prompt: requestedPrompt }) {
   if (agent.role !== "independentContributor") {
     const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
     error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
@@ -2855,10 +2857,10 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
     providerId,
     {
       cwd,
-      title: title || workItem.title,
+      title,
+      defaultTitle: defaultSessionTitleForAgent(agent.name),
       prompt,
       agent: agent.name,
-      avatarPath,
       sessionKind: "worker"
     },
     { source: "entity", actorId: agent.agentId }
@@ -2871,7 +2873,7 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
 // cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
 // 目录缺失时在此幂等创建。独立贡献者的会话应走 WorkItem 绑定路径（launchWorkItemSession），
 // 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
-async function launchAgentSession({ agent, title, prompt, avatarPath }) {
+async function launchAgentSession({ agent, title, prompt }) {
   if (agent.role !== "assistant") {
     const error = new Error("只有 Assistant 才能创建 Assistant Chat Session。");
     error.code = "AGENT_NOT_ASSISTANT";
@@ -2886,7 +2888,14 @@ async function launchAgentSession({ agent, title, prompt, avatarPath }) {
   const cwd = await ensureAgentWorkDir(agent, { environmentName });
   const session = await createSessionThroughApplication(
     providerId,
-    { cwd, title, prompt, agent: agent.name, avatarPath, sessionKind: "assistantChat" },
+    {
+      cwd,
+      title,
+      defaultTitle: defaultSessionTitleForAgent(agent.name),
+      prompt,
+      agent: agent.name,
+      sessionKind: "assistantChat"
+    },
     { source: "agent", actorId: agent.agentId }
   );
   // 把自由会话归属到该 Agent，使 GET /agents/:id/sessions 与前端按 Agent 分组能定位到它。
@@ -2994,7 +3003,6 @@ async function createCodexProviderSession(input = {}) {
       progress: 0.5,
       summary: "Initializing Codex session…",
       activityStatus: "Starting Codex",
-      avatarPath: input.avatarPath ?? null,
       capabilities: {
         ...codexAppServerSessionCapabilities(),
         canInterrupt: true
@@ -3038,16 +3046,6 @@ async function renameCodexProviderSession(reference, title) {
   if (!previous) throw new Error("Session not found.");
   await codexRuntime.setThreadName(reference.providerSessionId, title);
   const session = { ...previous, title, updatedAt: new Date().toISOString() };
-  upsertManagedCodexSession(session);
-  return session;
-}
-
-function updateCodexProviderAvatar(reference, avatarPath) {
-  const previous = reference.metadata?.session
-    ?? sessionPresentationCache.get(reference.sessionId)
-    ?? store.getSession(reference.sessionId);
-  if (!previous) throw new Error("Session not found.");
-  const session = { ...previous, avatarPath, updatedAt: new Date().toISOString() };
   upsertManagedCodexSession(session);
   return session;
 }
@@ -3578,7 +3576,6 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     title,
     pinned: session.pinned,
     accent: session.accent ?? "cyan",
-    avatarPath: session.avatarPath ?? null,
     status: "complete",
     progress: 1,
     summary: "Conversation cleared. Ready for a new instruction.",
@@ -4904,7 +4901,13 @@ function route(request, response) {
             status: "unavailable",
             reason: `Agent Provider is not registered: ${agent.provider ?? "default"}`
           };
-    }
+    },
+    suggestAgentSessionTitle: (agent) => resolveAvailableAgentSessionTitle(
+      knownSessionsForTitleValidation(),
+      agent.name,
+      null,
+      reservedSessionTitleKeys
+    )
   })) {
     return;
   }
@@ -5600,8 +5603,7 @@ function route(request, response) {
           sessionPresentationCache.set(id, {
             ...managed,
             pinned,
-            sortOrder: session.sortOrder ?? managed.sortOrder,
-            avatarPath: session.avatarPath ?? managed.avatarPath ?? null
+            sortOrder: session.sortOrder ?? managed.sortOrder
           });
         }
         emitEvent(pinned ? "SessionPinned" : "SessionUnpinned", { session });
@@ -5741,9 +5743,10 @@ function route(request, response) {
       .then(async (input) => {
         const rawId = decodeURIComponent(sessionDeleteMatch[1]);
         if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
-          const session = await sessionApplicationService.updateAvatar(rawId, input.avatarPath, { source: "http" });
-          emitEvent("SessionAvatarUpdated", { session });
-          sendJson(response, 200, { session });
+          sendJson(response, 400, {
+            error: "Session avatars are not supported; sessions inherit their Agent avatar.",
+            code: "SESSION_AVATAR_UNSUPPORTED"
+          });
           return;
         }
         const title = typeof input.title === "string" ? input.title.trim() : "";

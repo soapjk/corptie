@@ -65,7 +65,6 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let archived: Bool?
     let pinned: Bool?
     let sortOrder: Double?
-    let avatarPath: String?
     let capabilities: SessionCapabilities?
     let external: ExternalSession?
     var actions: SessionActions? = nil

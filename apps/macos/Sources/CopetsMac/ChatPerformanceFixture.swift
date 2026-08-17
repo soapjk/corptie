@@ -35,7 +35,6 @@ struct ChatPerformanceFixture: Sendable {
             archived: false,
             pinned: false,
             sortOrder: 0,
-            avatarPath: nil,
             capabilities: nil,
             external: ExternalSession(
                 provider: "fixture",

@@ -20,6 +20,7 @@ struct Agent: Identifiable, Codable, Hashable {
     var workDir: String?
     var avatarPath: String?
     var skillIds: [String]?
+    var suggestedSessionTitle: String? = nil
     var currentSessionId: String?
     var createdAt: String
     var updatedAt: String

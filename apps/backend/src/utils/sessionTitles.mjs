@@ -5,6 +5,34 @@ export function defaultSessionTitleForWorkspace(cwd) {
   return folderName ? `${folderName}_agent` : "Agent";
 }
 
+export function defaultSessionTitleForAgent(agentName) {
+  const normalizedName = String(agentName ?? "").trim() || "Agent";
+  return `${normalizedName}_Session`;
+}
+
+export function resolveAvailableAgentSessionTitle(
+  sessions,
+  agentName,
+  excludingSessionId = null,
+  additionalKeys = new Set()
+) {
+  const base = defaultSessionTitleForAgent(agentName);
+  if (
+    !findSessionTitleConflict(sessions, base, excludingSessionId)
+    && !additionalKeys.has(normalizeSessionTitle(base))
+  ) {
+    return base;
+  }
+  let suffix = 1;
+  while (
+    findSessionTitleConflict(sessions, `${base}_${suffix}`, excludingSessionId)
+    || additionalKeys.has(normalizeSessionTitle(`${base}_${suffix}`))
+  ) {
+    suffix += 1;
+  }
+  return `${base}_${suffix}`;
+}
+
 export function normalizeSessionTitle(title) {
   return String(title ?? "").trim().normalize("NFKC").toLocaleLowerCase("en-US");
 }

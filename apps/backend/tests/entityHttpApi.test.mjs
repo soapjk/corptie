@@ -73,7 +73,8 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     createSession: services.createSession,
     launchSession: services.launchSession,
     launchAgentSession: services.launchAgentSession,
-    resolveAgentAvailability: services.resolveAgentAvailability
+    resolveAgentAvailability: services.resolveAgentAvailability,
+    suggestAgentSessionTitle: services.suggestAgentSessionTitle
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
@@ -341,6 +342,26 @@ test("GET /agents 返回带 role 的 Agent（预种助手 Corptie）", async () 
   }
 });
 
+test("GET /agents returns the authoritative default title suggestion for each Agent", async () => {
+  const services = await createServices();
+  try {
+    const agents = await callApi({
+      method: "GET",
+      pathname: "/agents",
+      suggestAgentSessionTitle: (agent) => `${agent.name}_Session_2`,
+      ...services
+    });
+    assert.equal(agents.statusCode, 200);
+    assert.equal(
+      agents.body.agents.find((agent) => agent.agentId === "assistant").suggestedSessionTitle,
+      "Corptie_Session_2"
+    );
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功能配置", async () => {
   const services = await createServices();
   try {
@@ -570,12 +591,10 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       body: {
         workItemId: workItem.body.id,
         agentId: contributor.body.agent.agentId,
-        title: "自定义 Worker",
-        avatarPath: "/tmp/worker-avatar.png"
+        title: "自定义 Worker"
       },
-      launchSession: async ({ agent, title, avatarPath }) => {
+      launchSession: async ({ agent, title }) => {
         assert.equal(title, "自定义 Worker");
-        assert.equal(avatarPath, "/tmp/worker-avatar.png");
         services.store.upsertSession({
           id: "worker-session",
           title,
@@ -583,7 +602,6 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
           agentId: agent.agentId,
           provider: "codex-app-server",
           status: "running",
-          avatarPath,
           sessionKind: "worker"
         });
         return services.store.getSession("worker-session");
@@ -594,16 +612,15 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
     assert.equal(worker.body.session.workItemId, workItem.body.id);
     assert.equal(worker.body.session.agentId, contributor.body.agent.agentId);
     assert.equal(worker.body.session.title, "自定义 Worker");
-    assert.equal(worker.body.session.avatarPath, "/tmp/worker-avatar.png");
+    assert.equal(Object.hasOwn(worker.body.session, "avatarPath"), false);
 
     const assistant = await callApi({
       ...services,
       method: "POST",
       pathname: "/agents/assistant/sessions",
-      body: { title: "自定义 Chat", avatarPath: "/tmp/chat-avatar.png" },
-      launchAgentSession: async ({ agent, title, avatarPath }) => {
+      body: { title: "自定义 Chat" },
+      launchAgentSession: async ({ agent, title }) => {
         assert.equal(title, "自定义 Chat");
-        assert.equal(avatarPath, "/tmp/chat-avatar.png");
         services.store.upsertSession({
           id: "assistant-session",
           title,
@@ -611,7 +628,6 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
           agentId: agent.agentId,
           provider: "codex-app-server",
           status: "running",
-          avatarPath,
           sessionKind: "assistantChat"
         });
         return services.store.getSession("assistant-session");
@@ -622,7 +638,31 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
     assert.equal(assistant.body.session.workItemId, null);
     assert.equal(assistant.body.session.agentId, "assistant");
     assert.equal(assistant.body.session.title, "自定义 Chat");
-    assert.equal(assistant.body.session.avatarPath, "/tmp/chat-avatar.png");
+    assert.equal(Object.hasOwn(assistant.body.session, "avatarPath"), false);
+
+    const rejectedWorkerAvatar = await callApi({
+      ...services,
+      method: "POST",
+      pathname: "/sessions",
+      body: {
+        workItemId: workItem.body.id,
+        agentId: contributor.body.agent.agentId,
+        avatarPath: "/tmp/worker-avatar.png"
+      },
+      launchSession: async () => { throw new Error("must not launch"); }
+    });
+    assert.equal(rejectedWorkerAvatar.statusCode, 400);
+    assert.equal(rejectedWorkerAvatar.body.code, "SESSION_AVATAR_UNSUPPORTED");
+
+    const rejectedAssistantAvatar = await callApi({
+      ...services,
+      method: "POST",
+      pathname: "/agents/assistant/sessions",
+      body: { avatarPath: "/tmp/chat-avatar.png" },
+      launchAgentSession: async () => { throw new Error("must not launch"); }
+    });
+    assert.equal(rejectedAssistantAvatar.statusCode, 400);
+    assert.equal(rejectedAssistantAvatar.body.code, "SESSION_AVATAR_UNSUPPORTED");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
