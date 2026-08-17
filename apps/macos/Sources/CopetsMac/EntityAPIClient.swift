@@ -315,6 +315,37 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
+    @discardableResult
+    func startObjectiveChat(
+        objectiveId: String,
+        agentId: String,
+        title: String? = nil,
+        prompt: String? = nil
+    ) async -> EntitySessionLaunchResult {
+        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)/sessions"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["agentId": agentId]
+        if let title, !title.isEmpty { body["title"] = title }
+        if let prompt, !prompt.isEmpty { body["prompt"] = prompt }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                let message = envelope?.error ?? "启动 Objective Chat 失败（HTTP \(http.statusCode)）"
+                errorMessage = message
+                return .failure(message: message, code: envelope?.code)
+            }
+            let session = try decoder.decode(SessionCreateEnvelope.self, from: data).session
+            errorMessage = nil
+            return .success(session)
+        } catch {
+            errorMessage = error.localizedDescription
+            return .failure(message: error.localizedDescription)
+        }
+    }
+
     // 更新 Objective：PATCH /objectives/:id → objective（直接返回对象）
     // priority/targetDate 传 "" 表示清除；tags/workspaceIds/relatedObjectiveIds/contributorAgentIds 传数组整体替换。
     @discardableResult

@@ -1496,7 +1496,7 @@ final class BackendClient: ObservableObject {
                 return
             }
             startDetailStream(for: session)
-            if session.resolvedSessionKind == .assistantChat {
+            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
                 // References are supplementary metadata. Do not put them in
                 // front of the message snapshot on the critical click path.
                 Task { await loadContextReferences(for: session) }
@@ -1507,7 +1507,7 @@ final class BackendClient: ObservableObject {
 
     func loadContextReferences(for session: TaskSession? = nil) async {
         guard let target = session ?? selectedSession,
-              target.resolvedSessionKind == .assistantChat else {
+              target.resolvedSessionKind == .assistantChat || target.resolvedSessionKind == .objectiveChat else {
             selectedContextReferences = []
             return
         }

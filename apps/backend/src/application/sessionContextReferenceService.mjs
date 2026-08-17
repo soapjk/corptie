@@ -155,8 +155,8 @@ export class SessionContextReferenceService {
     const sessionId = requiredText(ownerSessionId, "ownerSessionId");
     const session = this.store.getSession(sessionId);
     if (!session) throw serviceError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`, 404);
-    if (session.sessionKind !== "assistantChat") {
-      throw serviceError("CONTEXT_REFERENCES_REQUIRE_ASSISTANT", "Context references are currently available only for Assistant Sessions.", 409);
+    if (!["assistantChat", "objectiveChat"].includes(session.sessionKind)) {
+      throw serviceError("CONTEXT_REFERENCES_REQUIRE_ASSISTANT", "Context references are available only for Assistant and Objective Chat Sessions.", 409);
     }
     return session;
   }

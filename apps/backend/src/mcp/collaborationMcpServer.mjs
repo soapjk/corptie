@@ -16,6 +16,8 @@ const messageFields = {
 export function createCollaborationMcpServer(options) {
   const agentId = required(options.agentId, "agentId");
   const client = options.client;
+  const objectiveId = typeof options.objectiveId === "string" ? options.objectiveId.trim() : "";
+  const objectiveSessionId = typeof options.objectiveSessionId === "string" ? options.objectiveSessionId.trim() : "";
   const server = new McpServer(
     { name: "corptie-collaboration", version: "0.5.2" },
     {
@@ -146,6 +148,8 @@ export function createCollaborationMcpServer(options) {
     handler: ({ skill_id }) => client.get(`/internal/collaboration/skills/${encodeURIComponent(skill_id)}`)
   });
 
+  if (objectiveId) registerObjectiveChatTools(server, client, objectiveId, objectiveSessionId);
+
   registerAction(server, client, "accept", "Accept a proposed task or resume requested revisions and begin working.", {
     task_id: z.string().min(1)
   });
@@ -221,6 +225,46 @@ export function createCollaborationMcpServer(options) {
   });
 
   return server;
+}
+
+function registerObjectiveChatTools(server, client, objectiveId, sessionId) {
+  const call = (tool, arguments_) => client.post("/internal/objective-chat/tool", {
+    objectiveId, sessionId, tool, arguments: arguments_
+  });
+  register(server, "corptie_objective_context", {
+    description: "Read the current Objective Chat scope, including Objective, WorkItems, Workspaces, and contributor Agents.",
+    inputSchema: {}, readOnly: true,
+    handler: () => call("corptie_objective_context", {})
+  });
+  register(server, "corptie_objective_update", {
+    description: "Update fields on the Objective bound to this Objective Chat.",
+    inputSchema: { patch: z.record(z.string(), z.unknown()) },
+    handler: (input) => call("corptie_objective_update", input)
+  });
+  register(server, "corptie_objective_work_items_manage", {
+    description: "Create, list, inspect, update, or delete WorkItems within the Objective bound to this chat.",
+    inputSchema: {
+      action: z.enum(["list", "get", "create", "update", "delete"]),
+      work_item_id: z.string().min(1).optional(),
+      title: z.string().min(1).optional(),
+      patch: z.record(z.string(), z.unknown()).optional()
+    },
+    handler: (input) => call("corptie_objective_work_items_manage", input)
+  });
+  register(server, "corptie_objective_agents_list", {
+    description: "List contributor Agents eligible for work in this Objective.",
+    inputSchema: {}, readOnly: true,
+    handler: () => call("corptie_objective_agents_list", {})
+  });
+  register(server, "corptie_objective_work_item_start", {
+    description: "Request execution of a WorkItem in this Objective through the shared Agent Provider lifecycle.",
+    inputSchema: {
+      work_item_id: z.string().min(1),
+      agent_id: z.string().min(1),
+      title: z.string().min(1).optional()
+    },
+    handler: (input) => call("corptie_objective_work_item_start", input)
+  });
 }
 
 function registerAction(server, client, name, description, inputSchema, pathName = name) {
@@ -308,7 +352,12 @@ function compact(value) {
 async function main() {
   const agentId = required(process.env.CORPTIE_AGENT_ID, "CORPTIE_AGENT_ID");
   const client = new CollaborationHttpClient({ agentId });
-  const server = createCollaborationMcpServer({ agentId, client });
+  const server = createCollaborationMcpServer({
+    agentId,
+    client,
+    objectiveId: process.env.CORPTIE_OBJECTIVE_CHAT_ID,
+    objectiveSessionId: process.env.CORPTIE_OBJECTIVE_CHAT_SESSION_ID
+  });
   await server.connect(new StdioServerTransport());
 }
 

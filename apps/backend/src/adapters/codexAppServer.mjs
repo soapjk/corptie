@@ -24,6 +24,7 @@ export class CodexAppServerClient {
     this.serverRequestsByThread = new Map();
     this.recentApprovedCommands = new Map();
     this.dynamicToolAgentsByThread = new Map();
+    this.dynamicToolMetadataByThread = new Map();
     this.initialized = false;
   }
 
@@ -118,6 +119,7 @@ export class CodexAppServerClient {
       this.tokenUsageByThread.delete(threadId);
       this.serverRequestsByThread.delete(threadId);
       this.dynamicToolAgentsByThread.delete(threadId);
+      this.dynamicToolMetadataByThread.delete(threadId);
     }
   }
 
@@ -139,6 +141,7 @@ export class CodexAppServerClient {
     }, options.requestTimeoutMs ?? 30000);
     if (result?.thread?.id && options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
+      this.dynamicToolMetadataByThread.set(result.thread.id, options.dynamicToolMetadata ?? null);
     }
     return result;
   }
@@ -162,6 +165,7 @@ export class CodexAppServerClient {
     }, options.requestTimeoutMs ?? 30000);
     if (options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
+      this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
     }
     return result;
   }
@@ -189,6 +193,7 @@ export class CodexAppServerClient {
     }, options.requestTimeoutMs ?? 30000);
     if (result?.thread?.id && options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
+      this.dynamicToolMetadataByThread.set(result.thread.id, options.dynamicToolMetadata ?? null);
     }
     return result;
   }
@@ -609,7 +614,8 @@ export class CodexAppServerClient {
       }
       const value = await this.onDynamicToolCall({
         ...params,
-        agentId
+        agentId,
+        metadata: this.dynamicToolMetadataByThread.get(params.threadId) ?? null
       });
       await this.respondToServerRequest(message.id, {
         contentItems: [{ type: "inputText", text: JSON.stringify(value, null, 2) }],

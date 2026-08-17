@@ -22,6 +22,7 @@ export function handleEntityHttpRequest({
   assistantService,
   launchSession,
   launchAgentSession,
+  launchObjectiveChatSession,
   createSession,
   backgroundAgentService,
   skillRegistryService,
@@ -303,6 +304,36 @@ export function handleEntityHttpRequest({
       if (request.method === "POST" && path === "/objectives") {
         const input = await readJson(request);
         return sendJson(response, 201, objectiveService.createObjective(input));
+      }
+
+      const objectiveSessionsMatch = path.match(/^\/objectives\/([^/]+)\/sessions$/);
+      if (objectiveSessionsMatch) {
+        const id = decodeURIComponent(objectiveSessionsMatch[1]);
+        const objective = objectiveService.getObjective(id);
+        if (request.method === "GET") {
+          return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByObjective(id) });
+        }
+        if (request.method === "POST") {
+          if (typeof launchObjectiveChatSession !== "function") {
+            throw apiError("INTERNAL", "launchObjectiveChatSession is not configured.", 500);
+          }
+          const input = await readJson(request);
+          rejectSessionAvatarInput(input);
+          const agentId = String(input.agentId ?? "").trim();
+          if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
+          const agent = objectiveService.store.getAgent(agentId);
+          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+          if (agent.role !== "assistant") {
+            throw apiError("AGENT_NOT_ASSISTANT", "只有 Assistant 才能创建 Objective Chat Session。", 400);
+          }
+          const session = await launchObjectiveChatSession({
+            agent,
+            objective,
+            title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
+            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
+          });
+          return sendJson(response, 201, { session });
+        }
       }
 
       const objectiveMatch = path.match(/^\/objectives\/([^/]+)$/);

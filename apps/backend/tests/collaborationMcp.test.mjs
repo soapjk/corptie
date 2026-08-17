@@ -36,13 +36,42 @@ const expectedTools = [
   "corptie.collaboration.list_inbox"
 ];
 
-async function connectMcp(backendClient) {
-  const server = createCollaborationMcpServer({ agentId: "research-agent", client: backendClient });
+async function connectMcp(backendClient, options = {}) {
+  const server = createCollaborationMcpServer({ agentId: "research-agent", client: backendClient, ...options });
   const client = new Client({ name: "corptie-test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return { client, server };
 }
+
+test("Objective Chat MCP exposes only fixed-scope work management tools", async () => {
+  const calls = [];
+  const { client } = await connectMcp({
+    get: async () => ({}),
+    post: async (path, body) => { calls.push({ path, body }); return { ok: true }; }
+  }, { objectiveId: "objective:1", objectiveSessionId: "session:1" });
+  try {
+    const tools = await client.listTools();
+    const names = tools.tools.map((tool) => tool.name);
+    assert.ok(names.includes("corptie_objective_context"));
+    assert.ok(names.includes("corptie_objective_work_item_start"));
+    await client.callTool({
+      name: "corptie_objective_work_items_manage",
+      arguments: { action: "create", title: "Scoped item" }
+    });
+    assert.deepEqual(calls[0], {
+      path: "/internal/objective-chat/tool",
+      body: {
+        objectiveId: "objective:1",
+        sessionId: "session:1",
+        tool: "corptie_objective_work_items_manage",
+        arguments: { action: "create", title: "Scoped item" }
+      }
+    });
+  } finally {
+    await client.close();
+  }
+});
 
 test("MCP server exposes the complete Phase 2 peer tool set and maps request fields", async () => {
   const calls = [];
