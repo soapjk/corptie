@@ -68,6 +68,22 @@ test("Claude starts only one live Query when usage loading and sending connect c
   assert.equal(starts, 1);
 });
 
+test("Claude sends resolved Session context without exposing it as the visible user message", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-context" });
+  const session = manager.get("claude-context");
+  manager.ensureQueryStarted = async () => {};
+  let providerMessage = null;
+  manager.enqueueInput = (_session, message) => { providerMessage = message; };
+
+  await manager.send("claude-context", "Fix the bug", { contextPrompt: "Reference context" });
+
+  assert.equal(session.items.at(-1).text, "Fix the bug");
+  assert.equal(providerMessage.message.content[0].text, "[[CORPTIE_CONTEXT_V1:17]]Reference contextFix the bug");
+  const replayed = claudeTranscriptItems(session, [providerMessage]);
+  assert.equal(replayed[0].text, "Fix the bug");
+});
+
 test("Claude transcript loader pages past the SDK's earliest-message limit", async () => {
   const source = Array.from({ length: 7 }, (_, index) => ({ index }));
   const calls = [];

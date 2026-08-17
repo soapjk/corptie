@@ -53,11 +53,10 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     updateAvatar: (reference, avatarPath) => manager.updateAvatar(reference.providerSessionId, avatarPath),
-    send: (reference, message, context = {}) => manager.send(
-      reference.providerSessionId,
-      message,
-      context.source ?? context
-    ),
+    send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, {
+      ...(context.source && typeof context.source === "object" ? context.source : {}),
+      contextPrompt: context.sessionContext?.prompt ?? null
+    }),
     clearConversation: (reference) => manager.clear(reference.providerSessionId),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),

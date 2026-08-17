@@ -146,6 +146,8 @@ test("OpenClacky manager creates over REST and sends chat over a subscribed WebS
   ]);
   await manager.interrupt("clacky-1");
   assert.deepEqual(socket.sent.at(-1), { type: "interrupt", session_id: "clacky-1" });
+  await manager.send("clacky-1", "Use this", { sessionContext: { prompt: "Reference context" } });
+  assert.equal(socket.sent.at(-1).content, "[[CORPTIE_CONTEXT_V1:17]]Reference contextUse this");
 });
 
 test("OpenClacky event mapping exposes confirmation as a blocked shared choice", () => {
