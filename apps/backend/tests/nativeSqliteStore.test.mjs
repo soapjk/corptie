@@ -75,6 +75,48 @@ test("logical Session owns the canonical unique name and preserves renamed alias
   }
 });
 
+test("active Provider Session ids are scoped by Provider and survive store restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-ownership-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const first = new CorptieStore({ dbPath, configPath });
+
+  try {
+    await first.initialize();
+    first.createLogicalSessionRoute({
+      logicalSessionId: "logical:openclacky-owned",
+      legacySessionId: "openclacky:owned-native",
+      providerThreadId: "owned-native",
+      providerId: "openclacky",
+      providerSessionId: "owned-native",
+      boundCwd: directory,
+      title: "Owned OpenClacky Session"
+    });
+    first.createLogicalSessionRoute({
+      logicalSessionId: "logical:other-provider",
+      legacySessionId: "other:foreign-native",
+      providerThreadId: "foreign-native",
+      providerId: "other-provider",
+      providerSessionId: "foreign-native",
+      boundCwd: directory,
+      title: "Other Provider Session"
+    });
+    await first.close();
+
+    const restarted = new CorptieStore({ dbPath, configPath });
+    try {
+      await restarted.initialize();
+      assert.deepEqual(restarted.listActiveProviderSessionIds("openclacky"), ["owned-native"]);
+      assert.deepEqual(restarted.listActiveProviderSessionIds("other-provider"), ["foreign-native"]);
+    } finally {
+      await restarted.close();
+    }
+  } finally {
+    await first.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("legacy workspace transition tables migrate to support regular directories", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-directory-transition-migration-"));
   const dbPath = join(directory, "corptie.sqlite");
