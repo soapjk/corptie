@@ -15,6 +15,9 @@ function fakeProvider(overrides = {}) {
       id: overrides.id ?? "fake.provider",
       displayName: overrides.displayName ?? "Fake Provider",
       transport: overrides.transport ?? "fake",
+      aliases: overrides.aliases ?? [],
+      runtime: overrides.runtime,
+      configuration: overrides.configuration,
       capabilities: overrides.capabilities ?? [
         AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
         AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT
@@ -45,6 +48,51 @@ test("registry rejects duplicate Provider ids", () => {
     () => registry.register(fakeProvider()),
     (error) => error instanceof AgentProviderContractError
   );
+});
+
+test("registry resolves Provider aliases and a declared default without product branching", () => {
+  const registry = new AgentProviderRegistry([
+    fakeProvider({ id: "provider.codex", aliases: ["codex", "CODEX-LEGACY"] })
+  ], { defaultProviderId: "codex" });
+
+  assert.equal(registry.resolveId("codex"), "provider.codex");
+  assert.equal(registry.resolveId("CODEX-LEGACY"), "provider.codex");
+  assert.equal(registry.resolveId("", { useDefault: true }), "provider.codex");
+  assert.equal(registry.get("codex").descriptor.id, "provider.codex");
+});
+
+test("registry rejects aliases owned by another Provider", () => {
+  assert.throws(
+    () => new AgentProviderRegistry([
+      fakeProvider({ id: "provider.a", aliases: ["shared"] }),
+      fakeProvider({ id: "provider.b", aliases: ["shared"] })
+    ]),
+    (error) => error instanceof AgentProviderContractError
+      && error.details.identity === "shared"
+      && error.details.existingProviderId === "provider.a"
+  );
+});
+
+test("Provider descriptors expose normalized runtime and configuration metadata", () => {
+  const registry = new AgentProviderRegistry([
+    fakeProvider({
+      id: "provider.http",
+      aliases: ["HTTP-Agent"],
+      runtime: { lifecycle: "hybrid", healthPath: "/health" },
+      configuration: {
+        fields: [
+          { id: "baseUrl", type: "url", default: "http://127.0.0.1:7070" },
+          { id: "accessKey", type: "secret", optional: true }
+        ]
+      }
+    })
+  ]);
+  const descriptor = registry.descriptors()[0];
+
+  assert.deepEqual(descriptor.aliases, ["http-agent"]);
+  assert.equal(descriptor.runtime.lifecycle, "hybrid");
+  assert.equal(descriptor.runtime.healthPath, "/health");
+  assert.deepEqual(descriptor.configuration.fields.map((field) => field.id), ["baseUrl", "accessKey"]);
 });
 
 test("registry invokes declared capabilities through the common contract", async () => {

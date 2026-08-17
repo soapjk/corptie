@@ -51,6 +51,10 @@ const REQUIRED_PROVIDER_METHODS = Object.freeze([
   "readSession"
 ]);
 
+const OPTIONAL_PROVIDER_METHODS = Object.freeze([
+  "prepareSessionInput"
+]);
+
 export class AgentProviderContractError extends Error {
   constructor(message, details = {}) {
     super(message);
@@ -92,6 +96,14 @@ export function validateAgentProvider(provider) {
       );
     }
   }
+  for (const method of OPTIONAL_PROVIDER_METHODS) {
+    if (provider[method] != null && typeof provider[method] !== "function") {
+      throw new AgentProviderContractError(
+        `Agent Provider ${descriptor.id} ${method} must be a function when provided.`,
+        { providerId: descriptor.id, method }
+      );
+    }
+  }
   for (const capability of descriptor.capabilities) {
     const method = AGENT_PROVIDER_METHOD_BY_CAPABILITY[capability];
     if (!method) continue;
@@ -112,6 +124,7 @@ export function normalizeAgentProviderDescriptor(input) {
   const id = normalizedRequiredString(input?.id, "descriptor.id");
   const displayName = normalizedRequiredString(input?.displayName, "descriptor.displayName");
   const transport = normalizedRequiredString(input?.transport, "descriptor.transport");
+  const aliases = normalizedAliases(input?.aliases, id);
   const capabilities = Array.isArray(input?.capabilities)
     ? [...new Set(input.capabilities.map((value) => normalizedRequiredString(value, "descriptor.capabilities[]")))].sort()
     : [];
@@ -120,7 +133,10 @@ export function normalizeAgentProviderDescriptor(input) {
     displayName,
     transport,
     protocolVersion: normalizedOptionalString(input?.protocolVersion),
+    aliases,
     capabilities,
+    runtime: normalizeRuntimeDescriptor(input?.runtime),
+    configuration: normalizeConfigurationDescriptor(input?.configuration),
     metadata: isPlainObject(input?.metadata) ? { ...input.metadata } : {}
   };
 }
@@ -143,6 +159,76 @@ function normalizedRequiredString(value, field) {
 function normalizedOptionalString(value) {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized || null;
+}
+
+function normalizedAliases(input, providerId) {
+  if (input == null) return [];
+  if (!Array.isArray(input)) {
+    throw new AgentProviderContractError("descriptor.aliases must be an array.", {
+      providerId,
+      field: "descriptor.aliases"
+    });
+  }
+  const aliases = input.map((value) => normalizedProviderIdentity(value, "descriptor.aliases[]"));
+  return [...new Set(aliases)].filter((alias) => alias !== normalizedProviderIdentity(providerId, "descriptor.id")).sort();
+}
+
+function normalizeRuntimeDescriptor(input) {
+  if (input == null) return { lifecycle: "external" };
+  if (!isPlainObject(input)) {
+    throw new AgentProviderContractError("descriptor.runtime must be an object.", {
+      field: "descriptor.runtime"
+    });
+  }
+  const lifecycle = normalizedOptionalString(input.lifecycle) ?? "external";
+  if (!["external", "managed", "hybrid"].includes(lifecycle)) {
+    throw new AgentProviderContractError(
+      "descriptor.runtime.lifecycle must be external, managed, or hybrid.",
+      { field: "descriptor.runtime.lifecycle", lifecycle }
+    );
+  }
+  return {
+    ...input,
+    lifecycle
+  };
+}
+
+function normalizeConfigurationDescriptor(input) {
+  if (input == null) return { fields: [] };
+  if (!isPlainObject(input)) {
+    throw new AgentProviderContractError("descriptor.configuration must be an object.", {
+      field: "descriptor.configuration"
+    });
+  }
+  const fields = input.fields ?? [];
+  if (!Array.isArray(fields)) {
+    throw new AgentProviderContractError("descriptor.configuration.fields must be an array.", {
+      field: "descriptor.configuration.fields"
+    });
+  }
+  const ids = new Set();
+  const normalizedFields = fields.map((field, index) => {
+    if (!isPlainObject(field)) {
+      throw new AgentProviderContractError("Provider configuration fields must be objects.", {
+        field: `descriptor.configuration.fields[${index}]`
+      });
+    }
+    const id = normalizedRequiredString(field.id, `descriptor.configuration.fields[${index}].id`);
+    const type = normalizedRequiredString(field.type, `descriptor.configuration.fields[${index}].type`);
+    if (ids.has(id)) {
+      throw new AgentProviderContractError(`Duplicate Provider configuration field: ${id}`, {
+        field: "descriptor.configuration.fields",
+        configurationFieldId: id
+      });
+    }
+    ids.add(id);
+    return { ...field, id, type };
+  });
+  return { ...input, fields: normalizedFields };
+}
+
+function normalizedProviderIdentity(value, field) {
+  return normalizedRequiredString(value, field).toLowerCase();
 }
 
 function isPlainObject(value) {

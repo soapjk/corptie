@@ -1,6 +1,3 @@
-import { CLAUDE_AGENT_SDK_PROVIDER_ID } from "./providers/claudeAgentSdkProvider.mjs";
-import { CODEX_APP_SERVER_PROVIDER_ID } from "./providers/codexAppServerProvider.mjs";
-
 // Owns the temporary translation between legacy public Session ids and the
 // stable Logical Session / Agent Provider binding model. No application service
 // or controller should parse codex:/pty: prefixes directly.
@@ -9,6 +6,7 @@ export class SessionBindingRepository {
     this.store = options.store;
     this.findSession = options.findSession;
     this.normalizeLegacySessionId = options.normalizeLegacySessionId ?? defaultNormalizeLegacySessionId;
+    this.resolveProviderId = options.resolveProviderId ?? defaultResolveProviderId;
     if (!this.store) throw new TypeError("SessionBindingRepository requires a store.");
     if (typeof this.findSession !== "function") {
       throw new TypeError("SessionBindingRepository requires findSession().");
@@ -24,7 +22,7 @@ export class SessionBindingRepository {
     const session = this.findSession(legacySessionId) ?? this.store.getSession(legacySessionId);
     if (!session) return null;
     const binding = logical?.activeBinding ?? null;
-    const providerId = binding?.providerId ?? providerIdForLegacySession(session);
+    const providerId = binding?.providerId ?? providerIdForLegacySession(session, this.resolveProviderId);
     const providerSessionId = binding?.providerSessionId
       ?? session.external?.threadId
       ?? session.external?.sessionId
@@ -69,11 +67,9 @@ export class SessionBindingRepository {
   }
 }
 
-export function providerIdForLegacySession(session) {
+export function providerIdForLegacySession(session, resolveProviderId = defaultResolveProviderId) {
   const provider = normalizedText(session?.external?.provider);
-  if (provider === CLAUDE_AGENT_SDK_PROVIDER_ID) return CLAUDE_AGENT_SDK_PROVIDER_ID;
-  if (provider === CODEX_APP_SERVER_PROVIDER_ID) return CODEX_APP_SERVER_PROVIDER_ID;
-  return CODEX_APP_SERVER_PROVIDER_ID;
+  return resolveProviderId(provider, { useDefault: true }) ?? null;
 }
 
 function defaultNormalizeLegacySessionId(sessionId) {
@@ -82,4 +78,8 @@ function defaultNormalizeLegacySessionId(sessionId) {
 
 function normalizedText(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function defaultResolveProviderId(providerId) {
+  return normalizedText(providerId) || null;
 }

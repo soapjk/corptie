@@ -69,7 +69,8 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     hubService: services.hubService,
     router: services.router,
     memoryExtractor: services.memoryExtractor,
-    assistantService: services.assistantService
+    assistantService: services.assistantService,
+    createSession: services.createSession
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
@@ -78,6 +79,29 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     body: response.body ? JSON.parse(response.body) : null
   };
 }
+
+test("POST /sessions delegates Provider-only creation when no WorkItem binding is requested", async () => {
+  const services = await createServices();
+  try {
+    const calls = [];
+    const result = await callApi({
+      method: "POST",
+      pathname: "/sessions",
+      body: { providerId: "openclacky", title: "Task", cwd: "/tmp" },
+      createSession: async (input) => {
+        calls.push(input);
+        return { id: "openclacky:native-1", title: input.title };
+      },
+      ...services
+    });
+    assert.equal(result.statusCode, 201);
+    assert.equal(result.body.session.id, "openclacky:native-1");
+    assert.equal(calls[0].providerId, "openclacky");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
 
 test("POST /objectives → 创建，GET /objectives → 列表", async () => {
   const services = await createServices();

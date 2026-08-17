@@ -9,32 +9,61 @@ import {
 import { withSessionActions } from "./sessionActions.mjs";
 
 export class AgentProviderRegistry {
-  constructor(providers = []) {
+  constructor(providers = [], options = {}) {
     this.providers = new Map();
+    this.providerIdsByIdentity = new Map();
+    this.defaultProviderId = normalizedOptionalProviderId(options.defaultProviderId);
     for (const provider of providers) this.register(provider);
+    if (this.defaultProviderId) {
+      this.defaultProviderId = this.resolveId(this.defaultProviderId);
+      if (!this.defaultProviderId) {
+        throw new AgentProviderNotFoundError(options.defaultProviderId);
+      }
+    }
   }
 
   register(provider) {
     const descriptor = validateAgentProvider(provider);
-    if (this.providers.has(descriptor.id)) {
-      throw new AgentProviderContractError(`Agent Provider is already registered: ${descriptor.id}`, {
-        providerId: descriptor.id
-      });
+    const identities = [descriptor.id, ...descriptor.aliases].map(normalizedProviderIdentity);
+    for (const identity of identities) {
+      const owner = this.providerIdsByIdentity.get(identity);
+      if (owner) {
+        throw new AgentProviderContractError(`Agent Provider identity is already registered: ${identity}`, {
+          providerId: descriptor.id,
+          identity,
+          existingProviderId: owner
+        });
+      }
     }
     provider.descriptor = descriptor;
     this.providers.set(descriptor.id, provider);
+    for (const identity of identities) this.providerIdsByIdentity.set(identity, descriptor.id);
     return descriptor;
   }
 
   unregister(providerId) {
-    return this.providers.delete(normalizedProviderId(providerId));
+    const resolved = this.resolveId(providerId);
+    if (!resolved) return false;
+    const provider = this.providers.get(resolved);
+    if (!provider) return false;
+    for (const identity of [provider.descriptor.id, ...provider.descriptor.aliases]) {
+      this.providerIdsByIdentity.delete(normalizedProviderIdentity(identity));
+    }
+    return this.providers.delete(resolved);
   }
 
   get(providerId) {
     const normalized = normalizedProviderId(providerId);
-    const provider = this.providers.get(normalized);
+    const resolved = this.resolveId(normalized);
+    const provider = resolved ? this.providers.get(resolved) : null;
     if (!provider) throw new AgentProviderNotFoundError(normalized);
     return provider;
+  }
+
+  resolveId(providerId, options = {}) {
+    const normalized = normalizedOptionalProviderId(providerId);
+    if (!normalized) return options.useDefault === true ? this.defaultProviderId : null;
+    return this.providerIdsByIdentity.get(normalized) ?? null;
   }
 
   descriptors() {
@@ -106,6 +135,15 @@ function normalizedProviderId(value) {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw new AgentProviderNotFoundError(String(value ?? ""));
   return normalized;
+}
+
+function normalizedProviderIdentity(value) {
+  return normalizedProviderId(value).toLowerCase();
+}
+
+function normalizedOptionalProviderId(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized || null;
 }
 
 function compareSessionOrder(left, right) {

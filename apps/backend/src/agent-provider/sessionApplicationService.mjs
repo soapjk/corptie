@@ -61,17 +61,21 @@ export class SessionApplicationService {
   }
 
   async createSession(providerId, input = {}, context = {}) {
+    const provider = this.registry.get(providerId);
+    const preparedInput = typeof provider.prepareSessionInput === "function"
+      ? await provider.prepareSessionInput(input, context)
+      : input;
     const toolHost = this.toolHostService
       ? await this.toolHostService.prepareSession(providerId, { purpose: "session", ...context })
       : null;
     const session = await this.registry.invoke(
       providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
-      toolHost ? { ...input, toolHost } : input,
+      toolHost ? { ...preparedInput, toolHost } : preparedInput,
       context
     );
     const reference = this.bindCreatedSession
-      ? await this.bindCreatedSession({ providerId, session, input, context })
+      ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
       : null;
     return this.decorateLifecycleSession(providerId, session, reference);
   }

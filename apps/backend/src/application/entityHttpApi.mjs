@@ -21,6 +21,7 @@ export function handleEntityHttpRequest({
   assistantService,
   launchSession,
   launchAgentSession,
+  createSession,
   backgroundAgentService,
   skillRegistryService
 }) {
@@ -311,6 +312,13 @@ export function handleEntityHttpRequest({
         const input = await readJson(request);
         const workItemId = String(input.workItemId ?? "").trim();
         const agentId = String(input.agentId ?? "").trim();
+        if (!workItemId && !agentId) {
+          if (typeof createSession !== "function") {
+            throw apiError("INTERNAL", "createSession is not configured.", 500);
+          }
+          const session = await createSession(input);
+          return sendJson(response, 201, { session });
+        }
         if (!workItemId) throw apiError("INVALID_INPUT", "workItemId is required.", 400);
         if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
         const workItem = objectiveService.getWorkItem(workItemId);

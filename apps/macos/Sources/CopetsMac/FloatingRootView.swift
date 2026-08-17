@@ -1907,8 +1907,7 @@ private struct NewPtyAgentTaskSheet: View {
     @AppStorage("newTask.defaultCodexReasoningLevel", store: CorptieAppEnvironment.userDefaults) private var defaultCodexReasoningLevel = ""
     @AppStorage("newTask.defaultClaudeModel", store: CorptieAppEnvironment.userDefaults) private var defaultClaudeModel = ""
     @State private var title = ""
-    @State private var command = "codex"
-    @State private var arguments = ""
+    @State private var selectedProviderId = "codex-app-server"
     @State private var existingSessionId = ""
     @State private var cwd = ""
     @State private var sandboxMode = "workspace-write"
@@ -2011,14 +2010,19 @@ private struct NewPtyAgentTaskSheet: View {
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(Color.black)
                 HStack(spacing: 8) {
-                    PresetButton(title: "Codex", command: "codex", arguments: "", isSelected: command == "codex", isDisabled: backendClient.isCreatingTask) {
-                        selectAgent($0)
+                    ForEach(creatableProviders) { provider in
+                        PresetButton(
+                            title: provider.displayName,
+                            command: provider.id,
+                            arguments: "",
+                            isSelected: selectedProviderId == provider.id,
+                            isDisabled: backendClient.isCreatingTask
+                        ) { _ in
+                            selectedProviderId = provider.id
+                        }
                     }
-                    PresetButton(title: "Claude", command: "claude", arguments: "", isSelected: command == "claude", isDisabled: backendClient.isCreatingTask) {
-                        selectAgent($0)
-                    }
-                    PresetButton(title: "OpenClacky", command: "openclacky", arguments: "", isSelected: command == "openclacky", isDisabled: backendClient.isCreatingTask) {
-                        selectAgent($0)
+                    if creatableProviders.isEmpty {
+                        ProgressView().controlSize(.small)
                     }
                 }
             }
@@ -2040,12 +2044,12 @@ private struct NewPtyAgentTaskSheet: View {
                     modelPicker
                     reasoningPicker
 
-                    HStack(spacing: 8) {
+                    if selectedProviderId == "codex-app-server" {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text(L10n("Command"))
+                            Text(L10n("Session ID"))
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundStyle(Color.black)
-                            TextField(L10n("codex"), text: $command)
+                            TextField(L10n("Bind existing Codex session"), text: $existingSessionId)
                                 .textFieldStyle(.plain)
                                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                                 .padding(.horizontal, 10)
@@ -2055,44 +2059,11 @@ private struct NewPtyAgentTaskSheet: View {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                                         .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
                                 )
+                                .help(L10n("Enter an existing Codex session id to resume it in Corptie"))
+                                .onChange(of: existingSessionId) { _, value in
+                                    scheduleSessionLookup(value)
+                                }
                         }
-
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text(L10n("Args"))
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(Color.black)
-                            TextField(L10n(""), text: $arguments)
-                                .textFieldStyle(.plain)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 8)
-                                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                                )
-                        }
-                        .frame(width: 120)
-                    }
-
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(L10n("Session ID"))
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color.black)
-                        TextField(L10n("Bind existing Codex session"), text: $existingSessionId)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, weight: .medium, design: .monospaced))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                            )
-                            .help(L10n("Enter an existing Codex session id to resume it in Corptie"))
-                            .onChange(of: existingSessionId) { _, value in
-                                scheduleSessionLookup(value)
-                            }
                     }
 
                     HStack(spacing: 8) {
@@ -2215,14 +2186,24 @@ private struct NewPtyAgentTaskSheet: View {
             }
             sandboxMode = validatedSandboxMode(defaultSandboxMode)
             approvalPolicy = validatedApprovalPolicy(defaultApprovalPolicy)
+            if backendClient.agentProviders.isEmpty {
+                Task { await backendClient.loadProviders() }
+            }
             loadModelsForCurrentAgent()
         }
         .onDisappear {
             sessionLookupTask?.cancel()
         }
-        .onChange(of: command) { _, _ in
+        .onChange(of: selectedProviderId) { _, _ in
             selectedModelId = ""
             selectedReasoningLevel = ""
+            loadModelsForCurrentAgent()
+        }
+        .onChange(of: backendClient.agentProviders) { _, providers in
+            if !providers.contains(where: { $0.id == selectedProviderId }),
+               let first = providers.first(where: { $0.supports("session.create") }) {
+                selectedProviderId = first.id
+            }
             loadModelsForCurrentAgent()
         }
         .onChange(of: backendClient.codexDefaultModel) { _, value in
@@ -2293,7 +2274,7 @@ private struct NewPtyAgentTaskSheet: View {
 
     @ViewBuilder
     private var reasoningPicker: some View {
-        if trimmedCommand == "codex" {
+        if supportsReasoningSelection {
             VStack(alignment: .leading, spacing: 7) {
                 Text(L10n("Reasoning"))
                     .font(.system(size: 13, weight: .bold))
@@ -2321,21 +2302,24 @@ private struct NewPtyAgentTaskSheet: View {
         }
     }
 
-    private func selectAgent(_ preset: AgentPreset) {
-        command = preset.command
-        arguments = preset.arguments
-    }
-
-    private var trimmedCommand: String {
-        command.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
     private var supportsModelSelection: Bool {
-        trimmedCommand == "codex" || trimmedCommand == "claude"
+        selectedProvider?.supports("configuration.model.list") == true
+    }
+
+    private var supportsReasoningSelection: Bool {
+        selectedProvider?.supports("configuration.reasoning.switch") == true
     }
 
     private var modelProviderForCurrentAgent: String {
-        trimmedCommand == "claude" ? "claude-sdk" : "codex-pty"
+        selectedProviderId
+    }
+
+    private var creatableProviders: [AgentProviderDescriptor] {
+        backendClient.agentProviders.filter { $0.supports("session.create") }
+    }
+
+    private var selectedProvider: AgentProviderDescriptor? {
+        backendClient.agentProviders.first(where: { $0.id == selectedProviderId })
     }
 
     private var currentReasoningLevels: [String] {
@@ -2347,7 +2331,7 @@ private struct NewPtyAgentTaskSheet: View {
     }
 
     private var savedModelForCurrentAgent: String? {
-        if trimmedCommand == "claude" {
+        if selectedProviderId == "claude-sdk" {
             return nonEmptyNewSessionValue(defaultClaudeModel)
                 ?? backendClient.settings?.newSessionDefaults?.claudeModel
         }
@@ -2390,7 +2374,7 @@ private struct NewPtyAgentTaskSheet: View {
     }
 
     private func applyDefaultReasoningIfNeeded(preferCurrentSelection: Bool = false) {
-        guard trimmedCommand == "codex" else {
+        guard supportsReasoningSelection else {
             selectedReasoningLevel = ""
             return
         }
@@ -2407,10 +2391,10 @@ private struct NewPtyAgentTaskSheet: View {
     private func saveNewSessionDefaults() {
         defaultSandboxMode = validatedSandboxMode(sandboxMode)
         defaultApprovalPolicy = validatedApprovalPolicy(approvalPolicy)
-        if trimmedCommand == "codex" {
+        if selectedProviderId == "codex-app-server" {
             defaultCodexModel = selectedModelId
             defaultCodexReasoningLevel = selectedReasoningLevel
-        } else if trimmedCommand == "claude" {
+        } else if selectedProviderId == "claude-sdk" {
             defaultClaudeModel = selectedModelId
         }
         Task {
@@ -2466,7 +2450,7 @@ private struct NewPtyAgentTaskSheet: View {
         let workspace = cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalTitle = titleOverride ?? (trimmedTitle.isEmpty ? defaultSessionTitle(for: workspace) : trimmedTitle)
-        if trimmedCommand == "codex" {
+        if selectedProviderId == "codex-app-server" && isBindingExistingSession {
             backendClient.createCodexPtyTask(
                 title: finalTitle,
                 prompt: "",
@@ -2480,25 +2464,16 @@ private struct NewPtyAgentTaskSheet: View {
             ) {
                 close()
             }
-        } else if trimmedCommand == "claude" {
-            backendClient.createClaudeTask(
+        } else {
+            backendClient.createProviderTask(
+                providerId: selectedProviderId,
                 title: finalTitle,
                 prompt: "",
                 cwd: workspace,
                 sandbox: sandboxMode,
                 approvalPolicy: approvalPolicy,
                 model: selectedModelId,
-                onNameConflict: { suggestedSessionTitle = $0 }
-            ) {
-                close()
-            }
-        } else {
-            backendClient.createPtyTask(
-                title: finalTitle,
-                command: command,
-                arguments: splitArguments(arguments),
-                initialInput: "",
-                cwd: workspace,
+                reasoningLevel: selectedReasoningLevel,
                 onNameConflict: { suggestedSessionTitle = $0 }
             ) {
                 close()
@@ -2514,12 +2489,6 @@ private struct NewPtyAgentTaskSheet: View {
     private func defaultSessionTitle(for path: String) -> String {
         let folderName = URL(fileURLWithPath: path).standardizedFileURL.lastPathComponent
         return folderName.isEmpty ? "Agent" : "\(folderName)_agent"
-    }
-
-    private func splitArguments(_ value: String) -> [String] {
-        value
-            .split(separator: " ")
-            .map(String.init)
     }
 
     private func chooseWorkspace() {
@@ -2539,7 +2508,6 @@ private struct NewPtyAgentTaskSheet: View {
     }
 
     private var isCreateDisabled: Bool {
-        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
         if backendClient.isCreatingTask {
             return true
         }
@@ -2549,16 +2517,13 @@ private struct NewPtyAgentTaskSheet: View {
         if isBindingExistingSession && sessionLookupMessage?.hasPrefix("Session not found") == true {
             return true
         }
-        if isShowingAdvanced && trimmedCommand.isEmpty {
-            return true
-        }
         if supportsModelSelection && selectedModelId.isEmpty {
             return true
         }
-        if trimmedCommand == "codex" && selectedReasoningLevel.isEmpty {
+        if supportsReasoningSelection && selectedReasoningLevel.isEmpty {
             return true
         }
-        return trimmedCommand.isEmpty
+        return selectedProvider == nil
     }
 
     private var isBindingExistingSession: Bool {

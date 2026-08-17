@@ -33,6 +33,8 @@ import { WorkspaceContinuationCoordinator } from "./application/workspaceContinu
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
+import { OpenClackyManager } from "./adapters/openClackyManager.mjs";
+import { createOpenClackyProvider } from "./agent-provider/providers/openClackyProvider.mjs";
 import { ClaudeWorkspaceTransitionPort } from "./agent-provider/adapters/claudeWorkspaceTransitionPort.mjs";
 import {
   claudeToolHostAttachment,
@@ -277,6 +279,7 @@ const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
+  prepareSessionInput: prepareClaudeProviderSessionInput,
   listModels: loadClaudeModels,
   onTurnSettled: handleClaudeTurnSettled,
   prepareWorkspaceTransition: switchClaudeProviderWorkspace,
@@ -285,6 +288,18 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
     await claudeCollaborationRuntimeOptionsWithAgentContext(attachment.actorId)
   ),
   resolveRuntimeOptions: (providerSessionId) => claudeRuntimeOptionsForSession(providerSessionId)
+});
+const openClackyManager = new OpenClackyManager({
+  baseURL: process.env.OPENCLACKY_BASE_URL,
+  accessKey: process.env.OPENCLACKY_ACCESS_KEY,
+  onSessionChanged: (change) => {
+    emitEvent("ProviderSessionChanged", {
+      provider: "openclacky",
+      type: change.type,
+      sessionId: change.sessionId ?? change.session?.id ?? null,
+      error: change.error?.message ?? null
+    }, { sessionId: change.session?.id ?? null, source: { type: "openclacky" } });
+  }
 });
 const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   store,
@@ -310,6 +325,7 @@ const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtecti
 const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   claudeProvider: claudeProviderRuntime,
   codexOperations: {
+    prepareSessionInput: prepareCodexProviderSessionInput,
     listSessions: listCodexProviderSessions,
     readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
@@ -352,13 +368,16 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   codexMetadata: {
     backgroundPermissionProfiles: ["read-only", "workspace-write"]
-  }
+  },
+  additionalProviders: [createOpenClackyProvider(openClackyManager)]
 });
+openClackyManager.start();
 toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
 const sessionBindingRepository = new SessionBindingRepository({
   store,
   findSession: (sessionId) => listGatewaySessions().find((session) => session.id === sessionId),
-  normalizeLegacySessionId: normalizeSessionId
+  normalizeLegacySessionId: normalizeSessionId,
+  resolveProviderId: (providerId, options = {}) => agentProviderRegistry.resolveId(providerId, options)
 });
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
@@ -2647,20 +2666,11 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   const cwd = sessionWorkspacePath(input.cwd);
   await assertDirectory(cwd);
   const title = sessionTitleForWorkspace(input.title, cwd);
-  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
   const prepared = {
     ...input,
     cwd,
-    title,
-    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
-    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy)
+    title
   };
-  if (providerId === "claude-sdk") {
-    prepared.model = typeof input.model === "string" && input.model.trim()
-      ? input.model.trim()
-      : defaults.claudeModel;
-    prepared.prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
-  }
   const releaseTitle = reserveSessionTitle(title);
   try {
     const session = await sessionApplicationService.createSession(providerId, prepared, context);
@@ -2687,6 +2697,28 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   }
 }
 
+function prepareCodexProviderSessionInput(input = {}) {
+  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
+  return {
+    ...input,
+    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
+    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy)
+  };
+}
+
+function prepareClaudeProviderSessionInput(input = {}) {
+  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
+  return {
+    ...input,
+    sandbox: normalizeCodexSandbox(input.sandbox ?? defaults.sandbox),
+    approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy ?? defaults.approvalPolicy),
+    model: typeof input.model === "string" && input.model.trim()
+      ? input.model.trim()
+      : defaults.claudeModel,
+    prompt: typeof input.prompt === "string" ? input.prompt.trim() : ""
+  };
+}
+
 // 实体层 Agent.provider → providerId 映射。deepseek / harness 暂无执行 runtime，返回 null。
 function entityAgentProviderId(provider) {
   return resolveAgentProviderId(provider);
@@ -2698,16 +2730,7 @@ function entityAgentProviderId(provider) {
 // 会话启动）都应复用此函数，避免映射散落、不一致。
 function resolveAgentProviderId(provider) {
   const normalized = typeof provider === "string" ? provider.trim().toLowerCase() : "";
-  const aliases = {
-    "": "codex-app-server",
-    codex: "codex-app-server",
-    "codex-app-server": "codex-app-server",
-    claude: "claude-sdk",
-    claude_code: "claude-sdk",
-    "claude-code": "claude-sdk",
-    "claude-sdk": "claude-sdk"
-  };
-  return aliases[normalized] ?? null;
+  return agentProviderRegistry.resolveId(normalized, { useDefault: normalized === "" });
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
@@ -4739,6 +4762,10 @@ function route(request, response) {
     assistantService,
     launchSession: launchWorkItemSession,
     launchAgentSession,
+    createSession: (input) => {
+      const providerId = requestedProviderId(input.providerId ?? input.agent);
+      return createSessionThroughApplication(providerId, input, { source: "http" });
+    },
     backgroundAgentService,
     skillRegistryService
   })) {

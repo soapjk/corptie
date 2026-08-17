@@ -834,6 +834,40 @@ struct CodexModelsResponse: Decodable {
     let models: [CodexModel]
 }
 
+struct AgentProviderDescriptor: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let displayName: String
+    let transport: String
+    let aliases: [String]
+    let capabilities: [String]
+    let runtime: AgentProviderRuntimeDescriptor
+    let configuration: AgentProviderConfigurationDescriptor
+
+    func supports(_ capability: String) -> Bool {
+        capabilities.contains(capability)
+    }
+}
+
+struct AgentProviderRuntimeDescriptor: Decodable, Equatable, Sendable {
+    let lifecycle: String
+}
+
+struct AgentProviderConfigurationDescriptor: Decodable, Equatable, Sendable {
+    let fields: [AgentProviderConfigurationField]
+}
+
+struct AgentProviderConfigurationField: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let type: String
+    let label: String?
+    let required: Bool?
+    let defaultValue: String?
+}
+
+struct AgentProvidersResponse: Decodable, Sendable {
+    let providers: [AgentProviderDescriptor]
+}
+
 enum SessionConnectionPresentation {
     static func isConnected(status: String?, usesManualConnection: Bool) -> Bool {
         guard let normalized = status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),

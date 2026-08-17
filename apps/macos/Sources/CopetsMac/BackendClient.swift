@@ -39,6 +39,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var feishuProfiles: [FeishuProfile] = []
     @Published private(set) var isUpdatingFeishu = false
     @Published private(set) var codexModels: [CodexModel] = []
+    @Published private(set) var agentProviders: [AgentProviderDescriptor] = []
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
     @Published private(set) var loadedModelProvider: String?
@@ -131,7 +132,8 @@ final class BackendClient: ObservableObject {
         }
         Task {
             await loadSettings()
-            await loadModels(for: "codex-pty")
+            await loadProviders()
+            await loadModels(for: "codex-app-server")
         }
         startEventStream()
         startSessionCollectionStream()
@@ -751,6 +753,19 @@ final class BackendClient: ObservableObject {
         await loadModels(for: provider, forceRefresh: forceRefresh)
     }
 
+    func loadProviders() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "providers"))
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            agentProviders = try JSONDecoder().decode(AgentProvidersResponse.self, from: data).providers
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     func loadModels(for provider: String, forceRefresh: Bool = false) async {
         if isLoadingCodexModels {
             return
@@ -1070,6 +1085,64 @@ final class BackendClient: ObservableObject {
 
                 onSuccess()
                 sendStatusMessage = L10n("Started Claude Code")
+                await refresh()
+            } catch {
+                lastError = error.localizedDescription
+                sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    func createProviderTask(
+        providerId: String,
+        title: String,
+        prompt: String,
+        cwd: String,
+        sandbox: String = "workspace-write",
+        approvalPolicy: String = "on-request",
+        model: String = "",
+        reasoningLevel: String = "",
+        onNameConflict: @escaping (String) -> Void = { _ in },
+        onSuccess: @escaping () -> Void = {}
+    ) {
+        let trimmedProviderId = providerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedCwd = cwd.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedProviderId.isEmpty, !isCreatingTask else { return }
+        isCreatingTask = true
+
+        Task {
+            defer { isCreatingTask = false }
+            do {
+                var request = URLRequest(url: baseURL.appending(path: "sessions"))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                var body: [String: Any] = [
+                    "providerId": trimmedProviderId,
+                    "title": title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "cwd": trimmedCwd.isEmpty ? defaultWorkspacePath : trimmedCwd,
+                    "sandbox": sandbox,
+                    "approvalPolicy": approvalPolicy
+                ]
+                if !model.isEmpty { body["model"] = model }
+                if !reasoningLevel.isEmpty { body["reasoningLevel"] = reasoningLevel }
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw URLError(.badServerResponse)
+                }
+                let decoded = try? JSONDecoder().decode(CreatePtySessionResponse.self, from: data)
+                guard (200..<300).contains(httpResponse.statusCode) else {
+                    if httpResponse.statusCode == 409, let suggestedTitle = decoded?.suggestedTitle {
+                        onNameConflict(suggestedTitle)
+                        return
+                    }
+                    throw BackendError.message(decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response")
+                }
+                onSuccess()
+                let providerName = agentProviders.first(where: { $0.id == trimmedProviderId })?.displayName ?? trimmedProviderId
+                sendStatusMessage = L10nFormat("Started %@", providerName)
                 await refresh()
             } catch {
                 lastError = error.localizedDescription

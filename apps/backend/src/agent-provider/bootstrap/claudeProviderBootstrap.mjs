@@ -9,6 +9,7 @@ export function createClaudeProviderRuntime(options = {}) {
     resolveRuntimeOptions: options.resolveRuntimeOptions
   });
   const provider = createClaudeAgentSdkProvider(manager, {
+    prepareSessionInput: options.prepareSessionInput,
     listModels: options.listModels,
     prepareWorkspaceTransition: options.prepareWorkspaceTransition,
     attachTools: options.attachTools

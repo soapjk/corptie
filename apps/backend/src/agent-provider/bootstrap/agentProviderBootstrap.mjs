@@ -35,10 +35,13 @@ export function createAgentProviderRuntimeRegistry(options = {}) {
     createCodexAppServerProvider(options.codexOperations ?? {}, {
       metadata: options.codexMetadata ?? {},
       capabilities: CODEX_APP_SERVER_CAPABILITIES
-    })
+    }),
+    ...materializeAdditionalProviders(options.additionalProviders, options.providerContext)
   ];
 
-  return new AgentProviderRegistry(providers);
+  return new AgentProviderRegistry(providers, {
+    defaultProviderId: options.defaultProviderId ?? "codex-app-server"
+  });
 }
 
 export { claudeToolHostAttachment, codexToolHostAttachment };
@@ -46,4 +49,18 @@ export { claudeToolHostAttachment, codexToolHostAttachment };
 function requiredProvider(provider, name) {
   if (!provider) throw new TypeError(`Agent Provider bootstrap requires ${name}.`);
   return provider;
+}
+
+function materializeAdditionalProviders(additionalProviders, context = {}) {
+  if (additionalProviders == null) return [];
+  if (!Array.isArray(additionalProviders)) {
+    throw new TypeError("Agent Provider bootstrap additionalProviders must be an array.");
+  }
+  return additionalProviders.map((entry, index) => {
+    const provider = typeof entry === "function" ? entry(context ?? {}) : entry;
+    if (!provider || typeof provider !== "object") {
+      throw new TypeError(`Agent Provider bootstrap entry ${index} did not produce a Provider.`);
+    }
+    return provider;
+  });
 }
