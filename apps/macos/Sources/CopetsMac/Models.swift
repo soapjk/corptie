@@ -988,6 +988,9 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let options: [CodexApprovalOption]?
     let status: String?
     let createdAt: String?
+    var userMessageStatus: String? = nil
+    var queuePosition: Int? = nil
+    var processingError: String? = nil
     var sourceType: String? = nil
     var localVisibility: String? = nil
     var workItemId: String? = nil
@@ -1007,6 +1010,38 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationAcceptanceCriteria: [String]? = nil
     var fileChanges: [CodexFileChange]? = nil
     var turnDiff: String? = nil
+
+    var authoritativeUserMessageState: UserMessageProcessingState? {
+        guard type == "userMessage" else { return nil }
+        return UserMessageProcessingState(
+            authoritativeValue: userMessageStatus,
+            legacyStatus: status
+        )
+    }
+}
+
+enum UserMessageProcessingState: String, Equatable, Sendable {
+    case queued
+    case processing
+    case consumed
+    case failed
+    case cancelled
+
+    init?(authoritativeValue: String?, legacyStatus: String?) {
+        if let authoritativeValue {
+            guard let state = Self(rawValue: authoritativeValue.lowercased()) else { return nil }
+            self = state
+            return
+        }
+        // Compatibility with snapshots produced before userMessageStatus was
+        // added. Only explicit server status values qualify; timeline position
+        // is never used to infer lifecycle.
+        switch legacyStatus?.lowercased() {
+        case "queued": self = .queued
+        case "running", "processing": self = .processing
+        default: return nil
+        }
+    }
 }
 
 struct CodexFileChange: Decodable, Equatable, Sendable {
