@@ -537,10 +537,11 @@ struct SessionDetailPanel: View {
                     Text(agentDisplayName)
                         .font(.system(size: 12, weight: .semibold))
                     if let description = assistantAgent?.description, !description.isEmpty {
-                        Text(description)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                        CollapsibleDetailText(
+                            text: description,
+                            font: .system(size: 11),
+                            lineSpacing: 1
+                        )
                     }
                 }
             }
@@ -1036,21 +1037,13 @@ private struct WorkItemDetailCard: View {
 
             if !item.description.isEmpty {
                 workItemSection(title: "描述", systemImage: "text.alignleft") {
-                    Text(item.description)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(1)
-                        .fixedSize(horizontal: false, vertical: true)
+                    CollapsibleDetailText(text: item.description, lineSpacing: 1)
                 }
             }
 
             if !item.acceptanceCriteria.isEmpty {
                 workItemSection(title: "验收标准", systemImage: "checkmark.circle") {
-                    Text(item.acceptanceCriteria)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(1)
-                        .fixedSize(horizontal: false, vertical: true)
+                    CollapsibleDetailText(text: item.acceptanceCriteria, lineSpacing: 1)
                 }
             }
         }

@@ -651,12 +651,10 @@ struct WorkItemDetailView: View {
             Label(title, systemImage: systemImage)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
-            Text(text.isEmpty ? L10n("No Content") : text)
-                .font(.system(size: 12))
-                .foregroundStyle(text.isEmpty ? .tertiary : .secondary)
-                .lineSpacing(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+            CollapsibleDetailText(
+                text: text.isEmpty ? L10n("No Content") : text,
+                color: text.isEmpty ? .secondary.opacity(0.6) : .secondary
+            )
         }
     }
 
@@ -741,9 +739,12 @@ struct WorkItemDetailView: View {
             } else {
                 ForEach(memories) { memory in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(memory.content)
-                            .font(.system(size: 11))
-                            .fixedSize(horizontal: false, vertical: true)
+                        CollapsibleDetailText(
+                            text: memory.content,
+                            font: .system(size: 11),
+                            color: .primary,
+                            lineSpacing: 1
+                        )
                         Text(kindLabel(memory.kind))
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.tertiary)
