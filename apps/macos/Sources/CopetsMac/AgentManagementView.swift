@@ -4,10 +4,11 @@ import SwiftUI
 // Agent 是低频变更的基础设施，单独一个 Tab 管理，控制台侧栏不再列出 Agent。
 struct AgentManagementView: View {
     @ObservedObject private var client = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @State private var isCreatingAgent = false
     @State private var selectedAgentForDetail: Agent?
-    @State private var startingAgentId: String?
+    @State private var agentForSessionCreation: Agent?
 
     // 自适应网格：卡片最小 260pt，随窗口宽度自动增减列数。
     private let columns = [GridItem(.adaptive(minimum: 260, maximum: 420), spacing: 16)]
@@ -60,9 +61,17 @@ struct AgentManagementView: View {
         .sheet(item: $selectedAgentForDetail) { agent in
             AgentDetailView(agent: agent)
         }
+        .sheet(item: $agentForSessionCreation) { agent in
+            NewSessionCreationSheet(fixedAgent: agent) { session in
+                router.openSession(session.id)
+            }
+        }
         .task {
             if client.agents.isEmpty {
                 await client.refreshAgents()
+            }
+            if backendClient.agentProviders.isEmpty {
+                await backendClient.loadProviders()
             }
         }
     }
@@ -90,12 +99,10 @@ struct AgentManagementView: View {
             } else {
                 LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
                     ForEach(agents) { agent in
-                        AgentCard(agent: agent, onStartChat: { startNewSession(with: agent) })
+                        AgentCard(agent: agent, onStartSession: { agentForSessionCreation = agent })
                             .contextMenu {
-                                if agent.isAssistant {
-                                    Button(L10n("开始新会话")) {
-                                        startNewSession(with: agent)
-                                    }
+                                Button(L10n("开始新会话")) {
+                                    agentForSessionCreation = agent
                                 }
                                 Button(L10n("打开详情")) {
                                     selectedAgentForDetail = agent
@@ -110,24 +117,13 @@ struct AgentManagementView: View {
         }
     }
 
-    // 直接为 Assistant Agent 开新会话（不询问首条消息），成功后跳转并选中新会话。
-    private func startNewSession(with agent: Agent) {
-        guard startingAgentId == nil else { return }
-        startingAgentId = agent.agentId
-        Task {
-            let sessionId = await client.startAgentSession(agentId: agent.agentId)
-            startingAgentId = nil
-            if let sessionId {
-                router.openSession(sessionId)
-            }
-        }
-    }
 }
 
-// 单个 Agent 的网格卡片：头像、名字、角色、状态、描述、能力标签、provider、开始新会话（仅 Assistant）。
+// 单个 Agent 的网格卡片：Assistant 直接建聊天；IC 选择 WorkItem 后建 Worker Session。
 struct AgentCard: View {
+    @ObservedObject private var backendClient = BackendClient.shared
     let agent: Agent
-    var onStartChat: (() -> Void)? = nil
+    var onStartSession: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -176,16 +172,16 @@ struct AgentCard: View {
             // 底部：provider + 状态文字
             HStack(spacing: 6) {
                 if let provider = agent.provider, !provider.isEmpty {
-                    Text(provider)
+                    Text(backendClient.providerDisplayName(for: provider) ?? provider)
                         .font(.caption2)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(.quaternary, in: Capsule())
                 }
                 Spacer()
-                if let onStartChat, agent.isAssistant {
+                if let onStartSession {
                     Button {
-                        onStartChat()
+                        onStartSession()
                     } label: {
                         Label(L10n("开始新会话"), systemImage: "bubble.left.and.bubble.right")
                             .font(.caption)

@@ -112,9 +112,9 @@ struct WorkItemSessionListEnvelope: Codable {
     let sessions: [WorkItemSessionSummary]
 }
 
-// 后端响应 envelope：POST /sessions → { session: {...} }
+// 后端响应 envelope：POST /sessions / POST /agents/:id/sessions → { session: TaskSession }
 struct SessionCreateEnvelope: Codable {
-    let session: WorkItemSessionSummary
+    let session: TaskSession
 }
 
 // 后端错误响应：{ error: String, code: String? }
@@ -124,9 +124,22 @@ struct EntityErrorEnvelope: Codable {
 }
 
 // 执行/操作失败的结果（含错误码，供 UI 做针对性引导，如「未绑定仓库」给绑定入口）
-struct EntityLaunchError {
+struct EntityLaunchError: Error {
     let message: String
     let code: String?
+}
+
+struct EntitySessionLaunchResult {
+    let session: TaskSession?
+    let error: EntityLaunchError?
+
+    static func success(_ session: TaskSession) -> Self {
+        Self(session: session, error: nil)
+    }
+
+    static func failure(message: String, code: String? = nil) -> Self {
+        Self(session: nil, error: EntityLaunchError(message: message, code: code))
+    }
 }
 
 // 记忆（work_item 级记忆，跨执行上下文载体；对齐后端 memories 表 snake_case 字段）

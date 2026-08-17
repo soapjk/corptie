@@ -70,7 +70,9 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     router: services.router,
     memoryExtractor: services.memoryExtractor,
     assistantService: services.assistantService,
-    createSession: services.createSession
+    createSession: services.createSession,
+    launchSession: services.launchSession,
+    launchAgentSession: services.launchAgentSession
   });
   await new Promise((resolve) => setImmediate(resolve));
   return {
@@ -377,6 +379,204 @@ test("POST /agents 创建独立贡献者 Agent", async () => {
     // 缺 name → 400
     const bad = await callApi({ method: "POST", pathname: "/agents", body: {}, ...services });
     assert.equal(bad.statusCode, 400);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Agent API atomically persists and returns Skill assignments", async () => {
+  const services = await createServices();
+  try {
+    const skill = services.store.createRegistrySkill({
+      name: "investrace",
+      description: "Investment workflow",
+      sourceType: "local",
+      source: services.directory,
+      manifestName: "investrace"
+    });
+    const created = await callApi({
+      method: "POST",
+      pathname: "/agents",
+      body: { name: "Investor", provider: "codex-app-server", skillIds: [skill.skillId] },
+      ...services
+    });
+    assert.equal(created.statusCode, 201);
+    assert.deepEqual(created.body.agent.skillIds, [skill.skillId]);
+
+    const listed = await callApi({ method: "GET", pathname: "/agents", ...services });
+    assert.deepEqual(
+      listed.body.agents.find((agent) => agent.agentId === created.body.agent.agentId).skillIds,
+      [skill.skillId]
+    );
+
+    const invalid = await callApi({
+      method: "PATCH",
+      pathname: `/agents/${encodeURIComponent(created.body.agent.agentId)}`,
+      body: { name: "Should Not Persist", skillIds: ["skill:missing"] },
+      ...services
+    });
+    assert.equal(invalid.statusCode, 404);
+    assert.equal(services.store.getAgent(created.body.agent.agentId).name, "Investor");
+    assert.deepEqual(
+      services.store.listRegistrySkillIdsForAgent(created.body.agent.agentId),
+      [skill.skillId]
+    );
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /agents 为每个 Assistant 分配独立 Workspace", async () => {
+  const services = await createServices();
+  try {
+    const first = await callApi({
+      method: "POST",
+      pathname: "/agents",
+      body: { name: "助手一", role: "assistant", provider: "codex-app-server" },
+      ...services
+    });
+    const second = await callApi({
+      method: "POST",
+      pathname: "/agents",
+      body: { name: "助手二", role: "assistant", provider: "claude-sdk" },
+      ...services
+    });
+
+    assert.equal(first.statusCode, 201);
+    assert.equal(second.statusCode, 201);
+    assert.notEqual(first.body.agent.workDir, second.body.agent.workDir);
+
+    const conflict = await callApi({
+      method: "PATCH",
+      pathname: `/agents/${encodeURIComponent(second.body.agent.agentId)}`,
+      body: { workDir: first.body.agent.workDir },
+      ...services
+    });
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.body.code, "ASSISTANT_WORKSPACE_CONFLICT");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "目标" }, ...services
+    });
+    const workItem = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: { objectiveId: objective.body.id, title: "任务" },
+      ...services
+    });
+    const assistantAsWorker = await callApi({
+      ...services,
+      method: "POST",
+      pathname: "/sessions",
+      body: { workItemId: workItem.body.id, agentId: "assistant" },
+      launchSession: async () => { throw new Error("must not launch"); }
+    });
+    assert.equal(assistantAsWorker.statusCode, 400);
+    assert.equal(assistantAsWorker.body.code, "AGENT_NOT_INDEPENDENT_CONTRIBUTOR");
+
+    const contributor = await callApi({
+      method: "POST", pathname: "/agents", body: { name: "贡献者" }, ...services
+    });
+    const contributorAsAssistant = await callApi({
+      ...services,
+      method: "POST",
+      pathname: `/agents/${contributor.body.agent.agentId}/sessions`,
+      body: {},
+      launchAgentSession: async () => { throw new Error("must not launch"); }
+    });
+    assert.equal(contributorAsAssistant.statusCode, 400);
+    assert.equal(contributorAsAssistant.body.code, "AGENT_NOT_ASSISTANT");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Session 创建响应返回可直接增量写入客户端的完整分类与归属", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "目标" }, ...services
+    });
+    const workItem = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: { objectiveId: objective.body.id, title: "任务" },
+      ...services
+    });
+    const contributor = await callApi({
+      method: "POST", pathname: "/agents", body: { name: "贡献者" }, ...services
+    });
+    const worker = await callApi({
+      ...services,
+      method: "POST",
+      pathname: "/sessions",
+      body: {
+        workItemId: workItem.body.id,
+        agentId: contributor.body.agent.agentId,
+        title: "自定义 Worker",
+        avatarPath: "/tmp/worker-avatar.png"
+      },
+      launchSession: async ({ agent, title, avatarPath }) => {
+        assert.equal(title, "自定义 Worker");
+        assert.equal(avatarPath, "/tmp/worker-avatar.png");
+        services.store.upsertSession({
+          id: "worker-session",
+          title,
+          agent: agent.name,
+          agentId: agent.agentId,
+          provider: "codex-app-server",
+          status: "running",
+          avatarPath,
+          sessionKind: "worker"
+        });
+        return services.store.getSession("worker-session");
+      }
+    });
+    assert.equal(worker.statusCode, 201);
+    assert.equal(worker.body.session.sessionKind, "worker");
+    assert.equal(worker.body.session.workItemId, workItem.body.id);
+    assert.equal(worker.body.session.agentId, contributor.body.agent.agentId);
+    assert.equal(worker.body.session.title, "自定义 Worker");
+    assert.equal(worker.body.session.avatarPath, "/tmp/worker-avatar.png");
+
+    const assistant = await callApi({
+      ...services,
+      method: "POST",
+      pathname: "/agents/assistant/sessions",
+      body: { title: "自定义 Chat", avatarPath: "/tmp/chat-avatar.png" },
+      launchAgentSession: async ({ agent, title, avatarPath }) => {
+        assert.equal(title, "自定义 Chat");
+        assert.equal(avatarPath, "/tmp/chat-avatar.png");
+        services.store.upsertSession({
+          id: "assistant-session",
+          title,
+          agent: agent.name,
+          agentId: agent.agentId,
+          provider: "codex-app-server",
+          status: "running",
+          avatarPath,
+          sessionKind: "assistantChat"
+        });
+        return services.store.getSession("assistant-session");
+      }
+    });
+    assert.equal(assistant.statusCode, 201);
+    assert.equal(assistant.body.session.sessionKind, "assistantChat");
+    assert.equal(assistant.body.session.workItemId, null);
+    assert.equal(assistant.body.session.agentId, "assistant");
+    assert.equal(assistant.body.session.title, "自定义 Chat");
+    assert.equal(assistant.body.session.avatarPath, "/tmp/chat-avatar.png");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

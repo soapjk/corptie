@@ -18,14 +18,15 @@ struct AgentProviderBadge: View {
         }
     }
 
-    // provider 品牌色（设计 §17.3.2 新增；现有代码无此映射，用系统橙/绿近似）
-    // claude_code = 橙、codex = 绿；harness（平台助手）与 nil 不显示徽标
+    // Provider 目录可动态扩展，因此颜色由稳定 ID 派生，不枚举具体 Provider。
     private var providerColor: Color? {
-        switch provider {
-        case "claude_code": .orange
-        case "codex": .green
-        default: nil
+        guard let provider = provider?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !provider.isEmpty else { return nil }
+        let palette: [Color] = [.blue, .green, .orange, .purple, .pink, .teal, .indigo]
+        let seed = provider.lowercased().unicodeScalars.reduce(0) { partial, scalar in
+            (partial &* 31 &+ Int(scalar.value)) & 0x7fffffff
         }
+        return palette[seed % palette.count]
     }
 }
 
@@ -100,19 +101,19 @@ struct AgentOrbDemoView: View {
             HStack(spacing: 32) {
                 VStack(spacing: 8) {
                     AgentOrbView(agent: Self.assistant, badgeCount: 3)
-                    Text("助手（harness）· 角标 3")
+                    Text("助手 · 角标 3")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 VStack(spacing: 8) {
                     AgentOrbView(agent: Self.contributor, badgeCount: 0)
-                    Text("独立贡献者（codex）")
+                    Text("独立贡献者（Codex）")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 VStack(spacing: 8) {
                     AgentOrbView(agent: Self.claude, badgeCount: 1)
-                    Text("独立贡献者（claude_code）")
+                    Text("独立贡献者（Claude Code）")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -124,17 +125,17 @@ struct AgentOrbDemoView: View {
 
     static let assistant = Agent(
         agentId: "assistant", name: "Corptie", description: "", role: "assistant",
-        status: "available", provider: "harness", systemPrompt: "", capabilities: [],
+        status: "available", provider: nil, systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
     static let contributor = Agent(
         agentId: "backend-dev", name: "后端开发", description: "", role: "independentContributor",
-        status: "available", provider: "codex", systemPrompt: "", capabilities: [],
+        status: "available", provider: "codex-app-server", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
     static let claude = Agent(
         agentId: "frontend-dev", name: "前端开发", description: "", role: "independentContributor",
-        status: "busy", provider: "claude_code", systemPrompt: "", capabilities: [],
+        status: "busy", provider: "claude-sdk", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
 }

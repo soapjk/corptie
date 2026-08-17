@@ -51,6 +51,7 @@ import { ObjectiveApplicationService } from "./application/objectiveApplicationS
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
 import { SkillRegistryService } from "./application/skillRegistryService.mjs";
+import { skillDynamicTools, callSkillDynamicTool } from "./application/skillDynamicTools.mjs";
 import { CollaborationRouter } from "./application/collaborationRouter.mjs";
 import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
@@ -79,6 +80,7 @@ import {
   defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   normalizeSessionTitle,
+  resolveAvailableSessionTitle,
   suggestAvailableSessionTitle
 } from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
@@ -209,7 +211,11 @@ const skillRegistryService = new SkillRegistryService({
   }
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
-agentContextService.resolveAgentSkills = (agentId) => skillRegistryService.skillsForAgent(agentId);
+agentContextService.resolveAgentSkills = (agentId) => {
+  const agent = store.getAgent(agentId);
+  if (!agent?.provider || !agentProviderRegistry.supports(agent.provider, "agent.skills.lazyLoad")) return [];
+  return skillRegistryService.skillsForAgent(agentId);
+};
 const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   core: collaborationCore,
   runtime: {
@@ -235,6 +241,11 @@ const hostToolCatalog = new HostToolCatalog([
       });
       return callCollaborationDynamicTool(client, input.tool, input.arguments);
     }
+  },
+  {
+    id: "skills",
+    tools: skillDynamicTools,
+    execute: (input) => callSkillDynamicTool(skillRegistryService, input)
   }
 ]);
 let toolHostService = null;
@@ -384,8 +395,8 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  bindCreatedSession: async ({ providerId, session, input }) => {
-    ensureCollaborationAgentForSession(session, input.toolHost?.actorId);
+  bindCreatedSession: async ({ providerId, session, input, context }) => {
+    ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
     const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
       instructionSources: input.instructionSources,
       runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
@@ -400,9 +411,17 @@ const sessionApplicationService = new SessionApplicationService({
       session: sessionWithLogicalWorkspace(session, logical)
     } : null;
   },
+  persistRenamedSession: async ({ reference, title, providerSession }) => {
+    const stored = store.renameSession(reference.sessionId, title);
+    return stored ? {
+      ...providerSession,
+      ...stored,
+      external: providerSession?.external ?? stored.external
+    } : providerSession;
+  },
   removeSessionBinding: async ({ reference }) => {
-    collaborationCore.deactivateAgentForSession(reference.sessionId);
-    collaborationCore.deactivateAgentForSession(reference.providerSessionId);
+    collaborationCore.detachSession(reference.sessionId);
+    collaborationCore.detachSession(reference.providerSessionId);
     store.deleteLogicalSessionByLegacySessionId(reference.sessionId);
     store.deleteSession(reference.sessionId);
     emitEvent("SessionDeleted", {
@@ -447,6 +466,7 @@ const projectApplicationService = new ProjectApplicationService({
 const feishuGateway = new FeishuGatewayManager({
   store,
   listSessions: listGatewaySessions,
+  describeSession: describeGatewaySession,
   listWorkspaces: listGatewayWorkspaces,
   createSession: createGatewaySession,
   getSnapshot: getUnifiedSessionSnapshot,
@@ -1878,6 +1898,7 @@ function handleCodexAppServerNotification(message) {
     }
     const nextSession = { ...current, title, updatedAt: now() };
     upsertManagedCodexSession(nextSession);
+    store.renameSession(sessionId, title);
     emitEvent("SessionRenamed", { session: nextSession, source: { type: "codex-app-server" } });
     return;
   }
@@ -2600,7 +2621,22 @@ function listGatewaySessions(options = {}) {
   // Corptie owns list presentation order. A Provider may keep an active
   // session object in memory with the sort order it had at startup, so always
   // project the persisted order back onto the unified Session list.
-  return applyPersistedSessionOrder(sessions, (id) => store.getSession(id));
+  return applyPersistedSessionOrder(sessions, (id) => store.getSession(id)).map((session) => ({
+    ...session,
+    sessionKind: session.sessionKind ?? "legacy"
+  }));
+}
+
+function describeGatewaySession(session) {
+  const workItem = session.workItemId
+    ? store.getWorkItem(session.workItemId)
+    : store.getWorkItemBySessionId(session.id);
+  const agentId = session.agentId ?? workItem?.main_agent_id ?? null;
+  const agent = agentId ? store.getAgent(agentId) : null;
+  return {
+    agentName: agent?.name ?? agentId,
+    workItemTitle: workItem?.title ?? null
+  };
 }
 
 function listCodexProviderSessions(options = {}) {
@@ -2665,7 +2701,16 @@ async function createGatewaySession(input = {}) {
 async function createSessionThroughApplication(providerId, input = {}, context = {}) {
   const cwd = sessionWorkspacePath(input.cwd);
   await assertDirectory(cwd);
-  const title = sessionTitleForWorkspace(input.title, cwd);
+  const requestedTitle = typeof input.title === "string" ? input.title.trim() : "";
+  const baseTitle = sessionTitleForWorkspace(requestedTitle, cwd);
+  const title = requestedTitle
+    ? baseTitle
+    : resolveAvailableSessionTitle(
+        knownSessionsForTitleValidation(),
+        baseTitle,
+        null,
+        reservedSessionTitleKeys
+      );
   const prepared = {
     ...input,
     cwd,
@@ -2673,7 +2718,14 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   };
   const releaseTitle = reserveSessionTitle(title);
   try {
-    const session = await sessionApplicationService.createSession(providerId, prepared, context);
+    const createdSession = await sessionApplicationService.createSession(providerId, prepared, context);
+    const session = input.sessionKind
+      ? (store.setSessionKind(createdSession.id, input.sessionKind, context.actorId) ?? {
+          ...createdSession,
+          sessionKind: input.sessionKind,
+          agentId: context.actorId ?? null
+        })
+      : createdSession;
     emitEvent("SessionStarted", {
       session,
       provider: providerId,
@@ -2734,7 +2786,12 @@ function resolveAgentProviderId(provider) {
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
-async function launchWorkItemSession({ agent, workItem }) {
+async function launchWorkItemSession({ agent, workItem, title, avatarPath }) {
+  if (agent.role !== "independentContributor") {
+    const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
+    error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
+    throw error;
+  }
   const providerId = entityAgentProviderId(agent.provider);
   if (!providerId) {
     const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
@@ -2756,7 +2813,14 @@ async function launchWorkItemSession({ agent, workItem }) {
 
   const session = await createSessionThroughApplication(
     providerId,
-    { cwd, title: workItem.title, prompt, agent: agent.name },
+    {
+      cwd,
+      title: title || workItem.title,
+      prompt,
+      agent: agent.name,
+      avatarPath,
+      sessionKind: "worker"
+    },
     { source: "entity", actorId: agent.agentId }
   );
   return session;
@@ -2764,10 +2828,15 @@ async function launchWorkItemSession({ agent, workItem }) {
 
 // 实体层「自由对话」入口：仅凭 Agent（role=assistant）开聊，不绑定具体工作项。
 // 与 launchWorkItemSession 复用同一 createSessionThroughApplication。
-// cwd 不再由客户端提供，而是取自该 Agent 的 work_dir（assistant 下所有会话共用此目录）；
+// cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
 // 目录缺失时在此幂等创建。独立贡献者的会话应走 WorkItem 绑定路径（launchWorkItemSession），
 // 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
-async function launchAgentSession({ agent, title, prompt }) {
+async function launchAgentSession({ agent, title, prompt, avatarPath }) {
+  if (agent.role !== "assistant") {
+    const error = new Error("只有 Assistant 才能创建 Assistant Chat Session。");
+    error.code = "AGENT_NOT_ASSISTANT";
+    throw error;
+  }
   const providerId = entityAgentProviderId(agent.provider);
   if (!providerId) {
     const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
@@ -2777,12 +2846,12 @@ async function launchAgentSession({ agent, title, prompt }) {
   const cwd = await ensureAgentWorkDir(agent, { environmentName });
   const session = await createSessionThroughApplication(
     providerId,
-    { cwd, title, prompt, agent: agent.name },
+    { cwd, title, prompt, agent: agent.name, avatarPath, sessionKind: "assistantChat" },
     { source: "agent", actorId: agent.agentId }
   );
   // 把自由会话归属到该 Agent，使 GET /agents/:id/sessions 与前端按 Agent 分组能定位到它。
   collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
-  return session;
+  return store.getSession(session.id) ?? session;
 }
 
 // 实体 WorkItem 状态由「执行动作」自动驱动，不由用户手改：
@@ -2885,6 +2954,7 @@ async function createCodexProviderSession(input = {}) {
       progress: 0.5,
       summary: "Initializing Codex session…",
       activityStatus: "Starting Codex",
+      avatarPath: input.avatarPath ?? null,
       capabilities: {
         ...codexAppServerSessionCapabilities(),
         canInterrupt: true
@@ -2929,7 +2999,7 @@ async function renameCodexProviderSession(reference, title) {
   await codexRuntime.setThreadName(reference.providerSessionId, title);
   const session = { ...previous, title, updatedAt: new Date().toISOString() };
   upsertManagedCodexSession(session);
-  return store.renameSession(reference.sessionId, title) ?? session;
+  return session;
 }
 
 function updateCodexProviderAvatar(reference, avatarPath) {
@@ -4565,7 +4635,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   for (const binding of source.sessions) {
     if (!binding.sessionId) continue;
     sessionPresentationCache.delete(binding.sessionId);
-    collaborationCore.deactivateAgentForSession(binding.sessionId);
+    collaborationCore.detachSession(binding.sessionId);
     store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
     store.deleteSession(binding.sessionId);
     deletedSessionIds.push(binding.sessionId);
@@ -4673,7 +4743,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
     for (const binding of source.sessions) {
       if (!binding.sessionId) continue;
       sessionPresentationCache.delete(binding.sessionId);
-      collaborationCore.deactivateAgentForSession(binding.sessionId);
+      collaborationCore.detachSession(binding.sessionId);
       store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
       store.deleteSession(binding.sessionId);
       deletedSessionIds.push(binding.sessionId);
@@ -4746,7 +4816,9 @@ function route(request, response) {
           promotionStatus: m.promotion_status
         }))
       };
-    }
+    },
+    onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
+    onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId)
   })) {
     return;
   }
@@ -5291,7 +5363,10 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/providers") {
-    sendJson(response, 200, { providers: agentProviderRegistry.descriptors() });
+    sendJson(response, 200, {
+      defaultProviderId: agentProviderRegistry.defaultProviderId,
+      providers: agentProviderRegistry.descriptors()
+    });
     return;
   }
 
@@ -5997,6 +6072,10 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+const legacySkillRepair = await skillRegistryService.repairLegacyRegistrations();
+if (legacySkillRepair.repaired.length > 0) {
+  console.log(`[skills] repaired ${legacySkillRepair.repaired.length} legacy Skill registration(s)`);
+}
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
@@ -6006,9 +6085,9 @@ codexResetForecastMonitor = new CodexResetForecastMonitor({
     : null
 });
 codexResetForecastMonitor.start();
-const deactivatedOrphanedAgents = collaborationCore.deactivateAgentsWithMissingSessions();
-if (deactivatedOrphanedAgents.length > 0) {
-  console.log(`[collaboration] deactivated ${deactivatedOrphanedAgents.length} Agent(s) with deleted Sessions`);
+const detachedOrphanedAgents = collaborationCore.detachMissingSessionBindings();
+if (detachedOrphanedAgents.length > 0) {
+  console.log(`[collaboration] detached deleted Session bindings from ${detachedOrphanedAgents.length} Agent(s)`);
 }
 activateStoredBackendLogging();
 console.log(`[store] SQLite ready at ${store.dbPath}`);

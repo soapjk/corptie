@@ -28,6 +28,7 @@ export class FeishuGatewayManager {
   constructor(options) {
     this.store = options.store;
     this.listSessions = options.listSessions;
+    this.describeSession = options.describeSession ?? (() => ({}));
     this.listWorkspaces = options.listWorkspaces ?? (() => []);
     this.createSession = options.createSession;
     this.getSnapshot = options.getSnapshot;
@@ -770,7 +771,7 @@ export class FeishuGatewayManager {
   }
 
   async sessionListText(botId) {
-    const sessions = await this.listSessions();
+    const sessions = await this.presentedSessions();
     const current = this.store.getFeishuAssignmentForBot(botId);
     const assignments = new Map(this.store.listFeishuAssignments().map((item) => [item.sessionId, item]));
     if (sessions.length === 0) {
@@ -780,14 +781,15 @@ export class FeishuGatewayManager {
       const owner = assignments.get(session.id);
       const marker = current?.sessionId === session.id ? "●" : owner ? "×" : "○";
       const occupied = owner && owner.botId !== botId ? " · 已被其他机器人占用" : "";
-      const cwd = session.external?.cwd ? ` · ${session.external.cwd}` : "";
-      return `${index + 1}. ${marker} ${session.title} · ${displayStatus(session.status)}${cwd}${occupied}`;
+      const agent = ` · Agent：${session.agentName || "未绑定"}`;
+      const workItem = session.workItemTitle ? ` · WorkItem：${session.workItemTitle}` : "";
+      return `${index + 1}. ${marker} ${session.title} · ${displayStatus(session.status)}${agent}${workItem}${occupied}`;
     });
     return `会话列表：\n${lines.join("\n")}\n\n发送 /use 序号 切换，例如 /use 2`;
   }
 
   async buildSessionListCard(botId, page = 0, notice = null) {
-    const sessions = await this.listSessions();
+    const sessions = await this.presentedSessions();
     const assignments = this.store.listFeishuAssignments();
     const maxPage = Math.max(0, Math.ceil(sessions.length / sessionCardPageSize) - 1);
     const safePage = Math.min(nonNegativeInteger(page), maxPage);
@@ -800,6 +802,14 @@ export class FeishuGatewayManager {
       pageSize: sessionCardPageSize,
       notice
     });
+  }
+
+  async presentedSessions() {
+    const sessions = await this.listSessions();
+    return Promise.all(sessions.map(async (session) => ({
+      ...session,
+      ...(await this.describeSession(session) ?? {})
+    })));
   }
 
   async sendSessionListCard(botId, chatId, page = 0, notice = null) {
@@ -1268,7 +1278,6 @@ export function buildSessionListCard({
     const owner = ownerBySession.get(session.id);
     const isCurrent = current?.sessionId === session.id;
     const isOccupied = Boolean(owner && owner.botId !== botId);
-    const cwd = compactPath(session.external?.cwd);
     const state = isCurrent ? "已连接" : isOccupied ? "其他机器人已占用" : displayStatus(session.status);
     const buttonText = isCurrent ? "已连接" : isOccupied ? "不可用" : "连接";
     elements.push({
@@ -1286,9 +1295,19 @@ export function buildSessionListCard({
             { tag: "markdown", content: `**${escapeCardMarkdown(session.title || "未命名会话")}**` },
             {
               tag: "markdown",
-              content: `<font color='grey'>${escapeCardMarkdown([state, cwd].filter(Boolean).join(" · "))}</font>`,
+              content: `<font color='grey'>${escapeCardMarkdown(state)}</font>`,
               text_size: "notation"
-            }
+            },
+            {
+              tag: "markdown",
+              content: `<font color='grey'>Agent：${escapeCardMarkdown(session.agentName || "未绑定")}</font>`,
+              text_size: "notation"
+            },
+            ...(session.workItemTitle ? [{
+              tag: "markdown",
+              content: `<font color='grey'>WorkItem：${escapeCardMarkdown(session.workItemTitle)}</font>`,
+              text_size: "notation"
+            }] : [])
           ]
         },
         {

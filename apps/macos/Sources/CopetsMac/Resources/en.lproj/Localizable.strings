@@ -284,7 +284,7 @@
 "\u52A9\u624B\uFF08Assistant\uFF09" = "Assistant";
 "\u9AD8\u7EA7\u9009\u9879" = "Advanced Options";
 "\u5982\uFF1Abackend, api, database" = "e.g. backend, api, database";
-"\u7559\u7A7A\u5219\u81EA\u52A8\u751F\u6210\uFF08\u52A9\u624B\u4E3A\u5171\u4EAB\u5DE5\u4F5C\u533A\uFF0C\u8D21\u732E\u8005\u4E3A\u6301\u4E45\u5316\u76EE\u5F55\uFF09" = "Leave blank to generate automatically (shared workspace for Assistants, persistent directory for contributors)";
+"\u7559\u7A7A\u5219\u81EA\u52A8\u751F\u6210\uFF08\u6BCF\u4E2A\u52A9\u624B\u72EC\u7ACB\uFF0C\u8D21\u732E\u8005\u4E3A\u6301\u4E45\u5316\u76EE\u5F55\uFF09" = "Leave blank to generate automatically (isolated per Assistant, persistent directory for contributors)";
 "\u53D6\u6D88" = "Cancel";
 "\u521B\u5EFA" = "Create";
 "\u4ECE\u5DF2\u6709 Agent \u7EE7\u627F\uFF08\u53EF\u9009\uFF09" = "Inherit from an existing Agent (optional)";
@@ -439,3 +439,14 @@
 "Delete “%@”? All of its WorkItems will be deleted. This action cannot be undone." = "Delete “%@”? All of its WorkItems will be deleted. This action cannot be undone.";
 "Ask an Agent to write “%@”" = "Ask an Agent to write “%@”";
 "You are manually overriding the WorkItem status (%@), bypassing execution-managed status. Continue?" = "You are manually overriding the WorkItem status (%@), bypassing execution-managed status. Continue?";
+"会话名称（可选）" = "Session name (optional)";
+"会话头像（可选）" = "Session avatar (optional)";
+"未选择时使用默认头像" = "Uses the default avatar when not selected";
+"选择图片" = "Choose Image";
+"清除" = "Clear";
+"可用 Skill" = "Available Skills";
+"选中的 Skill 会加入该 Agent 的查询范围，并在需要时按需加载。" = "Selected Skills are searchable by this Agent and load their full instructions only when needed.";
+"当前 Provider 不支持会话内 Skill 查询和懒加载。" = "The current Provider does not support in-session Skill search and lazy loading.";
+"选择具体 Skill" = "Choose a Specific Skill";
+"本地" = "Local";
+"保存失败。" = "Save failed.";

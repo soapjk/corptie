@@ -18,8 +18,8 @@ struct SessionsView: View {
     @StateObject private var layoutState = PanelLayoutState()
     @State private var composerDraftRepository = ComposerDraftRepository()
     @EnvironmentObject private var router: AppTabRouter
-    /// 「+」新建会话：选择 Assistant 开聊（会话只能由 Assistant 创建）。
-    @State private var showNewChatPicker = false
+    /// 「+」新建会话：明确选择 Assistant Chat 或 Worker Session。
+    @State private var showNewSessionCreation = false
     /// 记录用户最后选中的 Session，跨窗口/重启恢复，避免再次打开时无默认选中。
     private static let lastSelectedSessionKey = "sessions.lastSelectedSessionId"
 
@@ -48,6 +48,7 @@ struct SessionsView: View {
             backendClient.suppressBackgroundPolling = true
             attemptPendingSelection(backendClient.sessions)
             restoreLastSelectedSession(backendClient.sessions)
+            Task { await entityClient.refreshAgents() }
         }
         .onDisappear {
             backendClient.suppressBackgroundPolling = false
@@ -55,6 +56,9 @@ struct SessionsView: View {
         .onReceive(backendClient.sessionsDidChange) { sessions in
             attemptPendingSelection(sessions)
             restoreLastSelectedSession(sessions)
+        }
+        .onChange(of: router.pendingSessionId) { _, _ in
+            attemptPendingSelection(backendClient.sessions)
         }
         .onChange(of: backendClient.selectedSession?.id) { _, newValue in
             if let newValue {
@@ -65,8 +69,7 @@ struct SessionsView: View {
 
     // 控制台「打开对话」→ 切到本 Tab 后，选中目标会话（sessions 加载完成后）。
     private func attemptPendingSelection(_ sessions: [TaskSession]) {
-        guard let pendingId = router.pendingSessionId else { return }
-        guard let session = sessions.first(where: { $0.id == pendingId }) else { return }
+        guard let session = sessionMatchingPendingSelection(router.pendingSessionId, in: sessions) else { return }
         backendClient.select(session: session)
         router.pendingSessionId = nil
     }
@@ -121,32 +124,14 @@ struct SessionsView: View {
             }
             .listStyle(.sidebar)
         }
-        .sheet(isPresented: $showNewChatPicker) {
-            NewChatPickerSheet { agent in
-                showNewChatPicker = false
-                startNewSession(with: agent)
-            }
-        }
-    }
-
-    @State private var startingAgentId: String?
-
-    // 直接为选中的 Assistant 开新会话（不询问首条消息），成功后跳转并选中新会话。
-    private func startNewSession(with agent: Agent) {
-        guard startingAgentId == nil else { return }
-        startingAgentId = agent.agentId
-        Task {
-            let sessionId = await entityClient.startAgentSession(agentId: agent.agentId)
-            startingAgentId = nil
-            if let sessionId {
-                router.openSession(sessionId)
-            }
+        .sheet(isPresented: $showNewSessionCreation) {
+            NewSessionCreationSheet()
         }
     }
 
     private var newChatButton: some View {
         Button {
-            showNewChatPicker = true
+            showNewSessionCreation = true
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus.circle.fill")
@@ -163,7 +148,7 @@ struct SessionsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(L10n("新建会话（选择一个 Assistant）"))
+        .help(L10n("新建 Assistant Chat 或 Worker Session"))
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
@@ -201,51 +186,11 @@ struct SessionsView: View {
         .padding(.top, 4)
     }
 
-    // MARK: - 会话分组（仅 Assistant 按 Agent 聚合）
+    // MARK: - 会话分组
 
-    /// 会话分组：仅 Assistant 类 Agent 各自成组并置顶；其余（独立贡献者 + 未绑定）统一归入「Work Session」大类。
+    /// 分组只依据后端的 provider-neutral sessionKind；Agent 缓存仅用于显示名称。
     private var groupedSessions: [SessionGroup] {
-        let rows = sessionListStore.rows
-        let agentsByID = Dictionary(uniqueKeysWithValues: entityClient.agents.map { ($0.agentId, $0) })
-
-        // 助手按 Agent 归组；其余（独立贡献者 + 未绑定）统一归入 Work Session。
-        var assistantByKey: [String: [SessionRowModel]] = [:]
-        var workRows: [SessionRowModel] = []
-        for row in rows {
-            if let agentId = row.session.agentId,
-               let agent = agentsByID[agentId],
-               agent.isAssistant {
-                assistantByKey[agent.agentId, default: []].append(row)
-            } else {
-                workRows.append(row)
-            }
-        }
-
-        var groups: [SessionGroup] = []
-
-        // 助手各自成组并置顶（平台预置单例，若有多个助手也全部靠前）。
-        let assistantAgents = entityClient.agents
-            .filter { $0.isAssistant && assistantByKey[$0.agentId] != nil }
-        for agent in assistantAgents {
-            groups.append(SessionGroup(
-                key: agent.agentId,
-                title: agent.name,
-                isAssistant: true,
-                rows: assistantByKey[agent.agentId] ?? []
-            ))
-        }
-
-        // 独立贡献者 + 未分配会话，统一归入「Work Session」大类。
-        if !workRows.isEmpty {
-            groups.append(SessionGroup(
-                key: "__work__",
-                title: "Work Session",
-                isAssistant: false,
-                rows: workRows
-            ))
-        }
-
-        return groups
+        makeSessionGroups(rows: sessionListStore.rows, agents: entityClient.agents)
     }
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
@@ -278,8 +223,12 @@ struct SessionsView: View {
 
 }
 
-// 会话分组：仅 Assistant 各自成组置顶，其余（独立贡献者 + 未分配）统一归入「Work Session」。
-private struct SessionGroup: Identifiable {
+func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [TaskSession]) -> TaskSession? {
+    guard let pendingSessionId else { return nil }
+    return sessions.first { $0.id == pendingSessionId }
+}
+
+struct SessionGroup: Identifiable {
     let key: String
     let title: String
     let isAssistant: Bool
@@ -288,10 +237,60 @@ private struct SessionGroup: Identifiable {
     var id: String { key }
 }
 
+@MainActor
+func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGroup] {
+    let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
+    var assistantOrder: [String] = []
+    var assistantRows: [String: [SessionRowModel]] = [:]
+    var workerRows: [SessionRowModel] = []
+    var legacyRows: [SessionRowModel] = []
+
+    for row in rows {
+        switch row.session.resolvedSessionKind {
+        case .assistantChat:
+            let key = row.session.agentId ?? "__assistant_unbound__"
+            if assistantRows[key] == nil { assistantOrder.append(key) }
+            assistantRows[key, default: []].append(row)
+        case .worker:
+            workerRows.append(row)
+        case .legacy:
+            legacyRows.append(row)
+        }
+    }
+
+    var groups = assistantOrder.map { key in
+        SessionGroup(
+            key: "assistant:\(key)",
+            title: agentsByID[key]?.name ?? L10n("Assistant Session"),
+            isAssistant: true,
+            rows: assistantRows[key] ?? []
+        )
+    }
+    if !workerRows.isEmpty {
+        groups.append(SessionGroup(
+            key: "__worker__",
+            title: L10n("Worker Session"),
+            isAssistant: false,
+            rows: workerRows
+        ))
+    }
+    if !legacyRows.isEmpty {
+        groups.append(SessionGroup(
+            key: "__legacy__",
+            title: L10n("Unclassified Session"),
+            isAssistant: false,
+            rows: legacyRows
+        ))
+    }
+    return groups
+}
+
 // 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。
 //   固定在右侧，常驻展示，无收起/展开按钮；竖向排列详情字段。
 //   Rudder 契约：rail 固定 280px，sticky 顶部，仅 <48rem 移动端才隐藏。
 struct SessionDetailPanel: View {
+    @ObservedObject private var entityClient = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
     let session: TaskSession
 
     /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
@@ -302,12 +301,17 @@ struct SessionDetailPanel: View {
             if let workItemId = session.workItemId, !workItemId.isEmpty {
                 sessionCard
                     .frame(height: 330)
-                WorkItemDetailCard(workItemId: workItemId, agentName: session.agent)
+                WorkItemDetailCard(workItemId: workItemId, agentName: agentDisplayName)
             } else {
                 sessionCard
             }
         }
         .frame(width: Self.railWidth)
+        .task {
+            if backendClient.agentProviders.isEmpty {
+                await backendClient.loadProviders()
+            }
+        }
     }
 
     private var sessionCard: some View {
@@ -421,7 +425,7 @@ struct SessionDetailPanel: View {
     }
 
     private var primaryFields: [(String, String)] {
-        var fields = [("Agent", session.agent)]
+        var fields = [("Agent", agentDisplayName)]
         if let model = session.external?.currentModel {
             fields.append(("模型", model))
         }
@@ -429,9 +433,13 @@ struct SessionDetailPanel: View {
             fields.append(("推理强度", reasoning.capitalized))
         }
         if let provider = session.external?.provider {
-            fields.append(("Provider", friendlyProvider(provider)))
+            fields.append(("Provider", backendClient.providerDisplayName(for: provider) ?? provider))
         }
         return fields
+    }
+
+    private var agentDisplayName: String {
+        sessionAgentDisplayName(session: session, agents: entityClient.agents)
     }
 
     private var friendlyUpdatedAt: String {
@@ -455,12 +463,14 @@ struct SessionDetailPanel: View {
         return "…/" + components.suffix(3).joined(separator: "/")
     }
 
-    private func friendlyProvider(_ provider: String) -> String {
-        provider
-            .replacingOccurrences(of: "-app-server", with: "")
-            .replacingOccurrences(of: "-", with: " ")
-            .capitalized
+}
+
+func sessionAgentDisplayName(session: TaskSession, agents: [Agent]) -> String {
+    guard let agentId = session.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !agentId.isEmpty else {
+        return "未挂载"
     }
+    return agents.first(where: { $0.agentId == agentId })?.name ?? agentId
 }
 
 private struct WorkItemDetailCard: View {

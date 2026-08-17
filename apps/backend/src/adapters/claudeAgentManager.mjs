@@ -106,7 +106,8 @@ export class ClaudeAgentManager {
       this.persistSession(session);
       return this.toSessionSummary(session);
     }
-    return this.store?.renameSession(id, nextTitle) ?? null;
+    const stored = this.store?.getSession(id) ?? null;
+    return stored ? { ...stored, title: nextTitle, updatedAt: new Date().toISOString() } : null;
   }
 
   updateAvatar(id, avatarPath = null) {

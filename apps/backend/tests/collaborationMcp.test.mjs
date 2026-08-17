@@ -22,6 +22,8 @@ const expectedTools = [
   "corptie_switch_workspace",
   "corptie.collaboration.request",
   "corptie.memory.search",
+  "corptie_skill_search",
+  "corptie_skill_load",
   "corptie.collaboration.accept",
   "corptie.collaboration.reject",
   "corptie.collaboration.ask",

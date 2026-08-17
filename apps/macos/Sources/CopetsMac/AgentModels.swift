@@ -42,12 +42,31 @@ struct Skill: Identifiable, Codable, Hashable {
     var description: String
     var sourceType: String
     var source: String
+    var sourceSubpath: String?
     var cachePath: String?
+    var manifestName: String?
+    var manifestDescription: String?
+    var contentHash: String?
     var installedAt: String
     var updatedAt: String
 
     var id: String { skillId }
     var isGit: Bool { sourceType == "git" }
+}
+
+struct SkillCandidate: Codable, Hashable, Identifiable {
+    let relativePath: String
+    let manifestName: String
+    let manifestDescription: String
+    let contentHash: String
+
+    var id: String { relativePath.isEmpty ? manifestName : relativePath }
+}
+
+struct SkillDiscoveryEnvelope: Codable {
+    let sourceType: String
+    let source: String
+    let candidates: [SkillCandidate]
 }
 
 // 后端响应 envelope：GET /skills → { skills: [...] }

@@ -130,6 +130,8 @@ enum SessionCollectionDiffer {
             fields.insert(.ordering)
         }
         if previous.external != next.external
+            || previous.agentId != next.agentId
+            || previous.sessionKind != next.sessionKind
             || previous.objectiveId != next.objectiveId
             || previous.workItemId != next.workItemId {
             fields.insert(.metadata)

@@ -221,13 +221,6 @@ enum ChatTimelineRowRouting {
         switch entry.kind {
         case .message(let item):
             return requiresSwiftUIHosting(item) ? .swiftUI : .native
-        case .userTurn:
-            // A user turn is one composed card in the established UI. Keep the
-            // complete ThreadItemView so the localized footer, disclosure
-            // interaction, animation, and height measurement remain identical
-            // to the pre-AppKit renderer. Plain user messages still use the
-            // native path through `.message` above.
-            return .swiftUI
         case .process:
             return .swiftUI
         }
@@ -344,30 +337,61 @@ struct AppKitChatTimelineRow: Identifiable {
     }
 }
 
+/// Shared width contract for both the SwiftUI and AppKit chat renderers.
+/// A bubble owns an explicit preferred width; its outer row owns alignment.
 @MainActor
-enum NativeTimelineCardLayout {
+enum ChatBubbleWidthPolicy {
     static let maximumWidth: CGFloat = 480
     static let minimumWidth: CGFloat = 88
     static let horizontalPadding: CGFloat = 20
+    static let collapsedProcessWidth: CGFloat = 180
+
+    static func preferredWidth(
+        text: String,
+        style: AppKitChatTimelineRow.NativeStyle,
+        title: String,
+        metadata: String,
+        processWidth: CGFloat = 0,
+        availableWidth: CGFloat = maximumWidth
+    ) -> CGFloat {
+        let available = max(minimumWidth, min(maximumWidth, availableWidth))
+        let bodyWidth: CGFloat
+        if NativeMarkdownCompatibility.requiresSwiftUIRenderer(text) {
+            // Rich blocks (images, tables, fenced code, HTML) need the full
+            // content lane; their natural width is not represented by text
+            // glyph bounds alone.
+            bodyWidth = maximumWidth - horizontalPadding
+        } else {
+            let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style)
+            bodyWidth = ceil(attributed.boundingRect(
+                with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            ).width)
+        }
+        let titleWidth = ceil((title as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .bold)
+        ]).width)
+        let metadataWidth = ceil((metadata as NSString).size(withAttributes: [
+            .font: NSFont.systemFont(ofSize: 10, weight: .semibold)
+        ]).width)
+        let headerWidth = titleWidth + metadataWidth + 12
+        return min(
+            available,
+            max(minimumWidth, max(bodyWidth, headerWidth, processWidth) + horizontalPadding)
+        )
+    }
 
     static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat) -> CGFloat {
         let available = max(minimumWidth, availableWidth - 4)
         guard row.nativeStyle != .process else { return available }
-
-        let attributed = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
-        let bodyWidth = ceil(attributed.boundingRect(
-            with: NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading]
-        ).width)
-        let titleWidth = ceil((row.title as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 11, weight: .bold)
-        ]).width)
-        let metadataWidth = ceil((row.metadata as NSString).size(withAttributes: [
-            .font: NSFont.systemFont(ofSize: 10, weight: .semibold)
-        ]).width)
-        let headerWidth = titleWidth + metadataWidth + 12
-        let processWidth: CGFloat = row.processCount == nil ? 0 : 180
-        return min(available, maximumWidth, max(minimumWidth, max(bodyWidth, headerWidth, processWidth) + horizontalPadding))
+        return preferredWidth(
+            text: row.nativeText,
+            style: row.nativeStyle,
+            title: row.title,
+            metadata: row.metadata,
+            processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
+            availableWidth: available
+        )
     }
 }
 
@@ -513,7 +537,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
             let columnWidth = max(120, tableView.tableColumns.first?.width ?? tableView.bounds.width)
             let availableWidth = usesNativeText && item.content == nil
-                ? max(120, NativeTimelineCardLayout.cardWidth(for: item, availableWidth: columnWidth) - NativeTimelineCardLayout.horizontalPadding)
+                ? max(120, ChatBubbleWidthPolicy.cardWidth(for: item, availableWidth: columnWidth) - ChatBubbleWidthPolicy.horizontalPadding)
                 : columnWidth
             let widthBucket = Int(availableWidth.rounded(.down))
             let key = HeightCacheKey(id: item.id, revision: item.contentRevision, widthBucket: widthBucket)
@@ -843,7 +867,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         [titleLabel, metadataLabel, label, disclosureButton, copyButton, processSeparator, processButton].forEach(cardView.addSubview)
         processSeparatorHeight = processSeparator.heightAnchor.constraint(equalToConstant: 0)
         processButtonHeight = processButton.heightAnchor.constraint(equalToConstant: 0)
-        cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: NativeTimelineCardLayout.maximumWidth)
+        cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: ChatBubbleWidthPolicy.maximumWidth)
         cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
         NSLayoutConstraint.activate([
@@ -902,7 +926,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         expandableTurnId = row.expandableTurnId
         self.onToggleExpansion = onToggleExpansion
         copiedText = row.copyText
-        cardWidthConstraint.constant = NativeTimelineCardLayout.cardWidth(for: row, availableWidth: availableWidth)
+        cardWidthConstraint.constant = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: availableWidth)
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil

@@ -26,6 +26,18 @@ export function handleEntityHttpRequest({
   skillRegistryService
 }) {
   const path = url.pathname;
+  const presentAgent = (agent) => agent ? {
+    ...agent,
+    skillIds: objectiveService.store.listRegistrySkillIdsForAgent(agent.agentId)
+  } : null;
+  const normalizeSkillIds = (value) => [...new Set((Array.isArray(value) ? value : [])
+    .map((id) => String(id).trim()).filter(Boolean))];
+  const validateSkillIds = (value) => {
+    const skillIds = normalizeSkillIds(value);
+    const missing = skillIds.filter((id) => !objectiveService.store.getRegistrySkill(id));
+    if (missing.length > 0) throw apiError("SKILL_NOT_FOUND", `Skill not found: ${missing.join(", ")}`, 404);
+    return skillIds;
+  };
 
   const isEntityApi =
     path === "/objectives" || path.startsWith("/objectives/") ||
@@ -89,24 +101,23 @@ export function handleEntityHttpRequest({
 
       // ---- Agent ----
       if (request.method === "GET" && path === "/agents") {
-        return sendJson(response, 200, { agents: objectiveService.store.listAgents() });
+        return sendJson(response, 200, { agents: objectiveService.store.listAgents().map(presentAgent) });
       }
       if (request.method === "POST" && path === "/agents") {
         const input = await readJson(request);
         const name = String(input.name ?? "").trim();
         if (!name) throw apiError("INVALID_INPUT", "name is required.", 400);
-        const agent = objectiveService.store.createAgent({
+        const skillIds = validateSkillIds(input.skillIds);
+        const agent = objectiveService.store.createAgentWithRegistrySkills({
           name,
           description: input.description ?? "",
           role: input.role === "assistant" ? "assistant" : "independentContributor",
           provider: input.provider ?? null,
           systemPrompt: input.systemPrompt ?? "",
-          capabilities: Array.isArray(input.capabilities) ? input.capabilities : []
-        });
-        if (Array.isArray(input.skillIds)) {
-          objectiveService.store.setAgentRegistrySkills(agent.agentId, input.skillIds);
-        }
-        return sendJson(response, 201, { agent });
+          capabilities: Array.isArray(input.capabilities) ? input.capabilities : [],
+          workDir: input.workDir
+        }, skillIds);
+        return sendJson(response, 201, { agent: presentAgent(agent) });
       }
 
       const agentSessionsMatch = path.match(/^\/agents\/([^/]+)\/sessions$/);
@@ -116,7 +127,8 @@ export function handleEntityHttpRequest({
           return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByAgent(id) });
         }
         // 自由对话：仅凭 Assistant Agent 开聊（可选标题/首条提示），不绑定工作项。
-        // 工作目录由该 Agent 的 work_dir 托管（assistant 下所有会话共用），客户端无需也不应传 cwd。
+        // 工作目录由该 Agent 独占的 work_dir 托管（仅同一 Assistant 的会话共享），
+        // 客户端无需也不应传 cwd。
         if (request.method === "POST") {
           const agent = objectiveService.store.getAgent(id);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
@@ -130,7 +142,10 @@ export function handleEntityHttpRequest({
           const session = await launchAgentSession({
             agent,
             title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
+            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined,
+            avatarPath: typeof input.avatarPath === "string" && input.avatarPath.trim()
+              ? input.avatarPath.trim()
+              : undefined
           });
           return sendJson(response, 201, { session });
         }
@@ -143,11 +158,12 @@ export function handleEntityHttpRequest({
           const agent = objectiveService.store.getAgent(id);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
           return sendJson(response, 200, {
-            agent: { ...agent, skillIds: objectiveService.store.listRegistrySkillIdsForAgent(id) }
+            agent: presentAgent(agent)
           });
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
+          const skillIds = Array.isArray(input.skillIds) ? validateSkillIds(input.skillIds) : null;
           // 头像：avatarPath 传源文件路径 → 复制到托管目录并落库；传 null/空串 → 清除。
           // 未传 avatarPath 键则不动头像。
           if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
@@ -162,12 +178,8 @@ export function handleEntityHttpRequest({
               input.avatarPath = null;
             }
           }
-          const agent = objectiveService.store.updateAgent(id, input);
-          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
-          if (Array.isArray(input.skillIds)) {
-            objectiveService.store.setAgentRegistrySkills(id, input.skillIds);
-          }
-          return sendJson(response, 200, { agent });
+          const agent = objectiveService.store.updateAgentWithRegistrySkills(id, input, skillIds);
+          return sendJson(response, 200, { agent: presentAgent(objectiveService.store.getAgent(id) ?? agent) });
         }
         if (request.method === "DELETE") {
           objectiveService.store.deleteAgent(id);
@@ -183,6 +195,19 @@ export function handleEntityHttpRequest({
         if (request.method === "GET" && path === "/skills") {
           return sendJson(response, 200, { skills: skillRegistryService.list() });
         }
+        if (request.method === "POST" && path === "/skills/discover") {
+          const input = await readJson(request);
+          try {
+            return sendJson(response, 200, await skillRegistryService.discover({
+              sourceType: input.sourceType,
+              source: input.source
+            }));
+          } catch (error) {
+            const wrapped = apiError(error?.code ?? "SKILL_DISCOVERY_FAILED", error?.message ?? "Skill 发现失败。", 400);
+            wrapped.candidates = error?.candidates;
+            throw wrapped;
+          }
+        }
         if (request.method === "POST" && path === "/skills") {
           const input = await readJson(request);
           const sourceType = input.sourceType === "git" ? "git" : "local";
@@ -193,7 +218,8 @@ export function handleEntityHttpRequest({
               name: input.name ?? "",
               description: input.description ?? "",
               sourceType,
-              source
+              source,
+              sourceSubpath: input.sourceSubpath ?? ""
             });
             return sendJson(response, 201, { skill });
           } catch (error) {
@@ -208,6 +234,15 @@ export function handleEntityHttpRequest({
             const skill = skillRegistryService.get(id);
             if (!skill) throw apiError("SKILL_NOT_FOUND", "Skill not found.", 404);
             return sendJson(response, 200, { skill });
+          }
+          if (request.method === "PATCH") {
+            const input = await readJson(request);
+            try {
+              const skill = await skillRegistryService.update(id, input);
+              return sendJson(response, 200, { skill });
+            } catch (error) {
+              throw apiError(error?.code ?? "SKILL_UPDATE_FAILED", error?.message ?? "Skill 更新失败。", 400);
+            }
           }
           if (request.method === "DELETE") {
             await skillRegistryService.remove(id);
@@ -325,6 +360,13 @@ export function handleEntityHttpRequest({
         if (!workItem) throw apiError("WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
         const agent = objectiveService.store.getAgent(agentId);
         if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
+        if (agent.role !== "independentContributor") {
+          throw apiError(
+            "AGENT_NOT_INDEPENDENT_CONTRIBUTOR",
+            "只有 Independent Contributor 才能创建 Worker Session。",
+            400
+          );
+        }
         if (typeof launchSession !== "function") {
           throw apiError("INTERNAL", "launchSession is not configured.", 500);
         }
@@ -341,17 +383,28 @@ export function handleEntityHttpRequest({
         }
 
         // 真正启动模型执行（provider 映射 / cwd 解析 / prompt 拼装均在 launchSession 内完成）。
-        const session = await launchSession({ agent, workItem });
+        const session = await launchSession({
+          agent,
+          workItem,
+          title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
+          avatarPath: typeof input.avatarPath === "string" && input.avatarPath.trim()
+            ? input.avatarPath.trim()
+            : undefined
+        });
         // 1:1 归属：把启动后的 session 绑定到 work_item（更新 current_session_id），并把状态推进到「进行中」，
         // 同时记录实际执行 Agent（main_agent_id），让看板卡片能显示执行主体。
-        objectiveService.store.bindSessionToWorkItem(session.id, workItemId, workItem.objective_id);
+        const boundSession = objectiveService.store.bindSessionToWorkItem(
+          session.id,
+          workItemId,
+          workItem.objective_id
+        );
         const executionPatch = {};
         if (workItem.status !== "in_progress") executionPatch.status = "in_progress";
         if (workItem.main_agent_id !== agent.agentId) executionPatch.mainAgentId = agent.agentId;
         if (Object.keys(executionPatch).length > 0) {
           objectiveService.store.updateWorkItem(workItemId, executionPatch);
         }
-        return sendJson(response, 201, { session });
+        return sendJson(response, 201, { session: boundSession ?? session });
       }
 
       // ---- Memory ----
@@ -407,7 +460,8 @@ export function handleEntityHttpRequest({
     .catch((error) => {
       sendJson(response, error.statusCode ?? statusForCode(error.code), {
         error: error.message,
-        code: error.code ?? null
+        code: error.code ?? null,
+        ...(Array.isArray(error.candidates) ? { candidates: error.candidates } : {})
       });
     });
 
@@ -416,7 +470,7 @@ export function handleEntityHttpRequest({
 
 function statusForCode(code) {
   if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND"].includes(code)) return 404;
-  if (["CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS"].includes(code)) return 409;
+  if (["CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT"].includes(code)) return 409;
   return 400;
 }
 

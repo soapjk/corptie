@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 
 test("native SQLite persists committed writes immediately in WAL mode", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-native-sqlite-"));
@@ -38,6 +39,140 @@ test("native SQLite persists committed writes immediately in WAL mode", async ()
   }
 });
 
+test("Session kind persists explicitly and WorkItem binding classifies worker sessions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-kind-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "assistant-session",
+      title: "Assistant",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete",
+      sessionKind: "assistantChat"
+    });
+    store.setSessionKind("assistant-session", "assistantChat", "assistant");
+    assert.equal(store.getSession("assistant-session").sessionKind, "assistantChat");
+    assert.equal(store.getSession("assistant-session").agentId, "assistant");
+
+    store.upsertSession({
+      id: "worker-session",
+      title: "Worker",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    store.bindSessionToWorkItem("worker-session", "work-item:1", "objective:1");
+    const worker = store.getSession("worker-session");
+    assert.equal(worker.sessionKind, "worker");
+    assert.equal(worker.workItemId, "work-item:1");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Assistant agents receive distinct workspaces and reject explicit reuse", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-assistant-workspaces-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const first = store.createAgent({ id: "assistant:first", name: "First", role: "assistant" });
+    const second = store.createAgent({ id: "assistant:second", name: "Second", role: "assistant" });
+
+    assert.notEqual(first.workDir, second.workDir);
+    assert.match(first.workDir, /assistants\/assistant%3Afirst\/workspace$/);
+    assert.throws(
+      () => store.updateAgent(second.agentId, { workDir: first.workDir }),
+      (error) => error.code === "ASSISTANT_WORKSPACE_CONFLICT"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy shared Assistant workspaces are split during store migration", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-assistant-workspace-migration-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const sharedWorkspace = join(directory, "legacy-shared-workspace");
+  const firstStore = new CorptieStore({ dbPath, configPath });
+
+  try {
+    await firstStore.initialize();
+    firstStore.createAgent({ id: "assistant:first", name: "First", role: "assistant" });
+    firstStore.createAgent({ id: "assistant:second", name: "Second", role: "assistant" });
+    firstStore.db.run("DROP INDEX idx_agents_assistant_work_dir");
+    firstStore.db.run(
+      "UPDATE agents SET work_dir = ? WHERE agent_id IN (?, ?)",
+      [sharedWorkspace, "assistant:first", "assistant:second"]
+    );
+    await firstStore.close();
+
+    const migratedStore = new CorptieStore({ dbPath, configPath });
+    try {
+      await migratedStore.initialize();
+      const first = migratedStore.getAgent("assistant:first");
+      const second = migratedStore.getAgent("assistant:second");
+      assert.notEqual(first.workDir.toLowerCase(), second.workDir.toLowerCase());
+      assert.equal([first.workDir, second.workDir].includes(sharedWorkspace), true);
+    } finally {
+      await migratedStore.close();
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy Session-derived inactive status is repaired once without overriding future explicit inactivity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-agent-status-migration-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const first = new CorptieStore({ dbPath, configPath });
+
+  try {
+    await first.initialize();
+    first.createAgent({ id: "agent:legacy-inactive", name: "Legacy", role: "assistant" });
+    first.upsertSession({
+      id: "codex:deleted-session",
+      title: "Deleted",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    const core = new CollaborationCore(first);
+    core.bindSession({ agentId: "agent:legacy-inactive", sessionId: "codex:deleted-session" });
+    core.detachSession("codex:deleted-session");
+    first.db.run("UPDATE agents SET status = 'inactive' WHERE agent_id = ?", ["agent:legacy-inactive"]);
+    first.db.run(
+      "DELETE FROM data_migrations WHERE migration_id = ?",
+      ["decouple-agent-status-from-session-v1"]
+    );
+    await first.close();
+
+    const migrated = new CorptieStore({ dbPath, configPath });
+    await migrated.initialize();
+    assert.equal(migrated.getAgent("agent:legacy-inactive").status, "available");
+    migrated.updateAgent("agent:legacy-inactive", { status: "inactive" });
+    await migrated.close();
+
+    const restarted = new CorptieStore({ dbPath, configPath });
+    await restarted.initialize();
+    assert.equal(restarted.getAgent("agent:legacy-inactive").status, "inactive");
+    await restarted.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("logical Session owns the canonical unique name and preserves renamed aliases", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-identity-"));
   const store = new CorptieStore({
@@ -46,6 +181,7 @@ test("logical Session owns the canonical unique name and preserves renamed alias
   });
   try {
     await store.initialize();
+    store.createAgent({ id: "agent:stable-name", name: "Stable Agent", role: "assistant" });
     store.upsertSession({
       id: "codex:provider-thread",
       title: "original_agent",
@@ -62,13 +198,22 @@ test("logical Session owns the canonical unique name and preserves renamed alias
       boundCwd: directory,
       title: "original_agent"
     });
+    new CollaborationCore(store).bindSession({
+      agentId: "agent:stable-name",
+      sessionId: "codex:provider-thread"
+    });
 
     store.renameSession("logical:stable-session", "renamed_agent");
 
+    assert.equal(store.getAgent("agent:stable-name").name, "Stable Agent");
     assert.equal(store.getLogicalSession("logical:stable-session").sessionName, "renamed_agent");
     assert.equal(store.getSession("codex:provider-thread").title, "renamed_agent");
     assert.equal(store.getLogicalSessionByName("renamed_agent").logicalSessionId, "logical:stable-session");
     assert.equal(store.getLogicalSessionByName("original_agent").logicalSessionId, "logical:stable-session");
+
+    store.updateAgent("agent:stable-name", { name: "Renamed Agent" });
+    assert.equal(store.getSession("codex:provider-thread").title, "renamed_agent");
+    assert.equal(store.getLogicalSession("logical:stable-session").sessionName, "renamed_agent");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

@@ -191,7 +191,7 @@ test("rejecting a staged request never creates a task or delivery", async () => 
   });
 });
 
-test("agent identity survives session replacement and a session has one current owner", async () => {
+test("an Agent can own multiple active Sessions while each Session has one current owner", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
     core.bindSession({ agentId: "research-agent", sessionId: "codex:old-thread" });
@@ -203,7 +203,7 @@ test("agent identity survives session replacement and a session has one current 
       ["research-agent"]
     );
     assert.equal(bindings.length, 2);
-    assert.ok(bindings.find((row) => row.session_id === "codex:old-thread").unbound_at);
+    assert.equal(bindings.find((row) => row.session_id === "codex:old-thread").unbound_at, null);
     assert.equal(bindings.find((row) => row.session_id === "codex:new-thread").unbound_at, null);
 
     assert.throws(
@@ -213,7 +213,31 @@ test("agent identity survives session replacement and a session has one current 
   });
 });
 
-test("deleting a Session deactivates its Agent while preserving collaboration history", async () => {
+test("detaching one Session keeps the Agent attached to its other active Session", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    for (const id of ["codex:first-thread", "codex:second-thread"]) {
+      store.upsertSession({ id, title: id, agent: "Codex", provider: "codex-app-server", status: "complete" });
+      core.bindSession({ agentId: "research-agent", sessionId: id });
+    }
+
+    const agent = core.detachSession("codex:second-thread");
+
+    assert.equal(agent.currentSessionId, "codex:first-thread");
+    assert.notEqual(agent.status, "inactive");
+    const activeBindings = store.selectAll(
+      "SELECT session_id FROM agent_sessions WHERE agent_id = ? AND unbound_at IS NULL ORDER BY session_id",
+      ["research-agent"]
+    );
+    assert.deepEqual(activeBindings.map((row) => row.session_id), ["codex:first-thread"]);
+    assert.deepEqual(
+      store.listSessionsByAgent("research-agent").map((session) => session.id).sort(),
+      ["codex:first-thread", "codex:second-thread"]
+    );
+  });
+});
+
+test("deleting a Session detaches it without changing Agent lifecycle status", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
     store.upsertSession({
@@ -226,11 +250,11 @@ test("deleting a Session deactivates its Agent while preserving collaboration hi
     core.bindSession({ agentId: "research-agent", sessionId: "codex:temporary-thread" });
     const task = newTask(core);
 
-    const deactivated = core.deactivateAgentForSession("codex:temporary-thread");
+    const detached = core.detachSession("codex:temporary-thread");
     store.deleteSession("codex:temporary-thread");
 
-    assert.equal(deactivated.status, "inactive");
-    assert.equal(deactivated.currentSessionId, null);
+    assert.equal(detached.status, "available");
+    assert.equal(detached.currentSessionId, null);
     assert.equal(core.getTask(task.taskId).initiatorAgentId, "research-agent");
     const binding = store.selectOne(
       "SELECT unbound_at FROM agent_sessions WHERE agent_id = ? AND session_id = ?",
@@ -240,21 +264,21 @@ test("deleting a Session deactivates its Agent while preserving collaboration hi
   });
 });
 
-test("startup reconciliation deactivates Agents bound to already deleted Sessions", async () => {
+test("startup reconciliation detaches missing Sessions without deactivating Agents", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
     core.bindSession({ agentId: "research-agent", sessionId: "codex:missing-thread" });
 
-    const deactivated = core.deactivateAgentsWithMissingSessions();
+    const detached = core.detachMissingSessionBindings();
 
-    assert.deepEqual(deactivated.map((agent) => agent.agentId), ["research-agent"]);
-    assert.equal(core.getAgent("research-agent").status, "inactive");
+    assert.deepEqual(detached.map((agent) => agent.agentId), ["research-agent"]);
+    assert.equal(core.getAgent("research-agent").status, "available");
     assert.equal(core.getAgent("research-agent").currentSessionId, null);
     assert.ok(store.selectOne(
       "SELECT unbound_at FROM agent_sessions WHERE agent_id = ? AND session_id = ?",
       ["research-agent", "codex:missing-thread"]
     ).unbound_at);
-    assert.deepEqual(core.deactivateAgentsWithMissingSessions(), []);
+    assert.deepEqual(core.detachMissingSessionBindings(), []);
   });
 });
 

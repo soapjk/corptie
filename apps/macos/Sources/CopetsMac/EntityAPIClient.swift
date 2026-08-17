@@ -83,6 +83,26 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
+    func allWorkItems() async -> [WorkItem] {
+        do {
+            let url = baseURL.appending(path: "work-items")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(
+                    message: envelope?.error ?? "加载 WorkItem 失败（HTTP \(http.statusCode)）",
+                    code: envelope?.code
+                )
+            }
+            let workItems = try decoder.decode(WorkItemListEnvelope.self, from: data).workItems
+            errorMessage = nil
+            return workItems
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return []
+        }
+    }
+
     func workItem(id: String) async -> WorkItem? {
         do {
             let url = baseURL.appending(path: "work-items/\(id)")
@@ -230,15 +250,20 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 创建 Session（真正启动模型）：POST /sessions { workItemId, agentId, title? }。
-    // 返回 nil 表示成功；否则返回带错误码的失败结果（如「provider 暂不支持」「未绑定仓库」）。
+    // 创建 Worker Session：必须同时绑定 WorkItem 与 Independent Contributor。
     @discardableResult
-    func createSession(workItemId: String, agentId: String, title: String? = nil) async -> EntityLaunchError? {
+    func createSession(
+        workItemId: String,
+        agentId: String,
+        title: String? = nil,
+        avatarPath: String? = nil
+    ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId]
         if let title { body["title"] = title }
+        if let avatarPath { body["avatarPath"] = avatarPath }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -246,28 +271,33 @@ final class EntityAPIClient: ObservableObject {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
                 let message = envelope?.error ?? "执行失败（HTTP \(http.statusCode)）"
                 errorMessage = message
-                return EntityLaunchError(message: message, code: envelope?.code)
+                return .failure(message: message, code: envelope?.code)
             }
+            let session = try decoder.decode(SessionCreateEnvelope.self, from: data).session
             errorMessage = nil
-            return nil
+            return .success(session)
         } catch {
             let message = error.localizedDescription
             errorMessage = message
-            return EntityLaunchError(message: message, code: nil)
+            return .failure(message: message)
         }
     }
 
-    // 自由对话：仅凭 Agent 开聊（选定工作目录 + 可选标题/首条提示），不绑定工作项。
-    // POST /agents/:agentId/sessions { cwd, title?, prompt? } → { session }。
-    // 成功返回新 session id（供跳转选中），失败返回 nil（errorMessage 已带原因）。
+    // Assistant Chat Session：仅凭 Assistant 开聊，不绑定 WorkItem。
     @discardableResult
-    func startAgentSession(agentId: String, title: String? = nil, prompt: String? = nil) async -> String? {
+    func startAgentSession(
+        agentId: String,
+        title: String? = nil,
+        prompt: String? = nil,
+        avatarPath: String? = nil
+    ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)/sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [:]
         if let title, !title.isEmpty { body["title"] = title }
         if let prompt, !prompt.isEmpty { body["prompt"] = prompt }
+        if let avatarPath, !avatarPath.isEmpty { body["avatarPath"] = avatarPath }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -275,14 +305,15 @@ final class EntityAPIClient: ObservableObject {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
                 let message = envelope?.error ?? "启动对话失败（HTTP \(http.statusCode)）"
                 errorMessage = message
-                return nil
+                return .failure(message: message, code: envelope?.code)
             }
-            let created = try decoder.decode(AgentSessionCreateEnvelope.self, from: data)
+            let created = try decoder.decode(SessionCreateEnvelope.self, from: data)
             errorMessage = nil
-            return created.session.id
+            return .success(created.session)
         } catch {
-            errorMessage = error.localizedDescription
-            return nil
+            let message = error.localizedDescription
+            errorMessage = message
+            return .failure(message: message)
         }
     }
 
@@ -445,7 +476,12 @@ final class EntityAPIClient: ObservableObject {
         if let workDir, !workDir.isEmpty { body["workDir"] = workDir }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.error ?? "保存 Agent 失败（HTTP \(http.statusCode)）"
+                return nil
+            }
             let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
             await refreshAgents()
             return agent
@@ -473,7 +509,12 @@ final class EntityAPIClient: ObservableObject {
         if let workDir { body["workDir"] = workDir }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.error ?? "保存 Agent 失败（HTTP \(http.statusCode)）"
+                return nil
+            }
             let agent = try decoder.decode(AgentCreateEnvelope.self, from: data).agent
             await refreshAgents()
             return agent
@@ -525,15 +566,46 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 登记一个 Skill（local 目录 / git URL）：POST /skills { name?, description?, sourceType, source } → { skill }
+    func discoverSkills(sourceType: String, source: String) async -> [SkillCandidate]? {
+        var request = URLRequest(url: baseURL.appending(path: "skills/discover"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "sourceType": sourceType,
+            "source": source
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.error ?? "发现 Skill 失败（HTTP \(http.statusCode)）"
+                return nil
+            }
+            let result = try decoder.decode(SkillDiscoveryEnvelope.self, from: data)
+            errorMessage = nil
+            return result.candidates
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 登记一个精确 Skill：sourceSubpath 指向包含 SKILL.md 的具体相对目录。
     @discardableResult
-    func registerSkill(name: String?, description: String?, sourceType: String, source: String) async -> Skill? {
+    func registerSkill(
+        name: String?,
+        description: String?,
+        sourceType: String,
+        source: String,
+        sourceSubpath: String? = nil
+    ) async -> Skill? {
         var request = URLRequest(url: baseURL.appending(path: "skills"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["sourceType": sourceType, "source": source]
         if let name, !name.isEmpty { body["name"] = name }
         if let description, !description.isEmpty { body["description"] = description }
+        if let sourceSubpath { body["sourceSubpath"] = sourceSubpath }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -569,14 +641,6 @@ final class EntityAPIClient: ObservableObject {
 // POST /agents 响应 envelope
 private struct AgentCreateEnvelope: Decodable {
     let agent: Agent
-}
-
-// POST /agents/:id/sessions 响应 envelope：仅取 session id 用于跳转选中。
-private struct AgentSessionCreateEnvelope: Decodable {
-    struct Session: Decodable {
-        let id: String
-    }
-    let session: Session
 }
 
 // POST /assist/draft 响应

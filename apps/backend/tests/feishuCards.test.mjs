@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  FeishuGatewayManager,
   buildAgentPickerCard,
   buildApprovalCard,
   buildCollaborationConfirmationCard,
@@ -131,8 +132,8 @@ test("session list is a Card 2.0 card with direct session callbacks", () => {
   const card = buildSessionListCard({
     botId: "bot-a",
     sessions: [
-      { id: "session-current", title: "Current", status: "running", external: { cwd: "/tmp/current" } },
-      { id: "session-free", title: "Free", status: "idle", external: { cwd: "/tmp/free" } },
+      { id: "session-current", title: "Current", status: "running", agentName: "Corptie", external: { cwd: "/tmp/current" } },
+      { id: "session-free", title: "Free", status: "idle", agentName: "研究员", workItemTitle: "调研支付链路", external: { cwd: "/tmp/free" } },
       { id: "session-busy", title: "Busy", status: "idle" }
     ],
     assignments: [
@@ -154,6 +155,38 @@ test("session list is a Card 2.0 card with direct session callbacks", () => {
   assert.equal(sessionButtons[2].disabled, true);
   assert.ok(buttons.some((button) => button.behaviors?.[0]?.value?.corptie_action === "refresh_sessions"));
   assert.ok(buttons.some((button) => button.behaviors?.[0]?.value?.corptie_action === "detach_session"));
+  const content = JSON.stringify(card);
+  assert.match(content, /Agent：研究员/);
+  assert.match(content, /WorkItem：调研支付链路/);
+  assert.doesNotMatch(content, /\/tmp\/current|\/tmp\/free/);
+});
+
+test("session list resolves Agent and optional WorkItem presentation before rendering", async () => {
+  const manager = new FeishuGatewayManager({
+    store: {
+      listFeishuAssignments: () => [],
+      getFeishuAssignmentForBot: () => null
+    },
+    listSessions: async () => [{
+      id: "session-a",
+      title: "移动端会话",
+      status: "idle",
+      agentId: "agent-a",
+      workItemId: "work-item-a",
+      external: { cwd: "/Users/example/private-project" }
+    }],
+    describeSession: (session) => ({
+      agentName: session.agentId === "agent-a" ? "移动端 Agent" : null,
+      workItemTitle: session.workItemId === "work-item-a" ? "处理飞书体验" : null
+    })
+  });
+
+  const card = await manager.buildSessionListCard("bot-a");
+  const content = JSON.stringify(card);
+  assert.match(content, /移动端会话/);
+  assert.match(content, /Agent：移动端 Agent/);
+  assert.match(content, /WorkItem：处理飞书体验/);
+  assert.doesNotMatch(content, /private-project|Users\/example/);
 });
 
 test("session card paginates long lists", () => {

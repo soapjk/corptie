@@ -117,6 +117,10 @@ function fixture(capabilities = [
     },
     removeSessionBinding: async ({ reference }) => {
       calls.push(["removeSessionBinding", reference.sessionId]);
+    },
+    persistRenamedSession: async ({ reference, title, providerSession }) => {
+      calls.push(["persistRenamedSession", reference.sessionId, title]);
+      return { ...providerSession, id: reference.sessionId, title };
     }
   });
   return { calls, registry, service };
@@ -154,7 +158,7 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   assert.equal(resumed.title, "Resumed");
   assert.deepEqual(await service.restartSession("logical-a"), { status: "completed" });
   assert.deepEqual(await service.disconnectSession("logical-a"), { status: "disconnected" });
-  assert.deepEqual(await service.renameSession("logical-a", "Renamed"), { title: "Renamed" });
+  assert.deepEqual(await service.renameSession("logical-a", "Renamed"), { id: "legacy-a", title: "Renamed" });
   assert.deepEqual(await service.updateAvatar("logical-a", "/tmp/avatar.png"), { avatarPath: "/tmp/avatar.png" });
   const deleted = await service.deleteSession("logical-a", { source: "desktop" });
   assert.deepEqual(deleted, {
@@ -171,6 +175,7 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
     "restartSession",
     "disconnectSession",
     "renameSession",
+    "persistRenamedSession",
     "updateAvatar",
     "deleteSession",
     "removeSessionBinding"
@@ -225,6 +230,35 @@ test("Session application service lets each Provider prepare create input", asyn
     model: "provider-default",
     normalized: true
   });
+});
+
+test("Session creation preserves Agent actor context for Providers without Tool Host support", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "external-provider",
+    displayName: "External Provider",
+    transport: "http",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE]
+  }, {
+    createSession: async () => ({ id: "external-session" })
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => null,
+    bindCreatedSession: async ({ context }) => {
+      calls.push(context.actorId);
+      return { logicalSessionId: "logical-external" };
+    }
+  });
+
+  const session = await service.createSession(
+    "external-provider",
+    { cwd: "/tmp/external" },
+    { source: "agent", actorId: "agent:external" }
+  );
+
+  assert.equal(session.logicalSessionId, "logical-external");
+  assert.deepEqual(calls, ["agent:external"]);
 });
 
 test("Session application service exposes Provider model catalogs through capability dispatch", async () => {

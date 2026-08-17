@@ -17,6 +17,24 @@ test("a locally saved custom title wins over the Codex thread preview after rest
   assert.equal(merged.title, "My custom project name");
 });
 
+test("a stored Agent binding survives merging with a provider session", () => {
+  const merged = mergeStoredSessionPresentation(
+    { id: "codex:thread-a", title: "Provider title", status: "complete" },
+    { id: "codex:thread-a", title: "Stored title", agentId: "assistant" }
+  );
+
+  assert.equal(merged.agentId, "assistant");
+});
+
+test("a stored provider-neutral session kind survives provider refresh", () => {
+  const merged = mergeStoredSessionPresentation(
+    { id: "codex:thread-a", title: "Provider", sessionKind: "legacy", external: {} },
+    { id: "codex:thread-a", title: "Stored", sessionKind: "assistantChat", external: {} }
+  );
+
+  assert.equal(merged.sessionKind, "assistantChat");
+});
+
 test("stored Codex permissions survive merging with a resumed thread", () => {
   const merged = mergeStoredSessionPresentation(
     {
@@ -132,6 +150,7 @@ test("the archived session list includes only explicitly archived sessions", () 
     "claude:archived",
     "codex:archived"
   ]);
+  assert.ok(sessions.every((session) => session.sessionKind === "legacy"));
 });
 
 test("the active session list excludes explicitly archived sessions", () => {

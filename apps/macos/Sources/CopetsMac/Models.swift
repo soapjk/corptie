@@ -2,11 +2,18 @@ import Foundation
 import AppKit
 import SwiftUI
 
+enum SessionKind: String, Codable, Equatable, Sendable {
+    case assistantChat
+    case worker
+    case legacy
+}
+
 struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
     let agent: String
     let agentId: String?
+    var sessionKind: SessionKind? = nil
     var objectiveId: String? = nil
     var workItemId: String? = nil
     let status: TaskStatus
@@ -31,6 +38,11 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
             status: external?.connectionStatus,
             usesManualConnection: usesManualConnection
         )
+    }
+
+    var resolvedSessionKind: SessionKind {
+        if let sessionKind { return sessionKind }
+        return workItemId?.isEmpty == false ? .worker : .legacy
     }
 
     var isConnecting: Bool {
@@ -846,6 +858,28 @@ struct AgentProviderDescriptor: Identifiable, Decodable, Equatable, Sendable {
     func supports(_ capability: String) -> Bool {
         capabilities.contains(capability)
     }
+
+    func matches(_ providerIdentity: String?) -> Bool {
+        guard let providerIdentity else { return false }
+        let normalized = providerIdentity.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        return id.lowercased() == normalized
+            || aliases.contains(where: { $0.lowercased() == normalized })
+    }
+}
+
+extension Collection where Element == AgentProviderDescriptor {
+    func descriptor(matching providerIdentity: String?) -> AgentProviderDescriptor? {
+        first(where: { $0.matches(providerIdentity) })
+    }
+
+    func canonicalProviderId(for providerIdentity: String?) -> String? {
+        descriptor(matching: providerIdentity)?.id
+    }
+
+    func displayName(for providerIdentity: String?) -> String? {
+        descriptor(matching: providerIdentity)?.displayName
+    }
 }
 
 struct AgentProviderRuntimeDescriptor: Decodable, Equatable, Sendable {
@@ -865,6 +899,7 @@ struct AgentProviderConfigurationField: Identifiable, Decodable, Equatable, Send
 }
 
 struct AgentProvidersResponse: Decodable, Sendable {
+    let defaultProviderId: String?
     let providers: [AgentProviderDescriptor]
 }
 

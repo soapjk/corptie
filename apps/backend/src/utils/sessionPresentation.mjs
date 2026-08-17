@@ -5,6 +5,8 @@ export function mergeStoredSessionPresentation(session, stored) {
   return {
     ...session,
     title: nonEmptyText(stored.title) || session.title,
+    agentId: nonEmptyText(stored.agentId) || session.agentId || null,
+    sessionKind: stored.sessionKind ?? session.sessionKind ?? "legacy",
     archived: stored.archived,
     pinned: stored.pinned,
     sortOrder: stored.sortOrder,
@@ -71,7 +73,12 @@ export function composeStoredSessionList({
     ...codexSessions,
     ...(archived ? [] : mockSessions)
   ];
-  return candidates.filter((session) => Boolean(session?.archived) === archived);
+  return candidates
+    .filter((session) => Boolean(session?.archived) === archived)
+    .map((session) => ({
+      ...session,
+      sessionKind: session.sessionKind ?? "legacy"
+    }));
 }
 
 function nonEmptyText(value) {

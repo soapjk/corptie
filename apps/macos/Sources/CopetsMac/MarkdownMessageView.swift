@@ -9,9 +9,8 @@ struct MarkdownMessageView: View {
     var fontWeight: Font.Weight = .medium
     var foregroundColor: Color = CorptiePalette.secondaryText
     var allowsSelection = true
-    /// When `false`, the Markdown content sizes to its natural width instead of
-    /// expanding to fill the available width. Used for chat-bubble style
-    /// message cards that must hug their text.
+    /// When `false`, the owning bubble provides a measured width. Markdown then
+    /// wraps inside that proposal instead of owning the card's width policy.
     var fillWidth = true
     /// 当 `fillWidth == false` 时气泡收缩到的最大宽度（对应 Rudder `max-w-[72ch]`）。
     var maxContentWidth: CGFloat? = nil
@@ -44,7 +43,7 @@ struct MarkdownMessageView: View {
             if fillWidth {
                 content.frame(maxWidth: .infinity, alignment: .leading)
             } else if let maxContentWidth {
-                // 气泡模式：收缩到内容自然宽度，但允许换行且不超过上限（等价 Rudder `w-fit` + `max-w`）。
+                // maxContentWidth 只是富文本安全上限；真正的气泡宽度由外层共享策略决定。
                 content.frame(maxWidth: maxContentWidth, alignment: .leading)
             } else {
                 content.fixedSize()

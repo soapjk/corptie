@@ -456,6 +456,7 @@ struct AgentRow: View {
 
 struct WorkItemDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     let workItem: WorkItem
     let workspaceIds: [String]
@@ -526,11 +527,21 @@ struct WorkItemDetailView: View {
             }
         }
         .sheet(isPresented: $showAgentPicker) {
-            AgentPickerView(selectedIds: $executionAgentIds, onDone: { selection in
+            AgentPickerView(
+                selectedIds: $executionAgentIds,
+                roleFilter: .independentContributor,
+                onDone: { selection in
                 if let agentId = selection.first {
                     Task {
-                        let error = await client.createSession(workItemId: workItem.id, agentId: agentId, title: workItem.title)
-                        if let error { executionError = error }
+                        let result = await client.createSession(
+                            workItemId: workItem.id,
+                            agentId: agentId,
+                            title: workItem.title
+                        )
+                        if let session = result.session {
+                            backendClient.acceptCreatedSession(session, selectImmediately: false)
+                        }
+                        if let error = result.error { executionError = error }
                         await refreshExecution()
                         onRequestReload()
                     }

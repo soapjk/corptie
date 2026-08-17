@@ -5,6 +5,7 @@ final class AgentProviderDescriptorTests: XCTestCase {
     func testProviderCatalogDecodesCapabilitiesAndConfiguration() throws {
         let data = Data(#"""
         {
+          "defaultProviderId": "openclacky",
           "providers": [{
             "id": "openclacky",
             "displayName": "OpenClacky",
@@ -28,7 +29,10 @@ final class AgentProviderDescriptorTests: XCTestCase {
         let response = try JSONDecoder().decode(AgentProvidersResponse.self, from: data)
         let provider = try XCTUnwrap(response.providers.first)
         XCTAssertEqual(provider.id, "openclacky")
+        XCTAssertEqual(response.defaultProviderId, "openclacky")
         XCTAssertTrue(provider.supports("session.create"))
         XCTAssertEqual(provider.configuration.fields.first?.defaultValue, "http://127.0.0.1:7070")
+        XCTAssertEqual(response.providers.canonicalProviderId(for: "clacky"), "openclacky")
+        XCTAssertEqual(response.providers.displayName(for: "clacky"), "OpenClacky")
     }
 }
