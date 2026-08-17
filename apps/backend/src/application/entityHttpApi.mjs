@@ -4,6 +4,7 @@
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
+import { presentWorkItemAcceptance } from "./workItemAcceptance.mjs";
 import os from "node:os";
 
 function normalizeEnvironment(value = "") {
@@ -323,31 +324,50 @@ export function handleEntityHttpRequest({
       const objectiveWorkItemsMatch = path.match(/^\/objectives\/([^/]+)\/work-items$/);
       if (request.method === "GET" && objectiveWorkItemsMatch) {
         const id = decodeURIComponent(objectiveWorkItemsMatch[1]);
-        return sendJson(response, 200, { workItems: objectiveService.listWorkItemsByObjective(id) });
+        return sendJson(response, 200, {
+          workItems: objectiveService.listWorkItemsByObjective(id).map(presentWorkItemAcceptance)
+        });
       }
 
       // ---- WorkItem ----
       if (request.method === "GET" && path === "/work-items") {
-        return sendJson(response, 200, { workItems: objectiveService.listWorkItems() });
+        return sendJson(response, 200, {
+          workItems: objectiveService.listWorkItems().map(presentWorkItemAcceptance)
+        });
       }
       if (request.method === "POST" && path === "/work-items") {
         const input = await readJson(request);
-        return sendJson(response, 201, objectiveService.createWorkItem(input));
+        return sendJson(response, 201, presentWorkItemAcceptance(objectiveService.createWorkItem(input)));
       }
 
       const workItemMatch = path.match(/^\/work-items\/([^/]+)$/);
       if (workItemMatch) {
         const id = decodeURIComponent(workItemMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, objectiveService.getWorkItem(id));
+          return sendJson(response, 200, presentWorkItemAcceptance(objectiveService.getWorkItem(id)));
         }
         if (request.method === "PATCH") {
-          return sendJson(response, 200, objectiveService.updateWorkItem(id, await readJson(request)));
+          return sendJson(
+            response,
+            200,
+            presentWorkItemAcceptance(objectiveService.updateWorkItem(id, await readJson(request)))
+          );
         }
         if (request.method === "DELETE") {
           objectiveService.deleteWorkItem(id);
           return sendJson(response, 200, { ok: true });
         }
+      }
+
+      const acceptanceAssessmentMatch = path.match(/^\/work-items\/([^/]+)\/acceptance-assessment$/);
+      if (request.method === "PUT" && acceptanceAssessmentMatch) {
+        const id = decodeURIComponent(acceptanceAssessmentMatch[1]);
+        const input = await readJson(request);
+        return sendJson(
+          response,
+          200,
+          presentWorkItemAcceptance(objectiveService.recordAcceptanceAssessment(id, input))
+        );
       }
 
       const workItemSessionsMatch = path.match(/^\/work-items\/([^/]+)\/sessions$/);
@@ -423,7 +443,10 @@ export function handleEntityHttpRequest({
           workItemId,
           workItem.objective_id
         );
-        const executionPatch = {};
+        const executionPatch = {
+          executionStatus: "running",
+          acceptanceAssessment: null
+        };
         if (workItem.status !== "in_progress") executionPatch.status = "in_progress";
         if (workItem.main_agent_id !== agent.agentId) executionPatch.mainAgentId = agent.agentId;
         if (Object.keys(executionPatch).length > 0) {

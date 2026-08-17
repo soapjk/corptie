@@ -40,8 +40,38 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var mainWorkspaceId: String?
     var mainAgentId: String?
     var currentSessionId: String?
+    var executionStatus: String?
+    var acceptanceAssessment: WorkItemAcceptanceAssessment?
+    var completionSuggestion: WorkItemCompletionSuggestion?
     var createdAt: String
     var updatedAt: String
+}
+
+struct WorkItemAcceptanceEvidence: Codable, Hashable {
+    let summary: String
+    let reference: String
+}
+
+struct WorkItemAcceptanceResult: Codable, Hashable {
+    let criterion: String
+    let verdict: String
+    let evidence: [WorkItemAcceptanceEvidence]
+}
+
+struct WorkItemAcceptanceAssessment: Codable, Hashable {
+    let status: String
+    let criteriaSnapshot: String
+    let sourceSessionId: String
+    let assessedAt: String
+    let results: [WorkItemAcceptanceResult]
+}
+
+struct WorkItemCompletionSuggestion: Codable, Hashable {
+    let recommended: Bool
+    let sourceSessionId: String
+    let assessedAt: String
+    let criteriaSnapshot: String
+    let results: [WorkItemAcceptanceResult]
 }
 
 // 后端响应 envelope：GET /objectives → { objectives: [...] }；GET /work-items → { workItems: [...] }
