@@ -74,6 +74,7 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     router: services.router,
     memoryExtractor: services.memoryExtractor,
     assistantService: services.assistantService,
+    backgroundAgentService: services.backgroundAgentService,
     createSession: services.createSession,
     launchSession: services.launchSession,
     launchAgentSession: services.launchAgentSession,
@@ -88,6 +89,171 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     body: response.body ? JSON.parse(response.body) : null
   };
 }
+
+test("POST /assist/form-draft generates every field without creating an entity", async () => {
+  const services = await createServices();
+  try {
+    const calls = [];
+    const result = await callApi({
+      method: "POST",
+      pathname: "/assist/form-draft",
+      body: {
+        formType: "workItem",
+        prompt: "实现统一的一键填充",
+        currentValues: { title: "", description: "", acceptanceCriteria: "", priority: "medium" }
+      },
+      backgroundAgentService: {
+        async run(input) {
+          calls.push(input);
+          return {
+            providerId: "fake-provider",
+            text: JSON.stringify({
+              title: "统一帮我写",
+              description: "一次生成并回填全部字段。",
+              acceptanceCriteria: "- 所有字段可编辑\n- 不自动创建实体",
+              priority: "high"
+            })
+          };
+        }
+      },
+      ...services
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.formType, "workItem");
+    assert.equal(result.body.fields.title, "统一帮我写");
+    assert.equal(result.body.providerId, "fake-provider");
+    assert.equal(calls[0].purpose, "assist-form-draft");
+    assert.equal(calls[0].permissionProfile, "read-only");
+    assert.equal(services.store.listWorkItems().length, 0);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /assist/form-draft shares one structured contract across Agent and Objective forms", async () => {
+  const services = await createServices();
+  try {
+    const calls = [];
+    const backgroundAgentService = {
+      async run(input) {
+        calls.push(input);
+        if (input.intent.startsWith("agent:")) {
+          return {
+            providerId: "fake-provider",
+            text: JSON.stringify({
+              name: "SwiftUI Agent",
+              description: "负责 macOS 客户端体验。",
+              role: "independentContributor",
+              systemPrompt: "实现变更并运行相关测试。",
+              capabilities: "swiftui, testing"
+            })
+          };
+        }
+        return {
+          providerId: "fake-provider",
+          text: JSON.stringify({
+            name: "统一创建页辅助填写",
+            description: "统一三个实体创建页的草稿生成体验。",
+            acceptanceCriteria: "- Agent 创建页可回填\n- Objective 创建页可回填\n- WorkItem 创建页可回填",
+            priority: "high",
+            targetDate: "2026-09-01",
+            tags: "macos, forms"
+          })
+        };
+      }
+    };
+
+    const agentResult = await callApi({
+      method: "POST",
+      pathname: "/assist/form-draft",
+      body: {
+        formType: "agent",
+        prompt: "创建 SwiftUI 客户端 Agent",
+        agentId: "agent:test-drafter",
+        currentValues: {
+          name: "",
+          description: "",
+          role: "independentContributor",
+          systemPrompt: "",
+          capabilities: ""
+        }
+      },
+      backgroundAgentService,
+      ...services
+    });
+    const objectiveResult = await callApi({
+      method: "POST",
+      pathname: "/assist/form-draft",
+      body: {
+        formType: "objective",
+        prompt: "统一创建页",
+        currentValues: {
+          name: "",
+          description: "",
+          acceptanceCriteria: "",
+          priority: "",
+          targetDate: "",
+          tags: ""
+        }
+      },
+      backgroundAgentService,
+      ...services
+    });
+
+    assert.equal(agentResult.statusCode, 200);
+    assert.equal(agentResult.body.fields.role, "independentContributor");
+    assert.equal(objectiveResult.statusCode, 200);
+    assert.equal(objectiveResult.body.fields.targetDate, "2026-09-01");
+    assert.equal(objectiveResult.body.fields.priority, "high");
+    assert.equal(calls[0].agentId, "agent:test-drafter");
+    assert.equal(calls[0].purpose, calls[1].purpose);
+    assert.equal(services.store.listAgents().length, 1);
+    assert.equal(services.store.listObjectives().length, 0);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /assist/form-draft rejects unknown input and malformed Agent fields", async () => {
+  const services = await createServices();
+  try {
+    const unknownInput = await callApi({
+      method: "POST",
+      pathname: "/assist/form-draft",
+      body: { formType: "agent", prompt: "后端专家", currentValues: { mystery: "value" } },
+      backgroundAgentService: { run: async () => ({ text: "{}" }) },
+      ...services
+    });
+    assert.equal(unknownInput.statusCode, 400);
+    assert.equal(unknownInput.body.code, "INVALID_INPUT");
+
+    const malformedOutput = await callApi({
+      method: "POST",
+      pathname: "/assist/form-draft",
+      body: { formType: "agent", prompt: "后端专家" },
+      backgroundAgentService: {
+        run: async () => ({
+          text: JSON.stringify({
+            name: "后端专家",
+            description: "维护接口",
+            role: "worker",
+            systemPrompt: "负责后端。",
+            capabilities: "backend"
+          })
+        })
+      },
+      ...services
+    });
+    assert.equal(malformedOutput.statusCode, 502);
+    assert.equal(malformedOutput.body.code, "INVALID_GENERATED_DRAFT");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
 
 test("POST /sessions delegates Provider-only creation when no WorkItem binding is requested", async () => {
   const services = await createServices();
