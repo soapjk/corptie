@@ -17,6 +17,7 @@ export class SessionApplicationService {
     this.bindCreatedSession = options.bindCreatedSession ?? null;
     this.removeSessionBinding = options.removeSessionBinding ?? null;
     this.persistRenamedSession = options.persistRenamedSession ?? null;
+    this.resolveMessageContext = options.resolveMessageContext ?? null;
     this.toolHostService = options.toolHostService ?? null;
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
@@ -178,12 +179,15 @@ export class SessionApplicationService {
 
   async sendMessage(sessionId, message, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const sessionContext = this.resolveMessageContext
+      ? await this.resolveMessageContext(reference, context)
+      : null;
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       reference,
       message,
-      context
+      sessionContext ? { ...context, sessionContext } : context
     );
   }
 

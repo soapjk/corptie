@@ -306,6 +306,32 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_session_items_session_id ON session_items(session_id, created_at);
 
+      CREATE TABLE IF NOT EXISTS session_context_references (
+        reference_id TEXT PRIMARY KEY,
+        owner_session_id TEXT NOT NULL,
+        target_type TEXT NOT NULL,
+        target_key TEXT NOT NULL,
+        target_id TEXT,
+        locator TEXT,
+        display_name TEXT NOT NULL,
+        inclusion_mode TEXT NOT NULL DEFAULT 'default',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        priority INTEGER NOT NULL DEFAULT 100,
+        status TEXT NOT NULL DEFAULT 'available',
+        snapshot_title TEXT,
+        snapshot_text TEXT,
+        snapshot_at TEXT,
+        content_hash TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (owner_session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        UNIQUE(owner_session_id, target_type, target_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_context_references_owner
+      ON session_context_references(owner_session_id, enabled, priority, created_at);
+
       CREATE TABLE IF NOT EXISTS session_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -2349,6 +2375,97 @@ export class CorptieStore {
     );
     this.scheduleSave();
     return this.getSession(sessionId);
+  }
+
+  createSessionContextReference(input = {}) {
+    const referenceId = input.referenceId ?? `context_ref:${randomUUID()}`;
+    const timestamp = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO session_context_references (
+        reference_id, owner_session_id, target_type, target_key, target_id, locator,
+        display_name, inclusion_mode, enabled, priority, status,
+        snapshot_title, snapshot_text, snapshot_at, content_hash, metadata_json,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        referenceId,
+        input.ownerSessionId,
+        input.targetType,
+        input.targetKey,
+        input.targetId ?? null,
+        input.locator ?? null,
+        input.displayName,
+        input.inclusionMode ?? "default",
+        input.enabled === false ? 0 : 1,
+        Number.isFinite(input.priority) ? input.priority : 100,
+        input.status ?? "available",
+        input.snapshotTitle ?? null,
+        input.snapshotText ?? null,
+        input.snapshotAt ?? null,
+        input.contentHash ?? null,
+        JSON.stringify(input.metadata ?? {}),
+        timestamp,
+        timestamp
+      ]
+    );
+    this.scheduleSave();
+    return this.getSessionContextReference(referenceId);
+  }
+
+  getSessionContextReference(referenceId) {
+    const row = this.selectOne(
+      "SELECT * FROM session_context_references WHERE reference_id = ?",
+      [referenceId]
+    );
+    return row ? sessionContextReferenceFromRow(row) : null;
+  }
+
+  listSessionContextReferences(ownerSessionId) {
+    return this.selectAll(
+      `SELECT * FROM session_context_references
+       WHERE owner_session_id = ?
+       ORDER BY enabled DESC, priority DESC, created_at ASC`,
+      [ownerSessionId]
+    ).map(sessionContextReferenceFromRow);
+  }
+
+  updateSessionContextReference(referenceId, patch = {}) {
+    const current = this.getSessionContextReference(referenceId);
+    if (!current) return null;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
+    this.db.run(
+      `UPDATE session_context_references SET
+        display_name = ?, inclusion_mode = ?, enabled = ?, priority = ?, status = ?,
+        snapshot_title = ?, snapshot_text = ?, snapshot_at = ?, content_hash = ?,
+        metadata_json = ?, updated_at = ?
+       WHERE reference_id = ?`,
+      [
+        has("displayName") ? patch.displayName : current.displayName,
+        has("inclusionMode") ? patch.inclusionMode : current.inclusionMode,
+        has("enabled") ? (patch.enabled ? 1 : 0) : (current.enabled ? 1 : 0),
+        has("priority") ? patch.priority : current.priority,
+        has("status") ? patch.status : current.status,
+        has("snapshotTitle") ? patch.snapshotTitle : current.snapshotTitle,
+        has("snapshotText") ? patch.snapshotText : current.snapshotText,
+        has("snapshotAt") ? patch.snapshotAt : current.snapshotAt,
+        has("contentHash") ? patch.contentHash : current.contentHash,
+        JSON.stringify(has("metadata") ? (patch.metadata ?? {}) : current.metadata),
+        createdAtFromOrNow(),
+        referenceId
+      ]
+    );
+    this.scheduleSave();
+    return this.getSessionContextReference(referenceId);
+  }
+
+  deleteSessionContextReference(referenceId) {
+    this.db.run(
+      "DELETE FROM session_context_references WHERE reference_id = ?",
+      [referenceId]
+    );
+    const deleted = this.db.getRowsModified() > 0;
+    this.scheduleSave();
+    return deleted;
   }
 
   // 创建 Session 记录（绑定 work_item + agent；1:1 更新 work_item.current_session_id）。
@@ -4445,6 +4562,29 @@ function agentFromRow(row) {
     workDir: row.work_dir ?? null,
     avatarPath: row.avatar_path ?? null,
     currentSessionId: row.current_session_id ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function sessionContextReferenceFromRow(row) {
+  return {
+    referenceId: row.reference_id,
+    ownerSessionId: row.owner_session_id,
+    targetType: row.target_type,
+    targetKey: row.target_key,
+    targetId: row.target_id ?? null,
+    locator: row.locator ?? null,
+    displayName: row.display_name,
+    inclusionMode: row.inclusion_mode,
+    enabled: Boolean(row.enabled),
+    priority: Number(row.priority),
+    status: row.status,
+    snapshotTitle: row.snapshot_title ?? null,
+    snapshotText: row.snapshot_text ?? null,
+    snapshotAt: row.snapshot_at ?? null,
+    contentHash: row.content_hash ?? null,
+    metadata: parseJson(row.metadata_json, {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

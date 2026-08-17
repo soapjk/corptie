@@ -146,6 +146,31 @@ test("Session application service resolves stable logical ids before Provider ca
   ]]);
 });
 
+test("Session application service resolves context once and passes it through the common Provider contract", async () => {
+  const { calls, registry } = fixture();
+  const service = new SessionApplicationService({
+    registry,
+    resolveSessionReference: async () => ({
+      sessionId: "legacy-a",
+      providerId: "fake.provider",
+      providerSessionId: "native-a"
+    }),
+    resolveMessageContext: async (reference) => ({
+      prompt: `Context for ${reference.sessionId}`,
+      documents: [{ referenceId: "ref-a" }]
+    })
+  });
+
+  await service.sendMessage("legacy-a", "hello", { source: "desktop" });
+
+  assert.equal(calls[0][0], "send");
+  assert.equal(calls[0][2], "hello");
+  assert.deepEqual(calls[0][3].sessionContext, {
+    prompt: "Context for legacy-a",
+    documents: [{ referenceId: "ref-a" }]
+  });
+});
+
 test("Session application service owns Provider-neutral lifecycle and stable identity", async () => {
   const { calls, service } = fixture();
   const created = await service.createSession("fake.provider", { cwd: "/tmp/project" }, { source: "desktop" });
