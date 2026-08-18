@@ -58,7 +58,9 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
   const { directory, store, objectiveService } = await fixture();
   try {
     const contributor = store.createAgent({ name: "IC", role: "independentContributor", provider: "codex" });
-    const objective = objectiveService.createObjective({ name: "Scoped", contributorAgentIds: [contributor.agentId] });
+    const assistant = store.createAgent({ name: "Planner", role: "assistant", provider: "codex" });
+    const outsider = store.createAgent({ name: "Outside", role: "independentContributor", provider: "codex" });
+    const objective = objectiveService.createObjective({ name: "Scoped", contributorAgentIds: [contributor.agentId, assistant.agentId] });
     const other = objectiveService.createObjective({ name: "Other" });
     const scopedItem = objectiveService.createWorkItem({ objectiveId: objective.id, title: "Scoped item" });
     const otherItem = objectiveService.createWorkItem({ objectiveId: other.id, title: "Other item" });
@@ -70,6 +72,11 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
       startWorkItem: (input) => { starts.push(input); return { id: "worker" }; }
     });
     const metadata = { sessionKind: "objectiveChat", objectiveId: objective.id };
+    const agents = await service.execute({ tool: "corptie_objective_agents_list", metadata, arguments: {} });
+    assert.deepEqual(new Set(agents.map((agent) => agent.agentId)), new Set([contributor.agentId, assistant.agentId]));
+    assert.equal(agents.find((agent) => agent.agentId === contributor.agentId).canStartWorkItem, true);
+    assert.equal(agents.find((agent) => agent.agentId === assistant.agentId).canStartWorkItem, false);
+    assert.equal(agents.some((agent) => agent.agentId === outsider.agentId), false);
     const created = await service.execute({
       tool: "corptie_objective_work_items_manage", metadata,
       arguments: { action: "create", title: "New scoped item" }
