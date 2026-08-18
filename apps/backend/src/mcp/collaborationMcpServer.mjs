@@ -128,6 +128,64 @@ export function createCollaborationMcpServer(options) {
     handler: ({ intent }) => client.get("/internal/collaboration/memory/search", { intent })
   });
 
+  register(server, "corptie_memory_search", {
+    description: "Search active, non-revoked memories visible to the authenticated current Session. Empty intent returns a bounded high-confidence recall set.",
+    inputSchema: {
+      intent: z.string().optional().describe("What to recall. May be empty for high-confidence startup recall.")
+    },
+    readOnly: true,
+    handler: ({ intent }) => client.get("/internal/collaboration/memory/search", { intent: intent ?? "" })
+  });
+
+  register(server, "corptie_memory_list", {
+    description: "List memories manageable from the authenticated current Session.",
+    inputSchema: {
+      scope: z.enum(["agent", "objective", "work_item"]).optional(),
+      include_revoked: z.boolean().optional()
+    },
+    readOnly: true,
+    handler: ({ scope, include_revoked }) => client.get("/internal/collaboration/memory", {
+      scope,
+      includeRevoked: include_revoked ? "true" : undefined
+    })
+  });
+
+  register(server, "corptie_memory_remember", {
+    description: "Persist structured memory only when the user explicitly asks to remember it. Owner identity is derived from the authenticated current Session.",
+    inputSchema: {
+      content: z.string().min(1),
+      kind: z.enum(["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"]),
+      scope: z.enum(["agent", "objective", "work_item"]).optional(),
+      tags: z.array(z.string().min(1)).optional()
+    },
+    handler: (input) => client.post("/internal/collaboration/memory", input)
+  });
+
+  register(server, "corptie_memory_update", {
+    description: "Correct a non-revoked memory manageable from the authenticated current Session without changing ownership or provenance.",
+    inputSchema: {
+      memory_id: z.string().min(1),
+      content: z.string().min(1).optional(),
+      tags: z.array(z.string().min(1)).optional()
+    },
+    handler: ({ memory_id, ...input }) => client.post(
+      `/internal/collaboration/memory/${encodeURIComponent(memory_id)}/update`,
+      input
+    )
+  });
+
+  register(server, "corptie_memory_revoke", {
+    description: "Revoke a memory while preserving provenance. Revoked memories stop search and injection; physical deletion is unavailable.",
+    inputSchema: {
+      memory_id: z.string().min(1),
+      reason: z.string().min(1).optional()
+    },
+    handler: ({ memory_id, reason }) => client.post(
+      `/internal/collaboration/memory/${encodeURIComponent(memory_id)}/revoke`,
+      { reason }
+    )
+  });
+
   register(server, "corptie_skill_search", {
     description:
       "Search the compact index of Skills assigned to the authenticated Corptie Agent. Call this when a reusable workflow may help; results do not include full instructions.",
@@ -371,7 +429,14 @@ function compact(value) {
 
 async function main() {
   const agentId = required(process.env.CORPTIE_AGENT_ID, "CORPTIE_AGENT_ID");
-  const client = new CollaborationHttpClient({ agentId });
+  const client = new CollaborationHttpClient({
+    agentId,
+    sessionScope: {
+      sessionId: process.env.CORPTIE_SESSION_ID,
+      objectiveId: process.env.CORPTIE_OBJECTIVE_ID,
+      workItemId: process.env.CORPTIE_WORK_ITEM_ID
+    }
+  });
   const server = createCollaborationMcpServer({
     agentId,
     client,
