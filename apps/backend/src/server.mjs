@@ -22,6 +22,7 @@ import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceSt
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
+import { ProjectWorktreeIntegrationService } from "./application/projectWorktreeIntegrationService.mjs";
 import {
   applyPersistedSessionOrder,
   storedSessionIdForListSession
@@ -577,6 +578,71 @@ const projectApplicationService = new ProjectApplicationService({
   inspectDevelopmentService: (project) => projectToolsetStatusForPath(project.mainPath),
   performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
   performWorkspaceAction: performProjectWorkspaceAction
+});
+const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
+  store,
+  inspectProject: async (projectId) => {
+    const project = await projectApplicationService.requireProject(projectId);
+    return gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
+  },
+  mergeWorktree: ({ projectId, mainPath, worktreeId }) => gitWorkspaces.mergeWorktreeIntoMainForProject({
+    repositoryId: projectId,
+    workingDirectory: mainPath,
+    sourceWorktreeId: worktreeId,
+    synchronizeSource: false
+  }),
+  createConflictWorkspace: async ({ projectId, runId }) => {
+    const project = await projectApplicationService.requireProject(projectId);
+    return gitWorkspaces.createIntegrationWorktreeForProject({
+      repositoryId: project.id,
+      workingDirectory: project.mainPath,
+      runId
+    });
+  },
+  createAndLaunchConflictWorkItem: async ({
+    objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt
+  }) => {
+    const workItem = objectiveService.createWorkItem({
+      objectiveId: objective.id,
+      title,
+      description,
+      acceptanceCriteria,
+      priority: "high",
+      mainWorkspaceId: projectId,
+      mainAgentId: agent.agentId
+    });
+    let session;
+    try {
+      session = await launchWorkItemSession({
+        agent,
+        workItem,
+        title,
+        prompt,
+        workingDirectory: workspace.path
+      });
+    } catch (error) {
+      objectiveService.deleteWorkItem(workItem.id);
+      throw error;
+    }
+    const boundSession = store.bindSessionToWorkItem(session.id, workItem.id, objective.id);
+    store.updateWorkItem(workItem.id, {
+      status: "in_progress",
+      executionStatus: "running",
+      mainAgentId: agent.agentId,
+      acceptanceAssessment: null
+    });
+    emitEvent("WorkItemChanged", {
+      action: "integration-conflict-resolution-started",
+      entity: store.getWorkItem(workItem.id)
+    });
+    return {
+      workItem: presentWorkItemAcceptance(store.getWorkItem(workItem.id)),
+      session: boundSession
+    };
+  },
+  isSessionActive: sessionHasActiveRun,
+  presentWorkItem: presentWorkItemAcceptance,
+  onEvent: (type, payload) => emitEvent(type, payload)
 });
 const feishuGateway = new FeishuGatewayManager({
   store,
@@ -2975,7 +3041,7 @@ function resolveAgentProviderId(provider) {
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
-async function launchWorkItemSession({ agent, workItem, title, prompt: requestedPrompt }) {
+async function launchWorkItemSession({ agent, workItem, title, prompt: requestedPrompt, workingDirectory = null }) {
   if (agent.role !== "independentContributor") {
     const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
     error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
@@ -2987,7 +3053,9 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
-  const cwd = store.resolveWorkspacePath(workItem.main_workspace_id);
+  const cwd = typeof workingDirectory === "string" && workingDirectory.trim()
+    ? resolve(workingDirectory.trim())
+    : store.resolveWorkspacePath(workItem.main_workspace_id);
   if (!cwd) {
     const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
     error.code = "WORKSPACE_REQUIRED";
@@ -5752,7 +5820,53 @@ function route(request, response) {
   const projectDevelopmentServiceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/development-service\/actions\/([^/]+)$/
   );
+  const projectObjectiveIntegrationsMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations$/
+  );
+  const projectObjectiveIntegrationConflictMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations\/([^/]+)\/conflict-work-item$/
+  );
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+  if (request.method === "GET" && projectObjectiveIntegrationsMatch) {
+    const projectId = decodeURIComponent(projectObjectiveIntegrationsMatch[1]);
+    const objectiveId = decodeURIComponent(projectObjectiveIntegrationsMatch[2]);
+    projectWorktreeIntegrationService.status(projectId, objectiveId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code
+      }));
+    return;
+  }
+  if (request.method === "POST" && projectObjectiveIntegrationsMatch) {
+    const projectId = decodeURIComponent(projectObjectiveIntegrationsMatch[1]);
+    const objectiveId = decodeURIComponent(projectObjectiveIntegrationsMatch[2]);
+    projectWorktreeIntegrationService.integrateCompleted(projectId, objectiveId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code
+      }));
+    return;
+  }
+  if (request.method === "POST" && projectObjectiveIntegrationConflictMatch) {
+    const projectId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[1]);
+    const objectiveId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[2]);
+    const runId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[3]);
+    readJson(request)
+      .then((input) => projectWorktreeIntegrationService.createConflictWorkItem(
+        projectId,
+        objectiveId,
+        runId,
+        input
+      ))
+      .then((result) => sendJson(response, result.reused ? 200 : 201, result))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code
+      }));
+    return;
+  }
   if (request.method === "GET" && projectWorkspacesMatch) {
     const projectId = decodeURIComponent(projectWorkspacesMatch[1]);
     projectApplicationService.listWorkspaces(projectId, {

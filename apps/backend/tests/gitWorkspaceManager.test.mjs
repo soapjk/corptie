@@ -387,6 +387,64 @@ test("project workspace changes can be committed without a logical Session id", 
   }
 });
 
+test("project merge preserves conflict diagnostics and aborts the failed merge", async () => {
+  const fixture = await createFixture("project-conflict", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+  await git(["add", "shared.txt"], fixture.repository);
+  await git(["commit", "-m", "Main version"], fixture.repository);
+  await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+  await git(["add", "shared.txt"], fixture.activeWorktree);
+  await git(["commit", "-m", "Feature version"], fixture.activeWorktree);
+
+  try {
+    const status = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId);
+    const feature = status.worktrees.find((worktree) => !worktree.isMain);
+    await assert.rejects(
+      () => manager.mergeWorktreeIntoMainForProject({
+        repositoryId: fixture.repositoryId,
+        workingDirectory: fixture.repository,
+        sourceWorktreeId: feature.worktreeId,
+        synchronizeSource: false
+      }),
+      (error) => {
+        assert.match(`${String(error.stdout)}\n${String(error.stderr)}`, /CONFLICT .*shared\.txt/);
+        return true;
+      }
+    );
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], fixture.repository)).trim(), "");
+    await assert.rejects(() => gitOutput(["rev-parse", "-q", "--verify", "MERGE_HEAD"], fixture.repository));
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("creates a dedicated Integration Worktree from the current main revision", async () => {
+  const fixture = await createFixture("integration-worktree");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const mainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const created = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:run-one"
+    });
+    assert.equal(created.branchName, "integration/run-one");
+    assert.equal(created.headOid, mainHead);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], created.path)).trim(), mainHead);
+    const status = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId);
+    assert.equal(status.worktrees.some((worktree) => worktree.worktreeId === created.worktreeId), true);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("stage merge retains and synchronizes the source worktree", async () => {
   const fixture = await createFixture("stage-merge", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
