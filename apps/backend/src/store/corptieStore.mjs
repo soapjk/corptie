@@ -645,8 +645,11 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_agent_work_items_session_turn
       ON agent_work_items(session_id, target_turn_id);
 
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_items_one_running
-      ON agent_work_items(agent_id) WHERE status = 'running';
+      CREATE INDEX IF NOT EXISTS idx_agent_work_items_session_next
+      ON agent_work_items(session_id, status, priority DESC, created_at ASC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_items_one_running_per_session
+      ON agent_work_items(session_id) WHERE status = 'running';
 
       CREATE TABLE IF NOT EXISTS collaboration_events (
         event_id TEXT PRIMARY KEY,
@@ -1144,6 +1147,14 @@ export class CorptieStore {
       ON agents(work_dir COLLATE NOCASE)
       WHERE role = 'assistant' AND work_dir IS NOT NULL AND TRIM(work_dir) <> ''`);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
+    // Agent identity owns shared configuration and memory, not an execution slot.
+    // Sessions are the concurrency boundary: each Session remains serial while
+    // different Sessions bound to the same Agent may run independently.
+    this.db.run("DROP INDEX IF EXISTS idx_agent_work_items_one_running");
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_items_one_running_per_session
+      ON agent_work_items(session_id) WHERE status = 'running'`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_session_next
+      ON agent_work_items(session_id, status, priority DESC, created_at ASC)`);
 
     this.db.run(
       `UPDATE sessions
@@ -2869,6 +2880,14 @@ export class CorptieStore {
     ).map(agentWorkItemFromRow);
   }
 
+  listQueuedAgentWorkItemsForSession(sessionId, limit = 100) {
+    return this.selectAll(
+      `SELECT * FROM agent_work_items WHERE session_id = ? AND status = 'queued'
+       ORDER BY priority DESC, created_at ASC, work_item_id ASC LIMIT ?`,
+      [sessionId, Math.max(1, Math.min(1000, Number(limit) || 100))]
+    ).map(agentWorkItemFromRow);
+  }
+
   listAgentIdsWithQueuedWork() {
     return this.selectAll(
       "SELECT DISTINCT agent_id FROM agent_work_items WHERE status = 'queued' ORDER BY agent_id ASC"
@@ -2881,18 +2900,33 @@ export class CorptieStore {
     ).map((row) => row.agent_id);
   }
 
+  listSessionIdsWithUnsettledAgentWork() {
+    return this.selectAll(
+      "SELECT DISTINCT session_id FROM agent_work_items WHERE status IN ('queued', 'running') ORDER BY session_id ASC"
+    ).map((row) => row.session_id);
+  }
+
   claimAgentWorkItem(workItemId) {
     const item = this.getAgentWorkItem(workItemId);
     if (!item) return null;
+    // Older Corptie processes sharing a development database can recreate the
+    // retired Agent-wide uniqueness index after this process has migrated it.
+    // Remove that compatibility artifact at the claim boundary as well, so it
+    // cannot silently restore cross-Session serialization.
+    if (this.selectOne(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running'"
+    )) {
+      this.db.run("DROP INDEX idx_agent_work_items_one_running");
+    }
     const timestamp = new Date().toISOString();
     this.db.run(
       `UPDATE agent_work_items SET status = 'running', started_at = ?, updated_at = ?, last_error = NULL
        WHERE work_item_id = ? AND status = 'queued'
          AND NOT EXISTS (
            SELECT 1 FROM agent_work_items running
-           WHERE running.agent_id = ? AND running.status = 'running'
+           WHERE running.session_id = ? AND running.status = 'running'
          )`,
-      [timestamp, timestamp, workItemId, item.agentId]
+      [timestamp, timestamp, workItemId, item.sessionId]
     );
     if (this.db.getRowsModified() === 0) return null;
     this.scheduleSave();

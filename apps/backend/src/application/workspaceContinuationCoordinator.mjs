@@ -55,7 +55,7 @@ export class WorkspaceContinuationCoordinator {
       error: null
     });
     this.onEvent("WorkspaceContinuationQueued", { transition, logicalSession: logical, workItem });
-    this.scheduleDrain(agent.agentId);
+    this.scheduleDrain(sessionId);
     return workItem;
   }
 
