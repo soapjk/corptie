@@ -7,6 +7,7 @@ import SwiftUI
 
 struct WarRoomView: View {
     @StateObject private var client = EntityAPIClient.shared
+    @StateObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @State private var selectedObjectiveId: String?
     @State private var selectedWorkItemId: String?
@@ -165,12 +166,20 @@ struct WarRoomView: View {
         }
         .listStyle(.sidebar)
         .overlay(alignment: .bottom) {
-            if let error = client.errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if let error = client.objectivesLoadError {
+                if backendClient.isOnline {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Label(L10n("Connecting to the server…"), systemImage: "network")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .sheet(isPresented: $isCreatingObjective) {

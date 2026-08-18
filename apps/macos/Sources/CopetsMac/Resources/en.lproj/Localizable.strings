@@ -125,6 +125,7 @@
 "After confirmation, Corptie will bind this WorkItem to Agent %@ and start its Work Session in a dedicated Integration Worktree." = "After confirmation, Corptie will bind this WorkItem to Agent %@ and start its Work Session in a dedicated Integration Worktree.";
 "This Objective has no available IC Agent." = "This Objective has no available IC Agent.";
 "Create and Start WorkItem" = "Create and Start WorkItem";
+"Connecting to the server…" = "Connecting to the server…";
 "No merged Worktrees without associated sessions" = "No merged Worktrees without associated sessions";
 "Remove all merged Worktrees that have no associated sessions" = "Remove all merged Worktrees that have no associated sessions";
 "Remove %d merged Worktrees?" = "Remove %d merged Worktrees?";
