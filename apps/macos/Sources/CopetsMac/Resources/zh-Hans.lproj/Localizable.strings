@@ -445,6 +445,7 @@
 "After confirmation, Corptie will bind this WorkItem to Agent %@ and start its Work Session in a dedicated Integration Worktree." = "确认后，Corptie 会将此 WorkItem 绑定到 Agent「%@」，并在独立的集成 Worktree 中启动其 Work Session。";
 "This Objective has no available IC Agent." = "此 Objective 中没有可用的 IC Agent。";
 "Create and Start WorkItem" = "创建并开始运行";
+"Connecting to the server…" = "正在连接服务器…";
 "No merged Worktrees without associated sessions" = "没有可清除的已合并且无关联会话的 Worktree";
 "Remove all merged Worktrees that have no associated sessions" = "清除所有已合并且无关联会话的 Worktree";
 "Remove %d merged Worktrees?" = "清除 %d 个已合并的 Worktree？";
