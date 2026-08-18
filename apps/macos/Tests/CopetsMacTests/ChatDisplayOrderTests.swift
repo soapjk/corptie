@@ -122,6 +122,30 @@ final class ChatDisplayOrderTests: XCTestCase {
         )
     }
 
+    func testOpenClackyPartialHistoryDoesNotStackDatedUserMessagesAtTheTop() {
+        let items = [
+            item(
+                id: "user-1",
+                type: "userMessage",
+                turnId: "turn-1",
+                createdAt: "2026-08-18T10:24:10Z"
+            ),
+            item(id: "agent-1", type: "agentMessage", turnId: "turn-1", createdAt: nil),
+            item(
+                id: "user-2",
+                type: "userMessage",
+                turnId: "turn-2",
+                createdAt: "2026-08-18T10:24:11Z"
+            ),
+            item(id: "agent-2", type: "agentMessage", turnId: "turn-2", createdAt: nil)
+        ]
+
+        XCTAssertEqual(
+            underlyingItemIDs(in: makeChatDisplayEntries(from: items)),
+            ["user-1", "agent-1", "user-2", "agent-2"]
+        )
+    }
+
     private func item(
         id: String,
         type: String,
