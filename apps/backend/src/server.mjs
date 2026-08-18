@@ -2968,10 +2968,10 @@ function settleEntityWorkItemFromSession(session) {
       : "review";
   }
   else if (["failed", "cancelled"].includes(sessionStatus)) nextStatus = "todo";
-  // 用户已手动确认完成（done）后，不因会话状态回退；只有真正的推进才写库。
+  // 用户已手动确认完成（done）后，不因任何后续会话状态回退；只有真正的推进才写库。
   if (!nextStatus || nextStatus === workItem.status) return workItem;
-  // 已完成的 WorkItem 不再被会话完成事件重新推进（用户已确认 done 是终态之一）。
-  if (workItem.status === "done" && nextStatus === "review") return workItem;
+  // 已完成的 WorkItem 是终态；即使关联 Session 仍上报 running/failed/review，也保持用户确认结果。
+  if (["done", "complete", "completed"].includes(workItem.status)) return workItem;
   store.updateWorkItem(workItem.id, { status: nextStatus });
   const updated = store.getWorkItem(workItem.id);
   emitEvent("WorkItemChanged", { action: "status-updated", entity: updated });

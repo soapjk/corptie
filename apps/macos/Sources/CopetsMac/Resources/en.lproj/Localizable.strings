@@ -5,6 +5,10 @@
 "Off" = "Off";
 "Expand" = "Expand";
 "Collapse" = "Collapse";
+"Advance WorkItem Status" = "Advance WorkItem Status";
+"Change WorkItem status from “%@” to “%@”? This manually overrides the execution-managed status." = "Change WorkItem status from “%@” to “%@”? This manually overrides the execution-managed status.";
+"Advance status to %@" = "Advance status to %@";
+"Unable to update WorkItem status" = "Unable to update WorkItem status";
 "Workspace missing" = "Workspace missing";
 "Git status unavailable" = "Git status unavailable";
 "Git branch: %@" = "Git branch: %@";
