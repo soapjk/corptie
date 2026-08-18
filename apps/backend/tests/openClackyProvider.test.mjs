@@ -135,6 +135,39 @@ test("OpenClacky history preserves explicit turn ids across following events", (
   assert.deepEqual(detail.items.map((item) => item.turnId), ["upstream-turn", "upstream-turn"]);
 });
 
+test("OpenClacky history normalizes Unix seconds without inventing missing event timestamps", () => {
+  const expected = "2026-08-18T10:24:10.000Z";
+  const unixSeconds = Date.parse(expected) / 1_000;
+  const summary = openClackySessionSummary({
+    id: "clacky-1",
+    name: "Task",
+    status: "idle",
+    created_at: unixSeconds,
+    updated_at: String(unixSeconds)
+  });
+  const detail = openClackySessionDetail(summary, [
+    { type: "history_user_message", content: "First", created_at: unixSeconds },
+    { type: "assistant_message", content: "Answer" },
+    { type: "history_user_message", content: "Second", created_at: unixSeconds + 1 },
+    { type: "assistant_message", content: "Second answer", created_at: (unixSeconds + 2) * 1_000 }
+  ]);
+
+  assert.equal(summary.updatedAt, expected);
+  assert.equal(detail.createdAt, expected);
+  assert.deepEqual(detail.items.map((item) => item.createdAt), [
+    expected,
+    null,
+    "2026-08-18T10:24:11.000Z",
+    "2026-08-18T10:24:12.000Z"
+  ]);
+  assert.deepEqual(detail.items.map((item) => item.type), [
+    "userMessage",
+    "agentMessage",
+    "userMessage",
+    "agentMessage"
+  ]);
+});
+
 test("OpenClacky manager only restores Sessions owned by Corptie", async () => {
   const requestedPaths = [];
   const manager = new OpenClackyManager({
