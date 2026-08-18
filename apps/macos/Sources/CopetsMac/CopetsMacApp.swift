@@ -14,6 +14,28 @@ struct CorptieMacApp: App {
 }
 
 @MainActor
+enum ApplicationTerminationUI {
+    static func dismissBlockingUI(in application: NSApplication) {
+        dismissAttachedSheets(from: application.windows)
+        if let modalWindow = application.modalWindow {
+            application.abortModal()
+            modalWindow.orderOut(nil)
+        }
+    }
+
+    static func dismissAttachedSheets(from windows: [NSWindow]) {
+        // AppKit rejects terminate() before applicationShouldTerminate whenever
+        // any sheet is attached. Treat transient confirmation/edit sheets as
+        // cancelled so the normal unfinished-session shutdown guard can run.
+        for parentWindow in windows {
+            guard let sheet = parentWindow.attachedSheet else { continue }
+            parentWindow.endSheet(sheet, returnCode: .cancel)
+            sheet.orderOut(nil)
+        }
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
 
@@ -369,7 +391,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
-        NSApp.terminate(nil)
+        ApplicationTerminationUI.dismissBlockingUI(in: NSApp)
+        // Let AppKit finish detaching the cancelled sheet before termination;
+        // otherwise it may still reject the request in the current menu event.
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
     }
 
     private func confirmTerminationIfNeeded() async -> Bool {
