@@ -161,9 +161,11 @@ struct EntityErrorEnvelope: Codable {
 }
 
 // 执行/操作失败的结果（含错误码，供 UI 做针对性引导，如「未绑定仓库」给绑定入口）
-struct EntityLaunchError: Error {
+struct EntityLaunchError: Error, LocalizedError {
     let message: String
     let code: String?
+
+    var errorDescription: String? { message }
 }
 
 struct EntitySessionLaunchResult {
