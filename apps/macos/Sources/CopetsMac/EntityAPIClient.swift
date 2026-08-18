@@ -199,6 +199,19 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: WorkItem.self)
     }
 
+    // 用户在确认界面作出的最终裁决。通用 PATCH status=done 仍保留证据门禁，
+    // 防止 Agent 或后台流程把普通状态更新冒充为用户确认。
+    @discardableResult
+    func confirmWorkItemCompletion(workItemId: String) async -> WorkItem? {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItemId)/confirm-completion")
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["confirmed": true])
+        return await performEntityMutation(request, as: WorkItem.self)
+    }
+
     // 提交独立的验收评估。该接口要求逐条标准、结论和可核验证据；
     // Session 生命周期状态不能通过此方法隐式转换为验收通过。
     @discardableResult
