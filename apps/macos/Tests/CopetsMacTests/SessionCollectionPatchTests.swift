@@ -155,12 +155,17 @@ struct SessionCollectionPatchTests {
         ))
         let legacy = SessionRowModel(session: makeSession(id: "legacy", agentId: "unknown"))
 
-        let groups = makeSessionGroups(rows: [worker, legacy, assistant], agents: [])
+        let groups = makeSessionGroups(
+            rows: [worker, legacy, assistant],
+            agents: [],
+            workItems: [],
+            category: .assistant
+        )
 
-        #expect(groups.map(\.key) == ["assistant:assistant", "__worker__", "__legacy__"])
+        #expect(groups.map(\.key) == ["assistant:assistant", "__legacy__"])
         #expect(groups[0].rows.map(\.id) == ["assistant-chat"])
-        #expect(groups[1].rows.map(\.id) == ["worker"])
-        #expect(groups[2].rows.map(\.id) == ["legacy"])
+        #expect(groups[1].rows.map(\.id) == ["legacy"])
+        #expect(!groups.flatMap(\.rows).contains(where: { $0.id == worker.id }))
     }
 
     @Test
@@ -175,10 +180,56 @@ struct SessionCollectionPatchTests {
             agentId: "assistant",
             sessionKind: .assistantChat
         ))
-        let groups = makeSessionGroups(rows: [objective, assistant], agents: [])
+        let groups = makeSessionGroups(
+            rows: [objective, assistant],
+            agents: [],
+            workItems: [],
+            category: .objective
+        )
 
-        #expect(groups.map(\.key) == ["assistant:assistant", "__objective__"])
-        #expect(groups[1].rows.map(\.id) == ["objective-chat"])
+        #expect(groups.map(\.key) == ["__objective__"])
+        #expect(groups[0].rows.map(\.id) == ["objective-chat"])
+    }
+
+    @Test
+    func workerSessionsAreSplitByTheirWorkItemCompletionState() {
+        let active = SessionRowModel(session: makeSession(
+            id: "active-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:active"
+        ))
+        let completed = SessionRowModel(session: makeSession(
+            id: "completed-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:completed"
+        ))
+        let orphaned = SessionRowModel(session: makeSession(
+            id: "orphaned-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:missing"
+        ))
+
+        let groups = makeSessionGroups(
+            rows: [active, completed, orphaned],
+            agents: [],
+            workItems: [
+                makeWorkItem(id: "work-item:active", status: "in_progress"),
+                makeWorkItem(id: "work-item:completed", status: "done")
+            ],
+            category: .worker
+        )
+
+        #expect(groups.map(\.key) == ["__worker_active__", "__worker_completed__"])
+        #expect(groups[0].rows.map(\.id) == ["active-worker", "orphaned-worker"])
+        #expect(groups[1].rows.map(\.id) == ["completed-worker"])
+    }
+
+    @Test
+    func sessionCategoriesKeepLegacySessionsDiscoverableAsAssistantSessions() {
+        #expect(SessionCategory(session: makeSession(id: "worker", sessionKind: .worker)) == .worker)
+        #expect(SessionCategory(session: makeSession(id: "objective", sessionKind: .objectiveChat)) == .objective)
+        #expect(SessionCategory(session: makeSession(id: "assistant", sessionKind: .assistantChat)) == .assistant)
+        #expect(SessionCategory(session: makeSession(id: "legacy")) == .assistant)
     }
 
     @Test
@@ -284,5 +335,25 @@ private func makeSession(
         external: nil,
         actions: nil,
         pendingCollaborationConfirmation: nil
+    )
+}
+
+private func makeWorkItem(id: String, status: String) -> WorkItem {
+    WorkItem(
+        id: id,
+        objectiveId: "objective:1",
+        title: id,
+        description: "",
+        acceptanceCriteria: "",
+        priority: "medium",
+        status: status,
+        mainWorkspaceId: nil,
+        mainAgentId: nil,
+        currentSessionId: nil,
+        executionStatus: nil,
+        acceptanceAssessment: nil,
+        completionSuggestion: nil,
+        createdAt: "2026-08-12T00:00:00Z",
+        updatedAt: "2026-08-12T00:00:00Z"
     )
 }
