@@ -15,23 +15,30 @@ struct CorptieMacApp: App {
 
 @MainActor
 enum ApplicationTerminationUI {
-    static func dismissBlockingUI(in application: NSApplication) {
-        dismissAttachedSheets(from: application.windows)
+    @discardableResult
+    static func dismissBlockingUI(in application: NSApplication) -> Bool {
+        var dismissedBlockingUI = dismissAttachedSheets(from: application.windows)
         if let modalWindow = application.modalWindow {
             application.abortModal()
             modalWindow.orderOut(nil)
+            dismissedBlockingUI = true
         }
+        return dismissedBlockingUI
     }
 
-    static func dismissAttachedSheets(from windows: [NSWindow]) {
+    @discardableResult
+    static func dismissAttachedSheets(from windows: [NSWindow]) -> Bool {
         // AppKit rejects terminate() before applicationShouldTerminate whenever
         // any sheet is attached. Treat transient confirmation/edit sheets as
         // cancelled so the normal unfinished-session shutdown guard can run.
+        var dismissedSheet = false
         for parentWindow in windows {
             guard let sheet = parentWindow.attachedSheet else { continue }
             parentWindow.endSheet(sheet, returnCode: .cancel)
             sheet.orderOut(nil)
+            dismissedSheet = true
         }
+        return dismissedSheet
     }
 }
 
@@ -377,10 +384,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
-        ApplicationTerminationUI.dismissBlockingUI(in: NSApp)
-        // Let AppKit finish detaching the cancelled sheet before termination;
-        // otherwise it may still reject the request in the current menu event.
-        DispatchQueue.main.async {
+        let dismissedBlockingUI = ApplicationTerminationUI.dismissBlockingUI(in: NSApp)
+        // Ending a sheet clears attachedSheet immediately, but AppKit keeps its
+        // modal session alive until the detach animation completes. One run-loop
+        // tick is not sufficient; terminating during that interval is rejected.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (dismissedBlockingUI ? 0.35 : 0)) {
             NSApp.terminate(nil)
         }
     }

@@ -24,8 +24,9 @@ struct ApplicationTerminationUITests {
         parent.beginSheet(sheet)
         #expect(parent.attachedSheet === sheet)
 
-        ApplicationTerminationUI.dismissAttachedSheets(from: [parent])
+        let dismissedSheet = ApplicationTerminationUI.dismissAttachedSheets(from: [parent])
 
+        #expect(dismissedSheet)
         #expect(parent.attachedSheet == nil)
         #expect(!sheet.isVisible)
     }
