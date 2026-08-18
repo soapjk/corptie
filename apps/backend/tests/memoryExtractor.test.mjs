@@ -87,6 +87,55 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
   }
 });
 
+test("two Sessions can append memories to one Agent concurrently without lost writes", async () => {
+  const { store, directory } = await createStore();
+  try {
+    for (const sessionId of ["s1", "s2"]) {
+      store.upsertSession({
+        id: sessionId,
+        title: sessionId,
+        agent: "shared-agent",
+        provider: "codex-app-server",
+        status: "complete"
+      });
+      store.appendSessionEvent({
+        eventId: `event:${sessionId}`,
+        sessionId,
+        type: "tool_call",
+        payload: { text: `procedure learned by ${sessionId}` }
+      });
+    }
+
+    const extractor = new MemoryExtractor({
+      store,
+      classifyMany: async (events) => {
+        await Promise.resolve();
+        return events.map((event) => ({
+          kind: "procedure",
+          content: event.payload.text
+        }));
+      }
+    });
+    const scope = { agentId: "agent:shared" };
+    const [first, second] = await Promise.all([
+      extractor.extractFromSession("s1", scope),
+      extractor.extractFromSession("s2", scope)
+    ]);
+
+    assert.equal(first.length, 1);
+    assert.equal(second.length, 1);
+    assert.deepEqual(
+      store.listMemoriesByOwner("agent", "agent:shared")
+        .map((memory) => memory.source_session_id)
+        .sort(),
+      ["s1", "s2"]
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("ownerForKind 归属规则", () => {
   assert.deepEqual(ownerForKind("procedure", { agentId: "a" }), { ownerType: "agent", ownerId: "a" });
   assert.deepEqual(ownerForKind("fact", { workItemId: "w", objectiveId: "o" }), {

@@ -25,6 +25,7 @@ async function fixture() {
   const core = new CollaborationCore(store);
   core.registerAgent({ agentId: "agent-b", name: "Agent B" });
   core.bindSession({ agentId: "agent-b", sessionId: "codex:thread-b" });
+  core.bindSession({ agentId: "agent-b", sessionId: "codex:thread-c" });
   return { directory, dbPath, store };
 }
 
@@ -32,7 +33,7 @@ function enqueue(store, overrides) {
   return store.enqueueAgentWorkItem({
     workItemId: overrides.workItemId,
     agentId: "agent-b",
-    sessionId: "codex:thread-b",
+    sessionId: overrides.sessionId ?? "codex:thread-b",
     kind: overrides.kind,
     priority: overrides.priority,
     text: overrides.text ?? overrides.workItemId,
@@ -195,15 +196,28 @@ test("user instructions are selected before older collaboration work", async () 
   }
 });
 
-test("an Agent can claim only one work item at a time", async () => {
+test("one Session stays serial while two Sessions sharing an Agent run concurrently", async () => {
   const { directory, store } = await fixture();
   try {
     enqueue(store, { workItemId: "user-1", kind: "user", priority: 100 });
     enqueue(store, { workItemId: "user-2", kind: "user", priority: 100 });
+    enqueue(store, {
+      workItemId: "user-3",
+      kind: "user",
+      priority: 100,
+      sessionId: "codex:thread-c"
+    });
 
     assert.equal(store.claimAgentWorkItem("user-1")?.status, "running");
-    assert.equal(store.getRunningAgentWorkItem("agent-b")?.workItemId, "user-1");
     assert.equal(store.claimAgentWorkItem("user-2"), null);
+    store.db.run(`CREATE UNIQUE INDEX idx_agent_work_items_one_running
+      ON agent_work_items(agent_id) WHERE status = 'running'`);
+    assert.equal(store.claimAgentWorkItem("user-3")?.status, "running");
+    assert.equal(store.selectOne(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running'"
+    ), null);
+    assert.equal(store.getRunningAgentWorkItemForSession("codex:thread-b")?.workItemId, "user-1");
+    assert.equal(store.getRunningAgentWorkItemForSession("codex:thread-c")?.workItemId, "user-3");
     store.updateAgentWorkItem("user-1", { status: "completed" });
     assert.equal(store.claimAgentWorkItem("user-2")?.status, "running");
   } finally {
@@ -225,8 +239,33 @@ test("a lone running work item remains discoverable for restart recovery", async
 
     assert.deepEqual(store.listAgentIdsWithQueuedWork(), []);
     assert.deepEqual(store.listAgentIdsWithUnsettledWork(), ["agent-b"]);
+    assert.deepEqual(store.listSessionIdsWithUnsettledAgentWork(), ["codex:thread-b"]);
   } finally {
     await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("startup migrates the legacy Agent-wide running index to a Session-wide index", async () => {
+  const { directory, dbPath, store } = await fixture();
+  let reopened = null;
+  try {
+    store.db.run("DROP INDEX IF EXISTS idx_agent_work_items_one_running_per_session");
+    store.db.run(`CREATE UNIQUE INDEX idx_agent_work_items_one_running
+      ON agent_work_items(agent_id) WHERE status = 'running'`);
+    await store.close();
+
+    reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await reopened.initialize();
+
+    assert.equal(reopened.selectOne(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running'"
+    ), null);
+    assert.equal(reopened.selectOne(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running_per_session'"
+    )?.name, "idx_agent_work_items_one_running_per_session");
+  } finally {
+    if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
     await rm(directory, { recursive: true, force: true });
   }
 });
