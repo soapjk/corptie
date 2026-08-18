@@ -386,7 +386,11 @@ function openClackyEventItems(sessionId, event, index, fallbackTurnId) {
     turnId: String(event?.turn_id ?? fallbackTurnId ?? fallbackOpenClackyTurnId(sessionId, index)),
     turnStatus: "complete",
     title: "OpenClacky",
-    createdAt: isoTimestamp(event?.created_at)
+    // OpenClacky history commonly exposes Unix seconds for authored messages
+    // and no timestamp at all for assistant/tool events. Preserve the absence
+    // instead of fabricating a snapshot-read time: a made-up "now" would make
+    // the frontend sort every authored message ahead of the rest of history.
+    createdAt: isoTimestamp(event?.created_at, null)
   };
   if (type === "history_user_message" || type === "user_message") {
     return [{ ...base, type: "userMessage", title: "You", text: userMessageWithoutSessionContext(event.content) }];
@@ -453,9 +457,26 @@ function optionalText(value) {
   return text || null;
 }
 
-function isoTimestamp(value) {
-  const date = value ? new Date(value) : new Date();
-  return Number.isNaN(date.valueOf()) ? new Date().toISOString() : date.toISOString();
+function isoTimestamp(value, fallback = new Date().toISOString()) {
+  if (value === null || value === undefined || value === "") return fallback;
+  let normalized = value;
+  if (typeof value === "number" || (typeof value === "string" && /^-?\d+(?:\.\d+)?$/.test(value.trim()))) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    const magnitude = Math.abs(numeric);
+    // Date expects milliseconds. OpenClacky currently emits Unix seconds, but
+    // accept millisecond/microsecond/nanosecond epochs as well so the provider
+    // boundary remains tolerant of upstream serialization changes.
+    normalized = magnitude < 1e11
+      ? numeric * 1_000
+      : magnitude < 1e14
+        ? numeric
+        : magnitude < 1e17
+          ? numeric / 1_000
+          : numeric / 1_000_000;
+  }
+  const date = new Date(normalized);
+  return Number.isNaN(date.valueOf()) ? fallback : date.toISOString();
 }
 
 function safeJson(value) {
