@@ -79,5 +79,8 @@ development-docs/
 **/.github/copilot-instructions.md
 **/.github/instructions/
 docs/
+!docs/
+docs/**
+!docs/openclacky-provider-parity-audit-and-remediation.md
 # Corptie local Agent configuration
 /.corptie/
