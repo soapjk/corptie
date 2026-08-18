@@ -20,7 +20,7 @@ export const objectiveChatDynamicTools = Object.freeze([
     title: { type: "string", minLength: 1 },
     patch
   }, ["action"]),
-  tool("corptie_objective_agents_list", "List Agents eligible for work in this Objective, including contributor membership and availability data."),
+  tool("corptie_objective_agents_list", "List Agents attached to this Objective. Independent Contributors can be selected for WorkItem execution."),
   tool("corptie_objective_work_item_start", "Request execution of a WorkItem in this Objective through the shared Agent Provider lifecycle.", {
     work_item_id: id("WorkItem id within this Objective."),
     agent_id: id("Independent Contributor Agent id."),
@@ -73,10 +73,11 @@ export class ObjectiveChatOperationService {
   #agents(objectiveId) {
     const objective = this.objectiveService.getObjective(objectiveId);
     const contributors = new Set(objective.contributorAgentIds);
-    return this.store.listAgents().filter((agent) => agent.role === "independentContributor").map((agent) => ({
+    return this.store.listAgents().filter((agent) => contributors.has(agent.agentId)).map((agent) => ({
       agentId: agent.agentId, name: agent.name, role: agent.role, provider: agent.provider,
       description: agent.description, status: agent.status,
-      isContributor: contributors.has(agent.agentId)
+      isContributor: true,
+      canStartWorkItem: agent.role === "independentContributor"
     }));
   }
 
@@ -111,9 +112,6 @@ export class ObjectiveChatOperationService {
       for (const id of patch.contributorAgentIds) {
         const agent = this.store.getAgent(text(id, "contributorAgentIds[]"));
         if (!agent) throw coded("AGENT_NOT_FOUND", `Contributor Agent not found: ${id}`);
-        if (agent.role !== "independentContributor") {
-          throw coded("AGENT_NOT_INDEPENDENT_CONTRIBUTOR", `Objective contributor must be an Independent Contributor: ${id}`);
-        }
       }
     }
     if (Array.isArray(patch.workspaceIds)) {
