@@ -183,6 +183,28 @@ export class ObjectiveApplicationService {
     return this.emit("WorkItemChanged", this.store.updateWorkItem(id, nextPatch), "updated");
   }
 
+  confirmWorkItemCompletion(id, input = {}) {
+    const current = this.getWorkItem(id);
+    if (input.confirmed !== true) {
+      throw new WorkItemAcceptanceError(
+        "USER_CONFIRMATION_REQUIRED",
+        "Completing a WorkItem through this command requires explicit user confirmation."
+      );
+    }
+    if (["done", "complete", "completed"].includes(current.status)) return current;
+    if (!["in_progress", "doing", "running", "review", "reviewing"].includes(current.status)) {
+      throw new WorkItemAcceptanceError(
+        "INVALID_STATUS_TRANSITION",
+        `A WorkItem in status ${current.status} cannot be confirmed complete.`
+      );
+    }
+    return this.emit(
+      "WorkItemChanged",
+      this.store.updateWorkItem(id, { status: "done" }),
+      "user-confirmed-completion"
+    );
+  }
+
   recordAcceptanceAssessment(id, input = {}) {
     const workItem = this.getWorkItem(id);
     const sourceSessionId = String(input.sourceSessionId ?? "").trim();
