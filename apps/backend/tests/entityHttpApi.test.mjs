@@ -129,32 +129,51 @@ test("POST /objectives → 创建，GET /objectives → 列表", async () => {
   }
 });
 
-test("POST /objectives/:id/sessions creates a distinct Objective Chat with an Assistant", async () => {
+test("POST /objectives/:id/sessions creates Objective Chat with any attached Agent and rejects outsiders", async () => {
   const services = await createServices();
   try {
-    const objective = services.objectiveService.createObjective({ name: "Objective Chat" });
     const assistant = services.store.createAgent({ name: "Planner", role: "assistant", provider: "codex" });
+    const contributor = services.store.createAgent({ name: "Builder", role: "independentContributor", provider: "codex" });
+    const outsider = services.store.createAgent({ name: "Outsider", role: "independentContributor", provider: "codex" });
+    const objective = services.objectiveService.createObjective({
+      name: "Objective Chat",
+      contributorAgentIds: [assistant.agentId, contributor.agentId]
+    });
     const calls = [];
-    const result = await callApi({
+    const launchObjectiveChatSession = async (input) => {
+      calls.push(input);
+      return {
+        id: `objective-chat:${calls.length}`, title: "Planning", agent: input.agent.name, agentId: input.agent.agentId,
+        sessionKind: "objectiveChat", objectiveId: objective.id, workItemId: null,
+        status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
+      };
+    };
+    for (const agent of [assistant, contributor]) {
+      const result = await callApi({
+        method: "POST",
+        pathname: `/objectives/${objective.id}/sessions`,
+        body: { agentId: agent.agentId, title: "Planning" },
+        launchObjectiveChatSession,
+        ...services
+      });
+      assert.equal(result.statusCode, 201);
+      assert.equal(result.body.session.sessionKind, "objectiveChat");
+      assert.equal(result.body.session.objectiveId, objective.id);
+      assert.equal(result.body.session.workItemId, null);
+    }
+    assert.deepEqual(calls.map((call) => call.agent.agentId), [assistant.agentId, contributor.agentId]);
+    assert.equal(calls[0].objective.id, objective.id);
+
+    const rejected = await callApi({
       method: "POST",
       pathname: `/objectives/${objective.id}/sessions`,
-      body: { agentId: assistant.agentId, title: "Planning" },
-      launchObjectiveChatSession: async (input) => {
-        calls.push(input);
-        return {
-          id: "objective-chat:1", title: "Planning", agent: "Planner", agentId: assistant.agentId,
-          sessionKind: "objectiveChat", objectiveId: objective.id, workItemId: null,
-          status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
-        };
-      },
+      body: { agentId: outsider.agentId },
+      launchObjectiveChatSession,
       ...services
     });
-    assert.equal(result.statusCode, 201);
-    assert.equal(result.body.session.sessionKind, "objectiveChat");
-    assert.equal(result.body.session.objectiveId, objective.id);
-    assert.equal(result.body.session.workItemId, null);
-    assert.equal(calls[0].agent.agentId, assistant.agentId);
-    assert.equal(calls[0].objective.id, objective.id);
+    assert.equal(rejected.statusCode, 403);
+    assert.equal(rejected.body.code, "AGENT_OUTSIDE_OBJECTIVE");
+    assert.equal(calls.length, 2);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

@@ -134,6 +134,9 @@ struct NewSessionCreationSheet: View {
             }
         }
         .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
+        .onChange(of: selectedObjectiveId) { _, _ in
+            if kind == .objectiveChat { normalizeAgentSelection() }
+        }
     }
 
     private var sessionIdentitySection: some View {
@@ -218,14 +221,6 @@ struct NewSessionCreationSheet: View {
 
     @ViewBuilder
     private var objectiveSection: some View {
-        if fixedAgent == nil {
-            choiceSection(
-                title: L10n("选择 Assistant"),
-                emptyTitle: L10n("暂无可用 Assistant"),
-                emptyDescription: L10n("请先在 Agent 管理页创建 Assistant。"),
-                rows: client.assistantAgents
-            ) { agent in agentChoiceRow(agent) }
-        }
         VStack(alignment: .leading, spacing: 8) {
             Text(L10n("选择 Objective"))
                 .font(.caption.weight(.semibold))
@@ -256,10 +251,25 @@ struct NewSessionCreationSheet: View {
                 .frame(minHeight: 150)
             }
         }
+        if fixedAgent == nil {
+            choiceSection(
+                title: L10n("选择 Objective Agent"),
+                emptyTitle: L10n("Objective 暂无可用 Agent"),
+                emptyDescription: L10n("请先在 Objective 详情中挂载 Assistant 或 Independent Contributor。"),
+                rows: objectiveAgents
+            ) { agent in agentChoiceRow(agent) }
+        }
     }
 
     private var independentContributors: [Agent] {
         client.agents.filter(\.isIndependentContributor)
+    }
+
+    private var objectiveAgents: [Agent] {
+        let objective = fixedObjective ?? client.objectives.first(where: { $0.id == selectedObjectiveId })
+        guard let objective else { return [] }
+        let contributorIds = Set(objective.contributorAgentIds)
+        return client.agents.filter { contributorIds.contains($0.agentId) }
     }
 
     private var canCreate: Bool {
@@ -332,11 +342,22 @@ struct NewSessionCreationSheet: View {
 
     private func normalizeAgentSelection() {
         if let fixedAgent {
-            selectedAgentId = fixedAgent.agentId
-            kind = fixedObjective != nil ? .objectiveChat : (fixedAgent.isAssistant ? .assistantChat : .worker)
+            if let fixedObjective {
+                kind = .objectiveChat
+                selectedObjectiveId = fixedObjective.id
+                selectedAgentId = fixedObjective.contributorAgentIds.contains(fixedAgent.agentId) ? fixedAgent.agentId : nil
+            } else {
+                selectedAgentId = fixedAgent.agentId
+                kind = fixedAgent.isAssistant ? .assistantChat : .worker
+            }
             return
         }
-        let candidates = kind == .worker ? independentContributors : client.assistantAgents
+        let candidates: [Agent]
+        switch kind {
+        case .assistantChat: candidates = client.assistantAgents
+        case .objectiveChat: candidates = objectiveAgents
+        case .worker: candidates = independentContributors
+        }
         if !candidates.contains(where: { $0.agentId == selectedAgentId }) {
             selectedAgentId = candidates.first?.agentId
         }

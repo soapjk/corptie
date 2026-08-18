@@ -3018,9 +3018,9 @@ async function launchAgentSession({ agent, title, prompt }) {
 }
 
 async function launchObjectiveChatSession({ agent, objective, title, prompt: requestedPrompt }) {
-  if (agent.role !== "assistant") {
-    const error = new Error("只有 Assistant 才能创建 Objective Chat Session。");
-    error.code = "AGENT_NOT_ASSISTANT";
+  if (!objective.contributorAgentIds.includes(agent.agentId)) {
+    const error = new Error("只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。");
+    error.code = "AGENT_OUTSIDE_OBJECTIVE";
     throw error;
   }
   const providerId = entityAgentProviderId(agent.provider);

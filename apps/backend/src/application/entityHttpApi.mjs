@@ -323,8 +323,8 @@ export function handleEntityHttpRequest({
           if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
           const agent = objectiveService.store.getAgent(agentId);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
-          if (agent.role !== "assistant") {
-            throw apiError("AGENT_NOT_ASSISTANT", "只有 Assistant 才能创建 Objective Chat Session。", 400);
+          if (!objective.contributorAgentIds.includes(agent.agentId)) {
+            throw apiError("AGENT_OUTSIDE_OBJECTIVE", "只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。", 403);
           }
           const session = await launchObjectiveChatSession({
             agent,
