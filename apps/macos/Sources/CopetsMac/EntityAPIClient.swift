@@ -12,6 +12,7 @@ final class EntityAPIClient: ObservableObject {
     @Published var objectives: [Objective] = []
     @Published var agents: [Agent] = []
     @Published private(set) var workItemsRevision: UInt64 = 0
+    @Published private(set) var workItemsLoadError: String?
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
     var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
@@ -86,20 +87,20 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    func workItems(for objective: Objective) async -> [WorkItem] {
-        do {
-            let url = baseURL.appending(path: "objectives/\(objective.id)/work-items")
-            let (data, _) = try await URLSession.shared.data(from: url)
-            return try decoder.decode(WorkItemListEnvelope.self, from: data).workItems
-        } catch {
-            errorMessage = error.localizedDescription
-            return []
-        }
+    func workItems(for objective: Objective) async -> [WorkItem]? {
+        await loadWorkItems(from: baseURL.appending(path: "objectives/\(objective.id)/work-items"))
     }
 
-    func allWorkItems() async -> [WorkItem] {
+    func allWorkItems() async -> [WorkItem]? {
+        await loadWorkItems(from: baseURL.appending(path: "work-items"))
+    }
+
+    func clearWorkItemsLoadError() {
+        workItemsLoadError = nil
+    }
+
+    private func loadWorkItems(from url: URL) async -> [WorkItem]? {
         do {
-            let url = baseURL.appending(path: "work-items")
             let (data, response) = try await URLSession.shared.data(from: url)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
@@ -109,12 +110,37 @@ final class EntityAPIClient: ObservableObject {
                 )
             }
             let workItems = try decoder.decode(WorkItemListEnvelope.self, from: data).workItems
+            workItemsLoadError = nil
             errorMessage = nil
             return workItems
         } catch {
-            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
-            return []
+            let message = Self.workItemsLoadErrorMessage(error)
+            workItemsLoadError = message
+            errorMessage = message
+            return nil
         }
+    }
+
+    static func workItemsLoadErrorMessage(_ error: Error) -> String {
+        let detail: String
+        if let launchError = error as? EntityLaunchError {
+            detail = launchError.message
+        } else if case let DecodingError.keyNotFound(key, context) = error {
+            let path = (context.codingPath + [key]).map(\.stringValue).joined(separator: ".")
+            detail = "响应缺少字段 \(path)。"
+        } else if case let DecodingError.typeMismatch(_, context) = error {
+            let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+            detail = "响应字段 \(path.isEmpty ? "<root>" : path) 的类型不兼容。"
+        } else if case let DecodingError.valueNotFound(_, context) = error {
+            let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+            detail = "响应字段 \(path.isEmpty ? "<root>" : path) 缺少值。"
+        } else if case let DecodingError.dataCorrupted(context) = error {
+            let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+            detail = "响应数据损坏（\(path.isEmpty ? "<root>" : path)）。"
+        } else {
+            detail = error.localizedDescription
+        }
+        return "WorkItem 加载失败；未用空列表覆盖现有内容。此错误不代表数据已删除。\(detail)"
     }
 
     func workItem(id: String) async -> WorkItem? {
