@@ -1,0 +1,83 @@
+function tool(name, description, properties = {}, required = []) {
+  return Object.freeze({
+    type: "function",
+    name,
+    description,
+    deferLoading: false,
+    inputSchema: {
+      type: "object",
+      properties,
+      required,
+      additionalProperties: false
+    }
+  });
+}
+
+const scope = {
+  type: "string",
+  enum: ["agent", "objective", "work_item"],
+  description: "Memory scope. Owner identity is always derived from the authenticated current Session."
+};
+
+export const memoryDynamicTools = Object.freeze([
+  tool(
+    "corptie_memory_search",
+    "Search active, non-revoked memories visible to the current Session's Agent, Objective, and WorkItem. Empty intent returns a bounded high-confidence recall set.",
+    {
+      intent: {
+        type: "string",
+        description: "What to recall. May be empty to retrieve the current Session's highest-confidence active memories."
+      }
+    }
+  ),
+  tool(
+    "corptie_memory_list",
+    "List memories manageable from the authenticated current Session. Revoked memories are hidden unless explicitly requested so their audit trail can be inspected.",
+    {
+      scope,
+      include_revoked: { type: "boolean", description: "Include revoked audit records. Defaults to false." }
+    }
+  ),
+  tool(
+    "corptie_memory_remember",
+    "Persist a structured memory only when the user explicitly asks to remember, retain, or follow something in future. Never use this for ordinary conversation or to edit shared AGENT_MEMORY.md.",
+    {
+      content: { type: "string", minLength: 1, description: "Durable content explicitly requested by the user." },
+      kind: {
+        type: "string",
+        enum: ["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"]
+      },
+      scope,
+      tags: { type: "array", items: { type: "string", minLength: 1 } }
+    },
+    ["content", "kind"]
+  ),
+  tool(
+    "corptie_memory_update",
+    "Correct the content or tags of a non-revoked memory manageable from the authenticated current Session. Ownership and provenance cannot be changed.",
+    {
+      memory_id: { type: "string", minLength: 1 },
+      content: { type: "string", minLength: 1 },
+      tags: { type: "array", items: { type: "string", minLength: 1 } }
+    },
+    ["memory_id"]
+  ),
+  tool(
+    "corptie_memory_revoke",
+    "Revoke a memory manageable from the authenticated current Session. Revocation preserves provenance and stops future search or injection; physical deletion is intentionally unavailable.",
+    {
+      memory_id: { type: "string", minLength: 1 },
+      reason: { type: "string", minLength: 1 }
+    },
+    ["memory_id"]
+  )
+]);
+
+export function callMemoryDynamicTool(service, input = {}) {
+  if (!service || typeof service.execute !== "function") {
+    const error = new Error("Memory tools are unavailable.");
+    error.code = "MEMORY_TOOLS_UNAVAILABLE";
+    throw error;
+  }
+  return service.execute(input);
+}

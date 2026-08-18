@@ -74,6 +74,8 @@ import {
 } from "./application/workItemAcceptanceDynamicTools.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
+import { MemoryOperationService } from "./application/memoryOperationService.mjs";
+import { memoryDynamicTools, callMemoryDynamicTool } from "./application/memoryDynamicTools.mjs";
 import { SkillRegistryService } from "./application/skillRegistryService.mjs";
 import { skillDynamicTools, callSkillDynamicTool } from "./application/skillDynamicTools.mjs";
 import { CollaborationRouter } from "./application/collaborationRouter.mjs";
@@ -215,6 +217,11 @@ const hubService = new HubService({
   embedder: createOpenAiEmbedder(store.choiceParserSettings())
 });
 const agentContextService = new AgentContextService({ store, hubService });
+const memoryOperationService = new MemoryOperationService({
+  store,
+  hubService,
+  resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId)
+});
 const collaborationRouter = new CollaborationRouter({ store });
 const memoryExtractor = new MemoryExtractor({
   store,
@@ -271,6 +278,11 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
 });
 let platformOperationService = null;
 const hostToolCatalog = new HostToolCatalog([
+  {
+    id: "memory",
+    tools: memoryDynamicTools,
+    execute: (input) => callMemoryDynamicTool(memoryOperationService, input)
+  },
   {
     id: "workspace",
     tools: workspaceDynamicTools,
@@ -1899,6 +1911,9 @@ function collaborationMcpProcessOptions(agentId, metadata = null) {
       CORPTIE_AGENT_ID: agentId,
       CORPTIE_BACKEND_URL: `http://127.0.0.1:${port}`,
       CORPTIE_ENV: environmentName,
+      CORPTIE_SESSION_ID: metadata?.sessionId ?? "",
+      CORPTIE_OBJECTIVE_ID: metadata?.objectiveId ?? "",
+      CORPTIE_WORK_ITEM_ID: metadata?.workItemId ?? "",
       ...(metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
         ? {
             CORPTIE_OBJECTIVE_CHAT_ID: metadata.objectiveId,
@@ -1956,6 +1971,7 @@ function sessionToolMetadata(session) {
     purpose: "session",
     sessionKind: session?.sessionKind ?? "legacy",
     objectiveId: session?.objectiveId ?? null,
+    workItemId: session?.workItemId ?? null,
     sessionId: session?.id ?? null
   };
 }
@@ -3075,7 +3091,13 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
       agent: agent.name,
       sessionKind: "worker"
     },
-    { source: "entity", actorId: agent.agentId }
+    {
+      source: "entity",
+      actorId: agent.agentId,
+      objectiveId: workItem.objective_id,
+      workItemId: workItem.id,
+      sessionKind: "worker"
+    }
   );
   return session;
 }
@@ -5212,27 +5234,12 @@ function route(request, response) {
       const { sessionId } = requireAgentLogicalSession(agentId);
       return switchSessionWorkspace(sessionId, input.target_worktree_id, undefined, input.continuation_checkpoint);
     },
-    onSearchMemory: async (agentId, intent) => {
-      const { sessionId } = requireAgentLogicalSession(agentId);
-      const session = store.getSession(sessionId);
-      const objectiveId = session?.objectiveId ?? null;
-      const workItemId = session?.workItemId ?? null;
-      const memories = await hubService.retrieveMemory(intent, { agentId, objectiveId, workItemId });
-      return {
-        scopes: { agentId, objectiveId, workItemId },
-        count: memories.length,
-        memories: memories.map((m) => ({
-          id: m.id,
-          ownerType: m.owner_type,
-          ownerId: m.owner_id,
-          kind: m.kind,
-          content: m.content,
-          tags: (() => { try { return JSON.parse(m.tags_json || "[]"); } catch { return []; } })(),
-          confidence: Number(m.confidence ?? 0),
-          promotionStatus: m.promotion_status
-        }))
-      };
-    },
+    onMemoryOperation: (agentId, tool, args, metadata) => memoryOperationService.execute({
+      actorId: agentId,
+      tool,
+      arguments: args,
+      metadata
+    }),
     onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
     onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId),
     onReportWorkItemAcceptance: reportWorkItemAcceptanceForAgent
