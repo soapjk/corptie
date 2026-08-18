@@ -4,6 +4,8 @@ import {
   acceptanceCriteriaList,
   buildAcceptanceAssessment,
   completionSuggestionForWorkItem,
+  parseAcceptanceAssessment,
+  presentWorkItemAcceptance,
   workItemExecutionPatch,
   workItemExecutionPrompt,
   WorkItemAcceptanceError
@@ -40,6 +42,19 @@ test("acceptance criteria are canonicalized into an ordered checklist", () => {
     acceptanceCriteriaList(" 1. First\n- Second\n\n* Third "),
     ["First", "Second", "Third"]
   );
+});
+
+test("legacy empty acceptance objects are presented as absent", () => {
+  assert.equal(parseAcceptanceAssessment("{}"), null);
+  assert.equal(parseAcceptanceAssessment({}), null);
+  assert.deepEqual(presentWorkItemAcceptance({
+    id: "wi-legacy",
+    acceptance_assessment_json: "{}"
+  }), {
+    id: "wi-legacy",
+    acceptanceAssessment: null,
+    completionSuggestion: null
+  });
 });
 
 test("worker prompt carries the WorkItem acceptance criteria", () => {

@@ -853,13 +853,19 @@ private struct ContextReferenceAddSheet: View {
             if let error = backendClient.lastError, !error.isEmpty {
                 Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
             }
+            if mode == .workItem, let error = entityClient.workItemsLoadError {
+                Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(3)
+            }
         }
         .padding(18)
         .frame(width: 430, height: mode == .webURL ? 230 : 460)
         .task {
             switch mode {
             case .objective: await entityClient.refreshObjectives()
-            case .workItem: workItems = await entityClient.allWorkItems()
+            case .workItem:
+                if let loaded = await entityClient.allWorkItems() {
+                    workItems = loaded
+                }
             case .agent: await entityClient.refreshAgents()
             case .session, .webURL: break
             }

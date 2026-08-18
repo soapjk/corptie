@@ -52,9 +52,12 @@ struct WarRoomView: View {
             // 选中目标变化时拉取其工作项（三栏共享同一份 workItems）
             if let objectiveId = selectedObjectiveId,
                let objective = client.objectives.first(where: { $0.id == objectiveId }) {
-                workItems = await client.workItems(for: objective)
+                if let loaded = await client.workItems(for: objective) {
+                    workItems = loaded
+                }
             } else {
                 workItems = []
+                client.clearWorkItemsLoadError()
             }
         }
         .task(id: workItemsReloadToken) {
@@ -62,7 +65,9 @@ struct WarRoomView: View {
             guard workItemsReloadToken != 0 else { return }
             if let objectiveId = selectedObjectiveId,
                let objective = client.objectives.first(where: { $0.id == objectiveId }) {
-                workItems = await client.workItems(for: objective)
+                if let loaded = await client.workItems(for: objective) {
+                    workItems = loaded
+                }
             }
         }
         .onChange(of: client.objectives) { _, objectives in
@@ -198,7 +203,18 @@ struct WarRoomView: View {
 
     @ViewBuilder
     private var warRoomContent: some View {
-        if let objective = client.objectives.first(where: { $0.id == selectedObjectiveId }) {
+        if let error = client.workItemsLoadError,
+           client.objectives.contains(where: { $0.id == selectedObjectiveId }) {
+            ContentUnavailableView {
+                Label(L10n("WorkItem 加载失败"), systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error)
+            } actions: {
+                Button(L10n("重试")) {
+                    workItemsReloadToken &+= 1
+                }
+            }
+        } else if let objective = client.objectives.first(where: { $0.id == selectedObjectiveId }) {
             WorkItemBoardView(
                 objective: objective,
                 items: workItems,
