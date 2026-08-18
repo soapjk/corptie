@@ -42,7 +42,7 @@ final class AppStateSyncController {
             let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: data)
             store.apply(snapshot: snapshot)
         } catch {
-            store.reportSyncError(error.localizedDescription)
+            store.reportSyncError(Self.syncErrorMessage(error))
         }
     }
 
@@ -79,7 +79,7 @@ final class AppStateSyncController {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            store.reportSyncError(error.localizedDescription)
+            store.reportSyncError(Self.syncErrorMessage(error))
         }
     }
 
@@ -98,9 +98,31 @@ final class AppStateSyncController {
                 break
             }
         } catch {
-            store.reportSyncError(error.localizedDescription)
+            store.reportSyncError(Self.syncErrorMessage(error))
             await refreshSnapshot()
         }
+    }
+
+    static func syncErrorMessage(_ error: Error) -> String {
+        switch error {
+        case let DecodingError.keyNotFound(key, context):
+            return "状态数据缺少字段 \(codingPath(context.codingPath + [key]))：\(context.debugDescription)"
+        case let DecodingError.typeMismatch(_, context):
+            return "状态数据字段类型错误 \(codingPath(context.codingPath))：\(context.debugDescription)"
+        case let DecodingError.valueNotFound(_, context):
+            return "状态数据缺少必需值 \(codingPath(context.codingPath))：\(context.debugDescription)"
+        case let DecodingError.dataCorrupted(context):
+            return "状态数据格式错误 \(codingPath(context.codingPath))：\(context.debugDescription)"
+        default:
+            return error.localizedDescription
+        }
+    }
+
+    private static func codingPath(_ path: [any CodingKey]) -> String {
+        let rendered = path.map { key in
+            key.intValue.map { "[\($0)]" } ?? key.stringValue
+        }.joined(separator: ".")
+        return rendered.isEmpty ? "<root>" : rendered.replacingOccurrences(of: ".[", with: "[")
     }
 
     private static func requireSuccess(_ response: URLResponse) throws {

@@ -22,7 +22,10 @@ import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceSt
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
-import { ProjectWorktreeIntegrationService } from "./application/projectWorktreeIntegrationService.mjs";
+import {
+  ProjectWorktreeIntegrationService,
+  presentProjectIntegrationRun
+} from "./application/projectWorktreeIntegrationService.mjs";
 import {
   applyPersistedSessionOrder,
   storedSessionIdForListSession
@@ -1467,7 +1470,11 @@ function controlPlaneSnapshot() {
       skillIds: store.listRegistrySkillIdsForAgent(agent.agentId)
     })),
     repositories: store.listGitRepositories(),
-    integrationRuns: store.listProjectIntegrationRuns()
+    integrationRuns: store.listProjectIntegrationRuns().map((run) => (
+      presentProjectIntegrationRun(run, {
+        resolveWorkItem: (workItemId) => store.getWorkItem(workItemId)
+      })
+    ))
   };
 }
 
