@@ -511,6 +511,11 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
       ...services
     });
     assert.equal(itemA.statusCode, 201);
+    assert.equal(itemA.body.acceptanceAssessment, null);
+
+    const listed = await callApi({ method: "GET", pathname: "/work-items", ...services });
+    assert.equal(listed.statusCode, 200);
+    assert.equal(listed.body.workItems[0].acceptanceAssessment, null);
 
     const itemB = await callApi({
       method: "POST",

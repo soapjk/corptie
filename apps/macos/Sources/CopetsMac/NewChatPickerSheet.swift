@@ -121,12 +121,7 @@ struct NewSessionCreationSheet: View {
             creationError = nil
             normalizeAgentSelection()
             if kind == .worker, workItems.isEmpty {
-                isLoadingWorkItems = true
-                workItems = await client.allWorkItems()
-                isLoadingWorkItems = false
-                if selectedWorkItemId == nil {
-                    selectedWorkItemId = workItems.first?.id
-                }
+                await loadWorkItems()
             }
             if kind == .objectiveChat, client.objectives.isEmpty {
                 await client.refreshObjectives()
@@ -186,6 +181,17 @@ struct NewSessionCreationSheet: View {
             if isLoadingWorkItems {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 100)
+            } else if let error = client.workItemsLoadError {
+                ContentUnavailableView {
+                    Label(L10n("WorkItem 加载失败"), systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button(L10n("重试")) {
+                        Task { await loadWorkItems() }
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 120)
             } else if workItems.isEmpty {
                 ContentUnavailableView(
                     L10n("暂无 WorkItem"),
@@ -213,6 +219,16 @@ struct NewSessionCreationSheet: View {
                 .listStyle(.inset)
                 .frame(minHeight: 150)
             }
+        }
+    }
+
+    private func loadWorkItems() async {
+        isLoadingWorkItems = true
+        defer { isLoadingWorkItems = false }
+        guard let loaded = await client.allWorkItems() else { return }
+        workItems = loaded
+        if selectedWorkItemId == nil {
+            selectedWorkItemId = loaded.first?.id
         }
     }
 

@@ -40,11 +40,18 @@ export function workItemExecutionPrompt(workItem) {
 }
 
 export function parseAcceptanceAssessment(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return Object.keys(value).length > 0 ? value : null;
+  }
   if (typeof value !== "string" || !value.trim()) return null;
   try {
     const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+    return parsed
+      && typeof parsed === "object"
+      && !Array.isArray(parsed)
+      && Object.keys(parsed).length > 0
+      ? parsed
+      : null;
   } catch {
     return null;
   }
