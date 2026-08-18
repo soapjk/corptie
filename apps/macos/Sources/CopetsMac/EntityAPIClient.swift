@@ -25,6 +25,7 @@ final class EntityAPIClient: ObservableObject {
     private let appState = AppStateStore.shared
     var objectives: [Objective] { appState.objectives }
     var agents: [Agent] { appState.agents }
+    var workItems: [WorkItem] { appState.workItems }
     @Published private(set) var workItemsRevision: UInt64 = 0
     @Published private(set) var workItemsLoadError: String?
     @Published private(set) var objectivesLoadError: String?
