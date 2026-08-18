@@ -511,3 +511,8 @@
 "覆盖并填入" = "Replace and Fill";
 "保留当前内容" = "Keep Current Content";
 "已恢复生成前的表单内容。" = "Restored the form content from before generation.";
+"Worker" = "Worker";
+"Objective Session" = "Objective Session";
+"Session Type" = "Session Type";
+"No Sessions in This Category" = "No sessions in this category";
+"Create an Assistant, Objective, or Worker Session" = "Create an Assistant, Objective, or Worker Session";
