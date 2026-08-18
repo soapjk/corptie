@@ -42,6 +42,10 @@
 "Off" = "关闭";
 "Expand" = "展开";
 "Collapse" = "收起";
+"Advance WorkItem Status" = "推进工作项状态";
+"Change WorkItem status from “%@” to “%@”? This manually overrides the execution-managed status." = "将工作项状态从“%@”推进到“%@”？此操作会手动覆盖执行流程维护的状态。";
+"Advance status to %@" = "推进状态至%@";
+"Unable to update WorkItem status" = "无法更新工作项状态";
 "Workspace missing" = "工作区已丢失";
 "Git status unavailable" = "Git 状态不可用";
 "Git branch: %@" = "Git 分支：%@";

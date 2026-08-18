@@ -514,6 +514,22 @@ enum WorkItemExecutionStartDecision: Equatable {
     }
 }
 
+enum WorkItemStatusAdvanceDecision: Equatable {
+    case advance(to: String)
+    case unavailable
+
+    static func resolve(status: String) -> Self {
+        switch status {
+        case "todo", "pending", "ready":
+            .advance(to: "in_progress")
+        case "in_progress", "doing", "running", "review", "reviewing":
+            .advance(to: "done")
+        default:
+            .unavailable
+        }
+    }
+}
+
 struct WorkItemDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -535,6 +551,9 @@ struct WorkItemDetailView: View {
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
     @State private var notifiedSuggestionKey: String?
+    @State private var pendingStatusAdvance: String?
+    @State private var showStatusAdvanceConfirmation = false
+    @State private var isAdvancingStatus = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -634,6 +653,24 @@ struct WorkItemDetailView: View {
             Button(L10n("取消"), role: .cancel) { }
         } message: {
             Text(completionSuggestionMessage)
+        }
+        .alert(L10n("Advance WorkItem Status"), isPresented: $showStatusAdvanceConfirmation) {
+            Button(L10n("Confirm")) {
+                if let pendingStatusAdvance {
+                    Task { await advanceStatus(to: pendingStatusAdvance) }
+                }
+            }
+            Button(L10n("取消"), role: .cancel) {
+                pendingStatusAdvance = nil
+            }
+        } message: {
+            if let pendingStatusAdvance {
+                Text(L10nFormat(
+                    "Change WorkItem status from “%@” to “%@”? This manually overrides the execution-managed status.",
+                    workItemStatusLabel(workItem.status),
+                    workItemStatusLabel(pendingStatusAdvance)
+                ))
+            }
         }
         .sheet(isPresented: $showWorkspaceBind) {
             WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
@@ -1020,8 +1057,25 @@ struct WorkItemDetailView: View {
         }
     }
 
-    // 只读紧凑状态徽标（review 仅由证据支持的独立验收评估产生）。
+    @ViewBuilder
     private func compactStatusBadge(_ status: String) -> some View {
+        switch WorkItemStatusAdvanceDecision.resolve(status: status) {
+        case .advance(let targetStatus):
+            Button {
+                pendingStatusAdvance = targetStatus
+                showStatusAdvanceConfirmation = true
+            } label: {
+                statusBadgeLabel(status)
+            }
+            .buttonStyle(.plain)
+            .disabled(isAdvancingStatus)
+            .help(L10nFormat("Advance status to %@", workItemStatusLabel(targetStatus)))
+        case .unavailable:
+            statusBadgeLabel(status)
+        }
+    }
+
+    private func statusBadgeLabel(_ status: String) -> some View {
         let (label, color): (String, Color) = {
             switch status {
             case "in_progress": (L10n("In Progress"), .orange)
@@ -1037,6 +1091,32 @@ struct WorkItemDetailView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color.opacity(0.11), in: Capsule())
+    }
+
+    private func workItemStatusLabel(_ status: String) -> String {
+        switch status {
+        case "todo", "pending", "ready": L10n("Not Started")
+        case "in_progress", "doing", "running": L10n("In Progress")
+        case "review", "reviewing": L10n("Awaiting Completion Approval")
+        case "done", "complete", "completed": L10n("Completed")
+        case "failed": L10n("Failed")
+        default: status
+        }
+    }
+
+    private func advanceStatus(to status: String) async {
+        guard !isAdvancingStatus else { return }
+        isAdvancingStatus = true
+        defer {
+            isAdvancingStatus = false
+            pendingStatusAdvance = nil
+        }
+
+        if await client.updateWorkItem(workItemId: workItem.id, status: status) != nil {
+            onRequestReload()
+        } else {
+            executionError = EntityLaunchError(message: client.errorMessage ?? L10n("Unable to update WorkItem status"), code: nil)
+        }
     }
 
     private func metadataPill(_ text: String, systemImage: String) -> some View {
