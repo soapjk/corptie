@@ -335,7 +335,7 @@ const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
       listGatewaySessions().find((session) => session.id === sessionId) ?? store.getSession(sessionId)
     ),
   enqueueWork: (workItem) => store.enqueueAgentWorkItem(workItem),
-  scheduleDrain: (agentId) => scheduleAgentWorkDrain(agentId),
+  scheduleDrain: (sessionId) => scheduleAgentWorkDrain(sessionId),
   onEvent: (type, payload) => {
     const sessionId = payload.logicalSession?.legacySessionId ?? payload.workItem?.sessionId ?? null;
     emitEvent(type, payload, {
@@ -661,7 +661,7 @@ let codexModelsCache = null;
 let claudeModelsCache = null;
 
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
-const drainingAgentWorkIds = new Set();
+const drainingAgentWorkSessionIds = new Set();
 let agentWorkQueueInterval = null;
 let activeCodexThreadCreation = null;
 
@@ -2285,10 +2285,10 @@ function handleCodexAppServerNotification(message) {
         refreshWorkspaceInventoryAfterTurn(logicalRoute);
         const continuation = continuePendingWorkspaceTransition(logicalRoute, turn.id);
         resumeWorkAfterTransition(continuation, () => {
-          if (agent) scheduleAgentWorkDrain(agent.agentId);
+          scheduleAgentWorkDrain(nextSession.id);
         });
       } else if (agent) {
-        scheduleAgentWorkDrain(agent.agentId);
+        scheduleAgentWorkDrain(nextSession.id);
       }
       return;
     }
@@ -3631,11 +3631,9 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
   });
   const matchedWorkItemIds = new Set(annotated.map((item) => item.workItemId).filter(Boolean));
   const queuePositionByWorkItemId = new Map();
-  for (const agentId of new Set(workItems.map((item) => item.agentId))) {
-    store.listQueuedAgentWorkItems(agentId, 1_000).forEach((item, index) => {
-      queuePositionByWorkItemId.set(item.workItemId, index + 1);
-    });
-  }
+  store.listQueuedAgentWorkItemsForSession(sessionId, 1_000).forEach((item, index) => {
+    queuePositionByWorkItemId.set(item.workItemId, index + 1);
+  });
   const pending = workItems
     .filter((item) => !matchedWorkItemIds.has(item.workItemId))
     .filter((item) => item.status === "queued"
@@ -3938,7 +3936,7 @@ function enqueueUserAgentWork(session, text, source) {
     localVisibility: "normal",
     createdAt: now()
   });
-  const queuePosition = store.listQueuedAgentWorkItems(agent.agentId)
+  const queuePosition = store.listQueuedAgentWorkItemsForSession(session.id)
     .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
   const reportAsQueued = shouldReportAgentWorkQueued({
     sessionHasActiveRun: activeRun,
@@ -3946,7 +3944,7 @@ function enqueueUserAgentWork(session, text, source) {
     queuedWorkItemsAhead: Math.max(0, queuePosition - 1)
   });
   emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source }, { sessionId: session.id, source });
-  scheduleAgentWorkDrain(agent.agentId);
+  scheduleAgentWorkDrain(session.id);
   return {
     accepted: true,
     queued: reportAsQueued,
@@ -3956,10 +3954,10 @@ function enqueueUserAgentWork(session, text, source) {
   };
 }
 
-function scheduleAgentWorkDrain(agentId) {
+function scheduleAgentWorkDrain(sessionId) {
   setTimeout(() => {
-    drainAgentWork(agentId).catch((error) => {
-      console.error(`[agent-work] agent=${agentId} drain failed: ${error.message}`);
+    drainAgentWork(sessionId).catch((error) => {
+      console.error(`[agent-work] session=${sessionId} drain failed: ${error.message}`);
     });
   }, 0).unref?.();
 }
@@ -3980,7 +3978,7 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
           targetTurnId: null,
           lastError: null
         });
-        scheduleAgentWorkDrain(existingWork.agentId);
+        scheduleAgentWorkDrain(existingWork.sessionId);
       }
       continue;
     }
@@ -4016,18 +4014,27 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       collaborationCore.recordDeliveryEvent(delivery.deliveryId, "delivery_queued", { sessionId, reason: "agent_work_queue" });
     }
     emitEvent("AgentWorkQueued", { sessionId, workItem, queuePosition: null, source: workItem.source }, { sessionId, source: workItem.source });
-    scheduleAgentWorkDrain(agent.agentId);
+    scheduleAgentWorkDrain(sessionId);
   }
 }
 
-async function drainAgentWork(agentId) {
-  if (drainingAgentWorkIds.has(agentId)) return;
-  const agent = collaborationCore.getAgent(agentId);
-  if (!agent) return;
+async function drainAgentWork(sessionId) {
+  if (drainingAgentWorkSessionIds.has(sessionId)) return;
+  drainingAgentWorkSessionIds.add(sessionId);
+  try {
+    await drainAgentWorkSession(sessionId);
+  } finally {
+    drainingAgentWorkSessionIds.delete(sessionId);
+  }
+}
 
-  const runningWork = store.getRunningAgentWorkItem(agentId);
+async function drainAgentWorkSession(sessionId) {
+  const boundAgent = collaborationCore.getAgentForSession(sessionId);
+  if (!boundAgent) return;
+
+  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   if (runningWork) {
-    const liveState = await inspectCollaborationSession(runningWork.sessionId);
+    const liveState = await inspectCollaborationSession(sessionId);
     if (liveState === "running" || liveState === "missing") return;
     const patch = interruptedAgentWorkRecoveryPatch(runningWork);
     const recoveredWork = patch ? store.updateAgentWorkItem(runningWork.workItemId, patch) : null;
@@ -4044,19 +4051,17 @@ async function drainAgentWork(agentId) {
       });
       workspaceContinuationCoordinator.recordWorkRequeued(recoveredWork);
     }
-    console.log(`[agent-work] recovered orphaned work agent=${agentId} session=${runningWork.sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
+    console.log(`[agent-work] recovered orphaned work agent=${boundAgent.agentId} session=${sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
     return;
   }
 
-  const next = store.listQueuedAgentWorkItems(agentId, 1)[0];
+  const next = store.listQueuedAgentWorkItemsForSession(sessionId, 1)[0];
   if (!next) return;
 
-  const sessionId = next.sessionId;
-  const boundAgent = collaborationCore.getAgentForSession(sessionId);
-  if (!boundAgent || boundAgent.agentId !== agentId) {
+  if (boundAgent.agentId !== next.agentId) {
     const failedWork = store.updateAgentWorkItem(next.workItemId, {
       status: "failed",
-      lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${agentId}.`
+      lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${next.agentId}.`
     });
     emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
       sessionId,
@@ -4073,16 +4078,12 @@ async function drainAgentWork(agentId) {
     // work blocked indefinitely.
     const liveState = await inspectCollaborationSession(sessionId);
     if (liveState === "running" || liveState === "missing") return;
-    console.log(`[agent-work] reconciled stale run state agent=${agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
+    console.log(`[agent-work] reconciled stale run state agent=${boundAgent.agentId} session=${sessionId} previousStatus=${session.status} liveState=${liveState}`);
   }
   if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
 
-  drainingAgentWorkIds.add(agentId);
   const claimed = store.claimAgentWorkItem(next.workItemId);
-  if (!claimed) {
-    drainingAgentWorkIds.delete(agentId);
-    return;
-  }
+  if (!claimed) return;
   try {
     let turnId = null;
     if (claimed.kind === "collaboration") {
@@ -4127,8 +4128,6 @@ async function drainAgentWork(agentId) {
       workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     }
     if (error.code !== "SESSION_BUSY") throw error;
-  } finally {
-    drainingAgentWorkIds.delete(agentId);
   }
 }
 
@@ -4137,7 +4136,9 @@ async function tickAgentWorkQueue() {
   // A process can die after claiming the final item, leaving no queued row to
   // wake recovery. Poll both queued and running durable work so that a lone
   // orphaned run is reconciled after restart as well.
-  for (const agentId of store.listAgentIdsWithUnsettledWork()) await drainAgentWork(agentId);
+  await Promise.all(
+    store.listSessionIdsWithUnsettledAgentWork().map((sessionId) => drainAgentWork(sessionId))
+  );
 }
 
 async function inspectCollaborationSession(sessionId) {
@@ -4499,10 +4500,10 @@ async function handleClaudeTurnSettled(event) {
         })
       : null;
     resumeWorkAfterTransition(continuation, () => {
-      if (agent) scheduleAgentWorkDrain(agent.agentId);
+      scheduleAgentWorkDrain(sessionId);
     });
   } else if (agent) {
-    scheduleAgentWorkDrain(agent.agentId);
+    scheduleAgentWorkDrain(sessionId);
   }
 }
 
