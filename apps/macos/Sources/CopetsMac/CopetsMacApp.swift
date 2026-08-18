@@ -51,7 +51,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var warRoomWindow: NSWindow?
     private var assistantWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
-    private var isEvaluatingTermination = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
@@ -152,29 +151,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard CorptieAppEnvironment.canManageProductionBackend else {
             return .terminateNow
         }
-        guard !isEvaluatingTermination else {
-            return .terminateLater
+        guard confirmTerminationFromCurrentState() else {
+            return .terminateCancel
         }
-        isEvaluatingTermination = true
-
-        Task {
-            let shouldTerminate = await confirmTerminationIfNeeded()
-            guard shouldTerminate else {
-                isEvaluatingTermination = false
-                sender.reply(toApplicationShouldTerminate: false)
-                return
-            }
-
-            do {
-                try CorptieBackendSupervisor.stopProductionBackend()
-                sender.reply(toApplicationShouldTerminate: true)
-            } catch {
-                showBackendShutdownError(error)
-                isEvaluatingTermination = false
-                sender.reply(toApplicationShouldTerminate: false)
-            }
+        do {
+            try CorptieBackendSupervisor.stopProductionBackend()
+            return .terminateNow
+        } catch {
+            showBackendShutdownError(error)
+            return .terminateCancel
         }
-        return .terminateLater
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -399,14 +385,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func confirmTerminationIfNeeded() async -> Bool {
-        do {
-            let sessions = try await backendClient.fetchSessionsForShutdown()
-            let unfinished = sessions.filter(isUnfinishedSession)
-            guard !unfinished.isEmpty else {
-                return true
-            }
-
+    private func confirmTerminationFromCurrentState() -> Bool {
+        let appState = AppStateStore.shared
+        if backendClient.isOnline, appState.revision > 0, appState.syncError == nil {
+            let unfinished = backendClient.sessions.filter(isUnfinishedSession)
+            guard !unfinished.isEmpty else { return true }
             let alert = NSAlert()
             alert.alertStyle = .critical
             alert.messageText = L10n("Tasks are still running")
@@ -423,15 +406,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.addButton(withTitle: L10n("Cancel"))
             alert.addButton(withTitle: L10n("Quit and Interrupt Tasks"))
             return alert.runModal() == .alertSecondButtonReturn
-        } catch {
-            let alert = NSAlert()
-            alert.alertStyle = .warning
-            alert.messageText = L10n("Unable to verify running tasks")
-            alert.informativeText = L10n("Corptie could not read the latest session state. Quitting may interrupt unfinished conversations. Do you still want to stop the frontend and backend?")
-            alert.addButton(withTitle: L10n("Cancel"))
-            alert.addButton(withTitle: L10n("Quit Anyway"))
-            return alert.runModal() == .alertSecondButtonReturn
         }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n("Unable to verify running tasks")
+        alert.informativeText = L10n("Corptie could not read the latest synchronized session state. Quitting may interrupt unfinished conversations. Do you still want to stop the frontend and backend?")
+        alert.addButton(withTitle: L10n("Cancel"))
+        alert.addButton(withTitle: L10n("Quit Anyway"))
+        return alert.runModal() == .alertSecondButtonReturn
     }
 
     private func isUnfinishedSession(_ session: TaskSession) -> Bool {
