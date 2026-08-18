@@ -393,15 +393,15 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
   }
 });
 
-test("POST /objectives/:id/sessions creates Objective Chat with any attached Agent and rejects outsiders", async () => {
+test("POST /objectives/:id/sessions creates Objective Chat with any attached contributor and rejects outsiders", async () => {
   const services = await createServices();
   try {
-    const assistant = services.store.createAgent({ name: "Planner", role: "assistant", provider: "codex" });
-    const contributor = services.store.createAgent({ name: "Builder", role: "independentContributor", provider: "codex" });
+    const planner = services.store.createAgent({ name: "Planner", role: "independentContributor", provider: "codex" });
+    const builder = services.store.createAgent({ name: "Builder", role: "independentContributor", provider: "codex" });
     const outsider = services.store.createAgent({ name: "Outsider", role: "independentContributor", provider: "codex" });
     const objective = services.objectiveService.createObjective({
       name: "Objective Chat",
-      contributorAgentIds: [assistant.agentId, contributor.agentId]
+      contributorAgentIds: [planner.agentId, builder.agentId]
     });
     const calls = [];
     const launchObjectiveChatSession = async (input) => {
@@ -412,7 +412,7 @@ test("POST /objectives/:id/sessions creates Objective Chat with any attached Age
         status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
       };
     };
-    for (const agent of [assistant, contributor]) {
+    for (const agent of [planner, builder]) {
       const result = await callApi({
         method: "POST",
         pathname: `/objectives/${objective.id}/sessions`,
@@ -425,7 +425,7 @@ test("POST /objectives/:id/sessions creates Objective Chat with any attached Age
       assert.equal(result.body.session.objectiveId, objective.id);
       assert.equal(result.body.session.workItemId, null);
     }
-    assert.deepEqual(calls.map((call) => call.agent.agentId), [assistant.agentId, contributor.agentId]);
+    assert.deepEqual(calls.map((call) => call.agent.agentId), [planner.agentId, builder.agentId]);
     assert.equal(calls[0].objective.id, objective.id);
 
     const rejected = await callApi({
