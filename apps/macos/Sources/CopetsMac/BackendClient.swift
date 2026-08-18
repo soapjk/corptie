@@ -55,7 +55,8 @@ enum SessionDetailPreloadPolicy {
 final class BackendClient: ObservableObject {
     static let shared = BackendClient()
 
-    private(set) var sessions: [TaskSession] = []
+    private let appState = AppStateStore.shared
+    var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
     let sessionListStore = SessionListStore()
     let sessionsDidChange = CurrentValueSubject<[TaskSession], Never>([])
     @Published private(set) var archivedSessions: [TaskSession] = []
@@ -118,11 +119,7 @@ final class BackendClient: ObservableObject {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("corptie", isDirectory: true).path
     }
     private var pollingTask: Task<Void, Never>?
-    private let sessionPayloadProcessor = SessionPayloadProcessor()
     private var eventStreamTask: Task<Void, Never>?
-    private var sessionCollectionStreamTask: Task<Void, Never>?
-    private var sessionCollectionRevision: UInt64?
-    private var isSessionCollectionStreamConnected = false
     private var detailStreamTask: Task<Void, Never>?
     private var detailStreamWatchdogTask: Task<Void, Never>?
     private var detailStreamGeneration = 0
@@ -158,12 +155,17 @@ final class BackendClient: ObservableObject {
         action: String,
         body: [String: Any]
     )?
+    private var appStateCancellable: AnyCancellable?
+
+    init() {
+        appStateCancellable = appState.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.projectSessionsFromAppState() }
+    }
 
     func start() {
         pollingTask?.cancel()
         eventStreamTask?.cancel()
-        sessionCollectionStreamTask?.cancel()
-        isSessionCollectionStreamConnected = false
         detailStreamTask?.cancel()
         detailStreamWatchdogTask?.cancel()
         detailStreamGeneration &+= 1
@@ -190,15 +192,13 @@ final class BackendClient: ObservableObject {
             reconcileConnectedPresentation()
         }
         startEventStream()
-        startSessionCollectionStream()
+        AppStateSyncController.shared.start()
         if let selectedSession, viewingHistoricalThreadId == nil {
             startDetailStream(for: selectedSession)
         }
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
-                if self?.isSessionCollectionStreamConnected != true {
-                    await self?.refresh()
-                }
+                if self?.appState.syncError != nil { await AppStateSyncController.shared.refreshSnapshot() }
                 await self?.syncNewSessionDefaultsFromPreferences()
                 await self?.refreshSelectedDetailFromPolling()
                 guard SessionListPerformanceFlags.current.pollingEnabled else {
@@ -214,10 +214,7 @@ final class BackendClient: ObservableObject {
         pollingTask = nil
         eventStreamTask?.cancel()
         eventStreamTask = nil
-        sessionCollectionStreamTask?.cancel()
-        sessionCollectionStreamTask = nil
-        sessionCollectionRevision = nil
-        isSessionCollectionStreamConnected = false
+        AppStateSyncController.shared.stop()
         detailStreamTask?.cancel()
         detailStreamTask = nil
         detailStreamWatchdogTask?.cancel()
@@ -234,6 +231,10 @@ final class BackendClient: ObservableObject {
         projectStatusRefreshTask = nil
         detailPrefetchTasks.values.forEach { $0.cancel() }
         detailPrefetchTasks.removeAll()
+    }
+
+    func reportNavigationError(sessionId: String) {
+        lastError = L10nFormat("Session %@ could not be loaded.", sessionId)
     }
 
     private func startEventStream() {
@@ -274,102 +275,6 @@ final class BackendClient: ObservableObject {
                 }
             }
         }
-    }
-
-    private func startSessionCollectionStream() {
-        sessionCollectionStreamTask = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                var request = URLRequest(url: self.baseURL.appending(path: "session-collection/events"))
-                request.setValue("text/event-stream", forHTTPHeaderField: "accept")
-                request.setValue("identity", forHTTPHeaderField: "accept-encoding")
-                if let revision = self.sessionCollectionRevision {
-                    request.setValue(String(revision), forHTTPHeaderField: "last-event-id")
-                }
-                do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
-                    guard let httpResponse = response as? HTTPURLResponse,
-                          httpResponse.statusCode == 200 else {
-                        throw URLError(.badServerResponse)
-                    }
-                    self.isSessionCollectionStreamConnected = true
-                    self.markBackendConnectedFromSessionStream()
-                    var eventName = ""
-                    var dataLines: [String] = []
-                    for try await line in bytes.lines {
-                        guard !Task.isCancelled else { return }
-                        if line.isEmpty {
-                            await self.handleSessionCollectionFrame(
-                                eventName,
-                                data: dataLines.joined(separator: "\n")
-                            )
-                            eventName = ""
-                            dataLines.removeAll(keepingCapacity: true)
-                        } else if line.hasPrefix("event:") {
-                            eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                        } else if line.hasPrefix("data:") {
-                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-                        }
-                    }
-                } catch {
-                    guard !Task.isCancelled else { return }
-                    self.isSessionCollectionStreamConnected = false
-                    try? await Task.sleep(for: .seconds(2))
-                }
-            }
-        }
-    }
-
-    private func handleSessionCollectionFrame(_ eventName: String, data: String) async {
-        guard let payload = data.data(using: .utf8), !payload.isEmpty else { return }
-        do {
-            if eventName == "session-collection-snapshot" {
-                let envelope = try await Task.detached(priority: .userInitiated) {
-                    try JSONDecoder().decode(SessionCollectionSnapshotEnvelope.self, from: payload)
-                }.value
-                markBackendConnectedFromSessionStream()
-                let nextSessions = envelope.sessions
-                let patch = await sessionPayloadProcessor.processSnapshot(
-                    sessions: nextSessions,
-                    current: sessions
-                )
-                applySessionSnapshot(nextSessions, patch: patch)
-                sessionCollectionRevision = envelope.revision
-                return
-            }
-            guard eventName == "session-collection-patch" else { return }
-            let envelope = try await Task.detached(priority: .userInitiated) {
-                try JSONDecoder().decode(SessionCollectionPatchEnvelope.self, from: payload)
-            }.value
-            guard sessionCollectionRevision == envelope.baseRevision else {
-                sessionCollectionRevision = nil
-                sessionCollectionStreamTask?.cancel()
-                startSessionCollectionStream()
-                return
-            }
-            guard let next = Self.applyingSessionCollectionPatch(envelope, to: sessions) else {
-                sessionCollectionRevision = nil
-                sessionCollectionStreamTask?.cancel()
-                startSessionCollectionStream()
-                return
-            }
-            let collectionPatch = await sessionPayloadProcessor.processSnapshot(
-                sessions: next,
-                current: sessions
-            )
-            markBackendConnectedFromSessionStream()
-            applySessionSnapshot(next, patch: collectionPatch)
-            sessionCollectionRevision = envelope.revision
-        } catch {
-            sessionCollectionRevision = nil
-        }
-    }
-
-    func markBackendConnectedFromSessionStream() {
-        if !isOnline {
-            isOnline = true
-        }
-        reconcileConnectedPresentation()
     }
 
     private func reconcileConnectedPresentation() {
@@ -414,10 +319,6 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
-        if ["ObjectiveChanged", "WorkItemChanged", "AgentChanged"].contains(eventName) {
-            await EntityAPIClient.shared.handleEntityChangeEvent(eventName)
-            return
-        }
         if eventName == "SessionWorkspaceSwitched" {
             if let payload = data.data(using: .utf8),
                let event = try? JSONDecoder().decode(SessionWorkspaceSwitchedEventEnvelope.self, from: payload),
@@ -498,9 +399,6 @@ final class BackendClient: ObservableObject {
         ]
         guard refreshEvents.contains(eventName) else {
             return
-        }
-        if !isSessionCollectionStreamConnected {
-            await refresh()
         }
         if eventName == "CodexThreadCompleted"
             || eventName == "CodexThreadFailed"
@@ -923,38 +821,27 @@ final class BackendClient: ObservableObject {
     }
 
     func refresh() async {
-        do {
-            let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "sessions"))
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                throw URLError(.badServerResponse)
-            }
-            let result = try await sessionPayloadProcessor.processSnapshot(data: data, current: sessions)
-            applySessionSnapshot(result.sessions, patch: result.patch)
-            if !isOnline {
-                isOnline = true
-            }
-            if lastError != nil {
-                lastError = nil
-            }
-        } catch {
-            if isOnline {
-                isOnline = false
-            }
-            let message = error.localizedDescription
-            if lastError != message {
-                lastError = message
-            }
+        await AppStateSyncController.shared.refreshSnapshot()
+        if let syncError = appState.syncError {
+            isOnline = false
+            if lastError != syncError { lastError = syncError }
+            return
         }
+        isOnline = true
+        lastError = nil
     }
 
-    /// HTTP 创建响应提供 read-your-write：本地按 id 幂等 upsert，不推进 SSE revision。
-    /// 随后的 collection patch/snapshot 仍是排序、状态与能力字段的权威来源。
+    /// Commands are reconciled through the authoritative revisioned snapshot;
+    /// creation responses never form a second client-side cache.
     func acceptCreatedSession(_ session: TaskSession, selectImmediately: Bool = true) {
-        let nextSessions = Self.insertingCreatedSession(session, into: sessions)
-        let patch = SessionCollectionDiffer.patch(from: sessions, to: nextSessions, revision: 0)
-        applySessionSnapshot(nextSessions, patch: patch, allowDuringReorder: true)
-        if selectImmediately {
-            select(session: nextSessions.first(where: { $0.id == session.id }) ?? session)
+        Task { [weak self] in
+            await AppStateSyncController.shared.refreshSnapshot()
+            guard let self else { return }
+            guard let authoritative = self.appState.session(session.id) else {
+                self.reportNavigationError(sessionId: session.id)
+                return
+            }
+            if selectImmediately { self.select(session: authoritative) }
         }
     }
 
@@ -976,7 +863,6 @@ final class BackendClient: ObservableObject {
 
     private func applySessionSnapshot(
         _ nextSessions: [TaskSession],
-        patch: SessionCollectionPatch? = nil,
         allowDuringReorder: Bool = false
     ) {
         if isReorderingSessions && !allowDuringReorder {
@@ -989,17 +875,20 @@ final class BackendClient: ObservableObject {
             applySessionSnapshot(contentOnlySnapshot, allowDuringReorder: true)
             return
         }
-        let resolvedPatch = patch ?? SessionCollectionDiffer.patch(
-            from: sessions,
-            to: nextSessions,
-            revision: 0
-        )
         guard sessions != nextSessions else { return }
-        sessions = nextSessions
-        sessionListStore.apply(resolvedPatch, authoritativeSessions: nextSessions)
+        appState.replaceActiveSessions(nextSessions)
+    }
+
+    private func projectSessionsFromAppState() {
+        let nextSessions = sessions
+        let previous = sessionListStore.sessions
+        let patch = SessionCollectionDiffer.patch(from: previous, to: nextSessions, revision: UInt64(max(0, appState.revision)))
+        sessionListStore.apply(patch, authoritativeSessions: nextSessions)
+        archivedSessions = appState.sessions.filter { $0.archived == true }
         sessionsDidChange.send(nextSessions)
         syncSelectedSessionFromSessions()
         syncSelectedDetailMetadataFromSessions()
+        if !isOnline { isOnline = true }
     }
 
     func refreshArchivedSessions() async {

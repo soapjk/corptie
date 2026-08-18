@@ -77,11 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             .store(in: &cancellables)
-        EntityAPIClient.shared.$agents
+        AppStateStore.shared.$state
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] agents in
+            .sink { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.agentOrbManager?.sync(agents: agents, sessions: self?.backendClient.sessions ?? [])
+                    self?.agentOrbManager?.sync(
+                        agents: AppStateStore.shared.agents,
+                        sessions: self?.backendClient.sessions ?? []
+                    )
                 }
             }
             .store(in: &cancellables)
@@ -240,10 +243,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // 在悬浮窗打开某个 session 的对话（选中 + 显示悬浮窗）
     private func openSessionInPanel(sessionId: String) {
-        guard let session = backendClient.sessions.first(where: { $0.id == sessionId }) else { return }
-        backendClient.select(session: session)
-        NSApp.activate(ignoringOtherApps: true)
-        panelController?.show()
+        Task { @MainActor in
+            let cached = backendClient.sessions.first(where: { $0.id == sessionId })
+            let resolved: TaskSession?
+            if let cached { resolved = cached }
+            else { resolved = await AppStateSyncController.shared.hydrateSession(sessionId) }
+            guard let session = resolved else {
+                backendClient.reportNavigationError(sessionId: sessionId)
+                return
+            }
+            backendClient.select(session: session)
+            NSApp.activate(ignoringOtherApps: true)
+            panelController?.show()
+        }
     }
 
     @objc func openSettings() {

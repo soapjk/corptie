@@ -1140,6 +1140,7 @@ export class CorptieStore {
     this.initializeSortOrder();
     this.migrateAgentAvailability();
     this.ensureSkillTables();
+    this.ensureStateSyncTables();
     this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
     this.auditObjectiveWorkItemAssociations({ migrate: true });
@@ -1209,6 +1210,135 @@ export class CorptieStore {
              AND m.message_type = 'question'
          )`
     );
+  }
+
+  // Durable control-plane revision log. SQLite triggers make every mutation to
+  // a client-visible entity participate in the same transaction as the entity
+  // write, including writes performed by background/provider callbacks. The
+  // transport may coalesce several row revisions into one ChangeSet, but it
+  // can never acknowledge a revision whose entity write did not commit.
+  ensureStateSyncTables() {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS state_sync_clock (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        revision INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO state_sync_clock (singleton, revision) VALUES (1, 0);
+
+      CREATE TABLE IF NOT EXISTS state_change_log (
+        revision INTEGER PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+        changed_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_state_change_log_entity
+      ON state_change_log(entity_type, entity_id, revision DESC);
+    `);
+
+    const tracked = [
+      ["sessions", "session", "id"],
+      ["work_items", "workItem", "id"],
+      ["objectives", "objective", "id"],
+      ["agents", "agent", "agent_id"],
+      ["git_repositories", "repository", "repository_id"],
+      ["project_integration_runs", "integrationRun", "id"]
+    ];
+    for (const [table, entityType, idColumn] of tracked) {
+      for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+        const suffix = operation.toLowerCase();
+        const row = operation === "DELETE" ? "OLD" : "NEW";
+        const changeOperation = operation === "DELETE" ? "delete" : "upsert";
+        this.db.run(`
+          CREATE TRIGGER IF NOT EXISTS state_sync_${table}_${suffix}
+          AFTER ${operation} ON ${table}
+          BEGIN
+            UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
+            INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+            SELECT revision, '${entityType}', ${row}.${idColumn}, '${changeOperation}',
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+            FROM state_sync_clock WHERE singleton = 1;
+            DELETE FROM state_change_log
+            WHERE revision < MAX(0, (SELECT revision FROM state_sync_clock WHERE singleton = 1) - 10000);
+          END;
+        `);
+      }
+    }
+    // A bounded durable replay window is sufficient because clients fall back
+    // to /state/snapshot when their cursor predates it.
+    this.db.run(`
+      DELETE FROM state_change_log
+      WHERE revision < MAX(0, (SELECT revision FROM state_sync_clock WHERE singleton = 1) - 10000)
+    `);
+  }
+
+  stateRevision() {
+    return Number(this.selectOne(
+      "SELECT revision FROM state_sync_clock WHERE singleton = 1"
+    )?.revision ?? 0);
+  }
+
+  stateChangesAfter(revision) {
+    return this.selectAll(
+      `SELECT revision, entity_type, entity_id, operation, changed_at
+       FROM state_change_log WHERE revision > ? ORDER BY revision ASC`,
+      [Number(revision) || 0]
+    ).map((row) => ({
+      revision: Number(row.revision),
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      operation: row.operation,
+      changedAt: row.changed_at
+    }));
+  }
+
+  oldestStateChangeRevision() {
+    const row = this.selectOne("SELECT MIN(revision) AS revision FROM state_change_log");
+    return row?.revision == null ? this.stateRevision() : Number(row.revision);
+  }
+
+  stateConsistencyIssues() {
+    return this.selectAll(`
+      SELECT 'work_item_current_session_missing' AS code, wi.id AS entity_id,
+             wi.current_session_id AS reference_id
+      FROM work_items wi
+      LEFT JOIN sessions s ON s.id = wi.current_session_id
+      WHERE wi.current_session_id IS NOT NULL AND s.id IS NULL
+      UNION ALL
+      SELECT 'work_item_session_binding_mismatch', wi.id, wi.current_session_id
+      FROM work_items wi
+      JOIN sessions s ON s.id = wi.current_session_id
+      WHERE s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id
+      UNION ALL
+      SELECT 'session_work_item_missing', s.id, s.work_item_id
+      FROM sessions s
+      LEFT JOIN work_items wi ON wi.id = s.work_item_id
+      WHERE s.work_item_id IS NOT NULL AND wi.id IS NULL
+      UNION ALL
+      SELECT 'session_objective_mismatch', s.id, s.work_item_id
+      FROM sessions s
+      JOIN work_items wi ON wi.id = s.work_item_id
+      WHERE s.objective_id IS NOT wi.objective_id
+      UNION ALL
+      SELECT 'integration_conflict_work_item_missing', r.id, r.conflict_work_item_id
+      FROM project_integration_runs r
+      LEFT JOIN work_items wi ON wi.id = r.conflict_work_item_id
+      WHERE r.conflict_work_item_id IS NOT NULL AND wi.id IS NULL
+      UNION ALL
+      SELECT 'integration_conflict_session_missing', r.id, r.conflict_session_id
+      FROM project_integration_runs r
+      LEFT JOIN sessions s ON s.id = r.conflict_session_id
+      WHERE r.conflict_session_id IS NOT NULL AND s.id IS NULL
+      UNION ALL
+      SELECT 'integration_conflict_binding_mismatch', r.id, r.conflict_session_id
+      FROM project_integration_runs r
+      JOIN sessions s ON s.id = r.conflict_session_id
+      WHERE r.conflict_work_item_id IS NULL OR s.work_item_id IS NOT r.conflict_work_item_id
+    `).map((row) => ({
+      code: row.code,
+      entityId: row.entity_id,
+      referenceId: row.reference_id
+    }));
   }
 
   // 建立 Skill 维护中心（全局映射表）与 Agent↔Skill 多对多关联。
@@ -2543,6 +2673,74 @@ export class CorptieStore {
     }
     this.scheduleSave();
     return this.getSession(sessionId);
+  }
+
+  finalizeConflictResolutionLaunch({ sessionId, workItemId, objectiveId, agentId, integrationRunId }) {
+    if (!this.getSession(sessionId)) {
+      const error = new Error(`Session not found: ${sessionId}`);
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    const workItem = this.getWorkItem(workItemId);
+    if (!workItem) {
+      const error = new Error(`WorkItem not found: ${workItemId}`);
+      error.code = "WORK_ITEM_NOT_FOUND";
+      throw error;
+    }
+    if (!this.getObjective(objectiveId) || workItem.objective_id !== objectiveId) {
+      const error = new Error(`Objective does not match WorkItem: ${objectiveId}`);
+      error.code = "OBJECTIVE_MISMATCH";
+      throw error;
+    }
+    if (!this.getAgent(agentId)) {
+      const error = new Error(`Agent not found: ${agentId}`);
+      error.code = "AGENT_NOT_FOUND";
+      throw error;
+    }
+    if (!this.getProjectIntegrationRun(integrationRunId)) {
+      const error = new Error(`Integration Run not found: ${integrationRunId}`);
+      error.code = "INTEGRATION_NOT_FOUND";
+      throw error;
+    }
+    const timestamp = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      this.db.run(
+        `UPDATE sessions SET objective_id=?, work_item_id=?, session_kind='worker', agent_id=?, updated_at=? WHERE id=?`,
+        [objectiveId, workItemId, agentId, timestamp, sessionId]
+      );
+      this.db.run(
+        `UPDATE work_items SET current_session_id=?, status='in_progress', execution_status='running',
+         main_agent_id=?, acceptance_assessment_json='{}', updated_at=? WHERE id=?`,
+        [sessionId, agentId, timestamp, workItemId]
+      );
+      this.db.run(
+        `UPDATE project_integration_runs SET status='conflict_resolution_running',
+         conflict_work_item_id=?, conflict_session_id=?, updated_at=? WHERE id=?`,
+        [workItemId, sessionId, timestamp, integrationRunId]
+      );
+      const finalized = this.selectOne(
+        `SELECT wi.id
+         FROM work_items wi
+         JOIN sessions s ON s.id = wi.current_session_id
+         JOIN project_integration_runs r ON r.id = ?
+         WHERE wi.id = ? AND wi.objective_id = ? AND wi.main_agent_id = ?
+           AND s.id = ? AND s.work_item_id = wi.id AND s.objective_id = wi.objective_id
+           AND s.agent_id = wi.main_agent_id
+           AND r.conflict_work_item_id = wi.id AND r.conflict_session_id = s.id`,
+        [integrationRunId, workItemId, objectiveId, agentId, sessionId]
+      );
+      if (!finalized) {
+        const error = new Error("Conflict-resolution launch violated state invariants.");
+        error.code = "STATE_INVARIANT_VIOLATION";
+        throw error;
+      }
+    });
+    this.scheduleSave();
+    return {
+      session: this.getSession(sessionId),
+      workItem: this.getWorkItem(workItemId),
+      integrationRun: this.getProjectIntegrationRun(integrationRunId)
+    };
   }
 
   bindSessionToObjective(sessionId, objectiveId) {
@@ -4179,6 +4377,12 @@ export class CorptieStore {
       [id]
     ).map(projectIntegrationItemFromRow);
     return projectIntegrationRunFromRow(row, items);
+  }
+
+  listProjectIntegrationRuns() {
+    return this.selectAll(
+      `SELECT id FROM project_integration_runs ORDER BY created_at ASC`
+    ).map((row) => this.getProjectIntegrationRun(row.id));
   }
 
   getLatestProjectIntegrationRun(repositoryId, objectiveId) {

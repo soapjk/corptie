@@ -1,0 +1,174 @@
+import Combine
+import Foundation
+
+struct ControlPlaneStatePayload: Decodable, Sendable {
+    var sessions: [TaskSession]
+    var workItems: [WorkItem]
+    var objectives: [Objective]
+    var agents: [Agent]
+    var repositories: [GitRepository]
+    var integrationRuns: [ProjectIntegrationRun]
+}
+
+struct StateSnapshotEnvelope: Decodable, Sendable {
+    let revision: Int64
+    let state: ControlPlaneStatePayload
+}
+
+struct StateEntityDeletes: Decodable, Sendable {
+    var sessions: [String]
+    var workItems: [String]
+    var objectives: [String]
+    var agents: [String]
+    var repositories: [String]
+    var integrationRuns: [String]
+}
+
+struct StateChangeSetEnvelope: Decodable, Sendable {
+    let snapshotRequired: Bool
+    let baseRevision: Int64
+    let revision: Int64
+    let upserts: ControlPlaneStatePayload
+    let deletes: StateEntityDeletes
+}
+
+enum AppStateApplyResult: Equatable {
+    case applied
+    case duplicate
+    case revisionGap(expected: Int64, received: Int64)
+}
+
+struct NormalizedAppState: Equatable {
+    var sessions: [String: TaskSession] = [:]
+    var workItems: [String: WorkItem] = [:]
+    var objectives: [String: Objective] = [:]
+    var agents: [String: Agent] = [:]
+    var repositories: [String: GitRepository] = [:]
+    var integrationRuns: [String: ProjectIntegrationRun] = [:]
+}
+
+@MainActor
+final class AppStateStore: ObservableObject {
+    static let shared = AppStateStore()
+
+    @Published private(set) var revision: Int64 = 0
+    @Published private(set) var state = NormalizedAppState()
+    @Published private(set) var syncError: String?
+
+    var sessions: [TaskSession] {
+        state.sessions.values.sorted(by: Self.sessionPrecedes)
+    }
+    var workItems: [WorkItem] { state.workItems.values.sorted { $0.createdAt < $1.createdAt } }
+    var objectives: [Objective] { state.objectives.values.sorted { $0.createdAt > $1.createdAt } }
+    var agents: [Agent] { state.agents.values.sorted { $0.createdAt < $1.createdAt } }
+    var repositories: [GitRepository] { state.repositories.values.sorted { $0.name < $1.name } }
+    var integrationRuns: [ProjectIntegrationRun] {
+        state.integrationRuns.values.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    func session(_ id: String) -> TaskSession? { state.sessions[id] }
+    func workItem(_ id: String) -> WorkItem? { state.workItems[id] }
+    func objective(_ id: String) -> Objective? { state.objectives[id] }
+    func agent(_ id: String) -> Agent? { state.agents[id] }
+
+    @discardableResult
+    func apply(snapshot: StateSnapshotEnvelope) -> AppStateApplyResult {
+        guard snapshot.revision >= revision else { return .duplicate }
+        state = Self.normalized(snapshot.state)
+        revision = snapshot.revision
+        syncError = nil
+        return .applied
+    }
+
+    @discardableResult
+    func apply(changeSet: StateChangeSetEnvelope) -> AppStateApplyResult {
+        if changeSet.revision <= revision { return .duplicate }
+        guard changeSet.baseRevision == revision else {
+            let result = AppStateApplyResult.revisionGap(expected: revision, received: changeSet.baseRevision)
+            syncError = "State revision gap: expected \(revision), received \(changeSet.baseRevision)."
+            return result
+        }
+        var next = state
+        Self.upsert(changeSet.upserts.sessions, into: &next.sessions, id: \TaskSession.id)
+        Self.upsert(changeSet.upserts.workItems, into: &next.workItems, id: \WorkItem.id)
+        Self.upsert(changeSet.upserts.objectives, into: &next.objectives, id: \Objective.id)
+        Self.upsert(changeSet.upserts.agents, into: &next.agents, id: \Agent.agentId)
+        Self.upsert(changeSet.upserts.repositories, into: &next.repositories, id: \GitRepository.id)
+        Self.upsert(changeSet.upserts.integrationRuns, into: &next.integrationRuns, id: \ProjectIntegrationRun.id)
+        changeSet.deletes.sessions.forEach { next.sessions[$0] = nil }
+        changeSet.deletes.workItems.forEach { next.workItems[$0] = nil }
+        changeSet.deletes.objectives.forEach { next.objectives[$0] = nil }
+        changeSet.deletes.agents.forEach { next.agents[$0] = nil }
+        changeSet.deletes.repositories.forEach { next.repositories[$0] = nil }
+        changeSet.deletes.integrationRuns.forEach { next.integrationRuns[$0] = nil }
+        state = next
+        revision = changeSet.revision
+        syncError = nil
+        return .applied
+    }
+
+    func reportSyncError(_ message: String) {
+        syncError = message
+    }
+
+    // Entity hydration is a recovery/read path, not a second cache: fetched
+    // entities are merged into this same normalized store and are subsequently
+    // reconciled by the revision stream.
+    func hydrate(session: TaskSession) {
+        var next = state
+        next.sessions[session.id] = session
+        state = next
+    }
+
+    func replaceActiveSessions(_ sessions: [TaskSession]) {
+        var next = state
+        next.sessions = next.sessions.filter { $0.value.archived == true }
+        Self.upsert(sessions, into: &next.sessions, id: \TaskSession.id)
+        state = next
+    }
+
+    func hydrate(objectives: [Objective]) {
+        var next = state
+        Self.upsert(objectives, into: &next.objectives, id: \Objective.id)
+        state = next
+    }
+
+    func hydrate(agents: [Agent]) {
+        var next = state
+        Self.upsert(agents, into: &next.agents, id: \Agent.agentId)
+        state = next
+    }
+
+    func hydrate(repositories: [GitRepository]) {
+        var next = state
+        Self.upsert(repositories, into: &next.repositories, id: \GitRepository.id)
+        state = next
+    }
+
+    private static func normalized(_ payload: ControlPlaneStatePayload) -> NormalizedAppState {
+        NormalizedAppState(
+            sessions: Dictionary(uniqueKeysWithValues: payload.sessions.map { ($0.id, $0) }),
+            workItems: Dictionary(uniqueKeysWithValues: payload.workItems.map { ($0.id, $0) }),
+            objectives: Dictionary(uniqueKeysWithValues: payload.objectives.map { ($0.id, $0) }),
+            agents: Dictionary(uniqueKeysWithValues: payload.agents.map { ($0.agentId, $0) }),
+            repositories: Dictionary(uniqueKeysWithValues: payload.repositories.map { ($0.id, $0) }),
+            integrationRuns: Dictionary(uniqueKeysWithValues: payload.integrationRuns.map { ($0.id, $0) })
+        )
+    }
+
+    private static func upsert<Entity, ID: Hashable>(
+        _ entities: [Entity],
+        into dictionary: inout [ID: Entity],
+        id: KeyPath<Entity, ID>
+    ) {
+        for entity in entities { dictionary[entity[keyPath: id]] = entity }
+    }
+
+    private static func sessionPrecedes(_ left: TaskSession, _ right: TaskSession) -> Bool {
+        if (left.pinned == true) != (right.pinned == true) { return left.pinned == true }
+        let leftOrder = left.sortOrder ?? .greatestFiniteMagnitude
+        let rightOrder = right.sortOrder ?? .greatestFiniteMagnitude
+        if leftOrder != rightOrder { return leftOrder < rightOrder }
+        return left.updatedAt > right.updatedAt
+    }
+}
