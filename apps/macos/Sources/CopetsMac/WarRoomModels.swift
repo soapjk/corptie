@@ -118,11 +118,11 @@ enum WorkItemColumn: String, CaseIterable, Identifiable {
         }
     }
 
-    // 后端 status 字符串 → 看板列（容错：未知值归「待开始」；评审归入「进行中」）
+    // 后端 status 字符串 → 看板列（容错：未知值归「待开始」）
     static func column(for status: String) -> WorkItemColumn {
         switch status {
         case "todo", "pending", "ready": .todo
-        case "in_progress", "doing", "running", "review", "reviewing": .inProgress
+        case "in_progress", "doing", "running": .inProgress
         case "done", "complete", "completed": .done
         default: .todo
         }

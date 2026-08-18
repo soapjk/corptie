@@ -54,6 +54,11 @@ final class AppStateStore: ObservableObject {
     @Published private(set) var revision: Int64 = 0
     @Published private(set) var state = NormalizedAppState()
     @Published private(set) var syncError: String?
+    /// Authoritative server reachability, flipped by the sync engine on every
+    /// snapshot/change-set success or transport failure. Unlike `syncError` it
+    /// also emits on the very first success, so `isOnline` cannot be left stale
+    /// by a nil→nil error transition during the launch race.
+    @Published private(set) var isReachable = false
 
     var sessions: [TaskSession] {
         state.sessions.values.sorted(by: Self.sessionPrecedes)
@@ -77,6 +82,7 @@ final class AppStateStore: ObservableObject {
         state = Self.normalized(snapshot.state)
         revision = snapshot.revision
         syncError = nil
+        isReachable = true
         return .applied
     }
 
@@ -104,11 +110,13 @@ final class AppStateStore: ObservableObject {
         state = next
         revision = changeSet.revision
         syncError = nil
+        isReachable = true
         return .applied
     }
 
     func reportSyncError(_ message: String) {
         syncError = message
+        isReachable = false
     }
 
     // Entity hydration is a recovery/read path, not a second cache: fetched

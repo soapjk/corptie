@@ -320,6 +320,7 @@ struct WorkItemBoardView: View {
     @State private var boardItems: [WorkItem] = []
     @State private var isCreating = false
     @State private var isCreatingObjectiveChat = false
+    @State private var collapsedColumns: Set<WorkItemColumn> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -343,7 +344,14 @@ struct WorkItemBoardView: View {
                     WorkItemColumnView(
                         column: column,
                         items: boardItems.filter { WorkItemColumn.column(for: $0.status) == column },
-                        selectedWorkItemId: $selectedWorkItemId
+                        selectedWorkItemId: $selectedWorkItemId,
+                        isCollapsed: Binding(
+                            get: { collapsedColumns.contains(column) },
+                            set: { isCollapsed in
+                                if isCollapsed { collapsedColumns.insert(column) }
+                                else { collapsedColumns.remove(column) }
+                            }
+                        )
                     )
                 }
             }
@@ -369,13 +377,29 @@ struct WorkItemColumnView: View {
     let column: WorkItemColumn
     let items: [WorkItem]
     @Binding var selectedWorkItemId: String?
+    @Binding var isCollapsed: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label(column.title, systemImage: column.systemImage)
-                    .font(.system(size: 12, weight: .semibold))
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        isCollapsed.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(column.title)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
                 Spacer()
+
                 Text("\(items.count)")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -384,15 +408,17 @@ struct WorkItemColumnView: View {
 
             Divider()
 
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        WorkItemCard(item: item, isSelected: selectedWorkItemId == item.id)
-                            .onTapGesture { selectedWorkItemId = item.id }
+            if !isCollapsed {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            WorkItemCard(item: item, isSelected: selectedWorkItemId == item.id)
+                                .onTapGesture { selectedWorkItemId = item.id }
 
-                        if index < items.count - 1 {
-                            Divider()
-                                .padding(.leading, 12)
+                            if index < items.count - 1 {
+                                Divider()
+                                    .padding(.leading, 12)
+                            }
                         }
                     }
                 }
@@ -522,7 +548,7 @@ enum WorkItemStatusAdvanceDecision: Equatable {
         switch status {
         case "todo", "pending", "ready":
             .advance(to: "in_progress")
-        case "in_progress", "doing", "running", "review", "reviewing":
+        case "in_progress", "doing", "running":
             .advance(to: "done")
         default:
             .unavailable

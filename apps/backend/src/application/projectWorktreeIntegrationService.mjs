@@ -1,5 +1,5 @@
 const COMPLETED_EXECUTION_STATES = new Set(["completed"]);
-const COMPLETED_WORK_ITEM_STATES = new Set(["review", "reviewing", "done", "complete", "completed"]);
+const COMPLETED_WORK_ITEM_STATES = new Set(["done", "complete", "completed"]);
 
 export class ProjectWorktreeIntegrationError extends Error {
   constructor(code, message, statusCode = 400) {

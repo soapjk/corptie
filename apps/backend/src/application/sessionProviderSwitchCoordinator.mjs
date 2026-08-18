@@ -1,0 +1,230 @@
+import { randomUUID } from "node:crypto";
+import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
+import { SessionNotFoundError } from "../agent-provider/sessionApplicationService.mjs";
+
+// Provider-neutral coordinator for switching a logical Session from its current
+// Agent Provider to another one. It reuses the workspace_transitions state
+// machine with transition_kind='provider' (fork strategy) so the existing
+// routing_version optimistic-concurrency and in-flight-transition mutual
+// exclusion apply unchanged. It is deliberately independent of any concrete
+// Provider: the target session is created through the shared SESSION_CREATE
+// capability, and the "title + instruction summary" context migration is the
+// only content carried into the new thread (history is never deleted or
+// replayed).
+export class SessionProviderSwitchCoordinator {
+  constructor(options = {}) {
+    this.store = options.store;
+    this.registry = options.registry;
+    this.resolveSessionReference = options.resolveSessionReference;
+    this.createTargetSession = options.createTargetSession ?? null;
+    this.resolveTargetContext = options.resolveTargetContext ?? null;
+    this.hasActiveRun = options.hasActiveRun ?? (() => false);
+    this.onTransitionEvent = options.onTransitionEvent ?? (() => {});
+    this.pendingTargetProviders = new Map();
+    if (!this.store) throw new TypeError("SessionProviderSwitchCoordinator requires a store.");
+    if (!this.registry) throw new TypeError("SessionProviderSwitchCoordinator requires an Agent Provider Registry.");
+    if (typeof this.resolveSessionReference !== "function") {
+      throw new TypeError("SessionProviderSwitchCoordinator requires resolveSessionReference().");
+    }
+    if (typeof this.createTargetSession !== "function") {
+      throw new TypeError("SessionProviderSwitchCoordinator requires createTargetSession().");
+    }
+  }
+
+  async switchProvider(sessionId, input = {}) {
+    const reference = await this.resolveSessionReference(sessionId);
+    if (!reference?.providerId || !reference?.providerSessionId) {
+      throw new SessionNotFoundError(sessionId);
+    }
+    const targetProviderId = requiredText(input.providerId, "providerId");
+    if (!this.registry.resolveId(targetProviderId)) {
+      const error = new Error(`Agent Provider ${targetProviderId} is not available.`);
+      error.code = "PROVIDER_UNSUPPORTED";
+      throw error;
+    }
+    const logical = reference.logicalSessionId
+      ? this.store.getLogicalSession(reference.logicalSessionId)
+      : this.store.getLogicalSessionByLegacySessionId(reference.sessionId);
+    if (!logical?.activeBinding) {
+      const error = new Error("The Session has no active Provider binding to switch.");
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    if (logical.activeBinding.providerId === targetProviderId) {
+      const error = new Error("The Session is already bound to the requested Provider.");
+      error.code = "PROVIDER_ALREADY_ACTIVE";
+      throw error;
+    }
+
+    const active = this.hasActiveRun(reference.metadata?.session);
+    const transitionId = input.transitionId || `provider-transition:${randomUUID()}`;
+    const transition = this.store.beginWorkspaceTransition({
+      transitionId,
+      logicalSessionId: logical.logicalSessionId,
+      transitionKind: "provider",
+      targetCwd: logical.activeBinding.boundCwd,
+      sourceRoutingVersion: logical.routingVersion,
+      resumeGoalAfterTransition: Boolean(active),
+      strategy: "fork",
+      phase: active ? "waitingForTurn" : "preflighting"
+    });
+
+    this.onTransitionEvent("ProviderSwitchPending", {
+      sessionId: reference.sessionId,
+      logicalSessionId: logical.logicalSessionId,
+      transitionId,
+      fromProviderId: logical.activeBinding.providerId,
+      toProviderId: targetProviderId,
+      routingVersion: logical.routingVersion,
+      status: active ? "waitingForTurn" : "committed"
+    });
+
+    this.pendingTargetProviders.set(transitionId, targetProviderId);
+
+    if (active) {
+      return {
+        status: "waitingForTurn",
+        transition,
+        fromProviderId: logical.activeBinding.providerId,
+        toProviderId: targetProviderId
+      };
+    }
+
+    return this.completeProviderSwitch(transitionId, targetProviderId, reference, logical);
+  }
+
+  async completeProviderSwitch(transitionId, targetProviderId, reference, logical) {
+    const transition = this.store.getWorkspaceTransition(transitionId);
+    if (!transition) throw new Error(`Provider transition ${transitionId} was not found.`);
+    const resolvedTargetProviderId = targetProviderId
+      ?? this.pendingTargetProviders.get(transitionId)
+      ?? null;
+    if (!resolvedTargetProviderId) {
+      throw new Error(`Provider transition ${transitionId} has no target Provider.`);
+    }
+    if (transition.phase === "committed") {
+      this.pendingTargetProviders.delete(transitionId);
+      return {
+        status: "committed",
+        transition,
+        logicalSession: this.store.getLogicalSession(transition.logicalSessionId)
+      };
+    }
+    if (transition.phase === "failed") {
+      this.pendingTargetProviders.delete(transitionId);
+      throw new Error(`Provider transition ${transitionId} has already failed.`);
+    }
+    const sourceLogical = logical
+      ?? this.store.getLogicalSession(transition.logicalSessionId);
+    if (!sourceLogical?.activeBinding
+      || sourceLogical.activeThreadId !== transition.sourceThreadId
+      || sourceLogical.routingVersion !== transition.sourceRoutingVersion) {
+      throw new Error("The source Provider route changed before the switch could continue.");
+    }
+
+    const context = await this.resolveTargetContext?.({ reference, logical: sourceLogical })
+      ?? {};
+    let created = null;
+    try {
+      this.store.updateWorkspaceTransition(transitionId, { phase: "forking" });
+      created = await this.createTargetSession({
+        providerId: resolvedTargetProviderId,
+        title: sourceLogical.title || sourceLogical.sessionName,
+        instructionSummary: context.instructionSummary ?? null,
+        cwd: sourceLogical.activeBinding.boundCwd,
+        agentId: context.agentId ?? null,
+        input: context.input ?? {}
+      });
+      const newThreadId = created?.providerThreadId
+        ?? created?.external?.threadId
+        ?? created?.external?.sessionId;
+      if (!newThreadId) {
+        throw new Error(`Agent Provider ${resolvedTargetProviderId} did not return a thread id.`);
+      }
+      this.store.updateWorkspaceTransition(transitionId, {
+        phase: "committingRoute",
+        newThreadId
+      });
+      const switched = this.store.commitWorkspaceTransition(transitionId, {
+        providerThreadId: newThreadId,
+        providerId: resolvedTargetProviderId,
+        providerSessionId: created?.providerSessionId ?? newThreadId,
+        boundCwd: sourceLogical.activeBinding.boundCwd,
+        forkedAtTurnId: transition.lastCompletedTurnId,
+        instructionSources: this.buildInstructionSources(sourceLogical, context),
+        permissionSnapshot: sourceLogical.activeBinding.permissionSnapshot ?? {},
+        providerMetadata: {
+          ...(sourceLogical.activeBinding.providerMetadata ?? {}),
+          switchedFromProviderId: sourceLogical.activeBinding.providerId
+        }
+      });
+      this.pendingTargetProviders.delete(transitionId);
+      this.onTransitionEvent("ProviderSwitched", {
+        sessionId: reference.sessionId,
+        logicalSessionId: switched.logicalSessionId,
+        transitionId,
+        fromProviderId: sourceLogical.activeBinding.providerId,
+        toProviderId: resolvedTargetProviderId,
+        bindingId: switched.activeBinding?.bindingId ?? null,
+        routingVersion: switched.routingVersion
+      });
+      return {
+        status: "committed",
+        transition: this.store.getWorkspaceTransition(transitionId),
+        logicalSession: switched
+      };
+    } catch (error) {
+      const newThreadId = created?.providerThreadId
+        ?? created?.external?.threadId
+        ?? created?.external?.sessionId;
+      if (newThreadId) {
+        this.store.recordProviderThreadBinding({
+          providerThreadId: newThreadId,
+          logicalSessionId: transition.logicalSessionId,
+          boundCwd: sourceLogical.activeBinding.boundCwd,
+          parentThreadId: transition.sourceThreadId,
+          forkedAtTurnId: transition.lastCompletedTurnId,
+          instructionSources: [],
+          permissionSnapshot: sourceLogical.activeBinding.permissionSnapshot ?? {},
+          providerId: resolvedTargetProviderId,
+          providerSessionId: created?.providerSessionId ?? newThreadId,
+          routingVersion: transition.sourceRoutingVersion + 1,
+          state: "invalid"
+        });
+      }
+      this.store.updateWorkspaceTransition(transitionId, {
+        phase: "failed",
+        newThreadId,
+        error: { message: error.message }
+      });
+      this.pendingTargetProviders.delete(transitionId);
+      this.onTransitionEvent("ProviderSwitchFailed", {
+        sessionId: reference.sessionId,
+        logicalSessionId: transition.logicalSessionId,
+        transitionId,
+        fromProviderId: sourceLogical.activeBinding.providerId,
+        toProviderId: resolvedTargetProviderId,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
+  buildInstructionSources(logical, context) {
+    const sources = [];
+    const title = logical.title || logical.sessionName;
+    if (title) {
+      sources.push({ kind: "sessionTitle", title });
+    }
+    if (context.instructionSummary) {
+      sources.push({ kind: "instructionSummary", summary: context.instructionSummary });
+    }
+    return sources;
+  }
+}
+
+function requiredText(value, field) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw new TypeError(`${field} is required.`);
+  return text;
+}

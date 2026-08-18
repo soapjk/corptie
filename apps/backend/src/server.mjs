@@ -45,6 +45,7 @@ import {
   callObjectiveChatDynamicTool
 } from "./application/objectiveChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
@@ -53,6 +54,8 @@ import { SessionBindingRepository } from "./agent-provider/sessionBindingReposit
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { OpenClackyManager } from "./adapters/openClackyManager.mjs";
 import { createOpenClackyProvider } from "./agent-provider/providers/openClackyProvider.mjs";
+import { openClackyToolHostAttachment } from "./agent-provider/providers/openClackyToolHostAttachment.mjs";
+import { OpenClackyWorkspaceTransitionPort } from "./agent-provider/adapters/openClackyWorkspaceTransitionPort.mjs";
 import { ClaudeWorkspaceTransitionPort } from "./agent-provider/adapters/claudeWorkspaceTransitionPort.mjs";
 import {
   claudeToolHostAttachment,
@@ -122,6 +125,7 @@ import {
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 import { ensureAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
+import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } from "./runtime/corptieOpenClackyRuntime.mjs";
 import {
   codexPermissionsForSession,
   codexTurnPermissionOptions,
@@ -254,6 +258,7 @@ const bundledGitCommitProtectionPath = fileURLToPath(new URL(
 ));
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const corptieClaudeRuntimePaths = resolveCorptieClaudeRuntimePaths({ environmentName });
+const corptieOpenClackyRuntimePaths = resolveCorptieOpenClackyRuntimePaths({ environmentName });
 // Skill 维护中心（provider-neutral）：全局共享的 Skill 映射表 + 物化到各 Provider 的 skills 目录。
 // skillsDirs 由组合根声明「各 Provider 的 skills 根目录」，SkillRegistryService 不感知 Provider 名语义，
 // 仅把 Skill 内容镜像到这些目录；Claude Code / Codex 运行时会自动扫描各自目录发现 Skill。
@@ -389,7 +394,33 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
 const openClackyManager = new OpenClackyManager({
   baseURL: process.env.OPENCLACKY_BASE_URL,
   accessKey: process.env.OPENCLACKY_ACCESS_KEY,
+  runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
   resolveOwnedSessionIds: () => store.listActiveProviderSessionIds("openclacky"),
+  featureFlags: {
+    toolHostBridge: store.settings().openclackyBridge?.toolHostBridge !== false,
+    workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
+  },
+  resolveSessionBootstrap: async (input) => {
+    const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
+    const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
+    const agentContext = actorId ? await collaborationAgentContextInstructions(actorId) : "";
+    const runtimeInstructions = actorId ? collaborationRuntimeInstructions(actorId) : "";
+    const systemPrompt = [agentContext].filter(Boolean).join("\n\n") || null;
+    return {
+      body: {
+        runtime_directory: corptieOpenClackyRuntimePaths.runtimeRoot,
+        ...(systemPrompt ? { system_prompt_append: systemPrompt } : {}),
+        ...(runtimeInstructions ? { runtime_instructions: runtimeInstructions } : {}),
+        ...(metadata ? { corptie_metadata: metadata } : {})
+      },
+      summary: {
+        hasSystemPrompt: Boolean(systemPrompt),
+        hasRuntimeInstructions: Boolean(runtimeInstructions),
+        runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
+        scope: metadata ?? null
+      }
+    };
+  },
   onSessionChanged: (change) => {
     emitEvent("ProviderSessionChanged", {
       provider: "openclacky",
@@ -397,6 +428,41 @@ const openClackyManager = new OpenClackyManager({
       sessionId: change.sessionId ?? change.session?.id ?? null,
       error: change.error?.message ?? null
     }, { sessionId: change.session?.id ?? null, source: { type: "openclacky" } });
+  }
+});
+const openClackyWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
+  store,
+  providerPort: new OpenClackyWorkspaceTransitionPort({
+    store,
+    manager: openClackyManager,
+    instructionSources: requiredWorkspaceInstructionSources,
+    bootstrapSession: async (options = {}) => {
+      const cwd = typeof options.cwd === "string" && options.cwd.trim()
+        ? options.cwd.trim()
+        : null;
+      if (!cwd) throw new Error("OpenClacky workspace handoff requires a target cwd.");
+      return openClackyManager.create({
+        title: options.title ?? "OpenClacky Workspace",
+        cwd,
+        ...(options.dynamicToolAgentId ? { actorId: options.dynamicToolAgentId } : {})
+      });
+    }
+  }),
+  requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
+  globalInstructionSources: () => knownGlobalInstructionSources(),
+  onRouteCommitted: async (event) => {
+    const logical = store.getLogicalSession(event.logicalSessionId);
+    const sessionId = logical?.legacySessionId;
+    if (!sessionId) return;
+    const previous = listGatewaySessions().find((candidate) => candidate.id === sessionId)
+      ?? store.getSession(sessionId);
+    if (previous) {
+      emitEvent("SessionWorkspaceSwitched", {
+        session: sessionWithLogicalWorkspace(previous, logical),
+        ...event
+      }, { sessionId });
+    }
+    enqueueWorkspaceContinuationSafely(event.transitionId);
   }
 });
 const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
@@ -420,6 +486,11 @@ const gitWorkspaces = new GitWorkspaceManager({
 const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
+const openClackyProvider = createOpenClackyProvider(openClackyManager, {
+  attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
+  prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
+  readSessionUsage: async (reference) => openClackySessionUsage(reference.providerSessionId)
+});
 const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   claudeProvider: claudeProviderRuntime,
   codexOperations: {
@@ -469,9 +540,20 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   codexMetadata: {
     backgroundPermissionProfiles: ["read-only", "workspace-write"]
   },
-  additionalProviders: [createOpenClackyProvider(openClackyManager)]
+  additionalProviders: [openClackyProvider]
 });
 toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
+// Re-register the OpenClacky Provider after its runtime probe produces a fresh,
+// honest capability snapshot. This is how the bridge handshake gates TOOL_HOST_ATTACH
+// and WORKSPACE_TRANSITION: they are only declared after a healthy bridge confirms
+// support, and never appear when the runtime is missing or outdated.
+openClackyManager.onProbe = () => {
+  agentProviderRegistry.refreshProvider(createOpenClackyProvider(openClackyManager, {
+    attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
+    prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
+    readSessionUsage: async (reference) => openClackySessionUsage(reference.providerSessionId)
+  }));
+};
 const sessionBindingRepository = new SessionBindingRepository({
   store,
   findSession: (sessionId) => listGatewaySessions().find((session) => session.id === sessionId),
@@ -578,6 +660,46 @@ const projectToolsetInitializer = new ProjectToolsetInitializer({
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
+});
+const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
+  store,
+  registry: agentProviderRegistry,
+  resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  hasActiveRun: (session) => sessionHasActiveRun(session),
+  resolveTargetContext: async ({ reference, logical }) => {
+    const session = reference.metadata?.session
+      ?? sessionPresentationCache.get(reference.sessionId)
+      ?? store.getSession(reference.sessionId);
+    const agent = collaborationCore.getAgentForSession(reference.sessionId)
+      ?? ensureCollaborationAgentForSession(session);
+    return {
+      agentId: agent?.agentId ?? null,
+      instructionSummary: summarizeProviderInstructionSources(logical)
+    };
+  },
+  createTargetSession: async ({ providerId, title, cwd, agentId, instructionSummary }) => {
+    const toolHost = agentId
+      ? await toolHostService.prepareSession(providerId, {
+          purpose: "provider-switch",
+          actorId: agentId
+        })
+      : null;
+    const created = await sessionApplicationService.createSession(providerId, {
+      title,
+      cwd,
+      instructionSources: instructionSummary ? [instructionSummary] : [],
+      toolHost,
+      sessionKind: "assistantChat"
+    }, { actorId: agentId ?? null });
+    return {
+      providerThreadId: created?.external?.threadId ?? created?.external?.sessionId ?? created?.id ?? null,
+      providerSessionId: created?.external?.sessionId
+        ?? created?.external?.threadId
+        ?? created?.id
+        ?? null
+    };
+  },
   onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
 });
 const sessionWorktrees = new SessionWorktreeService({
@@ -809,6 +931,8 @@ function sessionWithLogicalWorkspace(session, logical) {
     : null;
   const cwd = worktree?.canonicalPath || worktree?.path || logical.activeBinding?.boundCwd || session.external?.cwd;
   const latestTransition = store.getLatestCommittedWorkspaceTransition(logical.logicalSessionId);
+  const pendingTransition = store.getPendingWorkspaceTransition(logical.logicalSessionId);
+  const providerTransition = pendingTransition?.transitionKind === "provider" ? pendingTransition : null;
   const presented = applyWorkspaceContinuationPresentation(session, latestTransition);
   return {
     ...presented,
@@ -832,7 +956,15 @@ function sessionWithLogicalWorkspace(session, logical) {
         previousThreadId: latestTransition?.sourceThreadId ?? null,
         continuationState: latestTransition?.continuationState ?? null
       },
-      routingVersion: logical.routingVersion
+      routingVersion: logical.routingVersion,
+      providerSwitchInFlight: Boolean(providerTransition),
+      providerTransition: providerTransition
+        ? {
+            transitionId: providerTransition.transitionId,
+            phase: providerTransition.phase,
+            error: providerTransition.error?.message ?? null
+          }
+        : null
     }
   };
 }
@@ -923,6 +1055,29 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
   }).catch((error) => {
     console.error(`[workspace-transition] failed transition=${transition.transitionId} error=${error.message}`);
     emitEvent("SessionWorkspaceSwitchFailed", {
+      logicalSessionId: logical.logicalSessionId,
+      sessionId: logical.legacySessionId,
+      transitionId: transition.transitionId,
+      error: error.message
+    }, { sessionId: logical.legacySessionId });
+  });
+}
+
+function continuePendingProviderSwitch(logical) {
+  const transition = logical
+    ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
+    : null;
+  if (!transition || transition.phase !== "waitingForTurn") return null;
+  if (transition.transitionKind !== "provider") return null;
+  const reference = sessionBindingRepository.resolve(logical.legacySessionId ?? logical.logicalSessionId);
+  return sessionProviderSwitchCoordinator.completeProviderSwitch(
+    transition.transitionId,
+    undefined,
+    reference,
+    logical
+  ).catch((error) => {
+    console.error(`[provider-switch] failed transition=${transition.transitionId} error=${error.message}`);
+    emitEvent("ProviderSwitchFailed", {
       logicalSessionId: logical.logicalSessionId,
       sessionId: logical.legacySessionId,
       transitionId: transition.transitionId,
@@ -2318,9 +2473,13 @@ function handleCodexAppServerNotification(message) {
       if (!failed && !cancelled) {
         refreshWorkspaceInventoryAfterTurn(logicalRoute);
         const continuation = continuePendingWorkspaceTransition(logicalRoute, turn.id);
+        const providerSwitch = continuePendingProviderSwitch(logicalRoute);
         resumeWorkAfterTransition(continuation, () => {
           scheduleAgentWorkDrain(nextSession.id);
         });
+        if (providerSwitch) {
+          providerSwitch.then(() => scheduleAgentWorkDrain(nextSession.id));
+        }
       } else if (agent) {
         scheduleAgentWorkDrain(nextSession.id);
       }
@@ -4499,6 +4658,59 @@ async function switchClaudeProviderWorkspace(reference, input = {}) {
   return result;
 }
 
+async function switchOpenClackyProviderWorkspace(reference, input = {}) {
+  const logical = (reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  if (!logical?.activeBinding) throw new Error("OpenClacky Session has no active workspace route.");
+  const summary = await openClackyManager.read(reference.providerSessionId);
+  const activeTurnId = summary?.status === "running" || summary?.status === "blocked"
+    ? `openclacky-turn:${randomUUID()}`
+    : null;
+  const lastCompletedTurnId = activeTurnId
+    ? activeTurnId
+    : `openclacky-checkpoint:${randomUUID()}`;
+  const result = await openClackyWorkspaceTransitionManager.switchWorkspace({
+    transitionId: input.transitionId,
+    logicalSessionId: logical.logicalSessionId,
+    targetWorktreeId: input.targetWorkspaceId,
+    activeTurnId,
+    lastCompletedTurnId,
+    continuationPrompt: input.continuationPrompt
+  });
+  emitEvent(
+    result.status === "waitingForTurn"
+      ? "SessionWorkspaceSwitchWaiting"
+      : "SessionWorkspaceSwitchCompleted",
+    { sessionId: reference.sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
+    { sessionId: reference.sessionId }
+  );
+  return result;
+}
+
+async function openClackySessionUsage(providerSessionId) {
+  const { events } = await openClackyManager.readHistory(providerSessionId);
+  return aggregateOpenClackyUsage(events);
+}
+
+function aggregateOpenClackyUsage(events = []) {
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cacheReadInputTokens: 0
+  };
+  for (const event of events) {
+    if (event?.type !== "token_usage" || !event.usage) continue;
+    const incoming = event.usage;
+    usage.inputTokens += Number(incoming.input_tokens ?? incoming.prompt_tokens ?? 0);
+    usage.outputTokens += Number(incoming.output_tokens ?? incoming.completion_tokens ?? 0);
+    usage.cacheReadInputTokens += Number(incoming.cache_read_input_tokens ?? 0);
+  }
+  usage.totalTokens = usage.inputTokens + usage.outputTokens;
+  return usage;
+}
+
 async function commitManagedClaudeWorkspaceRoute(event) {
   const logical = store.getLogicalSession(event.logicalSessionId);
   const session = logical?.legacySessionId
@@ -4539,9 +4751,15 @@ async function handleClaudeTurnSettled(event) {
           lastCompletedTurnId: event.turnId
         })
       : null;
+    const providerSwitch = transition?.transitionKind === "provider"
+      ? continuePendingProviderSwitch(logical)
+      : null;
     resumeWorkAfterTransition(continuation, () => {
       scheduleAgentWorkDrain(sessionId);
     });
+    if (providerSwitch) {
+      providerSwitch.then(() => scheduleAgentWorkDrain(sessionId));
+    }
   } else if (agent) {
     scheduleAgentWorkDrain(sessionId);
   }
@@ -4577,6 +4795,29 @@ async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId 
     targetWorkspaceId: targetWorktreeId,
     transitionId,
     continuationPrompt
+  });
+}
+
+function summarizeProviderInstructionSources(logical) {
+  const sources = logical?.activeBinding?.instructionSources ?? [];
+  if (!sources.length) return null;
+  const text = sources
+    .map((source) => {
+      if (typeof source === "string") return source;
+      if (source?.title) return source.title;
+      if (source?.summary) return source.summary;
+      if (source?.path) return source.path;
+      return null;
+    })
+    .filter(Boolean)
+    .join("\n");
+  return text || null;
+}
+
+async function switchSessionProvider(sessionId, providerId, transitionId = undefined) {
+  return sessionProviderSwitchCoordinator.switchProvider(sessionId, {
+    providerId,
+    transitionId
   });
 }
 
@@ -6406,6 +6647,30 @@ function route(request, response) {
           targetWorkspaceId,
           input.transitionId,
           input.continuationPrompt
+        );
+        sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
+      })
+      .catch((error) => {
+        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
+          error: error.message,
+          code: error.code
+        });
+      });
+    return;
+  }
+
+  const sessionProviderSwitchMatch = url.pathname.match(/^\/sessions\/([^/]+)\/switch-provider$/);
+  const unifiedSessionProviderSwitchMatch = url.pathname.match(
+    /^\/sessions\/([^/]+)\/actions\/switch-provider$/
+  );
+  if (request.method === "POST" && (sessionProviderSwitchMatch || unifiedSessionProviderSwitchMatch)) {
+    const sessionId = decodeURIComponent((sessionProviderSwitchMatch || unifiedSessionProviderSwitchMatch)[1]);
+    readJson(request)
+      .then(async (input) => {
+        const result = await switchSessionProvider(
+          sessionId,
+          input.providerId,
+          input.transitionId
         );
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })

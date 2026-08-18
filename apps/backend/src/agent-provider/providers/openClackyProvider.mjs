@@ -3,35 +3,49 @@ import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 
 export const OPENCLACKY_PROVIDER_ID = "openclacky";
 
-export function createOpenClackyProvider(manager) {
+// Capabilities that OpenClacky can always advertise regardless of the bridge
+// handshake. These are the honest baseline for basic chat and session lifecycle.
+const OPENCLACKY_BASE_CAPABILITIES = Object.freeze([
+  AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
+  AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+  AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
+  AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+  AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
+  AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+  AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH
+]);
+
+// Capabilities gated behind a healthy Corptie bridge handshake. They are only
+// declared after the runtime probe confirms bridge support, so the UI never shows
+// a false "available" for Tool Host or Workspace transition.
+const OPENCLACKY_BRIDGE_CAPABILITIES = Object.freeze([
+  AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
+  AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ
+]);
+
+export function createOpenClackyProvider(manager, options = {}) {
   if (!manager) throw new TypeError("OpenClacky Provider requires a manager.");
   return new CallbackAgentProvider({
     id: OPENCLACKY_PROVIDER_ID,
     displayName: "OpenClacky",
     transport: "http-websocket",
     aliases: ["clacky", "open-clacky"],
-    protocolVersion: "native-v1",
-    runtime: { lifecycle: "external" },
+    protocolVersion: "corptie-bridge-v1",
+    runtime: { lifecycle: "managed" },
+    metadata: options.metadata ?? {},
     configuration: {
       fields: [
         { id: "baseURL", type: "url", label: "Server URL", required: true, defaultValue: "http://127.0.0.1:7070" },
         { id: "accessKey", type: "secret", label: "Access Key", required: false }
       ]
     },
-    capabilities: [
-      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
-      AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
-      AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
-      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH
-    ]
+    capabilities: openClackyCapabilities(manager, options)
   }, {
-    listSessions: (options) => manager.list(options),
+    listSessions: (listOptions) => manager.list(listOptions),
     readSession: (reference) => manager.read(reference.providerSessionId),
     createSession: (input) => manager.create(input),
     resumeSession: (reference) => manager.resume(reference.providerSessionId),
@@ -42,6 +56,34 @@ export function createOpenClackyProvider(manager) {
     respondToApproval: (reference, approval) => manager.respondToApproval(reference.providerSessionId, approval),
     listModels: () => manager.listModels(),
     switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
-    switchReasoning: (reference, level) => manager.switchReasoning(reference.providerSessionId, level)
+    switchReasoning: (reference, level) => manager.switchReasoning(reference.providerSessionId, level),
+    ...(typeof options.prepareWorkspaceTransition === "function"
+      ? { prepareWorkspaceTransition: options.prepareWorkspaceTransition }
+      : {}),
+    ...(typeof options.attachTools === "function"
+      ? { attachTools: options.attachTools }
+      : {}),
+    ...(typeof options.readSessionUsage === "function"
+      ? { readSessionUsage: options.readSessionUsage }
+      : {})
   });
+}
+
+// Compute the capability list from the manager's runtime probe. The probe is
+// populated asynchronously; when absent, fall back to the base set only so an
+// un-probed or unhealthy bridge never over-claims capability.
+export function openClackyCapabilities(manager, options = {}) {
+  const probe = manager?.probe ?? null;
+  const result = probe?.capabilities ?? null;
+  const capabilities = new Set(OPENCLACKY_BASE_CAPABILITIES);
+  if (result?.toolHost && typeof options.attachTools === "function") {
+    capabilities.add(AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH);
+  }
+  if (result?.workspaceTransition && typeof options.prepareWorkspaceTransition === "function") {
+    capabilities.add(AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION);
+  }
+  if (typeof options.readSessionUsage === "function") {
+    capabilities.add(AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ);
+  }
+  return [...capabilities].sort();
 }

@@ -157,12 +157,6 @@ export class ObjectiveApplicationService {
         "acceptanceAssessment and executionStatus are managed by their dedicated workflows."
       );
     }
-    if (["review", "reviewing"].includes(patch.status)) {
-      throw new WorkItemAcceptanceError(
-        "ACCEPTANCE_ASSESSMENT_REQUIRED",
-        "A WorkItem can enter review only through a passing acceptance assessment."
-      );
-    }
     if (["done", "complete", "completed"].includes(patch.status)
       && !completionSuggestionForWorkItem(current)) {
       throw new WorkItemAcceptanceError(
@@ -176,9 +170,6 @@ export class ObjectiveApplicationService {
     if (Object.prototype.hasOwnProperty.call(normalized, "acceptanceCriteria")
       && String(normalized.acceptanceCriteria ?? "").trim() !== String(current.acceptance_criteria ?? "").trim()) {
       nextPatch.acceptanceAssessment = null;
-      if (["review", "reviewing"].includes(current.status)) {
-        nextPatch.status = current.current_session_id ? "in_progress" : "todo";
-      }
     }
     return this.emit("WorkItemChanged", this.store.updateWorkItem(id, nextPatch), "updated");
   }
@@ -192,7 +183,7 @@ export class ObjectiveApplicationService {
       );
     }
     if (["done", "complete", "completed"].includes(current.status)) return current;
-    if (!["in_progress", "doing", "running", "review", "reviewing"].includes(current.status)) {
+    if (!["in_progress", "doing", "running"].includes(current.status)) {
       throw new WorkItemAcceptanceError(
         "INVALID_STATUS_TRANSITION",
         `A WorkItem in status ${current.status} cannot be confirmed complete.`
@@ -220,9 +211,7 @@ export class ObjectiveApplicationService {
     const assessment = buildAcceptanceAssessment(workItem, input);
     const patch = {
       acceptanceAssessment: assessment,
-      status: assessment.status === "passed"
-        ? "review"
-        : (["review", "reviewing"].includes(workItem.status) ? "in_progress" : workItem.status)
+      status: workItem.status
     };
     return this.emit(
       "WorkItemChanged",
