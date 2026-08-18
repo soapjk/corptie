@@ -58,7 +58,11 @@ echo "Stopping existing CorptieMac processes..."
 launchctl remove com.corptie.mac.development 2>/dev/null || true
 app_pids=()
 while IFS= read -r pid; do
-  [[ -n "${pid}" ]] && app_pids+=("${pid}")
+  [[ -n "${pid}" ]] || continue
+  process_command="$(ps -p "${pid}" -o command= 2>/dev/null || true)"
+  if [[ "${process_command}" == */apps/macos/.build/debug/CorptieMac* ]]; then
+    app_pids+=("${pid}")
+  fi
 done < <(pgrep -x CorptieMac 2>/dev/null || true)
 if (( ${#app_pids[@]} > 0 )); then
   stop_pids "CorptieMac" "${app_pids[@]}"
