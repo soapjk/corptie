@@ -94,11 +94,14 @@ final class BackendClient: ObservableObject {
     @Published private(set) var selectedContextReferences: [SessionContextReference] = []
     @Published private(set) var isLoadingContextReferences = false
     @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
+    @Published private(set) var selectedProjectIntegrationStatus: ProjectIntegrationStatusResponse?
     @Published private(set) var projectWorktreeLoadError: String?
     @Published private(set) var projectWorktreeActionError: String?
     @Published private(set) var isLoadingProjectWorktrees = false
     @Published private(set) var projectWorktreeActionIds = Set<String>()
     @Published private(set) var isCleaningMergedProjectWorktrees = false
+    @Published private(set) var isIntegratingCompletedWorktrees = false
+    @Published private(set) var isCreatingIntegrationConflictWorkItem = false
     @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
     @Published private(set) var gitHubPushError: String?
     @Published private(set) var isPreparingGitHubPush = false
@@ -1475,6 +1478,7 @@ final class BackendClient: ObservableObject {
             }
         }
         selectedProjectWorktreeStatus = nil
+        selectedProjectIntegrationStatus = nil
         projectWorktreeLoadError = nil
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
@@ -1814,12 +1818,133 @@ final class BackendClient: ObservableObject {
             selectedProjectWorktreeStatus = status
             projectWorktreeLoadError = nil
             workspaceRecoveryStatus = nil
+            await loadProjectIntegrationStatus(for: session, projectId: status.project.repositoryId)
         } catch {
             if selectedSession?.id == session.id,
                requestSequence == projectStatusRequestSequence {
                 projectWorktreeLoadError = error.localizedDescription
             }
             await loadWorkspaceRecoveryStatus(for: session)
+        }
+    }
+
+    private func loadProjectIntegrationStatus(for session: TaskSession, projectId: String) async {
+        guard selectedSession?.id == session.id,
+              let objectiveId = session.objectiveId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !objectiveId.isEmpty else {
+            selectedProjectIntegrationStatus = nil
+            return
+        }
+        do {
+            let url = baseURL.appending(
+                path: "projects/\(projectId)/objectives/\(objectiveId)/integrations"
+            )
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                selectedProjectIntegrationStatus = nil
+                return
+            }
+            let result = try JSONDecoder().decode(ProjectIntegrationStatusResponse.self, from: data)
+            guard selectedSession?.id == session.id else { return }
+            selectedProjectIntegrationStatus = result
+        } catch {
+            selectedProjectIntegrationStatus = nil
+        }
+    }
+
+    func integrateCompletedWorktrees() {
+        guard let session = selectedSession,
+              let projectId = projectId(for: session),
+              let objectiveId = session.objectiveId,
+              !isIntegratingCompletedWorktrees else { return }
+        Task {
+            beginProjectWorktreeAction()
+            isIntegratingCompletedWorktrees = true
+            defer { isIntegratingCompletedWorktrees = false }
+            do {
+                var request = URLRequest(url: baseURL.appending(
+                    path: "projects/\(projectId)/objectives/\(objectiveId)/integrations"
+                ))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = Data("{}".utf8)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(
+                        Self.errorMessage(from: data) ?? L10n("Could not integrate completed Worktrees.")
+                    )
+                }
+                selectedProjectIntegrationStatus = try JSONDecoder().decode(
+                    ProjectIntegrationStatusResponse.self,
+                    from: data
+                )
+                let counts = selectedProjectIntegrationStatus?.latestRun?.counts
+                sendStatusMessage = L10nFormat(
+                    "Integrated %d Worktrees; %d have conflicts",
+                    counts?.integrated ?? 0,
+                    counts?.conflicts ?? 0
+                )
+                await loadProjectWorktreeStatus(for: session)
+            } catch {
+                recordProjectWorktreeActionError(error.localizedDescription)
+            }
+        }
+    }
+
+    func createIntegrationConflictWorkItem(runId: String, agentId: String, title: String? = nil) {
+        guard let session = selectedSession,
+              let projectId = projectId(for: session),
+              let objectiveId = session.objectiveId,
+              !isCreatingIntegrationConflictWorkItem else { return }
+        Task {
+            beginProjectWorktreeAction()
+            isCreatingIntegrationConflictWorkItem = true
+            defer { isCreatingIntegrationConflictWorkItem = false }
+            do {
+                var request = URLRequest(url: baseURL.appending(
+                    path: "projects/\(projectId)/objectives/\(objectiveId)/integrations/\(runId)/conflict-work-item"
+                ))
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                var body: [String: Any] = ["agentId": agentId]
+                if let title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    body["title"] = title
+                }
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    throw BackendError.message(
+                        Self.errorMessage(from: data) ?? L10n("Could not create the conflict-resolution WorkItem.")
+                    )
+                }
+                let result = try JSONDecoder().decode(
+                    ProjectIntegrationConflictWorkItemResponse.self,
+                    from: data
+                )
+                if var current = selectedProjectIntegrationStatus {
+                    current = ProjectIntegrationStatusResponse(
+                        projectId: current.projectId,
+                        objective: current.objective,
+                        mainHeadOid: current.mainHeadOid,
+                        eligibleWorktrees: current.eligibleWorktrees,
+                        excludedWorktrees: current.excludedWorktrees,
+                        eligibleAgents: current.eligibleAgents,
+                        latestRun: result.run
+                    )
+                    selectedProjectIntegrationStatus = current
+                }
+                if let createdSession = result.session {
+                    acceptCreatedSession(createdSession, selectImmediately: true)
+                }
+                sendStatusMessage = result.reused
+                    ? L10n("Opened the existing conflict-resolution WorkItem")
+                    : L10n("Created and started the conflict-resolution WorkItem")
+            } catch {
+                recordProjectWorktreeActionError(error.localizedDescription)
+            }
         }
     }
 

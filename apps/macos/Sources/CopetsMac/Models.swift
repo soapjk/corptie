@@ -326,6 +326,101 @@ struct ProjectWorktreeActionResponse: Decodable, Sendable {
     let deletedSessionIds: [String]?
 }
 
+struct ProjectIntegrationStatusResponse: Decodable, Equatable, Sendable {
+    let projectId: String
+    let objective: ProjectIntegrationObjective
+    let mainHeadOid: String
+    let eligibleWorktrees: [ProjectIntegrationCandidate]
+    let excludedWorktrees: [ProjectIntegrationExcludedCandidate]
+    let eligibleAgents: [ProjectIntegrationAgent]
+    let latestRun: ProjectIntegrationRun?
+}
+
+struct ProjectIntegrationObjective: Decodable, Equatable, Sendable {
+    let id: String
+    let name: String
+}
+
+struct ProjectIntegrationCandidate: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { worktreeId }
+    let worktreeId: String
+    let path: String
+    let branchName: String?
+    let headOid: String?
+    let workItemId: String?
+    let workItemTitle: String?
+}
+
+struct ProjectIntegrationExcludedCandidate: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { worktreeId }
+    let worktreeId: String
+    let path: String
+    let branchName: String?
+    let headOid: String?
+    let workItemId: String?
+    let workItemTitle: String?
+    let reason: String
+}
+
+struct ProjectIntegrationAgent: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { agentId }
+    let agentId: String
+    let name: String
+    let provider: String?
+    let role: String
+}
+
+struct ProjectIntegrationRun: Identifiable, Decodable, Equatable, Sendable {
+    let id: String
+    let repositoryId: String
+    let objectiveId: String
+    let status: String
+    let mainHeadBefore: String
+    let mainHeadAfter: String?
+    let integrationWorktreeId: String?
+    let integrationWorktreePath: String?
+    let integrationBranch: String?
+    let conflictWorkItemId: String?
+    let conflictSessionId: String?
+    let error: String?
+    let items: [ProjectIntegrationRunItem]
+    let counts: ProjectIntegrationCounts
+    let createdAt: String
+    let updatedAt: String
+    let completedAt: String?
+}
+
+struct ProjectIntegrationRunItem: Identifiable, Decodable, Equatable, Sendable {
+    var id: String { worktreeId }
+    let runId: String
+    let worktreeId: String
+    let workItemId: String
+    let workItemTitle: String
+    let branchName: String?
+    let sourceHeadOid: String
+    let ordinal: Int
+    let status: String
+    let conflictFiles: [String]
+    let mergedMainHead: String?
+    let error: String?
+    let updatedAt: String
+}
+
+struct ProjectIntegrationCounts: Decodable, Equatable, Sendable {
+    let total: Int
+    let integrated: Int
+    let conflicts: Int
+    let failed: Int
+    let pending: Int
+}
+
+struct ProjectIntegrationConflictWorkItemResponse: Decodable, Sendable {
+    let run: ProjectIntegrationRun
+    let workItem: WorkItem
+    let session: TaskSession?
+    let reused: Bool
+}
+
 struct GitCommitProtectionStatus: Decodable, Equatable, Sendable {
     let repositoryRoot: String
     let protectedPaths: [String]
