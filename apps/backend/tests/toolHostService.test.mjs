@@ -12,6 +12,7 @@ import {
   createClaudeAgentSdkProvider
 } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
+import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
@@ -155,6 +156,43 @@ test("Claude Provider preserves extra native tool restrictions while reserving W
   });
 
   assert.deepEqual(mapped.disallowedTools, ["EnterWorktree", "ExitWorktree", "WebSearch"]);
+});
+
+test("Codex and Claude Provider sessions receive the same provider-neutral memory tool contract", async () => {
+  const attachments = new Map();
+  const providers = ["codex-contract", "claude-contract"].map((id) => provider(
+    id,
+    [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH],
+    {
+      attachTools(attachment) {
+        attachments.set(id, attachment);
+        return { attached: true };
+      }
+    }
+  ));
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry(providers),
+    catalog: new HostToolCatalog([{
+      id: "memory",
+      tools: memoryDynamicTools,
+      execute: () => ({})
+    }])
+  });
+  await service.prepareSession("codex-contract", { actorId: "agent:1", sessionId: "session:1" });
+  await service.prepareSession("claude-contract", { actorId: "agent:1", sessionId: "session:1" });
+  const expected = [
+    "corptie_memory_search",
+    "corptie_memory_list",
+    "corptie_memory_remember",
+    "corptie_memory_update",
+    "corptie_memory_revoke"
+  ];
+  assert.deepEqual(attachments.get("codex-contract").tools.map((tool) => tool.name), expected);
+  assert.deepEqual(attachments.get("claude-contract").tools.map((tool) => tool.name), expected);
+  assert.deepEqual(
+    attachments.get("claude-contract").tools.map((tool) => tool.inputSchema),
+    attachments.get("codex-contract").tools.map((tool) => tool.inputSchema)
+  );
 });
 
 test("Session creation passes a prepared Tool Host attachment without knowing Provider mechanics", async () => {
