@@ -436,6 +436,18 @@ export function handleEntityHttpRequest({
         );
       }
 
+      const completionConfirmationMatch = path.match(/^\/work-items\/([^/]+)\/confirm-completion$/);
+      if (request.method === "POST" && completionConfirmationMatch) {
+        const id = decodeURIComponent(completionConfirmationMatch[1]);
+        return sendJson(
+          response,
+          200,
+          presentWorkItemAcceptance(
+            objectiveService.confirmWorkItemCompletion(id, await readJson(request))
+          )
+        );
+      }
+
       const workItemSessionsMatch = path.match(/^\/work-items\/([^/]+)\/sessions$/);
       if (request.method === "GET" && workItemSessionsMatch) {
         const id = decodeURIComponent(workItemSessionsMatch[1]);

@@ -554,6 +554,7 @@ struct WorkItemDetailView: View {
     @State private var pendingStatusAdvance: String?
     @State private var showStatusAdvanceConfirmation = false
     @State private var isAdvancingStatus = false
+    @State private var isConfirmingCompletion = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -646,13 +647,17 @@ struct WorkItemDetailView: View {
         } message: {
             Text(executionError?.message ?? "")
         }
-        .alert(L10n("确认完成"), isPresented: $showCompleteConfirmation) {
-            Button(L10n("确认完成"), role: .none) {
-                Task { await confirmComplete() }
-            }
-            Button(L10n("取消"), role: .cancel) { }
-        } message: {
-            Text(completionSuggestionMessage)
+        .sheet(isPresented: $showCompleteConfirmation) {
+            WorkItemCompletionConfirmationView(
+                workItem: workItem,
+                suggestion: workItem.completionSuggestion,
+                isConfirming: isConfirmingCompletion,
+                onConfirm: { Task { await confirmComplete() } },
+                onCancel: {
+                    showCompleteConfirmation = false
+                    pendingStatusAdvance = nil
+                }
+            )
         }
         .alert(L10n("Advance WorkItem Status"), isPresented: $showStatusAdvanceConfirmation) {
             Button(L10n("Confirm")) {
@@ -974,33 +979,29 @@ struct WorkItemDetailView: View {
 
     // 用户确认「待确认完成」→ 真正标记为已完成。
     private func confirmComplete() async {
-        if await client.updateWorkItem(workItemId: workItem.id, status: "done") != nil {
+        guard !isConfirmingCompletion else { return }
+        isConfirmingCompletion = true
+        defer { isConfirmingCompletion = false }
+        if await client.confirmWorkItemCompletion(workItemId: workItem.id) != nil {
+            showCompleteConfirmation = false
+            pendingStatusAdvance = nil
             onRequestReload()
         } else {
+            showCompleteConfirmation = false
             executionError = EntityLaunchError(
-                message: client.errorMessage ?? L10n("当前验收结果不足以证明该工作项已完成。"),
-                code: "ACCEPTANCE_NOT_PROVEN"
+                message: client.errorMessage ?? L10n("Unable to confirm WorkItem completion"),
+                code: nil
             )
         }
     }
 
     private func presentCompletionSuggestionIfEligible() {
+        guard !isCompleted else { return }
         guard let suggestion = workItem.completionSuggestion, suggestion.recommended else { return }
         let key = "\(workItem.id):\(suggestion.assessedAt)"
         guard notifiedSuggestionKey != key else { return }
         notifiedSuggestionKey = key
         showCompleteConfirmation = true
-    }
-
-    private var completionSuggestionMessage: String {
-        guard let suggestion = workItem.completionSuggestion, suggestion.recommended else {
-            return L10n("当前没有足够证据证明验收标准已满足。")
-        }
-        let evidence = suggestion.results.enumerated().map { index, result in
-            let entries = result.evidence.map { "• \($0.summary)\n  \($0.reference)" }.joined(separator: "\n")
-            return "\(index + 1). \(result.criterion)\n\(entries)"
-        }.joined(separator: "\n\n")
-        return "\(L10n("以下验收标准已有可核验证据。请人工确认是否标记为完成："))\n\n\(evidence)"
     }
 
     private var priorityLabel: String {
@@ -1063,7 +1064,11 @@ struct WorkItemDetailView: View {
         case .advance(let targetStatus):
             Button {
                 pendingStatusAdvance = targetStatus
-                showStatusAdvanceConfirmation = true
+                if targetStatus == "done" {
+                    showCompleteConfirmation = true
+                } else {
+                    showStatusAdvanceConfirmation = true
+                }
             } label: {
                 statusBadgeLabel(status)
             }
@@ -1126,6 +1131,104 @@ struct WorkItemDetailView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Color.primary.opacity(0.045), in: Capsule())
+    }
+}
+
+private struct WorkItemCompletionConfirmationView: View {
+    let workItem: WorkItem
+    let suggestion: WorkItemCompletionSuggestion?
+    let isConfirming: Bool
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n("确认完成"))
+                    .font(.title3.weight(.semibold))
+                Text(workItem.title)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let suggestion, suggestion.recommended {
+                        Label(
+                            L10n("以下验收标准已有可核验证据。请人工确认是否标记为完成。"),
+                            systemImage: "checkmark.seal.fill"
+                        )
+                        .foregroundStyle(.green)
+
+                        ForEach(Array(suggestion.results.enumerated()), id: \.offset) { index, result in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("\(index + 1). \(result.criterion)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .textSelection(.enabled)
+                                ForEach(Array(result.evidence.enumerated()), id: \.offset) { _, evidence in
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("• \(evidence.summary)")
+                                            .font(.system(size: 11))
+                                        Text(evidence.reference)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .textSelection(.enabled)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    } else {
+                        Label(
+                            L10n("自动验收尚未给出通过结论。你仍可作为用户作出最终裁决并确认完成。"),
+                            systemImage: "person.crop.circle.badge.checkmark"
+                        )
+                        .foregroundStyle(.orange)
+
+                        if !workItem.acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(L10n("Acceptance Criteria"))
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(workItem.acceptanceCriteria)
+                                    .font(.system(size: 11))
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button(L10n("取消"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isConfirming)
+                Button(action: onConfirm) {
+                    if isConfirming {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(L10n("确认完成"))
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isConfirming)
+            }
+            .padding(16)
+        }
+        .frame(width: 520, height: 480)
+        .interactiveDismissDisabled(isConfirming)
     }
 }
 

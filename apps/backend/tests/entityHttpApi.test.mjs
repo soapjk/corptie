@@ -627,13 +627,60 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     assert.equal(assessed.body.completionSuggestion.results.length, 2);
 
     const completed = await callApi({
-      method: "PATCH",
-      pathname: `/work-items/${created.body.id}`,
-      body: { status: "done" },
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/confirm-completion`,
+      body: { confirmed: true },
       ...services
     });
     assert.equal(completed.statusCode, 200);
     assert.equal(completed.body.status, "done");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit user confirmation completes an in-progress WorkItem without automatic proof", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "人工裁决目标" }, ...services
+    });
+    const created = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: {
+        objectiveId: objective.body.id,
+        title: "人工确认任务",
+        acceptanceCriteria: "User reviews the delivered result"
+      },
+      ...services
+    });
+    await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${created.body.id}`,
+      body: { status: "in_progress" },
+      ...services
+    });
+
+    const missingConfirmation = await callApi({
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/confirm-completion`,
+      body: { confirmed: false },
+      ...services
+    });
+    assert.equal(missingConfirmation.statusCode, 400);
+    assert.equal(missingConfirmation.body.code, "USER_CONFIRMATION_REQUIRED");
+
+    const completed = await callApi({
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/confirm-completion`,
+      body: { confirmed: true },
+      ...services
+    });
+    assert.equal(completed.statusCode, 200);
+    assert.equal(completed.body.status, "done");
+    assert.equal(completed.body.completionSuggestion, null);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
