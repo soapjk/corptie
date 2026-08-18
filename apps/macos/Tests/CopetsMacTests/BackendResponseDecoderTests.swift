@@ -115,7 +115,8 @@ final class BackendResponseDecoderTests: XCTestCase {
                     "approve": { "available": false, "reason": "NO_PENDING_APPROVAL" },
                     "switchModel": { "available": true },
                     "switchReasoning": { "available": false, "reason": "CAPABILITY_UNSUPPORTED" },
-                    "switchWorkspace": { "available": false, "reason": "TURN_RUNNING", "retryable": true }
+                    "switchWorkspace": { "available": false, "reason": "TURN_RUNNING", "retryable": true },
+                    "switchProvider": { "available": false, "reason": "TURN_RUNNING", "retryable": true }
                   },
                   "external": { "provider": "codex-app-server" }
                 },
@@ -135,7 +136,8 @@ final class BackendResponseDecoderTests: XCTestCase {
                     "approve": { "available": false, "reason": "NO_PENDING_APPROVAL" },
                     "switchModel": { "available": true },
                     "switchReasoning": { "available": false, "reason": "CAPABILITY_UNSUPPORTED" },
-                    "switchWorkspace": { "available": false, "reason": "TURN_RUNNING", "retryable": true }
+                    "switchWorkspace": { "available": false, "reason": "TURN_RUNNING", "retryable": true },
+                    "switchProvider": { "available": false, "reason": "TURN_RUNNING", "retryable": true }
                   },
                   "external": { "provider": "claude-sdk" }
                 }

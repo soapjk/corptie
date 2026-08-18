@@ -11,7 +11,8 @@ const ACTION_CAPABILITIES = Object.freeze({
   switchModel: AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
   switchReasoning: AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
   updatePermissions: AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
-  switchWorkspace: AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION
+  switchWorkspace: AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
+  switchProvider: null
 });
 
 export function withSessionActions(session, providerOrDescriptor) {
@@ -26,6 +27,17 @@ export function withSessionActions(session, providerOrDescriptor) {
 }
 
 export function sessionActionAvailability(action, session, providerOrDescriptor, capability = ACTION_CAPABILITIES[action]) {
+  if (action === "switchProvider") {
+    // Provider switching is a backend session-level operation (fork to a target
+    // Provider), not a capability of the current Provider. It is offered whenever
+    // the Session has an active logical route and no switch is already in flight.
+    const inFlight = session.providerSwitchInFlight === true
+      || session.external?.providerSwitchInFlight === true;
+    if (inFlight) {
+      return unavailable("PROVIDER_SWITCH_IN_FLIGHT", true);
+    }
+    return available();
+  }
   if (!capability || !providerSupports(providerOrDescriptor, capability)) {
     return unavailable("CAPABILITY_UNSUPPORTED", false);
   }

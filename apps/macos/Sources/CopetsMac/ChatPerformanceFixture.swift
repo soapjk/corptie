@@ -50,7 +50,9 @@ struct ChatPerformanceFixture: Sendable {
                 source: "local-fixture",
                 logicalSessionId: sessionId,
                 workspace: nil,
-                routingVersion: 1
+                routingVersion: 1,
+                providerSwitchInFlight: nil,
+                providerTransition: nil
             )
         )
 

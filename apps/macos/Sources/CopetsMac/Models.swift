@@ -108,6 +108,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         actions?.switchReasoning.available ?? capabilities?.canSwitchReasoning ?? false
     }
 
+    var canSwitchProviderNow: Bool {
+        actions?.switchProvider.available ?? false
+    }
+
     var usesManualConnection: Bool {
         if let disconnect = actions?.disconnect {
             return disconnect.available || disconnect.reason != "CAPABILITY_UNSUPPORTED"
@@ -151,6 +155,14 @@ struct ExternalSession: Codable, Equatable, Sendable {
     let logicalSessionId: String?
     let workspace: SessionWorkspace?
     let routingVersion: Int?
+    let providerSwitchInFlight: Bool?
+    let providerTransition: ProviderTransition?
+}
+
+struct ProviderTransition: Codable, Equatable, Sendable {
+    let transitionId: String
+    let phase: String
+    let error: String?
 }
 
 struct SessionWorkspace: Codable, Equatable, Sendable {
@@ -512,6 +524,7 @@ struct SessionActions: Codable, Equatable, Sendable {
     let switchReasoning: SessionActionAvailability
     let updatePermissions: SessionActionAvailability?
     let switchWorkspace: SessionActionAvailability
+    let switchProvider: SessionActionAvailability
 }
 
 enum TaskStatus: String, Codable, Sendable {
@@ -865,6 +878,22 @@ struct SessionTransitionEventEnvelope: Decodable {
 
 struct SessionTransitionEventPayload: Decodable {
     let sessionId: String?
+}
+
+struct SessionProviderSwitchPendingEventEnvelope: Decodable {
+    let payload: SessionProviderSwitchPendingEventPayload
+}
+
+struct SessionProviderSwitchPendingEventPayload: Decodable {
+    let session: TaskSession
+}
+
+struct SessionProviderSwitchedEventEnvelope: Decodable {
+    let payload: SessionProviderSwitchedEventPayload
+}
+
+struct SessionProviderSwitchedEventPayload: Decodable {
+    let session: TaskSession
 }
 
 struct CodexAccountUsage: Decodable, Equatable {

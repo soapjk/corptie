@@ -52,6 +52,40 @@ export class AgentProviderRegistry {
     return this.providers.delete(resolved);
   }
 
+  // Re-register an existing Provider after its runtime probe produced a fresh,
+  // honest capability snapshot (e.g. OpenClacky bridge handshake). Re-validates
+  // the descriptor so the declared capabilities always match the implemented
+  // operations and the running instance.
+  refreshProvider(provider) {
+    const descriptor = validateAgentProvider(provider);
+    const resolved = this.resolveId(descriptor.id);
+    if (!resolved) {
+      return this.register(provider);
+    }
+    if (resolved !== descriptor.id) {
+      throw new AgentProviderContractError(
+        `Agent Provider ${descriptor.id} is aliased by another provider.`,
+        { providerId: descriptor.id }
+      );
+    }
+    for (const identity of [descriptor.id, ...descriptor.aliases]) {
+      const owner = this.providerIdsByIdentity.get(normalizedProviderIdentity(identity));
+      if (owner && owner !== descriptor.id) {
+        throw new AgentProviderContractError(`Agent Provider identity is already registered: ${identity}`, {
+          providerId: descriptor.id,
+          identity,
+          existingProviderId: owner
+        });
+      }
+    }
+    provider.descriptor = descriptor;
+    this.providers.set(descriptor.id, provider);
+    for (const identity of [descriptor.id, ...descriptor.aliases]) {
+      this.providerIdsByIdentity.set(normalizedProviderIdentity(identity), descriptor.id);
+    }
+    return descriptor;
+  }
+
   get(providerId) {
     const normalized = normalizedProviderId(providerId);
     const resolved = this.resolveId(normalized);

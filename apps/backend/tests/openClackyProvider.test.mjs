@@ -69,7 +69,7 @@ test("OpenClacky Provider exposes the shared contract and native capabilities", 
   const descriptor = validateAgentProvider(provider);
   assert.equal(descriptor.id, "openclacky");
   assert.deepEqual(descriptor.aliases, ["clacky", "open-clacky"]);
-  assert.equal(descriptor.runtime.lifecycle, "external");
+  assert.equal(descriptor.runtime.lifecycle, "managed");
   assert.deepEqual(descriptor.configuration.fields.map((field) => field.id), ["baseURL", "accessKey"]);
 });
 

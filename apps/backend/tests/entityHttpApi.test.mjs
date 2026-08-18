@@ -592,6 +592,13 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     });
     services.objectiveService.bindSession("acceptance-session", created.body.id);
 
+    await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${created.body.id}`,
+      body: { status: "in_progress" },
+      ...services
+    });
+
     const rejectedCompletion = await callApi({
       method: "PATCH",
       pathname: `/work-items/${created.body.id}`,
@@ -622,7 +629,7 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
       ...services
     });
     assert.equal(assessed.statusCode, 200);
-    assert.equal(assessed.body.status, "review");
+    assert.equal(assessed.body.status, "in_progress");
     assert.equal(assessed.body.completionSuggestion.recommended, true);
     assert.equal(assessed.body.completionSuggestion.results.length, 2);
 
@@ -761,7 +768,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
       ...services
     });
     assert.equal(passed.statusCode, 200);
-    assert.equal(passed.body.status, "review");
+    assert.equal(passed.body.status, "todo");
     assert.equal(passed.body.completionSuggestion.recommended, true);
     assert.deepEqual(
       passed.body.completionSuggestion.results.map((result) => result.evidence[0].reference),

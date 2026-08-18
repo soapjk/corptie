@@ -28,8 +28,17 @@ struct SessionsView: View {
     @EnvironmentObject private var router: AppTabRouter
     /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
     @State private var showNewSessionCreation = false
-    /// 记录用户最后选中的 Session，跨窗口/重启恢复，避免再次打开时无默认选中。
-    private static let lastSelectedSessionKey = "sessions.lastSelectedSessionId"
+    /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
+    @State private var collapsedGroupKeys: Set<String> = []
+    /// 搜索交互状态。
+    @State private var isSearching = false
+    @State private var searchText = ""
+    @FocusState private var isSearchFieldFocused: Bool
+    /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
+    /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
+    private static func lastSelectedSessionKey(for category: SessionCategory) -> String {
+        "sessions.lastSelectedSessionId.\(category.rawValue)"
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -80,7 +89,7 @@ struct SessionsView: View {
         }
         .onChange(of: backendClient.selectedSession?.id) { _, newValue in
             if let newValue {
-                Self.recordSessionId(newValue)
+                Self.recordSessionId(newValue, category: selectedCategory)
                 visuallySelectedSessionID = newValue
                 if let session = backendClient.selectedSession {
                     selectedCategory = SessionCategory(session: session)
@@ -88,8 +97,8 @@ struct SessionsView: View {
             }
             preloadSessionMessages(backendClient.sessions)
         }
-        .onChange(of: selectedCategory) { _, _ in
-            selectFirstVisibleSessionIfNeeded()
+        .onChange(of: selectedCategory) { _, newValue in
+            restoreSelection(for: newValue)
         }
     }
 
@@ -133,22 +142,30 @@ struct SessionsView: View {
     // 未选中时恢复上次选中的会话（跨窗口/重启记忆）。
     private func restoreLastSelectedSession(_ sessions: [TaskSession]) {
         guard backendClient.selectedSession == nil, !sessions.isEmpty else { return }
-        let lastId = Self.restoredSessionId()
-        if let last = sessions.first(where: { $0.id == lastId }) {
-            selectedCategory = SessionCategory(session: last)
-            backendClient.select(session: last)
-        } else if let first = sessions.first {
-            selectedCategory = SessionCategory(session: first)
-            backendClient.select(session: first)
+        restoreSelection(for: selectedCategory)
+    }
+
+    private static func recordSessionId(_ id: String, category: SessionCategory) {
+        CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedSessionKey(for: category))
+    }
+
+    private static func restoredSessionId(for category: SessionCategory) -> String? {
+        CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedSessionKey(for: category))
+    }
+
+    // 恢复某个 Tab（SessionCategory）下的选择：优先保留仍有效的当前选择，
+    // 否则恢复该 Tab 上次选中的会话；若已删除/不属于该 Tab，则回退到第一个。
+    private func restoreSelection(for category: SessionCategory) {
+        let targetId = resolvedSessionSelection(
+            category: category,
+            rows: sessionListStore.rows,
+            selectedSessionId: backendClient.selectedSession?.id,
+            lastSelectedId: Self.restoredSessionId(for: category)
+        )
+        guard let targetId, targetId != backendClient.selectedSession?.id else { return }
+        if let session = backendClient.sessions.first(where: { $0.id == targetId }) {
+            selectSessionAfterHighlight(session)
         }
-    }
-
-    private static func recordSessionId(_ id: String) {
-        CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedSessionKey)
-    }
-
-    private static func restoredSessionId() -> String? {
-        CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedSessionKey)
     }
 
     private func preloadSessionMessages(_ sessions: [TaskSession]) {
@@ -257,9 +274,19 @@ struct SessionsView: View {
 
     private var sessionListSidebar: some View {
         VStack(spacing: 0) {
-            sessionCategoryPicker
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
+            HStack(spacing: 8) {
+                sessionCategoryPicker
+                    .frame(maxWidth: .infinity)
+                searchToggleButton
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 8)
+
+            if isSearching {
+                sessionSearchBar
+                    .padding(.horizontal, 8)
+                    .padding(.top, 6)
+            }
 
             newChatButton
                 .padding(.horizontal, 8)
@@ -267,7 +294,12 @@ struct SessionsView: View {
                 .padding(.bottom, 4)
 
             List {
-                if groupedSessions.isEmpty {
+                if isSearching && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && groupedSessions.isEmpty {
+                    ContentUnavailableView.search(text: searchText)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                } else if groupedSessions.isEmpty {
                     Text(L10n("No Sessions in This Category"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -277,8 +309,10 @@ struct SessionsView: View {
                 } else {
                     ForEach(groupedSessions) { group in
                         Section {
-                            ForEach(group.rows) { row in
-                                sessionRow(row)
+                            if !collapsedGroupKeys.contains(group.key) {
+                                ForEach(group.rows) { row in
+                                    sessionRow(row)
+                                }
                             }
                         } header: {
                             sessionGroupHeader(group)
@@ -290,6 +324,51 @@ struct SessionsView: View {
         }
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet()
+        }
+    }
+
+    private var searchToggleButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isSearching = true
+            }
+            isSearchFieldFocused = true
+        } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.plain)
+        .help(L10n("Search sessions"))
+    }
+
+    private var sessionSearchBar: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField(L10n("Search sessions"), text: $searchText)
+                .textFieldStyle(.plain)
+                .focused($isSearchFieldFocused)
+            Button {
+                searchText = ""
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isSearching = false
+                }
+                isSearchFieldFocused = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.4))
         }
     }
 
@@ -355,16 +434,36 @@ struct SessionsView: View {
 
     @ViewBuilder
     private func sessionGroupHeader(_ group: SessionGroup) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: group.systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-            Text(group.title)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
+        let isCollapsed = collapsedGroupKeys.contains(group.key)
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if isCollapsed {
+                    collapsedGroupKeys.remove(group.key)
+                } else {
+                    collapsedGroupKeys.insert(group.key)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Image(systemName: group.systemImage)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                Text(group.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(group.rows.count)")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.top, 4)
+            .contentShape(Rectangle())
         }
-        .padding(.top, 4)
+        .buttonStyle(.plain)
     }
 
     // MARK: - 会话分组
@@ -372,21 +471,16 @@ struct SessionsView: View {
     /// 一级分类依据 provider-neutral sessionKind；Worker 子分类依据关联 WorkItem 的业务状态。
     private var groupedSessions: [SessionGroup] {
         makeSessionGroups(
-            rows: sessionListStore.rows,
+            rows: searchFilteredRows,
             agents: entityClient.agents,
             workItems: entityClient.workItems,
             category: selectedCategory
         )
     }
 
-    private func selectFirstVisibleSessionIfNeeded() {
-        let visibleRows = groupedSessions.flatMap(\.rows)
-        guard !visibleRows.contains(where: { $0.id == backendClient.selectedSession?.id }) else { return }
-        guard let first = visibleRows.first else {
-            visuallySelectedSessionID = nil
-            return
-        }
-        selectSessionAfterHighlight(first.session)
+    // 按搜索词筛选当前 Tab 下的会话（匹配标题/摘要/Agent/工作目录）。
+    private var searchFilteredRows: [SessionRowModel] {
+        filteredSessionRows(sessionListStore.rows, query: searchText)
     }
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
@@ -543,6 +637,42 @@ func makeSessionGroups(
         ))
     }
     return groups
+}
+
+// 按搜索词筛选会话（匹配标题/摘要/Agent/工作目录，大小写不敏感）。
+@MainActor
+func filteredSessionRows(_ rows: [SessionRowModel], query: String) -> [SessionRowModel] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return rows }
+    return rows.filter { row in
+        let session = row.session
+        return [session.title, session.summary, session.agent, session.external?.cwd ?? ""]
+            .contains { $0.localizedCaseInsensitiveContains(trimmed) }
+    }
+}
+
+// 解析某个 Tab（SessionCategory）下应选中的会话 id：
+//  - 当前选择仍属于该 Tab 且存在 → 保留；
+//  - 否则若该 Tab 记住的上次选择仍存在 → 恢复；
+//  - 否则回退到该 Tab 的第一个会话；
+//  - 该 Tab 无会话时返回 nil。
+@MainActor
+func resolvedSessionSelection(
+    category: SessionCategory,
+    rows: [SessionRowModel],
+    selectedSessionId: String?,
+    lastSelectedId: String?
+) -> String? {
+    let visibleRows = rows.filter { SessionCategory(session: $0.session) == category }
+    if let selectedSessionId,
+       visibleRows.contains(where: { $0.id == selectedSessionId }) {
+        return selectedSessionId
+    }
+    guard let first = visibleRows.first else { return nil }
+    if let lastSelectedId, visibleRows.contains(where: { $0.id == lastSelectedId }) {
+        return lastSelectedId
+    }
+    return first.id
 }
 
 // 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。

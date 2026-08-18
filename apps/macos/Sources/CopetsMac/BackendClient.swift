@@ -156,11 +156,23 @@ final class BackendClient: ObservableObject {
         body: [String: Any]
     )?
     private var appStateCancellable: AnyCancellable?
+    private var reachabilityCancellable: AnyCancellable?
 
     init() {
         appStateCancellable = appState.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.projectSessionsFromAppState() }
+        // `isOnline` is authoritative connection state derived from the sync
+        // engine's transport outcome, not from a side effect of state emission.
+        // A successful snapshot/change-set sets `isReachable`; a failed request
+        // or dropped stream clears it. Reacting here guarantees the console and
+        // floating panel refresh whenever the server actually becomes reachable
+        // (or drops), regardless of whether session content changed.
+        // `AppStateStore` is @MainActor, so `$isReachable` already emits on the
+        // main actor; no re-dispatch is needed, and a synchronous sink keeps the
+        // console/footer refresh on the same run-loop turn as the transition.
+        reachabilityCancellable = appState.$isReachable
+            .sink { [weak self] reachable in self?.applyConnectionState(reachable: reachable) }
     }
 
     func start() {
@@ -250,7 +262,7 @@ final class BackendClient: ObservableObject {
                     guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                         throw URLError(.badServerResponse)
                     }
-
+                    self.markBackendConnectedFromSessionStream()
                     var eventName = ""
                     var dataLines: [String] = []
                     for try await line in bytes.lines {
@@ -280,6 +292,30 @@ final class BackendClient: ObservableObject {
     private func reconcileConnectedPresentation() {
         guard isOnline, lastError != nil else { return }
         lastError = nil
+    }
+
+    /// Authoritative connection transition driven by the sync engine's
+    /// reachability signal. `reachable == true` means the server answered a
+    /// snapshot/change-set; `false` is a real disconnect or launch race that
+    /// must be surfaced (and recovered) through the UI.
+    private func applyConnectionState(reachable: Bool) {
+        if reachable {
+            isOnline = true
+            if lastError != nil { lastError = nil }
+        } else {
+            isOnline = false
+            if let syncError = appState.syncError, lastError != syncError {
+                lastError = syncError
+            }
+        }
+    }
+
+    /// The canonical Session SSE stream (`/events`) established a connection.
+    /// Reconcile any stale transport error from startup requests that raced the
+    /// production launch agent. Kept separate from `applyConnectionState` so a
+    /// stream connection never masks a genuinely failed state sync.
+    func markBackendConnectedFromSessionStream() {
+        if lastError != nil { lastError = nil }
     }
 
     func dismissProjectWorktreeActionError() {
@@ -334,6 +370,20 @@ final class BackendClient: ObservableObject {
                let sessionId = event.payload.sessionId,
                restartActivityBySessionId[sessionId] != nil {
                 failRestartActivity(for: sessionId)
+            }
+            return
+        }
+        if eventName == "ProviderSwitchPending" {
+            if let payload = data.data(using: .utf8),
+               (try? JSONDecoder().decode(SessionProviderSwitchPendingEventEnvelope.self, from: payload)) != nil {
+                await refresh()
+            }
+            return
+        }
+        if eventName == "ProviderSwitched" {
+            if let payload = data.data(using: .utf8),
+               (try? JSONDecoder().decode(SessionProviderSwitchedEventEnvelope.self, from: payload)) != nil {
+                await refresh()
             }
             return
         }
@@ -822,13 +872,9 @@ final class BackendClient: ObservableObject {
 
     func refresh() async {
         await AppStateSyncController.shared.refreshSnapshot()
-        if let syncError = appState.syncError {
-            isOnline = false
-            if lastError != syncError { lastError = syncError }
-            return
-        }
-        isOnline = true
-        lastError = nil
+        // `refreshSnapshot` mutates `appState.syncError`, whose sink drives
+        // `applyConnectionState`; no need to duplicate the transition here.
+        // This keeps a single authoritative source of truth for `isOnline`.
     }
 
     /// Commands are reconciled through the authoritative revisioned snapshot;
@@ -880,7 +926,6 @@ final class BackendClient: ObservableObject {
         sessionsDidChange.send(nextSessions)
         syncSelectedSessionFromSessions()
         syncSelectedDetailMetadataFromSessions()
-        if !isOnline { isOnline = true }
     }
 
     func refreshArchivedSessions() async {
@@ -3559,7 +3604,9 @@ final class BackendClient: ObservableObject {
                     source: session.external?.source ?? detail.source,
                     logicalSessionId: session.external?.logicalSessionId,
                     workspace: session.external?.workspace,
-                    routingVersion: session.external?.routingVersion
+                    routingVersion: session.external?.routingVersion,
+                    providerSwitchInFlight: session.external?.providerSwitchInFlight,
+                    providerTransition: session.external?.providerTransition
                 ),
                 pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
             )

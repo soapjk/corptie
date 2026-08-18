@@ -146,8 +146,7 @@ test("Session lifecycle states update execution only and never prove WorkItem ac
     assert.equal(Object.hasOwn(patch, "status"), false);
   }
   assert.deepEqual(workItemExecutionPatch({ ...workItem, status: "review" }, "complete"), {
-    executionStatus: "completed",
-    status: "in_progress"
+    executionStatus: "completed"
   });
 });
 
@@ -158,8 +157,7 @@ test("a paused Session can continue without creating or preserving an unsupporte
     status: "in_progress"
   });
   assert.deepEqual(workItemExecutionPatch({ ...workItem, status: "review" }, "paused"), {
-    executionStatus: "paused",
-    status: "in_progress"
+    executionStatus: "paused"
   });
 });
 

@@ -201,10 +201,6 @@ export function workItemExecutionPatch(workItem, sessionStatus) {
   const terminal = ["done", "complete", "completed"].includes(workItem?.status);
   if (!terminal && ["running", "blocked"].includes(sessionStatus)) {
     patch.status = "in_progress";
-  } else if (["review", "reviewing"].includes(workItem?.status)
-    && !completionSuggestionForWorkItem(workItem)) {
-    // Retract review states created by the legacy Session-complete heuristic.
-    patch.status = "in_progress";
   }
   return patch;
 }
