@@ -57,7 +57,7 @@ struct UnderlineTabBar: View {
         0.9,
         0.24,
         1.0,
-        duration: 0.32
+        duration: 0.15
     )
 
     var body: some View {
@@ -186,12 +186,7 @@ struct MainTabView: View {
             ZStack {
                 content(for: router.selectedTab)
                     .id(router.selectedTab)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: router.slideForward ? .trailing : .leading)
-                            .combined(with: .opacity),
-                        removal: .move(edge: router.slideForward ? .leading : .trailing)
-                            .combined(with: .opacity)
-                    ))
+                    .transition(.opacity)
             }
             .clipped()
         }
