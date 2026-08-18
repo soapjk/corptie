@@ -6,7 +6,8 @@ import test from "node:test";
 import {
   ProjectWorktreeIntegrationService,
   conflictFilesFromError,
-  integrationCounts
+  integrationCounts,
+  presentProjectIntegrationRun
 } from "../src/application/projectWorktreeIntegrationService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -99,6 +100,30 @@ function fixture() {
   });
   return { store, state, inspection, workItems, sessions };
 }
+
+test("integration run presenter supplies the complete client wire contract", () => {
+  const presented = presentProjectIntegrationRun({
+    id: "integration:1",
+    items: [
+      { workItemId: "work_item:1", status: "integrated" },
+      { workItemId: "work_item:missing", status: "conflict" }
+    ]
+  }, {
+    resolveWorkItem: (id) => id === "work_item:1" ? { title: "Resolved title" } : null
+  });
+
+  assert.deepEqual(presented.counts, {
+    total: 2,
+    integrated: 1,
+    conflicts: 1,
+    failed: 0,
+    pending: 0
+  });
+  assert.deepEqual(
+    presented.items.map((item) => item.workItemTitle),
+    ["Resolved title", "work_item:missing"]
+  );
+});
 
 test("status exposes completed Objective Worktrees and scoped contributor Agents", async () => {
   const { store, inspection } = fixture();

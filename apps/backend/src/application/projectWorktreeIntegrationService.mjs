@@ -381,14 +381,9 @@ export class ProjectWorktreeIntegrationService {
         provider: agent.provider,
         role: agent.role
       }));
-    const presentedRun = run ? {
-      ...run,
-      items: run.items.map((item) => ({
-        ...item,
-        workItemTitle: workItems.get(item.workItemId)?.title ?? item.workItemId
-      })),
-      counts: integrationCounts(run.items)
-    } : null;
+    const presentedRun = presentProjectIntegrationRun(run, {
+      resolveWorkItem: (workItemId) => workItems.get(workItemId)
+    });
     return {
       projectId: scope.projectId,
       objective: { id: scope.objective.id, name: scope.objective.name },
@@ -447,5 +442,24 @@ export function integrationCounts(items = []) {
     conflicts: count(["conflict"]),
     failed: count(["failed"]),
     pending: count(["pending", "merging"])
+  };
+}
+
+// One provider-neutral wire contract is shared by the project integration API
+// and the revisioned control-plane snapshot. Store rows deliberately omit
+// derived labels/counts, so they must never be exposed directly to clients.
+export function presentProjectIntegrationRun(run, options = {}) {
+  if (!run) return null;
+  const resolveWorkItem = options.resolveWorkItem ?? (() => null);
+  const items = (run.items ?? []).map((item) => ({
+    ...item,
+    workItemTitle: resolveWorkItem(item.workItemId)?.title
+      ?? item.workItemTitle
+      ?? item.workItemId
+  }));
+  return {
+    ...run,
+    items,
+    counts: integrationCounts(items)
   };
 }

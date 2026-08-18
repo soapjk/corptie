@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CorptieMac
 
@@ -36,6 +37,81 @@ struct AppStateStoreTests {
             deletes: .fixture()
         )
         #expect(store.apply(changeSet: gap) == .revisionGap(expected: 4, received: 8))
+    }
+
+    @Test func snapshotDecodesIntegrationRunWireContract() throws {
+        let payload = """
+        {
+          "revision": 12,
+          "state": {
+            "sessions": [],
+            "workItems": [],
+            "objectives": [],
+            "agents": [],
+            "repositories": [],
+            "integrationRuns": [{
+              "id": "integration:1",
+              "repositoryId": "repository:1",
+              "objectiveId": "objective:1",
+              "status": "completed",
+              "mainHeadBefore": "main:before",
+              "mainHeadAfter": "main:after",
+              "integrationWorktreeId": null,
+              "integrationWorktreePath": null,
+              "integrationBranch": null,
+              "conflictWorkItemId": null,
+              "conflictSessionId": null,
+              "error": null,
+              "items": [{
+                "runId": "integration:1",
+                "worktreeId": "worktree:1",
+                "workItemId": "work_item:1",
+                "workItemTitle": "Memory tools",
+                "branchName": "feature/memory-tools",
+                "sourceHeadOid": "source:1",
+                "ordinal": 0,
+                "status": "integrated",
+                "conflictFiles": [],
+                "mergedMainHead": "main:after",
+                "error": null,
+                "updatedAt": "2026-08-18T00:01:00Z"
+              }],
+              "counts": {
+                "total": 1,
+                "integrated": 1,
+                "conflicts": 0,
+                "failed": 0,
+                "pending": 0
+              },
+              "createdAt": "2026-08-18T00:00:00Z",
+              "updatedAt": "2026-08-18T00:01:00Z",
+              "completedAt": "2026-08-18T00:01:00Z"
+            }]
+          }
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: Data(payload.utf8))
+
+        #expect(snapshot.state.integrationRuns.first?.counts.total == 1)
+        #expect(snapshot.state.integrationRuns.first?.items.first?.workItemTitle == "Memory tools")
+    }
+
+    @Test func snapshotDecodeErrorNamesTheMissingContractPath() {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"revision":1,"state":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"repositories":[],"integrationRuns":[{}]}}"#.utf8)
+
+        do {
+            _ = try decoder.decode(StateSnapshotEnvelope.self, from: payload)
+            Issue.record("Expected the incomplete integration run to fail decoding")
+        } catch {
+            let message = AppStateSyncController.syncErrorMessage(error)
+            #expect(message.contains("state.integrationRuns[0]"))
+            #expect(message.contains("字段"))
+        }
     }
 }
 
