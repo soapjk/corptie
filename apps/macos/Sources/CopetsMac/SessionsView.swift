@@ -449,9 +449,6 @@ struct SessionsView: View {
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .frame(width: 12)
-                Image(systemName: group.systemImage)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
                 Text(group.title)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
@@ -522,7 +519,6 @@ func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [
 struct SessionGroup: Identifiable {
     let key: String
     let title: String
-    let systemImage: String
     let rows: [SessionRowModel]
 
     var id: String { key }
@@ -600,7 +596,6 @@ func makeSessionGroups(
         SessionGroup(
             key: "assistant:\(key)",
             title: agentsByID[key]?.name ?? L10n("Assistant Session"),
-            systemImage: "sparkles",
             rows: assistantRows[key] ?? []
         )
     }
@@ -608,7 +603,6 @@ func makeSessionGroups(
         groups.append(SessionGroup(
             key: "__worker_active__",
             title: L10n("In Progress"),
-            systemImage: "circle.dotted",
             rows: activeWorkerRows
         ))
     }
@@ -616,7 +610,6 @@ func makeSessionGroups(
         groups.append(SessionGroup(
             key: "__worker_completed__",
             title: L10n("Completed"),
-            systemImage: "checkmark.circle",
             rows: completedWorkerRows
         ))
     }
@@ -624,7 +617,6 @@ func makeSessionGroups(
         groups.append(SessionGroup(
             key: "__objective__",
             title: L10n("Objective Session"),
-            systemImage: "scope",
             rows: objectiveRows
         ))
     }
@@ -632,7 +624,6 @@ func makeSessionGroups(
         groups.append(SessionGroup(
             key: "__legacy__",
             title: L10n("Unclassified Session"),
-            systemImage: "questionmark.circle",
             rows: legacyRows
         ))
     }
