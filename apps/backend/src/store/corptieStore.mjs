@@ -842,6 +842,46 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_work_items_objective_id ON work_items(objective_id);
       CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
 
+      CREATE TABLE IF NOT EXISTS project_integration_runs (
+        id TEXT PRIMARY KEY,
+        repository_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        main_head_before TEXT NOT NULL,
+        main_head_after TEXT,
+        integration_worktree_id TEXT,
+        integration_worktree_path TEXT,
+        integration_branch TEXT,
+        conflict_work_item_id TEXT,
+        conflict_session_id TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_project_integration_runs_scope
+      ON project_integration_runs(repository_id, objective_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS project_integration_items (
+        run_id TEXT NOT NULL,
+        worktree_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        branch_name TEXT,
+        source_head_oid TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        conflict_files_json TEXT NOT NULL DEFAULT '[]',
+        merged_main_head TEXT,
+        error TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, worktree_id),
+        FOREIGN KEY (run_id) REFERENCES project_integration_runs(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_project_integration_items_status
+      ON project_integration_items(run_id, status, ordinal);
+
       CREATE TABLE IF NOT EXISTS objective_work_item_association_audit (
         audit_id TEXT PRIMARY KEY,
         entity_type TEXT NOT NULL,
@@ -4063,6 +4103,115 @@ export class CorptieStore {
     );
   }
 
+  createProjectIntegrationRun(input) {
+    const id = input.id ?? `integration:${randomUUID()}`;
+    const timestamp = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      this.db.run(
+        `INSERT INTO project_integration_runs (
+           id, repository_id, objective_id, status, main_head_before,
+           main_head_after, error, created_at, updated_at, completed_at
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)`,
+        [id, input.repositoryId, input.objectiveId, input.status ?? "running", input.mainHeadBefore, timestamp, timestamp]
+      );
+      for (const [index, item] of (input.items ?? []).entries()) {
+        this.db.run(
+          `INSERT INTO project_integration_items (
+             run_id, worktree_id, work_item_id, branch_name, source_head_oid,
+             ordinal, status, conflict_files_json, merged_main_head, error, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, '[]', NULL, NULL, ?)`,
+          [
+            id,
+            item.worktreeId,
+            item.workItemId,
+            item.branchName ?? null,
+            item.sourceHeadOid,
+            item.ordinal ?? index,
+            item.status ?? "pending",
+            timestamp
+          ]
+        );
+      }
+    });
+    this.scheduleSave();
+    return this.getProjectIntegrationRun(id);
+  }
+
+  getProjectIntegrationRun(id) {
+    const row = this.selectOne(`SELECT * FROM project_integration_runs WHERE id = ?`, [id]);
+    if (!row) return null;
+    const items = this.selectAll(
+      `SELECT * FROM project_integration_items WHERE run_id = ? ORDER BY ordinal ASC`,
+      [id]
+    ).map(projectIntegrationItemFromRow);
+    return projectIntegrationRunFromRow(row, items);
+  }
+
+  getLatestProjectIntegrationRun(repositoryId, objectiveId) {
+    const row = this.selectOne(
+      `SELECT * FROM project_integration_runs
+       WHERE repository_id = ? AND objective_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [repositoryId, objectiveId]
+    );
+    return row ? this.getProjectIntegrationRun(row.id) : null;
+  }
+
+  updateProjectIntegrationRun(id, patch = {}) {
+    const current = this.getProjectIntegrationRun(id);
+    if (!current) return null;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
+    this.db.run(
+      `UPDATE project_integration_runs SET
+         status=?, main_head_after=?, integration_worktree_id=?, integration_worktree_path=?,
+         integration_branch=?, conflict_work_item_id=?, conflict_session_id=?, error=?,
+         updated_at=?, completed_at=? WHERE id=?`,
+      [
+        has("status") ? patch.status : current.status,
+        has("mainHeadAfter") ? patch.mainHeadAfter : current.mainHeadAfter,
+        has("integrationWorktreeId") ? patch.integrationWorktreeId : current.integrationWorktreeId,
+        has("integrationWorktreePath") ? patch.integrationWorktreePath : current.integrationWorktreePath,
+        has("integrationBranch") ? patch.integrationBranch : current.integrationBranch,
+        has("conflictWorkItemId") ? patch.conflictWorkItemId : current.conflictWorkItemId,
+        has("conflictSessionId") ? patch.conflictSessionId : current.conflictSessionId,
+        has("error") ? patch.error : current.error,
+        createdAtFromOrNow(),
+        has("completedAt") ? patch.completedAt : current.completedAt,
+        id
+      ]
+    );
+    this.scheduleSave();
+    return this.getProjectIntegrationRun(id);
+  }
+
+  updateProjectIntegrationItem(runId, worktreeId, patch = {}) {
+    const current = this.selectOne(
+      `SELECT * FROM project_integration_items WHERE run_id = ? AND worktree_id = ?`,
+      [runId, worktreeId]
+    );
+    if (!current) return null;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
+    this.db.run(
+      `UPDATE project_integration_items SET
+         status=?, conflict_files_json=?, merged_main_head=?, error=?, updated_at=?
+       WHERE run_id=? AND worktree_id=?`,
+      [
+        has("status") ? patch.status : current.status,
+        has("conflictFiles") ? JSON.stringify(patch.conflictFiles ?? []) : current.conflict_files_json,
+        has("mergedMainHead") ? patch.mergedMainHead : current.merged_main_head,
+        has("error") ? patch.error : current.error,
+        createdAtFromOrNow(),
+        runId,
+        worktreeId
+      ]
+    );
+    this.scheduleSave();
+    return projectIntegrationItemFromRow(this.selectOne(
+      `SELECT * FROM project_integration_items WHERE run_id = ? AND worktree_id = ?`,
+      [runId, worktreeId]
+    ));
+  }
+
   getWorkItem(id) {
     return this.selectOne(`SELECT * FROM work_items WHERE id = ?`, [id]);
   }
@@ -5065,6 +5214,44 @@ function workspaceTransitionFromRow(row) {
     strategy: row.strategy,
     error: parseJson(row.error_json, null),
     createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function projectIntegrationRunFromRow(row, items = []) {
+  return {
+    id: row.id,
+    repositoryId: row.repository_id,
+    objectiveId: row.objective_id,
+    status: row.status,
+    mainHeadBefore: row.main_head_before,
+    mainHeadAfter: row.main_head_after ?? null,
+    integrationWorktreeId: row.integration_worktree_id ?? null,
+    integrationWorktreePath: row.integration_worktree_path ?? null,
+    integrationBranch: row.integration_branch ?? null,
+    conflictWorkItemId: row.conflict_work_item_id ?? null,
+    conflictSessionId: row.conflict_session_id ?? null,
+    error: row.error ?? null,
+    items,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? null
+  };
+}
+
+function projectIntegrationItemFromRow(row) {
+  if (!row) return null;
+  return {
+    runId: row.run_id,
+    worktreeId: row.worktree_id,
+    workItemId: row.work_item_id,
+    branchName: row.branch_name ?? null,
+    sourceHeadOid: row.source_head_oid,
+    ordinal: Number(row.ordinal),
+    status: row.status,
+    conflictFiles: parseJson(row.conflict_files_json, []),
+    mergedMainHead: row.merged_main_head ?? null,
+    error: row.error ?? null,
     updatedAt: row.updated_at
   };
 }

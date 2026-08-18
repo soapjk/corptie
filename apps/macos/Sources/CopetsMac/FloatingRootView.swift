@@ -6190,6 +6190,8 @@ private struct ProjectWorktreeManagerView: View {
     @State private var pendingDeletionWarning: PendingWorktreeDeletion?
     @State private var pendingDeletionConfirmation: PendingWorktreeDeletion?
     @State private var pendingMergedCleanup: [ProjectWorktreeStatus] = []
+    @State private var showingIntegrationConfirmation = false
+    @State private var pendingConflictRun: ProjectIntegrationRun?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -6205,6 +6207,28 @@ private struct ProjectWorktreeManagerView: View {
                 }
                 Spacer()
                 if let status {
+                    if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+                        Button {
+                            showingIntegrationConfirmation = true
+                        } label: {
+                            Label(
+                                L10nFormat(
+                                    "Integrate Completed (%d)",
+                                    integrationStatus.eligibleWorktrees.count
+                                ),
+                                systemImage: "arrow.triangle.merge"
+                            )
+                        }
+                        .controlSize(.small)
+                        .disabled(
+                            integrationStatus.eligibleWorktrees.isEmpty
+                                || (integrationStatus.latestRun?.counts.conflicts ?? 0) > 0
+                                || backendClient.isIntegratingCompletedWorktrees
+                        )
+                        .help((integrationStatus.latestRun?.counts.conflicts ?? 0) > 0
+                            ? L10n("Resolve the current Integration Run conflicts before starting another one")
+                            : L10n("Serially merge every completed Worktree in this Objective into main"))
+                    }
                     let eligible = ProjectWorktreeCleanupPolicy.eligibleWorktrees(
                         from: status.project.worktrees
                     )
@@ -6244,6 +6268,10 @@ private struct ProjectWorktreeManagerView: View {
             }
 
             if let status {
+                if let integrationStatus = backendClient.selectedProjectIntegrationStatus,
+                   let run = integrationStatus.latestRun {
+                    integrationResultCard(run, status: integrationStatus)
+                }
                 serviceCard(status)
                 Divider()
                 ScrollView {
@@ -6394,6 +6422,46 @@ private struct ProjectWorktreeManagerView: View {
                 onCancel: { pendingDeletionConfirmation = nil }
             )
         }
+        .sheet(item: $pendingConflictRun) { run in
+            if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+                ProjectIntegrationConflictWorkItemConfirmationView(
+                    run: run,
+                    status: integrationStatus,
+                    isCreating: backendClient.isCreatingIntegrationConflictWorkItem,
+                    onConfirm: { agentId, title in
+                        backendClient.createIntegrationConflictWorkItem(
+                            runId: run.id,
+                            agentId: agentId,
+                            title: title
+                        )
+                        pendingConflictRun = nil
+                    },
+                    onCancel: { pendingConflictRun = nil }
+                )
+            }
+        }
+        .confirmationDialog(
+            L10n("Integrate all completed Worktrees?"),
+            isPresented: $showingIntegrationConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Start Serial Integration")) {
+                showingIntegrationConfirmation = false
+                backendClient.integrateCompletedWorktrees()
+            }
+            Button(L10n("Cancel"), role: .cancel) {
+                showingIntegrationConfirmation = false
+            }
+        } message: {
+            if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+                Text(L10nFormat(
+                    "Corptie will merge these completed Worktrees into main one at a time. Conflicts will be recorded and the remaining Worktrees will continue. No remote push is performed.\n\n%@",
+                    integrationStatus.eligibleWorktrees.map {
+                        "\($0.branchName ?? L10n("detached HEAD")) — \($0.workItemTitle ?? L10n("Untitled WorkItem"))"
+                    }.joined(separator: "\n")
+                ))
+            }
+        }
         .confirmationDialog(
             L10n("Synchronize this Worktree with main?"),
             isPresented: Binding(
@@ -6444,6 +6512,113 @@ private struct ProjectWorktreeManagerView: View {
 
     private var status: ProjectWorktreeStatusResponse? {
         backendClient.selectedProjectWorktreeStatus
+    }
+
+    @ViewBuilder
+    private func integrationResultCard(
+        _ run: ProjectIntegrationRun,
+        status: ProjectIntegrationStatusResponse
+    ) -> some View {
+        let conflicts = run.items.filter { $0.status == "conflict" }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Label(L10n("Completed Worktree Integration"), systemImage: "arrow.triangle.merge")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                if backendClient.isIntegratingCompletedWorktrees || run.status == "running" {
+                    ProgressView().controlSize(.small)
+                    Text(L10n("Integrating serially"))
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                }
+            }
+
+            HStack(spacing: 8) {
+                integrationCountBadge(
+                    L10nFormat("%d integrated", run.counts.integrated),
+                    color: CorptiePalette.connected
+                )
+                integrationCountBadge(
+                    L10nFormat("%d conflicts", run.counts.conflicts),
+                    color: run.counts.conflicts > 0 ? CorptiePalette.amber : CorptiePalette.secondaryText
+                )
+                if run.counts.failed > 0 {
+                    integrationCountBadge(
+                        L10nFormat("%d failed", run.counts.failed),
+                        color: .red
+                    )
+                }
+            }
+
+            if !conflicts.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(conflicts) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.branchName ?? item.workItemTitle)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            Text(item.conflictFiles.isEmpty
+                                ? L10n("Conflicting files will be inspected by the resolution WorkItem")
+                                : item.conflictFiles.joined(separator: ", "))
+                                .font(.system(size: 10))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                                .lineLimit(2)
+                        }
+                    }
+                }
+
+                HStack {
+                    Text(L10nFormat(
+                        "%d Worktrees require conflict resolution",
+                        conflicts.count
+                    ))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                    Spacer()
+                    Button(run.conflictWorkItemId == nil
+                        ? L10n("Resolve Conflicts…")
+                        : L10n("Open Conflict WorkItem")) {
+                        if run.conflictWorkItemId == nil {
+                            pendingConflictRun = run
+                        } else {
+                            backendClient.createIntegrationConflictWorkItem(
+                                runId: run.id,
+                                agentId: status.eligibleAgents.first?.agentId ?? ""
+                            )
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(
+                        backendClient.isCreatingIntegrationConflictWorkItem
+                            || (run.conflictWorkItemId == nil && status.eligibleAgents.isEmpty)
+                    )
+                    .help(status.eligibleAgents.isEmpty && run.conflictWorkItemId == nil
+                        ? L10n("Add an IC Agent to this Objective before creating the resolution WorkItem")
+                        : L10n("Create and immediately start a WorkItem to resolve these merge conflicts"))
+                }
+            }
+
+            if let error = run.error, !error.isEmpty {
+                Text(error)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(12)
+        .background(CorptiePalette.amber.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(CorptiePalette.amber.opacity(0.22), lineWidth: 0.75)
+        )
+    }
+
+    private func integrationCountBadge(_ label: String, color: Color) -> some View {
+        Text(label)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.1), in: Capsule())
     }
 
     @ViewBuilder
@@ -6848,6 +7023,135 @@ private struct ProjectWorktreeManagerView: View {
         case true: CorptiePalette.connected
         case false: CorptiePalette.amber
         case nil: CorptiePalette.secondaryText
+        }
+    }
+}
+
+private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
+    let run: ProjectIntegrationRun
+    let status: ProjectIntegrationStatusResponse
+    let isCreating: Bool
+    let onConfirm: (String, String?) -> Void
+    let onCancel: () -> Void
+
+    @State private var selectedAgentId = ""
+    @State private var title = ""
+
+    private var conflicts: [ProjectIntegrationRunItem] {
+        run.items.filter { $0.status == "conflict" }
+    }
+
+    private var selectedAgent: ProjectIntegrationAgent? {
+        status.eligibleAgents.first { $0.agentId == selectedAgentId }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 10) {
+                Image(systemName: "wrench.and.screwdriver.fill")
+                    .font(.system(size: 24))
+                    .foregroundStyle(CorptiePalette.amber)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n("Create Conflict-Resolution WorkItem"))
+                        .font(.system(size: 18, weight: .bold))
+                    Text(L10nFormat(
+                        "This WorkItem will be created under Objective %@ and start immediately.",
+                        status.objective.name
+                    ))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                }
+            }
+
+            Text(L10nFormat(
+                "This operation creates one dedicated WorkItem to resolve the merge conflicts in the following %d branches and merge the result into main:",
+                conflicts.count
+            ))
+            .font(.system(size: 12, weight: .medium))
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(conflicts) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.branchName ?? item.workItemTitle)
+                                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                            Text(item.workItemTitle)
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                            if !item.conflictFiles.isEmpty {
+                                Text(item.conflictFiles.joined(separator: ", "))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(CorptiePalette.mutedText)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+            }
+            .frame(maxHeight: 180)
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow {
+                    Text(L10n("Objective"))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    Text(status.objective.name)
+                        .fontWeight(.semibold)
+                }
+                GridRow {
+                    Text(L10n("Agent"))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    Picker("", selection: $selectedAgentId) {
+                        ForEach(status.eligibleAgents) { agent in
+                            Text(agent.name).tag(agent.agentId)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                GridRow {
+                    Text(L10n("WorkItem title"))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                    TextField(L10n("Resolve completed Worktree merge conflicts"), text: $title)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+            .font(.system(size: 11.5, weight: .medium))
+
+            if let selectedAgent {
+                Text(L10nFormat(
+                    "After confirmation, Corptie will bind this WorkItem to Agent %@ and start its Work Session in a dedicated Integration Worktree.",
+                    selectedAgent.name
+                ))
+                .font(.system(size: 10.5))
+                .foregroundStyle(CorptiePalette.secondaryText)
+            } else if status.eligibleAgents.isEmpty {
+                Label(
+                    L10n("This Objective has no available IC Agent."),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.red)
+            }
+
+            HStack {
+                Spacer()
+                Button(L10n("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n("Create and Start WorkItem")) {
+                    let customTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    onConfirm(selectedAgentId, customTitle.isEmpty ? nil : customTitle)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedAgentId.isEmpty || isCreating)
+            }
+        }
+        .padding(20)
+        .frame(width: 580)
+        .onAppear {
+            if selectedAgentId.isEmpty {
+                selectedAgentId = status.eligibleAgents.first?.agentId ?? ""
+            }
         }
     }
 }
