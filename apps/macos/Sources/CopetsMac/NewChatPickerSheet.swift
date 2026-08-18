@@ -17,7 +17,7 @@ enum NewSessionKind: String, CaseIterable, Identifiable {
 }
 
 /// 统一 Session 创建入口。
-/// Assistant Chat 只绑定 Assistant；Objective Chat 绑定 Objective 与 Assistant；
+/// Assistant Chat 只绑定 Assistant；Objective Chat 绑定 Objective 与其 Contributor；
 /// Worker Session 强制同时绑定 WorkItem 与 IC Agent。
 struct NewSessionCreationSheet: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -271,7 +271,7 @@ struct NewSessionCreationSheet: View {
             choiceSection(
                 title: L10n("选择 Objective Agent"),
                 emptyTitle: L10n("Objective 暂无可用 Agent"),
-                emptyDescription: L10n("请先在 Objective 详情中挂载 Assistant 或 Independent Contributor。"),
+                emptyDescription: L10n("请先在 Objective 详情中挂载 Independent Contributor。"),
                 rows: objectiveAgents
             ) { agent in agentChoiceRow(agent) }
         }
