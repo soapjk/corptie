@@ -853,21 +853,6 @@ final class BackendClient: ObservableObject {
         return [created] + current
     }
 
-    func fetchSessionsForShutdown() async throws -> [TaskSession] {
-        var request = URLRequest(url: baseURL.appending(path: "sessions"))
-        request.timeoutInterval = 3
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 3
-        configuration.timeoutIntervalForResource = 3
-        let shutdownSession = URLSession(configuration: configuration)
-        defer { shutdownSession.invalidateAndCancel() }
-        let (data, response) = try await shutdownSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw URLError(.badServerResponse)
-        }
-        return try await BackendResponseDecoder.sessions(from: data)
-    }
-
     private func applySessionSnapshot(
         _ nextSessions: [TaskSession],
         allowDuringReorder: Bool = false
