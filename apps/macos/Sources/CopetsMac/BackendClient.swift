@@ -3742,13 +3742,30 @@ final class BackendClient: ObservableObject {
         publishSelectedDetailIfSafe(nextDetail)
     }
 
+    private var deferredDetailPublishTask: Task<Void, Never>?
+
     private func publishSelectedDetailIfSafe(_ detail: CodexThreadDetail) {
         if let selectedDetail,
            detailPublicationRevision(selectedDetail) == detailPublicationRevision(detail),
            selectedDetail == detail {
             return
         }
-        guard NSEvent.pressedMouseButtons == 0 else { return }
+        // A row click can land while the mouse button is still physically held
+        // (pressedMouseButtons != 0). Publishing on that exact turn risks a
+        // transient gesture-driven re-render, so defer by one runloop turn
+        // instead of silently dropping the update — dropping it here left the
+        // detail view stuck on an empty placeholder with no way to recover.
+        guard NSEvent.pressedMouseButtons == 0 else {
+            deferredDetailPublishTask?.cancel()
+            deferredDetailPublishTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self, self.selectedSession != nil else { return }
+                self.publishSelectedDetailIfSafe(detail)
+            }
+            return
+        }
+        deferredDetailPublishTask?.cancel()
+        deferredDetailPublishTask = nil
         ChatPerformanceRecorder.shared.increment(.detailPublishes)
         ChatPerformanceTrace.event("ui.detail.publish", value: detail.items.count)
         selectedDetail = detail

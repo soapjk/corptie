@@ -4,30 +4,30 @@ import Testing
 
 struct ChatTimelineFeatureFlagsTests {
     @Test
-    func defaultsPreserveTheCurrentRendererAndDisableExperimentalPaths() {
+    func defaultsUseTheNativeAppKitRendererAndEnableOptimizationPaths() {
         let flags = ChatTimelineFeatureFlags.resolve(environment: [:])
 
-        #expect(flags.renderer == .swiftUIVStack)
+        #expect(flags.renderer == .appKitNativeText)
         #expect(flags.fixtureMode == .disabled)
         #expect(flags.initialDisplayWeight == 7)
         #expect(flags.uiBatchIntervalMilliseconds == 100)
-        #expect(!flags.sseHealthEnabled)
-        #expect(!flags.uiBatchingEnabled)
-        #expect(!flags.markdownCacheEnabled)
-        #expect(!flags.boundedWindowEnabled)
-        #expect(!flags.deltaTimelineEnabled)
+        #expect(flags.sseHealthEnabled)
+        #expect(flags.uiBatchingEnabled)
+        #expect(flags.markdownCacheEnabled)
+        #expect(flags.boundedWindowEnabled)
+        #expect(flags.deltaTimelineEnabled)
     }
 
     @Test
-    func developmentDefaultsToTheValidatedAppKitPipeline() {
-        let flags = ChatTimelineFeatureFlags.resolve(environment: ["CORPTIE_ENV": "development"])
+    func developmentAndProductionShareTheSameDefaults() {
+        let production = ChatTimelineFeatureFlags.resolve(environment: [:])
+        let development = ChatTimelineFeatureFlags.resolve(environment: ["CORPTIE_ENV": "development"])
 
-        #expect(flags.renderer == .appKitNativeText)
-        #expect(flags.uiBatchingEnabled)
-        #expect(flags.deltaTimelineEnabled)
-        #expect(flags.sseHealthEnabled)
-        #expect(flags.fixtureStreamSteps == 200)
-        #expect(flags.fixtureStreamIntervalMilliseconds == 50)
+        #expect(production == development)
+        #expect(development.renderer == .appKitNativeText)
+        #expect(development.sseHealthEnabled)
+        #expect(development.fixtureStreamSteps == 200)
+        #expect(development.fixtureStreamIntervalMilliseconds == 50)
     }
 
     @Test

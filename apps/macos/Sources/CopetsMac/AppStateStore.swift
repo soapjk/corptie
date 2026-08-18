@@ -52,8 +52,16 @@ final class AppStateStore: ObservableObject {
     static let shared = AppStateStore()
 
     @Published private(set) var revision: Int64 = 0
-    @Published private(set) var state = NormalizedAppState()
+    @Published private(set) var state = NormalizedAppState() {
+        didSet {
+            // `sessions` is accessed on every tab switch and list render; keep
+            // the sorted result cached so the O(n log n) sort is not repeated
+            // for each read against an unchanged state.
+            cachedSessions = nil
+        }
+    }
     @Published private(set) var syncError: String?
+    private var cachedSessions: [TaskSession]?
     /// Authoritative server reachability, flipped by the sync engine on every
     /// snapshot/change-set success or transport failure. Unlike `syncError` it
     /// also emits on the very first success, so `isOnline` cannot be left stale
@@ -61,7 +69,10 @@ final class AppStateStore: ObservableObject {
     @Published private(set) var isReachable = false
 
     var sessions: [TaskSession] {
-        state.sessions.values.sorted(by: Self.sessionPrecedes)
+        if let cachedSessions { return cachedSessions }
+        let sorted = state.sessions.values.sorted(by: Self.sessionPrecedes)
+        cachedSessions = sorted
+        return sorted
     }
     var workItems: [WorkItem] { state.workItems.values.sorted { $0.createdAt < $1.createdAt } }
     var objectives: [Objective] { state.objectives.values.sorted { $0.createdAt > $1.createdAt } }

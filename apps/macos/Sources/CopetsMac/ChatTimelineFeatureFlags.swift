@@ -47,11 +47,14 @@ struct ChatTimelineFeatureFlags: Equatable, Sendable {
             defaults: defaults,
             defaultsKey: "chat.renderer"
         )
-        let isDevelopment = ["dev", "development"].contains(
-            environment["CORPTIE_ENV"]?.lowercased() ?? ""
-        )
+        // The AppKit hybrid renderer routes simple text rows through an
+        // inexpensive native NSTextView path (with an attributed-string cache)
+        // and only falls back to SwiftUI hosting for complex cards. It is the
+        // default everywhere so production avoids the O(n) SwiftUI VStack
+        // projection on the main thread. An explicit renderer override still
+        // wins in both environments.
         let renderer = ChatTimelineRenderer(rawValue: rendererValue ?? "")
-            ?? (isDevelopment ? .appKitNativeText : .swiftUIVStack)
+            ?? .appKitNativeText
         let fixtureValue = stringValue(
             environment: environment,
             environmentKey: "CORPTIE_CHAT_PERFORMANCE_FIXTURE",
@@ -74,33 +77,35 @@ struct ChatTimelineFeatureFlags: Equatable, Sendable {
                 environmentKey: "CORPTIE_CHAT_SSE_HEALTH",
                 defaults: defaults,
                 defaultsKey: "chat.sseHealth.enabled",
-                defaultValue: isDevelopment
+                defaultValue: true
             ),
             uiBatchingEnabled: boolValue(
                 environment: environment,
                 environmentKey: "CORPTIE_CHAT_UI_BATCHING",
                 defaults: defaults,
                 defaultsKey: "chat.uiBatching.enabled",
-                defaultValue: isDevelopment
+                defaultValue: true
             ),
             markdownCacheEnabled: boolValue(
                 environment: environment,
                 environmentKey: "CORPTIE_CHAT_MARKDOWN_CACHE",
                 defaults: defaults,
-                defaultsKey: "chat.markdownCache.enabled"
+                defaultsKey: "chat.markdownCache.enabled",
+                defaultValue: true
             ),
             boundedWindowEnabled: boolValue(
                 environment: environment,
                 environmentKey: "CORPTIE_CHAT_BOUNDED_WINDOW",
                 defaults: defaults,
-                defaultsKey: "chat.boundedWindow.enabled"
+                defaultsKey: "chat.boundedWindow.enabled",
+                defaultValue: true
             ),
             deltaTimelineEnabled: boolValue(
                 environment: environment,
                 environmentKey: "CORPTIE_CHAT_DELTA_TIMELINE",
                 defaults: defaults,
                 defaultsKey: "chat.deltaTimeline.enabled",
-                defaultValue: isDevelopment
+                defaultValue: true
             ),
             initialDisplayWeight: integerValue(
                 environment: environment,
