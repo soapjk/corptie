@@ -24,8 +24,9 @@ struct SessionsView: View {
     @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
     @State private var visuallySelectedSessionID: String?
     @State private var pendingSelectionTask: Task<Void, Never>?
+    @State private var selectedCategory: SessionCategory = .worker
     @EnvironmentObject private var router: AppTabRouter
-    /// 「+」新建会话：明确选择 Assistant Chat 或 Worker Session。
+    /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
     @State private var showNewSessionCreation = false
     /// 记录用户最后选中的 Session，跨窗口/重启恢复，避免再次打开时无默认选中。
     private static let lastSelectedSessionKey = "sessions.lastSelectedSessionId"
@@ -81,8 +82,14 @@ struct SessionsView: View {
             if let newValue {
                 Self.recordSessionId(newValue)
                 visuallySelectedSessionID = newValue
+                if let session = backendClient.selectedSession {
+                    selectedCategory = SessionCategory(session: session)
+                }
             }
             preloadSessionMessages(backendClient.sessions)
+        }
+        .onChange(of: selectedCategory) { _, _ in
+            selectFirstVisibleSessionIfNeeded()
         }
     }
 
@@ -105,6 +112,7 @@ struct SessionsView: View {
         guard let pendingId = router.pendingSessionId else { return }
         if let session = sessionMatchingPendingSelection(pendingId, in: sessions) {
             pendingSelectionTask?.cancel()
+            selectedCategory = SessionCategory(session: session)
             backendClient.select(session: session)
             router.pendingSessionId = nil
             return
@@ -113,6 +121,7 @@ struct SessionsView: View {
         pendingSelectionTask = Task { @MainActor in
             defer { pendingSelectionTask = nil }
             if let session = await AppStateSyncController.shared.hydrateSession(pendingId) {
+                selectedCategory = SessionCategory(session: session)
                 backendClient.select(session: session)
                 router.pendingSessionId = nil
             } else {
@@ -126,8 +135,10 @@ struct SessionsView: View {
         guard backendClient.selectedSession == nil, !sessions.isEmpty else { return }
         let lastId = Self.restoredSessionId()
         if let last = sessions.first(where: { $0.id == lastId }) {
+            selectedCategory = SessionCategory(session: last)
             backendClient.select(session: last)
         } else if let first = sessions.first {
+            selectedCategory = SessionCategory(session: first)
             backendClient.select(session: first)
         }
     }
@@ -246,14 +257,18 @@ struct SessionsView: View {
 
     private var sessionListSidebar: some View {
         VStack(spacing: 0) {
-            newChatButton
+            sessionCategoryPicker
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
+
+            newChatButton
+                .padding(.horizontal, 8)
+                .padding(.top, 6)
                 .padding(.bottom, 4)
 
             List {
-                if sessionListStore.rows.isEmpty {
-                    Text(L10n("暂无会话"))
+                if groupedSessions.isEmpty {
+                    Text(L10n("No Sessions in This Category"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
@@ -278,6 +293,18 @@ struct SessionsView: View {
         }
     }
 
+    private var sessionCategoryPicker: some View {
+        Picker(L10n("Session Type"), selection: $selectedCategory) {
+            ForEach(SessionCategory.allCases) { category in
+                Label(category.title, systemImage: category.systemImage)
+                    .tag(category)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .help(selectedCategory.title)
+    }
+
     private var newChatButton: some View {
         Button {
             showNewSessionCreation = true
@@ -297,7 +324,7 @@ struct SessionsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(L10n("新建 Assistant Chat 或 Worker Session"))
+        .help(L10n("Create an Assistant, Objective, or Worker Session"))
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
@@ -329,11 +356,9 @@ struct SessionsView: View {
     @ViewBuilder
     private func sessionGroupHeader(_ group: SessionGroup) -> some View {
         HStack(spacing: 6) {
-            if group.isAssistant {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-            }
+            Image(systemName: group.systemImage)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
             Text(group.title)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -344,16 +369,32 @@ struct SessionsView: View {
 
     // MARK: - 会话分组
 
-    /// 分组只依据后端的 provider-neutral sessionKind；Agent 缓存仅用于显示名称。
+    /// 一级分类依据 provider-neutral sessionKind；Worker 子分类依据关联 WorkItem 的业务状态。
     private var groupedSessions: [SessionGroup] {
-        makeSessionGroups(rows: sessionListStore.rows, agents: entityClient.agents)
+        makeSessionGroups(
+            rows: sessionListStore.rows,
+            agents: entityClient.agents,
+            workItems: entityClient.workItems,
+            category: selectedCategory
+        )
+    }
+
+    private func selectFirstVisibleSessionIfNeeded() {
+        let visibleRows = groupedSessions.flatMap(\.rows)
+        guard !visibleRows.contains(where: { $0.id == backendClient.selectedSession?.id }) else { return }
+        guard let first = visibleRows.first else {
+            visuallySelectedSessionID = nil
+            return
+        }
+        selectSessionAfterHighlight(first.session)
     }
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
 
     @ViewBuilder
     private var sessionConversation: some View {
-        if let session = backendClient.selectedSession {
+        if let session = backendClient.selectedSession,
+           SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
                 // 主对话区：直接平铺，吃满剩余宽度（参考 Rudder 聊天主区）
                 DetailView(
@@ -387,22 +428,61 @@ func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [
 struct SessionGroup: Identifiable {
     let key: String
     let title: String
-    let isAssistant: Bool
+    let systemImage: String
     let rows: [SessionRowModel]
 
     var id: String { key }
 }
 
+enum SessionCategory: String, CaseIterable, Identifiable {
+    case worker
+    case objective
+    case assistant
+
+    var id: String { rawValue }
+
+    init(session: TaskSession) {
+        switch session.resolvedSessionKind {
+        case .worker: self = .worker
+        case .objectiveChat: self = .objective
+        case .assistantChat, .legacy: self = .assistant
+        }
+    }
+
+    @MainActor var title: String {
+        switch self {
+        case .worker: L10n("Worker")
+        case .objective: L10n("Objective")
+        case .assistant: L10n("Assistant")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .worker: "hammer"
+        case .objective: "scope"
+        case .assistant: "sparkles"
+        }
+    }
+}
+
 @MainActor
-func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGroup] {
+func makeSessionGroups(
+    rows: [SessionRowModel],
+    agents: [Agent],
+    workItems: [WorkItem],
+    category: SessionCategory
+) -> [SessionGroup] {
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
+    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
     var assistantOrder: [String] = []
     var assistantRows: [String: [SessionRowModel]] = [:]
-    var workerRows: [SessionRowModel] = []
+    var activeWorkerRows: [SessionRowModel] = []
+    var completedWorkerRows: [SessionRowModel] = []
     var objectiveRows: [SessionRowModel] = []
     var legacyRows: [SessionRowModel] = []
 
-    for row in rows {
+    for row in rows where SessionCategory(session: row.session) == category {
         switch row.session.resolvedSessionKind {
         case .assistantChat:
             let key = row.session.agentId ?? "__assistant_unbound__"
@@ -411,7 +491,12 @@ func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGrou
         case .objectiveChat:
             objectiveRows.append(row)
         case .worker:
-            workerRows.append(row)
+            let workItem = row.session.workItemId.flatMap { workItemsByID[$0] }
+            if workItem.map({ WorkItemColumn.column(for: $0.status) == .done }) == true {
+                completedWorkerRows.append(row)
+            } else {
+                activeWorkerRows.append(row)
+            }
         case .legacy:
             legacyRows.append(row)
         }
@@ -421,23 +506,31 @@ func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGrou
         SessionGroup(
             key: "assistant:\(key)",
             title: agentsByID[key]?.name ?? L10n("Assistant Session"),
-            isAssistant: true,
+            systemImage: "sparkles",
             rows: assistantRows[key] ?? []
         )
     }
-    if !workerRows.isEmpty {
+    if !activeWorkerRows.isEmpty {
         groups.append(SessionGroup(
-            key: "__worker__",
-            title: L10n("Worker Session"),
-            isAssistant: false,
-            rows: workerRows
+            key: "__worker_active__",
+            title: L10n("In Progress"),
+            systemImage: "circle.dotted",
+            rows: activeWorkerRows
+        ))
+    }
+    if !completedWorkerRows.isEmpty {
+        groups.append(SessionGroup(
+            key: "__worker_completed__",
+            title: L10n("Completed"),
+            systemImage: "checkmark.circle",
+            rows: completedWorkerRows
         ))
     }
     if !objectiveRows.isEmpty {
         groups.append(SessionGroup(
             key: "__objective__",
-            title: L10n("Objective Chat"),
-            isAssistant: true,
+            title: L10n("Objective Session"),
+            systemImage: "scope",
             rows: objectiveRows
         ))
     }
@@ -445,7 +538,7 @@ func makeSessionGroups(rows: [SessionRowModel], agents: [Agent]) -> [SessionGrou
         groups.append(SessionGroup(
             key: "__legacy__",
             title: L10n("Unclassified Session"),
-            isAssistant: false,
+            systemImage: "questionmark.circle",
             rows: legacyRows
         ))
     }
