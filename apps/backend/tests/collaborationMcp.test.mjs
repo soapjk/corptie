@@ -22,6 +22,11 @@ const expectedTools = [
   "corptie_switch_workspace",
   "corptie.collaboration.request",
   "corptie.memory.search",
+  "corptie_memory_search",
+  "corptie_memory_list",
+  "corptie_memory_remember",
+  "corptie_memory_update",
+  "corptie_memory_revoke",
   "corptie_skill_search",
   "corptie_skill_load",
   "corptie_work_item_report_acceptance",
@@ -93,8 +98,25 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
     assert.deepEqual(tools.tools.map((tool) => tool.name), expectedTools);
     assert.equal(tools.tools.find((tool) => tool.name === "corptie.agents.discover").annotations.readOnlyHint, true);
     assert.equal(tools.tools.find((tool) => tool.name === "corptie_list_workspaces").annotations.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === "corptie_memory_search").annotations.readOnlyHint, true);
+    assert.equal(tools.tools.find((tool) => tool.name === "corptie_memory_list").annotations.readOnlyHint, true);
 
     await client.callTool({ name: "corptie_list_workspaces", arguments: {} });
+    await client.callTool({ name: "corptie.memory.search", arguments: { intent: "style" } });
+    await client.callTool({ name: "corptie_memory_search", arguments: { intent: "style" } });
+    await client.callTool({ name: "corptie_memory_list", arguments: { scope: "agent", include_revoked: true } });
+    await client.callTool({
+      name: "corptie_memory_remember",
+      arguments: { content: "Concise replies", kind: "preference" }
+    });
+    await client.callTool({
+      name: "corptie_memory_update",
+      arguments: { memory_id: "memory:1", content: "Very concise replies" }
+    });
+    await client.callTool({
+      name: "corptie_memory_revoke",
+      arguments: { memory_id: "memory:1", reason: "withdrawn" }
+    });
     await client.callTool({
       name: "corptie_create_worktree",
       arguments: {
@@ -111,11 +133,29 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
         continuation_checkpoint: "Resume the remaining work"
       }
     });
-    assert.deepEqual(reads[0], {
+    assert.deepEqual(reads.slice(0, 4), [{
       path: "/internal/collaboration/workspaces",
       search: undefined
-    });
-    assert.deepEqual(calls.slice(0, 2), [{
+    }, {
+      path: "/internal/collaboration/memory/search",
+      search: { intent: "style" }
+    }, {
+      path: "/internal/collaboration/memory/search",
+      search: { intent: "style" }
+    }, {
+      path: "/internal/collaboration/memory",
+      search: { scope: "agent", includeRevoked: "true" }
+    }]);
+    assert.deepEqual(calls.slice(0, 5), [{
+      path: "/internal/collaboration/memory",
+      body: { content: "Concise replies", kind: "preference" }
+    }, {
+      path: "/internal/collaboration/memory/memory%3A1/update",
+      body: { content: "Very concise replies" }
+    }, {
+      path: "/internal/collaboration/memory/memory%3A1/revoke",
+      body: { reason: "withdrawn" }
+    }, {
       path: "/internal/collaboration/worktrees",
       body: {
         target_path: "/repo/feature",
@@ -152,7 +192,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
       nextAction: "end_current_turn",
       note: "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
     });
-    assert.deepEqual(calls.slice(2), [{
+    assert.deepEqual(calls.slice(5), [{
       path: "/internal/collaboration/task-confirmations",
       body: {
         recipientAgentId: "journal-agent",
@@ -176,7 +216,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
         }]
       }
     });
-    assert.deepEqual(calls[3], {
+    assert.deepEqual(calls[6], {
       path: "/internal/collaboration/work-items/acceptance",
       body: {
         results: [{
@@ -195,7 +235,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
       name: "corptie.collaboration.get_task",
       arguments: { task_id: "task-1", include_history: true }
     });
-    assert.deepEqual(reads.slice(1), [
+    assert.deepEqual(reads.slice(4), [
       { path: "/internal/collaboration/tasks/task-1", search: { includeHistory: undefined } },
       { path: "/internal/collaboration/tasks/task-1", search: { includeHistory: "true" } }
     ]);
@@ -255,23 +295,44 @@ test("authenticated MCP workspace routes preserve the calling Agent identity", a
         onSwitchWorkspace: async (agentId, input) => {
           calls.push({ operation: "switch", agentId, input });
           return { status: "waitingForTurn" };
+        },
+        onMemoryOperation: async (agentId, tool, arguments_, metadata) => {
+          calls.push({ operation: "memory", agentId, tool, arguments: arguments_, metadata });
+          return { count: 0, memories: [] };
         }
       })) response.writeHead(404).end();
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const client = new CollaborationHttpClient({
       baseUrl: `http://127.0.0.1:${server.address().port}`,
-      agentId: "research-agent"
+      agentId: "research-agent",
+      sessionScope: {
+        sessionId: "session:research",
+        objectiveId: "objective:research",
+        workItemId: "work_item:research"
+      }
     });
 
     await client.get("/internal/collaboration/workspaces");
     await client.post("/internal/collaboration/worktrees", { target_path: "/repo/feature" });
     await client.post("/internal/collaboration/workspaces/switch", { target_worktree_id: "worktree:feature" });
+    await client.get("/internal/collaboration/memory/search", { intent: "" });
 
     assert.deepEqual(calls, [
       { operation: "list", agentId: "research-agent" },
       { operation: "create", agentId: "research-agent", input: { target_path: "/repo/feature" } },
-      { operation: "switch", agentId: "research-agent", input: { target_worktree_id: "worktree:feature" } }
+      { operation: "switch", agentId: "research-agent", input: { target_worktree_id: "worktree:feature" } },
+      {
+        operation: "memory",
+        agentId: "research-agent",
+        tool: "corptie_memory_search",
+        arguments: { intent: "" },
+        metadata: {
+          sessionId: "session:research",
+          objectiveId: "objective:research",
+          workItemId: "work_item:research"
+        }
+      }
     ]);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));

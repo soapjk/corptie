@@ -102,19 +102,27 @@ export class HubService {
   }
 
   // 记忆检索（12）：作用域聚合 → embedding 召回（回退关键词）→ confidence 加权排序。
-  async retrieveMemory(intent, scope = {}) {
+  async retrieveMemory(intent, scope = {}, options = {}) {
     const { objectiveId, workItemId, agentId } = scope;
     const memories = [];
     if (workItemId) memories.push(...this.store.listMemoriesByOwner("work_item", workItemId));
     if (objectiveId) memories.push(...this.store.listMemoriesByOwner("objective", objectiveId));
     if (agentId) memories.push(...this.store.listMemoriesByOwner("agent", agentId));
 
-    const active = memories.filter((m) => m.promotion_status === "active");
-    const scored = await this.scoreMemories(intent, active);
-    return scored
-      .filter((x) => x.score > 0)
+    const active = memories.filter((m) => m.promotion_status === "active" && !m.revoked_at);
+    const normalizedIntent = String(intent ?? "").trim();
+    const scored = await this.scoreMemories(normalizedIntent, active);
+    const limit = Math.max(1, Math.min(100, Number(options.limit) || 20));
+    const selected = scored
+      .filter((x) => normalizedIntent === "" || x.score > 0)
       .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
       .map((x) => x.memory);
+    if (options.touch !== false) {
+      for (const memory of selected) this.store.touchMemory(memory.id);
+      return selected.map((memory) => this.store.getMemory(memory.id) ?? memory);
+    }
+    return selected;
   }
 
   // 语义 + 关键词混合打分：有 embedder 则用余弦相似度，否则回退关键词；confidence 加权。
@@ -149,7 +157,12 @@ export class HubService {
       }
       const lexical = matchScore(m.content, terms);
       // 语义优先；无语义时纯关键词；两者取高者再乘置信度。
-      const raw = Math.max(semantic, lexical);
+      // 空 intent 是显式的启动召回策略：按置信度与既有使用/新近度排序，
+      // 而不是让零关键词分数把所有 active 记忆过滤掉。
+      const emptyIntentScore = terms.length === 0
+        ? 1 + Math.min(Number(m.usage_count ?? 0), 10) * 0.01 + Math.min(Number(m.recency_score ?? 0), 10) * 0.001
+        : 0;
+      const raw = Math.max(semantic, lexical, emptyIntentScore);
       results.push({ memory: m, score: raw * Number(m.confidence ?? 0.5) });
     }
     return results;
@@ -173,7 +186,7 @@ export class HubService {
     const candidates = [];
     if (scope.agentId) {
       for (const m of this.store.listMemoriesByOwner("agent", scope.agentId)) {
-        if (m.kind === "procedure" || m.kind === "skill") {
+        if (!m.revoked_at && m.promotion_status === "active" && (m.kind === "procedure" || m.kind === "skill")) {
           candidates.push({ toolName: m.id, description: m.content, kind: m.kind });
         }
       }

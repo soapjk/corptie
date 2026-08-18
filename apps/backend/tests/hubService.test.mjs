@@ -155,3 +155,23 @@ test("hub search indexes only Registry Skills assigned to the Agent and invalida
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("revoked procedure memories are excluded from both memory recall and hub discovery", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.createMemory({
+      ownerType: "agent",
+      ownerId: "a1",
+      kind: "procedure",
+      content: "Deprecated release workflow",
+      revokedAt: "2026-08-18T00:00:00.000Z"
+    });
+    const hub = new HubService({ store });
+    assert.deepEqual(await hub.retrieveMemory("release workflow", { agentId: "a1" }), []);
+    assert.deepEqual(await hub.retrieveMemory("", { agentId: "a1" }), []);
+    assert.equal(hub.discover("release workflow", { agentId: "a1" }).found, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

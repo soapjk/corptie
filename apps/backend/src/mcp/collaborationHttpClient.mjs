@@ -3,6 +3,7 @@ export class CollaborationHttpClient {
     this.baseUrl = String(options.baseUrl ?? defaultBackendUrl()).replace(/\/$/, "");
     this.agentId = required(options.agentId, "agentId");
     this.fetch = options.fetch ?? globalThis.fetch;
+    this.sessionScope = options.sessionScope ?? {};
   }
 
   get(path, search = {}) {
@@ -29,7 +30,10 @@ export class CollaborationHttpClient {
         ...init,
         headers: {
           ...init.headers,
-          "x-corptie-agent-id": this.agentId
+          "x-corptie-agent-id": this.agentId,
+          ...(this.sessionScope.sessionId ? { "x-corptie-session-id": this.sessionScope.sessionId } : {}),
+          ...(this.sessionScope.objectiveId ? { "x-corptie-objective-id": this.sessionScope.objectiveId } : {}),
+          ...(this.sessionScope.workItemId ? { "x-corptie-work-item-id": this.sessionScope.workItemId } : {})
         }
       });
     } catch (error) {

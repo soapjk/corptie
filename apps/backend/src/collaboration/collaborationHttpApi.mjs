@@ -8,6 +8,7 @@ export function handleCollaborationHttpRequest({
   onListWorkspaces,
   onCreateWorktree,
   onSwitchWorkspace,
+  onMemoryOperation,
   onSearchMemory,
   onSearchSkills,
   onLoadSkill,
@@ -56,10 +57,43 @@ export function handleCollaborationHttpRequest({
       }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/memory/search") {
-        if (!onSearchMemory) throw apiError("MEMORY_TOOLS_UNAVAILABLE", "Memory search is unavailable.", 503);
+        if (!onMemoryOperation && !onSearchMemory) throw apiError("MEMORY_TOOLS_UNAVAILABLE", "Memory search is unavailable.", 503);
         const intent = String(url.searchParams.get("intent") ?? "").trim();
-        if (!intent) throw apiError("INVALID_INPUT", "intent is required.", 400);
-        return sendJson(response, 200, await onSearchMemory(actorAgentId, intent));
+        return sendJson(response, 200, onMemoryOperation
+          ? await onMemoryOperation(actorAgentId, "corptie_memory_search", { intent }, memoryMetadata(request))
+          : await onSearchMemory(actorAgentId, intent));
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/memory") {
+        if (!onMemoryOperation) throw apiError("MEMORY_TOOLS_UNAVAILABLE", "Memory tools are unavailable.", 503);
+        return sendJson(response, 200, await onMemoryOperation(actorAgentId, "corptie_memory_list", {
+          scope: url.searchParams.get("scope") || undefined,
+          include_revoked: url.searchParams.get("includeRevoked") === "true"
+        }, memoryMetadata(request)));
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/memory") {
+        if (!onMemoryOperation) throw apiError("MEMORY_TOOLS_UNAVAILABLE", "Memory tools are unavailable.", 503);
+        return sendJson(response, 201, await onMemoryOperation(
+          actorAgentId,
+          "corptie_memory_remember",
+          await readJson(request),
+          memoryMetadata(request)
+        ));
+      }
+
+      const memoryActionMatch = url.pathname.match(/^\/internal\/collaboration\/memory\/([^/]+)\/(update|revoke)$/);
+      if (request.method === "POST" && memoryActionMatch) {
+        if (!onMemoryOperation) throw apiError("MEMORY_TOOLS_UNAVAILABLE", "Memory tools are unavailable.", 503);
+        const input = await readJson(request);
+        const memoryId = decodeURIComponent(memoryActionMatch[1]);
+        const action = memoryActionMatch[2];
+        return sendJson(response, 200, await onMemoryOperation(
+          actorAgentId,
+          action === "update" ? "corptie_memory_update" : "corptie_memory_revoke",
+          { ...input, memory_id: memoryId },
+          memoryMetadata(request)
+        ));
       }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/skills/search") {
@@ -185,6 +219,20 @@ export function handleCollaborationHttpRequest({
       });
     });
   return true;
+}
+
+function memoryMetadata(request) {
+  return {
+    sessionId: headerText(request, "x-corptie-session-id"),
+    objectiveId: headerText(request, "x-corptie-objective-id"),
+    workItemId: headerText(request, "x-corptie-work-item-id")
+  };
+}
+
+function headerText(request, name) {
+  const value = request.headers?.[name];
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
 }
 
 async function handleProductRequest({ request, response, url, core, onConfirmationResolved }) {
