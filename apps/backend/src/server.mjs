@@ -174,7 +174,7 @@ import {
   SessionTimelineRefreshScheduler
 } from "./utils/sessionTimelineRefreshPolicy.mjs";
 import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
-import { SessionCollectionRevisionBuffer } from "./utils/sessionCollectionDelta.mjs";
+import { StateSyncService } from "./application/stateSyncService.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
@@ -183,10 +183,10 @@ const sessions = new Map();
 const sessionPresentationCache = new Map();
 const eventLog = [];
 const sseClients = new Set();
-const sessionCollectionClients = new Set();
-const sessionCollectionRevisions = new SessionCollectionRevisionBuffer();
-let sessionCollectionPublishScheduled = false;
-let sessionCollectionConsistencyTimer = null;
+const stateSyncClients = new Set();
+let stateSyncConsistencyTimer = null;
+let stateSyncPublishedRevision = 0;
+let stateSyncService = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -600,7 +600,7 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
     });
   },
   createAndLaunchConflictWorkItem: async ({
-    objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt
+    objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt, integrationRunId
   }) => {
     const workItem = objectiveService.createWorkItem({
       objectiveId: objective.id,
@@ -624,20 +624,20 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
       objectiveService.deleteWorkItem(workItem.id);
       throw error;
     }
-    const boundSession = store.bindSessionToWorkItem(session.id, workItem.id, objective.id);
-    store.updateWorkItem(workItem.id, {
-      status: "in_progress",
-      executionStatus: "running",
-      mainAgentId: agent.agentId,
-      acceptanceAssessment: null
+    const finalized = store.finalizeConflictResolutionLaunch({
+      sessionId: session.id,
+      workItemId: workItem.id,
+      objectiveId: objective.id,
+      agentId: agent.agentId,
+      integrationRunId
     });
     emitEvent("WorkItemChanged", {
       action: "integration-conflict-resolution-started",
       entity: store.getWorkItem(workItem.id)
     });
     return {
-      workItem: presentWorkItemAcceptance(store.getWorkItem(workItem.id)),
-      session: boundSession
+      workItem: presentWorkItemAcceptance(finalized.workItem),
+      session: finalized.session
     };
   },
   isSessionActive: sessionHasActiveRun,
@@ -1314,7 +1314,7 @@ function emitEvent(type, payload, options = {}) {
   for (const response of sseClients) {
     response.write(frame);
   }
-  scheduleSessionCollectionPublish();
+  setImmediate(publishStateChangesIfNeeded);
 
   const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
   if (sessionId && store.db) {
@@ -1442,38 +1442,49 @@ function dshRunningStatusForEvent(type) {
   }
 }
 
-function activeSessionCollection() {
-  return sortSessionsForList(withPendingCollaborationConfirmations(listGatewaySessions({ archived: false })));
+function controlPlaneSnapshot() {
+  const active = listGatewaySessions({ archived: false });
+  const archived = listGatewaySessions({ archived: true });
+  const sessionsById = new Map([...active, ...archived].map((session) => [session.id, session]));
+  return {
+    sessions: sortSessionsForList(withPendingCollaborationConfirmations([...sessionsById.values()])),
+    workItems: store.listWorkItems().map(presentWorkItemAcceptance),
+    objectives: store.listObjectives(),
+    agents: store.listAgents().map((agent) => ({
+      ...agent,
+      skillIds: store.listRegistrySkillIdsForAgent(agent.agentId)
+    })),
+    repositories: store.listGitRepositories(),
+    integrationRuns: store.listProjectIntegrationRuns()
+  };
 }
 
-function writeSessionCollectionFrame(response, name, data) {
+function writeStateSyncFrame(response, name, data) {
   response.write(`id: ${data.revision}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
-function publishSessionCollectionIfChanged() {
-  const patch = sessionCollectionRevisions.update(activeSessionCollection());
-  if (!patch) return;
-  for (const response of sessionCollectionClients) {
-    writeSessionCollectionFrame(response, "session-collection-patch", patch);
+function publishStateChangesIfNeeded() {
+  if (!stateSyncService) return;
+  const current = store.stateRevision();
+  if (current === stateSyncPublishedRevision) return;
+  const changes = stateSyncService.changesAfter(stateSyncPublishedRevision);
+  if (changes.snapshotRequired) {
+    const snapshot = stateSyncService.snapshot();
+    for (const response of stateSyncClients) writeStateSyncFrame(response, "state-snapshot", snapshot);
+    stateSyncPublishedRevision = snapshot.revision;
+    return;
   }
+  for (const response of stateSyncClients) writeStateSyncFrame(response, "state-change-set", changes);
+  stateSyncPublishedRevision = changes.revision;
 }
 
-function scheduleSessionCollectionPublish() {
-  if (sessionCollectionPublishScheduled) return;
-  sessionCollectionPublishScheduled = true;
-  setImmediate(() => {
-    sessionCollectionPublishScheduled = false;
-    publishSessionCollectionIfChanged();
-  });
-}
-
-function updateSessionCollectionConsistencyTimer() {
-  if (sessionCollectionClients.size > 0 && !sessionCollectionConsistencyTimer) {
-    sessionCollectionConsistencyTimer = setInterval(publishSessionCollectionIfChanged, 2_000);
-    sessionCollectionConsistencyTimer.unref?.();
-  } else if (sessionCollectionClients.size === 0 && sessionCollectionConsistencyTimer) {
-    clearInterval(sessionCollectionConsistencyTimer);
-    sessionCollectionConsistencyTimer = null;
+function updateStateSyncConsistencyTimer() {
+  if (stateSyncClients.size > 0 && !stateSyncConsistencyTimer) {
+    stateSyncConsistencyTimer = setInterval(publishStateChangesIfNeeded, 250);
+    stateSyncConsistencyTimer.unref?.();
+  } else if (stateSyncClients.size === 0 && stateSyncConsistencyTimer) {
+    clearInterval(stateSyncConsistencyTimer);
+    stateSyncConsistencyTimer = null;
   }
 }
 
@@ -6444,28 +6455,55 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/session-collection/events") {
+  if (request.method === "GET" && url.pathname === "/state/snapshot") {
+    sendJson(response, 200, stateSyncService.snapshot());
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/state/diagnostics") {
+    const revision = store.stateRevision();
+    const oldestRevision = store.oldestStateChangeRevision();
+    const consistencyIssues = store.stateConsistencyIssues();
+    sendJson(response, 200, {
+      revision,
+      oldestRevision,
+      replayDepth: Math.max(0, revision - oldestRevision + 1),
+      connectedClients: stateSyncClients.size,
+      healthy: consistencyIssues.length === 0,
+      consistencyIssues
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/state/changes") {
+    const changes = stateSyncService.changesAfter(Number(url.searchParams.get("after")));
+    sendJson(response, changes.snapshotRequired ? 410 : 200, changes);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/state/events") {
     response.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive"
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive"
     });
     response.flushHeaders?.();
-    publishSessionCollectionIfChanged();
-    const requestedRevision = Number(
-      request.headers["last-event-id"] ?? url.searchParams.get("revision") ?? Number.NaN
-    );
-    for (const frame of sessionCollectionRevisions.framesAfter(requestedRevision)) {
-      writeSessionCollectionFrame(response, frame.name, frame.data);
+    const requestedRevision = Number(url.searchParams.get("after"));
+    const changes = stateSyncService.changesAfter(requestedRevision);
+    if (changes.snapshotRequired) {
+      writeStateSyncFrame(response, "state-snapshot", stateSyncService.snapshot());
+    } else if (changes.revision > changes.baseRevision) {
+      writeStateSyncFrame(response, "state-change-set", changes);
     }
-    sessionCollectionClients.add(response);
-    updateSessionCollectionConsistencyTimer();
+    stateSyncPublishedRevision = store.stateRevision();
+    stateSyncClients.add(response);
+    updateStateSyncConsistencyTimer();
     const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
     heartbeat.unref?.();
     request.on("close", () => {
       clearInterval(heartbeat);
-      sessionCollectionClients.delete(response);
-      updateSessionCollectionConsistencyTimer();
+      stateSyncClients.delete(response);
+      updateStateSyncConsistencyTimer();
     });
     return;
   }
@@ -6561,6 +6599,8 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
+stateSyncPublishedRevision = store.stateRevision();
 const legacySkillRepair = await skillRegistryService.repairLegacyRegistrations();
 if (legacySkillRepair.repaired.length > 0) {
   console.log(`[skills] repaired ${legacySkillRepair.repaired.length} legacy Skill registration(s)`);

@@ -102,9 +102,23 @@ struct SessionsView: View {
 
     // 控制台「打开对话」→ 切到本 Tab 后，选中目标会话（sessions 加载完成后）。
     private func attemptPendingSelection(_ sessions: [TaskSession]) {
-        guard let session = sessionMatchingPendingSelection(router.pendingSessionId, in: sessions) else { return }
-        backendClient.select(session: session)
-        router.pendingSessionId = nil
+        guard let pendingId = router.pendingSessionId else { return }
+        if let session = sessionMatchingPendingSelection(pendingId, in: sessions) {
+            pendingSelectionTask?.cancel()
+            backendClient.select(session: session)
+            router.pendingSessionId = nil
+            return
+        }
+        guard pendingSelectionTask == nil else { return }
+        pendingSelectionTask = Task { @MainActor in
+            defer { pendingSelectionTask = nil }
+            if let session = await AppStateSyncController.shared.hydrateSession(pendingId) {
+                backendClient.select(session: session)
+                router.pendingSessionId = nil
+            } else {
+                router.failSessionNavigation(pendingId)
+            }
+        }
     }
 
     // 未选中时恢复上次选中的会话（跨窗口/重启记忆）。

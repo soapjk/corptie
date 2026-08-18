@@ -66,6 +66,95 @@ test("native SQLite persists committed writes immediately in WAL mode", async ()
   }
 });
 
+test("state revision log commits and rolls back atomically with entity writes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-state-revision-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const initialRevision = store.stateRevision();
+    store.upsertSession({
+      id: "revision-session",
+      title: "Before",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    assert.equal(store.stateRevision(), initialRevision + 1);
+    assert.deepEqual(
+      store.stateChangesAfter(initialRevision).map(({ entityType, entityId, operation }) => ({ entityType, entityId, operation })),
+      [{ entityType: "session", entityId: "revision-session", operation: "upsert" }]
+    );
+
+    const committedRevision = store.stateRevision();
+    assert.throws(() => store.runInTransaction(() => {
+      store.db.run("UPDATE sessions SET title = 'Rolled back' WHERE id = 'revision-session'");
+      throw new Error("force rollback");
+    }), /force rollback/);
+    assert.equal(store.stateRevision(), committedRevision);
+    assert.equal(store.getSession("revision-session").title, "Before");
+    assert.deepEqual(store.stateChangesAfter(committedRevision), []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("conflict-resolution launch finalizes all visible bindings in one transaction", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-conflict-finalize-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.createObjective({ id: "objective:conflict", name: "Resolve conflict" });
+    store.createAgent({ id: "agent:conflict", name: "Conflict Agent", role: "independentContributor" });
+    store.createWorkItem({
+      id: "work-item:conflict",
+      objectiveId: "objective:conflict",
+      title: "Resolve merge conflict"
+    });
+    store.upsertSession({
+      id: "session:conflict",
+      title: "Conflict session",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "running"
+    });
+    store.createProjectIntegrationRun({
+      id: "integration:conflict",
+      repositoryId: "repository:test",
+      objectiveId: "objective:conflict",
+      mainHeadBefore: "abc123",
+      status: "conflicted"
+    });
+
+    const before = store.stateRevision();
+    const finalized = store.finalizeConflictResolutionLaunch({
+      sessionId: "session:conflict",
+      workItemId: "work-item:conflict",
+      objectiveId: "objective:conflict",
+      agentId: "agent:conflict",
+      integrationRunId: "integration:conflict"
+    });
+    assert.equal(finalized.session.workItemId, "work-item:conflict");
+    assert.equal(finalized.session.objectiveId, "objective:conflict");
+    assert.equal(finalized.workItem.current_session_id, "session:conflict");
+    assert.equal(finalized.integrationRun.conflictSessionId, "session:conflict");
+    assert.deepEqual(store.stateConsistencyIssues(), []);
+    assert.deepEqual(
+      new Set(store.stateChangesAfter(before).map((change) => change.entityType)),
+      new Set(["session", "workItem", "integrationRun"])
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Session kind persists explicitly and WorkItem binding classifies worker sessions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-kind-"));
   const store = new CorptieStore({

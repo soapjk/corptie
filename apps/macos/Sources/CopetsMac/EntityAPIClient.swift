@@ -22,21 +22,23 @@ struct EntityRefreshGeneration: Equatable {
 final class EntityAPIClient: ObservableObject {
     static let shared = EntityAPIClient()
 
-    @Published var objectives: [Objective] = []
-    @Published var agents: [Agent] = []
+    private let appState = AppStateStore.shared
+    var objectives: [Objective] { appState.objectives }
+    var agents: [Agent] { appState.agents }
     @Published private(set) var workItemsRevision: UInt64 = 0
     @Published private(set) var workItemsLoadError: String?
     @Published private(set) var objectivesLoadError: String?
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
     var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
-    @Published var repositories: [GitRepository] = []
+    var repositories: [GitRepository] { appState.repositories }
     @Published var skills: [Skill] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var objectivesRefreshGeneration = EntityRefreshGeneration()
+    private var appStateCancellable: AnyCancellable?
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -44,19 +46,12 @@ final class EntityAPIClient: ObservableObject {
         return decoder
     }()
 
-    private init() {}
-
-    func handleEntityChangeEvent(_ eventName: String) async {
-        switch eventName {
-        case "ObjectiveChanged":
-            await refreshObjectives()
-        case "AgentChanged":
-            await refreshAgents()
-        case "WorkItemChanged":
-            workItemsRevision &+= 1
-        default:
-            break
-        }
+    private init() {
+        appStateCancellable = appState.$state
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.workItemsRevision &+= 1
+            }
     }
 
     func refreshObjectives() async {
@@ -68,16 +63,9 @@ final class EntityAPIClient: ObservableObject {
             }
         }
         do {
-            let (data, response) = try await URLSession.shared.data(
-                from: baseURL.appending(path: "objectives")
-            )
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            let loaded = try decoder.decode(ObjectiveListEnvelope.self, from: data).objectives
+            await AppStateSyncController.shared.refreshSnapshot()
             guard objectivesRefreshGeneration.isCurrent(generation) else { return }
-            objectives = loaded
+            if let syncError = appState.syncError { throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED") }
             objectivesLoadError = nil
             errorMessage = nil
         } catch {
@@ -97,23 +85,13 @@ final class EntityAPIClient: ObservableObject {
     }
 
     func refreshAgents() async {
-        do {
-            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "agents"))
-            agents = try decoder.decode(AgentListEnvelope.self, from: data).agents
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        await AppStateSyncController.shared.refreshSnapshot()
+        errorMessage = appState.syncError
     }
 
     func refreshRepositories() async {
-        do {
-            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "repositories"))
-            repositories = try decoder.decode(RepositoryListEnvelope.self, from: data).repositories
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        await AppStateSyncController.shared.refreshSnapshot()
+        errorMessage = appState.syncError
     }
 
     // 拉取全局 Skill 维护中心列表：GET /skills → { skills }
@@ -128,11 +106,11 @@ final class EntityAPIClient: ObservableObject {
     }
 
     func workItems(for objective: Objective) async -> [WorkItem]? {
-        await loadWorkItems(from: baseURL.appending(path: "objectives/\(objective.id)/work-items"))
+        appState.workItems.filter { $0.objectiveId == objective.id }
     }
 
     func allWorkItems() async -> [WorkItem]? {
-        await loadWorkItems(from: baseURL.appending(path: "work-items"))
+        appState.workItems
     }
 
     func clearWorkItemsLoadError() {
@@ -274,16 +252,20 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: WorkItem.self)
     }
 
-    // WorkItem 名下的 Session 历史：GET /work-items/:id/sessions → { sessions }
+    // WorkItem execution history is a selector over the unified AppStateStore.
+    // There is no view-local HTTP cache to drift from the session list.
     func sessions(for workItem: WorkItem) async -> [WorkItemSessionSummary] {
-        do {
-            let url = baseURL.appending(path: "work-items/\(workItem.id)/sessions")
-            let (data, _) = try await URLSession.shared.data(from: url)
-            return try decoder.decode(WorkItemSessionListEnvelope.self, from: data).sessions
-        } catch {
-            errorMessage = error.localizedDescription
-            return []
-        }
+        appState.sessions
+            .filter { $0.workItemId == workItem.id }
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .map {
+                WorkItemSessionSummary(
+                    id: $0.id,
+                    title: $0.title,
+                    status: $0.status.rawValue,
+                    updatedAt: $0.updatedAt
+                )
+            }
     }
 
     // 删除会话：DELETE /sessions/:id → { ok }
@@ -808,6 +790,7 @@ final class EntityAPIClient: ObservableObject {
                 return nil
             }
             let value = try decoder.decode(type, from: data)
+            await AppStateSyncController.shared.refreshSnapshot()
             errorMessage = nil
             return value
         } catch {

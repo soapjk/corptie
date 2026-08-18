@@ -226,6 +226,7 @@ final class AppTabRouter: ObservableObject {
     @Published private(set) var slideForward = true
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
+    @Published var navigationError: String?
 
     // 当前主页面外层均为两栏 NavigationSplitView：.all 显示 sidebar，
     // .detailOnly 收起 sidebar。不要使用三栏布局的 .doubleColumn。
@@ -244,7 +245,13 @@ final class AppTabRouter: ObservableObject {
     }
 
     func openSession(_ sessionId: String) {
+        navigationError = nil
         pendingSessionId = sessionId
         selectTab(.sessions)
+    }
+
+    func failSessionNavigation(_ sessionId: String) {
+        navigationError = L10nFormat("Session %@ could not be loaded.", sessionId)
+        pendingSessionId = nil
     }
 }
