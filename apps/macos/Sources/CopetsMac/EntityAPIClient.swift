@@ -1,6 +1,19 @@
 import Combine
 import Foundation
 
+struct EntityRefreshGeneration: Equatable {
+    private(set) var current = 0
+
+    mutating func begin() -> Int {
+        current &+= 1
+        return current
+    }
+
+    func isCurrent(_ generation: Int) -> Bool {
+        generation == current
+    }
+}
+
 // 实体层轻量 API 客户端（15 Phase 5 净新增）。
 // 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/objectives、/work-items）。
 // 与 BackendClient 使用相同后端地址（CorptieAppEnvironment.backendBaseURL）与 URLSession 模式。
@@ -13,6 +26,7 @@ final class EntityAPIClient: ObservableObject {
     @Published var agents: [Agent] = []
     @Published private(set) var workItemsRevision: UInt64 = 0
     @Published private(set) var workItemsLoadError: String?
+    @Published private(set) var objectivesLoadError: String?
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
     var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
@@ -22,6 +36,7 @@ final class EntityAPIClient: ObservableObject {
     @Published var errorMessage: String?
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
+    private var objectivesRefreshGeneration = EntityRefreshGeneration()
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -45,15 +60,40 @@ final class EntityAPIClient: ObservableObject {
     }
 
     func refreshObjectives() async {
+        let generation = objectivesRefreshGeneration.begin()
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if objectivesRefreshGeneration.isCurrent(generation) {
+                isLoading = false
+            }
+        }
         do {
-            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "objectives"))
-            objectives = try decoder.decode(ObjectiveListEnvelope.self, from: data).objectives
+            let (data, response) = try await URLSession.shared.data(
+                from: baseURL.appending(path: "objectives")
+            )
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw URLError(.badServerResponse)
+            }
+            let loaded = try decoder.decode(ObjectiveListEnvelope.self, from: data).objectives
+            guard objectivesRefreshGeneration.isCurrent(generation) else { return }
+            objectives = loaded
+            objectivesLoadError = nil
             errorMessage = nil
         } catch {
+            guard objectivesRefreshGeneration.isCurrent(generation) else { return }
+            objectivesLoadError = error.localizedDescription
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// Entity requests made while the production launch agent is still starting
+    /// are retried when the canonical backend Session stream becomes available.
+    /// This keeps the first Objective view in sync without requiring a Tab switch.
+    func refreshAfterBackendConnected() async {
+        await refreshObjectives()
+        await refreshRepositories()
+        await refreshAgents()
     }
 
     func refreshAgents() async {

@@ -43,6 +43,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showWelcomePromptIfNeeded()
         CorptieBackendSupervisor.ensureProductionBackendStarted()
 
+        // The production backend is started alongside the app, so the first
+        // Entity request can legitimately race its launch. Refresh the Entity
+        // projections whenever the canonical backend connection comes online;
+        // this also covers a later backend restart without rebuilding a Tab.
+        backendClient.$isOnline
+            .removeDuplicates()
+            .filter { $0 }
+            .sink { _ in
+                Task { @MainActor in
+                    await EntityAPIClient.shared.refreshAfterBackendConnected()
+                }
+            }
+            .store(in: &cancellables)
+        backendClient.start()
+
         let controller = FloatingPanelController(client: backendClient)
         let soundManager = SessionCompletionSoundManager(client: backendClient)
         panelController = controller
@@ -90,12 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
-        backendClient.start()
         SessionDSHWebViewStore.shared.preload()
-
-        Task { @MainActor in
-            await EntityAPIClient.shared.refreshAgents()
-        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
