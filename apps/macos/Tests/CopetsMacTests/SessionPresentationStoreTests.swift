@@ -13,8 +13,7 @@ final class SessionPresentationStoreTests: XCTestCase {
             makeDetailDisplayCache(
                 for: fixture.detail,
                 sessionId: fixture.session.id,
-                visibleMessageLimit: 7,
-                deltaTimelineEnabled: true
+                visibleMessageLimit: 7
             )
         }.value
 
@@ -49,6 +48,19 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertNotNil(store.cache(for: "a"))
         XCTAssertNil(store.cache(for: "b"))
         XCTAssertNotNil(store.cache(for: "c"))
+    }
+
+    func testCompleteHostPoolKeepsRecentSessionsInLRUOrder() {
+        let store = SessionPresentationStore(hostCapacity: 3)
+        store.activateHost(for: "a")
+        store.activateHost(for: "b")
+        store.activateHost(for: "c")
+        store.activateHost(for: "a")
+        store.activateHost(for: "d")
+
+        XCTAssertEqual(store.hostedSessionIDs, ["c", "a", "d"])
+        store.prune(to: ["a", "d"])
+        XCTAssertEqual(store.hostedSessionIDs, ["a", "d"])
     }
 
     func testABAProjectionCannotCommitAnOlderGeneration() {

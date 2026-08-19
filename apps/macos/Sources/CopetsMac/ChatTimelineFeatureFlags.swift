@@ -1,33 +1,17 @@
 import Foundation
 
-enum ChatTimelineRenderer: String, CaseIterable, Sendable {
-    case swiftUIVStack = "swiftuiVStack"
-    case appKitTable
-    case appKitNativeText
-}
-
 enum ChatPerformanceFixtureMode: String, Sendable {
     case disabled
     case standard
 }
 
 struct ChatTimelineFeatureFlags: Equatable, Sendable {
-    let renderer: ChatTimelineRenderer
     let fixtureMode: ChatPerformanceFixtureMode
     let replaysStreamingUpdates: Bool
-    let sseHealthEnabled: Bool
-    let uiBatchingEnabled: Bool
-    let markdownCacheEnabled: Bool
-    let boundedWindowEnabled: Bool
-    let deltaTimelineEnabled: Bool
     let initialDisplayWeight: Int
     let uiBatchIntervalMilliseconds: Int
     let fixtureStreamSteps: Int
     let fixtureStreamIntervalMilliseconds: Int
-
-    var rendererIndex: Int {
-        ChatTimelineRenderer.allCases.firstIndex(of: renderer) ?? 0
-    }
 
     @MainActor
     static var current: ChatTimelineFeatureFlags {
@@ -41,20 +25,6 @@ struct ChatTimelineFeatureFlags: Equatable, Sendable {
         environment: [String: String],
         defaults: UserDefaults? = nil
     ) -> ChatTimelineFeatureFlags {
-        let rendererValue = stringValue(
-            environment: environment,
-            environmentKey: "CORPTIE_CHAT_RENDERER",
-            defaults: defaults,
-            defaultsKey: "chat.renderer"
-        )
-        // The AppKit hybrid renderer routes simple text rows through an
-        // inexpensive native NSTextView path (with an attributed-string cache)
-        // and only falls back to SwiftUI hosting for complex cards. It is the
-        // default everywhere so production avoids the O(n) SwiftUI VStack
-        // projection on the main thread. An explicit renderer override still
-        // wins in both environments.
-        let renderer = ChatTimelineRenderer(rawValue: rendererValue ?? "")
-            ?? .appKitNativeText
         let fixtureValue = stringValue(
             environment: environment,
             environmentKey: "CORPTIE_CHAT_PERFORMANCE_FIXTURE",
@@ -64,48 +34,12 @@ struct ChatTimelineFeatureFlags: Equatable, Sendable {
         let fixtureMode = ChatPerformanceFixtureMode(rawValue: fixtureValue ?? "") ?? .disabled
 
         return ChatTimelineFeatureFlags(
-            renderer: renderer,
             fixtureMode: fixtureMode,
             replaysStreamingUpdates: boolValue(
                 environment: environment,
                 environmentKey: "CORPTIE_CHAT_PERFORMANCE_STREAM",
                 defaults: defaults,
                 defaultsKey: "chat.performanceStream"
-            ),
-            sseHealthEnabled: boolValue(
-                environment: environment,
-                environmentKey: "CORPTIE_CHAT_SSE_HEALTH",
-                defaults: defaults,
-                defaultsKey: "chat.sseHealth.enabled",
-                defaultValue: true
-            ),
-            uiBatchingEnabled: boolValue(
-                environment: environment,
-                environmentKey: "CORPTIE_CHAT_UI_BATCHING",
-                defaults: defaults,
-                defaultsKey: "chat.uiBatching.enabled",
-                defaultValue: true
-            ),
-            markdownCacheEnabled: boolValue(
-                environment: environment,
-                environmentKey: "CORPTIE_CHAT_MARKDOWN_CACHE",
-                defaults: defaults,
-                defaultsKey: "chat.markdownCache.enabled",
-                defaultValue: true
-            ),
-            boundedWindowEnabled: boolValue(
-                environment: environment,
-                environmentKey: "CORPTIE_CHAT_BOUNDED_WINDOW",
-                defaults: defaults,
-                defaultsKey: "chat.boundedWindow.enabled",
-                defaultValue: true
-            ),
-            deltaTimelineEnabled: boolValue(
-                environment: environment,
-                environmentKey: "CORPTIE_CHAT_DELTA_TIMELINE",
-                defaults: defaults,
-                defaultsKey: "chat.deltaTimeline.enabled",
-                defaultValue: true
             ),
             initialDisplayWeight: integerValue(
                 environment: environment,

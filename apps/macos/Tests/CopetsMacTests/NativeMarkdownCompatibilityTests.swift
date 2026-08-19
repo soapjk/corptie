@@ -2,12 +2,12 @@ import XCTest
 @testable import CorptieMac
 
 final class NativeMarkdownCompatibilityTests: XCTestCase {
-    func testRoutesUnsupportedBlockContentToSwiftUI() {
-        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("![alt](image.png)"))
-        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("- [ ] unfinished"))
-        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("| A | B |\n|---|---|\n| 1 | 2 |"))
-        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("```swift\nlet value = 42\n```"))
-        XCTAssertTrue(NativeMarkdownCompatibility.requiresSwiftUIRenderer("<details>\ntext\n</details>"))
+    func testRichBlocksRequestTheFullNativeContentWidth() {
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("![alt](image.png)"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("- [ ] unfinished"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("| A | B |\n|---|---|\n| 1 | 2 |"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("```swift\nlet value = 42\n```"))
+        XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("<details>\ntext\n</details>"))
     }
 
     func testKeepsSupportedMarkdownOnNativePath() {
@@ -20,16 +20,16 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         > quote with **bold**, ~~deleted~~, and [link](https://example.com)
         """
 
-        XCTAssertFalse(NativeMarkdownCompatibility.requiresSwiftUIRenderer(markdown))
+        XCTAssertFalse(NativeMarkdownCompatibility.requiresFullWidthLayout(markdown))
     }
 
-    func testStandaloneProcessKeepsEstablishedSwiftUICard() {
+    func testStandaloneProcessUsesNativeExpandableRow() {
         let reasoning = item(id: "reasoning", type: "reasoning", text: "Thinking")
         XCTAssertEqual(
             ChatTimelineRowRouting.route(
                 for: ChatDisplayEntry(kind: .process(turnId: "turn", items: [reasoning]))
             ),
-            .swiftUI
+            .native
         )
     }
 
@@ -69,20 +69,30 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         )
     }
 
-    func testLongAgentReplyUsesExactSwiftUIHeightPath() {
+    func testLongAgentReplyUsesDeterministicNativeLayoutPath() {
         let longReply = String(repeating: "A long model reply that wraps across several lines. ", count: 20)
         XCTAssertEqual(
             ChatTimelineRowRouting.route(
                 for: ChatDisplayEntry(kind: .message(item(id: "long", type: "agentMessage", text: longReply)))
             ),
-            .swiftUI
+            .native
         )
         let manyLines = (0..<12).map { "line \($0)" }.joined(separator: "\n")
         XCTAssertEqual(
             ChatTimelineRowRouting.route(
                 for: ChatDisplayEntry(kind: .message(item(id: "lines", type: "agentMessage", text: manyLines)))
             ),
-            .swiftUI
+            .native
+        )
+    }
+
+    func testRichMarkdownStillUsesTheNativeTimelineLayout() {
+        let markdown = "```swift\nlet value = 42\n```"
+        XCTAssertEqual(
+            ChatTimelineRowRouting.route(
+                for: ChatDisplayEntry(kind: .message(item(id: "code", type: "agentMessage", text: markdown)))
+            ),
+            .native
         )
     }
 

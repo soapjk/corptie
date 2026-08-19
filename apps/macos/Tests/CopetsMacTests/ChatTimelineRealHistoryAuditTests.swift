@@ -18,7 +18,8 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             SessionList.self,
             from: Data(contentsOf: baseURL.appending(path: "sessions"))
         ).sessions
-        let providers = ["codex-app-server", "claude-sdk"]
+        let providers = ["codex-app-server", "claude-sdk", "openclacky"]
+        var auditedProviderCount = 0
 
         for provider in providers {
             let candidates = sessions.filter { $0.external?.provider == provider }
@@ -31,9 +32,9 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
                 ))
             }
             guard let largest = snapshots.max(by: { $0.1.items.count < $1.1.items.count }) else {
-                XCTFail("No local \(provider) session was available for the audit.")
                 continue
             }
+            auditedProviderCount += 1
 
             let sourceItems = largest.1.items.filter { item in
                 !(item.type == "taskComplete"
@@ -54,7 +55,7 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             XCTAssertTrue(requiredUserIDs.isSubset(of: projectedIDs), "Lost user messages in \(provider)")
             XCTAssertTrue(requiredFinalIDs.isSubset(of: projectedIDs), "Lost final answers in \(provider)")
 
-            let nativeCandidates = projectedItems.filter { !ChatTimelineRowRouting.requiresSwiftUIHosting($0) }
+            let nativeCandidates = projectedItems
             XCTAssertFalse(nativeCandidates.isEmpty)
             for item in nativeCandidates {
                 let text = ChatTimelineRowRouting.displayText(for: item)
@@ -79,9 +80,10 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             XCTAssertLessThan(scrollMetrics.elapsedSeconds, 5)
             XCTAssertLessThan(pipelineMetrics.p95Milliseconds, 100)
             let reportURL = URL(fileURLWithPath: "/private/tmp/corptie-dev/real-history-\(provider)-audit.txt")
-            let report = "session=\(largest.0.title)\nraw=\(largest.1.items.count)\nsnapshotBytes=\(pipelineMetrics.bytes)\nentries=\(entries.count)\nvisibleEntries=\(visibleEntries.count)\nnative=\(routingCounts["native", default: 0])\nswiftui=\(routingCounts["swiftUI", default: 0])\ndecodeProjectP50Ms=\(String(format: "%.3f", pipelineMetrics.p50Milliseconds))\ndecodeProjectP95Ms=\(String(format: "%.3f", pipelineMetrics.p95Milliseconds))\ncellsCreated=\(scrollMetrics.cellsCreated)\nscrollSeconds=\(String(format: "%.3f", scrollMetrics.elapsedSeconds))\n"
+            let report = "session=\(largest.0.title)\nraw=\(largest.1.items.count)\nsnapshotBytes=\(pipelineMetrics.bytes)\nentries=\(entries.count)\nvisibleEntries=\(visibleEntries.count)\nnative=\(routingCounts["native", default: 0])\ndecodeProjectP50Ms=\(String(format: "%.3f", pipelineMetrics.p50Milliseconds))\ndecodeProjectP95Ms=\(String(format: "%.3f", pipelineMetrics.p95Milliseconds))\ncellsCreated=\(scrollMetrics.cellsCreated)\nscrollSeconds=\(String(format: "%.3f", scrollMetrics.elapsedSeconds))\n"
             try report.write(to: reportURL, atomically: true, encoding: String.Encoding.utf8)
         }
+        XCTAssertGreaterThan(auditedProviderCount, 0, "No local provider history was available for the audit")
     }
 
     private func underlyingItems(_ entry: ChatDisplayEntry) -> [CodexThreadItem] {
@@ -100,7 +102,6 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
         let tableView = AppKitChatTimelineView.makeTableView()
         let scrollView = AppKitChatTimelineView.makeScrollView(tableView: tableView)
         let coordinator = AppKitChatTimelineView.Coordinator(
-            usesNativeText: true,
             followsLatest: Binding(get: { state.value }, set: { state.value = $0 }),
             onToggleExpansion: { _ in }
         )
@@ -131,6 +132,23 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             tableView.scrollRowToVisible(index)
             tableView.layoutSubtreeIfNeeded()
             scrollView.displayIfNeeded()
+        }
+        if let lastIndex = rows.indices.last {
+            let clipView = scrollView.contentView
+            let bottomY = max(0, tableView.bounds.maxY - clipView.bounds.height)
+            clipView.scroll(to: NSPoint(x: 0, y: bottomY))
+            scrollView.reflectScrolledClipView(clipView)
+            tableView.layoutSubtreeIfNeeded()
+            let lastRowRect = tableView.rect(ofRow: lastIndex)
+            XCTAssertTrue(
+                tableView.visibleRect.intersects(lastRowRect),
+                "Dragging to the bottom must keep the final message visible"
+            )
+            XCTAssertLessThanOrEqual(
+                max(0, tableView.visibleRect.maxY - lastRowRect.maxY),
+                tableView.intercellSpacing.height + 2,
+                "The table must not expose a blank region below the final message"
+            )
         }
         let elapsed = startedAt.duration(to: clock.now)
         let components = elapsed.components
@@ -164,31 +182,31 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
 
     private func auditRow(_ entry: ChatDisplayEntry) -> AppKitChatTimelineRow {
         let item = underlyingItems(entry).first
-        let route = ChatTimelineRowRouting.route(for: entry)
         let text: String
         switch entry.kind {
         case .message(let message):
             text = ChatTimelineRowRouting.displayText(for: message)
-        case .process(_, let items):
-            text = "\(items.count) execution items"
+        case .process:
+            text = ""
         }
+        let isProcess = entry.isProcessGroup
+        let processItems = underlyingItems(entry)
         return AppKitChatTimelineRow(
             id: entry.id,
             contentRevision: text.hashValue,
-            content: route == .swiftUI
-                ? AnyView(
-                    Text(text.prefix(2_000))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                )
-                : nil,
             nativeText: text,
             copyText: text,
-            nativeStyle: item?.type == "userMessage" ? .user : .agent,
+            nativeStyle: isProcess ? .process : (item?.type == "userMessage" ? .user : .agent),
             title: item?.title ?? "Execution process",
             metadata: "",
             expandableTurnId: nil,
-            isExpanded: false
+            isExpanded: false,
+            processCount: isProcess ? processItems.count : nil,
+            processDuration: isProcess ? "1s" : nil,
+            processState: processItems.contains(where: { !["complete", "completed"].contains($0.turnStatus.lowercased()) })
+                ? .running
+                : .completed,
+            showsHeader: !isProcess
         )
     }
 

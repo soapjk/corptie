@@ -66,7 +66,13 @@ final class BackendClient: ObservableObject {
     let sessionsDidChange = CurrentValueSubject<[TaskSession], Never>([])
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
-    @Published private(set) var selectedDetail: CodexThreadDetail?
+    @Published private(set) var selectedDetail: CodexThreadDetail? {
+        didSet {
+            if let selectedDetail, let selectedSession {
+                SessionTimelineRepository.shared.publish(selectedDetail, for: selectedSession.id)
+            }
+        }
+    }
     // Sessions Tab 等轻量场景置 true：select 后不启动 usage/worktree 后台轮询，减少刷新。
     var suppressBackgroundPolling = false
     @Published private(set) var viewingHistoricalThreadId: String?
@@ -138,10 +144,7 @@ final class BackendClient: ObservableObject {
     private var performanceFixtureStreamTask: Task<Void, Never>?
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
-    private var detailCacheBySessionId: [String: CodexThreadDetail] = [:]
-    private var detailCacheRecency: [String] = []
     private var detailPrefetchTasks: [String: Task<CodexThreadDetail?, Never>] = [:]
-    private static let detailCacheCapacity = 12
     private static let historyPageSize = 200
     private var historyLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
@@ -198,7 +201,6 @@ final class BackendClient: ObservableObject {
         resetDetailTimelineState()
         performanceFixtureStreamTask?.cancel()
         let chatFeatures = ChatTimelineFeatureFlags.current
-        ChatPerformanceTrace.event("chat.renderer.selected", value: chatFeatures.rendererIndex)
         if chatFeatures.fixtureMode == .standard {
             installPerformanceFixture(replaysStreamingUpdates: chatFeatures.replaysStreamingUpdates)
             return
@@ -2369,35 +2371,19 @@ final class BackendClient: ObservableObject {
     }
 
     func cachedDetail(for sessionId: String) -> CodexThreadDetail? {
-        guard let detail = detailCacheBySessionId[sessionId] else { return nil }
-        touchCachedDetail(sessionId)
-        return detail
+        SessionTimelineRepository.shared.detail(for: sessionId)
     }
 
     private func storeCachedDetail(_ detail: CodexThreadDetail, for sessionId: String) {
-        detailCacheBySessionId[sessionId] = detail
-        touchCachedDetail(sessionId)
-        while detailCacheBySessionId.count > Self.detailCacheCapacity {
-            guard let evictionIndex = detailCacheRecency.firstIndex(where: {
-                $0 != selectedSession?.id
-            }) else { break }
-            let evictedSessionID = detailCacheRecency.remove(at: evictionIndex)
-            detailCacheBySessionId.removeValue(forKey: evictedSessionID)
-        }
-    }
-
-    private func touchCachedDetail(_ sessionId: String) {
-        detailCacheRecency.removeAll { $0 == sessionId }
-        detailCacheRecency.append(sessionId)
+        SessionTimelineRepository.shared.publish(detail, for: sessionId)
     }
 
     private func removeCachedDetail(for sessionId: String) {
-        detailCacheBySessionId.removeValue(forKey: sessionId)
-        detailCacheRecency.removeAll { $0 == sessionId }
+        SessionTimelineRepository.shared.remove(sessionId)
     }
 
     func prefetchDetail(for session: TaskSession) {
-        guard detailCacheBySessionId[session.id] == nil,
+        guard SessionTimelineRepository.shared.detail(for: session.id) == nil,
               detailPrefetchTasks[session.id] == nil else {
             return
         }
@@ -3226,7 +3212,6 @@ final class BackendClient: ObservableObject {
               ChatDetailRefreshPolicy.shouldPoll(
                   sessionId: selectedSession.id,
                   isViewingHistory: viewingHistoricalThreadId != nil,
-                  sseHealthEnabled: ChatTimelineFeatureFlags.current.sseHealthEnabled,
                   streamHealth: detailStreamHealth
               ) else {
             return
@@ -3429,9 +3414,7 @@ final class BackendClient: ObservableObject {
                 var request = URLRequest(url: self.baseURL.appending(path: "sessions/\(session.id)/events"))
                 request.setValue("text/event-stream", forHTTPHeaderField: "accept")
                 request.setValue("identity", forHTTPHeaderField: "accept-encoding")
-                if ChatTimelineFeatureFlags.current.deltaTimelineEnabled {
-                    request.setValue("1", forHTTPHeaderField: "x-corptie-timeline-protocol")
-                }
+                request.setValue("1", forHTTPHeaderField: "x-corptie-timeline-protocol")
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 self.detailStreamLastDiagnostic = "generation=\(generation) requesting"
 
@@ -3965,8 +3948,7 @@ final class BackendClient: ObservableObject {
         archivedSessions = []
         selectedSession = fixture.session
         selectedDetail = fixture.detail
-        detailCacheBySessionId = [fixture.session.id: fixture.detail]
-        detailCacheRecency = [fixture.session.id]
+        SessionTimelineRepository.shared.publish(fixture.detail, for: fixture.session.id)
         isLoadingDetail = false
         isOnline = true
         lastError = nil
@@ -3987,8 +3969,7 @@ final class BackendClient: ObservableObject {
                 ChatPerformanceRecorder.shared.increment(.fixtureStreamingUpdates)
                 let flags = ChatTimelineFeatureFlags.current
                 let batchInterval = Duration.milliseconds(flags.uiBatchIntervalMilliseconds)
-                if !flags.uiBatchingEnabled
-                    || ContinuousClock.now - lastPublishedAt >= batchInterval
+                if ContinuousClock.now - lastPublishedAt >= batchInterval
                     || step == finalStep {
                     publishSelectedDetailIfSafe(detail)
                     lastPublishedAt = .now

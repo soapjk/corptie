@@ -202,7 +202,7 @@ enum NativeMarkdownCompatibility {
         options: [.caseInsensitive]
     )
 
-    static func requiresSwiftUIRenderer(_ markdown: String) -> Bool {
+    static func requiresFullWidthLayout(_ markdown: String) -> Bool {
         let range = NSRange(markdown.startIndex..., in: markdown)
         return image.firstMatch(in: markdown, range: range) != nil
             || taskList.firstMatch(in: markdown, range: range) != nil
@@ -215,34 +215,15 @@ enum NativeMarkdownCompatibility {
 enum ChatTimelineRowRouting {
     enum Route: String, Sendable {
         case native
-        case swiftUI
     }
 
     static func route(for entry: ChatDisplayEntry) -> Route {
         switch entry.kind {
-        case .message(let item):
-            return requiresSwiftUIHosting(item) ? .swiftUI : .native
+        case .message:
+            return .native
         case .process:
-            return .swiftUI
+            return .native
         }
-    }
-
-    static func requiresSwiftUIHosting(_ item: CodexThreadItem) -> Bool {
-        let text = displayText(for: item)
-        return item.type == "approval"
-            || item.type == "choice"
-            || (item.authoritativeUserMessageState != nil
-                && item.authoritativeUserMessageState != .consumed)
-            || item.presentationRole == "collaboration"
-            || item.sourceType == "collaboration"
-            || !(item.fileChanges ?? []).isEmpty
-            || NativeMarkdownCompatibility.requiresSwiftUIRenderer(text)
-            // Native text rows use a deliberately inexpensive height path.
-            // Large prose/list replies are much more sensitive to wrapping and
-            // attributed-string metrics; host those with their established
-            // SwiftUI card so the rendered view owns its exact height.
-            || text.count > 600
-            || text.filter(\.isNewline).count > 10
     }
 
     static func displayText(for item: CodexThreadItem) -> String {
@@ -291,10 +272,155 @@ final class NativeMarkdownTextCache {
     }
 }
 
+/// Final native row geometry, shared by all retained Session hosts. The cache
+/// key includes every input that can affect wrapping, so a row is never shown
+/// with an estimated height and corrected after the first paint.
+@MainActor
+final class NativeTimelineLayoutCache {
+    struct Layout {
+        let attributedText: NSAttributedString
+        let cardWidth: CGFloat
+        let rowHeight: CGFloat
+    }
+
+    private struct Key: Hashable {
+        let text: String
+        let style: AppKitChatTimelineRow.NativeStyle
+        let title: String
+        let metadata: String
+        let processCount: Int?
+        let processDuration: String?
+        let processState: AppKitChatTimelineRow.ProcessState
+        let isExpanded: Bool
+        let showsHeader: Bool
+        let hasHoverTimestamp: Bool
+        let actionCount: Int
+        let widthBucket: Int
+    }
+
+    static let shared = NativeTimelineLayoutCache()
+    private var values: [Key: Layout] = [:]
+    private var recency: [Key] = []
+    private var estimatedBytes = 0
+    private let byteLimit = 64 * 1_024 * 1_024
+
+    func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat) -> Layout {
+        let normalizedWidth = max(120, columnWidth)
+        let key = Key(
+            text: row.nativeText,
+            style: row.nativeStyle,
+            title: row.title,
+            metadata: row.metadata,
+            processCount: row.processCount,
+            processDuration: row.processDuration,
+            processState: row.processState,
+            isExpanded: row.isExpanded,
+            showsHeader: row.showsHeader,
+            hasHoverTimestamp: !row.hoverTimestamp.isEmpty,
+            actionCount: row.actions.count,
+            widthBucket: Int((normalizedWidth * 2).rounded())
+        )
+        if let cached = values[key] {
+            touch(key)
+            return cached
+        }
+
+        let attributed = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+        let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth)
+        let rowHeight: CGFloat
+        if row.nativeStyle == .process && !row.isExpanded {
+            rowHeight = 32
+        } else {
+            // This exactly matches the native cell's 10pt leading/trailing
+            // constraints. The previous 120pt floor could measure a different
+            // line count than the width eventually assigned to NSTextField.
+            let textWidth = max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
+            let bounds = attributed.boundingRect(
+                with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]
+            )
+            if row.nativeStyle == .process {
+                rowHeight = max(54, ceil(bounds.height) + 48)
+            } else {
+                let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
+                let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
+                let messageActionBarHeight: CGFloat = row.showsMessageActionBar ? 27 : 0
+                let verticalChrome: CGFloat = row.showsHeader ? 39 : 20
+                rowHeight = max(
+                    row.showsHeader ? 54 : 30,
+                    ceil(bounds.height) + verticalChrome + footerHeight + actionHeight + messageActionBarHeight
+                )
+            }
+        }
+        let layout = Layout(attributedText: attributed, cardWidth: cardWidth, rowHeight: rowHeight)
+        values[key] = layout
+        recency.append(key)
+        estimatedBytes += (key.text.utf16.count * 8) + attributed.length * 8 + 192
+        evictIfNeeded()
+        return layout
+    }
+
+    private func touch(_ key: Key) {
+        recency.removeAll { $0 == key }
+        recency.append(key)
+    }
+
+    private func evictIfNeeded() {
+        while estimatedBytes > byteLimit, let oldest = recency.first {
+            recency.removeFirst()
+            guard let removed = values.removeValue(forKey: oldest) else { continue }
+            estimatedBytes = max(
+                0,
+                estimatedBytes - (oldest.text.utf16.count * 8) - removed.attributedText.length * 8 - 192
+            )
+        }
+    }
+}
+
 struct AppKitChatTimelineRow: Identifiable {
+    enum ProcessState: Hashable {
+        case running
+        case completed
+        case failed
+        case cancelled
+
+        var symbolName: String {
+            switch self {
+            case .running: "ellipsis.circle"
+            case .completed: "checkmark.circle.fill"
+            case .failed: "exclamationmark.circle.fill"
+            case .cancelled: "stop.circle.fill"
+            }
+        }
+
+        var color: NSColor {
+            switch self {
+            case .running: .controlAccentColor
+            case .completed: .systemGreen
+            case .failed: .systemRed
+            case .cancelled: .secondaryLabelColor
+            }
+        }
+    }
+
+    struct Action: Identifiable {
+        enum Kind {
+            case codexApproval(CodexApprovalOption)
+            case ptyChoice(CodexApprovalOption, choiceID: String)
+            case sendMessage(String)
+            case collaborationConfirmation(id: String, approve: Bool)
+            case reviewChanges(turnID: String)
+            case undoChanges(turnID: String)
+        }
+
+        let id: String
+        let label: String
+        let isDestructive: Bool
+        let kind: Kind
+    }
+
     let id: String
     let contentRevision: Int
-    let content: AnyView?
     let nativeText: String
     let copyText: String
     let nativeStyle: NativeStyle
@@ -304,13 +430,20 @@ struct AppKitChatTimelineRow: Identifiable {
     let isExpanded: Bool
     let processCount: Int?
     let processDuration: String?
+    let processState: ProcessState
     let showsHeader: Bool
     let hoverTimestamp: String
+    let actions: [Action]
+
+    var showsMessageActionBar: Bool {
+        !showsHeader
+            && !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (nativeStyle == .user || nativeStyle == .agent)
+    }
 
     init(
         id: String,
         contentRevision: Int,
-        content: AnyView?,
         nativeText: String,
         copyText: String,
         nativeStyle: NativeStyle,
@@ -320,12 +453,13 @@ struct AppKitChatTimelineRow: Identifiable {
         isExpanded: Bool,
         processCount: Int? = nil,
         processDuration: String? = nil,
+        processState: ProcessState = .completed,
         showsHeader: Bool = true,
-        hoverTimestamp: String = ""
+        hoverTimestamp: String = "",
+        actions: [Action] = []
     ) {
         self.id = id
         self.contentRevision = contentRevision
-        self.content = content
         self.nativeText = nativeText
         self.copyText = copyText
         self.nativeStyle = nativeStyle
@@ -335,8 +469,10 @@ struct AppKitChatTimelineRow: Identifiable {
         self.isExpanded = isExpanded
         self.processCount = processCount
         self.processDuration = processDuration
+        self.processState = processState
         self.showsHeader = showsHeader
         self.hoverTimestamp = hoverTimestamp
+        self.actions = actions
     }
 
     enum NativeStyle: Hashable {
@@ -344,10 +480,30 @@ struct AppKitChatTimelineRow: Identifiable {
         case agent
         case process
     }
+
+    var processSummary: String {
+        let count = processCount ?? 0
+        let steps = "\(count) \(count == 1 ? "step" : "steps")"
+        let normalizedDuration = processDuration?
+            .replacingOccurrences(of: "·", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch processState {
+        case .running:
+            return "Working… · \(steps)"
+        case .completed:
+            if let normalizedDuration, !normalizedDuration.isEmpty {
+                return "Worked for \(normalizedDuration) · \(steps)"
+            }
+            return "Completed · \(steps)"
+        case .failed:
+            return "Execution failed · \(steps)"
+        case .cancelled:
+            return "Execution stopped · \(steps)"
+        }
+    }
 }
 
-/// Shared width contract for both the SwiftUI and AppKit chat renderers.
-/// A bubble owns an explicit preferred width; its outer row owns alignment.
+/// Deterministic width contract for native AppKit timeline rows.
 @MainActor
 enum ChatBubbleWidthPolicy {
     static let maximumWidth: CGFloat = 480
@@ -367,7 +523,7 @@ enum ChatBubbleWidthPolicy {
     ) -> CGFloat {
         let available = max(minimumWidth, min(maximumWidth, availableWidth))
         let bodyWidth: CGFloat
-        if NativeMarkdownCompatibility.requiresSwiftUIRenderer(text) {
+        if NativeMarkdownCompatibility.requiresFullWidthLayout(text) {
             // Rich blocks (images, tables, fenced code, HTML) need the full
             // content lane; their natural width is not represented by text
             // glyph bounds alone.
@@ -394,7 +550,13 @@ enum ChatBubbleWidthPolicy {
 
     static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat) -> CGFloat {
         let fullAvailableWidth = max(minimumWidth, availableWidth - 4)
-        guard row.nativeStyle != .process else { return fullAvailableWidth }
+        if row.nativeStyle == .process {
+            guard !row.isExpanded else { return fullAvailableWidth }
+            let summaryWidth = ceil((row.processSummary as NSString).size(withAttributes: [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .medium)
+            ]).width)
+            return min(fullAvailableWidth, max(collapsedProcessWidth, summaryWidth + 58))
+        }
         // Native rows place the hover timestamp beside the card. Reserve that
         // exterior lane in narrow floating panels so the label is not clipped
         // by the table viewport when the message body reaches its max width.
@@ -420,18 +582,18 @@ struct AppKitChatTimelinePosition: Equatable, Sendable {
 struct AppKitChatTimelineView: NSViewRepresentable {
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
-    let usesNativeText: Bool
     @Binding var followsLatest: Bool
     let onToggleExpansion: (String) -> Void
+    var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     var onNearTop: () -> Void = {}
     var initialPosition: AppKitChatTimelinePosition? = nil
     var onPositionChange: (AppKitChatTimelinePosition) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
-            usesNativeText: usesNativeText,
             followsLatest: $followsLatest,
             onToggleExpansion: onToggleExpansion,
+            onAction: onAction,
             onNearTop: onNearTop,
             onPositionChange: onPositionChange
         )
@@ -462,9 +624,13 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         tableView.headerView = nil
         tableView.backgroundColor = .clear
         tableView.gridStyleMask = []
-        tableView.intercellSpacing = NSSize(width: 0, height: 8)
-        tableView.rowHeight = 112
-        tableView.usesAutomaticRowHeights = true
+        tableView.intercellSpacing = NSSize(width: 0, height: 10)
+        tableView.rowHeight = 30
+        // Every row has an exact cached height from the delegate. Automatic
+        // row heights make NSTableView assign its 120pt estimate to offscreen
+        // rows; a direct scrollbar jump can then land in an unmaterialized
+        // blank region before those estimates are corrected.
+        tableView.usesAutomaticRowHeights = false
         tableView.selectionHighlightStyle = .none
         tableView.allowsEmptySelection = true
         tableView.focusRingType = .none
@@ -476,11 +642,14 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     static func makeScrollView(tableView: NSTableView) -> NSScrollView {
-        let scrollView = ChatTimelineScrollView()
+        let scrollView = NSScrollView()
+        scrollView.contentView = TimelineBoundedClipView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
+        scrollView.verticalScrollElasticity = .none
+        scrollView.horizontalScrollElasticity = .none
         scrollView.documentView = tableView
         return scrollView
     }
@@ -488,6 +657,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.followsLatest = followsLatest
         context.coordinator.onToggleExpansion = onToggleExpansion
+        context.coordinator.onAction = onAction
         context.coordinator.onNearTop = onNearTop
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
@@ -500,12 +670,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         static let columnIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.column")
-        private static let cellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.hosting.cell")
         private static let nativeCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.native.cell")
 
-        private let usesNativeText: Bool
         private let followsLatestBinding: Binding<Bool>
         var onToggleExpansion: (String) -> Void
+        var onAction: (AppKitChatTimelineRow.Action) -> Void
         var onNearTop: () -> Void
         var onPositionChange: (AppKitChatTimelinePosition) -> Void
         private weak var tableView: NSTableView?
@@ -523,6 +692,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var positionPublishWorkItem: DispatchWorkItem?
         private var lastPublishedPosition: AppKitChatTimelinePosition?
 
+        /// The timeline width is a parent-owned layout input. Reserving a
+        /// legacy scroller gutter unconditionally prevents the feedback loop
+        /// where content height toggles the scroller, changes text width, and
+        /// makes a two-line message become three lines after it is visible.
+        private static let verticalScrollerGutter = NSScroller.scrollerWidth(
+            for: .regular,
+            scrollerStyle: .legacy
+        )
+
         private struct HeightCacheKey: Hashable {
             let id: String
             let revision: Int
@@ -530,15 +708,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         init(
-            usesNativeText: Bool,
             followsLatest: Binding<Bool>,
             onToggleExpansion: @escaping (String) -> Void,
+            onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
             onNearTop: @escaping () -> Void = {},
             onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
         ) {
-            self.usesNativeText = usesNativeText
             self.followsLatestBinding = followsLatest
             self.onToggleExpansion = onToggleExpansion
+            self.onAction = onAction
             self.onNearTop = onNearTop
             self.onPositionChange = onPositionChange
         }
@@ -573,38 +751,20 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
             guard rows.indices.contains(row) else { return tableView.rowHeight }
             let item = rows[row]
-            if item.content != nil {
-                // Hosted rows derive their actual height from the visible
-                // NSHostingView's Auto Layout constraints. `rowHeight` remains
-                // only the estimate used before an off-screen cell is realized.
-                return -1
-            }
             let columnWidth = max(120, tableView.tableColumns.first?.width ?? tableView.bounds.width)
-            let availableWidth = usesNativeText && item.content == nil
-                ? max(120, ChatBubbleWidthPolicy.cardWidth(for: item, availableWidth: columnWidth) - ChatBubbleWidthPolicy.horizontalPadding)
-                : columnWidth
+            let availableWidth = max(
+                20,
+                ChatBubbleWidthPolicy.cardWidth(for: item, availableWidth: columnWidth)
+                    - ChatBubbleWidthPolicy.horizontalPadding
+            )
             let widthBucket = Int(availableWidth.rounded(.down))
             let key = HeightCacheKey(id: item.id, revision: item.contentRevision, widthBucket: widthBucket)
             if let cached = heightCache[key] { return cached }
 
-            let height: CGFloat
-            if usesNativeText, item.content == nil {
-                if item.nativeStyle == .process {
-                    height = 28
-                    heightCache[key] = height
-                    return height
-                }
-                let attributed = NativeMarkdownTextCache.shared.value(text: item.nativeText, style: item.nativeStyle)
-                let bounds = attributed.boundingRect(
-                    with: NSSize(width: availableWidth, height: .greatestFiniteMagnitude),
-                    options: [.usesLineFragmentOrigin, .usesFontLeading]
-                )
-                let footerHeight: CGFloat = item.processCount == nil ? 0 : 24
-                let verticalChrome: CGFloat = item.showsHeader ? 39 : 20
-                height = max(item.showsHeader ? 54 : 30, ceil(bounds.height) + verticalChrome + footerHeight)
-            } else {
-                height = 140
-            }
+            let height = NativeTimelineLayoutCache.shared.layout(
+                for: item,
+                columnWidth: columnWidth
+            ).rowHeight
             heightCache[key] = height
             return height
         }
@@ -612,23 +772,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard rows.indices.contains(row) else { return nil }
-            if usesNativeText, rows[row].content == nil {
-                let cell = (tableView.makeView(withIdentifier: Self.nativeCellIdentifier, owner: nil) as? AppKitChatNativeTextCell)
-                    ?? {
-                        ChatPerformanceRecorder.shared.increment(.appKitCellsCreated)
-                        return AppKitChatNativeTextCell(identifier: Self.nativeCellIdentifier)
-                    }()
-                ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
-                cell.setContent(rows[row], availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width, onToggleExpansion: onToggleExpansion)
-                return cell
-            }
-            let cell = (tableView.makeView(withIdentifier: Self.cellIdentifier, owner: nil) as? AppKitChatHostingCell)
+            let cell = (tableView.makeView(withIdentifier: Self.nativeCellIdentifier, owner: nil) as? AppKitChatNativeTextCell)
                 ?? {
                     ChatPerformanceRecorder.shared.increment(.appKitCellsCreated)
-                    return AppKitChatHostingCell(identifier: Self.cellIdentifier)
+                    return AppKitChatNativeTextCell(identifier: Self.nativeCellIdentifier)
                 }()
             ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
-            configureHostingCell(cell, in: tableView, row: row)
+            cell.setContent(
+                rows[row],
+                availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width,
+                onToggleExpansion: onToggleExpansion,
+                onAction: onAction
+            )
             return cell
         }
 
@@ -659,9 +814,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             revisionsByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0.contentRevision) })
 
             guard oldIDs == newIDs else {
-                ChatPerformanceTrace.measure("appkit.table.reload.structure") {
-                    tableView.reloadData()
-                }
+                applyStructuralDifference(
+                    from: oldIDs,
+                    to: newIDs,
+                    oldRevisions: oldRevisions,
+                    in: tableView
+                )
                 if followsLatest {
                     scrollToBottom()
                 } else if let prependAnchor {
@@ -677,28 +835,16 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             heightCache = heightCache.filter { key, _ in
                 !changed.contains { index in nextRows[index].id == key.id }
             }
-            var rowsRequiringReplacement = IndexSet()
             for row in changed {
                 let currentCell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false)
-                if let hostingCell = currentCell as? AppKitChatHostingCell,
-                   nextRows[row].content != nil {
-                    configureHostingCell(hostingCell, in: tableView, row: row)
-                    noteHeightChange(for: row, rowID: nextRows[row].id, in: tableView)
-                } else if let nativeCell = currentCell as? AppKitChatNativeTextCell,
-                          usesNativeText,
-                          nextRows[row].content == nil {
-                    nativeCell.setContent(nextRows[row], availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width, onToggleExpansion: onToggleExpansion)
-                    noteHeightChange(for: row, rowID: nextRows[row].id, in: tableView)
-                } else {
-                    rowsRequiringReplacement.insert(row)
-                }
-            }
-            if !rowsRequiringReplacement.isEmpty {
-                ChatPerformanceTrace.measure("appkit.table.reload.rows") {
-                    tableView.reloadData(
-                        forRowIndexes: rowsRequiringReplacement,
-                        columnIndexes: IndexSet(integer: 0)
+                if let nativeCell = currentCell as? AppKitChatNativeTextCell {
+                    nativeCell.setContent(
+                        nextRows[row],
+                        availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width,
+                        onToggleExpansion: onToggleExpansion,
+                        onAction: onAction
                     )
+                    noteHeightChange(for: row, rowID: nextRows[row].id, in: tableView)
                 }
             }
             if followsLatest, oldTailRevision != newTailRevision {
@@ -706,28 +852,51 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
         }
 
-        private func configureHostingCell(
-            _ cell: AppKitChatHostingCell,
-            in tableView: NSTableView,
-            row: Int
+        private func applyStructuralDifference(
+            from oldIDs: [String],
+            to newIDs: [String],
+            oldRevisions: [String: Int],
+            in tableView: NSTableView
         ) {
-            guard rows.indices.contains(row), let content = rows[row].content else { return }
-            let availableWidth = max(120, tableView.tableColumns.first?.width ?? tableView.bounds.width)
-            cell.setContent(
-                content,
-                width: availableWidth,
-                expandableTurnId: rows[row].expandableTurnId,
-                isExpanded: rows[row].isExpanded,
-                onToggleExpansion: onToggleExpansion
-            )
+            let difference = newIDs.difference(from: oldIDs)
+            var removals = IndexSet()
+            var insertions = IndexSet()
+            for change in difference {
+                switch change {
+                case .remove(let offset, _, _): removals.insert(offset)
+                case .insert(let offset, _, _): insertions.insert(offset)
+                }
+            }
+
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                context.allowsImplicitAnimation = false
+                tableView.beginUpdates()
+                if !removals.isEmpty {
+                    tableView.removeRows(at: removals, withAnimation: [])
+                }
+                if !insertions.isEmpty {
+                    tableView.insertRows(at: insertions, withAnimation: [])
+                }
+                tableView.endUpdates()
+            }
+
+            let changedSurvivors = IndexSet(newIDs.indices.filter { index in
+                !insertions.contains(index)
+                    && oldRevisions[newIDs[index]] != rows[index].contentRevision
+            })
+            if !changedSurvivors.isEmpty {
+                tableView.reloadData(
+                    forRowIndexes: changedSurvivors,
+                    columnIndexes: IndexSet(integer: 0)
+                )
+                tableView.noteHeightOfRows(withIndexesChanged: changedSurvivors)
+            }
         }
 
         private func noteHeightChange(for row: Int, rowID: String, in tableView: NSTableView) {
             let indexes = IndexSet(integer: row)
-            // SwiftUI already animates the inserted/removed process content.
-            // A second AppKit animation for the enclosing table row runs on a
-            // different layout clock and briefly exposes a stale clipped frame.
-            // Update the row geometry in the same transaction instead.
+            // Keep expansion geometry on the table's single layout clock.
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0
                 context.allowsImplicitAnimation = false
@@ -745,14 +914,19 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                       self.scrollCommandGeneration == generation,
                       let tableView,
                       !self.rows.isEmpty else { return }
-                tableView.scrollRowToVisible(self.rows.count - 1)
+                tableView.layoutSubtreeIfNeeded()
+                guard let clipView = self.scrollView?.contentView else { return }
+                let lastRowRect = tableView.rect(ofRow: self.rows.count - 1)
+                let bottomOrigin = max(0, lastRowRect.maxY - clipView.bounds.height)
+                clipView.scroll(to: NSPoint(x: 0, y: bottomOrigin))
+                self.scrollView?.reflectScrolledClipView(clipView)
             }
         }
 
         private func viewportDidScroll() {
             guard let scrollView, let tableView, !rows.isEmpty else { return }
             let visibleMaxY = scrollView.contentView.bounds.maxY
-            let contentMaxY = tableView.bounds.maxY
+            let contentMaxY = tableView.rect(ofRow: rows.count - 1).maxY
             let nearBottom = contentMaxY - visibleMaxY <= 8
             followsLatest = nearBottom
             if followsLatestBinding.wrappedValue != nearBottom {
@@ -782,17 +956,34 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         private func synchronizeTableWidth() {
             guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
-            let width = max(120, scrollView.contentSize.width)
+            let width = max(120, scrollView.bounds.width - Self.verticalScrollerGutter)
             guard abs(column.width - width) >= 0.5 else { return }
             column.width = width
-            // A vertical scroller changes contentSize.width (typically by
-            // 17 pt). Both native cached heights and hosted intrinsic heights
-            // are width-dependent, so rebuild visible cells under the new
-            // column constraint.
+            // This path now runs only for an actual container resize. Scroller
+            // visibility no longer changes the layout width.
             heightCache.removeAll(keepingCapacity: true)
             lastMeasuredWidth = width
             if !rows.isEmpty {
-                tableView.reloadData()
+                let allRows = IndexSet(integersIn: 0..<rows.count)
+                let visible = tableView.rows(in: tableView.visibleRect)
+                if visible.location != NSNotFound {
+                    let upperBound = min(rows.count, visible.location + visible.length)
+                    for row in visible.location..<upperBound {
+                        if let nativeCell = tableView.view(
+                            atColumn: 0,
+                            row: row,
+                            makeIfNecessary: false
+                        ) as? AppKitChatNativeTextCell {
+                            nativeCell.setContent(
+                                rows[row],
+                                availableWidth: width,
+                                onToggleExpansion: onToggleExpansion,
+                                onAction: onAction
+                            )
+                        }
+                    }
+                }
+                tableView.noteHeightOfRows(withIndexesChanged: allRows)
             }
         }
 
@@ -877,56 +1068,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 }
 
-/// Keeps vertical wheel/trackpad gestures owned by the message timeline even
-/// when the pointer happens to be above a horizontally scrolling Markdown code
-/// block. SwiftUI's nested horizontal `ScrollView` otherwise consumes the
-/// vertical event without moving either scroll view, which makes the timeline
-/// appear to freeze at arbitrary messages.
-@MainActor
-final class ChatTimelineScrollView: NSScrollView {
-    private var wheelMonitor: Any?
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        updateWheelMonitor()
-    }
-
-    static func shouldOwnVerticalWheel(deltaX: CGFloat, deltaY: CGFloat) -> Bool {
-        abs(deltaY) > 0.01 && abs(deltaY) >= abs(deltaX)
-    }
-
-    private func updateWheelMonitor() {
-        if let wheelMonitor {
-            NSEvent.removeMonitor(wheelMonitor)
-            self.wheelMonitor = nil
-        }
-        guard window != nil else { return }
-
-        wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            guard let self,
-                  let window = self.window,
-                  event.window === window,
-                  Self.shouldOwnVerticalWheel(
-                    deltaX: event.scrollingDeltaX,
-                    deltaY: event.scrollingDeltaY
-                  ) else {
-                return event
-            }
-            let location = self.convert(event.locationInWindow, from: nil)
-            guard self.bounds.contains(location) else { return event }
-
-            // Calling super directly bypasses the nested SwiftUI scroll view;
-            // returning nil prevents the same event from being handled twice.
-            self.scrollTimeline(with: event)
-            return nil
-        }
-    }
-
-    private func scrollTimeline(with event: NSEvent) {
-        super.scrollWheel(with: event)
-    }
-}
-
 @MainActor
 final class AppKitChatNativeTextCell: NSTableCellView {
     private let cardView = NSView()
@@ -936,19 +1077,34 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private let label = NSTextField(wrappingLabelWithString: "")
     private let disclosureButton = NSButton()
     private let copyButton = NSButton()
+    private let messageActionBar = NSStackView()
+    private let actionStack = NSStackView()
     private let processSeparator = NSView()
     private let processButton = NSButton()
     private var processSeparatorHeight: NSLayoutConstraint!
     private var processButtonHeight: NSLayoutConstraint!
+    private var processButtonTopConstraint: NSLayoutConstraint!
+    private var processButtonBottomConstraint: NSLayoutConstraint!
+    private var actionStackHeight: NSLayoutConstraint!
     private var cardWidthConstraint: NSLayoutConstraint!
     private var cardLeadingConstraint: NSLayoutConstraint!
     private var cardTrailingConstraint: NSLayoutConstraint!
+    private var cardBottomStandardConstraint: NSLayoutConstraint!
+    private var cardBottomWithMessageActionsConstraint: NSLayoutConstraint!
+    private var messageActionBarLeadingConstraint: NSLayoutConstraint!
+    private var messageActionBarTrailingConstraint: NSLayoutConstraint!
     private var labelTopToTitleConstraint: NSLayoutConstraint!
     private var labelTopToCardConstraint: NSLayoutConstraint!
+    private var labelBottomToProcessConstraint: NSLayoutConstraint!
+    private var labelBottomToActionsConstraint: NSLayoutConstraint!
+    private var labelTopToProcessButtonConstraint: NSLayoutConstraint!
+    private var labelBottomToCardConstraint: NSLayoutConstraint!
     private var timestampBeforeCardConstraint: NSLayoutConstraint!
     private var timestampAfterCardConstraint: NSLayoutConstraint!
     private var expandableTurnId: String?
     private var onToggleExpansion: ((String) -> Void)?
+    private var timelineActions: [AppKitChatTimelineRow.Action] = []
+    private var onAction: ((AppKitChatTimelineRow.Action) -> Void)?
     private var copiedText = ""
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -970,6 +1126,14 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         label.translatesAutoresizingMaskIntoConstraints = false
         disclosureButton.translatesAutoresizingMaskIntoConstraints = false
         copyButton.translatesAutoresizingMaskIntoConstraints = false
+        messageActionBar.translatesAutoresizingMaskIntoConstraints = false
+        messageActionBar.orientation = .horizontal
+        messageActionBar.alignment = .centerY
+        messageActionBar.spacing = 2
+        actionStack.translatesAutoresizingMaskIntoConstraints = false
+        actionStack.orientation = .horizontal
+        actionStack.alignment = .centerY
+        actionStack.spacing = 8
         processSeparator.translatesAutoresizingMaskIntoConstraints = false
         processSeparator.wantsLayer = true
         processButton.translatesAutoresizingMaskIntoConstraints = false
@@ -984,19 +1148,25 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         disclosureButton.isHidden = true
         copyButton.isBordered = false
         copyButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.copy")
-        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy message")
+        copyButton.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "复制消息")
         copyButton.imagePosition = .imageOnly
         copyButton.target = self
         copyButton.action = #selector(copyText)
-        copyButton.alphaValue = 0
-        copyButton.toolTip = "Copy message"
+        copyButton.toolTip = "复制消息"
+        copyButton.setAccessibilityLabel("复制消息")
+        messageActionBar.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-actions")
+        messageActionBar.alphaValue = 0
+        messageActionBar.addArrangedSubview(copyButton)
         processButton.isBordered = false
         processButton.alignment = .left
+        processButton.imagePosition = .imageLeading
+        processButton.imageHugsTitle = true
         processButton.target = self
         processButton.action = #selector(toggleDisclosure)
         processButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.process")
         titleLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.title")
         metadataLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.metadata")
+        label.identifier = NSUserInterfaceItemIdentifier("chat.timeline.body")
         hoverTimestampLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.hover-timestamp")
         hoverTimestampLabel.font = .systemFont(ofSize: 9, weight: .medium)
         hoverTimestampLabel.textColor = NativeTimelineCardPalette.mutedText
@@ -1004,21 +1174,33 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         hoverTimestampLabel.alphaValue = 0
         addSubview(cardView)
         addSubview(hoverTimestampLabel)
-        [titleLabel, metadataLabel, label, disclosureButton, copyButton, processSeparator, processButton].forEach(cardView.addSubview)
+        addSubview(messageActionBar)
+        [titleLabel, metadataLabel, label, disclosureButton, actionStack, processSeparator, processButton].forEach(cardView.addSubview)
         processSeparatorHeight = processSeparator.heightAnchor.constraint(equalToConstant: 0)
         processButtonHeight = processButton.heightAnchor.constraint(equalToConstant: 0)
+        processButtonTopConstraint = processButton.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 3)
+        processButtonBottomConstraint = processButton.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -3)
+        actionStackHeight = actionStack.heightAnchor.constraint(equalToConstant: 0)
         cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: ChatBubbleWidthPolicy.maximumWidth)
         cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
+        cardBottomStandardConstraint = cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1)
+        cardBottomWithMessageActionsConstraint = cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -27)
+        messageActionBarLeadingConstraint = messageActionBar.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 2)
+        messageActionBarTrailingConstraint = messageActionBar.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -2)
         labelTopToTitleConstraint = label.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6)
         labelTopToCardConstraint = label.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 10)
+        labelBottomToProcessConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: processSeparator.topAnchor, constant: -5)
+        labelBottomToActionsConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: actionStack.topAnchor, constant: -4)
+        labelTopToProcessButtonConstraint = label.topAnchor.constraint(equalTo: processButton.bottomAnchor, constant: 8)
+        labelBottomToCardConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10)
         timestampBeforeCardConstraint = hoverTimestampLabel.trailingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: -8)
         timestampAfterCardConstraint = hoverTimestampLabel.leadingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: 8)
         NSLayoutConstraint.activate([
             cardWidthConstraint,
             cardLeadingConstraint,
             cardView.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-            cardView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -1),
+            cardBottomStandardConstraint,
             disclosureButton.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             disclosureButton.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 8),
             disclosureButton.widthAnchor.constraint(equalToConstant: 16),
@@ -1027,21 +1209,25 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             titleLabel.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 9),
             metadataLabel.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             metadataLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            copyButton.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -4),
-            copyButton.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -4),
             copyButton.widthAnchor.constraint(equalToConstant: 22),
             copyButton.heightAnchor.constraint(equalToConstant: 22),
+            messageActionBar.topAnchor.constraint(equalTo: cardView.bottomAnchor, constant: 2),
+            messageActionBar.heightAnchor.constraint(equalToConstant: 22),
             label.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             label.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             labelTopToTitleConstraint,
-            label.bottomAnchor.constraint(lessThanOrEqualTo: processSeparator.topAnchor, constant: -5),
+            labelBottomToProcessConstraint,
+            actionStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
+            actionStack.trailingAnchor.constraint(lessThanOrEqualTo: cardView.trailingAnchor, constant: -10),
+            actionStack.bottomAnchor.constraint(equalTo: processSeparator.topAnchor, constant: -4),
+            actionStackHeight,
             processSeparator.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             processSeparator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             processSeparator.bottomAnchor.constraint(equalTo: processButton.topAnchor),
             processSeparatorHeight,
             processButton.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             processButton.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
-            processButton.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -3),
+            processButtonBottomConstraint,
             processButtonHeight,
             hoverTimestampLabel.centerYAnchor.constraint(equalTo: cardView.centerYAnchor)
         ])
@@ -1052,8 +1238,14 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func setContent(_ row: AppKitChatTimelineRow, availableWidth: CGFloat, onToggleExpansion: @escaping (String) -> Void) {
-        label.attributedStringValue = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+    func setContent(
+        _ row: AppKitChatTimelineRow,
+        availableWidth: CGFloat,
+        onToggleExpansion: @escaping (String) -> Void,
+        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
+    ) {
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        label.attributedStringValue = layout.attributedText
         label.allowsEditingTextAttributes = true
         titleLabel.stringValue = row.title
         titleLabel.font = .systemFont(ofSize: 11, weight: .bold)
@@ -1070,8 +1262,29 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         )
         expandableTurnId = row.expandableTurnId
         self.onToggleExpansion = onToggleExpansion
+        self.onAction = onAction
+        configureActions(row.actions)
         copiedText = row.copyText
-        cardWidthConstraint.constant = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: availableWidth)
+        let showsMessageActions = row.showsMessageActionBar
+        NSLayoutConstraint.deactivate([
+            cardBottomStandardConstraint,
+            cardBottomWithMessageActionsConstraint,
+            messageActionBarLeadingConstraint,
+            messageActionBarTrailingConstraint
+        ])
+        if showsMessageActions {
+            cardBottomWithMessageActionsConstraint.isActive = true
+            if row.nativeStyle == .user {
+                messageActionBarTrailingConstraint.isActive = true
+            } else {
+                messageActionBarLeadingConstraint.isActive = true
+            }
+        } else {
+            cardBottomStandardConstraint.isActive = true
+        }
+        messageActionBar.isHidden = !showsMessageActions
+        messageActionBar.alphaValue = 0
+        cardWidthConstraint.constant = layout.cardWidth
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         NSLayoutConstraint.deactivate([timestampBeforeCardConstraint, timestampAfterCardConstraint])
@@ -1085,39 +1298,94 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         let showsHeader = row.showsHeader && !isStandaloneProcess
         titleLabel.isHidden = !showsHeader
         metadataLabel.isHidden = !showsHeader
-        NSLayoutConstraint.deactivate([labelTopToTitleConstraint, labelTopToCardConstraint])
-        (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true
+        NSLayoutConstraint.deactivate([
+            labelTopToTitleConstraint,
+            labelTopToCardConstraint,
+            labelTopToProcessButtonConstraint,
+            labelBottomToCardConstraint,
+            processButtonTopConstraint,
+            processButtonBottomConstraint
+        ])
+        if isStandaloneProcess {
+            NSLayoutConstraint.deactivate([labelBottomToProcessConstraint, labelBottomToActionsConstraint])
+            processButtonTopConstraint.isActive = true
+            if row.isExpanded {
+                labelTopToProcessButtonConstraint.isActive = true
+                labelBottomToCardConstraint.isActive = true
+            }
+        } else {
+            (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true
+            processButtonBottomConstraint.isActive = true
+        }
         hoverTimestampLabel.stringValue = row.hoverTimestamp
         hoverTimestampLabel.isHidden = row.hoverTimestamp.isEmpty || isStandaloneProcess
         hoverTimestampLabel.alphaValue = 0
-        label.isHidden = isStandaloneProcess
+        label.isHidden = isStandaloneProcess && !row.isExpanded
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
         processButton.isHidden = !hasProcess
         processSeparatorHeight.constant = hasProcess && !isStandaloneProcess ? 1 : 0
         processButtonHeight.constant = hasProcess ? 22 : 0
-        if let count = row.processCount {
-            let chevron = row.isExpanded ? "▾" : "▸"
-            let duration = row.processDuration.map { "  \($0)" } ?? ""
+        if row.processCount != nil {
+            let chevron = row.isExpanded ? "⌄" : "›"
+            processButton.image = NSImage(
+                systemSymbolName: row.processState.symbolName,
+                accessibilityDescription: row.processSummary
+            )
+            processButton.contentTintColor = row.processState.color
+            processButton.toolTip = row.isExpanded ? "Collapse execution details" : "Expand execution details"
+            processButton.setAccessibilityLabel(row.processSummary)
             processButton.attributedTitle = NSAttributedString(
-                string: "\(chevron)  ↳  Execution process\(duration)   \(count)",
+                string: "  \(row.processSummary)    \(chevron)",
                 attributes: [
-                    .font: NSFont.systemFont(ofSize: 9.5, weight: .semibold),
+                    .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
                     .foregroundColor: NativeTimelineCardPalette.secondaryText
                 ]
             )
         }
         switch row.nativeStyle {
-        case .user, .agent:
+        case .user:
+            cardView.layer?.backgroundColor = NativeTimelineCardPalette.userBackground.cgColor
+            cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
+        case .agent:
             cardView.layer?.backgroundColor = NSColor.white.cgColor
             cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
         case .process:
-            cardView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.42).cgColor
-            cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.045).cgColor
-            cardView.layer?.cornerRadius = 13
+            let tint = row.processState.color
+            cardView.layer?.backgroundColor = tint.withAlphaComponent(row.isExpanded ? 0.055 : 0.035).cgColor
+            cardView.layer?.borderColor = tint.withAlphaComponent(0.16).cgColor
+            cardView.layer?.cornerRadius = row.isExpanded ? 12 : 10
         }
         if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
         processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
         needsLayout = true
+    }
+
+    private func configureActions(_ actions: [AppKitChatTimelineRow.Action]) {
+        timelineActions = actions
+        actionStack.arrangedSubviews.forEach {
+            actionStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        NSLayoutConstraint.deactivate([labelBottomToProcessConstraint, labelBottomToActionsConstraint])
+        if actions.isEmpty {
+            actionStackHeight.constant = 0
+            actionStack.isHidden = true
+            labelBottomToProcessConstraint.isActive = true
+            return
+        }
+        actionStack.isHidden = false
+        actionStackHeight.constant = 28
+        labelBottomToActionsConstraint.isActive = true
+        for (index, action) in actions.enumerated() {
+            let button = NSButton(title: action.label, target: self, action: #selector(performTimelineAction(_:)))
+            button.tag = index
+            button.identifier = NSUserInterfaceItemIdentifier("chat.timeline.action.\(action.id)")
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.contentTintColor = action.isDestructive ? .systemRed : .controlAccentColor
+            button.toolTip = action.label
+            actionStack.addArrangedSubview(button)
+        }
     }
 
     override func updateTrackingAreas() {
@@ -1133,7 +1401,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     override func mouseEntered(with event: NSEvent) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
-            copyButton.animator().alphaValue = copiedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0 : 1
+            messageActionBar.animator().alphaValue = messageActionBar.isHidden ? 0 : 1
             hoverTimestampLabel.animator().alphaValue = hoverTimestampLabel.isHidden ? 0 : 1
         }
     }
@@ -1141,7 +1409,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     override func mouseExited(with event: NSEvent) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
-            copyButton.animator().alphaValue = 0
+            messageActionBar.animator().alphaValue = 0
             hoverTimestampLabel.animator().alphaValue = 0
         }
     }
@@ -1155,6 +1423,11 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(copiedText, forType: .string)
     }
+
+    @objc private func performTimelineAction(_ sender: NSButton) {
+        guard timelineActions.indices.contains(sender.tag) else { return }
+        onAction?(timelineActions[sender.tag])
+    }
 }
 
 private enum NativeTimelineCardPalette {
@@ -1162,6 +1435,8 @@ private enum NativeTimelineCardPalette {
     static let mutedText = NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1)
     static let userText = NSColor(calibratedRed: 0.22, green: 0.35, blue: 0.62, alpha: 1)
     static let agentText = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.27, alpha: 1)
+    static let userBackground = NSColor(calibratedRed: 0.945, green: 0.965, blue: 0.988, alpha: 1)
+    static let userBorder = NSColor(calibratedRed: 0.45, green: 0.58, blue: 0.76, alpha: 0.22)
 }
 
 private final class IntrinsicHeightTableView: NSTableView {
@@ -1171,88 +1446,32 @@ private final class IntrinsicHeightTableView: NSTableView {
     }
 }
 
-@MainActor
-final class AppKitChatHostingCell: NSTableCellView {
-    private let hostingView = FirstMouseTimelineHostingView(rootView: AnyView(EmptyView()))
-    private let collapsedProcessHitTarget = FirstMouseTimelineButton()
-    private var expandableTurnId: String?
-    private var onToggleExpansion: ((String) -> Void)?
-
-    init(identifier: NSUserInterfaceItemIdentifier) {
-        super.init(frame: .zero)
-        self.identifier = identifier
-        hostingView.translatesAutoresizingMaskIntoConstraints = false
-        hostingView.sizingOptions = [.intrinsicContentSize]
-        hostingView.setContentHuggingPriority(.required, for: .vertical)
-        hostingView.setContentCompressionResistancePriority(.required, for: .vertical)
-        addSubview(hostingView)
-        collapsedProcessHitTarget.translatesAutoresizingMaskIntoConstraints = false
-        collapsedProcessHitTarget.isBordered = false
-        collapsedProcessHitTarget.title = ""
-        collapsedProcessHitTarget.identifier = NSUserInterfaceItemIdentifier("chat.timeline.hosted-process-hit-target")
-        collapsedProcessHitTarget.target = self
-        collapsedProcessHitTarget.action = #selector(toggleCollapsedProcess)
-        collapsedProcessHitTarget.isHidden = true
-        addSubview(collapsedProcessHitTarget)
-        NSLayoutConstraint.activate([
-            hostingView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hostingView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            hostingView.topAnchor.constraint(equalTo: topAnchor),
-            hostingView.bottomAnchor.constraint(equalTo: bottomAnchor),
-            collapsedProcessHitTarget.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            collapsedProcessHitTarget.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            collapsedProcessHitTarget.bottomAnchor.constraint(equalTo: bottomAnchor),
-            collapsedProcessHitTarget.heightAnchor.constraint(equalToConstant: 28)
-        ])
+/// NSTableView can temporarily retain a document frame taller than its final
+/// row geometry while SwiftUI resizes or rows are remeasured. The stock clip
+/// view then exposes that surplus as scrollable blank space. The timeline's
+/// semantic bottom is always the lower edge of its last row.
+private final class TimelineBoundedClipView: NSClipView {
+    override var documentRect: NSRect {
+        var rect = super.documentRect
+        guard let tableView = documentView as? NSTableView,
+              tableView.numberOfRows > 0 else { return rect }
+        rect.size.height = max(0, tableView.rect(ofRow: tableView.numberOfRows - 1).maxY - rect.minY)
+        return rect
     }
 
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var constrained = super.constrainBoundsRect(proposedBounds)
+        let maximumY = max(documentRect.minY, documentRect.maxY - constrained.height)
+        constrained.origin.y = min(max(constrained.origin.y, documentRect.minY), maximumY)
+        return constrained
     }
 
-    func setContent(
-        _ content: AnyView,
-        width: CGFloat,
-        expandableTurnId: String? = nil,
-        isExpanded: Bool = false,
-        onToggleExpansion: @escaping (String) -> Void = { _ in }
-    ) {
-        self.expandableTurnId = expandableTurnId
-        self.onToggleExpansion = onToggleExpansion
-        collapsedProcessHitTarget.isHidden = expandableTurnId == nil || isExpanded
-        hostingView.rootView = AnyView(
-            content
-                // NSHostingView otherwise asks SwiftUI for its unconstrained
-                // ideal width. Long Markdown may report a width several times
-                // wider than the table column and therefore an intrinsic height
-                // that is far too short for the actual wrapped content. Give
-                // SwiftUI the table's real width before it computes height.
-                .frame(width: width, alignment: .topLeading)
-                .fixedSize(horizontal: false, vertical: true)
-        )
-        // NSTableView automatic row heights and the hosting view's Auto Layout
-        // constraints are the only sizing authority. Reading the intrinsic size
-        // here and feeding it back through a second cache races the table's row
-        // geometry and lets newly expanded content draw over the next row.
-        hostingView.invalidateIntrinsicContentSize()
-        invalidateIntrinsicContentSize()
-        needsLayout = true
+    override func setBoundsOrigin(_ newOrigin: NSPoint) {
+        let proposedBounds = NSRect(origin: newOrigin, size: bounds.size)
+        super.setBoundsOrigin(constrainBoundsRect(proposedBounds).origin)
     }
 
-    @objc private func toggleCollapsedProcess() {
-        guard let expandableTurnId else { return }
-        onToggleExpansion?(expandableTurnId)
-    }
-}
-
-private final class FirstMouseTimelineHostingView<Content: View>: NSHostingView<Content> {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
-    }
-}
-
-private final class FirstMouseTimelineButton: NSButton {
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        true
+    override func scroll(to newOrigin: NSPoint) {
+        setBoundsOrigin(newOrigin)
     }
 }

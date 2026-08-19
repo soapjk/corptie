@@ -637,7 +637,6 @@ struct FloatingRootView: View {
             session: session,
             backendClient: backendClient,
             visibleMessageLimit: DetailView.initialVisibleMessageLimit,
-            deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
             delay: .milliseconds(120)
         )
     }
@@ -1269,22 +1268,6 @@ private struct ListHeightPreferenceKey: PreferenceKey {
 
     static func reduce(value: inout [ListHeightMetric: CGFloat], nextValue: () -> [ListHeightMetric: CGFloat]) {
         value.merge(nextValue(), uniquingKeysWith: { _, newValue in newValue })
-    }
-}
-
-private struct DetailScrollViewportHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private struct DetailScrollBottomMaxYPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
     }
 }
 
@@ -3314,7 +3297,6 @@ struct DetailView: View {
     static var initialVisibleMessageLimit: Int {
         ChatTimelineFeatureFlags.current.initialDisplayWeight
     }
-    @State private var didInitialScroll = false
     @State private var visibleMessageLimit: Int
     @State private var cachedSourceItemCount = 0
     @State private var cachedSourcePenultimateItemId: String?
@@ -3327,29 +3309,18 @@ struct DetailView: View {
     @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
     @ObservedObject var presentationStore: SessionPresentationStore
-    @State private var collaborationExpansionByItemKey: [String: Bool] = [:]
-    @State private var collaborationConfirmationExpansionByItemKey: [String: Bool] = [:]
     @State private var expandedProcessTurnIds: Set<String> = []
-    @State private var detailScrollViewportHeight: CGFloat = 0
-    @State private var detailScrollBottomMaxY: CGFloat = 0
-    @State private var isDetailScrolledNearBottom = true
     @State private var isFollowingLatest = true
-    @State private var isMaintainingFollowPosition = false
-    @State private var pendingFollowScrollWorkItem: DispatchWorkItem?
-    @State private var lastVisibleContentSignature = ""
     @State private var hasNewMessagesBelow = false
     @State private var appKitScrollToBottomRevision = 0
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
-    @State private var displayedDetail: CodexThreadDetail?
+    @ObservedObject private var timelineState: SessionTimelineState
     @State private var displaysLoadingDetail: Bool
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
     let sessionId: String
     let composerDraftRepository: ComposerDraftRepository
-    // 渲染管线覆盖：nil = 跟随全局 ChatTimelineFeatureFlags.current；
-    // Sessions Tab 使用原生时间线，复杂卡片仍由行路由自动回退 SwiftUI。
-    let renderer: ChatTimelineRenderer?
     let initialTimelinePosition: AppKitChatTimelinePosition?
     let onTimelinePositionChange: (AppKitChatTimelinePosition) -> Void
 
@@ -3358,7 +3329,6 @@ struct DetailView: View {
         presentationStore: SessionPresentationStore,
         composerDraftRepository: ComposerDraftRepository,
         backendClient: BackendClient = .shared,
-        renderer: ChatTimelineRenderer? = nil,
         initialTimelinePosition: AppKitChatTimelinePosition? = nil,
         onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
     ) {
@@ -3366,9 +3336,16 @@ struct DetailView: View {
         self.presentationStore = presentationStore
         self.composerDraftRepository = composerDraftRepository
         self.backendClient = backendClient
-        self.renderer = renderer
         self.initialTimelinePosition = initialTimelinePosition
         self.onTimelinePositionChange = onTimelinePositionChange
+        let timelineState = SessionTimelineRepository.shared.state(for: sessionId)
+        if timelineState.detail == nil,
+           backendClient.selectedSession?.id == sessionId,
+           let selectedDetail = backendClient.selectedDetail,
+           !selectedDetail.id.isEmpty {
+            SessionTimelineRepository.shared.publish(selectedDetail, for: sessionId)
+        }
+        _timelineState = ObservedObject(wrappedValue: timelineState)
         let initialCache = presentationStore.cache(for: sessionId)
         _visibleMessageLimit = State(
             initialValue: initialCache?.visibleMessageLimit
@@ -3383,18 +3360,19 @@ struct DetailView: View {
         _cachedItemsSignature = State(initialValue: initialCache?.signature ?? "")
         _cachedDetailSourceSignature = State(initialValue: initialCache?.sourceSignature ?? "")
         _cachedSessionId = State(initialValue: initialCache?.sessionId ?? "")
-        _displayedDetail = State(initialValue: backendClient.selectedDetail)
-        _displaysLoadingDetail = State(initialValue: backendClient.isLoadingDetail)
+        _displaysLoadingDetail = State(
+            initialValue: backendClient.selectedSession?.id == sessionId && backendClient.isLoadingDetail
+        )
         _displayedWorkspaceRecoveryStatus = State(initialValue: backendClient.workspaceRecoveryStatus)
         PerfStopwatch.event("会话切换.DetailView.init", value: 1)
     }
 
-    private var effectiveRenderer: ChatTimelineRenderer {
-        renderer ?? ChatTimelineFeatureFlags.current.renderer
-    }
-
     private var preheatedDisplayCache: DetailDisplayCache? {
         presentationStore.cache(for: sessionId)
+    }
+
+    private var displayedDetail: CodexThreadDetail? {
+        timelineState.detail
     }
 
     var body: some View {
@@ -3425,12 +3403,7 @@ struct DetailView: View {
 
                 Group {
                     if shouldRenderDetailMessages {
-                        if effectiveRenderer == .appKitTable
-                            || effectiveRenderer == .appKitNativeText {
-                            appKitCachedDetailMessages()
-                        } else {
-                            detailMessages(detail)
-                        }
+                        appKitCachedDetailMessages()
                     } else {
                         DetailMessagesPlaceholder()
                     }
@@ -3488,19 +3461,9 @@ struct DetailView: View {
             displayProjectionTask = nil
             displayProjectionGeneration &+= 1
             pendingProjectionSourceSignature = nil
-            didInitialScroll = false
-            isDetailScrolledNearBottom = true
             isFollowingLatest = true
-            isMaintainingFollowPosition = false
-            pendingFollowScrollWorkItem?.cancel()
-            pendingFollowScrollWorkItem = nil
-            lastVisibleContentSignature = ""
             hasNewMessagesBelow = false
-            detailScrollViewportHeight = 0
-            detailScrollBottomMaxY = 0
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
-            collaborationExpansionByItemKey.removeAll()
-            collaborationConfirmationExpansionByItemKey.removeAll()
             expandedProcessTurnIds.removeAll()
             restoreDisplayCacheForCurrentSession()
         }
@@ -3508,10 +3471,8 @@ struct DetailView: View {
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
         }
-        .onReceive(backendClient.$selectedDetail) { detail in
-            displayedDetail = detail
-        }
         .onReceive(backendClient.$isLoadingDetail) { isLoading in
+            guard backendClient.selectedSession?.id == sessionId else { return }
             displaysLoadingDetail = isLoading
         }
         .onReceive(backendClient.$workspaceRecoveryStatus) { status in
@@ -3519,149 +3480,8 @@ struct DetailView: View {
         }
     }
 
-    @ViewBuilder
-    private func detailMessages(_ detail: CodexThreadDetail) -> some View {
-        let preparedDisplay = preparedDisplayEntries(for: detail)
-        let displayEntries = preparedDisplay.visibleEntries
-        let visibleDisplayWeight = displayEntries.reduce(0) { $0 + $1.displayWeight }
-        let hiddenCount = max(0, preparedDisplay.totalCount - visibleDisplayWeight)
-
-        swiftUIDetailMessages(detail, displayEntries: displayEntries, hiddenCount: hiddenCount)
-    }
-
     private func appKitCachedDetailMessages() -> some View {
         return appKitDetailMessages(displayEntries: cachedDisplayEntries)
-    }
-
-    private func swiftUIDetailMessages(
-        _ detail: CodexThreadDetail,
-        displayEntries: [ChatDisplayEntry],
-        hiddenCount: Int
-    ) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView(.vertical, showsIndicators: true) {
-                // Dynamic-height Markdown and nested horizontal code scrollers can
-                // send LazyVStack's off-screen height estimator into a sustained
-                // layout loop on macOS. Keep the explicitly paged timeline eager
-                // until the bounded-window timeline store is available; a regular
-                // stack is slower for very large pages but avoids the lazy
-                // estimate loop observed in production.
-                VStack(alignment: .leading, spacing: 8) {
-                    if hiddenCount > 0 {
-                        Button {
-                            let anchor = DetailHistoryScrollAnchor.resolve(
-                                orderedEntryIds: displayEntries.map(\.id)
-                            )
-                            isFollowingLatest = false
-                            ChatPerformanceRecorder.shared.increment(.historyPrepends)
-                            ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))
-                            visibleMessageLimit += 100
-                            updateCachedDisplayEntries(for: detail)
-                            restoreHistoryScrollAnchor(anchor, proxy: proxy)
-                        } label: {
-                            Label(L10nFormat("Load %lld earlier messages", min(100, hiddenCount)), systemImage: "arrow.up.circle")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(CorptiePalette.secondaryText)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.plain)
-                        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    }
-
-                    ForEach(displayEntries) { entry in
-                        Group {
-                            switch entry.kind {
-                            case .message(let item):
-                                ThreadItemView(
-                                    item: item,
-                                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
-                                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
-                                )
-                            case .process(let turnId, let items):
-                                ThreadProcessGroupView(
-                                    items: items,
-                                    isExpanded: expandedProcessTurnIds.contains(turnId),
-                                    onToggle: {
-                                        toggleNativeProcessExpansion(turnId)
-                                    }
-                                )
-                            }
-                        }
-                        .id(entry.id)
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .identity
-                        ))
-                    }
-
-                    Color.clear
-                        .frame(height: 1)
-                        .id(bottomScrollAnchorId)
-                        .background(
-                            GeometryReader { proxy in
-                                Color.clear.preference(
-                                    key: DetailScrollBottomMaxYPreferenceKey.self,
-                                    value: proxy.frame(in: .named(detailScrollCoordinateSpaceName)).maxY
-                                )
-                            }
-                        )
-                }
-                .padding(.bottom, 4)
-            }
-            .coordinateSpace(name: detailScrollCoordinateSpaceName)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: DetailScrollViewportHeightPreferenceKey.self, value: proxy.size.height)
-                }
-            )
-            .onAppear {
-                updateCachedDisplayEntries(for: detail)
-                lastVisibleContentSignature = visibleContentSignature(for: cachedDisplayEntries)
-                scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
-            }
-            .onChange(of: detailSourceSignature(for: detail)) { _, _ in
-                // Following is valid only while the viewport is actually at the
-                // bottom. A content update can arrive before the next geometry
-                // preference callback after a user scroll, so the historical
-                // follow flag alone is not safe enough to trigger scrollTo.
-                let wasFollowingLatest = isFollowingLatest && isDetailScrolledNearBottom
-                isFollowingLatest = wasFollowingLatest
-                if wasFollowingLatest && !expandedProcessTurnIds.isEmpty {
-                    isMaintainingFollowPosition = true
-                }
-                updateCachedDisplayEntries(for: detail)
-                maintainLatestPositionIfVisibleContentChanged(detail: detail, proxy: proxy)
-            }
-            .onPreferenceChange(DetailScrollViewportHeightPreferenceKey.self) { height in
-                detailScrollViewportHeight = height
-                updateDetailScrollBottomProximity()
-            }
-            .onPreferenceChange(DetailScrollBottomMaxYPreferenceKey.self) { maxY in
-                detailScrollBottomMaxY = maxY
-                updateDetailScrollBottomProximity()
-            }
-            .overlay(alignment: .bottomTrailing) {
-                ZStack {
-                    if hasNewMessagesBelow && !isDetailScrolledNearBottom {
-                        Button {
-                            isFollowingLatest = true
-                            scrollToLatestAfterLayout(detail: detail, proxy: proxy, force: true)
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 12, weight: .bold))
-                                .frame(width: 30, height: 30)
-                        }
-                        .buttonStyle(IconButtonStyle())
-                        .help(L10n("Jump to latest message"))
-                        .padding(.trailing, 10)
-                        .padding(.bottom, 8)
-                        .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                    }
-                }
-                .animation(.easeOut(duration: 0.16), value: hasNewMessagesBelow)
-            }
-        }
     }
 
     private func appKitDetailMessages(
@@ -3674,20 +3494,20 @@ struct DetailView: View {
             AppKitChatTimelineView(
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
-                usesNativeText: effectiveRenderer == .appKitNativeText,
                 followsLatest: $isFollowingLatest,
                 onToggleExpansion: toggleNativeProcessExpansion,
+                onAction: performNativeTimelineAction,
                 onNearTop: loadEarlierMessagesIfNeeded,
                 initialPosition: initialTimelinePosition,
                 onPositionChange: onTimelinePositionChange
             )
             .onAppear {
-                if let currentDetail = backendClient.selectedDetail {
+                if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
                 }
             }
             .onChange(of: appKitDetailRevision) { _, _ in
-                if let currentDetail = backendClient.selectedDetail {
+                if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
                 }
                 if !isFollowingLatest {
@@ -3714,7 +3534,7 @@ struct DetailView: View {
     }
 
     private var appKitDetailRevision: String {
-        guard let detail = backendClient.selectedDetail else { return "none" }
+        guard let detail = displayedDetail else { return "none" }
         return detailSourceSignature(for: detail)
     }
 
@@ -3723,77 +3543,13 @@ struct DetailView: View {
         expansionSnapshot: Set<String>? = nil
     ) -> AppKitChatTimelineRow {
         let expandedTurnIds = expansionSnapshot ?? expandedProcessTurnIds
-        if effectiveRenderer == .appKitNativeText {
-            return nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
-        }
-        let content = swiftUIAppKitContent(for: entry, expandedTurnIds: expandedTurnIds)
-        let expansion = processExpansionMetadata(for: entry, expandedTurnIds: expandedTurnIds)
-        return AppKitChatTimelineRow(
-            id: entry.id,
-            contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
-            content: content,
-            nativeText: "",
-            copyText: "",
-            nativeStyle: .agent,
-            title: "",
-            metadata: "",
-            expandableTurnId: expansion.turnId,
-            isExpanded: expansion.isExpanded
-        )
-    }
-
-    private func swiftUIAppKitContent(
-        for entry: ChatDisplayEntry,
-        expandedTurnIds: Set<String>
-    ) -> AnyView {
-        switch entry.kind {
-        case .message(let item):
-            return AnyView(
-                ThreadItemView(
-                    item: item,
-                    isCollaborationExpanded: collaborationExpansionBinding(for: item),
-                    isCollaborationConfirmationExpanded: collaborationConfirmationExpansionBinding(for: item)
-                )
-                .environmentObject(backendClient)
-            )
-        case .process(let turnId, let items):
-            let isExpanded = expandedTurnIds.contains(turnId)
-            return AnyView(
-                ThreadProcessGroupView(
-                    items: items,
-                    isExpanded: isExpanded,
-                    onToggle: {
-                        setProcessExpansion(!isExpanded, for: turnId)
-                    }
-                )
-                .environmentObject(backendClient)
-            )
-        }
+        return nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
     }
 
     private func nativeAppKitRow(
         _ entry: ChatDisplayEntry,
         expandedTurnIds: Set<String>
     ) -> AppKitChatTimelineRow {
-        let isExpandedProcessEntry: Bool = switch entry.kind {
-        case .process(let turnId, _): expandedTurnIds.contains(turnId)
-        case .message: false
-        }
-        if shouldUseSwiftUIHosting(for: entry) || isExpandedProcessEntry {
-            let expansion = processExpansionMetadata(for: entry, expandedTurnIds: expandedTurnIds)
-            return AppKitChatTimelineRow(
-                id: entry.id,
-                contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
-                content: swiftUIAppKitContent(for: entry, expandedTurnIds: expandedTurnIds),
-                nativeText: "",
-                copyText: "",
-                nativeStyle: .agent,
-                title: "",
-                metadata: "",
-                expandableTurnId: expansion.turnId,
-                isExpanded: expansion.isExpanded
-            )
-        }
         let text: String
         let copyText: String
         let style: AppKitChatTimelineRow.NativeStyle
@@ -3803,15 +3559,21 @@ struct DetailView: View {
         let isExpanded: Bool
         var processCount: Int?
         var processDuration: String?
+        var processState: AppKitChatTimelineRow.ProcessState = .completed
         var showsHeader: Bool
         var hoverTimestamp: String
+        let actions: [AppKitChatTimelineRow.Action]
         switch entry.kind {
         case .message(let item):
             style = item.type == "userMessage" ? .user : .agent
             copyText = nativeTimelineText(for: item)
+            let supplementalText = nativeTimelineSupplementalText(for: item)
+            let presentedText = supplementalText.isEmpty
+                ? copyText
+                : "\(copyText)\n\n\(supplementalText)"
             text = ClickableMessageText.markdown(
-                from: copyText,
-                baseDirectory: backendClient.selectedDetail?.cwd
+                from: presentedText,
+                baseDirectory: displayedDetail?.cwd
             )
             let isOrdinaryMessage = item.type == "userMessage" || item.type == "agentMessage"
             title = isOrdinaryMessage ? "" : item.title
@@ -3822,10 +3584,13 @@ struct DetailView: View {
             isExpanded = false
             processCount = nil
             processDuration = nil
+            actions = nativeTimelineActions(for: item)
         case .process(let turnId, let items):
             let expanded = expandedTurnIds.contains(turnId)
             copyText = items.map { nativeTimelineText(for: $0) }.joined(separator: "\n")
-            text = ""
+            text = expanded
+                ? items.map(nativeProcessStepText).joined(separator: "\n\n")
+                : ""
             style = .process
             title = ""
             metadata = ""
@@ -3833,13 +3598,14 @@ struct DetailView: View {
             isExpanded = expanded
             processCount = items.count
             processDuration = nativeProcessDuration(for: items)
+            processState = nativeProcessState(for: items)
             showsHeader = false
             hoverTimestamp = ""
+            actions = []
         }
         return AppKitChatTimelineRow(
             id: entry.id,
             contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
-            content: nil,
             nativeText: text,
             copyText: copyText,
             nativeStyle: style,
@@ -3849,8 +3615,10 @@ struct DetailView: View {
             isExpanded: isExpanded,
             processCount: processCount,
             processDuration: processDuration,
+            processState: processState,
             showsHeader: showsHeader,
-            hoverTimestamp: hoverTimestamp
+            hoverTimestamp: hoverTimestamp,
+            actions: actions
         )
     }
 
@@ -3860,9 +3628,64 @@ struct DetailView: View {
         }
         guard let start = timestamps.min(), let end = timestamps.max() else { return nil }
         let duration = max(0, end.timeIntervalSince(start))
-        if duration < 0.95 { return "· <1s" }
-        if duration < 10 { return String(format: "· %.1fs", duration) }
-        return "· \(Int(duration.rounded()))s"
+        if duration < 0.95 { return "<1s" }
+        if duration < 10 { return String(format: "%.1fs", duration) }
+        let seconds = Int(duration.rounded())
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        if minutes < 60 { return remainder == 0 ? "\(minutes)m" : "\(minutes)m \(remainder)s" }
+        let hours = minutes / 60
+        let minuteRemainder = minutes % 60
+        return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
+    }
+
+    private func nativeProcessStepText(for item: CodexThreadItem) -> String {
+        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = nativeTimelineText(for: item).trimmingCharacters(in: .whitespacesAndNewlines)
+        let presentedTitle = title.isEmpty ? nativeProcessTypeLabel(item.type) : title
+        let marker = nativeProcessStepMarker(item.type)
+        guard !body.isEmpty, body != title, !body.hasPrefix(title + "\n") else {
+            return "\(marker)  **\(presentedTitle)**"
+        }
+        return "\(marker)  **\(presentedTitle)**\n    \(body.replacingOccurrences(of: "\n", with: "\n    "))"
+    }
+
+    private func nativeProcessStepMarker(_ type: String) -> String {
+        switch type {
+        case "commandExecution": "⌘"
+        case "fileChange": "±"
+        case "webSearch": "⌕"
+        case "mcpToolCall", "dynamicToolCall": "⚙"
+        case "warning": "!"
+        case "reasoning", "plan": "◇"
+        default: "•"
+        }
+    }
+
+    private func nativeProcessTypeLabel(_ type: String) -> String {
+        switch type {
+        case "commandExecution": "Ran command"
+        case "fileChange": "Changed files"
+        case "webSearch": "Searched the web"
+        case "mcpToolCall", "dynamicToolCall": "Used tool"
+        case "reasoning": "Reasoned"
+        case "plan": "Updated plan"
+        case "warning": "Warning"
+        case "agentMessage": "Progress update"
+        default: "Execution step"
+        }
+    }
+
+    private func nativeProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRow.ProcessState {
+        let statuses = items.flatMap { [$0.turnStatus, $0.status ?? ""] }.map { $0.lowercased() }
+        if statuses.contains(where: { $0 == "failed" || $0 == "error" }) { return .failed }
+        if statuses.contains(where: { $0 == "cancelled" || $0 == "canceled" || $0 == "interrupted" }) {
+            return .cancelled
+        }
+        let turnStatuses = items.map { $0.turnStatus.lowercased() }.filter { !$0.isEmpty }
+        if turnStatuses.contains(where: { !isTerminalTurnStatus($0) }) { return .running }
+        return .completed
     }
 
     private func processExpansionMetadata(
@@ -3878,16 +3701,9 @@ struct DetailView: View {
     }
 
     private func toggleNativeProcessExpansion(_ turnId: String) {
-        if effectiveRenderer == .swiftUIVStack {
-            withAnimation(.easeOut(duration: 0.14)) {
-                setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
-            }
-        } else {
-            // AppKit owns the row geometry. Running a SwiftUI transition around
-            // the same change gives the hosted content and NSTableView different
-            // animation clocks, which causes flashing and transient overlap.
-            setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
-        }
+        // AppKit owns the row geometry. A SwiftUI transition would put hosted
+        // content and the enclosing row on different layout clocks.
+        setProcessExpansion(!expandedProcessTurnIds.contains(turnId), for: turnId)
     }
 
     private func nativeTimelineMetadata(for item: CodexThreadItem) -> String {
@@ -3896,12 +3712,118 @@ struct DetailView: View {
         return date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())
     }
 
-    private func shouldUseSwiftUIHosting(for entry: ChatDisplayEntry) -> Bool {
-        ChatTimelineRowRouting.route(for: entry) == .swiftUI
-    }
-
     private func nativeTimelineText(for item: CodexThreadItem) -> String {
         ChatTimelineRowRouting.displayText(for: item)
+    }
+
+    private func nativeTimelineSupplementalText(for item: CodexThreadItem) -> String {
+        var sections: [String] = []
+        switch item.authoritativeUserMessageState {
+        case .queued:
+            sections.append(item.queuePosition.map { "Queued · position \($0)" } ?? "Queued for processing")
+        case .processing: sections.append("Processing")
+        case .failed: sections.append("Processing failed")
+        case .cancelled: sections.append("Cancelled before processing")
+        case .consumed, .none: break
+        }
+        if item.type == "choice",
+           item.status == "selected",
+           let selected = item.options?.first(where: { $0.selected == true }) {
+            sections.append("Selected: \(selected.label)")
+        }
+        if let fileChanges = item.fileChanges, !fileChanges.isEmpty {
+            let paths = fileChanges.map { change in
+                let marker = switch change.kind {
+                case "add": "+"
+                case "delete": "−"
+                default: "•"
+                }
+                return "\(marker) `\(change.path)`"
+            }
+            sections.append((["**Changed Files**"] + paths).joined(separator: "\n"))
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
+    private func nativeTimelineActions(for item: CodexThreadItem) -> [AppKitChatTimelineRow.Action] {
+        if item.presentationRole == "collaboration_confirmation"
+            || item.type == "collaborationConfirmation",
+           (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased() == "pending",
+           let confirmationID = item.collaborationConfirmationId {
+            return [
+                .init(
+                    id: "\(item.id):confirm",
+                    label: L10n("确认发送"),
+                    isDestructive: false,
+                    kind: .collaborationConfirmation(id: confirmationID, approve: true)
+                ),
+                .init(
+                    id: "\(item.id):cancel",
+                    label: L10n("取消"),
+                    isDestructive: true,
+                    kind: .collaborationConfirmation(id: confirmationID, approve: false)
+                )
+            ]
+        }
+
+        if item.status != "selected",
+           item.type == "approval" || item.type == "choice" || item.type == "agentMessage" {
+            let options = (item.options?.isEmpty == false ? item.options : nil)
+                ?? (item.type == "approval" || item.type == "choice"
+                    ? [
+                        CodexApprovalOption(id: "approve", label: "Approve", role: "approve", index: 0, selected: false),
+                        CodexApprovalOption(id: "deny", label: "Deny", role: "deny", index: 1, selected: false)
+                    ]
+                    : [])
+            if !options.isEmpty {
+                return options.map { option in
+                    let kind: AppKitChatTimelineRow.Action.Kind = switch item.type {
+                    case "approval": .codexApproval(option)
+                    case "choice": .ptyChoice(option, choiceID: item.id)
+                    default: .sendMessage(option.label)
+                    }
+                    return .init(
+                        id: "\(item.id):\(option.id)",
+                        label: option.label,
+                        isDestructive: option.role?.localizedCaseInsensitiveContains("deny") == true,
+                        kind: kind
+                    )
+                }
+            }
+        }
+
+        guard !(item.fileChanges ?? []).isEmpty else { return [] }
+        return [
+            .init(
+                id: "\(item.id):review",
+                label: L10n("Review"),
+                isDestructive: false,
+                kind: .reviewChanges(turnID: item.turnId)
+            ),
+            .init(
+                id: "\(item.id):undo",
+                label: L10n("Undo"),
+                isDestructive: true,
+                kind: .undoChanges(turnID: item.turnId)
+            )
+        ]
+    }
+
+    private func performNativeTimelineAction(_ action: AppKitChatTimelineRow.Action) {
+        switch action.kind {
+        case .codexApproval(let option):
+            backendClient.respondToCodexApproval(option: option)
+        case .ptyChoice(let option, let choiceID):
+            backendClient.respondToPtyChoice(option: option, choiceId: choiceID)
+        case .sendMessage(let message):
+            backendClient.sendMessage(message)
+        case .collaborationConfirmation(let id, let approve):
+            backendClient.respondToCollaborationConfirmation(confirmationId: id, approve: approve)
+        case .reviewChanges(let turnID):
+            Task { _ = await backendClient.reviewTurnChanges(sessionId: sessionId, turnId: turnID) }
+        case .undoChanges(let turnID):
+            Task { _ = await backendClient.undoTurnChanges(sessionId: sessionId, turnId: turnID) }
+        }
     }
 
     private func appKitContentRevision(
@@ -3916,54 +3838,17 @@ struct DetailView: View {
         case .process(let turnId, let items):
             hasher.combine(turnId)
             hasher.combine(expandedTurnIds.contains(turnId))
+            hasher.combine(items.count)
+            if let last = items.last {
+                hasher.combine(last.turnStatus)
+                hasher.combine(last.status)
+                hasher.combine(last.id)
+            }
             if expandedTurnIds.contains(turnId) {
                 items.forEach { hasher.combine(itemSignature($0)) }
             }
         }
         return hasher.finalize()
-    }
-
-    private func restoreHistoryScrollAnchor(
-        _ anchor: DetailHistoryScrollAnchor?,
-        proxy: ScrollViewProxy
-    ) {
-        guard let anchor else { return }
-        Task { @MainActor in
-            // Let the prepended rows complete layout before restoring the old
-            // visible entry. A second pass covers variable-height Markdown
-            // cards whose final size settles one layout turn later.
-            await Task.yield()
-            proxy.scrollTo(
-                anchor.entryId,
-                anchor: .top
-            )
-            await Task.yield()
-            proxy.scrollTo(
-                anchor.entryId,
-                anchor: .top
-            )
-        }
-    }
-
-    private func collaborationExpansionBinding(for item: CodexThreadItem) -> Binding<Bool> {
-        let key = collaborationExpansionKey(for: item)
-        return Binding(
-            get: { collaborationExpansionByItemKey[key] ?? false },
-            set: { collaborationExpansionByItemKey[key] = $0 }
-        )
-    }
-
-    private func collaborationConfirmationExpansionBinding(for item: CodexThreadItem) -> Binding<Bool> {
-        let key = collaborationExpansionKey(for: item)
-        let status = (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased()
-        return Binding(
-            get: { collaborationConfirmationExpansionByItemKey[key] ?? (status == "pending") },
-            set: { collaborationConfirmationExpansionByItemKey[key] = $0 }
-        )
-    }
-
-    private func collaborationExpansionKey(for item: CodexThreadItem) -> String {
-        "\(sessionId)::\(item.id)"
     }
 
     private func setProcessExpansion(_ isExpanded: Bool, for turnId: String) {
@@ -3977,19 +3862,17 @@ struct DetailView: View {
         }
         expandedProcessTurnIds = nextExpandedTurnIds
 
-        // AppKit rows are independent NSHostingView roots. Parent state changes
-        // do not invalidate a cached root by themselves, so rebuild rows with a
-        // new content revision and let NSTableView remeasure the changed height.
-        if effectiveRenderer != .swiftUIVStack {
-            cachedAppKitRows = cachedDisplayEntries.map {
-                appKitRow($0, expansionSnapshot: nextExpandedTurnIds)
-            }
+        // Rebuild the immutable native row projection with a new content
+        // revision so NSTableView remeasures only the expanded process row.
+        cachedAppKitRows = cachedDisplayEntries.map {
+            appKitRow($0, expansionSnapshot: nextExpandedTurnIds)
         }
     }
 
     // 微信/Discord 式「上滑到顶自动加载」：先展开已加载窗口，窗口耗尽后再补拉。
     private func loadEarlierMessagesIfNeeded() {
-        guard let detail = backendClient.selectedDetail else { return }
+        guard backendClient.selectedSession?.id == sessionId,
+              let detail = displayedDetail else { return }
         let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
         let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
         isFollowingLatest = false
@@ -3999,8 +3882,7 @@ struct DetailView: View {
             visibleMessageLimit += 100
             updateCachedDisplayEntries(for: detail)
         } else if detail.hasMoreHistory == true {
-            let session = backendClient.selectedSession
-            if let session {
+            if let session = backendClient.selectedSession, session.id == sessionId {
                 Task { @MainActor in
                     await backendClient.loadEarlierMessages(for: session)
                 }
@@ -4014,8 +3896,7 @@ struct DetailView: View {
             return
         }
         PerfStopwatch.event("会话切换.updateCachedDisplayEntries", value: detail.items.count)
-        if ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
-           let incremental = makeIncrementalTailDisplay(for: detail) {
+        if let incremental = makeIncrementalTailDisplay(for: detail) {
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
             pendingProjectionSourceSignature = nil
@@ -4046,7 +3927,6 @@ struct DetailView: View {
         displayProjectionGeneration &+= 1
         let requestedSessionID = sessionId
         let requestedLimit = visibleMessageLimit
-        let deltaTimelineEnabled = ChatTimelineFeatureFlags.current.deltaTimelineEnabled
         pendingProjectionSourceSignature = sourceSignature
         let request = SessionDisplayProjectionRequest(
             sessionID: requestedSessionID,
@@ -4061,8 +3941,7 @@ struct DetailView: View {
                     makeDetailDisplayCache(
                         for: detail,
                         sessionId: requestedSessionID,
-                        visibleMessageLimit: requestedLimit,
-                        deltaTimelineEnabled: deltaTimelineEnabled
+                        visibleMessageLimit: requestedLimit
                     )
                 }
             }.value
@@ -4084,23 +3963,8 @@ struct DetailView: View {
 
     private func commitDisplayCache(_ preparedDisplay: DetailDisplayCache) {
         ChatPerformanceRecorder.shared.increment(.displayRebuilds)
-        let addsMainCard = preparedDisplay.totalDisplayEntryCount > cachedTotalDisplayEntryCount
-        let oldExpandedProcessCounts = expandedProcessItemCounts(in: cachedDisplayEntries)
-        let newExpandedProcessCounts = expandedProcessItemCounts(in: preparedDisplay.displayEntries)
-        let addsExpandedProcessCard = newExpandedProcessCounts.contains { turnId, count in
-            count > (oldExpandedProcessCounts[turnId] ?? 0)
-        }
-        let addsVisibleCard = cachedSessionId == sessionId
-            && (addsMainCard || addsExpandedProcessCard)
-        // Moving a newly inserted row in from the bottom animates the entire
-        // VStack layout and can shift the viewport even without an explicit
-        // scrollTo. While the user is reading history, update the list in a
-        // non-animated transaction so the currently visible content stays put.
-        let animateInsertion = addsVisibleCard
-            && isFollowingLatest
-            && isDetailScrolledNearBottom
-        var transaction = Transaction(animation: animateInsertion ? .easeOut(duration: 0.22) : nil)
-        transaction.disablesAnimations = !animateInsertion
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
         let nextAppKitRows = PerfStopwatch.measure("会话切换.makeCachedAppKitRows") {
             makeCachedAppKitRows(
                 previousEntries: cachedDisplayEntries,
@@ -4126,9 +3990,7 @@ struct DetailView: View {
         previousRows: [AppKitChatTimelineRow],
         nextEntries: [ChatDisplayEntry]
     ) -> [AppKitChatTimelineRow] {
-        guard effectiveRenderer != .swiftUIVStack else { return [] }
-        guard ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
-              previousEntries.count == previousRows.count,
+        guard previousEntries.count == previousRows.count,
               let nextTailTurnId = nextEntries.last.map(chatDisplayEntryTurnId),
               let nextTailStart = nextEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
               let previousTailStart = previousEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
@@ -4229,25 +4091,6 @@ struct DetailView: View {
         return canRender
     }
 
-    private func preparedDisplayEntries(for detail: CodexThreadDetail) -> (visibleEntries: [ChatDisplayEntry], totalCount: Int) {
-        // Once a session has a display cache, render that cache until the
-        // controlled update path replaces it with the intended transaction.
-        // Recomputing directly from a newer detail here bypasses animation
-        // suppression for folded process-only updates.
-        if hasPreparedDisplayCacheForCurrentSession {
-            return (cachedDisplayEntries, cachedTotalDisplayEntryCount)
-        }
-        if let preheatedDisplayCache, preheatedDisplayCache.sessionId == sessionId {
-            return (preheatedDisplayCache.displayEntries, preheatedDisplayCache.totalDisplayEntryCount)
-        }
-        let preparedDisplay = makeVisibleDetailDisplay(
-            for: detail,
-            visibleMessageLimit: visibleMessageLimit,
-            deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled
-        )
-        return (preparedDisplay.visibleEntries, preparedDisplay.totalCount)
-    }
-
     private var hasPreparedDisplayCacheForCurrentSession: Bool {
         cachedSessionId == sessionId
     }
@@ -4323,21 +4166,8 @@ struct DetailView: View {
     private func detailSourceSignature(for detail: CodexThreadDetail) -> String {
         makeDetailSourceSignature(
             for: detail,
-            visibleMessageLimit: visibleMessageLimit,
-            deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+            visibleMessageLimit: visibleMessageLimit
         )
-    }
-
-    private func displaySignature(for visibleEntries: [ChatDisplayEntry]) -> String {
-        let entrySignatures = visibleEntries.map { entry in
-            switch entry.kind {
-            case .message(let item):
-                return itemSignature(item)
-            case .process(let turnId, let items):
-                return turnId + ":" + items.map(itemSignature).joined(separator: ",")
-            }
-        }.joined(separator: "|")
-        return "\(visibleMessageLimit)|\(entrySignatures)"
     }
 
     private func itemSignature(_ item: CodexThreadItem) -> String {
@@ -4359,168 +4189,6 @@ struct DetailView: View {
             String(presentationText.suffix(96)),
             fileChangesSignature(item)
         ].joined(separator: ":")
-    }
-
-    private func scrollToLatestAfterLayout(detail: CodexThreadDetail, proxy: ScrollViewProxy, force: Bool = false) {
-        guard !cachedDisplayEntries.isEmpty || !detail.items.isEmpty else {
-            return
-        }
-        if force {
-            isFollowingLatest = true
-        }
-        guard force || isFollowingLatest else {
-            hasNewMessagesBelow = true
-            return
-        }
-
-        let delay: TimeInterval = didInitialScroll ? 0.0 : 0.02
-        didInitialScroll = true
-        hasNewMessagesBelow = false
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            guard backendClient.selectedSession?.id == sessionId else {
-                return
-            }
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                proxy.scrollTo(bottomScrollAnchorId, anchor: .bottom)
-            }
-        }
-    }
-
-    private func maintainLatestPositionAfterIncomingContent(
-        detail: CodexThreadDetail,
-        proxy: ScrollViewProxy
-    ) {
-        guard isFollowingLatest else {
-            hasNewMessagesBelow = true
-            return
-        }
-
-        pendingFollowScrollWorkItem?.cancel()
-        isMaintainingFollowPosition = true
-        scrollToLatestAfterLayout(detail: detail, proxy: proxy)
-
-        // Card insertion runs for 0.22 seconds. Scroll once more after that
-        // layout settles so the old bottom cannot become the new viewport top.
-        let workItem = DispatchWorkItem {
-            guard backendClient.selectedSession?.id == sessionId else {
-                return
-            }
-            isMaintainingFollowPosition = false
-            guard isFollowingLatest else {
-                return
-            }
-            scrollToLatestAfterLayout(detail: detail, proxy: proxy)
-            pendingFollowScrollWorkItem = nil
-        }
-        pendingFollowScrollWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
-    }
-
-    private func maintainLatestPositionIfVisibleContentChanged(
-        detail: CodexThreadDetail,
-        proxy: ScrollViewProxy
-    ) {
-        let signature = visibleContentSignature(for: cachedDisplayEntries)
-        guard signature != lastVisibleContentSignature else {
-            if pendingFollowScrollWorkItem == nil {
-                isMaintainingFollowPosition = false
-            }
-            return
-        }
-        lastVisibleContentSignature = signature
-        maintainLatestPositionAfterIncomingContent(detail: detail, proxy: proxy)
-    }
-
-    private func visibleContentSignature(for entries: [ChatDisplayEntry]) -> String {
-        entries.map { entry in
-            switch entry.kind {
-            case .message(let item):
-                return "message:" + itemSignature(item)
-            case .process(let turnId, let items):
-                // A collapsed process row has fixed height. Its count, duration,
-                // and hidden items can update without changing visible layout.
-                guard expandedProcessTurnIds.contains(turnId) else {
-                    return "process:\(turnId)"
-                }
-                return "process:\(turnId):" + items.map(itemSignature).joined(separator: ",")
-            }
-        }.joined(separator: "|")
-    }
-
-    private func expandedProcessItemCounts(in entries: [ChatDisplayEntry]) -> [String: Int] {
-        var counts: [String: Int] = [:]
-        for entry in entries {
-            let processGroup: (turnId: String, items: [CodexThreadItem])?
-            switch entry.kind {
-            case .process(let turnId, let items):
-                processGroup = (turnId, items)
-            case .message:
-                processGroup = nil
-            }
-            guard let processGroup,
-                  expandedProcessTurnIds.contains(processGroup.turnId) else {
-                continue
-            }
-            counts[processGroup.turnId] = processGroup.items.count
-        }
-        return counts
-    }
-
-    private var bottomScrollAnchorId: String {
-        "\(sessionId)-bottom-anchor"
-    }
-
-    private var detailScrollCoordinateSpaceName: String {
-        "\(sessionId)-detail-scroll"
-    }
-
-    private func updateDetailScrollBottomProximity() {
-        guard detailScrollViewportHeight > 0, detailScrollBottomMaxY > 0 else {
-            return
-        }
-        let bottomDistance = detailScrollBottomMaxY - detailScrollViewportHeight
-        let isNearBottom = bottomDistance <= 8
-        isDetailScrolledNearBottom = isNearBottom
-
-        let currentEvent = NSApp.currentEvent
-        let isUserScrollEvent = currentEvent?.type == .scrollWheel || NSEvent.pressedMouseButtons != 0
-        if isUserScrollEvent {
-            isFollowingLatest = isNearBottom
-            if !isNearBottom {
-                pendingFollowScrollWorkItem?.cancel()
-                pendingFollowScrollWorkItem = nil
-                isMaintainingFollowPosition = false
-            }
-        } else if !isMaintainingFollowPosition {
-            isFollowingLatest = isNearBottom
-        }
-        if isNearBottom {
-            hasNewMessagesBelow = false
-        }
-    }
-
-    private func visibleEntries(from displayEntries: [ChatDisplayEntry]) -> [ChatDisplayEntry] {
-        guard displayEntries.reduce(0, { $0 + $1.displayWeight }) > visibleMessageLimit else {
-            return displayEntries
-        }
-        return visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
-    }
-
-    private func displayItems(for detail: CodexThreadDetail) -> [CodexThreadItem] {
-        detail.items.filter { !isLowSignalProcessItem($0) }
-    }
-
-    private func isLowSignalProcessItem(_ item: CodexThreadItem) -> Bool {
-        if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
-            return true
-        }
-        if item.type == "agentMessage" && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
-        }
-        return false
     }
 
 }
@@ -4946,13 +4614,11 @@ private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
 func makeDetailDisplayCache(
     for detail: CodexThreadDetail,
     sessionId: String,
-    visibleMessageLimit: Int,
-    deltaTimelineEnabled: Bool
+    visibleMessageLimit: Int
 ) -> DetailDisplayCache {
     let preparedDisplay = makeVisibleDetailDisplay(
         for: detail,
-        visibleMessageLimit: visibleMessageLimit,
-        deltaTimelineEnabled: deltaTimelineEnabled
+        visibleMessageLimit: visibleMessageLimit
     )
     return DetailDisplayCache(
         sessionId: sessionId,
@@ -4967,8 +4633,7 @@ func makeDetailDisplayCache(
 
 private func makeVisibleDetailDisplay(
     for detail: CodexThreadDetail,
-    visibleMessageLimit: Int,
-    deltaTimelineEnabled: Bool
+    visibleMessageLimit: Int
 ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String) {
     let displayItems = detail.items
         .filter { !isLowSignalDetailProcessItem($0) }
@@ -4983,20 +4648,16 @@ private func makeVisibleDetailDisplay(
         signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
         sourceSignature: makeDetailSourceSignature(
             for: detail,
-            visibleMessageLimit: visibleMessageLimit,
-            deltaTimelineEnabled: deltaTimelineEnabled
+            visibleMessageLimit: visibleMessageLimit
         )
     )
 }
 
 private func makeDetailSourceSignature(
     for detail: CodexThreadDetail,
-    visibleMessageLimit: Int,
-    deltaTimelineEnabled: Bool
+    visibleMessageLimit: Int
 ) -> String {
-    let signatureItemLimit = deltaTimelineEnabled
-        ? 2
-        : max(visibleMessageLimit * 4, visibleMessageLimit + 8)
+    let signatureItemLimit = 2
     let items = detail.items.suffix(signatureItemLimit)
     let itemSignatures = items.map { item in
         [

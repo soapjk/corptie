@@ -98,6 +98,7 @@ import {
   broadcastDshHostFrame,
 } from "./dsh-adapter/dshWebSocket.mjs";
 import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
+import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
@@ -404,6 +405,8 @@ const openClackyManager = new OpenClackyManager({
   accessKey: process.env.OPENCLACKY_ACCESS_KEY,
   runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
   resolveOwnedSessionIds: () => store.listActiveProviderSessionIds("openclacky"),
+  listStoredSessions: ({ archived }) => store.listSessions({ archived })
+    .filter((session) => session.external?.provider === "openclacky"),
   featureFlags: {
     toolHostBridge: store.settings().openclackyBridge?.toolHostBridge !== false,
     workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
@@ -1621,9 +1624,30 @@ function dshRunningStatusForEvent(type) {
 }
 
 function controlPlaneSnapshot() {
-  const active = listGatewaySessions({ archived: false });
+  // The persisted `sessions` table is the authoritative inventory. Provider
+  // in-memory session lists are refilled asynchronously and can be momentarily
+  // incomplete (e.g. an OpenClacky session dropped while its file is being
+  // rewritten), so building the snapshot purely from `listGatewaySessions`
+  // would publish a full snapshot that silently deletes idle sessions from every
+  // client. Start from the database and prefer the provider-memory copy only for
+  // the fields it owns live (status), while backfilling anything the provider is
+  // currently missing.
+  const live = listGatewaySessions({ archived: false });
   const archived = listGatewaySessions({ archived: true });
-  const sessionsById = new Map([...active, ...archived].map((session) => [session.id, session]));
+  const liveById = new Map([...live, ...archived].map((session) => [session.id, session]));
+  const persisted = [...store.listSessions({ archived: false }), ...store.listSessions({ archived: true })];
+  for (const stored of persisted) {
+    if (!liveById.has(stored.id)) {
+      liveById.set(stored.id, stored);
+    }
+  }
+  const sessionsById = liveById;
+  if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
+    const openclacky = [...sessionsById.values()].filter((s) => s.id.startsWith("openclacky:"));
+    const detail = openclacky.map((s) => `${s.id.slice(10, 18)}:${s.status}`).join(",");
+    console.log(`[snapshot] sessions=${sessionsById.size} workItems=${store.listWorkItems().length} ` +
+      `openclacky=[${detail}]`);
+  }
   return {
     sessions: sortSessionsForList(withPendingCollaborationConfirmations([...sessionsById.values()])),
     workItems: store.listWorkItems().map(presentWorkItemAcceptance),
@@ -1652,6 +1676,11 @@ function publishStateChangesIfNeeded() {
   const changes = stateSyncService.changesAfter(stateSyncPublishedRevision);
   if (changes.snapshotRequired) {
     const snapshot = stateSyncService.snapshot();
+    if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
+      console.log(`[state-sync] SNAPSHOT published rev=${snapshot.revision} sessions=${snapshot.state.sessions.length} ` +
+        `dbSessions=${store.listSessions({ archived: false }).length + store.listSessions({ archived: true }).length} ` +
+        `clients=${stateSyncClients.size}`);
+    }
     for (const response of stateSyncClients) writeStateSyncFrame(response, "state-snapshot", snapshot);
     stateSyncPublishedRevision = snapshot.revision;
     return;
@@ -3386,6 +3415,11 @@ function settleEntityWorkItemFromSession(session) {
   const statusChanged = patch.status && patch.status !== workItem.status;
   const executionChanged = patch.executionStatus !== (workItem.execution_status ?? "idle");
   if (!statusChanged && !executionChanged) return workItem;
+  if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
+    console.log(`[settle] workItem=${workItem.id} session=${session.id} session.status=${session.status} ` +
+      `wi.status=${workItem.status}->${patch.status ?? workItem.status} ` +
+      `wi.exec=${workItem.execution_status}->${patch.executionStatus}`);
+  }
   store.updateWorkItem(workItem.id, patch);
   const updated = store.getWorkItem(workItem.id);
   emitEvent("WorkItemChanged", { action: "execution-status-updated", entity: updated });
@@ -3607,10 +3641,39 @@ async function readCodexProviderSession(reference) {
   } catch (error) {
     if (reference.metadata?.historical) throw error;
     const managed = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-    return managed
-      ? createManagedCodexDetail(managed, codexRuntime.liveItemsForThread(threadId), error)
-      : store.getDetail(sessionId);
+    if (!managed) return store.getDetail(sessionId);
+    const liveItems = codexRuntime.liveItemsForThread(threadId);
+    const storedItems = storedTimelineItemsForSession(sessionId);
+    const detail = createManagedCodexDetail(
+      managed,
+      liveItems,
+      storedItems.length > 0 ? null : error
+    );
+    return storedItems.length > 0
+      ? { ...detail, items: mergeTimelineItems(storedItems, liveItems) }
+      : detail;
   }
+}
+
+function storedTimelineItemsForSession(sessionId) {
+  const events = [];
+  let after = 0;
+  while (true) {
+    const page = store.listSessionEvents(sessionId, after, 1_000);
+    events.push(...page);
+    if (page.length < 1_000) break;
+    after = page.at(-1)?.sequence ?? after;
+  }
+  return projectStoredSessionTimeline(events);
+}
+
+function mergeTimelineItems(storedItems, liveItems) {
+  const result = [...storedItems];
+  const ids = new Set(result.map((item) => item.id));
+  for (const item of liveItems) {
+    if (!ids.has(item.id)) result.push(item);
+  }
+  return result;
 }
 
 async function interruptCodexProviderSession(reference, context = {}) {
