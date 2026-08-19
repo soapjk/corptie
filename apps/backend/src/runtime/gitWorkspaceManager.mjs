@@ -954,6 +954,10 @@ function requiredCommitMessage(value) {
 }
 
 function safeGitError(error, fallback) {
-  const stderr = String(error?.stderr ?? "").replace(/\s+/g, " ").trim();
-  return stderr ? `${fallback}: ${stderr.slice(0, 600)}` : `${fallback}: ${error.message}`;
+  const diagnostics = [error?.stdout, error?.stderr]
+    .map((value) => String(value ?? "").replaceAll("\0", "").trim())
+    .filter((value, index, values) => value && values.indexOf(value) === index)
+    .join("\n");
+  const detail = diagnostics || String(error?.message ?? "Git command failed").trim();
+  return `${fallback}:\n${detail.slice(0, 2_000)}`;
 }
