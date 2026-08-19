@@ -38,7 +38,8 @@ import {
   isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
   repairStableSessionFromBoundPhysicalProjection,
-  resolveRoutedProviderSessionProjection
+  resolveRoutedProviderSessionProjection,
+  visibleStoredSessionProjections
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
 import { ObjectiveChatContextService } from "./application/objectiveChatContextService.mjs";
@@ -881,11 +882,12 @@ function sessionTitleForWorkspace(value, cwd) {
 
 function knownSessionsForTitleValidation() {
   const byId = new Map();
-  for (const session of [
+  for (const session of visibleStoredSessionProjections(store, [
     ...store.listSessions({ archived: false }),
-    ...store.listSessions({ archived: true }),
+    ...store.listSessions({ archived: true })
+  ]).concat([
     ...listGatewaySessions()
-  ]) {
+  ])) {
     if (session?.id) byId.set(session.id, session);
   }
   return Array.from(byId.values());
@@ -1655,7 +1657,10 @@ function controlPlaneSnapshot() {
   const live = listGatewaySessions({ archived: false });
   const archived = listGatewaySessions({ archived: true });
   const liveById = new Map([...live, ...archived].map((session) => [session.id, session]));
-  const persisted = [...store.listSessions({ archived: false }), ...store.listSessions({ archived: true })];
+  const persisted = visibleStoredSessionProjections(store, [
+    ...store.listSessions({ archived: false }),
+    ...store.listSessions({ archived: true })
+  ]);
   for (const stored of persisted) {
     if (!liveById.has(stored.id)) {
       liveById.set(stored.id, stored);
@@ -3156,7 +3161,7 @@ function describeGatewaySession(session) {
 
 function listCodexProviderSessions(options = {}) {
   const archived = options.archived === true;
-  const storedSessions = store.listSessions({ archived });
+  const storedSessions = visibleStoredSessionProjections(store, store.listSessions({ archived }));
   const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
   const managedById = new Map(
     Array.from(sessionPresentationCache.values())
@@ -3176,8 +3181,10 @@ function listCodexProviderSessions(options = {}) {
 function listGatewayWorkspaces() {
   const candidates = [
     ...listGatewaySessions(),
-    ...store.listSessions({ archived: false }),
-    ...store.listSessions({ archived: true })
+    ...visibleStoredSessionProjections(store, [
+      ...store.listSessions({ archived: false }),
+      ...store.listSessions({ archived: true })
+    ])
   ];
   const workspaces = new Map();
   for (const path of store.settings().gateway?.trustedWorkspaces ?? []) {
@@ -7081,9 +7088,7 @@ if (repairedStableProjectionCount > 0) {
 const allStoredSessionsAtStartup = repairedStableProjectionCount > 0
   ? [...store.listSessions({ archived: false }), ...store.listSessions({ archived: true })]
   : initiallyStoredSessions;
-let storedSessionsAtStartup = allStoredSessionsAtStartup.filter(
-  (session) => !isBoundPhysicalProviderSession(store, session)
-);
+let storedSessionsAtStartup = visibleStoredSessionProjections(store, allStoredSessionsAtStartup);
 const hiddenPhysicalSessionCount = allStoredSessionsAtStartup.length - storedSessionsAtStartup.length;
 if (hiddenPhysicalSessionCount > 0) {
   console.log(`[session-projection] hid ${hiddenPhysicalSessionCount} bound physical Provider session(s) at startup`);
