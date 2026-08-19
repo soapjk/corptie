@@ -3525,12 +3525,19 @@ struct DetailView: View {
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
                 }
+            }
+            .onChange(of: latestTimelineContentRevision) { _, _ in
                 if !isFollowingLatest {
                     hasNewMessagesBelow = true
                 }
             }
+            .onChange(of: isFollowingLatest) { _, followsLatest in
+                if followsLatest {
+                    hasNewMessagesBelow = false
+                }
+            }
             .overlay(alignment: .bottomTrailing) {
-                if hasNewMessagesBelow {
+                if !isFollowingLatest {
                     Button {
                         isFollowingLatest = true
                         hasNewMessagesBelow = false
@@ -3540,7 +3547,7 @@ struct DetailView: View {
                             .font(.system(size: 12, weight: .bold))
                             .frame(width: 30, height: 30)
                     }
-                    .buttonStyle(IconButtonStyle())
+                    .buttonStyle(JumpToLatestButtonStyle(highlightsUnread: hasNewMessagesBelow))
                     .help(L10n("Jump to latest message"))
                     .padding(10)
                 }
@@ -3551,6 +3558,14 @@ struct DetailView: View {
     private var appKitDetailRevision: String {
         guard let detail = displayedDetail else { return "none" }
         return detailSourceSignature(for: detail)
+    }
+
+    /// Only tail mutations represent content arriving below the reader. A
+    /// history prepend changes the full detail revision but leaves this value
+    /// unchanged, so loading older messages does not create a false unread cue.
+    private var latestTimelineContentRevision: String {
+        guard let detail = displayedDetail else { return "none" }
+        return timelineTailContentRevision(for: detail.items)
     }
 
     private func appKitRow(
@@ -4880,7 +4895,7 @@ func makeChatDisplayEntriesForTurn(
     }
 
     var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-    if shouldShowProcessGroup(items: items, userMessages: userMessages, processItems: processItems),
+    if !processItems.isEmpty,
        let sourceTurnId = items.first?.turnId {
         // Keep execution lifecycle independent from the user's authored message.
         // The process row owns its disclosure state and remains a separate bubble
@@ -4946,23 +4961,6 @@ func projectedProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRo
     }
 }
 
-private func shouldShowProcessGroup(
-    items: [CodexThreadItem],
-    userMessages: [CodexThreadItem],
-    processItems: [CodexThreadItem]
-) -> Bool {
-    if !processItems.isEmpty {
-        return true
-    }
-    return !userMessages.isEmpty && items.contains { item in
-        guard !isTerminalTurnStatus(item.turnStatus) else { return false }
-        switch item.authoritativeUserMessageState {
-        case .queued, .failed, .cancelled: return false
-        case .processing, .consumed, .none: return true
-        }
-    }
-}
-
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
     if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
         return true
@@ -5013,6 +5011,10 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         String(presentationText.suffix(96)),
         fileChangesSignature(item)
     ].joined(separator: ":")
+}
+
+func timelineTailContentRevision(for items: [CodexThreadItem]) -> String {
+    items.suffix(2).map(detailItemSignature).joined(separator: "|")
 }
 
 private func fileChangesSignature(_ item: CodexThreadItem) -> String {
@@ -8865,6 +8867,7 @@ struct MessageComposer: View {
     let draftRepository: ComposerDraftRepository
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
+    @State private var inputHeight = ComposerInputLayout.minimumHeight
     @State private var editorController: ComposerEditorController
     @State private var hasSendableText: Bool
 
@@ -8889,9 +8892,14 @@ struct MessageComposer: View {
                             hasSendableText = nextValue
                         }
                     },
+                    onContentHeightChange: { nextHeight in
+                        if abs(inputHeight - nextHeight) > 0.5 {
+                            inputHeight = nextHeight
+                        }
+                    },
                     onSubmit: send
                 )
-                    .frame(height: 32)
+                    .frame(height: inputHeight)
                     .padding(.leading, 10)
                     .padding(.trailing, 2)
                     .onTapGesture {
@@ -8993,6 +9001,7 @@ struct MessageComposer: View {
         backendClient.sendMessage(submission.text) {
             if editorController.clear(ifUnchangedSince: submission) {
                 hasSendableText = false
+                inputHeight = ComposerInputLayout.minimumHeight
             }
         }
     }
@@ -9021,6 +9030,15 @@ struct MessageComposer: View {
             return 74
         }
         return max(54, min(74, composerWidth / 6))
+    }
+}
+
+enum ComposerInputLayout {
+    static let minimumHeight: CGFloat = 44
+    static let maximumHeight: CGFloat = 96
+
+    static func resolvedHeight(for contentHeight: CGFloat) -> CGFloat {
+        min(maximumHeight, max(minimumHeight, ceil(contentHeight)))
     }
 }
 
@@ -9269,13 +9287,16 @@ private struct ComposerInputTextView: NSViewRepresentable {
     var textInsetHeight: CGFloat = 6
     var onFocusChange: (Bool) -> Void = { _ in }
     var onSendableTextChange: (Bool) -> Void = { _ in }
+    var onContentHeightChange: (CGFloat) -> Void = { _ in }
     let onSubmit: (ComposerDraftBuffer.Submission) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
         scrollView.drawsBackground = false
-        scrollView.hasVerticalScroller = false
+        scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
         scrollView.borderType = .noBorder
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
@@ -9303,6 +9324,9 @@ private struct ComposerInputTextView: NSViewRepresentable {
         scrollView.documentView = textView
         controller.attach(textView)
         context.coordinator.attach(textView)
+        DispatchQueue.main.async {
+            context.coordinator.reportContentHeight(of: textView)
+        }
         return scrollView
     }
 
@@ -9314,6 +9338,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             controller: controller,
             onFocusChange: onFocusChange,
             onSendableTextChange: onSendableTextChange,
+            onContentHeightChange: onContentHeightChange,
             onSubmit: onSubmit
         )
         textView.placeholder = placeholder
@@ -9322,6 +9347,9 @@ private struct ComposerInputTextView: NSViewRepresentable {
         textView.onFocusChange = onFocusChange
         textView.onSubmit = context.coordinator.submit
         controller.attach(textView)
+        DispatchQueue.main.async {
+            context.coordinator.reportContentHeight(of: textView)
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -9329,6 +9357,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             controller: controller,
             onFocusChange: onFocusChange,
             onSendableTextChange: onSendableTextChange,
+            onContentHeightChange: onContentHeightChange,
             onSubmit: onSubmit
         )
     }
@@ -9338,6 +9367,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         private var controller: ComposerEditorController
         private var onFocusChange: (Bool) -> Void
         private var onSendableTextChange: (Bool) -> Void
+        private var onContentHeightChange: (CGFloat) -> Void
         private var onSubmit: (ComposerDraftBuffer.Submission) -> Void
         private var lastSendableState: Bool
 
@@ -9345,11 +9375,13 @@ private struct ComposerInputTextView: NSViewRepresentable {
             controller: ComposerEditorController,
             onFocusChange: @escaping (Bool) -> Void,
             onSendableTextChange: @escaping (Bool) -> Void,
+            onContentHeightChange: @escaping (CGFloat) -> Void,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
             self.controller = controller
             self.onFocusChange = onFocusChange
             self.onSendableTextChange = onSendableTextChange
+            self.onContentHeightChange = onContentHeightChange
             self.onSubmit = onSubmit
             lastSendableState = controller.draft.hasSendableText
         }
@@ -9363,11 +9395,13 @@ private struct ComposerInputTextView: NSViewRepresentable {
             controller: ComposerEditorController,
             onFocusChange: @escaping (Bool) -> Void,
             onSendableTextChange: @escaping (Bool) -> Void,
+            onContentHeightChange: @escaping (CGFloat) -> Void,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
             self.controller = controller
             self.onFocusChange = onFocusChange
             self.onSendableTextChange = onSendableTextChange
+            self.onContentHeightChange = onContentHeightChange
             self.onSubmit = onSubmit
             lastSendableState = controller.draft.hasSendableText
         }
@@ -9377,6 +9411,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             controller.recordEditorText(textView.string)
+            reportContentHeight(of: textView)
             let nextSendableState = controller.draft.hasSendableText
             guard nextSendableState != lastSendableState else {
                 return
@@ -9390,6 +9425,17 @@ private struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             onSubmit(submission)
+        }
+
+        func reportContentHeight(of textView: NSTextView) {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer else {
+                return
+            }
+            layoutManager.ensureLayout(for: textContainer)
+            let usedHeight = layoutManager.usedRect(for: textContainer).height
+            let contentHeight = usedHeight + (textView.textContainerInset.height * 2)
+            onContentHeightChange(ComposerInputLayout.resolvedHeight(for: contentHeight))
         }
     }
 
@@ -9741,6 +9787,31 @@ private struct IconButtonStyle: ButtonStyle {
                     lineWidth: 1
                 )
             )
+            .contentShape(Circle())
+    }
+}
+
+private struct JumpToLatestButtonStyle: ButtonStyle {
+    @Environment(\.isLiquidGlass) private var isLiquidGlass
+    let highlightsUnread: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        let neutralBackground = isLiquidGlass
+            ? Color.white.opacity(configuration.isPressed ? 0.24 : 0.13)
+            : Color(nsColor: .controlBackgroundColor)
+        let background = highlightsUnread
+            ? CorptiePalette.connected.opacity(configuration.isPressed ? 0.78 : 1)
+            : neutralBackground
+        let border = highlightsUnread
+            ? CorptiePalette.connected.opacity(0.75)
+            : (isLiquidGlass
+                ? Color.white.opacity(0.16)
+                : Color(nsColor: .separatorColor).opacity(0.6))
+
+        configuration.label
+            .foregroundStyle(highlightsUnread ? Color.white : Color.primary)
+            .background(background, in: Circle())
+            .overlay(Circle().strokeBorder(border, lineWidth: 1))
             .contentShape(Circle())
     }
 }
