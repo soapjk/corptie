@@ -543,3 +543,5 @@
 "Session Type" = "Session Type";
 "No Sessions in This Category" = "No sessions in this category";
 "Create an Assistant, Objective, or Worker Session" = "Create an Assistant, Objective, or Worker Session";
+"Regenerate Plan" = "Regenerate Plan";
+"The integration plan is stale. Regenerate and review it before continuing." = "The integration plan is stale. Regenerate and review it before continuing.";

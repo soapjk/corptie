@@ -293,7 +293,18 @@ struct WorktreeManagementView: View {
                 Text(localizedIntegrationPhase(job.phase)).font(.caption.weight(.semibold))
                 Spacer()
                 Text("\(job.progress.completed)/\(job.progress.total)").font(.caption.monospacedDigit())
-                if job.status == "paused" {
+                if job.requiresPlanRegeneration {
+                    Button(L10n("Regenerate Plan")) {
+                        Task {
+                            if await client.regeneratePlan() {
+                                showingPlan = true
+                            }
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.regenerate")
+                } else if job.status == "paused" {
                     Button(L10n("Retry")) { Task { await client.retryJob() } }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.retry")
@@ -304,7 +315,13 @@ struct WorktreeManagementView: View {
                let item = job.plan.items.first(where: { $0.worktreeId == current }) {
                 Text(item.branchName ?? item.path).font(.caption).foregroundStyle(.secondary)
             }
-            if let error = job.error { Text(error).font(.caption).foregroundStyle(.red) }
+            if job.requiresPlanRegeneration {
+                Text(L10n("The integration plan is stale. Regenerate and review it before continuing."))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if let error = job.error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
         }
         .padding(10)
         .background((job.status == "paused" ? Color.orange : Color.accentColor).opacity(0.08))
