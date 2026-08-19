@@ -149,7 +149,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 54)
     }
 
-    func testOrdinaryNativeMessageHidesInternalHeaderAndKeepsHoverTimestampOutsideCard() throws {
+    func testOrdinaryNativeMessagePlacesHoverTimestampBesideCopyAction() throws {
         let harness = makeHarness(followsLatest: true)
         let message = row(
             id: "ordinary-message",
@@ -158,20 +158,29 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             hoverTimestamp: "08/17 20:30"
         )
         harness.coordinator.apply(rows: [message])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
 
         let cell = try XCTUnwrap(
             harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 0)
                 as? AppKitChatNativeTextCell
         )
+        cell.layoutSubtreeIfNeeded()
         let title = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.title"))
         let metadata = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.metadata"))
         let hoverTimestamp = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.hover-timestamp"))
+        let messageActions = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.message-actions"))
+        let copy = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.copy"))
+        messageActions.layoutSubtreeIfNeeded()
 
         XCTAssertTrue(title.isHidden)
         XCTAssertTrue(metadata.isHidden)
         XCTAssertFalse(hoverTimestamp.isHidden)
         XCTAssertEqual(hoverTimestamp.stringValue, "08/17 20:30")
-        XCTAssertEqual(hoverTimestamp.alphaValue, 0)
+        XCTAssertEqual(hoverTimestamp.alphaValue, 1)
+        XCTAssertTrue(hoverTimestamp.isDescendant(of: messageActions))
+        XCTAssertTrue(copy.isDescendant(of: messageActions))
+        XCTAssertLessThanOrEqual(hoverTimestamp.frame.maxX, copy.frame.minX)
+        XCTAssertLessThanOrEqual(copy.frame.minX - hoverTimestamp.frame.maxX, 6.5)
         XCTAssertLessThan(
             harness.coordinator.tableView(harness.tableView, heightOfRow: 0),
             65
@@ -184,13 +193,15 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             id: "agent-message",
             text: "First line\nSecond line",
             copyText: "First line\nSecond line",
-            showsHeader: false
+            showsHeader: false,
+            hoverTimestamp: "08/17 20:30"
         )
         let user = row(
             id: "user-message",
             text: "Question",
             nativeStyle: .user,
-            showsHeader: false
+            showsHeader: false,
+            hoverTimestamp: "08/17 20:31"
         )
         let process = AppKitChatTimelineRow(
             id: "process",
@@ -217,9 +228,11 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let agentCard = try XCTUnwrap(agentCell.subviews.first)
         let agentActions = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.message-actions"))
         let copy = try XCTUnwrap(button(in: agentCell, identifier: "chat.timeline.copy"))
+        let agentTimestamp = try XCTUnwrap(textField(in: agentCell, identifier: "chat.timeline.hover-timestamp"))
         XCTAssertFalse(agentActions.isHidden)
         XCTAssertEqual(agentActions.alphaValue, 0)
         XCTAssertFalse(copy.isDescendant(of: agentCard))
+        XCTAssertTrue(agentTimestamp.isDescendant(of: agentActions))
         XCTAssertEqual(copy.toolTip, "复制消息")
         XCTAssertNil(button(in: agentCell, identifier: "chat.timeline.quote"))
         XCTAssertEqual(agentActions.frame.minX, agentCard.frame.minX + 2, accuracy: 1)
@@ -233,8 +246,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         userCell.layoutSubtreeIfNeeded()
         let userCard = try XCTUnwrap(userCell.subviews.first)
         let userActions = try XCTUnwrap(view(in: userCell, identifier: "chat.timeline.message-actions"))
+        let userTimestamp = try XCTUnwrap(textField(in: userCell, identifier: "chat.timeline.hover-timestamp"))
         XCTAssertFalse(userActions.isHidden)
         XCTAssertEqual(userActions.frame.maxX, userCard.frame.maxX - 2, accuracy: 1)
+        XCTAssertTrue(userTimestamp.isDescendant(of: userActions))
         XCTAssertFalse(
             try XCTUnwrap(NSColor(cgColor: userCard.layer?.backgroundColor ?? CGColor.clear))
                 .isEqual(try XCTUnwrap(NSColor(cgColor: agentCard.layer?.backgroundColor ?? CGColor.clear)))
@@ -359,6 +374,26 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(harness.tableView.visibleRect.intersects(lastRowRect))
         let scroller = try XCTUnwrap(harness.scrollView.verticalScroller)
         XCTAssertEqual(scroller.floatValue, 1, accuracy: 0.01)
+    }
+
+    func testFollowBindingTracksWhetherViewportIsAtBottom() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<24).map { row(id: "follow-state-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        XCTAssertTrue(harness.followState.value)
+
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        await settleMainQueue()
+
+        XCTAssertFalse(harness.followState.value)
+
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+
+        XCTAssertTrue(harness.followState.value)
     }
 
     func testSavedSessionPositionRestoresMessageAnchorAndFollowMode() async {

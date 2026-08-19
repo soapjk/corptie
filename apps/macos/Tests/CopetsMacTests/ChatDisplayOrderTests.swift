@@ -177,6 +177,35 @@ final class ChatDisplayOrderTests: XCTestCase {
         )
     }
 
+    func testUnreadTailRevisionIgnoresHistoryPrepends() {
+        let current = [
+            item(id: "user", type: "userMessage", turnId: "turn"),
+            item(id: "agent", type: "agentMessage", turnId: "turn")
+        ]
+        let prepended = [
+            item(id: "history", type: "agentMessage", turnId: "older")
+        ] + current
+
+        XCTAssertEqual(
+            timelineTailContentRevision(for: prepended),
+            timelineTailContentRevision(for: current)
+        )
+    }
+
+    func testUnreadTailRevisionChangesWhenContentArrivesBelow() {
+        let current = [
+            item(id: "user", type: "userMessage", turnId: "turn")
+        ]
+        let withNewTailContent = current + [
+            item(id: "agent", type: "agentMessage", turnId: "turn")
+        ]
+
+        XCTAssertNotEqual(
+            timelineTailContentRevision(for: withNewTailContent),
+            timelineTailContentRevision(for: current)
+        )
+    }
+
     private func item(
         id: String,
         type: String,

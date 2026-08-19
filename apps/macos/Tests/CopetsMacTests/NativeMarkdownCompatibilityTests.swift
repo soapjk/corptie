@@ -54,6 +54,33 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         }
     }
 
+    func testExecutionProcessAppearsOnlyAfterItHasContent() {
+        let user = item(id: "user", type: "userMessage", text: "hi", turnStatus: "inProgress")
+
+        let userOnlyEntries = makeChatDisplayEntriesForTurn([user])
+
+        XCTAssertEqual(userOnlyEntries.count, 1)
+        guard case .message(let message) = userOnlyEntries[0].kind else {
+            return XCTFail("A user-only turn should not create an empty execution process")
+        }
+        XCTAssertEqual(message.id, user.id)
+
+        let reasoning = item(
+            id: "reasoning",
+            type: "reasoning",
+            text: "Thinking",
+            turnStatus: "inProgress"
+        )
+        let entriesWithProcessContent = makeChatDisplayEntriesForTurn([user, reasoning])
+
+        XCTAssertEqual(entriesWithProcessContent.count, 2)
+        guard case .process(_, let processItems) = entriesWithProcessContent[1].kind else {
+            return XCTFail("The first execution item should create the process card")
+        }
+        XCTAssertEqual(processItems.map(\.id), [reasoning.id])
+        XCTAssertEqual(projectedProcessState(for: processItems), .running)
+    }
+
     func testPlainUserAndAgentMessagesRemainNative() {
         XCTAssertEqual(
             ChatTimelineRowRouting.route(
@@ -96,11 +123,16 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         )
     }
 
-    private func item(id: String, type: String, text: String) -> CodexThreadItem {
+    private func item(
+        id: String,
+        type: String,
+        text: String,
+        turnStatus: String = "complete"
+    ) -> CodexThreadItem {
         CodexThreadItem(
             id: id,
             turnId: "turn",
-            turnStatus: "complete",
+            turnStatus: turnStatus,
             type: type,
             title: type == "userMessage" ? "User" : "Claude Code",
             text: text,

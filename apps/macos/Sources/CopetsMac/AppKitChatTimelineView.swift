@@ -322,7 +322,6 @@ final class NativeTimelineLayoutCache {
         let processState: AppKitChatTimelineRow.ProcessState
         let isExpanded: Bool
         let showsHeader: Bool
-        let hasHoverTimestamp: Bool
         let actionCount: Int
         let widthBucket: Int
     }
@@ -345,7 +344,6 @@ final class NativeTimelineLayoutCache {
             processState: row.processState,
             isExpanded: row.isExpanded,
             showsHeader: row.showsHeader,
-            hasHoverTimestamp: !row.hoverTimestamp.isEmpty,
             actionCount: row.actions.count,
             widthBucket: Int((normalizedWidth * 2).rounded())
         )
@@ -591,18 +589,13 @@ enum ChatBubbleWidthPolicy {
             ]).width)
             return min(fullAvailableWidth, max(collapsedProcessWidth, summaryWidth + 58))
         }
-        // Native rows place the hover timestamp beside the card. Reserve that
-        // exterior lane in narrow floating panels so the label is not clipped
-        // by the table viewport when the message body reaches its max width.
-        let exteriorTimestampReserve: CGFloat = row.hoverTimestamp.isEmpty ? 0 : 84
-        let available = max(minimumWidth, fullAvailableWidth - exteriorTimestampReserve)
         return preferredWidth(
             text: row.nativeText,
             style: row.nativeStyle,
             title: row.showsHeader ? row.title : "",
             metadata: row.showsHeader ? row.metadata : "",
             processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
-            availableWidth: available
+            availableWidth: fullAvailableWidth
         )
     }
 }
@@ -1205,8 +1198,6 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var labelTopToProcessButtonConstraint: NSLayoutConstraint!
     private var labelBottomToCardConstraint: NSLayoutConstraint!
     private var labelHeightConstraint: NSLayoutConstraint!
-    private var timestampBeforeCardConstraint: NSLayoutConstraint!
-    private var timestampAfterCardConstraint: NSLayoutConstraint!
     private var expandableTurnId: String?
     private var onToggleExpansion: ((String) -> Void)?
     private var timelineActions: [AppKitChatTimelineRow.Action] = []
@@ -1235,7 +1226,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         messageActionBar.translatesAutoresizingMaskIntoConstraints = false
         messageActionBar.orientation = .horizontal
         messageActionBar.alignment = .centerY
-        messageActionBar.spacing = 2
+        messageActionBar.spacing = 6
         actionStack.translatesAutoresizingMaskIntoConstraints = false
         actionStack.orientation = .horizontal
         actionStack.alignment = .centerY
@@ -1260,6 +1251,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         copyButton.setAccessibilityLabel("复制消息")
         messageActionBar.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-actions")
         messageActionBar.alphaValue = 0
+        messageActionBar.addArrangedSubview(hoverTimestampLabel)
         messageActionBar.addArrangedSubview(copyButton)
         processButton.isBordered = false
         processButton.alignment = .left
@@ -1274,9 +1266,8 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         hoverTimestampLabel.font = .systemFont(ofSize: 9, weight: .medium)
         hoverTimestampLabel.textColor = NativeTimelineCardPalette.mutedText
         hoverTimestampLabel.maximumNumberOfLines = 1
-        hoverTimestampLabel.alphaValue = 0
+        hoverTimestampLabel.alphaValue = 1
         addSubview(cardView)
-        addSubview(hoverTimestampLabel)
         addSubview(messageActionBar)
         [titleLabel, metadataLabel, label, disclosureButton, actionStack, processSeparator, processButton].forEach(cardView.addSubview)
         processSeparatorHeight = processSeparator.heightAnchor.constraint(equalToConstant: 0)
@@ -1298,8 +1289,6 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         labelTopToProcessButtonConstraint = label.topAnchor.constraint(equalTo: processButton.bottomAnchor, constant: 8)
         labelBottomToCardConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10)
         labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: 0)
-        timestampBeforeCardConstraint = hoverTimestampLabel.trailingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: -8)
-        timestampAfterCardConstraint = hoverTimestampLabel.leadingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: 8)
         NSLayoutConstraint.activate([
             cardWidthConstraint,
             cardLeadingConstraint,
@@ -1333,8 +1322,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             processButton.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             processButton.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             processButtonBottomConstraint,
-            processButtonHeight,
-            hoverTimestampLabel.centerYAnchor.constraint(equalTo: cardView.centerYAnchor)
+            processButtonHeight
         ])
         updateTrackingAreas()
     }
@@ -1392,12 +1380,6 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         cardWidthConstraint.constant = layout.cardWidth
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
-        NSLayoutConstraint.deactivate([timestampBeforeCardConstraint, timestampAfterCardConstraint])
-        if row.nativeStyle == .user {
-            timestampBeforeCardConstraint.isActive = true
-        } else if row.nativeStyle == .agent {
-            timestampAfterCardConstraint.isActive = true
-        }
         let hasProcess = row.processCount != nil
         let isStandaloneProcess = row.nativeStyle == .process
         let showsHeader = row.showsHeader && !isStandaloneProcess
@@ -1424,7 +1406,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         }
         hoverTimestampLabel.stringValue = row.hoverTimestamp
         hoverTimestampLabel.isHidden = row.hoverTimestamp.isEmpty || isStandaloneProcess
-        hoverTimestampLabel.alphaValue = 0
+        hoverTimestampLabel.alphaValue = 1
         label.isHidden = isStandaloneProcess && !row.isExpanded
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
         processButton.isHidden = !hasProcess
@@ -1507,7 +1489,6 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             messageActionBar.animator().alphaValue = messageActionBar.isHidden ? 0 : 1
-            hoverTimestampLabel.animator().alphaValue = hoverTimestampLabel.isHidden ? 0 : 1
         }
     }
 
@@ -1515,7 +1496,6 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             messageActionBar.animator().alphaValue = 0
-            hoverTimestampLabel.animator().alphaValue = 0
         }
     }
 

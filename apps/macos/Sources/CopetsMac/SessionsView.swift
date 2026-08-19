@@ -239,6 +239,7 @@ struct SessionsView: View {
                 sessionCategoryPicker
                     .frame(maxWidth: .infinity)
                 searchToggleButton
+                newChatToolbarButton
             }
             .padding(.horizontal, 8)
             .padding(.top, 8)
@@ -248,11 +249,6 @@ struct SessionsView: View {
                     .padding(.horizontal, 8)
                     .padding(.top, 6)
             }
-
-            newChatButton
-                .padding(.horizontal, 8)
-                .padding(.top, 6)
-                .padding(.bottom, 4)
 
             List {
                 if isSearching && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && groupedSessions.isEmpty {
@@ -345,23 +341,14 @@ struct SessionsView: View {
         .help(selectedCategory.title)
     }
 
-    private var newChatButton: some View {
+    private var newChatToolbarButton: some View {
         Button {
             showNewSessionCreation = true
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                Text(L10n("新建会话"))
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Spacer()
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color(nsColor: .quaternaryLabelColor).opacity(0.4)))
-            .contentShape(Rectangle())
+            Image(systemName: "plus")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 22, height: 22)
         }
         .buttonStyle(.plain)
         .help(L10n("Create an Assistant, Objective, or Worker Session"))

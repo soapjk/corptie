@@ -2,6 +2,12 @@ import XCTest
 @testable import CorptieMac
 
 final class ComposerDraftTests: XCTestCase {
+    func testComposerInputHeightUsesComfortableMinimumAndCapsGrowth() {
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 20), 44)
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 63.2), 64)
+        XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 140), 96)
+    }
+
     func testDraftRepositoryKeepsIndependentDraftsPerSession() async {
         await MainActor.run {
             let repository = ComposerDraftRepository()
