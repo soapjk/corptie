@@ -561,3 +561,4 @@
 "Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session." = "Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session.";
 "All" = "All";
 "New Objective" = "New Objective";
+"执行状态" = "Execution Status";

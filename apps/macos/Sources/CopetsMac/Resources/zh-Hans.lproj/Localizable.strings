@@ -939,3 +939,4 @@
 "Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session." = "要将这个已完成的 WorkItem 恢复为进行中吗？Corptie 会优先复用原 Worktree；如果原 Worktree 已不存在，会先重新创建，再恢复绑定的会话。";
 "All" = "全部";
 "New Objective" = "新建 Objective";
+"执行状态" = "执行状态";
