@@ -224,17 +224,23 @@ final class FloatingPanelController: NSObject {
         isDetailTransitionLocked = true
         layoutState.canRenderDetailMessages = false
 
-        let targetSessionId = client.selectedSession?.id
         applyDetailSizing(animated: true, restoreSavedSize: true) { [weak self] in
             guard let self else {
                 return
             }
             self.isDetailTransitionLocked = false
-            guard self.client.selectedSession?.id == targetSessionId else {
-                return
-            }
+        }
+        // Re-enable message rendering on an independent timer so a rapid
+        // session switch can never leave the panel stuck on the placeholder.
+        // The sizing completion above only clears the resize lock; relying on
+        // it to match the current session id meant an intermediate switch's
+        // completion dropped the unlock and the next session stayed blank.
+        let unlock = DispatchWorkItem { [weak self] in
+            guard let self, self.client.selectedSession != nil else { return }
             self.layoutState.canRenderDetailMessages = true
         }
+        pendingDetailTransitionUnlock = unlock
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: unlock)
     }
 
     private func resizeForSessionCount(_ count: Int) {

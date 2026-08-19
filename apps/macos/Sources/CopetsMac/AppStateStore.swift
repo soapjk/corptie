@@ -56,8 +56,12 @@ final class AppStateStore: ObservableObject {
         didSet {
             // `sessions` is accessed on every tab switch and list render; keep
             // the sorted result cached so the O(n log n) sort is not repeated
-            // for each read against an unchanged state.
-            cachedSessions = nil
+            // for each read against an unchanged state. Only invalidate when the
+            // sessions dictionary actually changes — unrelated entity updates
+            // (workItems/objectives/agents…) must not drop the sort cache.
+            if oldValue.sessions != state.sessions {
+                cachedSessions = nil
+            }
         }
     }
     @Published private(set) var syncError: String?

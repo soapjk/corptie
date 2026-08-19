@@ -10,6 +10,9 @@ enum ChatPerformanceMetric: String, CaseIterable, Sendable {
     case sseSnapshotRecoveries
     case detailPublishes
     case displayRebuilds
+    case displayProjectionRequests
+    case displayProjectionCommits
+    case displayProjectionCancellations
     case historyPrepends
     case markdownPreprocesses
     case markdownCharacters

@@ -13,16 +13,15 @@ import SwiftUI
 //   - 字段区标题用 11px uppercase + tracking 的小字「Properties」标签，下面竖向排列字段。
 //   - 窄列固定像素宽度，主工作区吃掉剩余空间。
 struct SessionsView: View {
-    @ObservedObject private var backendClient = BackendClient.shared
+    private let backendClient = BackendClient.shared
     @ObservedObject private var sessionListStore = BackendClient.shared.sessionListStore
     @ObservedObject private var entityClient = EntityAPIClient.shared
     @StateObject private var layoutState = PanelLayoutState()
+    @StateObject private var presentationStore = SessionPresentationStore()
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var detailRenderTask: Task<Void, Never>?
-    @State private var presentationPreheatTasks: [String: Task<Void, Never>] = [:]
-    @State private var presentationPreheatTokens: [String: UUID] = [:]
-    @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
     @State private var visuallySelectedSessionID: String?
+    @State private var selectedSession: TaskSession?
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
     @EnvironmentObject private var router: AppTabRouter
@@ -61,25 +60,24 @@ struct SessionsView: View {
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
         .onAppear {
-            scheduleDetailRendering()
-            backendClient.suppressBackgroundPolling = true
-            attemptPendingSelection(backendClient.sessions)
-            restoreLastSelectedSession(backendClient.sessions)
-            preloadSessionMessages(backendClient.sessions)
-            Task { await entityClient.refreshAgents() }
+            PerfStopwatch.event("SessionsView·onAppear", value: 1)
+            activateSessions()
         }
         .onDisappear {
-            detailRenderTask?.cancel()
-            detailRenderTask = nil
-            pendingSelectionTask?.cancel()
-            pendingSelectionTask = nil
-            presentationPreheatTasks.values.forEach { $0.cancel() }
-            presentationPreheatTasks.removeAll()
-            presentationPreheatTokens.removeAll()
-            layoutState.canRenderDetailMessages = false
-            backendClient.suppressBackgroundPolling = false
+            deactivateSessions()
+        }
+        .onChange(of: router.selectedTab) { _, newTab in
+            // 常驻子树后 onAppear/onDisappear 不再随 Tab 切换触发，改用
+            // selectedTab 显式驱动进入/离开语义，保持轮询抑制与任务清理正确。
+            if newTab == .sessions {
+                activateSessions()
+            } else {
+                deactivateSessions()
+            }
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
+            let activeSessionIDs = Set(sessions.map(\.id))
+            presentationStore.prune(to: activeSessionIDs)
             attemptPendingSelection(sessions)
             restoreLastSelectedSession(sessions)
             preloadSessionMessages(sessions)
@@ -87,13 +85,12 @@ struct SessionsView: View {
         .onChange(of: router.pendingSessionId) { _, _ in
             attemptPendingSelection(backendClient.sessions)
         }
-        .onChange(of: backendClient.selectedSession?.id) { _, newValue in
-            if let newValue {
-                Self.recordSessionId(newValue, category: selectedCategory)
-                visuallySelectedSessionID = newValue
-                if let session = backendClient.selectedSession {
-                    selectedCategory = SessionCategory(session: session)
-                }
+        .onReceive(backendClient.$selectedSession) { session in
+            selectedSession = session
+            if let session {
+                Self.recordSessionId(session.id, category: selectedCategory)
+                visuallySelectedSessionID = session.id
+                selectedCategory = SessionCategory(session: session)
             }
             preloadSessionMessages(backendClient.sessions)
         }
@@ -102,9 +99,33 @@ struct SessionsView: View {
         }
     }
 
+    private func activateSessions() {
+        // 常驻子树后 onAppear 会在启动时（selectedTab 仍为 console）就触发，
+        // 只有真正处于 Sessions Tab 时才执行激活逻辑。
+        guard router.selectedTab == .sessions else { return }
+        selectedSession = backendClient.selectedSession
+        scheduleDetailRendering()
+        backendClient.suppressBackgroundPolling = true
+        attemptPendingSelection(backendClient.sessions)
+        restoreLastSelectedSession(backendClient.sessions)
+        preloadSessionMessages(backendClient.sessions)
+        Task { await entityClient.refreshAgents() }
+    }
+
+    private func deactivateSessions() {
+        detailRenderTask?.cancel()
+        detailRenderTask = nil
+        pendingSelectionTask?.cancel()
+        pendingSelectionTask = nil
+        presentationStore.cancelPreheats()
+        layoutState.canRenderDetailMessages = false
+        backendClient.suppressBackgroundPolling = false
+    }
+
     private func scheduleDetailRendering() {
         detailRenderTask?.cancel()
         layoutState.canRenderDetailMessages = false
+        PerfStopwatch.event("会话切换.scheduleDetailRendering=false", value: 1)
         detailRenderTask = Task { @MainActor in
             // Let NavigationSplitView establish its columns and paint the
             // lightweight shell before constructing Markdown/process cards.
@@ -113,6 +134,7 @@ struct SessionsView: View {
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled, router.selectedTab == .sessions else { return }
             layoutState.canRenderDetailMessages = true
+            PerfStopwatch.event("会话切换.scheduleDetailRendering=true", value: 1)
         }
     }
 
@@ -141,7 +163,7 @@ struct SessionsView: View {
 
     // 未选中时恢复上次选中的会话（跨窗口/重启记忆）。
     private func restoreLastSelectedSession(_ sessions: [TaskSession]) {
-        guard backendClient.selectedSession == nil, !sessions.isEmpty else { return }
+        guard selectedSession == nil, !sessions.isEmpty else { return }
         restoreSelection(for: selectedCategory)
     }
 
@@ -159,101 +181,36 @@ struct SessionsView: View {
         let targetId = resolvedSessionSelection(
             category: category,
             rows: sessionListStore.rows,
-            selectedSessionId: backendClient.selectedSession?.id,
+            selectedSessionId: selectedSession?.id,
             lastSelectedId: Self.restoredSessionId(for: category)
         )
-        guard let targetId, targetId != backendClient.selectedSession?.id else { return }
+        guard let targetId, targetId != selectedSession?.id else { return }
         if let session = backendClient.sessions.first(where: { $0.id == targetId }) {
             selectSessionAfterHighlight(session)
         }
     }
 
     private func preloadSessionMessages(_ sessions: [TaskSession]) {
-        backendClient.preloadSessionDetails(
-            sessions,
-            centeredOn: backendClient.selectedSession?.id
-        )
-        prunePresentationCaches(to: Set(sessions.map(\.id)))
-        let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        let prioritizedIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
-            sessions.map(\.id),
-            selectedSessionID: backendClient.selectedSession?.id
-        )
-        for sessionID in prioritizedIDs {
-            guard let session = sessionsByID[sessionID] else { continue }
-            preheatPresentation(for: session)
-        }
-    }
-
-    private func preheatPresentation(for session: TaskSession) {
-        guard detailDisplayCacheBySessionId[session.id] == nil,
-              presentationPreheatTasks[session.id] == nil else { return }
-
-        let token = UUID()
-        presentationPreheatTokens[session.id] = token
-        presentationPreheatTasks[session.id] = Task { @MainActor in
-            defer {
-                if presentationPreheatTokens[session.id] == token {
-                    presentationPreheatTasks[session.id] = nil
-                    presentationPreheatTokens[session.id] = nil
-                }
-            }
-            guard let detail = await backendClient.detailForPreheating(session),
-                  !Task.isCancelled,
-                  presentationPreheatTokens[session.id] == token else { return }
-
-            // Publish the cheap display grouping first. Markdown parsing then
-            // advances one card at a time so preheating never monopolizes a run loop.
-            let displayCache = makeDetailDisplayCache(
-                for: detail,
-                sessionId: session.id,
-                visibleMessageLimit: DetailView.initialVisibleMessageLimit
+        PerfStopwatch.measure("预加载·preloadSessionMessages(\(sessions.count)会话)") {
+            backendClient.preloadSessionDetails(
+                sessions,
+                centeredOn: selectedSession?.id
             )
-            detailDisplayCacheBySessionId[session.id] = displayCache
-            for (text, style) in markdownContentForPreheating(displayCache.displayEntries) {
-                guard !Task.isCancelled else { return }
-                _ = MarkdownRenderCache.shared.content(text: text, baseDirectory: detail.cwd)
-                if let style {
-                    _ = NativeMarkdownTextCache.shared.value(text: text, style: style)
-                }
-                try? await Task.sleep(for: .milliseconds(1))
+            presentationStore.prune(to: Set(sessions.map(\.id)))
+            let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+            let prioritizedIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
+                sessions.map(\.id),
+                selectedSessionID: selectedSession?.id
+            )
+            for sessionID in prioritizedIDs {
+                guard let session = sessionsByID[sessionID] else { continue }
+                presentationStore.preheat(
+                    session: session,
+                    backendClient: backendClient,
+                    visibleMessageLimit: DetailView.initialVisibleMessageLimit,
+                    deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+                )
             }
-        }
-    }
-
-    private func prunePresentationCaches(to validSessionIDs: Set<String>) {
-        let removedSessionIDs = presentationPreheatTasks.keys.filter { !validSessionIDs.contains($0) }
-        for sessionID in removedSessionIDs {
-            presentationPreheatTasks[sessionID]?.cancel()
-            presentationPreheatTasks[sessionID] = nil
-            presentationPreheatTokens[sessionID] = nil
-        }
-        detailDisplayCacheBySessionId = detailDisplayCacheBySessionId.filter {
-            validSessionIDs.contains($0.key)
-        }
-    }
-
-    private func markdownContentForPreheating(
-        _ entries: [ChatDisplayEntry]
-    ) -> [(text: String, style: AppKitChatTimelineRow.NativeStyle?)] {
-        entries.compactMap { entry in
-            guard case .message(let item) = entry.kind else { return nil }
-            let text: String
-            if item.presentationRole == "collaboration" || item.sourceType == "collaboration" {
-                text = item.presentationText ?? item.text
-            } else if item.type == "agentMessage" {
-                text = AgentMessageParts.parse(item.text).body
-            } else {
-                text = item.text
-            }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            let style: AppKitChatTimelineRow.NativeStyle? = switch item.type {
-            case "userMessage": .user
-            case "agentMessage": .agent
-            default: nil
-            }
-            return (text, style)
         }
     }
 
@@ -407,7 +364,7 @@ struct SessionsView: View {
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
-        let isSelected = (visuallySelectedSessionID ?? backendClient.selectedSession?.id) == row.session.id
+        let isSelected = (visuallySelectedSessionID ?? selectedSession?.id) == row.session.id
         return CompactSessionRow(
             session: row.session,
             selectionRequested: selectSessionAfterHighlight
@@ -484,16 +441,21 @@ struct SessionsView: View {
 
     @ViewBuilder
     private var sessionConversation: some View {
-        if let session = backendClient.selectedSession,
+        if let session = selectedSession,
            SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
                 // 主对话区：直接平铺，吃满剩余宽度（参考 Rudder 聊天主区）
                 DetailView(
                     sessionId: session.id,
-                    preheatedDisplayCache: detailDisplayCacheBySessionId[session.id],
+                    presentationStore: presentationStore,
                     composerDraftRepository: composerDraftRepository,
-                    renderer: .appKitNativeText
+                    renderer: .appKitNativeText,
+                    initialTimelinePosition: presentationStore.position(for: session.id),
+                    onTimelinePositionChange: { position in
+                        presentationStore.store(position, for: session.id)
+                    }
                 )
+                .id(session.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 // 右侧竖列详情面板（固定常驻，无收起按钮，模仿 Rudder IssueDetail rail）
@@ -671,12 +633,34 @@ func resolvedSessionSelection(
 //   Rudder 契约：rail 固定 280px，sticky 顶部，仅 <48rem 移动端才隐藏。
 struct SessionDetailPanel: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
-    @ObservedObject private var backendClient = BackendClient.shared
+    private let backendClient = BackendClient.shared
     let session: TaskSession
     @State private var contextReferenceAddMode: ContextReferenceAddMode?
+    @State private var contextReferences: [SessionContextReference] = []
+    @State private var isLoadingContextReferences = false
+    @State private var providerCatalogRevision = 0
 
     /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
     private static let railWidth: CGFloat = 280
+
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let iso8601NoFractionFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     var body: some View {
         VStack(spacing: 12) {
@@ -693,6 +677,15 @@ struct SessionDetailPanel: View {
             if backendClient.agentProviders.isEmpty {
                 await backendClient.loadProviders()
             }
+        }
+        .onReceive(backendClient.$selectedContextReferences) { references in
+            contextReferences = references
+        }
+        .onReceive(backendClient.$isLoadingContextReferences) { isLoading in
+            isLoadingContextReferences = isLoading
+        }
+        .onReceive(backendClient.$agentProviders) { _ in
+            providerCatalogRevision &+= 1
         }
         .sheet(item: $contextReferenceAddMode) { mode in
             ContextReferenceAddSheet(session: session, mode: mode)
@@ -812,16 +805,16 @@ struct SessionDetailPanel: View {
                 .help("添加上下文引用")
             }
 
-            if backendClient.isLoadingContextReferences && backendClient.selectedContextReferences.isEmpty {
+            if isLoadingContextReferences && contextReferences.isEmpty {
                 ProgressView().controlSize(.small)
-            } else if backendClient.selectedContextReferences.isEmpty {
+            } else if contextReferences.isEmpty {
                 Text("添加文件、网页或 Corptie 对象，作为这个会话的持续上下文。")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 VStack(spacing: 6) {
-                    ForEach(backendClient.selectedContextReferences) { reference in
+                    ForEach(contextReferences) { reference in
                         contextReferenceRow(reference)
                     }
                 }
@@ -929,6 +922,7 @@ struct SessionDetailPanel: View {
     }
 
     private var primaryFields: [(String, String)] {
+        _ = providerCatalogRevision
         var fields = [("Agent", agentDisplayName)]
         if let model = session.external?.currentModel {
             fields.append(("模型", model))
@@ -952,17 +946,12 @@ struct SessionDetailPanel: View {
     }
 
     private var friendlyUpdatedAt: String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: session.updatedAt)
-            ?? ISO8601DateFormatter().date(from: session.updatedAt)
+        let date = Self.iso8601Formatter.date(from: session.updatedAt)
+            ?? Self.iso8601NoFractionFormatter.date(from: session.updatedAt)
         guard let date else {
             return session.updatedAt
         }
-        let relativeFormatter = RelativeDateTimeFormatter()
-        relativeFormatter.locale = Locale(identifier: "zh_CN")
-        relativeFormatter.unitsStyle = .short
-        return relativeFormatter.localizedString(for: date, relativeTo: Date())
+        return Self.relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     private func compactPath(_ path: String) -> String {

@@ -43,8 +43,7 @@ struct FloatingRootView: View {
     @State private var hoverPreviewSessionId: String?
     @State private var isHoveringReplyPreviewBubble = false
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
-    @State private var detailPreheatTasks: [String: Task<Void, Never>] = [:]
-    @State private var detailDisplayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @StateObject private var presentationStore = SessionPresentationStore()
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var listHeightMeasurements: [ListHeightMetric: CGFloat] = [:]
     @State private var isSearching = false
@@ -70,9 +69,10 @@ struct FloatingRootView: View {
                 if let selectedSession = backendClient.selectedSession {
                     DetailView(
                         sessionId: selectedSession.id,
-                        preheatedDisplayCache: detailDisplayCacheBySessionId[selectedSession.id],
+                        presentationStore: presentationStore,
                         composerDraftRepository: composerDraftRepository
                     )
+                        .id(selectedSession.id)
                         .transition(.opacity)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
@@ -633,37 +633,13 @@ struct FloatingRootView: View {
     }
 
     private func preheatDetail(for session: TaskSession) {
-        guard detailPreheatTasks[session.id] == nil else {
-            return
-        }
-
-        if let cachedDetail = backendClient.cachedDetail(for: session.id) {
-            detailDisplayCacheBySessionId[session.id] = makeDetailDisplayCache(
-                for: cachedDetail,
-                sessionId: session.id,
-                visibleMessageLimit: DetailView.initialVisibleMessageLimit
-            )
-            return
-        }
-
-        detailPreheatTasks[session.id] = Task {
-            try? await Task.sleep(nanoseconds: 120_000_000)
-            guard !Task.isCancelled else {
-                return
-            }
-            let detail = await backendClient.fetchDetail(for: session)
-            await MainActor.run {
-                detailPreheatTasks[session.id] = nil
-                guard let detail else {
-                    return
-                }
-                detailDisplayCacheBySessionId[session.id] = makeDetailDisplayCache(
-                    for: detail,
-                    sessionId: session.id,
-                    visibleMessageLimit: DetailView.initialVisibleMessageLimit
-                )
-            }
-        }
+        presentationStore.preheat(
+            session: session,
+            backendClient: backendClient,
+            visibleMessageLimit: DetailView.initialVisibleMessageLimit,
+            deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
+            delay: .milliseconds(120)
+        )
     }
 
     private func clampedHoverBubbleX(for anchorFrame: CGRect) -> CGFloat {
@@ -1000,7 +976,7 @@ struct CompactSessionRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SessionAvatarView(session: session, avatarSize: 28)
+            SessionStatusLight(status: session.status, diameter: 9)
             Text(session.title)
                 .font(.system(size: 12.5, weight: .semibold))
                 .lineLimit(1)
@@ -2739,6 +2715,8 @@ struct TaskCardView: View {
     @State private var hoverPreviewTask: Task<Void, Never>?
     @FocusState private var isQuickReplyFocused: Bool
 
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     let session: TaskSession
     var showsProjectName = true
     var hoverPreviewChanged: (String, Bool) -> Void = { _, _ in }
@@ -3021,8 +2999,7 @@ struct TaskCardView: View {
     }
 
     private func relativeTime(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        guard let date = formatter.date(from: value) else {
+        guard let date = Self.iso8601Formatter.date(from: value) else {
             return ""
         }
 
@@ -3331,7 +3308,7 @@ struct AnimatedAvatarImage: NSViewRepresentable {
 }
 
 struct DetailView: View {
-    @EnvironmentObject private var backendClient: BackendClient
+    private let backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @MainActor
     static var initialVisibleMessageLimit: Int {
@@ -3349,7 +3326,7 @@ struct DetailView: View {
     @State private var cachedItemsSignature = ""
     @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
-    @State private var displayCacheBySessionId: [String: DetailDisplayCache] = [:]
+    @ObservedObject var presentationStore: SessionPresentationStore
     @State private var collaborationExpansionByItemKey: [String: Bool] = [:]
     @State private var collaborationConfirmationExpansionByItemKey: [String: Bool] = [:]
     @State private var expandedProcessTurnIds: Set<String> = []
@@ -3362,42 +3339,74 @@ struct DetailView: View {
     @State private var lastVisibleContentSignature = ""
     @State private var hasNewMessagesBelow = false
     @State private var appKitScrollToBottomRevision = 0
+    @State private var displayProjectionTask: Task<Void, Never>?
+    @State private var displayProjectionGeneration = 0
+    @State private var pendingProjectionSourceSignature: String?
+    @State private var displayedDetail: CodexThreadDetail?
+    @State private var displaysLoadingDetail: Bool
+    @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
     let sessionId: String
-    let preheatedDisplayCache: DetailDisplayCache?
     let composerDraftRepository: ComposerDraftRepository
     // 渲染管线覆盖：nil = 跟随全局 ChatTimelineFeatureFlags.current；
     // Sessions Tab 使用原生时间线，复杂卡片仍由行路由自动回退 SwiftUI。
     let renderer: ChatTimelineRenderer?
+    let initialTimelinePosition: AppKitChatTimelinePosition?
+    let onTimelinePositionChange: (AppKitChatTimelinePosition) -> Void
 
     init(
         sessionId: String,
-        preheatedDisplayCache: DetailDisplayCache?,
+        presentationStore: SessionPresentationStore,
         composerDraftRepository: ComposerDraftRepository,
-        renderer: ChatTimelineRenderer? = nil
+        backendClient: BackendClient = .shared,
+        renderer: ChatTimelineRenderer? = nil,
+        initialTimelinePosition: AppKitChatTimelinePosition? = nil,
+        onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
     ) {
         self.sessionId = sessionId
-        self.preheatedDisplayCache = preheatedDisplayCache
+        self.presentationStore = presentationStore
         self.composerDraftRepository = composerDraftRepository
+        self.backendClient = backendClient
         self.renderer = renderer
+        self.initialTimelinePosition = initialTimelinePosition
+        self.onTimelinePositionChange = onTimelinePositionChange
+        let initialCache = presentationStore.cache(for: sessionId)
         _visibleMessageLimit = State(
-            initialValue: ChatTimelineFeatureFlags.current.initialDisplayWeight
+            initialValue: initialCache?.visibleMessageLimit
+                ?? ChatTimelineFeatureFlags.current.initialDisplayWeight
         )
+        _cachedSourceItemCount = State(initialValue: initialCache?.displayItems.count ?? 0)
+        _cachedSourcePenultimateItemId = State(initialValue: initialCache?.displayItems.dropLast().last?.id)
+        _cachedSourceTailItem = State(initialValue: initialCache?.displayItems.last)
+        _cachedDisplayEntries = State(initialValue: initialCache?.displayEntries ?? [])
+        _cachedTotalDisplayEntryCount = State(initialValue: initialCache?.totalDisplayEntryCount ?? 0)
+        _cachedVisibleMessageLimit = State(initialValue: initialCache?.visibleMessageLimit ?? 0)
+        _cachedItemsSignature = State(initialValue: initialCache?.signature ?? "")
+        _cachedDetailSourceSignature = State(initialValue: initialCache?.sourceSignature ?? "")
+        _cachedSessionId = State(initialValue: initialCache?.sessionId ?? "")
+        _displayedDetail = State(initialValue: backendClient.selectedDetail)
+        _displaysLoadingDetail = State(initialValue: backendClient.isLoadingDetail)
+        _displayedWorkspaceRecoveryStatus = State(initialValue: backendClient.workspaceRecoveryStatus)
+        PerfStopwatch.event("会话切换.DetailView.init", value: 1)
     }
 
     private var effectiveRenderer: ChatTimelineRenderer {
         renderer ?? ChatTimelineFeatureFlags.current.renderer
     }
 
+    private var preheatedDisplayCache: DetailDisplayCache? {
+        presentationStore.cache(for: sessionId)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DetailHeaderView()
 
-            if let recovery = backendClient.workspaceRecoveryStatus,
+            if let recovery = displayedWorkspaceRecoveryStatus,
                recovery.orphaned {
                 OrphanedWorkspaceRecoveryView(status: recovery)
             }
 
-            if backendClient.isLoadingDetail && backendClient.selectedDetail == nil {
+            if displaysLoadingDetail && displayedDetail == nil {
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -3406,7 +3415,7 @@ struct DetailView: View {
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let detail = backendClient.selectedDetail {
+            } else if let detail = displayedDetail {
                 ThreadMetaView(
                     status: detail.status,
                     isConnecting: detail.isConnecting,
@@ -3427,11 +3436,11 @@ struct DetailView: View {
                     }
                 }
                 .onAppear {
-                    if let currentDetail = backendClient.selectedDetail {
+                    if let currentDetail = displayedDetail {
                         updateCachedDisplayEntries(for: currentDetail)
                     }
                 }
-            } else if backendClient.selectedDetail == nil,
+            } else if displayedDetail == nil,
                       backendClient.isLoadingDetail == false,
                       backendClient.lastError != nil {
                 OfflineView(error: backendClient.lastError ?? L10n("No detail is available for this task."))
@@ -3452,9 +3461,9 @@ struct DetailView: View {
                     .lineLimit(2)
             }
 
-            if backendClient.selectedDetail?.canSend == false
-                && backendClient.selectedDetail?.canInterruptNow != true {
-                ReadOnlyComposer(reason: backendClient.selectedDetail?.sendUnavailableReason)
+            if displayedDetail?.canSend == false
+                && displayedDetail?.canInterruptNow != true {
+                ReadOnlyComposer(reason: displayedDetail?.sendUnavailableReason)
             } else {
                 MessageComposer(
                     sessionId: sessionId,
@@ -3475,6 +3484,10 @@ struct DetailView: View {
             restorePreheatedDisplayCacheIfNeeded()
         }
         .onChange(of: sessionId) { _, _ in
+            displayProjectionTask?.cancel()
+            displayProjectionTask = nil
+            displayProjectionGeneration &+= 1
+            pendingProjectionSourceSignature = nil
             didInitialScroll = false
             isDetailScrolledNearBottom = true
             isFollowingLatest = true
@@ -3491,6 +3504,19 @@ struct DetailView: View {
             expandedProcessTurnIds.removeAll()
             restoreDisplayCacheForCurrentSession()
         }
+        .onDisappear {
+            displayProjectionTask?.cancel()
+            displayProjectionTask = nil
+        }
+        .onReceive(backendClient.$selectedDetail) { detail in
+            displayedDetail = detail
+        }
+        .onReceive(backendClient.$isLoadingDetail) { isLoading in
+            displaysLoadingDetail = isLoading
+        }
+        .onReceive(backendClient.$workspaceRecoveryStatus) { status in
+            displayedWorkspaceRecoveryStatus = status
+        }
     }
 
     @ViewBuilder
@@ -3504,9 +3530,7 @@ struct DetailView: View {
     }
 
     private func appKitCachedDetailMessages() -> some View {
-        let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
-        let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
-        return appKitDetailMessages(displayEntries: cachedDisplayEntries, hiddenCount: hiddenCount)
+        return appKitDetailMessages(displayEntries: cachedDisplayEntries)
     }
 
     private func swiftUIDetailMessages(
@@ -3641,39 +3665,21 @@ struct DetailView: View {
     }
 
     private func appKitDetailMessages(
-        displayEntries: [ChatDisplayEntry],
-        hiddenCount: Int
+        displayEntries: [ChatDisplayEntry]
     ) -> some View {
         let rows = cachedAppKitRows.count == displayEntries.count
             ? cachedAppKitRows
             : displayEntries.map { appKitRow($0) }
         return VStack(alignment: .leading, spacing: 6) {
-            if hiddenCount > 0 {
-                Button {
-                    isFollowingLatest = false
-                    ChatPerformanceRecorder.shared.increment(.historyPrepends)
-                    ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))
-                    visibleMessageLimit += 100
-                    if let currentDetail = backendClient.selectedDetail {
-                        updateCachedDisplayEntries(for: currentDetail)
-                    }
-                } label: {
-                    Label(L10nFormat("Load %lld earlier messages", min(100, hiddenCount)), systemImage: "arrow.up.circle")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                }
-                .buttonStyle(.plain)
-                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            }
-
             AppKitChatTimelineView(
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
                 usesNativeText: effectiveRenderer == .appKitNativeText,
                 followsLatest: $isFollowingLatest,
-                onToggleExpansion: toggleNativeProcessExpansion
+                onToggleExpansion: toggleNativeProcessExpansion,
+                onNearTop: loadEarlierMessagesIfNeeded,
+                initialPosition: initialTimelinePosition,
+                onPositionChange: onTimelinePositionChange
             )
             .onAppear {
                 if let currentDetail = backendClient.selectedDetail {
@@ -3981,23 +3987,106 @@ struct DetailView: View {
         }
     }
 
+    // 微信/Discord 式「上滑到顶自动加载」：先展开已加载窗口，窗口耗尽后再补拉。
+    private func loadEarlierMessagesIfNeeded() {
+        guard let detail = backendClient.selectedDetail else { return }
+        let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
+        let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
+        isFollowingLatest = false
+        if hiddenCount > 0 {
+            ChatPerformanceRecorder.shared.increment(.historyPrepends)
+            ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))
+            visibleMessageLimit += 100
+            updateCachedDisplayEntries(for: detail)
+        } else if detail.hasMoreHistory == true {
+            let session = backendClient.selectedSession
+            if let session {
+                Task { @MainActor in
+                    await backendClient.loadEarlierMessages(for: session)
+                }
+            }
+        }
+    }
+
     private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
         let sourceSignature = detailSourceSignature(for: detail)
         guard cachedSessionId != sessionId || sourceSignature != cachedDetailSourceSignature else {
             return
         }
-        let preparedDisplay = ChatPerformanceTrace.measure("timeline.display.diff") {
-            if ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
-               let incremental = makeIncrementalTailDisplay(for: detail) {
-                incremental
-            } else {
-                makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
-            }
+        PerfStopwatch.event("会话切换.updateCachedDisplayEntries", value: detail.items.count)
+        if ChatTimelineFeatureFlags.current.deltaTimelineEnabled,
+           let incremental = makeIncrementalTailDisplay(for: detail) {
+            displayProjectionTask?.cancel()
+            displayProjectionTask = nil
+            pendingProjectionSourceSignature = nil
+            commitDisplayCache(DetailDisplayCache(
+                sessionId: sessionId,
+                displayItems: incremental.displayItems,
+                displayEntries: incremental.visibleEntries,
+                totalDisplayEntryCount: incremental.totalCount,
+                visibleMessageLimit: visibleMessageLimit,
+                signature: incremental.signature,
+                sourceSignature: incremental.sourceSignature
+            ))
+            return
         }
+
+        scheduleFullDisplayProjection(for: detail, sourceSignature: sourceSignature)
+    }
+
+    private func scheduleFullDisplayProjection(
+        for detail: CodexThreadDetail,
+        sourceSignature: String
+    ) {
+        guard pendingProjectionSourceSignature != sourceSignature else { return }
+        if displayProjectionTask != nil {
+            ChatPerformanceRecorder.shared.increment(.displayProjectionCancellations)
+        }
+        displayProjectionTask?.cancel()
+        displayProjectionGeneration &+= 1
+        let requestedSessionID = sessionId
+        let requestedLimit = visibleMessageLimit
+        let deltaTimelineEnabled = ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+        pendingProjectionSourceSignature = sourceSignature
+        let request = SessionDisplayProjectionRequest(
+            sessionID: requestedSessionID,
+            sourceSignature: sourceSignature,
+            generation: displayProjectionGeneration
+        )
+        ChatPerformanceRecorder.shared.increment(.displayProjectionRequests)
+
+        displayProjectionTask = Task { @MainActor in
+            let cache = await Task.detached(priority: .userInitiated) {
+                ChatPerformanceTrace.measure("timeline.display.project.background") {
+                    makeDetailDisplayCache(
+                        for: detail,
+                        sessionId: requestedSessionID,
+                        visibleMessageLimit: requestedLimit,
+                        deltaTimelineEnabled: deltaTimelineEnabled
+                    )
+                }
+            }.value
+            guard request.isCurrent(
+                sessionID: sessionId,
+                sourceSignature: cache.sourceSignature,
+                generation: displayProjectionGeneration,
+                isCancelled: Task.isCancelled
+            ) else {
+                ChatPerformanceRecorder.shared.increment(.displayProjectionCancellations)
+                return
+            }
+            pendingProjectionSourceSignature = nil
+            displayProjectionTask = nil
+            ChatPerformanceRecorder.shared.increment(.displayProjectionCommits)
+            commitDisplayCache(cache)
+        }
+    }
+
+    private func commitDisplayCache(_ preparedDisplay: DetailDisplayCache) {
         ChatPerformanceRecorder.shared.increment(.displayRebuilds)
-        let addsMainCard = preparedDisplay.totalCount > cachedTotalDisplayEntryCount
+        let addsMainCard = preparedDisplay.totalDisplayEntryCount > cachedTotalDisplayEntryCount
         let oldExpandedProcessCounts = expandedProcessItemCounts(in: cachedDisplayEntries)
-        let newExpandedProcessCounts = expandedProcessItemCounts(in: preparedDisplay.visibleEntries)
+        let newExpandedProcessCounts = expandedProcessItemCounts(in: preparedDisplay.displayEntries)
         let addsExpandedProcessCard = newExpandedProcessCounts.contains { turnId, count in
             count > (oldExpandedProcessCounts[turnId] ?? 0)
         }
@@ -4012,29 +4101,23 @@ struct DetailView: View {
             && isDetailScrolledNearBottom
         var transaction = Transaction(animation: animateInsertion ? .easeOut(duration: 0.22) : nil)
         transaction.disablesAnimations = !animateInsertion
-        let nextAppKitRows = makeCachedAppKitRows(
-            previousEntries: cachedDisplayEntries,
-            previousRows: cachedAppKitRows,
-            nextEntries: preparedDisplay.visibleEntries
-        )
+        let nextAppKitRows = PerfStopwatch.measure("会话切换.makeCachedAppKitRows") {
+            makeCachedAppKitRows(
+                previousEntries: cachedDisplayEntries,
+                previousRows: cachedAppKitRows,
+                nextEntries: preparedDisplay.displayEntries
+            )
+        }
         withTransaction(transaction) {
-            cachedDetailSourceSignature = sourceSignature
+            cachedDetailSourceSignature = preparedDisplay.sourceSignature
             cachedItemsSignature = preparedDisplay.signature
             cachedSessionId = sessionId
             updateCachedSourceTail(from: preparedDisplay.displayItems)
-            cachedTotalDisplayEntryCount = preparedDisplay.totalCount
-            cachedVisibleMessageLimit = visibleMessageLimit
-            cachedDisplayEntries = preparedDisplay.visibleEntries
+            cachedTotalDisplayEntryCount = preparedDisplay.totalDisplayEntryCount
+            cachedVisibleMessageLimit = preparedDisplay.visibleMessageLimit
+            cachedDisplayEntries = preparedDisplay.displayEntries
             cachedAppKitRows = nextAppKitRows
-            displayCacheBySessionId[sessionId] = DetailDisplayCache(
-                sessionId: sessionId,
-                displayItems: preparedDisplay.displayItems,
-                displayEntries: preparedDisplay.visibleEntries,
-                totalDisplayEntryCount: preparedDisplay.totalCount,
-                visibleMessageLimit: visibleMessageLimit,
-                signature: preparedDisplay.signature,
-                sourceSignature: sourceSignature
-            )
+            presentationStore.store(preparedDisplay)
         }
     }
 
@@ -4133,10 +4216,17 @@ struct DetailView: View {
     }
 
     private var shouldRenderDetailMessages: Bool {
-        if hasPreparedDisplayCacheForCurrentSession || hasPreheatedDisplayCacheForCurrentSession {
+        if hasPreparedDisplayCacheForCurrentSession {
             return true
         }
-        return panelLayoutState.canRenderDetailMessages
+        if hasPreheatedDisplayCacheForCurrentSession {
+            return true
+        }
+        let canRender = panelLayoutState.canRenderDetailMessages
+        if !canRender {
+            PerfStopwatch.event("会话切换.shouldRender=false.placeholder", value: 1)
+        }
+        return canRender
     }
 
     private func preparedDisplayEntries(for detail: CodexThreadDetail) -> (visibleEntries: [ChatDisplayEntry], totalCount: Int) {
@@ -4150,7 +4240,11 @@ struct DetailView: View {
         if let preheatedDisplayCache, preheatedDisplayCache.sessionId == sessionId {
             return (preheatedDisplayCache.displayEntries, preheatedDisplayCache.totalDisplayEntryCount)
         }
-        let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+        let preparedDisplay = makeVisibleDetailDisplay(
+            for: detail,
+            visibleMessageLimit: visibleMessageLimit,
+            deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+        )
         return (preparedDisplay.visibleEntries, preparedDisplay.totalCount)
     }
 
@@ -4168,27 +4262,50 @@ struct DetailView: View {
               !hasPreparedDisplayCacheForCurrentSession else {
             return
         }
+        PerfStopwatch.event("会话切换.restorePreheated", value: preheatedDisplayCache.displayEntries.count)
         cachedSessionId = sessionId
         updateCachedSourceTail(from: preheatedDisplayCache.displayItems)
         cachedDisplayEntries = preheatedDisplayCache.displayEntries
-        cachedAppKitRows = preheatedDisplayCache.displayEntries.map { appKitRow($0) }
+        cachedAppKitRows = PerfStopwatch.measure("会话切换.appKitRow重建") {
+            preheatedDisplayCache.displayEntries.map { appKitRow($0) }
+        }
         cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
         cachedVisibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
+        visibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
         cachedItemsSignature = preheatedDisplayCache.signature
         cachedDetailSourceSignature = preheatedDisplayCache.sourceSignature
-        displayCacheBySessionId[sessionId] = preheatedDisplayCache
+        presentationStore.store(preheatedDisplayCache)
     }
 
     private func restoreDisplayCacheForCurrentSession() {
-        if let cache = displayCacheBySessionId[sessionId] {
+        if let cache = presentationStore.cache(for: sessionId) {
             cachedSessionId = sessionId
             updateCachedSourceTail(from: cache.displayItems)
             cachedDisplayEntries = cache.displayEntries
             cachedAppKitRows = cache.displayEntries.map { appKitRow($0) }
             cachedTotalDisplayEntryCount = cache.totalDisplayEntryCount
             cachedVisibleMessageLimit = cache.visibleMessageLimit
+            visibleMessageLimit = cache.visibleMessageLimit
             cachedItemsSignature = cache.signature
             cachedDetailSourceSignature = cache.sourceSignature
+            return
+        }
+        // 切会话时内部字典未命中（会话首次在本视图打开），但外层 SessionsView
+        // 可能已预热好该会话的 display 缓存。同步从预热缓存恢复，避免先清空再等
+        // onAppear 延迟填充导致的空态闪动（消息页跳动 / 滚动条跳）。
+        if let preheatedDisplayCache,
+           preheatedDisplayCache.sessionId == sessionId,
+           !preheatedDisplayCache.displayEntries.isEmpty {
+            cachedSessionId = sessionId
+            updateCachedSourceTail(from: preheatedDisplayCache.displayItems)
+            cachedDisplayEntries = preheatedDisplayCache.displayEntries
+            cachedAppKitRows = preheatedDisplayCache.displayEntries.map { appKitRow($0) }
+            cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
+            cachedVisibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
+            visibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
+            cachedItemsSignature = preheatedDisplayCache.signature
+            cachedDetailSourceSignature = preheatedDisplayCache.sourceSignature
+            presentationStore.store(preheatedDisplayCache)
             return
         }
         cachedSessionId = ""
@@ -4204,7 +4321,11 @@ struct DetailView: View {
     }
 
     private func detailSourceSignature(for detail: CodexThreadDetail) -> String {
-        makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
+        makeDetailSourceSignature(
+            for: detail,
+            visibleMessageLimit: visibleMessageLimit,
+            deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+        )
     }
 
     private func displaySignature(for visibleEntries: [ChatDisplayEntry]) -> String {
@@ -4774,8 +4895,8 @@ private struct UsageProgressRing: View {
     }
 }
 
-struct ChatDisplayEntry: Identifiable {
-    enum Kind {
+struct ChatDisplayEntry: Identifiable, Sendable {
+    enum Kind: Sendable {
         case message(CodexThreadItem)
         case process(turnId: String, items: [CodexThreadItem])
     }
@@ -4805,7 +4926,7 @@ struct ChatDisplayEntry: Identifiable {
     }
 }
 
-struct DetailDisplayCache {
+struct DetailDisplayCache: Sendable {
     let sessionId: String
     let displayItems: [CodexThreadItem]
     let displayEntries: [ChatDisplayEntry]
@@ -4822,13 +4943,17 @@ private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
     }
 }
 
-@MainActor
 func makeDetailDisplayCache(
     for detail: CodexThreadDetail,
     sessionId: String,
-    visibleMessageLimit: Int
+    visibleMessageLimit: Int,
+    deltaTimelineEnabled: Bool
 ) -> DetailDisplayCache {
-    let preparedDisplay = makeVisibleDetailDisplay(for: detail, visibleMessageLimit: visibleMessageLimit)
+    let preparedDisplay = makeVisibleDetailDisplay(
+        for: detail,
+        visibleMessageLimit: visibleMessageLimit,
+        deltaTimelineEnabled: deltaTimelineEnabled
+    )
     return DetailDisplayCache(
         sessionId: sessionId,
         displayItems: preparedDisplay.displayItems,
@@ -4840,27 +4965,36 @@ func makeDetailDisplayCache(
     )
 }
 
-@MainActor
 private func makeVisibleDetailDisplay(
     for detail: CodexThreadDetail,
-    visibleMessageLimit: Int
+    visibleMessageLimit: Int,
+    deltaTimelineEnabled: Bool
 ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String) {
     let displayItems = detail.items
         .filter { !isLowSignalDetailProcessItem($0) }
-    let displayEntries = makeChatDisplayEntries(from: displayItems)
+    let displayEntries = PerfStopwatch.measure("timeline.makeChatDisplayEntries") {
+        makeChatDisplayEntries(from: displayItems)
+    }
     let visibleEntries = visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
     return (
         displayItems: displayItems,
         visibleEntries: visibleEntries,
         totalCount: displayEntries.reduce(0) { $0 + $1.displayWeight },
         signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
-        sourceSignature: makeDetailSourceSignature(for: detail, visibleMessageLimit: visibleMessageLimit)
+        sourceSignature: makeDetailSourceSignature(
+            for: detail,
+            visibleMessageLimit: visibleMessageLimit,
+            deltaTimelineEnabled: deltaTimelineEnabled
+        )
     )
 }
 
-@MainActor
-private func makeDetailSourceSignature(for detail: CodexThreadDetail, visibleMessageLimit: Int) -> String {
-    let signatureItemLimit = ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+private func makeDetailSourceSignature(
+    for detail: CodexThreadDetail,
+    visibleMessageLimit: Int,
+    deltaTimelineEnabled: Bool
+) -> String {
+    let signatureItemLimit = deltaTimelineEnabled
         ? 2
         : max(visibleMessageLimit * 4, visibleMessageLimit + 8)
     let items = detail.items.suffix(signatureItemLimit)
@@ -4904,9 +5038,9 @@ func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -
 func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
     var entries: [ChatDisplayEntry] = []
     var currentItems: [CodexThreadItem] = []
+    var currentSegmentHasNonUserMessage = false
     var segmentCountsByTurnId: [String: Int] = [:]
     let orderedItems = stableChronologicalChatItems(items)
-
     func appendCurrentSegment() {
         guard let sourceTurnId = currentItems.first?.turnId else { return }
         let segmentIndex = segmentCountsByTurnId[sourceTurnId, default: 0]
@@ -4919,6 +5053,7 @@ func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry]
             displayTurnId: displayTurnId
         ))
         currentItems.removeAll(keepingCapacity: true)
+        currentSegmentHasNonUserMessage = false
     }
 
     for item in orderedItems {
@@ -4929,11 +5064,12 @@ func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry]
         // preserves provider order and prevents all user cards from being
         // projected ahead of every assistant/process card in the Session.
         let startsRecoveredTurn = item.type == "userMessage"
-            && currentItems.contains { $0.type != "userMessage" }
+            && currentSegmentHasNonUserMessage
         if startsNewSourceTurn || startsRecoveredTurn {
             appendCurrentSegment()
         }
         currentItems.append(item)
+        currentSegmentHasNonUserMessage = currentSegmentHasNonUserMessage || item.type != "userMessage"
     }
     appendCurrentSegment()
     return entries
@@ -4943,6 +5079,46 @@ func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry]
 /// source order for ties. A partial or malformed timestamp set stays untouched:
 /// provider order is safer than inventing positions for undated process items.
 func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadItem] {
+    guard let firstTimestamp = items.first?.createdAt else { return items }
+    let fixedTimestampLength = firstTimestamp.utf8.count
+    var previousTimestamp: String?
+    var fixedUTCRequiresSorting = false
+    var hasUniformTimestampWidth = true
+
+    for item in items {
+        guard let timestamp = item.createdAt else { return items }
+        if timestamp.utf8.count != fixedTimestampLength {
+            hasUniformTimestampWidth = false
+        }
+        if let previousTimestamp, previousTimestamp > timestamp {
+            fixedUTCRequiresSorting = true
+        }
+        previousTimestamp = timestamp
+    }
+
+    // An already monotonic, uniform-width sequence needs no interpretation:
+    // returning provider order is correct even when a provider supplied a
+    // malformed value. Strict timestamp validation is only necessary before
+    // we actively reorder anything.
+    if hasUniformTimestampWidth, !fixedUTCRequiresSorting {
+        return items
+    }
+
+    // Provider timelines overwhelmingly use one fixed-width UTC ISO-8601
+    // representation. In that form lexical and chronological order are
+    // identical, avoiding thousands of formatter calls when sorting is needed.
+    if hasUniformTimestampWidth,
+       items.allSatisfy({ item in
+           item.createdAt.map { isFixedUTCISO8601Timestamp($0, length: fixedTimestampLength) } == true
+       }) {
+        return items.enumerated().sorted { left, right in
+            guard let leftTimestamp = left.element.createdAt,
+                  let rightTimestamp = right.element.createdAt else { return left.offset < right.offset }
+            guard leftTimestamp != rightTimestamp else { return left.offset < right.offset }
+            return leftTimestamp < rightTimestamp
+        }.map(\.element)
+    }
+
     var datedItems: [(index: Int, item: CodexThreadItem, date: Date)] = []
     datedItems.reserveCapacity(items.count)
     var previousDate: Date?
@@ -4950,7 +5126,7 @@ func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadIte
 
     for (index, item) in items.enumerated() {
         guard let createdAt = item.createdAt,
-              let date = try? Date(createdAt, strategy: .iso8601) else {
+              let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else {
             return items
         }
         if let previousDate, previousDate > date {
@@ -4966,6 +5142,54 @@ func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadIte
         }
         return left.date < right.date
     }.map(\.item)
+}
+
+private func isFixedUTCISO8601Timestamp(_ value: String, length: Int) -> Bool {
+    guard value.utf8.count == length,
+          length == 20 || length >= 22 else { return false }
+    var month = 0
+    var day = 0
+    var hour = 0
+    var minute = 0
+    var second = 0
+    for (index, byte) in value.utf8.enumerated() {
+        switch index {
+        case 4, 7:
+            guard byte == 45 else { return false } // -
+        case 10:
+            guard byte == 84 else { return false } // T
+        case 13, 16:
+            guard byte == 58 else { return false } // :
+        case 19 where length == 20:
+            guard byte == 90 else { return false } // Z
+        case 19:
+            guard byte == 46 else { return false } // .
+        case length - 1:
+            guard byte == 90 else { return false } // Z
+        default:
+            guard byte >= 48, byte <= 57 else { return false }
+            let digit = Int(byte - 48)
+            switch index {
+            case 5: month = digit * 10
+            case 6: month += digit
+            case 8: day = digit * 10
+            case 9: day += digit
+            case 11: hour = digit * 10
+            case 12: hour += digit
+            case 14: minute = digit * 10
+            case 15: minute += digit
+            case 17: second = digit * 10
+            case 18: second += digit
+            default: break
+            }
+        }
+    }
+    guard (1...12).contains(month),
+          (1...31).contains(day),
+          (0...23).contains(hour),
+          (0...59).contains(minute),
+          (0...60).contains(second) else { return false }
+    return true
 }
 
 func makeChatDisplayEntriesForTurn(
@@ -7835,15 +8059,23 @@ private struct ProcessTimelineStep: View {
 }
 
 private extension ISO8601DateFormatter {
+    nonisolated(unsafe) static let corptieThreadItemWithFraction: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    nonisolated(unsafe) static let corptieThreadItemWithoutFraction: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
     static func corptieThreadItemDate(from value: String) -> Date? {
-        let withFraction = ISO8601DateFormatter()
-        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = withFraction.date(from: value) {
+        if let date = corptieThreadItemWithFraction.date(from: value) {
             return date
         }
-        let withoutFraction = ISO8601DateFormatter()
-        withoutFraction.formatOptions = [.withInternetDateTime]
-        return withoutFraction.date(from: value)
+        return corptieThreadItemWithoutFraction.date(from: value)
     }
 }
 

@@ -289,6 +289,6 @@ struct ChatPerformanceFixture: Sendable {
 
     private static func timestamp(turnIndex: Int, itemIndex: Int) -> String {
         let seconds = turnIndex * 100 + itemIndex
-        return "2026-08-12T00:\(String(format: "%02d", (seconds / 60) % 60)):\(String(format: "%02d", seconds % 60)).000Z"
+        return "2026-08-12T\(String(format: "%02d", (seconds / 3_600) % 24)):\(String(format: "%02d", (seconds / 60) % 60)):\(String(format: "%02d", seconds % 60)).000Z"
     }
 }
