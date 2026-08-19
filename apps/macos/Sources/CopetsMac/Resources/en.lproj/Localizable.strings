@@ -564,3 +564,4 @@
 "Raw status" = "Raw status";
 "Regenerate Plan" = "Regenerate Plan";
 "The integration plan is stale. Regenerate and review it before continuing." = "The integration plan is stale. Regenerate and review it before continuing.";
+"执行状态" = "Execution Status";

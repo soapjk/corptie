@@ -942,3 +942,4 @@
 "Raw status" = "原始状态";
 "Regenerate Plan" = "重新生成计划";
 "The integration plan is stale. Regenerate and review it before continuing." = "代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。";
+"执行状态" = "执行状态";

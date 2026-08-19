@@ -598,17 +598,7 @@ struct WorkItemCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 6) {
-                        lifecycleStatusPill
-                        sessionStatusPill
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        lifecycleStatusPill
-                        sessionStatusPill
-                    }
-                }
+                sessionStatusPill
             }
         }
         .padding(.horizontal, 8)
@@ -620,26 +610,6 @@ struct WorkItemCard: View {
 
     private var sessionActivity: WorkItemBoundSessionActivity {
         WorkItemBoundSessionActivity.resolve(workItem: item, sessions: sessions)
-    }
-
-    private var lifecycleLabel: String {
-        switch WorkItemColumn.column(for: item.status) {
-        case .todo: L10n("Not Started")
-        case .inProgress: L10n("In Progress")
-        case .done: L10n("Completed")
-        }
-    }
-
-    private var lifecycleColor: Color {
-        switch WorkItemColumn.column(for: item.status) {
-        case .todo: .secondary
-        case .inProgress: .orange
-        case .done: .green
-        }
-    }
-
-    private var lifecycleStatusPill: some View {
-        statusPill(lifecycleLabel, color: lifecycleColor)
     }
 
     private var sessionStatusPill: some View {
@@ -1045,7 +1015,7 @@ struct WorkItemDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             if !isCompleted {
                 HStack {
-                    Label(L10n("执行"), systemImage: "play.circle")
+                    Label(L10n("执行状态"), systemImage: "waveform.path.ecg")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -1285,9 +1255,9 @@ struct WorkItemDetailView: View {
                 Task { await interruptExecution() }
             } label: {
                 Image(systemName: "stop.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
                     .background(Color.red, in: Circle())
             }
             .buttonStyle(.plain)
@@ -1297,9 +1267,9 @@ struct WorkItemDetailView: View {
                 Task { await startOrResumeExecution() }
             } label: {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: 24)
                     .background(Color.accentColor, in: Circle())
             }
             .buttonStyle(.plain)
