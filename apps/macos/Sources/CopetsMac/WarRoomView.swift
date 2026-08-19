@@ -311,8 +311,35 @@ struct WarRoomView: View {
 
 // MARK: - WorkItem 混合看板
 
+enum ObjectiveDiscussionRouteDecision: Equatable {
+    case open(sessionId: String)
+    case create
+
+    static func resolve(objectiveId: String, sessions: [TaskSession]) -> Self {
+        if let session = sessions.first(where: {
+            $0.objectiveId == objectiveId && $0.resolvedSessionKind == .objectiveChat
+        }) {
+            return .open(sessionId: session.id)
+        }
+        return .create
+    }
+}
+
+enum WorkItemAcceptancePresentationTrigger: Equatable {
+    case automaticRefresh
+    case automaticAcceptanceButton
+}
+
+enum WorkItemAcceptancePresentationDecision {
+    static func shouldPresent(trigger: WorkItemAcceptancePresentationTrigger, hasPassingAcceptance: Bool) -> Bool {
+        hasPassingAcceptance && trigger == .automaticAcceptanceButton
+    }
+}
+
 struct WorkItemBoardView: View {
     @ObservedObject private var client = EntityAPIClient.shared
+    @ObservedObject private var backendClient = BackendClient.shared
+    @EnvironmentObject private var router: AppTabRouter
     let objective: Objective
     let items: [WorkItem]
     @Binding var selectedWorkItemId: String?
@@ -329,9 +356,9 @@ struct WorkItemBoardView: View {
                     .font(.title3.bold())
                 Spacer()
                 Button {
-                    isCreatingObjectiveChat = true
+                    openOrCreateObjectiveDiscussion()
                 } label: {
-                    Label(L10n("讨论 Objective"), systemImage: "bubble.left.and.bubble.right")
+                    Label(L10n("讨论"), systemImage: "bubble.left.and.bubble.right")
                 }
                 Button {
                     isCreating = true
@@ -366,7 +393,21 @@ struct WorkItemBoardView: View {
             }
         }
         .sheet(isPresented: $isCreatingObjectiveChat) {
-            NewSessionCreationSheet(fixedObjective: objective)
+            NewSessionCreationSheet(fixedObjective: objective) { session in
+                router.openSession(session.id)
+            }
+        }
+    }
+
+    private func openOrCreateObjectiveDiscussion() {
+        switch ObjectiveDiscussionRouteDecision.resolve(
+            objectiveId: objective.id,
+            sessions: backendClient.sessions
+        ) {
+        case .open(let sessionId):
+            router.openSession(sessionId)
+        case .create:
+            isCreatingObjectiveChat = true
         }
     }
 }
@@ -576,11 +617,11 @@ struct WorkItemDetailView: View {
     @State private var showEdit = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
-    @State private var notifiedSuggestionKey: String?
     @State private var pendingStatusAdvance: String?
     @State private var showStatusAdvanceConfirmation = false
     @State private var isAdvancingStatus = false
     @State private var isConfirmingCompletion = false
+    @State private var isRejectingAcceptance = false
     @State private var sessionCreationAgent: Agent?
     @State private var worktreeStatus: WorkItemWorktreeStatus?
     @State private var isLoadingWorktree = false
@@ -633,10 +674,6 @@ struct WorkItemDetailView: View {
             // 本视图会拿到新的 workItem 值并重新刷新「当前执行」，避免依赖陈旧的 currentSessionId。
             await refreshExecution()
             if isCompleted { await refreshWorktree() }
-            presentCompletionSuggestionIfEligible()
-        }
-        .onChange(of: workItem.completionSuggestion) { _, _ in
-            presentCompletionSuggestionIfEligible()
         }
         .sheet(isPresented: $showEdit) {
             WorkItemEditView(workItem: workItem, workspaceIds: workspaceIds) {
@@ -698,8 +735,9 @@ struct WorkItemDetailView: View {
             WorkItemCompletionConfirmationView(
                 workItem: workItem,
                 suggestion: workItem.completionSuggestion,
-                isConfirming: isConfirmingCompletion,
+                isWorking: isConfirmingCompletion || isRejectingAcceptance,
                 onConfirm: { Task { await confirmComplete() } },
+                onReject: { Task { await rejectAcceptance() } },
                 onCancel: {
                     showCompleteConfirmation = false
                     pendingStatusAdvance = nil
@@ -780,6 +818,27 @@ struct WorkItemDetailView: View {
             HStack(spacing: 7) {
                 compactStatusBadge(workItem.status)
                 metadataPill(priorityLabel, systemImage: "flag")
+            }
+
+
+            if isPendingReview {
+                Button {
+                    if WorkItemAcceptancePresentationDecision.shouldPresent(
+                        trigger: .automaticAcceptanceButton,
+                        hasPassingAcceptance: isPendingReview
+                    ) {
+                        showCompleteConfirmation = true
+                    }
+                } label: {
+                    Label(L10n("自动验收已通过"), systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.green.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(L10n("查看自动验收情况"))
             }
 
             HStack(alignment: .top, spacing: 8) {
@@ -1051,18 +1110,6 @@ struct WorkItemDetailView: View {
     private var executionControlButton: some View {
         if isCompleted {
             EmptyView()
-        } else if isPendingReview {
-            Button {
-                showCompleteConfirmation = true
-            } label: {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
-                    .background(Color.green, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .help(L10n("确认完成"))
         } else if isRunning {
             Button {
                 Task { await interruptExecution() }
@@ -1153,13 +1200,21 @@ struct WorkItemDetailView: View {
         }
     }
 
-    private func presentCompletionSuggestionIfEligible() {
-        guard !isCompleted else { return }
-        guard let suggestion = workItem.completionSuggestion, suggestion.recommended else { return }
-        let key = "\(workItem.id):\(suggestion.assessedAt)"
-        guard notifiedSuggestionKey != key else { return }
-        notifiedSuggestionKey = key
-        showCompleteConfirmation = true
+    private func rejectAcceptance() async {
+        guard !isRejectingAcceptance else { return }
+        isRejectingAcceptance = true
+        defer { isRejectingAcceptance = false }
+        if await client.rejectWorkItemAcceptance(workItemId: workItem.id) != nil {
+            showCompleteConfirmation = false
+            pendingStatusAdvance = nil
+            onRequestReload()
+        } else {
+            showCompleteConfirmation = false
+            executionError = EntityLaunchError(
+                message: client.errorMessage ?? L10n("Unable to reject automated acceptance"),
+                code: nil
+            )
+        }
     }
 
     private var priorityLabel: String {
@@ -1220,19 +1275,19 @@ struct WorkItemDetailView: View {
     private func compactStatusBadge(_ status: String) -> some View {
         switch WorkItemStatusAdvanceDecision.resolve(status: status) {
         case .advance(let targetStatus):
-            Button {
-                pendingStatusAdvance = targetStatus
-                if targetStatus == "done" {
-                    showCompleteConfirmation = true
-                } else {
-                    showStatusAdvanceConfirmation = true
-                }
-            } label: {
+            if targetStatus == "done" {
                 statusBadgeLabel(status)
+            } else {
+                Button {
+                    pendingStatusAdvance = targetStatus
+                    showStatusAdvanceConfirmation = true
+                } label: {
+                    statusBadgeLabel(status)
+                }
+                .buttonStyle(.plain)
+                .disabled(isAdvancingStatus)
+                .help(L10nFormat("Advance status to %@", workItemStatusLabel(targetStatus)))
             }
-            .buttonStyle(.plain)
-            .disabled(isAdvancingStatus)
-            .help(L10nFormat("Advance status to %@", workItemStatusLabel(targetStatus)))
         case .unavailable:
             statusBadgeLabel(status)
         }
@@ -1295,8 +1350,9 @@ struct WorkItemDetailView: View {
 private struct WorkItemCompletionConfirmationView: View {
     let workItem: WorkItem
     let suggestion: WorkItemCompletionSuggestion?
-    let isConfirming: Bool
+    let isWorking: Bool
     let onConfirm: () -> Void
+    let onReject: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
@@ -1318,7 +1374,7 @@ private struct WorkItemCompletionConfirmationView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if let suggestion, suggestion.recommended {
                         Label(
-                            L10n("以下验收标准已有可核验证据。请人工确认是否标记为完成。"),
+                            L10n("自动化验收已通过，该 WorkItem 可以完成。请查看当前验收情况并作出最终确认。"),
                             systemImage: "checkmark.seal.fill"
                         )
                         .foregroundStyle(.green)
@@ -1371,22 +1427,24 @@ private struct WorkItemCompletionConfirmationView: View {
                 Spacer()
                 Button(L10n("取消"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                    .disabled(isConfirming)
+                    .disabled(isWorking)
+                Button(L10n("不通过，还要继续改"), action: onReject)
+                    .disabled(isWorking)
                 Button(action: onConfirm) {
-                    if isConfirming {
+                    if isWorking {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text(L10n("确认完成"))
+                        Text(L10n("确认通过"))
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(isConfirming)
+                .disabled(isWorking)
             }
             .padding(16)
         }
         .frame(width: 520, height: 480)
-        .interactiveDismissDisabled(isConfirming)
+        .interactiveDismissDisabled(isWorking)
     }
 }
 

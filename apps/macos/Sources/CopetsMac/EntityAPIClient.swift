@@ -260,6 +260,18 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
+    // 用户明确驳回已通过的自动验收结论，保留评估证据但撤销“可完成”建议。
+    @discardableResult
+    func rejectWorkItemAcceptance(workItemId: String) async -> WorkItem? {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItemId)/reject-acceptance")
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["rejected": true])
+        return await performEntityMutation(request, as: WorkItem.self)
+    }
+
     // 提交独立的验收评估。该接口要求逐条标准、结论和可核验证据；
     // Session 生命周期状态不能通过此方法隐式转换为验收通过。
     @discardableResult

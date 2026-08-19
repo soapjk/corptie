@@ -1127,6 +1127,26 @@ export class CorptieStore {
       WHERE objective_id IS NOT NULL AND TRIM(objective_id) <> ''
         AND (work_item_id IS NULL OR TRIM(work_item_id) = '')
         AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+    // Objective discussion is a one-to-one association. Preserve the oldest
+    // discussion as canonical and retain historical duplicates as ordinary,
+    // unbound chats before installing the durable uniqueness guard.
+    this.db.run(`UPDATE sessions AS duplicate
+      SET objective_id = NULL, session_kind = 'assistantChat'
+      WHERE duplicate.session_kind = 'objectiveChat'
+        AND duplicate.objective_id IS NOT NULL
+        AND TRIM(duplicate.objective_id) <> ''
+        AND EXISTS (
+          SELECT 1 FROM sessions AS canonical
+          WHERE canonical.session_kind = 'objectiveChat'
+            AND canonical.objective_id = duplicate.objective_id
+            AND (
+              canonical.created_at < duplicate.created_at
+              OR (canonical.created_at = duplicate.created_at AND canonical.id < duplicate.id)
+            )
+        )`);
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_objective_chat
+      ON sessions(objective_id)
+      WHERE session_kind = 'objectiveChat' AND objective_id IS NOT NULL`);
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
       WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
         AND EXISTS (SELECT 1 FROM agents
@@ -2952,6 +2972,8 @@ export class CorptieStore {
       error.code = "OBJECTIVE_NOT_FOUND";
       throw error;
     }
+    const existing = this.getObjectiveChatSession(objectiveId);
+    if (existing && existing.id !== sessionId) return existing;
     this.db.run(
       "UPDATE sessions SET objective_id = ?, work_item_id = NULL, session_kind = 'objectiveChat', updated_at = ? WHERE id = ?",
       [objectiveId, createdAtFromOrNow(), sessionId]
@@ -3383,6 +3405,16 @@ export class CorptieStore {
       [objectiveId]
     );
     return rows.map((row) => this.rowToSession(row));
+  }
+
+  getObjectiveChatSession(objectiveId) {
+    const row = this.selectOne(
+      `SELECT * FROM sessions
+       WHERE objective_id = ? AND session_kind = 'objectiveChat'
+       ORDER BY created_at ASC, id ASC LIMIT 1`,
+      [objectiveId]
+    );
+    return row ? this.rowToSession(row) : null;
   }
 
   listSessionsByAgent(agentId) {

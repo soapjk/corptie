@@ -366,6 +366,10 @@ export function handleEntityHttpRequest({
             throw apiError("AGENT_OUTSIDE_OBJECTIVE", "只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。", 403);
           }
           const providerId = requiredProviderId(input);
+          const existingSession = objectiveService.store.getObjectiveChatSession(id);
+          if (existingSession) {
+            return sendJson(response, 200, { session: existingSession, created: false });
+          }
           const session = await launchObjectiveChatSession({
             agent,
             objective,
@@ -471,6 +475,18 @@ export function handleEntityHttpRequest({
         }
         const id = decodeURIComponent(reclaimWorktreeMatch[1]);
         return sendJson(response, 200, await reclaimWorkItemWorktree(id));
+      }
+
+      const acceptanceRejectionMatch = path.match(/^\/work-items\/([^/]+)\/reject-acceptance$/);
+      if (request.method === "POST" && acceptanceRejectionMatch) {
+        const id = decodeURIComponent(acceptanceRejectionMatch[1]);
+        return sendJson(
+          response,
+          200,
+          presentWorkItemAcceptance(
+            objectiveService.rejectWorkItemAcceptance(id, await readJson(request))
+          )
+        );
       }
 
       const workItemSessionsMatch = path.match(/^\/work-items\/([^/]+)\/sessions$/);
