@@ -3613,7 +3613,7 @@ struct DetailView: View {
             isExpanded = expanded
             processCount = items.count
             processDuration = nativeProcessDuration(for: items)
-            processState = nativeProcessState(for: items)
+            processState = projectedProcessState(for: items)
             showsHeader = false
             hoverTimestamp = ""
             actions = []
@@ -3690,17 +3690,6 @@ struct DetailView: View {
         case "agentMessage": "Progress update"
         default: "Execution step"
         }
-    }
-
-    private func nativeProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRow.ProcessState {
-        let statuses = items.flatMap { [$0.turnStatus, $0.status ?? ""] }.map { $0.lowercased() }
-        if statuses.contains(where: { $0 == "failed" || $0 == "error" }) { return .failed }
-        if statuses.contains(where: { $0 == "cancelled" || $0 == "canceled" || $0 == "interrupted" }) {
-            return .cancelled
-        }
-        let turnStatuses = items.map { $0.turnStatus.lowercased() }.filter { !$0.isEmpty }
-        if turnStatuses.contains(where: { !isTerminalTurnStatus($0) }) { return .running }
-        return .completed
     }
 
     private func processExpansionMetadata(
@@ -4932,6 +4921,28 @@ private func isTerminalTurnStatus(_ status: String) -> Bool {
         return true
     default:
         return false
+    }
+}
+
+/// Projects the state of the whole execution card from the turn lifecycle.
+/// An individual command can fail and still be followed by a successful
+/// recovery, so its item-level `status` must not determine the turn outcome.
+func projectedProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRow.ProcessState {
+    guard let status = items.lazy
+        .map({ $0.turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
+        .last(where: { !$0.isEmpty }) else {
+        return .completed
+    }
+
+    switch status {
+    case "failed", "error":
+        return .failed
+    case "cancelled", "canceled", "interrupted":
+        return .cancelled
+    case "completed", "complete":
+        return .completed
+    default:
+        return .running
     }
 }
 
