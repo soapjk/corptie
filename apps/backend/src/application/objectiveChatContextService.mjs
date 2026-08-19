@@ -23,8 +23,7 @@ export class ObjectiveChatContextService {
         agentId: agent.agentId,
         name: agent.name,
         role: agent.role,
-        description: agent.description,
-        provider: agent.provider
+        description: agent.description
       }));
     const snapshot = {
       generatedAt: new Date().toISOString(),

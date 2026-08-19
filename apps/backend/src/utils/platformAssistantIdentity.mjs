@@ -10,7 +10,6 @@ export const PLATFORM_ASSISTANT_MANIFEST = Object.freeze({
   defaultName: "Corptie",
   description: "Corptie 平台助手：代用户管理 Agent、Objective、WorkItem、Session 与其他 Corptie 产品能力。",
   role: "assistant",
-  provider: "codex-app-server",
   capabilities: Object.freeze(["platform.manage"]),
   systemPrompt: [
     "You are Corptie's built-in platform assistant.",

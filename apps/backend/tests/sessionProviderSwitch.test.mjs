@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { SessionProviderSwitchCoordinator } from "../src/application/sessionProviderSwitchCoordinator.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { withSessionActions } from "../src/agent-provider/sessionActions.mjs";
 
@@ -97,6 +98,7 @@ test("provider switch forks the binding, preserves workspace identity, and bumps
       transitionId: "transition:provider-switch",
       logicalSessionId: "logical:provider-switch",
       transitionKind: "provider",
+      targetProviderId: "claude-sdk",
       targetCwd: "/repo/main",
       sourceRoutingVersion: before.routingVersion,
       phase: "waitingForTurn",
@@ -105,6 +107,7 @@ test("provider switch forks the binding, preserves workspace identity, and bumps
 
     const pending = store.getPendingWorkspaceTransition("logical:provider-switch");
     assert.equal(pending.transitionKind, "provider");
+    assert.equal(pending.targetProviderId, "claude-sdk");
     assert.equal(pending.phase, "waitingForTurn");
 
     store.commitWorkspaceTransition("transition:provider-switch", {
@@ -122,6 +125,7 @@ test("provider switch forks the binding, preserves workspace identity, and bumps
     assert.equal(after.activeBinding.providerId, "claude-sdk");
     assert.equal(after.activeThreadId, "thread:claude-b");
     assert.equal(after.routingVersion, 2);
+    assert.equal(store.getSession("codex:provider-switch").external.provider, "claude-sdk");
     // Workspace identity is preserved across a Provider switch (no worktree move).
     assert.equal(after.activeWorkspaceId, before.activeWorkspaceId);
     assert.equal(after.repositoryId, before.repositoryId);
@@ -144,6 +148,93 @@ test("provider switch forks the binding, preserves workspace identity, and bumps
   }
 });
 
+test("pending provider switch preserves its target Provider across a store restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-restart-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const initialStore = new CorptieStore({ dbPath, configPath });
+  let reopenedStore = null;
+  try {
+    await initialStore.initialize();
+    const before = providerSession(initialStore);
+    initialStore.beginWorkspaceTransition({
+      transitionId: "transition:restart",
+      logicalSessionId: "logical:provider-switch",
+      transitionKind: "provider",
+      targetProviderId: "claude-sdk",
+      targetCwd: "/repo/main",
+      sourceRoutingVersion: before.routingVersion,
+      phase: "waitingForTurn",
+      strategy: "fork"
+    });
+    await initialStore.close();
+
+    reopenedStore = new CorptieStore({ dbPath, configPath });
+    await reopenedStore.initialize();
+    const pending = reopenedStore.getPendingWorkspaceTransition("logical:provider-switch");
+    assert.equal(pending.transitionKind, "provider");
+    assert.equal(pending.targetProviderId, "claude-sdk");
+    assert.equal(pending.phase, "waitingForTurn");
+  } finally {
+    await initialStore.close().catch(() => {});
+    await reopenedStore?.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("provider switch coordinator preserves Session kind and rejects a stale route", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-coordinator-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store);
+    let createdInput = null;
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "codex-app-server",
+      providerSessionId: "thread:codex-a",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: { resolveId: (providerId) => ["codex-app-server", "claude-sdk"].includes(providerId) ? providerId : null },
+      resolveSessionReference: async () => reference,
+      resolveTargetContext: async () => ({ sessionKind: "assistantChat", agentId: "assistant" }),
+      createTargetSession: async (input) => {
+        createdInput = input;
+        return { providerThreadId: "thread:claude-coordinator" };
+      }
+    });
+
+    await assert.rejects(
+      () => coordinator.switchProvider(reference.sessionId, {
+        providerId: "claude-sdk",
+        expectedRoutingVersion: logical.routingVersion - 1
+      }),
+      (error) => error?.code === "STALE_SESSION_ROUTE"
+    );
+    assert.equal(store.getPendingWorkspaceTransition(logical.logicalSessionId), null);
+
+    const result = await coordinator.switchProvider(reference.sessionId, {
+      providerId: "claude-sdk",
+      expectedRoutingVersion: logical.routingVersion,
+      transitionId: "transition:coordinator"
+    });
+    assert.equal(result.status, "committed");
+    assert.equal(createdInput.providerId, "claude-sdk");
+    assert.equal(createdInput.sessionKind, "assistantChat");
+    assert.equal(createdInput.agentId, "assistant");
+    assert.equal(result.logicalSession.activeBinding.providerId, "claude-sdk");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("beginWorkspaceTransition rejects a concurrent unfinished provider transition", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-mutex-"));
   const store = new CorptieStore({
@@ -157,6 +248,7 @@ test("beginWorkspaceTransition rejects a concurrent unfinished provider transiti
       transitionId: "transition:first",
       logicalSessionId: "logical:provider-switch",
       transitionKind: "provider",
+      targetProviderId: "claude-sdk",
       sourceRoutingVersion: before.routingVersion,
       phase: "waitingForTurn"
     });
@@ -165,6 +257,7 @@ test("beginWorkspaceTransition rejects a concurrent unfinished provider transiti
         transitionId: "transition:second",
         logicalSessionId: "logical:provider-switch",
         transitionKind: "provider",
+        targetProviderId: "openclacky",
         sourceRoutingVersion: before.routingVersion,
         phase: "waitingForTurn"
       }),

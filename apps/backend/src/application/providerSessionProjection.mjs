@@ -15,6 +15,55 @@ export function persistProviderSessionProjection(store, session, {
   return store.getSession(session.id);
 }
 
+// Resolve a physical Provider Session against the durable logical route before
+// the generic projection repair runs. The active target thread keeps the
+// original public Session identity; superseded/invalid physical threads are
+// historical implementation details and must not reappear as duplicate rows.
+export function resolveRoutedProviderSessionProjection(store, session, {
+  providerId = session?.external?.provider ?? null
+} = {}) {
+  if (!store?.db || !session?.id || !providerId) {
+    return { disposition: "unbound", session, logical: null };
+  }
+  const providerSessionId = session.external?.sessionId
+    ?? session.external?.threadId
+    ?? session.id;
+  const logical = store.getLogicalSessionByProviderSessionId(providerId, providerSessionId);
+  if (logical?.activeBinding) {
+    const stable = store.getSession(logical.legacySessionId);
+    return {
+      disposition: "active",
+      logical,
+      session: {
+        ...session,
+        id: logical.legacySessionId,
+        title: logical.sessionName || logical.title || stable?.title || session.title,
+        agent: stable?.agent ?? session.agent,
+        agentId: stable?.agentId ?? session.agentId ?? null,
+        sessionKind: stable?.sessionKind ?? session.sessionKind ?? "legacy",
+        objectiveId: stable?.objectiveId ?? session.objectiveId ?? null,
+        workItemId: stable?.workItemId ?? session.workItemId ?? null,
+        archived: stable?.archived ?? session.archived,
+        pinned: stable?.pinned ?? session.pinned,
+        sortOrder: stable?.sortOrder ?? session.sortOrder,
+        external: {
+          ...(session.external ?? {}),
+          provider: logical.activeBinding.providerId,
+          threadId: logical.activeThreadId,
+          sessionId: logical.activeBinding.providerSessionId
+        }
+      }
+    };
+  }
+
+  const providerThreadId = session.external?.threadId ?? providerSessionId;
+  const binding = store.getProviderThreadBinding(providerThreadId);
+  if (binding && binding.state !== "active") {
+    return { disposition: "historical", session: null, logical: null };
+  }
+  return { disposition: "unbound", session, logical: null };
+}
+
 // Repairs the historical state where a Corptie-owned Provider session had a
 // logical route / entity links but no row in the shared sessions projection.
 export function ensureProviderSessionProjection({

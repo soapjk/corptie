@@ -208,6 +208,18 @@ test("Session application service rejects retired per-session avatar input", asy
   );
 });
 
+test("route-transition creation returns a Provider thread without binding a second logical Session", async () => {
+  const { calls, service } = fixture();
+  const session = await service.createSessionForRouteTransition(
+    "fake.provider",
+    { cwd: "/tmp/project", title: "Existing logical title" },
+    { actorId: "agent-a", sessionKind: "assistantChat" }
+  );
+
+  assert.equal(session.id, "legacy-created");
+  assert.deepEqual(calls.map((call) => call[0]), ["createSession"]);
+});
+
 test("Session application service lets each Provider prepare create input", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({

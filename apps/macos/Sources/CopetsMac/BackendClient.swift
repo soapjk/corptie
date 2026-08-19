@@ -90,7 +90,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isUpdatingFeishu = false
     @Published private(set) var codexModels: [CodexModel] = []
     @Published private(set) var agentProviders: [AgentProviderDescriptor] = []
-    @Published private(set) var defaultAgentProviderId: String?
+    @Published private(set) var defaultSessionProviderId: String?
     @Published private(set) var codexDefaultModel: String?
     @Published private(set) var codexDefaultReasoningLevel: String?
     @Published private(set) var loadedModelProvider: String?
@@ -208,7 +208,7 @@ final class BackendClient: ObservableObject {
         Task {
             await loadSettings()
             await loadProviders()
-            if let providerId = defaultAgentProviderId,
+            if let providerId = defaultSessionProviderId,
                agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
                 await loadModels(for: providerId)
             }
@@ -821,7 +821,7 @@ final class BackendClient: ObservableObject {
             }
             let catalog = try JSONDecoder().decode(AgentProvidersResponse.self, from: data)
             agentProviders = catalog.providers
-            defaultAgentProviderId = catalog.providers.canonicalProviderId(for: catalog.defaultProviderId)
+            defaultSessionProviderId = catalog.providers.canonicalProviderId(for: catalog.defaultProviderId)
             lastError = nil
         } catch {
             lastError = error.localizedDescription
@@ -2836,6 +2836,41 @@ final class BackendClient: ObservableObject {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Restart failed: %@", error.localizedDescription)
             }
+        }
+    }
+
+    @discardableResult
+    func switchProvider(session: TaskSession, to providerId: String) async -> Bool {
+        let target = providerId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty, target != session.external?.provider else { return false }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/actions/switch-provider"))
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            var body: [String: Any] = [
+                "providerId": target,
+                "transitionId": "provider-transition:\(UUID().uuidString.lowercased())"
+            ]
+            if let routingVersion = session.external?.routingVersion {
+                body["expectedRoutingVersion"] = routingVersion
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+            guard (200..<300).contains(http.statusCode) else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Provider 切换失败"))
+            }
+            sendStatusMessage = http.statusCode == 202
+                ? L10n("当前回复完成后切换 Provider")
+                : L10n("Provider 已切换")
+            await refresh()
+            if selectedSession?.id == session.id {
+                selectedSession = sessions.first(where: { $0.id == session.id }) ?? selectedSession
+            }
+            return true
+        } catch {
+            lastError = error.localizedDescription
+            return false
         }
     }
 
