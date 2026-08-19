@@ -217,6 +217,25 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     @discardableResult
+    func resolveConflictWithAgent() async -> Bool {
+        guard let job, job.hasMergeConflict else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/jobs/\(job.id)/resolve-conflict",
+                body: [:]
+            )
+            self.job = envelope.job
+            errorMessage = nil
+            return envelope.job.conflictResolution?.sessionId != nil
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
     func regeneratePlan() async -> Bool {
         guard let staleJob = job,
               staleJob.requiresPlanRegeneration,
@@ -243,7 +262,7 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func pollJob() async {
-        guard let current = job, current.isActive else { return }
+        guard let current = job, current.shouldPoll else { return }
         do {
             let envelope: WorktreeIntegrationJobEnvelope = try await get(
                 "worktree-management/jobs/\(current.id)"

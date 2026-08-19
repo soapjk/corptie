@@ -446,6 +446,54 @@ export class GitWorkspaceManager {
     return presentEnsuredWorkItemWorkspace(created, false, sharedAgentConfiguration);
   }
 
+  async prepareIntegrationConflictResolutionForProject(input) {
+    const snapshot = await createGitWorkspaceSnapshot(absolutePath(input.workingDirectory));
+    if (snapshot.repository.id !== input.repositoryId) {
+      throw integrationGitError("REPOSITORY_IDENTITY_CHANGED", "The integration project identity changed.");
+    }
+    const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree is unavailable.");
+    const operationState = await this.integrationOperationState(main.path);
+    if (operationState !== "merge") {
+      throw integrationGitError(
+        "INTEGRATION_CONFLICT_STATE_CHANGED",
+        "main no longer contains the merge conflict owned by this integration task. Refresh before continuing."
+      );
+    }
+    const mergeHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "MERGE_HEAD"])).trim();
+    if (mergeHead !== input.sourceHead) {
+      throw integrationGitError(
+        "UNRELATED_MERGE_IN_PROGRESS",
+        "main contains a merge for a different source. Resolve it manually before continuing."
+      );
+    }
+    const mainHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (mainHead !== input.expectedMainHead) {
+      throw integrationGitError("MAIN_HEAD_CHANGED", "main HEAD changed after the integration conflict was recorded.");
+    }
+    const conflicts = (await this.gitOutput(main.path, ["diff", "--name-only", "--diff-filter=U"]))
+      .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    if (conflicts.length === 0) {
+      throw integrationGitError(
+        "INTEGRATION_CONFLICT_STATE_CHANGED",
+        "The recorded merge no longer has unresolved files. Retry the integration task instead."
+      );
+    }
+    await this.runGit(main.path, ["merge", "--abort"]);
+    const status = (await this.gitOutput(main.path, ["status", "--porcelain=v1"])).trim();
+    if (status) {
+      throw integrationGitError(
+        "MAIN_NOT_RESTORED",
+        "Git aborted the task-owned merge, but main did not return to a clean state."
+      );
+    }
+    return this.createIntegrationWorktreeForProject({
+      repositoryId: input.repositoryId,
+      workingDirectory: main.path,
+      runId: input.jobId
+    });
+  }
+
   async mergeWorktreeIntoMain(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
     return this.mergeWorktreeIntoMainForProject({

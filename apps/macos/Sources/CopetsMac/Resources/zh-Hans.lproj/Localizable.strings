@@ -952,3 +952,8 @@
 "Regenerate Plan" = "重新生成计划";
 "The integration plan is stale. Regenerate and review it before continuing." = "代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。";
 "执行状态" = "执行状态";
+"Ask Agent to Resolve" = "让 Agent 处理冲突";
+"Open Conflict Agent" = "打开冲突处理 Agent";
+"Agent %@ is resolving conflicts in %@. Return here and retry after it finishes." = "Agent %@ 正在 %@ 中处理冲突。完成后请返回此处重试。";
+"The conflict Agent finished. Retry to verify and resume the integration task." = "冲突处理 Agent 已完成。请点击重试以验证结果并继续集成任务。";
+"The conflict Agent stopped before completing. Open its Session to inspect or resume it." = "冲突处理 Agent 尚未完成便已停止。请打开其会话检查或恢复执行。";

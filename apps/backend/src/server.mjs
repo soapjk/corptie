@@ -857,6 +857,86 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   },
   commitChanges: (input) => gitWorkspaces.commitIntegrationChanges(input),
   mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
+  prepareConflictResolution: (input) => gitWorkspaces.prepareIntegrationConflictResolutionForProject({
+    repositoryId: input.repositoryId,
+    workingDirectory: input.mainPath,
+    sourceHead: input.sourceHead,
+    expectedMainHead: input.expectedMainHead,
+    jobId: input.jobId
+  }),
+  launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
+    const sourceWorkItem = (item.associations ?? [])
+      .map((association) => association.workItemId ? store.getWorkItem(association.workItemId) : null)
+      .find((candidate) => candidate?.objective_id && candidate?.main_agent_id);
+    const objective = sourceWorkItem ? store.getObjective(sourceWorkItem.objective_id) : null;
+    const agent = sourceWorkItem ? store.getAgent(sourceWorkItem.main_agent_id) : null;
+    if (!sourceWorkItem || !objective || !agent || agent.role !== "independentContributor") {
+      const error = new Error(
+        "The conflicted Worktree has no associated WorkItem with an available Independent Contributor Agent."
+      );
+      error.code = "CONFLICT_AGENT_UNAVAILABLE";
+      throw error;
+    }
+    const branchLabel = item.branchName ?? item.worktreeId;
+    const title = `处理 ${branchLabel} 的 Worktree 集成冲突`;
+    const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
+    const description = [
+      `处理 Worktree Integration Job ${job.id} 在合并 ${branchLabel} 时产生的冲突。`,
+      `来源 WorkItem：${sourceWorkItem.title}`,
+      `冲突文件：${conflictFiles}`,
+      `专用 Integration Worktree：${workspace.path}`
+    ].join("\n");
+    const acceptanceCriteria = [
+      "- 来源分支的有效修改已完整进入 Integration 分支",
+      "- 所有冲突均按双方语义解决，且不存在未合并文件或冲突标记",
+      "- 相关测试通过，Development App 与后端重建及健康检查成功",
+      "- Integration 分支已安全合入本地 main",
+      "- 未推送远端，未删除任何来源分支或 Worktree"
+    ].join("\n");
+    const prompt = [
+      description,
+      "",
+      "固定执行流程：",
+      `1. 确认当前目录是专用 Integration Worktree，基线 HEAD 应为 ${expectedMainHead}。`,
+      `2. 在当前 Integration 分支合并来源提交 ${sourceHead}，逐文件分析并解决冲突；不得简单全选 ours 或 theirs。`,
+      "3. 确认没有冲突标记或未合并文件后创建清晰的本地提交。",
+      "4. 运行相关测试，并按 AGENTS.md 重建、启动 Development App 与后端并检查健康状态。",
+      `5. 将 Integration 分支 ${workspace.branchName} 安全合入最新本地 main；如果 main 已推进，先把最新 main 集成到当前分支并解决差异。`,
+      "6. 验证来源提交已成为 main 的祖先。不得推送远端，不得删除来源分支或 Worktree。",
+      "7. 完成后提醒用户回到 Worktree Tab 对原集成任务点击重试，让后台幂等完成剩余步骤。"
+    ].join("\n");
+    const workItem = objectiveService.createWorkItem({
+      objectiveId: objective.id,
+      title,
+      description,
+      acceptanceCriteria,
+      priority: "high",
+      mainWorkspaceId: job.repositoryId,
+      mainAgentId: agent.agentId
+    });
+    let session;
+    try {
+      session = await launchWorkItemSession({
+        agent,
+        workItem,
+        providerId: agentProviderRegistry.defaultProviderId,
+        title,
+        prompt,
+        workingDirectory: workspace.path
+      });
+      session = objectiveService.bindSession(session.id, workItem.id);
+      objectiveService.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
+    } catch (error) {
+      objectiveService.deleteWorkItem(workItem.id);
+      throw error;
+    }
+    return {
+      workItemId: workItem.id,
+      sessionId: session.id,
+      agentId: agent.agentId,
+      agentName: agent.name
+    };
+  },
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const feishuGateway = new FeishuGatewayManager({
@@ -6478,7 +6558,7 @@ function route(request, response) {
     /^\/worktree-management\/jobs\/([^/]+)$/
   );
   const worktreeManagementJobActionMatch = url.pathname.match(
-    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel)$/
+    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel|resolve-conflict)$/
   );
   const projectWorkspaceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
@@ -6534,7 +6614,9 @@ function route(request, response) {
         ? worktreeIntegrationJobService.confirm(jobId, input)
         : action === "cancel"
           ? worktreeIntegrationJobService.cancel(jobId)
-          : worktreeIntegrationJobService.retry(jobId))
+          : action === "resolve-conflict"
+            ? worktreeIntegrationJobService.resolveConflictWithAgent(jobId)
+            : worktreeIntegrationJobService.retry(jobId))
       .then((result) => sendJson(response, 202, { job: result }))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code
