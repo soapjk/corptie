@@ -26,7 +26,7 @@ final class UserMessageProcessingStateTests: XCTestCase {
 
         XCTAssertEqual(item.authoritativeUserMessageState, .queued)
         XCTAssertEqual(item.queuePosition, 2)
-        XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(item))), .swiftUI)
+        XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(item))), .native)
         XCTAssertEqual(makeChatDisplayEntries(from: [item]).count, 1)
     }
 
@@ -38,7 +38,7 @@ final class UserMessageProcessingStateTests: XCTestCase {
         XCTAssertNil(ordinary.authoritativeUserMessageState)
         XCTAssertEqual(processing.authoritativeUserMessageState, .processing)
         XCTAssertEqual(consumed.authoritativeUserMessageState, .consumed)
-        XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(processing))), .swiftUI)
+        XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(processing))), .native)
         XCTAssertEqual(ChatTimelineRowRouting.route(for: ChatDisplayEntry(kind: .message(consumed))), .native)
     }
 

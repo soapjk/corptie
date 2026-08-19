@@ -15,11 +15,10 @@ enum ChatDetailRefreshPolicy {
     static func shouldPoll(
         sessionId: String?,
         isViewingHistory: Bool,
-        sseHealthEnabled: Bool,
         streamHealth: ChatDetailStreamHealth
     ) -> Bool {
         guard let sessionId, !isViewingHistory else { return false }
-        return !sseHealthEnabled || !streamHealth.isHealthy(for: sessionId)
+        return !streamHealth.isHealthy(for: sessionId)
     }
 
     static func reconnectDelaySeconds(afterFailure failureCount: Int) -> Int {

@@ -19,14 +19,6 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(unique.first?.nativeText, "new")
     }
 
-    func testTimelineOwnsVerticalButNotHorizontalCodeBlockWheelGestures() {
-        XCTAssertTrue(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 0, deltaY: 12))
-        XCTAssertTrue(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 4, deltaY: 12))
-        XCTAssertFalse(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 12, deltaY: 4))
-        XCTAssertFalse(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 12, deltaY: 0))
-        XCTAssertFalse(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 0, deltaY: 0.001))
-    }
-
     private final class FollowState {
         var value: Bool
 
@@ -35,16 +27,15 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
-    func testConfiguresNativeAndHostedRowsWithDynamicHeights() {
+    func testConfiguresNativeRowsWithDeterministicDynamicHeights() {
         let harness = makeHarness(followsLatest: true)
         let short = row(id: "short", text: "short")
         let long = row(id: "long", text: String(repeating: "long wrapped content ", count: 80))
-        let hosted = row(id: "hosted", content: AnyView(Text("Hosted approval")))
 
-        harness.coordinator.apply(rows: [short, long, hosted])
+        harness.coordinator.apply(rows: [short, long])
         harness.tableView.layoutSubtreeIfNeeded()
 
-        XCTAssertEqual(harness.tableView.numberOfRows, 3)
+        XCTAssertEqual(harness.tableView.numberOfRows, 2)
         XCTAssertLessThan(
             harness.coordinator.tableView(harness.tableView, heightOfRow: 0),
             harness.coordinator.tableView(harness.tableView, heightOfRow: 1)
@@ -53,258 +44,6 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 0)
                 is AppKitChatNativeTextCell
         )
-        XCTAssertTrue(
-            harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 2)
-                is AppKitChatHostingCell
-        )
-    }
-
-    func testHostedRowUsesAutomaticLayoutAsItsSingleHeightAuthority() async {
-        let harness = makeHarness(followsLatest: false, height: 520)
-        harness.coordinator.apply(rows: [
-            row(id: "hosted-height", content: AnyView(Color.clear.frame(height: 236)))
-        ])
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-        await settleMainQueue()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), -1)
-        XCTAssertEqual(
-            harness.tableView.rect(ofRow: 0).height,
-            236 + harness.tableView.intercellSpacing.height,
-            accuracy: 1
-        )
-    }
-
-    func testTableAdoptsMeasuredHostedHeightAndExpansionRevision() async {
-        let harness = makeHarness(followsLatest: false, height: 520)
-        let collapsed = row(
-            id: "hosted-turn",
-            revision: 0,
-            content: AnyView(Color.clear.frame(height: 74))
-        )
-        harness.coordinator.apply(rows: [collapsed])
-        harness.tableView.reloadData()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-        await settleMainQueue()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), -1)
-        XCTAssertEqual(
-            harness.tableView.rect(ofRow: 0).height,
-            74 + harness.tableView.intercellSpacing.height,
-            accuracy: 1
-        )
-
-        let expanded = row(
-            id: "hosted-turn",
-            revision: 1,
-            content: AnyView(Color.clear.frame(height: 521))
-        )
-        harness.coordinator.apply(rows: [expanded])
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-        await settleMainQueue()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), -1)
-        XCTAssertEqual(
-            harness.tableView.rect(ofRow: 0).height,
-            521 + harness.tableView.intercellSpacing.height,
-            accuracy: 1
-        )
-    }
-
-    func testHostedHeightIsRemeasuredAfterViewportWidthChanges() async {
-        let harness = makeHarness(followsLatest: false, height: 420)
-        harness.window.setContentSize(NSSize(width: 520, height: 420))
-        harness.window.layoutIfNeeded()
-        harness.coordinator.apply(rows: [
-            row(id: "hosted-resize", content: AnyView(Color.clear.frame(height: 74)))
-        ])
-        harness.tableView.reloadData()
-        await settleMainQueue()
-        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), -1)
-
-        harness.window.setContentSize(NSSize(width: 420, height: 420))
-        harness.window.layoutIfNeeded()
-        NotificationCenter.default.post(
-            name: NSView.frameDidChangeNotification,
-            object: harness.scrollView
-        )
-        await settleMainQueue()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), -1)
-        XCTAssertEqual(
-            harness.tableView.rect(ofRow: 0).height,
-            74 + harness.tableView.intercellSpacing.height,
-            accuracy: 1
-        )
-    }
-
-    func testHostedCollapsedProcessUsesNativeClickTarget() throws {
-        var toggledTurnId: String?
-        let cell = AppKitChatHostingCell(identifier: .init("hosted-process-click-test"))
-        cell.frame = NSRect(x: 0, y: 0, width: 420, height: 60)
-        cell.setContent(
-            AnyView(Color.clear.frame(height: 60)),
-            width: 420,
-            expandableTurnId: "turn-42",
-            isExpanded: false,
-            onToggleExpansion: { toggledTurnId = $0 }
-        )
-
-        let button = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.hosted-process-hit-target"))
-        XCTAssertFalse(button.isHidden)
-        button.performClick(self)
-        XCTAssertEqual(toggledTurnId, "turn-42")
-
-        cell.setContent(
-            AnyView(Color.clear.frame(height: 180)),
-            width: 420,
-            expandableTurnId: "turn-42",
-            isExpanded: true,
-            onToggleExpansion: { toggledTurnId = $0 }
-        )
-        XCTAssertTrue(button.isHidden)
-    }
-
-    func testHostedProcessClickAppliesExpandedContentInTheSameUpdate() async throws {
-        let state = FollowState(false)
-        let tableView = AppKitChatTimelineView.makeTableView()
-        let scrollView = AppKitChatTimelineView.makeScrollView(tableView: tableView)
-        var coordinator: AppKitChatTimelineView.Coordinator!
-        coordinator = AppKitChatTimelineView.Coordinator(
-            usesNativeText: true,
-            followsLatest: Binding(get: { state.value }, set: { state.value = $0 }),
-            onToggleExpansion: { turnID in
-                XCTAssertEqual(turnID, "turn-42")
-                coordinator.apply(rows: [
-                    self.row(
-                        id: "hosted-turn",
-                        revision: 1,
-                        content: AnyView(Color.clear.frame(height: 236)),
-                        expandableTurnId: turnID,
-                        isExpanded: true
-                    )
-                ], animated: true)
-            }
-        )
-        coordinator.followsLatest = false
-        coordinator.attach(tableView: tableView, scrollView: scrollView)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = scrollView
-        coordinator.apply(rows: [
-            row(
-                id: "hosted-turn",
-                revision: 0,
-                content: AnyView(Color.clear.frame(height: 60)),
-                expandableTurnId: "turn-42"
-            )
-        ])
-        tableView.reloadData()
-        await settleMainQueue()
-
-        let collapsedCell = try XCTUnwrap(
-            tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatHostingCell
-        )
-        let disclosure = try XCTUnwrap(
-            button(in: collapsedCell, identifier: "chat.timeline.hosted-process-hit-target")
-        )
-        disclosure.performClick(self)
-        await settleMainQueue()
-        window.contentView?.layoutSubtreeIfNeeded()
-
-        XCTAssertEqual(coordinator.tableView(tableView, heightOfRow: 0), -1)
-        let expandedCell = try XCTUnwrap(
-            tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatHostingCell
-        )
-        let updatedDisclosure = try XCTUnwrap(
-            button(in: expandedCell, identifier: "chat.timeline.hosted-process-hit-target")
-        )
-        XCTAssertTrue(updatedDisclosure.isHidden)
-        XCTAssertTrue(expandedCell === collapsedCell)
-    }
-
-    func testHostedLongMarkdownMeasuresBeyondTheVisibleViewport() async throws {
-        let harness = makeHarness(followsLatest: false, height: 520)
-        let paragraphs = (0..<40).map { index in
-            "## Section \(index)\n\nThis is a long wrapped paragraph with **bold text**, a [link](https://example.com), and enough content to require multiple lines."
-        }.joined(separator: "\n\n")
-        harness.coordinator.apply(rows: [
-            row(
-                id: "hosted-long-markdown",
-                content: AnyView(MarkdownMessageView(text: paragraphs, allowsSelection: true))
-            ),
-            row(id: "following-row", text: "This row must remain below the long reply.")
-        ])
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-        await settleMainQueue()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-
-        let longRect = harness.tableView.rect(ofRow: 0)
-        let followingRect = harness.tableView.rect(ofRow: 1)
-        XCTAssertGreaterThan(longRect.height, 1_500)
-        XCTAssertGreaterThanOrEqual(followingRect.minY, longRect.maxY)
-    }
-
-    func testHostedLongMarkdownIsMeasuredAtTheActualColumnWidth() async throws {
-        let harness = makeHarness(followsLatest: false, height: 520)
-        let unbreakable = String(repeating: "veryLongUnbrokenToken", count: 90)
-        let paragraphs = (0..<16).map { index in
-            "Section \(index) \(unbreakable)\n\nA wrapped paragraph that must be measured using the 420 point table column."
-        }.joined(separator: "\n\n")
-        harness.coordinator.apply(rows: [
-            row(
-                id: "width-sensitive-hosted-markdown",
-                content: AnyView(MarkdownMessageView(text: paragraphs, allowsSelection: true))
-            )
-        ])
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-        await settleMainQueue()
-        harness.window.contentView?.layoutSubtreeIfNeeded()
-
-        let cell = try XCTUnwrap(
-            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatHostingCell
-        )
-        let hosting = try XCTUnwrap(cell.subviews.first { String(describing: type(of: $0)).contains("FirstMouseTimelineHostingView") })
-        XCTAssertEqual(hosting.intrinsicContentSize.width, harness.tableView.tableColumns[0].width, accuracy: 1)
-        XCTAssertEqual(hosting.frame.height, hosting.intrinsicContentSize.height, accuracy: 1)
-        assertDescendantsStayInsideVerticalBounds(of: hosting)
-    }
-
-    func testHostedRowsNeverOverlapAfterRepeatedExpansionAndReuse() async {
-        let harness = makeHarness(followsLatest: false, height: 460)
-        for revision in 0..<12 {
-            let expanded = revision.isMultiple(of: 2)
-            harness.coordinator.apply(rows: [
-                row(id: "before", text: "Before"),
-                row(
-                    id: "changing-hosted-row",
-                    revision: revision,
-                    content: AnyView(Color.clear.frame(height: expanded ? 860 : 62)),
-                    expandableTurnId: "turn",
-                    isExpanded: expanded
-                ),
-                row(id: "after", text: "After")
-            ], animated: true)
-            harness.window.contentView?.layoutSubtreeIfNeeded()
-            await settleMainQueue()
-            harness.window.contentView?.layoutSubtreeIfNeeded()
-
-            for row in 1..<harness.tableView.numberOfRows {
-                XCTAssertGreaterThanOrEqual(
-                    harness.tableView.rect(ofRow: row).minY,
-                    harness.tableView.rect(ofRow: row - 1).maxY,
-                    "Rows overlapped after revision \(revision)"
-                )
-            }
-        }
     }
 
     func testDisclosureCallbackAndCopyUseOriginalUnmodifiedText() throws {
@@ -334,13 +73,12 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), source)
     }
 
-    func testNativeCardPreservesLegacyVisualContractAndProcessUsesCompactFooter() throws {
+    func testNativeCardUsesCommunityStyleCompactExecutionSummary() throws {
         let harness = makeHarness(followsLatest: true)
         let message = row(id: "message", text: "Ready")
         let process = AppKitChatTimelineRow(
             id: "process",
             contentRevision: 0,
-            content: nil,
             nativeText: "",
             copyText: "command",
             nativeStyle: .process,
@@ -349,7 +87,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             expandableTurnId: "turn",
             isExpanded: false,
             processCount: 3,
-            processDuration: "· 1.2s"
+            processDuration: "1.2s",
+            processState: .completed
         )
         harness.coordinator.apply(rows: [message, process])
 
@@ -360,20 +99,54 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let card = try XCTUnwrap(messageCell.subviews.first)
         XCTAssertEqual(card.layer?.cornerRadius, 14)
         XCTAssertEqual(card.layer?.borderWidth, 1)
-        let copy = try XCTUnwrap(button(in: messageCell, identifier: "chat.timeline.copy"))
-        XCTAssertEqual(copy.alphaValue, 0)
+        let messageActions = try XCTUnwrap(view(in: messageCell, identifier: "chat.timeline.message-actions"))
+        XCTAssertTrue(messageActions.isHidden)
 
         XCTAssertEqual(
             harness.coordinator.tableView(harness.tableView, heightOfRow: 1),
-            28
+            32
         )
         let processCell = try XCTUnwrap(
             harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 1)
                 as? AppKitChatNativeTextCell
         )
         let processButton = try XCTUnwrap(button(in: processCell, identifier: "chat.timeline.process"))
-        XCTAssertTrue(processButton.attributedTitle.string.contains("Execution process"))
-        XCTAssertTrue(processButton.attributedTitle.string.contains("3"))
+        XCTAssertTrue(processButton.attributedTitle.string.contains("Worked for 1.2s"))
+        XCTAssertTrue(processButton.attributedTitle.string.contains("3 steps"))
+        XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
+    }
+
+    func testExpandedExecutionPlacesSummaryBeforeStepDetails() throws {
+        let harness = makeHarness(followsLatest: true)
+        let process = AppKitChatTimelineRow(
+            id: "process",
+            contentRevision: 1,
+            nativeText: "⌘  **Ran tests**\n    swift test",
+            copyText: "swift test",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "turn",
+            isExpanded: true,
+            processCount: 1,
+            processDuration: "4.2s",
+            processState: .running,
+            showsHeader: false
+        )
+        harness.coordinator.apply(rows: [process])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            harness.coordinator.tableView(harness.tableView, viewFor: harness.tableView.tableColumns[0], row: 0)
+                as? AppKitChatNativeTextCell
+        )
+        cell.layoutSubtreeIfNeeded()
+        let summary = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
+        let body = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.body"))
+
+        XCTAssertTrue(summary.attributedTitle.string.contains("Working…"))
+        XCTAssertGreaterThan(summary.frame.minY, body.frame.maxY)
+        XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 54)
     }
 
     func testOrdinaryNativeMessageHidesInternalHeaderAndKeepsHoverTimestampOutsideCard() throws {
@@ -401,11 +174,80 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(hoverTimestamp.alphaValue, 0)
         XCTAssertLessThan(
             harness.coordinator.tableView(harness.tableView, heightOfRow: 0),
-            38
+            65
         )
     }
 
-    func testSingleColumnTracksTheFullScrollViewportWidth() async {
+    func testOrdinaryMessageActionsAreOutsideCardAndExcludedFromExecutionRows() throws {
+        let harness = makeHarness(followsLatest: true)
+        let agent = row(
+            id: "agent-message",
+            text: "First line\nSecond line",
+            copyText: "First line\nSecond line",
+            showsHeader: false
+        )
+        let user = row(
+            id: "user-message",
+            text: "Question",
+            nativeStyle: .user,
+            showsHeader: false
+        )
+        let process = AppKitChatTimelineRow(
+            id: "process",
+            contentRevision: 0,
+            nativeText: "swift test",
+            copyText: "swift test",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "turn",
+            isExpanded: true,
+            processCount: 1,
+            processDuration: "2s",
+            processState: .completed,
+            showsHeader: false
+        )
+        harness.coordinator.apply(rows: [agent, user, process])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let agentCell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        agentCell.layoutSubtreeIfNeeded()
+        let agentCard = try XCTUnwrap(agentCell.subviews.first)
+        let agentActions = try XCTUnwrap(view(in: agentCell, identifier: "chat.timeline.message-actions"))
+        let copy = try XCTUnwrap(button(in: agentCell, identifier: "chat.timeline.copy"))
+        XCTAssertFalse(agentActions.isHidden)
+        XCTAssertEqual(agentActions.alphaValue, 0)
+        XCTAssertFalse(copy.isDescendant(of: agentCard))
+        XCTAssertEqual(copy.toolTip, "复制消息")
+        XCTAssertNil(button(in: agentCell, identifier: "chat.timeline.quote"))
+        XCTAssertEqual(agentActions.frame.minX, agentCard.frame.minX + 2, accuracy: 1)
+
+        copy.performClick(nil)
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "First line\nSecond line")
+
+        let userCell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 1, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        userCell.layoutSubtreeIfNeeded()
+        let userCard = try XCTUnwrap(userCell.subviews.first)
+        let userActions = try XCTUnwrap(view(in: userCell, identifier: "chat.timeline.message-actions"))
+        XCTAssertFalse(userActions.isHidden)
+        XCTAssertEqual(userActions.frame.maxX, userCard.frame.maxX - 2, accuracy: 1)
+        XCTAssertFalse(
+            try XCTUnwrap(NSColor(cgColor: userCard.layer?.backgroundColor ?? CGColor.clear))
+                .isEqual(try XCTUnwrap(NSColor(cgColor: agentCard.layer?.backgroundColor ?? CGColor.clear)))
+        )
+
+        let processCell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 2, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        let processActions = try XCTUnwrap(view(in: processCell, identifier: "chat.timeline.message-actions"))
+        XCTAssertTrue(processActions.isHidden)
+    }
+
+    func testSingleColumnReservesAStableScrollerGutter() async {
         let harness = makeHarness(followsLatest: true)
         harness.coordinator.apply(rows: [row(id: "message", text: "Ready")])
         harness.window.setContentSize(NSSize(width: 620, height: 320))
@@ -416,8 +258,12 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         await settleMainQueue()
 
-        let viewportWidth = harness.scrollView.contentSize.width
-        XCTAssertEqual(harness.tableView.tableColumns[0].width, viewportWidth, accuracy: 1)
+        let expectedWidth = harness.scrollView.bounds.width - NSScroller.scrollerWidth(
+            for: .regular,
+            scrollerStyle: .legacy
+        )
+        XCTAssertEqual(harness.tableView.tableColumns[0].width, expectedWidth, accuracy: 1)
+        XCTAssertLessThan(harness.tableView.tableColumns[0].width, harness.scrollView.bounds.width)
         XCTAssertEqual(harness.tableView.style, .plain)
         XCTAssertEqual(harness.tableView.rect(ofColumn: 0).minX, 0, accuracy: 0.5)
     }
@@ -438,6 +284,60 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         XCTAssertEqual(after.id, before.id)
         XCTAssertEqual(after.offset, before.offset, accuracy: 4)
+    }
+
+    func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<40).map { index in
+            row(
+                id: "direct-jump-\(index)",
+                text: index == 39
+                    ? String(repeating: "Final message remains visible. ", count: 18)
+                    : "Message \(index)"
+            )
+        }
+        harness.coordinator.apply(rows: rows)
+        XCTAssertFalse(harness.tableView.usesAutomaticRowHeights)
+
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let lastIndex = rows.count - 1
+        let lastRect = harness.tableView.rect(ofRow: lastIndex)
+        XCTAssertTrue(harness.tableView.visibleRect.intersects(lastRect))
+        XCTAssertNotNil(
+            harness.tableView.view(atColumn: 0, row: lastIndex, makeIfNecessary: false),
+            "A direct scrollbar jump must materialize the destination cell"
+        )
+        XCTAssertLessThanOrEqual(
+            max(0, harness.tableView.visibleRect.maxY - lastRect.maxY),
+            harness.tableView.intercellSpacing.height + 2
+        )
+    }
+
+    func testScrollbarCannotOverscrollPastLastMessageWhenDocumentFrameContainsSurplusHeight() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<20).map { row(id: "bounded-scroll-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let lastRowRect = harness.tableView.rect(ofRow: rows.count - 1)
+        harness.tableView.setFrameSize(NSSize(
+            width: harness.tableView.frame.width,
+            height: lastRowRect.maxY + 500
+        ))
+        await settleMainQueue()
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: lastRowRect.maxY + 500))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        await settleMainQueue()
+
+        XCTAssertEqual(
+            harness.scrollView.contentView.bounds.maxY,
+            lastRowRect.maxY,
+            accuracy: harness.tableView.intercellSpacing.height + 2
+        )
+        XCTAssertTrue(harness.tableView.visibleRect.intersects(lastRowRect))
     }
 
     func testSavedSessionPositionRestoresMessageAnchorAndFollowMode() async {
@@ -484,11 +384,29 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let rows = [
             row(id: "heading", text: "# Native AppKit Timeline\n\nA paragraph with **bold**, *italic*, and [a link](https://example.com)."),
             row(id: "list", text: "- first item\n- second item\n\n> quoted explanation"),
-            row(id: "hosted", content: AnyView(
-                Text("SwiftUI hosted interactive-card placeholder")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color.orange.opacity(0.2))
-            ))
+            AppKitChatTimelineRow(
+                id: "process",
+                contentRevision: 0,
+                nativeText: "",
+                copyText: "swift test",
+                nativeStyle: .process,
+                title: "",
+                metadata: "",
+                expandableTurnId: "turn",
+                isExpanded: false,
+                processCount: 4,
+                processDuration: "12s",
+                processState: .completed,
+                showsHeader: false
+            ),
+            row(id: "action", text: "Native AppKit action row", actions: [
+                .init(
+                    id: "action:continue",
+                    label: "Continue",
+                    isDestructive: false,
+                    kind: .sendMessage("continue")
+                )
+            ])
         ]
         harness.coordinator.apply(rows: rows)
         harness.tableView.reloadData()
@@ -507,10 +425,48 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         }
     }
 
+    func testNativeActionRowDispatchesApprovalWithoutHostingSwiftUI() throws {
+        let option = CodexApprovalOption(
+            id: "approve",
+            label: "Approve",
+            role: "approve",
+            index: 0,
+            selected: false
+        )
+        var receivedActionID: String?
+        let harness = makeHarness(
+            followsLatest: true,
+            onToggle: { _ in },
+            onAction: { action in receivedActionID = action.id }
+        )
+        harness.coordinator.apply(rows: [row(
+            id: "approval",
+            text: "Allow this operation?",
+            actions: [
+                .init(
+                    id: "approval:approve",
+                    label: "Approve",
+                    isDestructive: false,
+                    kind: .codexApproval(option)
+                )
+            ]
+        )])
+        harness.tableView.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        let actionButton = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.action.approval:approve"))
+        actionButton.performClick(nil)
+
+        XCTAssertEqual(receivedActionID, "approval:approve")
+    }
+
     private func makeHarness(
         followsLatest: Bool,
         height: CGFloat = 320,
-        onToggle: @escaping (String) -> Void = { _ in }
+        onToggle: @escaping (String) -> Void = { _ in },
+        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) -> (
         window: NSWindow,
         scrollView: NSScrollView,
@@ -523,9 +479,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let tableView = AppKitChatTimelineView.makeTableView()
         let scrollView = AppKitChatTimelineView.makeScrollView(tableView: tableView)
         let coordinator = AppKitChatTimelineView.Coordinator(
-            usesNativeText: true,
             followsLatest: binding,
-            onToggleExpansion: onToggle
+            onToggleExpansion: onToggle,
+            onAction: onAction
         )
         coordinator.followsLatest = followsLatest
         coordinator.attach(tableView: tableView, scrollView: scrollView)
@@ -545,25 +501,26 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         revision: Int = 0,
         text: String = "",
         copyText: String? = nil,
-        content: AnyView? = nil,
+        nativeStyle: AppKitChatTimelineRow.NativeStyle = .agent,
         expandableTurnId: String? = nil,
         isExpanded: Bool = false,
         showsHeader: Bool = true,
-        hoverTimestamp: String = ""
+        hoverTimestamp: String = "",
+        actions: [AppKitChatTimelineRow.Action] = []
     ) -> AppKitChatTimelineRow {
         AppKitChatTimelineRow(
             id: id,
             contentRevision: revision,
-            content: content,
             nativeText: text,
             copyText: copyText ?? text,
-            nativeStyle: .agent,
+            nativeStyle: nativeStyle,
             title: "Agent",
             metadata: "10:20",
             expandableTurnId: expandableTurnId,
             isExpanded: isExpanded,
             showsHeader: showsHeader,
-            hoverTimestamp: hoverTimestamp
+            hoverTimestamp: hoverTimestamp,
+            actions: actions
         )
     }
 
@@ -575,6 +532,11 @@ final class AppKitChatTimelineControlTests: XCTestCase {
     private func textField(in view: NSView, identifier: String) -> NSTextField? {
         if let textField = view as? NSTextField, textField.identifier?.rawValue == identifier { return textField }
         return view.subviews.lazy.compactMap { self.textField(in: $0, identifier: identifier) }.first
+    }
+
+    private func view(in view: NSView, identifier: String) -> NSView? {
+        if view.identifier?.rawValue == identifier { return view }
+        return view.subviews.lazy.compactMap { self.view(in: $0, identifier: identifier) }.first
     }
 
     private func assertDescendantsStayInsideVerticalBounds(

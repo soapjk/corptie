@@ -24,16 +24,31 @@ struct SessionDisplayProjectionRequest: Equatable, Sendable {
 @MainActor
 final class SessionPresentationStore: ObservableObject {
     @Published private(set) var cacheRevision = 0
+    @Published private(set) var hostedSessionIDs: [String] = []
 
     private let cacheCapacity: Int
+    private let hostCapacity: Int
     private var cachesBySessionID: [String: DetailDisplayCache] = [:]
     private var cacheRecency: [String] = []
     private var positionsBySessionID: [String: AppKitChatTimelinePosition] = [:]
     private var preheatTasksBySessionID: [String: Task<Void, Never>] = [:]
     private var preheatTokensBySessionID: [String: UUID] = [:]
 
-    init(cacheCapacity: Int = 12) {
+    init(cacheCapacity: Int = 12, hostCapacity: Int = 3) {
         self.cacheCapacity = max(1, cacheCapacity)
+        self.hostCapacity = max(1, hostCapacity)
+    }
+
+    /// Keeps the complete SwiftUI/AppKit timeline subtree alive for the most
+    /// recently visited sessions. A warm A → B → A switch therefore reuses the
+    /// same NSScrollView, row views, height cache, and viewport state.
+    func activateHost(for sessionID: String) {
+        hostedSessionIDs.removeAll { $0 == sessionID }
+        hostedSessionIDs.append(sessionID)
+        if hostedSessionIDs.count > hostCapacity {
+            hostedSessionIDs.removeFirst(hostedSessionIDs.count - hostCapacity)
+        }
+        SessionTimelineRepository.shared.pin(Set(hostedSessionIDs))
     }
 
     func cache(for sessionID: String) -> DetailDisplayCache? {
@@ -70,7 +85,6 @@ final class SessionPresentationStore: ObservableObject {
         session: TaskSession,
         backendClient: BackendClient,
         visibleMessageLimit: Int,
-        deltaTimelineEnabled: Bool,
         delay: Duration = .zero
     ) {
         guard cachesBySessionID[session.id] == nil,
@@ -92,8 +106,7 @@ final class SessionPresentationStore: ObservableObject {
                 makeDetailDisplayCache(
                     for: detail,
                     sessionId: session.id,
-                    visibleMessageLimit: visibleMessageLimit,
-                    deltaTimelineEnabled: deltaTimelineEnabled
+                    visibleMessageLimit: visibleMessageLimit
                 )
             }.value
             guard !Task.isCancelled,
@@ -118,6 +131,8 @@ final class SessionPresentationStore: ObservableObject {
         cachesBySessionID = cachesBySessionID.filter { validSessionIDs.contains($0.key) }
         cacheRecency.removeAll { !validSessionIDs.contains($0) }
         positionsBySessionID = positionsBySessionID.filter { validSessionIDs.contains($0.key) }
+        hostedSessionIDs.removeAll { !validSessionIDs.contains($0) }
+        SessionTimelineRepository.shared.pin(Set(hostedSessionIDs))
         if cachesBySessionID.count != previousCount {
             cacheRevision &+= 1
         }

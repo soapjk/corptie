@@ -78,6 +78,7 @@ struct SessionsView: View {
         .onReceive(backendClient.sessionsDidChange) { sessions in
             let activeSessionIDs = Set(sessions.map(\.id))
             presentationStore.prune(to: activeSessionIDs)
+            SessionTimelineRepository.shared.prune(to: activeSessionIDs)
             attemptPendingSelection(sessions)
             restoreLastSelectedSession(sessions)
             preloadSessionMessages(sessions)
@@ -88,6 +89,7 @@ struct SessionsView: View {
         .onReceive(backendClient.$selectedSession) { session in
             selectedSession = session
             if let session {
+                presentationStore.activateHost(for: session.id)
                 Self.recordSessionId(session.id, category: selectedCategory)
                 visuallySelectedSessionID = session.id
                 selectedCategory = SessionCategory(session: session)
@@ -104,6 +106,9 @@ struct SessionsView: View {
         // 只有真正处于 Sessions Tab 时才执行激活逻辑。
         guard router.selectedTab == .sessions else { return }
         selectedSession = backendClient.selectedSession
+        if let selectedSession {
+            presentationStore.activateHost(for: selectedSession.id)
+        }
         scheduleDetailRendering()
         backendClient.suppressBackgroundPolling = true
         attemptPendingSelection(backendClient.sessions)
@@ -207,8 +212,7 @@ struct SessionsView: View {
                 presentationStore.preheat(
                     session: session,
                     backendClient: backendClient,
-                    visibleMessageLimit: DetailView.initialVisibleMessageLimit,
-                    deltaTimelineEnabled: ChatTimelineFeatureFlags.current.deltaTimelineEnabled
+                    visibleMessageLimit: DetailView.initialVisibleMessageLimit
                 )
             }
         }
@@ -444,18 +448,26 @@ struct SessionsView: View {
         if let session = selectedSession,
            SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
-                // 主对话区：直接平铺，吃满剩余宽度（参考 Rudder 聊天主区）
-                DetailView(
-                    sessionId: session.id,
-                    presentationStore: presentationStore,
-                    composerDraftRepository: composerDraftRepository,
-                    renderer: .appKitNativeText,
-                    initialTimelinePosition: presentationStore.position(for: session.id),
-                    onTimelinePositionChange: { position in
-                        presentationStore.store(position, for: session.id)
+                // Keep the three most recently visited timeline hosts mounted.
+                // Hidden hosts retain their AppKit view tree and exact layout;
+                // the selected host is revealed only as a complete frame.
+                ZStack {
+                    ForEach(presentationStore.hostedSessionIDs, id: \.self) { hostedSessionID in
+                        DetailView(
+                            sessionId: hostedSessionID,
+                            presentationStore: presentationStore,
+                            composerDraftRepository: composerDraftRepository,
+                            initialTimelinePosition: presentationStore.position(for: hostedSessionID),
+                            onTimelinePositionChange: { position in
+                                presentationStore.store(position, for: hostedSessionID)
+                            }
+                        )
+                        .opacity(hostedSessionID == session.id ? 1 : 0)
+                        .allowsHitTesting(hostedSessionID == session.id)
+                        .accessibilityHidden(hostedSessionID != session.id)
+                        .zIndex(hostedSessionID == session.id ? 1 : 0)
                     }
-                )
-                .id(session.id)
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 // 右侧竖列详情面板（固定常驻，无收起按钮，模仿 Rudder IssueDetail rail）

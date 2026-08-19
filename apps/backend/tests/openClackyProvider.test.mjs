@@ -168,6 +168,60 @@ test("OpenClacky history normalizes Unix seconds without inventing missing event
   ]);
 });
 
+test("OpenClacky refresh keeps last-known state when the provider returns a transient 404", async () => {
+  const requestedPaths = [];
+  const owned = ["clacky-1"];
+  const manager = new OpenClackyManager({
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      requestedPaths.push(path);
+      return new Response(JSON.stringify({ error: "Session not found" }), { status: 404 });
+    },
+    WebSocket: FakeWebSocket,
+    resolveOwnedSessionIds: () => owned,
+    refreshIntervalMs: 0
+  });
+
+  // Seed a known-good session, then let a refresh hit 404 for it.
+  manager.sessions.set("clacky-1", openClackySessionSummary({
+    id: "clacky-1",
+    name: "Clacky Task",
+    status: "idle",
+    working_dir: "/tmp/project"
+  }));
+
+  await manager.refresh();
+
+  assert.deepEqual(requestedPaths, ["/api/sessions/clacky-1"]);
+  assert.deepEqual(manager.list().map((session) => session.external.sessionId), ["clacky-1"]);
+});
+
+test("OpenClacky refresh still drops sessions no longer owned by Corptie", async () => {
+  const manager = new OpenClackyManager({
+    fetch: async (url) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/sessions/clacky-2") {
+        return Response.json({ session: { id: "clacky-2", name: "Other", status: "idle" } });
+      }
+      return new Response(JSON.stringify({ error: "Session not found" }), { status: 404 });
+    },
+    WebSocket: FakeWebSocket,
+    resolveOwnedSessionIds: () => ["clacky-2"],
+    refreshIntervalMs: 0
+  });
+
+  manager.sessions.set("clacky-1", openClackySessionSummary({
+    id: "clacky-1",
+    name: "Clacky Task",
+    status: "idle"
+  }));
+
+  await manager.refresh();
+
+  // clacky-1 is no longer owned (not in resolveOwnedSessionIds), so it is pruned.
+  assert.deepEqual(manager.list().map((session) => session.external.sessionId), ["clacky-2"]);
+});
+
 test("OpenClacky manager only restores Sessions owned by Corptie", async () => {
   const requestedPaths = [];
   const manager = new OpenClackyManager({
@@ -236,4 +290,39 @@ test("OpenClacky event mapping exposes confirmation as a blocked shared choice",
   }]);
   assert.equal(detail.items[0].type, "choice");
   assert.deepEqual(detail.items[0].options.map((option) => option.id), ["yes", "no"]);
+});
+
+test("OpenClacky manager backfills stored sessions when the in-memory list is incomplete", () => {
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({}),
+    WebSocket: FakeWebSocket,
+    listStoredSessions: ({ archived }) => archived === false ? [
+      { id: "openclacky:idle-1", status: "complete", archived: false, sortOrder: 1 },
+      { id: "openclacky:idle-2", status: "complete", archived: false, sortOrder: 2 }
+    ] : []
+  });
+
+  // In-memory map only has the actively working session; the idle ones are missing
+  // while `refresh()` is in flight. `list()` must not drop them.
+  manager.sessions.set("openclacky:live-1", {
+    id: "openclacky:live-1", status: "running", archived: false, sortOrder: 3
+  });
+
+  const ids = manager.list({ archived: false }).map((session) => session.id);
+  assert.deepEqual(ids, ["openclacky:live-1", "openclacky:idle-1", "openclacky:idle-2"]);
+});
+
+test("OpenClacky manager does not duplicate a session present in both memory and store", () => {
+  const stored = { id: "openclacky:dup-1", status: "complete", archived: false, sortOrder: 1 };
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({}),
+    WebSocket: FakeWebSocket,
+    listStoredSessions: () => [stored]
+  });
+  // Live map has a fresher status for the same session; the stored copy must be skipped.
+  manager.sessions.set("openclacky:dup-1", { id: "openclacky:dup-1", status: "running", archived: false, sortOrder: 1 });
+
+  const list = manager.list({ archived: false });
+  assert.equal(list.length, 1);
+  assert.equal(list[0].status, "running");
 });

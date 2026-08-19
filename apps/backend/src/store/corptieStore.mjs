@@ -1664,20 +1664,33 @@ export class CorptieStore {
     const observedAt = snapshot.observedAt || new Date().toISOString();
     this.db.run("BEGIN IMMEDIATE");
     try {
-      this.db.run(
-        `INSERT INTO git_repositories (
-          repository_id, common_git_dir, discovered_at, last_validated_at
-        ) VALUES (?, ?, ?, ?)
-        ON CONFLICT(repository_id) DO UPDATE SET
-          common_git_dir=excluded.common_git_dir,
-          last_validated_at=excluded.last_validated_at`,
-        [
-          repository.id,
-          repository.commonGitDirCanonicalPath,
-          repository.discoveredAt || observedAt,
-          repository.lastValidatedAt || observedAt
-        ]
+      // Change-detection: the frontend polls workspace status every few seconds,
+      // and each poll previously rewrote `last_validated_at` with a fresh
+      // timestamp, bumping the state_sync_clock revision via the git_repositories
+      // trigger and fanning a change-set back to every client even when nothing
+      // about the repository changed. Persist the repository row only when it is
+      // new or its canonical git dir actually moved; a routine re-validation that
+      // changes nothing must stay a silent no-op.
+      const existingRepo = this.selectOne(
+        "SELECT common_git_dir FROM git_repositories WHERE repository_id = ?",
+        [repository.id]
       );
+      if (!existingRepo || existingRepo.common_git_dir !== repository.commonGitDirCanonicalPath) {
+        this.db.run(
+          `INSERT INTO git_repositories (
+            repository_id, common_git_dir, discovered_at, last_validated_at
+          ) VALUES (?, ?, ?, ?)
+          ON CONFLICT(repository_id) DO UPDATE SET
+            common_git_dir=excluded.common_git_dir,
+            last_validated_at=excluded.last_validated_at`,
+          [
+            repository.id,
+            repository.commonGitDirCanonicalPath,
+            repository.discoveredAt || observedAt,
+            repository.lastValidatedAt || observedAt
+          ]
+        );
+      }
       this.db.run(
         `UPDATE git_worktrees
          SET availability = 'missing', observed_at = ?, inventory_version = ?
@@ -2601,6 +2614,67 @@ export class CorptieStore {
 
   upsertSession(session) {
     const summary = toSessionSummary(session);
+    const values = [
+      session.id,
+      session.title,
+      session.agentName || session.agent || "Agent",
+      session.provider || session.external?.provider || "unknown",
+      session.command || session.external?.source || null,
+      JSON.stringify(session.args || []),
+      session.cwd || session.external?.cwd || null,
+      summary.status,
+      summary.progress,
+      summary.summary,
+      session.accent || summary.accent || "cyan",
+      createdAtFromOrNow(session.createdAt, session.updatedAt),
+      createdAtFromOrNow(session.updatedAt),
+      session.archived ? 1 : 0,
+      session.pinned ? 1 : 0,
+      Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
+      serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
+      JSON.stringify(toRawStatus(session)),
+      session.objectiveId ?? null,
+      session.workItemId ?? null,
+      normalizeSessionKind(session.sessionKind),
+      session.agentId ?? null
+    ];
+
+    // Change-detection: an UPDATE bumps the state_sync_clock revision (via the
+    // sessions trigger) and fans out a change-set to every connected client, so a
+    // no-op write is a real source of idle churn. Compare the normalized row against
+    // what is already persisted and skip the write entirely when nothing changed.
+    const existing = this.selectOne(
+      `SELECT title, agent, provider, command, args_json, cwd, status, progress,
+              summary, accent, created_at, updated_at, archived, pinned, sort_order,
+              active_choice_json, raw_json, objective_id, work_item_id, session_kind, agent_id
+       FROM sessions WHERE id = ?`,
+      [session.id]
+    );
+    if (existing) {
+      const columns = [
+        "title", "agent", "provider", "command", "args_json", "cwd", "status", "progress",
+        "summary", "accent", "created_at", "updated_at", "archived", "pinned", "sort_order",
+        "active_choice_json", "raw_json", "objective_id", "work_item_id", "session_kind", "agent_id"
+      ];
+      let changed = false;
+      for (let i = 0; i < columns.length; i++) {
+        const next = values[i + 1];
+        const prev = existing[columns[i]];
+        // SQLite returns integers/bools as numbers and NULL for absent values;
+        // normalize both sides so `0` matches `false` and `null` matches `undefined`.
+        const a = next == null ? null : next;
+        const b = prev == null ? null : prev;
+        if (a !== b) {
+          changed = true;
+          break;
+        }
+      }
+      if (!changed) {
+        this.ensureSessionLog(session.id);
+        return;
+      }
+    }
+
     this.db.run(
       `INSERT INTO sessions (
         id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, active_choice_json, raw_json, objective_id, work_item_id, session_kind, agent_id
@@ -2629,30 +2703,7 @@ export class CorptieStore {
           WHEN excluded.session_kind = 'legacy' THEN sessions.session_kind
           ELSE excluded.session_kind
         END`,
-      [
-        session.id,
-        session.title,
-        session.agentName || session.agent || "Agent",
-        session.provider || session.external?.provider || "unknown",
-        session.command || session.external?.source || null,
-        JSON.stringify(session.args || []),
-        session.cwd || session.external?.cwd || null,
-        summary.status,
-        summary.progress,
-        summary.summary,
-        session.accent || summary.accent || "cyan",
-        createdAtFromOrNow(session.createdAt, session.updatedAt),
-        createdAtFromOrNow(session.updatedAt),
-        session.archived ? 1 : 0,
-        session.pinned ? 1 : 0,
-        Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
-        serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
-        JSON.stringify(toRawStatus(session)),
-        session.objectiveId ?? null,
-        session.workItemId ?? null,
-        normalizeSessionKind(session.sessionKind),
-        session.agentId ?? null
-      ]
+      values
     );
     this.ensureSessionLog(session.id);
     this.scheduleSave();

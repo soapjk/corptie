@@ -62,8 +62,28 @@ export class StateSyncService {
       const collection = ENTITY_COLLECTION[row.entityType];
       if (!collection) continue;
       const entity = state[collection].find((candidate) => ENTITY_ID[collection](candidate) === row.entityId);
-      if (row.operation === "delete" || !entity) deletes[collection].push(row.entityId);
-      else upserts[collection].push(entity);
+      if (row.operation === "delete") {
+        deletes[collection].push(row.entityId);
+        if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
+          console.log(`[state-sync] DELETE ${collection} ${row.entityId} (op=delete) rev=${currentRevision} after=${after}`);
+        }
+      } else if (entity) {
+        upserts[collection].push(entity);
+      } else {
+        // The entity was upserted in the database but is absent from the
+        // provider-memory projection (e.g. an OpenClacky session whose in-memory
+        // cache briefly dropped it). This is not a deletion; skip it so the
+        // client keeps its last known state until the next full snapshot.
+        if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
+          console.log(`[state-sync] SKIP ${collection} ${row.entityId} (upsert missing from snapshot) rev=${currentRevision}`);
+        }
+      }
+    }
+    if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
+      const summary = Object.fromEntries(
+        STATE_COLLECTIONS.map((c) => [`${c}:u${upserts[c].length}/d${deletes[c].length}`])
+      );
+      console.log(`[state-sync] changeSet rev=${currentRevision} after=${after} ${JSON.stringify(summary)}`);
     }
     return {
       snapshotRequired: false,

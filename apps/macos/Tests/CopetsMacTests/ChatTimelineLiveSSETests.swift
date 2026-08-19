@@ -26,11 +26,13 @@ final class ChatTimelineLiveSSETests: XCTestCase {
         try await eventually(stage: { "latest rapid selection (expected.id)" }, timeout: .seconds(8)) {
             client.selectedSession?.id == expected.id
                 && client.selectedDetail?.id == expectedThreadID
+                && SessionTimelineRepository.shared.detail(for: expected.id)?.id == expectedThreadID
                 && client.detailStreamHealth == .healthy(sessionId: expected.id)
         }
         try await Task.sleep(for: .seconds(1))
         XCTAssertEqual(client.selectedSession?.id, expected.id)
         XCTAssertEqual(client.selectedDetail?.id, expectedThreadID)
+        XCTAssertEqual(SessionTimelineRepository.shared.detail(for: expected.id)?.id, expectedThreadID)
         XCTAssertEqual(client.detailStreamHealth, .healthy(sessionId: expected.id))
     }
 
@@ -52,6 +54,7 @@ final class ChatTimelineLiveSSETests: XCTestCase {
         ) {
             client.detailStreamHealth == .healthy(sessionId: first.id)
                 && client.selectedDetail != nil
+                && SessionTimelineRepository.shared.detail(for: first.id)?.id == client.selectedDetail?.id
                 && client.detailTimelineRevision != nil
         }
 
@@ -73,6 +76,7 @@ final class ChatTimelineLiveSSETests: XCTestCase {
                 client.selectedSession?.id == second.id
                     && client.detailStreamHealth == .healthy(sessionId: second.id)
                     && client.selectedDetail != nil
+                    && SessionTimelineRepository.shared.detail(for: second.id)?.id == client.selectedDetail?.id
             }
             try await Task.sleep(for: .seconds(1))
             XCTAssertEqual(client.selectedSession?.id, second.id)

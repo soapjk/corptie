@@ -17,6 +17,7 @@ export class OpenClackyManager {
     this.WebSocket = options.WebSocket ?? globalThis.WebSocket;
     this.onSessionChanged = options.onSessionChanged ?? null;
     this.resolveOwnedSessionIds = options.resolveOwnedSessionIds ?? (() => []);
+    this.listStoredSessions = options.listStoredSessions ?? (() => []);
     this.refreshIntervalMs = options.refreshIntervalMs ?? 10_000;
     // Corptie-owned isolated runtime options. When present, every created Session
     // is bootstrapped with the Corptie Agent identity, runtime instructions, scope
@@ -128,9 +129,19 @@ export class OpenClackyManager {
 
   list(options = {}) {
     const archived = options.archived === true;
-    return Array.from(this.sessions.values())
-      .filter((session) => Boolean(session.archived) === archived)
-      .map((session) => ({ ...session }));
+    // In-memory sessions carry the live status (running/complete/…), but they are
+    // refilled asynchronously by `refresh()` and can be momentarily incomplete while
+    // the provider rewrites a session file. The persisted session table is the
+    // authoritative inventory, so backfill any stored session the in-memory map is
+    // currently missing — the same merge the Claude SDK manager performs — instead of
+    // letting a transient gap silently drop idle sessions from the control plane.
+    // Order is applied downstream by `listGatewaySessions` via persisted order.
+    const live = Array.from(this.sessions.values())
+      .filter((session) => Boolean(session.archived) === archived);
+    const liveIds = new Set(live.map((session) => session.id));
+    const stored = (this.listStoredSessions({ archived }) ?? [])
+      .filter((session) => !liveIds.has(session.id));
+    return [...live, ...stored];
   }
 
   async refresh() {
@@ -153,7 +164,15 @@ export class OpenClackyManager {
         seen.add(sessionId);
         this.sessions.set(sessionId, summary);
       } catch (error) {
-        if (error.statusCode === 404) continue;
+        if (error.statusCode === 404) {
+          // A 404 is not a deletion signal: the provider can be mid-write on a
+          // session file (non-atomic save) or momentarily unreachable, which makes
+          // `load` return nil transiently. Keep the last known state so a still-owned
+          // session doesn't vanish from the control plane until the provider confirms
+          // removal via DELETE or drops it from the owned-session list.
+          seen.add(sessionId);
+          continue;
+        }
         throw error;
       }
     }

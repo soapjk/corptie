@@ -6,7 +6,6 @@ final class ChatTimelineStreamPolicyTests: XCTestCase {
         XCTAssertFalse(ChatDetailRefreshPolicy.shouldPoll(
             sessionId: "session-a",
             isViewingHistory: false,
-            sseHealthEnabled: true,
             streamHealth: .healthy(sessionId: "session-a")
         ))
     }
@@ -20,32 +19,20 @@ final class ChatTimelineStreamPolicyTests: XCTestCase {
             XCTAssertTrue(ChatDetailRefreshPolicy.shouldPoll(
                 sessionId: "session-a",
                 isViewingHistory: false,
-                sseHealthEnabled: true,
                 streamHealth: health
             ))
         }
-    }
-
-    func testFeatureDisabledPreservesLegacyPolling() {
-        XCTAssertTrue(ChatDetailRefreshPolicy.shouldPoll(
-            sessionId: "session-a",
-            isViewingHistory: false,
-            sseHealthEnabled: false,
-            streamHealth: .healthy(sessionId: "session-a")
-        ))
     }
 
     func testHistoricalAndClosedDetailsNeverPoll() {
         XCTAssertFalse(ChatDetailRefreshPolicy.shouldPoll(
             sessionId: "session-a",
             isViewingHistory: true,
-            sseHealthEnabled: true,
             streamHealth: .fallback(sessionId: "session-a")
         ))
         XCTAssertFalse(ChatDetailRefreshPolicy.shouldPoll(
             sessionId: nil,
             isViewingHistory: false,
-            sseHealthEnabled: true,
             streamHealth: .inactive
         ))
     }

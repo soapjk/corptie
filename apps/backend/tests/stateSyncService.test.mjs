@@ -47,3 +47,19 @@ test("change set emits deletes and requires snapshot beyond replay window", () =
   const changes = service.changesAfter(7);
   assert.deepEqual(changes.deletes.sessions, ["gone"]);
 });
+
+test("upsert missing from provider-memory snapshot is skipped, not deleted", () => {
+  // operation='upsert' means the row still exists in the database (INSERT/UPDATE
+  // trigger). A missing snapshot projection (e.g. an OpenClacky session whose
+  // in-memory cache briefly dropped it) must not be misreported as a delete.
+  const service = fixture({
+    revision: 3,
+    oldest: 2,
+    changes: [{ revision: 3, entityType: "session", entityId: "s-missing", operation: "upsert" }],
+    state: { sessions: [], workItems: [] }
+  });
+  const changes = service.changesAfter(2);
+  assert.equal(changes.snapshotRequired, false);
+  assert.deepEqual(changes.deletes.sessions, []);
+  assert.deepEqual(changes.upserts.sessions, []);
+});
