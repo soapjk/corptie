@@ -3631,7 +3631,7 @@ struct DetailView: View {
             expandableTurnId = turnId
             isExpanded = expanded
             processCount = items.count
-            processDuration = nativeProcessDuration(for: items)
+            processDuration = executionProcessDurationText(for: items)
             processState = projectedProcessState(for: items)
             showsHeader = false
             hoverTimestamp = ""
@@ -3655,24 +3655,6 @@ struct DetailView: View {
             hoverTimestamp: hoverTimestamp,
             actions: actions
         )
-    }
-
-    private func nativeProcessDuration(for items: [CodexThreadItem]) -> String? {
-        let timestamps = items.compactMap { item in
-            item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
-        }
-        guard let start = timestamps.min(), let end = timestamps.max() else { return nil }
-        let duration = max(0, end.timeIntervalSince(start))
-        if duration < 0.95 { return "<1s" }
-        if duration < 10 { return String(format: "%.1fs", duration) }
-        let seconds = Int(duration.rounded())
-        if seconds < 60 { return "\(seconds)s" }
-        let minutes = seconds / 60
-        let remainder = seconds % 60
-        if minutes < 60 { return remainder == 0 ? "\(minutes)m" : "\(minutes)m \(remainder)s" }
-        let hours = minutes / 60
-        let minuteRemainder = minutes % 60
-        return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
     }
 
     private func nativeProcessStepText(for item: CodexThreadItem) -> String {
@@ -3863,6 +3845,8 @@ struct DetailView: View {
             hasher.combine(turnId)
             hasher.combine(expandedTurnIds.contains(turnId))
             hasher.combine(items.count)
+            hasher.combine(items.first?.processStartedAt)
+            hasher.combine(items.first?.processEndedAt)
             if let last = items.last {
                 hasher.combine(last.turnStatus)
                 hasher.combine(last.status)
@@ -4892,7 +4876,7 @@ func makeChatDisplayEntriesForTurn(
     let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
     let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
     let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
-    let processItems = items.filter { item in
+    var processItems = items.filter { item in
         isDetailProcessItem(item) || progressAgentMessageIds.contains(item.id)
     }
     let trailingItems = items.filter { item in
@@ -4902,6 +4886,13 @@ func makeChatDisplayEntriesForTurn(
     var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
     if !processItems.isEmpty,
        let sourceTurnId = items.first?.turnId {
+        let turnStartedAt = userMessages.compactMap(\.createdAt).first
+            ?? items.compactMap(\.createdAt).first
+        let turnEndedAt = items.reversed().compactMap(\.createdAt).first
+        processItems[0].processStartedAt = turnStartedAt
+        if items.contains(where: { isTerminalTurnStatus($0.turnStatus) }) {
+            processItems[0].processEndedAt = turnEndedAt
+        }
         // Keep execution lifecycle independent from the user's authored message.
         // The process row owns its disclosure state and remains a separate bubble
         // even for the common one-message turn.
@@ -4964,6 +4955,44 @@ func projectedProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRo
     default:
         return .running
     }
+}
+
+/// Formats the elapsed time for the complete execution lifecycle. Prefer the
+/// turn bounds projected onto the process group; fall back to execution item
+/// timestamps only for older cached entries. A single timestamp is not a
+/// duration and must never be presented as a fabricated "<1s" result.
+func executionProcessDurationText(
+    for items: [CodexThreadItem],
+    now: Date = Date()
+) -> String? {
+    let itemDates = items.compactMap { item in
+        item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+    }
+    let projectedStart = items.lazy.compactMap(\.processStartedAt).first
+        .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+    let projectedEnd = items.lazy.compactMap(\.processEndedAt).first
+        .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+    guard let start = projectedStart ?? itemDates.min() else { return nil }
+    let end: Date?
+    if let projectedEnd {
+        end = projectedEnd
+    } else if projectedProcessState(for: items) == .running {
+        end = now
+    } else {
+        end = itemDates.max()
+    }
+    guard let end else { return nil }
+    let duration = end.timeIntervalSince(start)
+    guard duration > 0.05 else { return nil }
+    if duration < 10 { return String(format: "%.1fs", duration) }
+    let seconds = Int(duration.rounded())
+    if seconds < 60 { return "\(seconds)s" }
+    let minutes = seconds / 60
+    let remainder = seconds % 60
+    if minutes < 60 { return remainder == 0 ? "\(minutes)m" : "\(minutes)m \(remainder)s" }
+    let hours = minutes / 60
+    let minuteRemainder = minutes % 60
+    return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
 }
 
 @MainActor
@@ -5037,6 +5066,8 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.userMessageStatus ?? "",
         item.queuePosition.map(String.init) ?? "",
         item.turnStatus,
+        item.processStartedAt ?? "",
+        item.processEndedAt ?? "",
         item.presentationRole ?? "",
         item.collaborationProcessingStatus ?? "",
         item.collaborationSenderName ?? "",

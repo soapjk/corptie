@@ -762,6 +762,8 @@
 "Not Started" = "待开始";
 "In Progress" = "进行中";
 "Completed" = "已完成";
+"No Objective" = "未关联 Objective";
+"Unknown Objective" = "未知 Objective";
 "Awaiting Completion Approval" = "待确认完成";
 "Assistant" = "助手";
 "Independent Contributor" = "独立贡献者";

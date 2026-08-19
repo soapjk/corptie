@@ -158,6 +158,7 @@ struct SessionCollectionPatchTests {
             rows: [worker, legacy, assistant],
             agents: [],
             workItems: [],
+            objectives: [],
             category: .assistant
         )
 
@@ -172,7 +173,8 @@ struct SessionCollectionPatchTests {
         let objective = SessionRowModel(session: makeSession(
             id: "objective-chat",
             agentId: "assistant",
-            sessionKind: .objectiveChat
+            sessionKind: .objectiveChat,
+            objectiveId: "objective:1"
         ))
         let assistant = SessionRowModel(session: makeSession(
             id: "assistant-chat",
@@ -183,10 +185,12 @@ struct SessionCollectionPatchTests {
             rows: [objective, assistant],
             agents: [],
             workItems: [],
+            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .objective
         )
 
-        #expect(groups.map(\.key) == ["__objective__"])
+        #expect(groups.map(\.key) == ["objective:objective:1"])
+        #expect(groups.map(\.title) == ["Sessions UI"])
         #expect(groups[0].rows.map(\.id) == ["objective-chat"])
     }
 
@@ -215,12 +219,16 @@ struct SessionCollectionPatchTests {
                 makeWorkItem(id: "work-item:active", status: "in_progress"),
                 makeWorkItem(id: "work-item:completed", status: "done")
             ],
+            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .worker
         )
 
-        #expect(groups.map(\.key) == ["__worker_active__", "__worker_completed__"])
-        #expect(groups[0].rows.map(\.id) == ["active-worker", "orphaned-worker"])
-        #expect(groups[1].rows.map(\.id) == ["completed-worker"])
+        #expect(groups.map(\.key) == ["worker-objective:objective:1", "worker-objective:__no_objective__"])
+        #expect(groups.map(\.title) == ["Sessions UI", L10n("No Objective")])
+        #expect(groups[0].subgroups.map(\.title) == [L10n("In Progress"), L10n("Completed")])
+        #expect(groups[0].subgroups[0].rows.map(\.id) == ["active-worker"])
+        #expect(groups[0].subgroups[1].rows.map(\.id) == ["completed-worker"])
+        #expect(groups[1].subgroups[0].rows.map(\.id) == ["orphaned-worker"])
     }
 
     @Test
@@ -310,7 +318,8 @@ private func makeSession(
     summary: String = "Summary",
     agentId: String? = nil,
     sessionKind: SessionKind? = nil,
-    workItemId: String? = nil
+    workItemId: String? = nil,
+    objectiveId: String? = nil
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -318,6 +327,7 @@ private func makeSession(
         agent: "Codex",
         agentId: agentId,
         sessionKind: sessionKind,
+        objectiveId: objectiveId,
         workItemId: workItemId,
         status: .complete,
         progress: 1,
@@ -334,6 +344,24 @@ private func makeSession(
         external: nil,
         actions: nil,
         pendingCollaborationConfirmation: nil
+    )
+}
+
+private func makeObjective(id: String, name: String) -> Objective {
+    Objective(
+        id: id,
+        name: name,
+        description: "",
+        idealState: "",
+        status: "active",
+        priority: nil,
+        targetDate: nil,
+        tags: [],
+        workspaceIds: [],
+        relatedObjectiveIds: [],
+        contributorAgentIds: [],
+        createdAt: "2026-08-12T00:00:00Z",
+        updatedAt: "2026-08-12T00:00:00Z"
     )
 }
 
