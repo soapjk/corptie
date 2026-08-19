@@ -82,5 +82,6 @@ docs/
 !docs/
 docs/**
 !docs/openclacky-provider-parity-audit-and-remediation.md
+!docs/skill-management-page-proposal.md
 # Corptie local Agent configuration
 /.corptie/
