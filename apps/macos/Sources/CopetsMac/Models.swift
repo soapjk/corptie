@@ -378,7 +378,6 @@ struct ProjectIntegrationAgent: Identifiable, Decodable, Equatable, Sendable {
     var id: String { agentId }
     let agentId: String
     let name: String
-    let provider: String?
     let role: String
 }
 
@@ -893,7 +892,7 @@ struct SessionProviderSwitchPendingEventEnvelope: Decodable {
 }
 
 struct SessionProviderSwitchPendingEventPayload: Decodable {
-    let session: TaskSession
+    let sessionId: String?
 }
 
 struct SessionProviderSwitchedEventEnvelope: Decodable {
@@ -901,7 +900,7 @@ struct SessionProviderSwitchedEventEnvelope: Decodable {
 }
 
 struct SessionProviderSwitchedEventPayload: Decodable {
-    let session: TaskSession
+    let sessionId: String?
 }
 
 struct CodexAccountUsage: Decodable, Equatable {
@@ -1054,6 +1053,16 @@ extension Collection where Element == AgentProviderDescriptor {
 
     func displayName(for providerIdentity: String?) -> String? {
         descriptor(matching: providerIdentity)?.displayName
+    }
+
+    /// Provider switching is server-authoritative. The client only needs to know
+    /// whether the catalog contains a different Provider capable of creating the
+    /// replacement Session; it must not gate the menu on an optional cached
+    /// SessionActions projection.
+    func sessionProviderAlternatives(to currentProviderIdentity: String?) -> [AgentProviderDescriptor] {
+        filter {
+            $0.supports("session.create") && !$0.matches(currentProviderIdentity)
+        }
     }
 }
 

@@ -14,7 +14,6 @@ struct Agent: Identifiable, Codable, Hashable {
     var role: String
     var status: String
     var statusReason: String? = nil
-    var provider: String?
     var systemPrompt: String
     var capabilities: [String]
     var workDir: String?

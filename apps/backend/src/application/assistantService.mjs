@@ -176,8 +176,7 @@ export class AssistantService {
       }
       case "agent.create": {
         const agent = this.store.createAgent({
-          name: args.name || "未命名 Agent",
-          provider: args.provider ?? null
+          name: args.name || "未命名 Agent"
         });
         this.onEntityChanged?.("AgentChanged", { action: "created", entity: agent });
         return [

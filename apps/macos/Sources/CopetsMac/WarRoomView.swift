@@ -581,6 +581,7 @@ struct WorkItemDetailView: View {
     @State private var showStatusAdvanceConfirmation = false
     @State private var isAdvancingStatus = false
     @State private var isConfirmingCompletion = false
+    @State private var sessionCreationAgent: Agent?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -658,6 +659,15 @@ struct WorkItemDetailView: View {
                     }
                 }
             })
+        }
+        .sheet(item: $sessionCreationAgent) { agent in
+            NewSessionCreationSheet(fixedAgent: agent, fixedWorkItem: workItem) { session in
+                backendClient.acceptCreatedSession(session, selectImmediately: false)
+                Task {
+                    await refreshExecution()
+                    onRequestReload()
+                }
+            }
         }
         .alert(L10n("执行失败"), isPresented: Binding(
             get: { executionError != nil },
@@ -973,23 +983,12 @@ struct WorkItemDetailView: View {
     }
 
     private func createExecutionSession(agentId: String) async {
-        guard !isLaunchingExecution else { return }
-        isLaunchingExecution = true
-        defer { isLaunchingExecution = false }
-
-        let result = await client.createSession(
-            workItemId: workItem.id,
-            agentId: agentId,
-            title: workItem.title
-        )
-        if let session = result.session {
-            backendClient.acceptCreatedSession(session, selectImmediately: false)
+        if client.agents.isEmpty { await client.refreshAgents() }
+        guard let agent = client.agents.first(where: { $0.agentId == agentId }) else {
+            executionError = EntityLaunchError(message: L10n("Agent 不存在"), code: "AGENT_NOT_FOUND")
+            return
         }
-        if let error = result.error {
-            executionError = error
-        }
-        await refreshExecution()
-        onRequestReload()
+        sessionCreationAgent = agent
     }
 
     // 终止当前运行中的会话。

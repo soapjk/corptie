@@ -74,7 +74,7 @@ export class ObjectiveChatOperationService {
     const objective = this.objectiveService.getObjective(objectiveId);
     const contributors = new Set(objective.contributorAgentIds);
     return this.store.listAgents().filter((agent) => contributors.has(agent.agentId)).map((agent) => ({
-      agentId: agent.agentId, name: agent.name, role: agent.role, provider: agent.provider,
+      agentId: agent.agentId, name: agent.name, role: agent.role,
       description: agent.description, status: agent.status,
       isContributor: true,
       canStartWorkItem: agent.role === "independentContributor"

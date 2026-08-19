@@ -6,7 +6,6 @@ import SwiftUI
 
 struct AgentSinglePickerView: View {
     @ObservedObject private var client = EntityAPIClient.shared
-    @ObservedObject private var backendClient = BackendClient.shared
     /// 当前选中（可选）；nil 表示「使用默认 Agent」。
     @Binding var selectedId: String?
     /// 完成回调（可选）：点「完成」时把最终选中 id 交回调用方；不传则仅关闭。
@@ -48,11 +47,6 @@ struct AgentSinglePickerView: View {
                             .foregroundStyle(selectedId == agent.agentId ? Color.accentColor : Color.secondary)
                         Label(agent.name, systemImage: agent.isAssistant ? "sparkles" : "person")
                         Spacer()
-                        if let provider = agent.provider {
-                            Text(backendClient.providerDisplayName(for: provider) ?? provider)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { select(agent.agentId) }
@@ -93,7 +87,6 @@ struct AgentSinglePickerView: View {
         .onAppear {
             Task {
                 if client.agents.isEmpty { await client.refreshAgents() }
-                if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
             }
         }
         .sheet(isPresented: $showCreate) {

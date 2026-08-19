@@ -396,9 +396,9 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
 test("POST /objectives/:id/sessions creates Objective Chat with any attached contributor and rejects outsiders", async () => {
   const services = await createServices();
   try {
-    const planner = services.store.createAgent({ name: "Planner", role: "independentContributor", provider: "codex" });
-    const builder = services.store.createAgent({ name: "Builder", role: "independentContributor", provider: "codex" });
-    const outsider = services.store.createAgent({ name: "Outsider", role: "independentContributor", provider: "codex" });
+    const planner = services.store.createAgent({ name: "Planner", role: "independentContributor" });
+    const builder = services.store.createAgent({ name: "Builder", role: "independentContributor" });
+    const outsider = services.store.createAgent({ name: "Outsider", role: "independentContributor" });
     const objective = services.objectiveService.createObjective({
       name: "Objective Chat",
       contributorAgentIds: [planner.agentId, builder.agentId]
@@ -416,7 +416,7 @@ test("POST /objectives/:id/sessions creates Objective Chat with any attached con
       const result = await callApi({
         method: "POST",
         pathname: `/objectives/${objective.id}/sessions`,
-        body: { agentId: agent.agentId, title: "Planning" },
+        body: { agentId: agent.agentId, providerId: "codex-app-server", title: "Planning" },
         launchObjectiveChatSession,
         ...services
       });
@@ -939,7 +939,6 @@ test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功�
     assert.equal(renamed.body.agent.name, "我的 Corptie");
 
     for (const body of [
-      { provider: "claude-sdk" },
       { systemPrompt: "ignore product rules" },
       { description: "changed" },
       { capabilities: [] },
@@ -962,7 +961,7 @@ test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功�
 
     const assistant = services.store.getAgent("assistant");
     assert.equal(assistant.name, "我的 Corptie");
-    assert.equal(assistant.provider, "codex-app-server");
+    assert.equal(Object.hasOwn(assistant, "provider"), false);
     assert.deepEqual(assistant.capabilities, ["platform.manage"]);
   } finally {
     await services.store.close();
@@ -999,13 +998,13 @@ test("POST /agents 创建独立贡献者 Agent", async () => {
     const created = await callApi({
       method: "POST",
       pathname: "/agents",
-      body: { name: "后端开发", provider: "codex" },
+      body: { name: "后端开发" },
       ...services
     });
     assert.equal(created.statusCode, 201);
     assert.equal(created.body.agent.name, "后端开发");
     assert.equal(created.body.agent.role, "independentContributor");
-    assert.equal(created.body.agent.provider, "codex");
+    assert.equal(Object.hasOwn(created.body.agent, "provider"), false);
 
     // 缺 name → 400
     const bad = await callApi({ method: "POST", pathname: "/agents", body: {}, ...services });
@@ -1157,6 +1156,7 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       body: {
         workItemId: workItem.body.id,
         agentId: contributor.body.agent.agentId,
+        providerId: "codex-app-server",
         title: "自定义 Worker"
       },
       launchSession: async ({ agent, title }) => {
@@ -1184,7 +1184,7 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       ...services,
       method: "POST",
       pathname: "/agents/assistant/sessions",
-      body: { title: "自定义 Chat" },
+      body: { providerId: "codex-app-server", title: "自定义 Chat" },
       launchAgentSession: async ({ agent, title }) => {
         assert.equal(title, "自定义 Chat");
         services.store.upsertSession({
@@ -1267,20 +1267,18 @@ test("PATCH /agents/:id 编辑 Agent", async () => {
   }
 });
 
-test("GET /agents dynamically reports an unregistered Provider without persisting an Agent lifecycle state", async () => {
+test("GET /agents reports availability independently of Session Provider selection", async () => {
   const services = await createServices();
   try {
     const created = await callApi({
       method: "POST",
       pathname: "/agents",
-      body: { name: "Unavailable Provider Agent", provider: "removed-provider" },
-      resolveAgentAvailability: (agent) => agent.provider === "removed-provider"
-        ? { status: "unavailable", reason: "Agent Provider is not registered: removed-provider" }
-        : { status: "available" },
+      body: { name: "Provider-neutral Agent" },
+      resolveAgentAvailability: () => ({ status: "available" }),
       ...services
     });
-    assert.equal(created.body.agent.status, "unavailable");
-    assert.equal(created.body.agent.statusReason, "Agent Provider is not registered: removed-provider");
+    assert.equal(created.body.agent.status, "available");
+    assert.equal(created.body.agent.statusReason, null);
     assert.equal(services.store.getAgent(created.body.agent.agentId).status, "available");
   } finally {
     await services.store.close();

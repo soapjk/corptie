@@ -355,12 +355,13 @@ final class EntityAPIClient: ObservableObject {
     func createSession(
         workItemId: String,
         agentId: String,
+        providerId: String,
         title: String? = nil
     ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId]
+        var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId, "providerId": providerId]
         if let title { body["title"] = title }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
@@ -385,13 +386,14 @@ final class EntityAPIClient: ObservableObject {
     @discardableResult
     func startAgentSession(
         agentId: String,
+        providerId: String,
         title: String? = nil,
         prompt: String? = nil
     ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)/sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = [:]
+        var body: [String: Any] = ["providerId": providerId]
         if let title, !title.isEmpty { body["title"] = title }
         if let prompt, !prompt.isEmpty { body["prompt"] = prompt }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -417,13 +419,14 @@ final class EntityAPIClient: ObservableObject {
     func startObjectiveChat(
         objectiveId: String,
         agentId: String,
+        providerId: String,
         title: String? = nil,
         prompt: String? = nil
     ) async -> EntitySessionLaunchResult {
         var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)/sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["agentId": agentId]
+        var body: [String: Any] = ["agentId": agentId, "providerId": providerId]
         if let title, !title.isEmpty { body["title"] = title }
         if let prompt, !prompt.isEmpty { body["prompt"] = prompt }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -617,17 +620,16 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 创建 Agent：POST /agents { name, description?, role?, provider?, systemPrompt?, capabilities?, skillIds? } → { agent }
+    // 创建 Agent 资源包：Provider 由实际 Session 选择。
     @discardableResult
     func createAgent(name: String, description: String? = nil, role: String = "independentContributor",
-                     provider: String? = nil, systemPrompt: String? = nil, capabilities: [String] = [],
+                     systemPrompt: String? = nil, capabilities: [String] = [],
                      skillIds: [String] = [], workDir: String? = nil) async -> Agent? {
         var request = URLRequest(url: baseURL.appending(path: "agents"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["name": name, "role": role]
         if let description, !description.isEmpty { body["description"] = description }
-        if let provider { body["provider"] = provider }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
         if !capabilities.isEmpty { body["capabilities"] = capabilities }
         if !skillIds.isEmpty { body["skillIds"] = skillIds }
@@ -652,7 +654,6 @@ final class EntityAPIClient: ObservableObject {
     // 更新 Agent：PATCH /agents/:id → { agent }
     @discardableResult
     func updateAgent(agentId: String, name: String? = nil, description: String? = nil,
-                     provider: String? = nil,
                      systemPrompt: String? = nil, skillIds: [String]? = nil,
                      workDir: String? = nil) async -> Agent? {
         var request = URLRequest(url: baseURL.appending(path: "agents/\(agentId)"))
@@ -661,7 +662,6 @@ final class EntityAPIClient: ObservableObject {
         var body: [String: Any] = [:]
         if let name { body["name"] = name }
         if let description { body["description"] = description }
-        if let provider { body["provider"] = provider }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
         if let skillIds { body["skillIds"] = skillIds }
         if let workDir { body["workDir"] = workDir }

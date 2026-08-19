@@ -35,7 +35,8 @@ import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import {
   ensureProviderSessionProjection,
-  persistProviderSessionProjection
+  persistProviderSessionProjection,
+  resolveRoutedProviderSessionProjection
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
 import { ObjectiveChatContextService } from "./application/objectiveChatContextService.mjs";
@@ -279,8 +280,6 @@ const skillRegistryService = new SkillRegistryService({
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
 agentContextService.resolveAgentSkills = (agentId) => {
-  const agent = store.getAgent(agentId);
-  if (!agent?.provider || !agentProviderRegistry.supports(agent.provider, "agent.skills.lazyLoad")) return [];
   return skillRegistryService.skillsForAgent(agentId);
 };
 const collaborationDispatcher = new CollaborationDeliveryDispatcher({
@@ -633,7 +632,7 @@ platformOperationService = new PlatformOperationService({
   objectiveService,
   sessionService: sessionApplicationService,
   listSessions: (input) => listGatewaySessions(input),
-  createSession: async ({ agentId, workItemId, title, prompt }) => {
+  createSession: async ({ agentId, providerId, workItemId, title, prompt }) => {
     const agent = store.getAgent(agentId);
     if (!agent) {
       const error = new Error(`Agent not found: ${agentId}`);
@@ -642,9 +641,9 @@ platformOperationService = new PlatformOperationService({
     }
     if (workItemId) {
       const workItem = objectiveService.getWorkItem(workItemId);
-      return launchWorkItemSession({ agent, workItem, title, prompt });
+      return launchWorkItemSession({ agent, workItem, providerId, title, prompt });
     }
-    return launchAgentSession({ agent, title, prompt });
+    return launchAgentSession({ agent, providerId, title, prompt });
   },
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
@@ -655,7 +654,7 @@ const sessionContextReferenceService = new SessionContextReferenceService({
 const backgroundAgentService = new BackgroundAgentService({
   registry: agentProviderRegistry,
   defaultProviderId: "codex-app-server",
-  resolveProviderId: (provider) => resolveAgentProviderId(provider),
+  resolveProviderId: (provider) => resolveSessionProviderId(provider),
   resolveAgentContext: (agentId, { intent } = {}) => agentContextService.buildAgentContext(agentId, { intent }),
   onOperationEvent: (type, payload) => emitEvent(type, payload)
 });
@@ -683,23 +682,17 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
       ?? ensureCollaborationAgentForSession(session);
     return {
       agentId: agent?.agentId ?? null,
+      sessionKind: session?.sessionKind ?? "legacy",
       instructionSummary: summarizeProviderInstructionSources(logical)
     };
   },
-  createTargetSession: async ({ providerId, title, cwd, agentId, instructionSummary }) => {
-    const toolHost = agentId
-      ? await toolHostService.prepareSession(providerId, {
-          purpose: "provider-switch",
-          actorId: agentId
-        })
-      : null;
-    const created = await sessionApplicationService.createSession(providerId, {
+  createTargetSession: async ({ providerId, title, cwd, agentId, instructionSummary, sessionKind }) => {
+    const created = await sessionApplicationService.createSessionForRouteTransition(providerId, {
       title,
       cwd,
       instructionSources: instructionSummary ? [instructionSummary] : [],
-      toolHost,
-      sessionKind: "assistantChat"
-    }, { actorId: agentId ?? null });
+      sessionKind
+    }, { purpose: "provider-switch", actorId: agentId ?? null, sessionKind });
     return {
       providerThreadId: created?.external?.threadId ?? created?.external?.sessionId ?? created?.id ?? null,
       providerSessionId: created?.external?.sessionId
@@ -761,6 +754,7 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
       session = await launchWorkItemSession({
         agent,
         workItem,
+        providerId: agentProviderRegistry.defaultProviderId,
         title,
         prompt,
         workingDirectory: workspace.path
@@ -949,7 +943,9 @@ function sessionWithLogicalWorkspace(session, logical) {
     publicSessionId: logical.logicalSessionId,
     external: {
       ...(presented.external ?? {}),
+      provider: logical.activeBinding?.providerId ?? presented.external?.provider,
       threadId: logical.activeThreadId,
+      sessionId: logical.activeBinding?.providerSessionId ?? presented.external?.sessionId,
       cwd,
       logicalSessionId: logical.logicalSessionId,
       workspace: {
@@ -2785,8 +2781,8 @@ function normalizeSessionId(id) {
 
 function requestedProviderId(value) {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  // 先走统一的 Agent provider id 规范化（覆盖 codex / claude / claude_code 等别名）。
-  const resolved = resolveAgentProviderId(normalized);
+  // 先走统一的 Session Provider id 规范化（覆盖 codex / claude / claude_code 等别名）。
+  const resolved = resolveSessionProviderId(normalized);
   if (resolved) return resolved;
   return normalized;
 }
@@ -3059,7 +3055,12 @@ async function assertDirectory(path) {
 }
 
 function listGatewaySessions(options = {}) {
-  const sessions = agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).map((session) => {
+  const sessions = agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).flatMap((session) => {
+    const routed = resolveRoutedProviderSessionProjection(store, session);
+    if (routed.disposition === "historical") return [];
+    if (routed.disposition === "active") {
+      return [sessionWithLogicalWorkspace(routed.session, routed.logical)];
+    }
     const projection = ensureProviderSessionProjection({
       store,
       session,
@@ -3070,7 +3071,7 @@ function listGatewaySessions(options = {}) {
       console.log(`[session-projection] repaired provider session=${session.id}`);
     }
     const logical = store.getLogicalSessionByLegacySessionId(session.id);
-    return logical ? sessionWithLogicalWorkspace(session, logical) : session;
+    return [logical ? sessionWithLogicalWorkspace(session, logical) : session];
   });
   // Corptie owns list presentation order. A Provider may keep an active
   // session object in memory with the sort order it had at startup, so always
@@ -3227,30 +3228,24 @@ function prepareClaudeProviderSessionInput(input = {}) {
   };
 }
 
-// 实体层 Agent.provider → providerId 映射。deepseek / harness 暂无执行 runtime，返回 null。
-function entityAgentProviderId(provider) {
-  return resolveAgentProviderId(provider);
-}
-
-// provider-neutral 的 Agent provider id 规范化：把前端展示 tag / 历史别名 / registry id
+// provider-neutral 的 provider id 规范化：把展示 tag / 历史别名 / registry id
 // 统一映射为 registry id（codex-app-server / claude-sdk），未知值返回 null。
-// 所有需要从 agent.provider 解析 registry provider 的路径（WorkItem 执行、后台 Agent、
-// 会话启动）都应复用此函数，避免映射散落、不一致。
-function resolveAgentProviderId(provider) {
+// 所有 Session 创建与后台运行入口都复用此函数，避免映射散落、不一致。
+function resolveSessionProviderId(provider) {
   const normalized = typeof provider === "string" ? provider.trim().toLowerCase() : "";
   return agentProviderRegistry.resolveId(normalized, { useDefault: normalized === "" });
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
-async function launchWorkItemSession({ agent, workItem, title, prompt: requestedPrompt, workingDirectory = null }) {
+async function launchWorkItemSession({ agent, workItem, providerId: requestedProviderId, title, prompt: requestedPrompt, workingDirectory = null }) {
   if (agent.role !== "independentContributor") {
     const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
     error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
     throw error;
   }
-  const providerId = entityAgentProviderId(agent.provider);
+  const providerId = resolveSessionProviderId(requestedProviderId);
   if (!providerId) {
-    const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
+    const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
@@ -3292,15 +3287,15 @@ async function launchWorkItemSession({ agent, workItem, title, prompt: requested
 // cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
 // 目录缺失时在此幂等创建。独立贡献者的会话应走 WorkItem 绑定路径（launchWorkItemSession），
 // 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
-async function launchAgentSession({ agent, title, prompt }) {
+async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt }) {
   if (agent.role !== "assistant") {
     const error = new Error("只有 Assistant 才能创建 Assistant Chat Session。");
     error.code = "AGENT_NOT_ASSISTANT";
     throw error;
   }
-  const providerId = entityAgentProviderId(agent.provider);
+  const providerId = resolveSessionProviderId(requestedProviderId);
   if (!providerId) {
-    const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
+    const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
@@ -3322,15 +3317,15 @@ async function launchAgentSession({ agent, title, prompt }) {
   return store.getSession(session.id) ?? session;
 }
 
-async function launchObjectiveChatSession({ agent, objective, title, prompt: requestedPrompt }) {
+async function launchObjectiveChatSession({ agent, objective, providerId: requestedProviderId, title, prompt: requestedPrompt }) {
   if (!objective.contributorAgentIds.includes(agent.agentId)) {
     const error = new Error("只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。");
     error.code = "AGENT_OUTSIDE_OBJECTIVE";
     throw error;
   }
-  const providerId = entityAgentProviderId(agent.provider);
+  const providerId = resolveSessionProviderId(requestedProviderId);
   if (!providerId) {
-    const error = new Error(`Agent「${agent.name}」的 provider（${agent.provider ?? "未设置"}）暂不支持执行。`);
+    const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
@@ -3359,7 +3354,7 @@ async function launchObjectiveChatSession({ agent, objective, title, prompt: req
   return store.bindSessionToObjective(session.id, objective.id);
 }
 
-async function launchAndBindWorkItemSession({ workItem, agent, title }) {
+async function launchAndBindWorkItemSession({ workItem, agent, title, providerId = agentProviderRegistry.defaultProviderId }) {
   if (workItem.current_session_id) {
     await memoryExtractor.extractFromSession(workItem.current_session_id, {
       objectiveId: workItem.objective_id,
@@ -3368,7 +3363,7 @@ async function launchAndBindWorkItemSession({ workItem, agent, title }) {
     });
     store.closeSession(workItem.current_session_id);
   }
-  const session = await launchWorkItemSession({ agent, workItem, title });
+  const session = await launchWorkItemSession({ agent, workItem, providerId, title });
   const bound = store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);
   store.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
   emitEvent("WorkItemChanged", { action: "execution-started", entity: store.getWorkItem(workItem.id) });
@@ -4844,10 +4839,11 @@ function summarizeProviderInstructionSources(logical) {
   return text || null;
 }
 
-async function switchSessionProvider(sessionId, providerId, transitionId = undefined) {
+async function switchSessionProvider(sessionId, providerId, transitionId = undefined, expectedRoutingVersion = undefined) {
   return sessionProviderSwitchCoordinator.switchProvider(sessionId, {
     providerId,
-    transitionId
+    transitionId,
+    expectedRoutingVersion
   });
 }
 
@@ -5564,13 +5560,7 @@ function route(request, response) {
     backgroundAgentService,
     skillRegistryService,
     resolveAgentAvailability: (agent) => {
-      const providerId = entityAgentProviderId(agent.provider);
-      return providerId
-        ? { status: "available", reason: null }
-        : {
-            status: "unavailable",
-            reason: `Agent Provider is not registered: ${agent.provider ?? "default"}`
-          };
+      return { status: "available", reason: null };
     },
     suggestAgentSessionTitle: (agent) => resolveAvailableAgentSessionTitle(
       knownSessionsForTitleValidation(),
@@ -6714,7 +6704,8 @@ function route(request, response) {
         const result = await switchSessionProvider(
           sessionId,
           input.providerId,
-          input.transitionId
+          input.transitionId,
+          input.expectedRoutingVersion
         );
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
