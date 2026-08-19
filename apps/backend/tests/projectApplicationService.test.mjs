@@ -54,6 +54,7 @@ test("Project APIs operate without constructing an Agent Session", async () => {
   });
   const development = await service.runDevelopmentServiceAction("project:one", "restart", { profileId: "dev" });
   const workspace = await service.runWorkspaceAction("project:one", "worktree:feature", "commit", { commitMessage: "Save" });
+  const preparation = await service.runWorkspaceAction("project:one", "worktree:feature", "commit-prepare", {});
 
   assert.equal(project.project.pendingWorkspaceCount, 1);
   assert.equal(workspaces.project.worktrees.length, 2);
@@ -61,6 +62,7 @@ test("Project APIs operate without constructing an Agent Session", async () => {
   assert.equal(workspaces.project.worktrees[1].gitHubPush.pending, false);
   assert.equal(development.service.state, "running");
   assert.equal(workspace.result.committed, true);
+  assert.equal(preparation.action, "commit-prepare");
   assert.deepEqual(calls, [
     ["workspaces", "project:one"],
     ["workspaces", "project:one"],
@@ -70,6 +72,8 @@ test("Project APIs operate without constructing an Agent Session", async () => {
     ["action", "project:one", "restart", { profileId: "dev" }],
     ["service", "project:one"],
     ["workspaceAction", "project:one", "worktree:feature", "commit", { commitMessage: "Save" }],
+    ["workspaces", "project:one"],
+    ["workspaceAction", "project:one", "worktree:feature", "commit-prepare", {}],
     ["workspaces", "project:one"]
   ]);
 });

@@ -4670,7 +4670,7 @@ async function performProjectDevelopmentServiceAction(project, action, input = {
 }
 
 async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
-  if (!["commit-message", "commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
+  if (!["commit-prepare", "commit-message", "commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
     const error = new Error(`Unsupported workspace action: ${action}`);
     error.code = "INVALID_PROJECT_ACTION";
     throw error;
@@ -4681,6 +4681,10 @@ async function performProjectWorkspaceAction(project, workspaceId, action, input
     const error = new Error("The selected workspace is unavailable or does not belong to this Project.");
     error.code = "WORKSPACE_NOT_FOUND";
     throw error;
+  }
+  if (action === "commit-prepare") {
+    if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
+    return gitCommitProtection.inspect(workspace.path);
   }
   if (action === "commit-message") {
     if (workspace.dirty !== true) throw new Error("The selected workspace has no uncommitted changes.");
@@ -6474,7 +6478,7 @@ function route(request, response) {
     /^\/worktree-management\/jobs\/([^/]+)$/
   );
   const worktreeManagementJobActionMatch = url.pathname.match(
-    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry)$/
+    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry|cancel)$/
   );
   const projectWorkspaceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
@@ -6528,7 +6532,9 @@ function route(request, response) {
     readJson(request)
       .then((input) => action === "confirm"
         ? worktreeIntegrationJobService.confirm(jobId, input)
-        : worktreeIntegrationJobService.retry(jobId))
+        : action === "cancel"
+          ? worktreeIntegrationJobService.cancel(jobId)
+          : worktreeIntegrationJobService.retry(jobId))
       .then((result) => sendJson(response, 202, { job: result }))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code

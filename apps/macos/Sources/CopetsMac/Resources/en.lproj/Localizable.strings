@@ -276,6 +276,16 @@
 "Commit changes" = "Commit changes";
 "Corptie will generate a commit message using the associated session and commit the uncommitted changes on %@. No remote push is performed." = "Corptie will generate a commit message using the associated session and commit the uncommitted changes on %@. No remote push is performed.";
 "Open Worktree operations" = "Open Worktree operations";
+"Click a Worktree status to review and run operations for that Worktree only." = "Click a Worktree status to review and run operations for that Worktree only.";
+"Inspecting Worktree changes…" = "Inspecting Worktree changes…";
+"Protected local files were detected." = "Protected local files were detected.";
+"Handle protected files" = "Handle protected files";
+"Choose…" = "Choose…";
+"Add matching paths to .gitignore" = "Add matching paths to .gitignore";
+"Include files in this commit" = "Include files in this commit";
+"Operations run in the displayed order. No remote push or deletion is performed." = "Operations run in the displayed order. No remote push or deletion is performed.";
+"No Worktree changes require integration." = "No Worktree changes require integration.";
+"Canceled" = "Canceled";
 "Commit uncommitted changes" = "Commit uncommitted changes";
 "No associated sessions" = "No associated sessions";
 "Create a session in this Worktree" = "Create a session in this Worktree";

@@ -1,11 +1,19 @@
 import AppKit
 import SwiftUI
 
+enum WorktreeAutomaticLoadPolicy {
+    static func shouldLoad(isBackendOnline: Bool, selectedTab: AppTab) -> Bool {
+        isBackendOnline && selectedTab == .worktrees
+    }
+}
+
 struct WorktreeManagementView: View {
     @EnvironmentObject private var router: AppTabRouter
+    @ObservedObject private var backendClient = BackendClient.shared
     @StateObject private var client = WorktreeManagementClient()
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
+    @State private var pendingOperation: ManagedWorktree?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
@@ -18,8 +26,23 @@ struct WorktreeManagementView: View {
             detailColumn
         }
         .toolbar(removing: .sidebarToggle)
-        .task { await client.loadRepositories() }
+        .task(id: worktreeReloadTrigger) {
+            guard backendClient.isOnline else {
+                client.dismissError()
+                return
+            }
+            guard WorktreeAutomaticLoadPolicy.shouldLoad(
+                isBackendOnline: backendClient.isOnline,
+                selectedTab: router.selectedTab
+            ) else { return }
+            await client.loadRepositories()
+            if let target = router.pendingWorktreeTarget {
+                await client.navigate(to: target)
+                router.consumeWorktreeTarget(target)
+            }
+        }
         .task(id: router.pendingWorktreeTarget) {
+            guard backendClient.isOnline, router.selectedTab == .worktrees else { return }
             guard let target = router.pendingWorktreeTarget else { return }
             await client.navigate(to: target)
             router.consumeWorktreeTarget(target)
@@ -35,6 +58,13 @@ struct WorktreeManagementView: View {
         .sheet(isPresented: $showingPlan) {
             if let job = client.job { WorktreeIntegrationPlanReview(job: job, client: client, isPresented: $showingPlan) }
         }
+        .sheet(item: $pendingOperation) { worktree in
+            IndividualWorktreeOperationView(
+                worktree: worktree,
+                client: client,
+                onClose: { pendingOperation = nil }
+            )
+        }
         .confirmationDialog(
             L10n("Synchronize this Worktree with main?"),
             isPresented: $showingSynchronizationConfirmation,
@@ -48,13 +78,17 @@ struct WorktreeManagementView: View {
             Text(L10n("This fast-forwards an already integrated Worktree to the current main revision. Uncommitted or unmerged changes are never overwritten."))
         }
         .alert(L10n("Worktree operation failed"), isPresented: Binding(
-            get: { client.errorMessage != nil },
+            get: { backendClient.isOnline && client.errorMessage != nil },
             set: { if !$0 { client.dismissError() } }
         )) {
             Button(L10n("OK"), role: .cancel) { client.dismissError() }
         } message: {
             Text(client.errorMessage ?? "")
         }
+    }
+
+    private var worktreeReloadTrigger: String {
+        "\(backendClient.isOnline):\(router.selectedTab == .worktrees)"
     }
 
     private var repositoryColumn: some View {
@@ -121,8 +155,7 @@ struct WorktreeManagementView: View {
                             Text(worktree.path).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                         }
                         Spacer()
-                        let state = worktreeState(worktree)
-                        statusBadge(state.label, color: state.color)
+                        worktreeStateControl(worktree)
                     }
                     detailSection(L10n("Git Status")) {
                         detailPair("HEAD", worktree.headOid ?? "—", monospaced: true)
@@ -148,9 +181,21 @@ struct WorktreeManagementView: View {
                                 }
                                 .disabled(client.isMutating || worktree.availability != "available")
                             }
+                            if !worktree.isMain {
+                                Button {
+                                    pendingOperation = worktree
+                                } label: {
+                                    Label(L10n("Worktree Operations"), systemImage: "slider.horizontal.3")
+                                }
+                                .disabled(
+                                    client.isMutating
+                                        || worktree.availability != "available"
+                                        || worktree.operationState != nil
+                                )
+                            }
                         }
                         .controlSize(.small)
-                        Text(L10n("Commits and merges are reviewed through the repository integration plan above."))
+                        Text(L10n("Click a Worktree status to review and run operations for that Worktree only."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -278,13 +323,18 @@ struct WorktreeManagementView: View {
             HStack(spacing: 7) {
                 Text(String((worktree.headOid ?? "—").prefix(8))).font(.caption2.monospaced())
                 if worktree.isMain { statusBadge("main", color: .blue) }
-                let state = worktreeState(worktree)
-                statusBadge(state.label, color: state.color)
+                worktreeStateControl(worktree)
                 if !worktree.isMain {
-                    statusBadge(
-                        worktree.synchronizedWithMain == true ? L10n("Synchronized") : L10n("Not synchronized"),
-                        color: worktree.synchronizedWithMain == true ? .green : .orange
-                    )
+                    let synchronized = worktree.synchronizedWithMain == true
+                    if synchronized {
+                        statusBadge(L10n("Synchronized"), color: .green)
+                    } else {
+                        Button { pendingOperation = worktree } label: {
+                            statusBadge(L10n("Not synchronized"), color: .orange)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L10n("Open Worktree operations"))
+                    }
                 }
                 if let item = client.job?.plan.items.first(where: { $0.worktreeId == worktree.worktreeId }) {
                     statusBadge(localizedIntegrationStatus(item.mergeStatus), color: item.mergeStatus == "conflict" || item.mergeStatus == "failed" ? .orange : .secondary)
@@ -350,6 +400,26 @@ struct WorktreeManagementView: View {
     private func statusBadge(_ text: String, color: Color) -> some View {
         Text(text).font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
             .background(color.opacity(0.12), in: Capsule()).foregroundStyle(color)
+    }
+
+    @ViewBuilder
+    private func worktreeStateControl(_ worktree: ManagedWorktree) -> some View {
+        let state = worktreeState(worktree)
+        if worktree.isMain {
+            statusBadge(state.label, color: state.color)
+        } else {
+            Button { pendingOperation = worktree } label: {
+                statusBadge(state.label, color: state.color)
+            }
+            .buttonStyle(.plain)
+            .help(L10n("Open Worktree operations"))
+            .disabled(
+                client.isMutating
+                    || worktree.availability != "available"
+                    || worktree.operationState != nil
+            )
+            .accessibilityIdentifier("worktree.operation.\(worktree.worktreeId)")
+        }
     }
 
     private func worktreeState(_ worktree: ManagedWorktree) -> (label: String, color: Color) {
@@ -434,6 +504,152 @@ struct WorktreeManagementView: View {
     }
 }
 
+private struct IndividualWorktreeOperationView: View {
+    let worktree: ManagedWorktree
+    @ObservedObject var client: WorktreeManagementClient
+    let onClose: () -> Void
+
+    @State private var mergeIntoMain: Bool
+    @State private var synchronizeWithMain: Bool
+    @State private var restartService = false
+    @State private var preparation: IndividualWorktreeOperationPreparation?
+    @State private var commitMessage = ""
+    @State private var privateFilesDecision: String?
+    @State private var neverRemindPrivateFiles = false
+    @State private var isPreparing = true
+
+    init(
+        worktree: ManagedWorktree,
+        client: WorktreeManagementClient,
+        onClose: @escaping () -> Void
+    ) {
+        self.worktree = worktree
+        self.client = client
+        self.onClose = onClose
+        let needsMerge = worktree.dirty == true || worktree.mergedIntoMain != true
+        _mergeIntoMain = State(initialValue: needsMerge)
+        _synchronizeWithMain = State(initialValue: worktree.synchronizedWithMain != true)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L10n("Worktree Operations")).font(.title3.weight(.semibold))
+                Text(worktree.branchName ?? L10n("Detached HEAD"))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Text(worktree.path).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+
+            if isPreparing {
+                HStack { ProgressView().controlSize(.small); Text(L10n("Inspecting Worktree changes…")) }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle(L10n("Merge into main"), isOn: $mergeIntoMain)
+                        .disabled(mergeIsUnnecessary)
+                    Toggle(L10n("Synchronize with main"), isOn: $synchronizeWithMain)
+                        .disabled(worktree.synchronizedWithMain == true)
+                    Toggle(L10n("Restart service"), isOn: $restartService)
+                }
+                .toggleStyle(.checkbox)
+
+                if worktree.dirty == true, mergeIntoMain {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L10n("Commit message")).font(.headline)
+                        TextField(L10n("Enter a commit message"), text: $commitMessage)
+                        if let protection = preparation?.protection,
+                           protection.requiresDecision {
+                            Label(L10n("Protected local files were detected."), systemImage: "exclamationmark.shield.fill")
+                                .foregroundStyle(.orange)
+                            ForEach(protection.protectedPaths, id: \.self) { path in
+                                Text(path).font(.caption.monospaced()).textSelection(.enabled)
+                            }
+                            Picker(L10n("Handle protected files"), selection: $privateFilesDecision) {
+                                Text(L10n("Choose…")).tag(String?.none)
+                                Text(L10n("Add matching paths to .gitignore")).tag(String?.some("ignore"))
+                                Text(L10n("Include files in this commit")).tag(String?.some("include"))
+                            }
+                            Toggle(L10n("Do not remind me again for this project"), isOn: $neverRemindPrivateFiles)
+                        }
+                    }
+                }
+
+                Text(L10n("Operations run in the displayed order. No remote push or deletion is performed."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+            HStack {
+                Button(L10n("Cancel"), action: onClose).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(L10n("Execute")) {
+                    executeAndDismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canExecute)
+                .accessibilityIdentifier("worktree.operation.execute")
+            }
+        }
+        .padding(20)
+        .frame(width: 480, height: worktree.dirty == true ? 520 : 370)
+        .task {
+            preparation = await client.prepareIndividualOperation(for: worktree)
+            commitMessage = preparation?.commitMessage ?? ""
+            isPreparing = false
+        }
+        .onChange(of: synchronizeWithMain) { _, selected in
+            if selected, (worktree.dirty == true || worktree.mergedIntoMain != true) {
+                mergeIntoMain = true
+            }
+        }
+        .onChange(of: mergeIntoMain) { _, selected in
+            if !selected, (worktree.dirty == true || worktree.mergedIntoMain != true) {
+                synchronizeWithMain = false
+            }
+        }
+    }
+
+    private var mergeIsUnnecessary: Bool {
+        worktree.mergedIntoMain == true && worktree.dirty != true
+    }
+
+    private var canExecute: Bool {
+        guard !isPreparing, !client.isMutating else { return false }
+        guard mergeIntoMain || synchronizeWithMain || restartService else { return false }
+        if worktree.dirty == true, mergeIntoMain, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if preparation?.protection?.requiresDecision == true, mergeIntoMain, privateFilesDecision == nil {
+            return false
+        }
+        return true
+    }
+
+    private func executeAndDismiss() {
+        let merge = mergeIntoMain
+        let synchronize = synchronizeWithMain
+        let restart = restartService
+        let message = commitMessage.isEmpty ? nil : commitMessage
+        let protectedFilesDecision = privateFilesDecision
+        let neverRemind = neverRemindPrivateFiles
+        onClose()
+        Task {
+            _ = await client.executeIndividualOperation(
+                worktree: worktree,
+                mergeIntoMain: merge,
+                synchronizeWithMain: synchronize,
+                restartService: restart,
+                commitMessage: message,
+                privateFilesDecision: protectedFilesDecision,
+                neverRemindPrivateFiles: neverRemind
+            )
+        }
+    }
+}
+
 @MainActor
 private func localizedIntegrationStatus(_ value: String) -> String {
     switch value {
@@ -450,6 +666,7 @@ private func localizedIntegrationStatus(_ value: String) -> String {
     case "recovered": L10n("Recovered")
     case "conflict": L10n("Conflict")
     case "skipped": L10n("Skipped")
+    case "canceled": L10n("Canceled")
     default: value.replacingOccurrences(of: "_", with: " ")
     }
 }
@@ -505,7 +722,13 @@ private struct WorktreeIntegrationPlanReview: View {
                 .foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(job.plan.items) { item in
+                    if reviewItems.isEmpty {
+                        ContentUnavailableView(
+                            L10n("No Worktree changes require integration."),
+                            systemImage: "checkmark.circle"
+                        )
+                    }
+                    ForEach(reviewItems) { item in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(item.isMain ? "main — \(item.path)" : (item.branchName ?? item.path)).fontWeight(.semibold)
                             Text(item.dirty ? L10nFormat("%d changed files; commit: %@", item.changedFiles.count, item.commitMessage ?? "—") : L10n("No local commit required"))
@@ -532,10 +755,7 @@ private struct WorktreeIntegrationPlanReview: View {
                 Button(L10n("Cancel"), role: .cancel) { isPresented = false }
                 Spacer()
                 Button(L10n("Confirm and Start")) {
-                    Task {
-                        await client.confirmPlan()
-                        if client.job?.status != "awaiting_confirmation" { isPresented = false }
-                    }
+                    confirmAndDismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(client.isMutating || !job.plan.blockingRisks.isEmpty)
@@ -544,5 +764,16 @@ private struct WorktreeIntegrationPlanReview: View {
         }
         .padding(20)
         .frame(width: 680, height: 620)
+    }
+
+    private var reviewItems: [WorktreeIntegrationItem] {
+        job.plan.items.filter {
+            $0.commitStatus != "not_needed" || $0.mergeStatus != "not_needed"
+        }
+    }
+
+    private func confirmAndDismiss() {
+        isPresented = false
+        Task { await client.confirmPlan() }
     }
 }

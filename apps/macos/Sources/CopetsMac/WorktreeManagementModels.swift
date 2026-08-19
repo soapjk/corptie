@@ -160,3 +160,8 @@ struct WorktreeManagementSelection: Equatable {
         }
     }
 }
+
+struct IndividualWorktreeOperationPreparation: Equatable, Sendable {
+    let commitMessage: String?
+    let protection: GitCommitProtectionStatus?
+}

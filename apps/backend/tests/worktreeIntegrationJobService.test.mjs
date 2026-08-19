@@ -6,21 +6,31 @@ import test from "node:test";
 import { WorktreeIntegrationJobService } from "../src/application/worktreeIntegrationJobService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-function memoryFixture({ conflictOnce = false, blockingRisk = false, featureAlreadyMerged = false } = {}) {
+function memoryFixture({
+  conflictOnce = false,
+  blockingRisk = false,
+  featureAlreadyMerged = false,
+  featureDirty = true,
+  mainDirty = true
+} = {}) {
   const jobs = new Map();
   let sequence = 0;
   const repository = { id: "repository:1", commonGitDirCanonicalPath: "/repo/.git" };
   const worktrees = [
     {
       worktreeId: "wt:main", path: "/repo", isMain: true, availability: "available",
-      headOid: "main:1", branchName: "main", dirty: true, statusSummary: " M main.txt",
-      changedFiles: ["main.txt"], aheadOfMain: 0, behindMain: 0, mergedIntoMain: true,
+      headOid: "main:1", branchName: "main", dirty: mainDirty,
+      statusSummary: mainDirty ? " M main.txt" : "",
+      changedFiles: mainDirty ? ["main.txt"] : [],
+      aheadOfMain: 0, behindMain: 0, mergedIntoMain: true,
       isLocked: false, isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: []
     },
     {
       worktreeId: "wt:feature", path: "/repo-feature", isMain: false, availability: "available",
-      headOid: "feature:1", branchName: "feature/one", dirty: true, statusSummary: " M feature.txt",
-      changedFiles: ["feature.txt"], aheadOfMain: 1, behindMain: 0, mergedIntoMain: featureAlreadyMerged,
+      headOid: "feature:1", branchName: "feature/one", dirty: featureDirty,
+      statusSummary: featureDirty ? " M feature.txt" : "",
+      changedFiles: featureDirty ? ["feature.txt"] : [],
+      aheadOfMain: 1, behindMain: 0, mergedIntoMain: featureAlreadyMerged,
       isLocked: blockingRisk, lockReason: blockingRisk ? "owned by another process" : null,
       isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: []
     }
@@ -122,6 +132,20 @@ test("an awaiting-confirmation plan prevents duplicate preflight jobs", async ()
   assert.equal(service.get(plan.id).id, plan.id);
 });
 
+test("a stale review can be canceled with an audit record before creating a fresh preflight", async () => {
+  const { service } = memoryFixture();
+  const stale = await service.preflight("repository:1");
+  const canceled = service.cancel(stale.id);
+
+  assert.equal(canceled.status, "canceled");
+  assert.equal(canceled.phase, "canceled");
+  assert.ok(canceled.completedAt);
+  assert.equal(canceled.audit.at(-1).event, "plan_canceled");
+  const fresh = await service.preflight("repository:1");
+  assert.equal(fresh.status, "awaiting_confirmation");
+  assert.notEqual(fresh.id, stale.id);
+});
+
 test("merge conflict preserves a paused item and retry resumes the same idempotent task", async () => {
   const { service } = memoryFixture({ conflictOnce: true });
   const plan = await service.preflight("repository:1");
@@ -152,6 +176,31 @@ test("a dirty branch still has a merge step when its pre-commit HEAD is already 
   const plan = await service.preflight("repository:1");
   assert.deepEqual(plan.plan.mergeOrder, ["wt:feature"]);
   assert.equal(plan.plan.items[1].mergeStatus, "pending");
+});
+
+test("preflight omits clean Worktrees whose HEAD is already integrated into main", async () => {
+  const { service } = memoryFixture({ featureAlreadyMerged: true, featureDirty: false });
+  const plan = await service.preflight("repository:1");
+
+  assert.deepEqual(plan.plan.items.map((item) => item.worktreeId), ["wt:main"]);
+  assert.deepEqual(plan.plan.mergeOrder, []);
+  assert.equal(plan.plan.items.some((item) => item.mergeStatus === "not_needed" && !item.isMain), false);
+});
+
+test("preflight completes immediately when every Worktree is already integrated and clean", async () => {
+  const { service } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  const plan = await service.preflight("repository:1");
+
+  assert.equal(plan.status, "completed");
+  assert.equal(plan.phase, "completed");
+  assert.deepEqual(plan.plan.items, []);
+  assert.equal(plan.progress.fraction, 1);
+  assert.ok(plan.completedAt);
+  assert.equal(plan.audit[0].event, "preflight_no_changes");
 });
 
 test("integration job, per-item state, and audit survive Store restart", async () => {

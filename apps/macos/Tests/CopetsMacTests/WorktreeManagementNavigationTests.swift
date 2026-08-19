@@ -9,6 +9,12 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(AppTab.worktrees.index, 2)
     }
 
+    func testWorktreeAutomaticLoadWaitsForBackendAndSelectedTab() {
+        XCTAssertFalse(WorktreeAutomaticLoadPolicy.shouldLoad(isBackendOnline: false, selectedTab: .worktrees))
+        XCTAssertFalse(WorktreeAutomaticLoadPolicy.shouldLoad(isBackendOnline: true, selectedTab: .console))
+        XCTAssertTrue(WorktreeAutomaticLoadPolicy.shouldLoad(isBackendOnline: true, selectedTab: .worktrees))
+    }
+
     @MainActor
     func testChatWorktreeNavigationTargetsTheUnifiedTab() {
         let router = AppTabRouter()
@@ -48,6 +54,41 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("worktree.repository.column"))
         XCTAssertTrue(contents.contains("worktree.list.column"))
         XCTAssertTrue(contents.contains("worktree.detail.column"))
+        XCTAssertTrue(contents.contains("@ObservedObject private var backendClient = BackendClient.shared"))
+        XCTAssertTrue(contents.contains(".task(id: worktreeReloadTrigger)"))
+        XCTAssertTrue(contents.contains("guard backendClient.isOnline else"))
+        XCTAssertTrue(contents.contains("WorktreeAutomaticLoadPolicy.shouldLoad("))
+        XCTAssertTrue(contents.contains("guard backendClient.isOnline, router.selectedTab == .worktrees else"))
+        XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
+    }
+
+    func testWorktreeStatusOpensProviderNeutralIndividualOperationReview() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("Button { pendingOperation = worktree }"))
+        XCTAssertTrue(view.contains("IndividualWorktreeOperationView("))
+        XCTAssertTrue(view.contains("worktree.operation.\\(worktree.worktreeId)"))
+        XCTAssertTrue(view.contains("L10n(\"Merge into main\")"))
+        XCTAssertTrue(view.contains("L10n(\"Synchronize with main\")"))
+        XCTAssertTrue(view.contains("private func executeAndDismiss()"))
+        XCTAssertTrue(view.contains("private func confirmAndDismiss()"))
+        XCTAssertTrue(view.contains("onClose()\n        Task"))
+        XCTAssertTrue(view.contains("isPresented = false\n        Task { await client.confirmPlan() }"))
+        XCTAssertTrue(view.contains("$0.commitStatus != \"not_needed\" || $0.mergeStatus != \"not_needed\""))
+        XCTAssertFalse(view.contains("Toggle(L10n(\"Delete this Worktree\")"))
+        XCTAssertTrue(client.contains("projects/\\(repositoryId)/workspaces/\\(worktree.worktreeId)/actions/merge"))
+        XCTAssertTrue(client.contains("body: body"))
     }
 
     func testWorktreeTabHasChineseTranslationsForUIAndBackendStatuses() throws {
@@ -69,7 +110,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Preflight complete\" = \"预检完成\";",
             "\"Not needed\" = \"无需处理\";",
             "\"Pending merge\" = \"待合并\";",
-            "\"Development Service\" = \"开发服务\";"
+            "\"Development Service\" = \"开发服务\";",
+            "\"Inspecting Worktree changes…\" = \"正在检查 Worktree 修改…\";",
+            "\"Protected local files were detected.\" = \"检测到受保护的本地文件。\";",
+            "\"Operations run in the displayed order. No remote push or deletion is performed.\" = \"操作将按显示顺序执行；不会远程推送或删除任何内容。\";",
+            "\"No Worktree changes require integration.\" = \"没有需要集成的 Worktree 修改。\";"
         ] {
             XCTAssertTrue(localization.contains(expected), "Missing localization: \(expected)")
         }
