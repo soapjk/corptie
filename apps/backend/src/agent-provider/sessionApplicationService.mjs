@@ -81,10 +81,21 @@ export class SessionApplicationService {
       toolHost ? { ...preparedInput, toolHost } : preparedInput,
       context
     );
-    const reference = this.bindCreatedSession
+    const reference = this.bindCreatedSession && context.deferSessionBinding !== true
       ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
       : null;
     return this.decorateLifecycleSession(providerId, session, reference);
+  }
+
+  // A route transition creates only the target Provider thread. The coordinator
+  // subsequently binds that thread to the existing logical Session atomically.
+  // Running the ordinary bindCreatedSession hook here would incorrectly create
+  // a second logical Session and collide with the original canonical name.
+  async createSessionForRouteTransition(providerId, input = {}, context = {}) {
+    return this.createSession(providerId, input, {
+      ...context,
+      deferSessionBinding: true
+    });
   }
 
   async resumeSession(sessionId, context = {}) {

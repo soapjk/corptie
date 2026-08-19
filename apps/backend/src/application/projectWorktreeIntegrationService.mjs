@@ -378,7 +378,6 @@ export class ProjectWorktreeIntegrationService {
       .map((agent) => ({
         agentId: agent.agentId,
         name: agent.name,
-        provider: agent.provider,
         role: agent.role
       }));
     const presentedRun = presentProjectIntegrationRun(run, {

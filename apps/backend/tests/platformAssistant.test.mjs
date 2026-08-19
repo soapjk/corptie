@@ -61,7 +61,7 @@ test("startup self-heals protected platform Assistant fields without overwriting
     store.db.run(
       `UPDATE agents
        SET agent_kind = 'user', description = 'drifted', role = 'independentContributor',
-           provider = 'openclacky', capabilities_json = '[]', system_prompt = 'drifted', work_dir = '/tmp/drifted'
+           capabilities_json = '[]', system_prompt = 'drifted', work_dir = '/tmp/drifted'
        WHERE agent_id = 'assistant'`
     );
     store.db.run(
@@ -81,7 +81,7 @@ test("startup self-heals protected platform Assistant fields without overwriting
     assert.equal(healed.agentKind, "platformAssistant");
     assert.equal(healed.description, PLATFORM_ASSISTANT_MANIFEST.description);
     assert.equal(healed.role, PLATFORM_ASSISTANT_MANIFEST.role);
-    assert.equal(healed.provider, PLATFORM_ASSISTANT_MANIFEST.provider);
+    assert.equal(Object.hasOwn(healed, "provider"), false);
     assert.deepEqual(healed.capabilities, [...PLATFORM_ASSISTANT_MANIFEST.capabilities]);
     assert.equal(healed.systemPrompt, PLATFORM_ASSISTANT_MANIFEST.systemPrompt);
     assert.deepEqual(store.listRegistrySkillIdsForAgent("assistant"), []);

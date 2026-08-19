@@ -84,7 +84,7 @@ test("workspace-write background work fails when no Provider declares that profi
   );
 });
 
-test("resolves agent.provider tag to a registry provider id via injected resolver", async () => {
+test("uses the operation-selected Provider while Agent contributes context only", async () => {
   const calls = [];
   const registry = new AgentProviderRegistry([
     provider("codex-app-server", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], calls)
@@ -92,23 +92,23 @@ test("resolves agent.provider tag to a registry provider id via injected resolve
   const service = new BackgroundAgentService({
     registry,
     defaultProviderId: "codex-app-server",
-    // 模拟组合根注入：把前端 tag 规范化为 registry id。
     resolveProviderId: (value) => ({ codex: "codex-app-server", claude_code: "claude-sdk" }[value] ?? null),
-    resolveAgentContext: async () => ({ agent: { provider: "codex" }, instructions: null })
+    resolveAgentContext: async () => ({ agent: { provider: "ignored-agent-provider" }, instructions: "agent context" })
   });
 
   const result = await service.run({
     purpose: "assist-draft",
     cwd: "/tmp",
     prompt: "Write a description",
-    agentId: "agent:1"
+    agentId: "agent:1",
+    preferredProviderId: "codex"
   });
 
   assert.equal(result.providerId, "codex-app-server");
   assert.equal(calls.length, 1);
 });
 
-test("falls back to default provider when agent.provider tag is unknown", async () => {
+test("falls back to background default without consulting Agent Provider metadata", async () => {
   const calls = [];
   const registry = new AgentProviderRegistry([
     provider("codex-app-server", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], calls)

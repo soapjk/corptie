@@ -435,7 +435,6 @@ export class CorptieStore {
         role TEXT NOT NULL DEFAULT 'independentContributor',
         status TEXT NOT NULL DEFAULT 'available'
           CHECK (status IN ('available', 'busy', 'offline', 'inactive')),
-        provider TEXT,
         capabilities_json TEXT NOT NULL DEFAULT '[]',
         work_dir TEXT,
         avatar_path TEXT,
@@ -777,6 +776,7 @@ export class CorptieStore {
         target_cwd TEXT NOT NULL,
         transition_kind TEXT NOT NULL DEFAULT 'workspace'
           CHECK (transition_kind IN ('workspace', 'provider')),
+        target_provider_id TEXT,
         source_routing_version INTEGER NOT NULL,
         last_completed_turn_id TEXT,
         new_thread_id TEXT,
@@ -1039,7 +1039,6 @@ export class CorptieStore {
       ON agent_sessions(agent_id, session_id) WHERE unbound_at IS NULL`);
     this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("agents", "agent_kind", "TEXT NOT NULL DEFAULT 'user'");
-    this.ensureColumn("agents", "provider", "TEXT");
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("agents", "work_dir", "TEXT");
     this.ensureColumn("agents", "avatar_path", "TEXT");
@@ -1083,7 +1082,7 @@ export class CorptieStore {
     this.ensureColumn("provider_thread_bindings", "provider_session_id", "TEXT");
     this.ensureColumn("provider_thread_bindings", "parent_binding_id", "TEXT");
     this.ensureColumn("provider_thread_bindings", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
-    this.migrateAgentProviderBindings();
+    this.migrateSessionProviderBindings();
     this.migrateWorkspaceTransitionsForDirectoryTargets();
     this.ensureColumn("workspace_transitions", "resume_goal_after_transition", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("workspace_transitions", "continuation_prompt", "TEXT");
@@ -1107,6 +1106,7 @@ export class CorptieStore {
           WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
     this.ensureColumn("workspace_transitions", "continuation_error", "TEXT");
     this.ensureColumn("workspace_transitions", "transition_kind", "TEXT NOT NULL DEFAULT 'workspace'");
+    this.ensureColumn("workspace_transitions", "target_provider_id", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -1144,6 +1144,7 @@ export class CorptieStore {
     this.migrateAgentAvailability();
     this.ensureSkillTables();
     this.ensureStateSyncTables();
+    this.dropColumnIfExists("agents", "provider");
     this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
     this.auditObjectiveWorkItemAssociations({ migrate: true });
@@ -2224,6 +2225,9 @@ export class CorptieStore {
       }
       targetCwd = requiredText(targetCwd, "targetCwd");
     } else {
+      if (typeof input.targetProviderId !== "string" || !input.targetProviderId.trim()) {
+        throw new Error("targetProviderId is required for a Provider transition.");
+      }
       // A Provider switch does not move the workspace; reuse the active binding's cwd
       // so the non-null target_cwd constraint stays satisfied without workspace semantics.
       targetCwd = targetCwd ?? logicalSession.activeBinding.boundCwd;
@@ -2244,10 +2248,10 @@ export class CorptieStore {
       this.db.run(
         `INSERT INTO workspace_transitions (
           transition_id, logical_session_id, source_thread_id, target_worktree_id, target_cwd,
-          transition_kind, source_routing_version, last_completed_turn_id, resume_goal_after_transition,
+          transition_kind, target_provider_id, source_routing_version, last_completed_turn_id, resume_goal_after_transition,
           continuation_prompt, continuation_state, phase, strategy,
           error_json, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
         [
           transitionId,
           logicalSessionId,
@@ -2255,6 +2259,7 @@ export class CorptieStore {
           targetWorktreeId,
           targetCwd,
           transitionKind,
+          transitionKind === "provider" ? input.targetProviderId.trim() : null,
           sourceRoutingVersion,
           input.lastCompletedTurnId || null,
           input.resumeGoalAfterTransition ? 1 : 0,
@@ -2446,6 +2451,12 @@ export class CorptieStore {
           `UPDATE sessions SET cwd = ?, updated_at = ?
            WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
           [boundCwd, timestamp, transition.logicalSessionId]
+        );
+      } else {
+        this.db.run(
+          `UPDATE sessions SET provider = ?, updated_at = ?
+           WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
+          [providerId, timestamp, transition.logicalSessionId]
         );
       }
       this.db.run(
@@ -3819,14 +3830,8 @@ export class CorptieStore {
   }
 
   // 预种并自愈固定 id 的平台助手。名称和头像属于用户外观配置；
-  // 角色、Provider、Prompt、capabilities、Workspace 和 Skill 则以代码 manifest 为权威来源。
+  // 角色、Prompt、capabilities、Workspace 和 Skill 则以代码 manifest 为权威来源。
   ensureAssistantAgent() {
-    // 迁移：修正历史遗留的占位 provider（"harness" → 真实默认 provider）。
-    // 幂等，每次启动都会执行；仅影响误填了占位 provider 的记录，不动 provider 为 null 的普通 Agent。
-    this.db.run(
-      `UPDATE agents SET provider = ? WHERE provider = ?`,
-      ["codex-app-server", "harness"]
-    );
     // 迁移：修正历史遗留的平台助手旧名（仅限 "Copilot" 等已知旧值），幂等。
     // 注意：不能对任意非 "Corptie" 名称做统一改写，否则会覆盖用户对助手的合法重命名。
     this.db.run(
@@ -3838,14 +3843,13 @@ export class CorptieStore {
     if (existing) {
       this.db.run(
         `UPDATE agents SET
-           agent_kind = ?, description = ?, role = ?, status = 'available', provider = ?,
+           agent_kind = ?, description = ?, role = ?, status = 'available',
            capabilities_json = ?, system_prompt = ?, work_dir = ?
          WHERE agent_id = ?`,
         [
           AGENT_KIND.PLATFORM_ASSISTANT,
           PLATFORM_ASSISTANT_MANIFEST.description,
           PLATFORM_ASSISTANT_MANIFEST.role,
-          PLATFORM_ASSISTANT_MANIFEST.provider,
           JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
           PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
           defaultDir,
@@ -3857,8 +3861,8 @@ export class CorptieStore {
     }
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, current_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, capabilities_json, system_prompt, work_dir, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         PLATFORM_ASSISTANT_ID,
         AGENT_KIND.PLATFORM_ASSISTANT,
@@ -3866,7 +3870,6 @@ export class CorptieStore {
         PLATFORM_ASSISTANT_MANIFEST.description,
         PLATFORM_ASSISTANT_MANIFEST.role,
         "available",
-        PLATFORM_ASSISTANT_MANIFEST.provider,
         JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
         PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
         defaultDir,
@@ -3965,8 +3968,8 @@ export class CorptieStore {
     if (role === "assistant") this.assertAssistantWorkDirAvailable(workDir);
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, provider, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         AGENT_KIND.USER,
@@ -3974,7 +3977,6 @@ export class CorptieStore {
         input.description ?? "",
         role,
         "available",
-        input.provider ?? null,
         JSON.stringify(input.capabilities ?? []),
         input.systemPrompt ?? "",
         workDir,
@@ -3988,7 +3990,7 @@ export class CorptieStore {
     return this.getAgent(id);
   }
 
-  // 更新 Agent（name/description/provider/systemPrompt/capabilities/workDir）。
+  // 更新 Agent 资源包（name/description/systemPrompt/capabilities/workDir）。
   // status 是旧版兼容列，不再是可编辑字段；Agent 持久化状态恒为 available。
   // 强约束：role 在创建后不可变更（assistant ↔ independentContributor 定型后不可切换），
   // 因此这里忽略任何传入的 role，始终沿用 existing.role。
@@ -4008,13 +4010,12 @@ export class CorptieStore {
       ? (typeof input.avatarPath === "string" && input.avatarPath.trim() ? input.avatarPath.trim() : null)
       : existing.avatarPath;
     this.db.run(
-      `UPDATE agents SET name = ?, description = ?, role = ?, status = ?, provider = ?, system_prompt = ?, capabilities_json = ?, work_dir = ?, avatar_path = ?, updated_at = ? WHERE agent_id = ?`,
+      `UPDATE agents SET name = ?, description = ?, role = ?, status = ?, system_prompt = ?, capabilities_json = ?, work_dir = ?, avatar_path = ?, updated_at = ? WHERE agent_id = ?`,
       [
         input.name ?? existing.name,
         input.description ?? existing.description,
         role,
         "available",
-        input.provider ?? existing.provider,
         input.systemPrompt ?? existing.systemPrompt ?? "",
         input.capabilities != null ? JSON.stringify(input.capabilities) : JSON.stringify(existing.capabilities ?? []),
         workDir,
@@ -5231,7 +5232,7 @@ export class CorptieStore {
     this.db.run(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   }
 
-  migrateAgentProviderBindings() {
+  migrateSessionProviderBindings() {
     this.db.run(
       `UPDATE provider_thread_bindings
        SET binding_id = COALESCE(binding_id, 'binding:' || lower(hex(randomblob(16)))),
@@ -5513,6 +5514,7 @@ function workspaceTransitionFromRow(row) {
     targetWorktreeId: row.target_worktree_id,
     targetCwd: row.target_cwd,
     transitionKind: row.transition_kind || "workspace",
+    targetProviderId: row.target_provider_id || null,
     sourceRoutingVersion: Number(row.source_routing_version),
     lastCompletedTurnId: row.last_completed_turn_id,
     newThreadId: row.new_thread_id,
@@ -5601,7 +5603,6 @@ function agentFromRow(row) {
     // 防御性规范化：即使旧客户端或外部 SQL 写入了历史值，
     // 也不允许会话生命周期重新污染 Agent 可用性。
     status: "available",
-    provider: row.provider ?? null,
     systemPrompt: row.system_prompt ?? "",
     capabilities: parseJson(row.capabilities_json, []),
     workDir: row.work_dir ?? null,

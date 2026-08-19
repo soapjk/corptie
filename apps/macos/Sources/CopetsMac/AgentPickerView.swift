@@ -10,7 +10,6 @@ struct AgentPickerView: View {
     }
 
     @ObservedObject private var client = EntityAPIClient.shared
-    @ObservedObject private var backendClient = BackendClient.shared
     @Binding var selectedIds: Set<String>
     var roleFilter: RoleFilter = .all
     var allowedAgentIds: Set<String>? = nil
@@ -55,11 +54,6 @@ struct AgentPickerView: View {
                             .foregroundStyle(selectedIds.contains(agent.agentId) ? Color.accentColor : Color.secondary)
                         Label(agent.name, systemImage: agent.isAssistant ? "sparkles" : "person")
                         Spacer()
-                        if let provider = agent.provider {
-                            Text(backendClient.providerDisplayName(for: provider) ?? provider)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { toggle(agent.agentId) }
@@ -86,7 +80,6 @@ struct AgentPickerView: View {
         .onAppear {
             Task {
                 if client.agents.isEmpty { await client.refreshAgents() }
-                if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
             }
         }
         .sheet(isPresented: $showCreate) {

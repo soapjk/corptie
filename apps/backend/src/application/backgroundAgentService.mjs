@@ -17,26 +17,20 @@ export class BackgroundAgentService {
     // 由组合根注入（agentContextService），BackgroundAgentService 不依赖具体 Provider 或 store。
     this.resolveAgentContext = options.resolveAgentContext ?? null;
     // provider-neutral provider id 规范化器：resolveProviderId(providerTagOrId) → registryId | null。
-    // agent.provider 存储的是前端展示 tag（如 "codex"），而 registry 用内部 id（如 "codex-app-server"），
-    // 必须经此规范化后再交给 selectProvider，否则会抛 AgentProviderNotFoundError。
-    // 未知值应返回 null，让 selectProvider 走 default / fallback 逻辑。
+    // Provider belongs to the invoking Session/background operation, never to the Agent resource bundle.
     this.resolveProviderId = options.resolveProviderId ?? null;
     if (!this.registry) throw new TypeError("BackgroundAgentService requires an Agent Provider Registry.");
   }
 
   async run(input = {}) {
     const permissionProfile = input.permissionProfile ?? "read-only";
-    // 指定 Agent 时：解析其上下文（systemPrompt + description + per-agent 记忆），
-    // 并按其 provider 路由；否则回退到 preferredProviderId / default。
+    // 指定 Agent 只解析资源上下文（systemPrompt + description + per-agent 记忆）。
+    // Runtime routing comes exclusively from the invoking Session/request or the background default.
     const agentContext = input.agentId && typeof this.resolveAgentContext === "function"
       ? await this.resolveAgentContext(input.agentId, { intent: input.intent ?? "" })
       : null;
-    const preferredProviderId = agentContext?.agent?.provider
-      ?? input.preferredProviderId
-      ?? null;
+    const preferredProviderId = input.preferredProviderId ?? null;
 
-    // agent.provider 可能是前端展示 tag（"codex"），需要规范化为 registry id；
-    // 未知/未设置时返回 null，交由 selectProvider 的 default / fallback 逻辑兜底。
     const resolvedProviderId = this.resolveProviderId
       ? this.resolveProviderId(preferredProviderId)
       : preferredProviderId;
