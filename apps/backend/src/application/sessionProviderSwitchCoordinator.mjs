@@ -148,6 +148,7 @@ export class SessionProviderSwitchCoordinator {
         phase: "committingRoute",
         newThreadId
       });
+      const sessionProjection = created?.sessionProjection ?? created?.session ?? null;
       const switched = this.store.commitWorkspaceTransition(transitionId, {
         providerThreadId: newThreadId,
         providerId: resolvedTargetProviderId,
@@ -155,11 +156,11 @@ export class SessionProviderSwitchCoordinator {
         boundCwd: sourceLogical.activeBinding.boundCwd,
         forkedAtTurnId: transition.lastCompletedTurnId,
         instructionSources: this.buildInstructionSources(sourceLogical, context),
-        permissionSnapshot: sourceLogical.activeBinding.permissionSnapshot ?? {},
+        permissionSnapshot: providerPermissionSnapshot(sessionProjection),
         providerMetadata: {
-          ...(sourceLogical.activeBinding.providerMetadata ?? {}),
           switchedFromProviderId: sourceLogical.activeBinding.providerId
-        }
+        },
+        sessionProjection
       });
       this.onTransitionEvent("ProviderSwitched", {
         sessionId: reference.sessionId,
@@ -222,6 +223,14 @@ export class SessionProviderSwitchCoordinator {
     }
     return sources;
   }
+}
+
+function providerPermissionSnapshot(session) {
+  const external = session?.external ?? {};
+  return {
+    ...(external.sandbox != null ? { sandbox: external.sandbox } : {}),
+    ...(external.approvalPolicy != null ? { approvalPolicy: external.approvalPolicy } : {})
+  };
 }
 
 function requiredText(value, field) {

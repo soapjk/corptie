@@ -7,6 +7,8 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import {
   ensureProviderSessionProjection,
+  isBoundPhysicalProviderSession,
+  repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection
 } from "../src/application/providerSessionProjection.mjs";
 
@@ -135,10 +137,46 @@ test("a Provider switch projects only the active target thread under the origina
     assert.equal(active.disposition, "active");
     assert.equal(active.session.id, "openclacky:source");
     assert.equal(active.session.title, "Stable title");
+    assert.equal(active.session.sessionName, "Stable title");
     assert.equal(active.session.agentId, "agent:arbitrage");
     assert.equal(active.session.sessionKind, "assistantChat");
     assert.equal(active.session.external.provider, "codex-app-server");
     assert.equal(store.getSession("codex:codex-target"), null);
+
+    assert.equal(isBoundPhysicalProviderSession(store, {
+      id: "codex:codex-target",
+      external: {
+        provider: "codex-app-server",
+        threadId: "codex-target",
+        sessionId: "codex-target"
+      }
+    }), true);
+    assert.equal(isBoundPhysicalProviderSession(store, active.session), false);
+
+    store.upsertSession({
+      id: "codex:codex-target",
+      title: "Provider-local title",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete",
+      external: {
+        provider: "codex-app-server",
+        threadId: "codex-target",
+        sessionId: "codex-target",
+        currentModel: "target-model",
+        currentReasoningLevel: "high"
+      }
+    });
+    const repaired = repairStableSessionFromBoundPhysicalProjection(
+      store,
+      store.getSession("codex:codex-target")
+    );
+    assert.equal(repaired.id, "openclacky:source");
+    assert.equal(repaired.title, "Stable title");
+    assert.equal(repaired.agentId, "agent:arbitrage");
+    assert.equal(repaired.external.threadId, "codex-target");
+    assert.equal(repaired.external.currentModel, "target-model");
+    assert.equal(repaired.external.currentReasoningLevel, "high");
 
     const source = resolveRoutedProviderSessionProjection(store, {
       id: "openclacky:source",

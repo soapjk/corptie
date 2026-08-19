@@ -185,6 +185,69 @@ test("stored Codex model and reasoning survive a provider refresh with empty met
   assert.equal(merged.external.threadId, "thread-a");
 });
 
+test("live Provider runtime configuration wins over stale stored metadata for the same thread", () => {
+  const merged = mergeStoredSessionPresentation(
+    {
+      id: "codex:thread-a",
+      external: {
+        provider: "codex-app-server",
+        threadId: "thread-a",
+        currentModel: "gpt-5.6-sol",
+        currentReasoningLevel: "high",
+        sandbox: "danger-full-access",
+        approvalPolicy: "never"
+      }
+    },
+    {
+      id: "codex:thread-a",
+      external: {
+        provider: "codex-app-server",
+        threadId: "thread-a",
+        currentModel: "stale-model",
+        currentReasoningLevel: "medium",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request"
+      }
+    }
+  );
+
+  assert.equal(merged.external.currentModel, "gpt-5.6-sol");
+  assert.equal(merged.external.currentReasoningLevel, "high");
+  assert.equal(merged.external.sandbox, "danger-full-access");
+  assert.equal(merged.external.approvalPolicy, "never");
+});
+
+test("provider runtime configuration does not cross a switched physical Session route", () => {
+  const merged = mergeStoredSessionPresentation(
+    {
+      id: "stable:session-a",
+      external: {
+        provider: "codex-app-server",
+        threadId: "codex-thread-b",
+        sessionId: "codex-thread-b",
+        currentModel: "gpt-5.6-sol",
+        currentReasoningLevel: "high",
+        sandbox: "danger-full-access"
+      }
+    },
+    {
+      id: "stable:session-a",
+      external: {
+        provider: "codex-app-server",
+        threadId: "openclacky-thread-a",
+        sessionId: "openclacky-thread-a",
+        currentModel: "openclacky-model-id",
+        currentReasoningLevel: "medium",
+        sandbox: "workspace-write"
+      }
+    }
+  );
+
+  assert.equal(merged.external.currentModel, "gpt-5.6-sol");
+  assert.equal(merged.external.currentReasoningLevel, "high");
+  assert.equal(merged.external.sandbox, "danger-full-access");
+});
+
 test("the stored project path survives a provider refresh with a process directory", () => {
   const merged = mergeStoredSessionPresentation(
     {

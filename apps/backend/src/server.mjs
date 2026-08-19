@@ -35,7 +35,9 @@ import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import {
   ensureProviderSessionProjection,
+  isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
+  repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
@@ -701,10 +703,19 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
       providerSessionId: created?.external?.sessionId
         ?? created?.external?.threadId
         ?? created?.id
-        ?? null
+        ?? null,
+      sessionProjection: created
     };
   },
-  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
+  onTransitionEvent: (type, payload) => {
+    if (type === "ProviderSwitched") {
+      // The stable Session id may still be cached with the source Provider's
+      // runtime configuration. The active target projection is authoritative
+      // after the route commit.
+      sessionPresentationCache.delete(payload.sessionId);
+    }
+    emitEvent(type, payload, { sessionId: payload.sessionId });
+  }
 });
 const sessionWorktrees = new SessionWorktreeService({
   gitWorkspaces,
@@ -3102,10 +3113,17 @@ function listGatewaySessions(options = {}) {
     const logical = store.getLogicalSessionByLegacySessionId(session.id);
     return [logical ? sessionWithLogicalWorkspace(session, logical) : session];
   });
+  const uniqueSessions = Array.from(sessions.reduce((byId, session) => {
+    const previous = byId.get(session.id);
+    if (!previous || Date.parse(session.updatedAt ?? 0) >= Date.parse(previous.updatedAt ?? 0)) {
+      byId.set(session.id, session);
+    }
+    return byId;
+  }, new Map()).values());
   // Corptie owns list presentation order. A Provider may keep an active
   // session object in memory with the sort order it had at startup, so always
   // project the persisted order back onto the unified Session list.
-  return applyPersistedSessionOrder(sessions, (id) => store.getSession(id)).map((session) => ({
+  return applyPersistedSessionOrder(uniqueSessions, (id) => store.getSession(id)).map((session) => ({
     ...session,
     sessionKind: session.sessionKind ?? "legacy"
   }));
@@ -6997,10 +7015,29 @@ if (detachedOrphanedAgents.length > 0) {
 }
 activateStoredBackendLogging();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
-let storedSessionsAtStartup = [
+const initiallyStoredSessions = [
   ...store.listSessions({ archived: false }),
   ...store.listSessions({ archived: true })
 ];
+let repairedStableProjectionCount = 0;
+for (const session of initiallyStoredSessions) {
+  if (repairStableSessionFromBoundPhysicalProjection(store, session)) {
+    repairedStableProjectionCount += 1;
+  }
+}
+if (repairedStableProjectionCount > 0) {
+  console.log(`[session-projection] repaired ${repairedStableProjectionCount} stable Session projection(s) from active Provider bindings`);
+}
+const allStoredSessionsAtStartup = repairedStableProjectionCount > 0
+  ? [...store.listSessions({ archived: false }), ...store.listSessions({ archived: true })]
+  : initiallyStoredSessions;
+let storedSessionsAtStartup = allStoredSessionsAtStartup.filter(
+  (session) => !isBoundPhysicalProviderSession(store, session)
+);
+const hiddenPhysicalSessionCount = allStoredSessionsAtStartup.length - storedSessionsAtStartup.length;
+if (hiddenPhysicalSessionCount > 0) {
+  console.log(`[session-projection] hid ${hiddenPhysicalSessionCount} bound physical Provider session(s) at startup`);
+}
 const uniqueStoredSessionsAtStartup = deduplicateSessionTitles(storedSessionsAtStartup);
 for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
   const previous = storedSessionsAtStartup[index];
