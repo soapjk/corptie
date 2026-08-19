@@ -356,6 +356,13 @@
 "\u6682\u65E0\u5DF2\u6709 Agent\uFF0C\u53EF\u76F4\u63A5\u586B\u5199\u4E0B\u65B9\u4FE1\u606F\u3002" = "No existing Agents. Fill in the fields below directly.";
 "\u9884\u88C5 Skill" = "Preinstalled Skills";
 "\u767B\u8BB0" = "Register";
+"Skills" = "Skills";
+"Show Skills" = "Show Skills";
+"No Skills" = "No Skills";
+"Registered" = "Registered";
+"No description" = "No description";
+"Git" = "Git";
+"Local" = "Local";
 "\u5C1A\u672A\u767B\u8BB0\u4EFB\u4F55 Skill\uFF0C\u70B9\u300C\u767B\u8BB0\u300D\u4ECE\u672C\u5730\u76EE\u5F55\u6216 Git \u4ED3\u5E93\u6DFB\u52A0\u3002" = "No Skills registered. Click Register to add one from a local directory or Git repository.";
 "\u8BF7\u5148\u5728 Agent \u7BA1\u7406\u9875\u521B\u5EFA\u4E00\u4E2A Assistant \u7C7B Agent\u3002" = "Create an Assistant Agent in Agent Management first.";
 "\u9009\u62E9\u4E00\u4E2A Assistant \u5F00\u59CB\u5BF9\u8BDD" = "Choose an Assistant to start a conversation";

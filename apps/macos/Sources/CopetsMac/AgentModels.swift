@@ -55,6 +55,7 @@ struct Skill: Identifiable, Codable, Hashable {
 
     var id: String { skillId }
     var isGit: Bool { sourceType == "git" }
+    var sourceKindLocalizationKey: String { isGit ? "Git" : "Local" }
 }
 
 struct SkillCandidate: Codable, Hashable, Identifiable {

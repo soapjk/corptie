@@ -1,11 +1,29 @@
 import SwiftUI
 
-// Agent 管理页面（顶层 Tab「Agents」）：网格卡片 + 加号创建 + 右键/点击打开详情（详情内增删改/启停/设为助手）。
-// Agent 是低频变更的基础设施，单独一个 Tab 管理，控制台侧栏不再列出 Agent。
+enum AgentsSkillsLayoutMode: Equatable {
+    case split
+    case compact
+}
+
+enum AgentsSkillsLayoutMetrics {
+    static let skillsColumnWidth: CGFloat = 300
+    static let headerHeight: CGFloat = 60
+    static let columnPadding: CGFloat = 16
+    static let minimumAgentsColumnWidth: CGFloat = 520
+    static let dividerWidth: CGFloat = 1
+
+    static func mode(for availableWidth: CGFloat) -> AgentsSkillsLayoutMode {
+        availableWidth >= minimumAgentsColumnWidth + skillsColumnWidth + dividerWidth ? .split : .compact
+    }
+}
+
+// 顶层 Agents Tab 同时管理 Agent 和共享 Skill 注册表。宽屏平级双列，紧凑宽度仅保留 Agent 主列。
 struct AgentManagementView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @State private var isCreatingAgent = false
+    @State private var isRegisteringSkill = false
+    @State private var isShowingSkillsSheet = false
     @State private var selectedAgentForDetail: Agent?
     @State private var agentForSessionCreation: Agent?
 
@@ -13,18 +31,65 @@ struct AgentManagementView: View {
     private let columns = [GridItem(.adaptive(minimum: 260, maximum: 420), spacing: 16)]
 
     var body: some View {
+        GeometryReader { geometry in
+            let layoutMode = AgentsSkillsLayoutMetrics.mode(for: geometry.size.width)
+
+            HStack(spacing: 0) {
+                agentsColumn(showsSkillsButton: layoutMode == .compact)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if layoutMode == .split {
+                    Divider()
+                    skillsColumn
+                        .frame(width: AgentsSkillsLayoutMetrics.skillsColumnWidth)
+                }
+            }
+        }
+        .sheet(isPresented: $isShowingSkillsSheet) {
+            skillsColumn
+                .frame(width: AgentsSkillsLayoutMetrics.skillsColumnWidth)
+                .frame(minHeight: 520, idealHeight: 680)
+        }
+        .sheet(isPresented: $isCreatingAgent) {
+            AgentCreateView()
+        }
+        .sheet(item: $selectedAgentForDetail) { agent in
+            AgentDetailView(agent: agent)
+        }
+        .sheet(item: $agentForSessionCreation) { agent in
+            NewSessionCreationSheet(fixedAgent: agent) { session in
+                router.openSession(session.id)
+            }
+        }
+        .task {
+            async let agents: Void = client.refreshAgents()
+            async let skills: Void = client.refreshSkills()
+            _ = await (agents, skills)
+        }
+    }
+
+    private func agentsColumn(showsSkillsButton: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(L10n("Agents"))
                     .font(.title2.bold())
                 Spacer()
+                if showsSkillsButton {
+                    Button {
+                        isShowingSkillsSheet = true
+                    } label: {
+                        Label(L10n("Skills"), systemImage: "shippingbox")
+                    }
+                    .help(L10n("Show Skills"))
+                }
                 Button {
                     isCreatingAgent = true
                 } label: {
                     Label(L10n("新建 Agent"), systemImage: "plus")
                 }
             }
-            .padding()
+            .padding(.horizontal, AgentsSkillsLayoutMetrics.columnPadding)
+            .frame(height: AgentsSkillsLayoutMetrics.headerHeight)
 
             Divider()
 
@@ -50,23 +115,52 @@ struct AgentManagementView: View {
                             agents: client.agents.filter(\.isIndependentContributor)
                         )
                     }
-                    .padding()
+                    .padding(AgentsSkillsLayoutMetrics.columnPadding)
                 }
             }
         }
-        .sheet(isPresented: $isCreatingAgent) {
-            AgentCreateView()
-        }
-        .sheet(item: $selectedAgentForDetail) { agent in
-            AgentDetailView(agent: agent)
-        }
-        .sheet(item: $agentForSessionCreation) { agent in
-            NewSessionCreationSheet(fixedAgent: agent) { session in
-                router.openSession(session.id)
+    }
+
+    private var skillsColumn: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(L10n("Skills"))
+                    .font(.title2.bold())
+                Spacer()
+                Button {
+                    isRegisteringSkill = true
+                } label: {
+                    Label(L10n("登记"), systemImage: "plus")
+                }
+            }
+            .padding(.horizontal, AgentsSkillsLayoutMetrics.columnPadding)
+            .frame(height: AgentsSkillsLayoutMetrics.headerHeight)
+
+            Divider()
+
+            if client.skills.isEmpty {
+                ContentUnavailableView(
+                    L10n("No Skills"),
+                    systemImage: "shippingbox",
+                    description: Text(L10n("尚未登记任何 Skill，点「登记」从本地目录或 Git 仓库添加。"))
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(client.skills.enumerated()), id: \.element.id) { index, skill in
+                            SkillRegistryRow(skill: skill)
+                            if index < client.skills.count - 1 {
+                                Divider()
+                                    .padding(.leading, AgentsSkillsLayoutMetrics.columnPadding)
+                            }
+                        }
+                    }
+                }
             }
         }
-        .task {
-            await client.refreshAgents()
+        .sheet(isPresented: $isRegisteringSkill) {
+            SkillRegisterView { _ in }
         }
     }
 
@@ -111,6 +205,44 @@ struct AgentManagementView: View {
         }
     }
 
+}
+
+struct SkillRegistryRow: View {
+    let skill: Skill
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text(skill.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Label(L10n("Registered"), systemImage: "checkmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                    .labelStyle(.titleAndIcon)
+            }
+
+            Text(skill.description.isEmpty ? L10n("No description") : skill.description)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Label(
+                "\(L10n(skill.sourceKindLocalizationKey)) · \(skill.source)",
+                systemImage: skill.isGit ? "arrow.triangle.branch" : "folder"
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, AgentsSkillsLayoutMetrics.columnPadding)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
 }
 
 // 单个 Agent 的网格卡片：Assistant 直接建聊天；IC 选择 WorkItem 后建 Worker Session。
