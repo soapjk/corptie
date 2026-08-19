@@ -142,7 +142,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
         cell.layoutSubtreeIfNeeded()
         let summary = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
-        let body = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.body"))
+        let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
 
         XCTAssertTrue(summary.attributedTitle.string.contains("Working…"))
         XCTAssertGreaterThan(summary.frame.minY, body.frame.maxY)
@@ -268,6 +268,29 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(harness.tableView.rect(ofColumn: 0).minX, 0, accuracy: 0.5)
     }
 
+    func testUnbrokenModelTextWrapsInsideTheCardBoundary() throws {
+        let harness = makeHarness(followsLatest: false, height: 320)
+        let token = String(repeating: "https://example.com/very-long-path-without-breaks-0123456789", count: 12)
+        harness.coordinator.apply(rows: [row(id: "long-token", text: token, showsHeader: false)])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        cell.layoutSubtreeIfNeeded()
+        let card = try XCTUnwrap(cell.subviews.first)
+        let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
+        let bodyFrame = body.convert(body.bounds, to: cell)
+        let cardFrame = card.convert(card.bounds, to: cell)
+
+        XCTAssertLessThanOrEqual(bodyFrame.maxX, cardFrame.maxX + 1)
+        XCTAssertLessThanOrEqual(bodyFrame.maxY, cardFrame.maxY + 1)
+        XCTAssertEqual(body.laidOutCharacterRange, NSRange(location: 0, length: body.string.utf16.count))
+        XCTAssertGreaterThan(body.textContainer?.containerSize.height ?? 0, body.bounds.height)
+        XCTAssertTrue(hasVisiblePixels(in: body), "The message body must draw visible text pixels")
+        XCTAssertGreaterThan(harness.tableView.rect(ofRow: 0).height, 60)
+    }
+
     func testStructuralPrependRestoresStableVisibleAnchor() async {
         let harness = makeHarness(followsLatest: false, height: 180)
         let original = (0..<30).map { row(id: "old-\($0)", text: "Original row \($0)") }
@@ -316,28 +339,26 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
     }
 
-    func testScrollbarCannotOverscrollPastLastMessageWhenDocumentFrameContainsSurplusHeight() async {
+    func testDocumentAndScrollerShareTheLastMessageAsTheirNaturalBottom() async throws {
         let harness = makeHarness(followsLatest: false, height: 180)
         let rows = (0..<20).map { row(id: "bounded-scroll-\($0)", text: "Message \($0)") }
         harness.coordinator.apply(rows: rows)
         harness.window.contentView?.layoutSubtreeIfNeeded()
 
         let lastRowRect = harness.tableView.rect(ofRow: rows.count - 1)
-        harness.tableView.setFrameSize(NSSize(
-            width: harness.tableView.frame.width,
-            height: lastRowRect.maxY + 500
-        ))
-        await settleMainQueue()
-        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: lastRowRect.maxY + 500))
-        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.scrollToBottom()
         await settleMainQueue()
 
+        XCTAssertEqual(harness.tableView.frame.height, lastRowRect.maxY, accuracy: 1)
+        XCTAssertEqual(harness.scrollView.documentVisibleRect.maxY, lastRowRect.maxY, accuracy: 2)
         XCTAssertEqual(
             harness.scrollView.contentView.bounds.maxY,
             lastRowRect.maxY,
-            accuracy: harness.tableView.intercellSpacing.height + 2
+            accuracy: 2
         )
         XCTAssertTrue(harness.tableView.visibleRect.intersects(lastRowRect))
+        let scroller = try XCTUnwrap(harness.scrollView.verticalScroller)
+        XCTAssertEqual(scroller.floatValue, 1, accuracy: 0.01)
     }
 
     func testSavedSessionPositionRestoresMessageAnchorAndFollowMode() async {
@@ -534,6 +555,12 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         return view.subviews.lazy.compactMap { self.textField(in: $0, identifier: identifier) }.first
     }
 
+    private func textView(in view: NSView, identifier: String) -> NativeTimelineTextView? {
+        if let textView = view as? NativeTimelineTextView,
+           textView.identifier?.rawValue == identifier { return textView }
+        return view.subviews.lazy.compactMap { self.textView(in: $0, identifier: identifier) }.first
+    }
+
     private func view(in view: NSView, identifier: String) -> NSView? {
         if view.identifier?.rawValue == identifier { return view }
         return view.subviews.lazy.compactMap { self.view(in: $0, identifier: identifier) }.first
@@ -550,6 +577,18 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             XCTAssertLessThanOrEqual(rect.maxY, root.bounds.maxY + 1, file: file, line: line)
             assertDescendantsStayInsideVerticalBounds(of: descendant, file: file, line: line)
         }
+    }
+
+    private func hasVisiblePixels(in view: NSView) -> Bool {
+        guard !view.bounds.isEmpty,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        for y in 0..<bitmap.pixelsHigh {
+            for x in 0..<bitmap.pixelsWide where (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.05 {
+                return true
+            }
+        }
+        return false
     }
 
     private func visibleAnchor(
