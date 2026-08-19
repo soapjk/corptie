@@ -9,7 +9,8 @@ import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   repairStableSessionFromBoundPhysicalProjection,
-  resolveRoutedProviderSessionProjection
+  resolveRoutedProviderSessionProjection,
+  visibleStoredSessionProjections
 } from "../src/application/providerSessionProjection.mjs";
 
 test("a historical OpenClacky Work Session projection is repaired idempotently", async () => {
@@ -96,9 +97,19 @@ test("a Provider switch projects only the active target thread under the origina
       agent: "Arbitrage Agent",
       agentId: "agent:arbitrage",
       provider: "openclacky",
-      sessionKind: "assistantChat",
       status: "complete"
     });
+    store.createObjective({ id: "objective:arbitrage", name: "Arbitrage" });
+    store.createWorkItem({
+      id: "work-item:arbitrage",
+      objectiveId: "objective:arbitrage",
+      title: "Run arbitrage"
+    });
+    store.bindSessionToWorkItem(
+      "openclacky:source",
+      "work-item:arbitrage",
+      "objective:arbitrage"
+    );
     store.createLogicalSessionRoute({
       logicalSessionId: "logical:arbitrage",
       legacySessionId: "openclacky:source",
@@ -139,7 +150,9 @@ test("a Provider switch projects only the active target thread under the origina
     assert.equal(active.session.title, "Stable title");
     assert.equal(active.session.sessionName, "Stable title");
     assert.equal(active.session.agentId, "agent:arbitrage");
-    assert.equal(active.session.sessionKind, "assistantChat");
+    assert.equal(active.session.sessionKind, "worker");
+    assert.equal(active.session.workItemId, "work-item:arbitrage");
+    assert.equal(active.session.objectiveId, "objective:arbitrage");
     assert.equal(active.session.external.provider, "codex-app-server");
     assert.equal(store.getSession("codex:codex-target"), null);
 
@@ -167,6 +180,10 @@ test("a Provider switch projects only the active target thread under the origina
         currentReasoningLevel: "high"
       }
     });
+    const visible = visibleStoredSessionProjections(store, store.listSessions({ archived: false }));
+    assert.deepEqual(visible.map((session) => session.id), ["openclacky:source"]);
+    assert.equal(visible[0].sessionKind, "worker");
+    assert.equal(visible[0].workItemId, "work-item:arbitrage");
     const repaired = repairStableSessionFromBoundPhysicalProjection(
       store,
       store.getSession("codex:codex-target")
