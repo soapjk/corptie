@@ -80,7 +80,6 @@ export class PlatformOperationService {
         name: required(args.name, "name"),
         description: args.description ?? "",
         role: args.role,
-        provider: optional(args.provider),
         systemPrompt: args.system_prompt ?? "",
         capabilities: array(args.capabilities),
         workDir: optional(args.work_dir),
@@ -91,7 +90,6 @@ export class PlatformOperationService {
         const patch = compact({
           name: args.name,
           description: args.description,
-          provider: args.provider,
           systemPrompt: args.system_prompt,
           capabilities: args.capabilities,
           workDir: args.work_dir,
@@ -171,6 +169,7 @@ export class PlatformOperationService {
       case "get": return this.sessionService.readSession(required(args.session_id, "session_id"));
       case "create": return this.createSession({
         agentId: required(args.agent_id, "agent_id"),
+        providerId: required(args.provider_id, "provider_id"),
         workItemId: optional(args.work_item_id),
         title: optional(args.title),
         prompt: optional(args.prompt)

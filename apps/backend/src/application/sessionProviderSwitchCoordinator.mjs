@@ -1,9 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 import { SessionNotFoundError } from "../agent-provider/sessionApplicationService.mjs";
 
 // Provider-neutral coordinator for switching a logical Session from its current
-// Agent Provider to another one. It reuses the workspace_transitions state
+// Session Provider to another one. It reuses the workspace_transitions state
 // machine with transition_kind='provider' (fork strategy) so the existing
 // routing_version optimistic-concurrency and in-flight-transition mutual
 // exclusion apply unchanged. It is deliberately independent of any concrete
@@ -20,9 +19,8 @@ export class SessionProviderSwitchCoordinator {
     this.resolveTargetContext = options.resolveTargetContext ?? null;
     this.hasActiveRun = options.hasActiveRun ?? (() => false);
     this.onTransitionEvent = options.onTransitionEvent ?? (() => {});
-    this.pendingTargetProviders = new Map();
     if (!this.store) throw new TypeError("SessionProviderSwitchCoordinator requires a store.");
-    if (!this.registry) throw new TypeError("SessionProviderSwitchCoordinator requires an Agent Provider Registry.");
+    if (!this.registry) throw new TypeError("SessionProviderSwitchCoordinator requires a Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionProviderSwitchCoordinator requires resolveSessionReference().");
     }
@@ -36,9 +34,10 @@ export class SessionProviderSwitchCoordinator {
     if (!reference?.providerId || !reference?.providerSessionId) {
       throw new SessionNotFoundError(sessionId);
     }
-    const targetProviderId = requiredText(input.providerId, "providerId");
-    if (!this.registry.resolveId(targetProviderId)) {
-      const error = new Error(`Agent Provider ${targetProviderId} is not available.`);
+    const requestedTargetProviderId = requiredText(input.providerId, "providerId");
+    const targetProviderId = this.registry.resolveId(requestedTargetProviderId);
+    if (!targetProviderId) {
+      const error = new Error(`Session Provider ${requestedTargetProviderId} is not available.`);
       error.code = "PROVIDER_UNSUPPORTED";
       throw error;
     }
@@ -48,6 +47,12 @@ export class SessionProviderSwitchCoordinator {
     if (!logical?.activeBinding) {
       const error = new Error("The Session has no active Provider binding to switch.");
       error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    if (input.expectedRoutingVersion != null
+      && Number(input.expectedRoutingVersion) !== logical.routingVersion) {
+      const error = new Error(`The Session route changed from version ${input.expectedRoutingVersion} to ${logical.routingVersion}.`);
+      error.code = "STALE_SESSION_ROUTE";
       throw error;
     }
     if (logical.activeBinding.providerId === targetProviderId) {
@@ -62,6 +67,7 @@ export class SessionProviderSwitchCoordinator {
       transitionId,
       logicalSessionId: logical.logicalSessionId,
       transitionKind: "provider",
+      targetProviderId,
       targetCwd: logical.activeBinding.boundCwd,
       sourceRoutingVersion: logical.routingVersion,
       resumeGoalAfterTransition: Boolean(active),
@@ -79,8 +85,6 @@ export class SessionProviderSwitchCoordinator {
       status: active ? "waitingForTurn" : "committed"
     });
 
-    this.pendingTargetProviders.set(transitionId, targetProviderId);
-
     if (active) {
       return {
         status: "waitingForTurn",
@@ -97,13 +101,12 @@ export class SessionProviderSwitchCoordinator {
     const transition = this.store.getWorkspaceTransition(transitionId);
     if (!transition) throw new Error(`Provider transition ${transitionId} was not found.`);
     const resolvedTargetProviderId = targetProviderId
-      ?? this.pendingTargetProviders.get(transitionId)
+      ?? transition.targetProviderId
       ?? null;
     if (!resolvedTargetProviderId) {
       throw new Error(`Provider transition ${transitionId} has no target Provider.`);
     }
     if (transition.phase === "committed") {
-      this.pendingTargetProviders.delete(transitionId);
       return {
         status: "committed",
         transition,
@@ -111,7 +114,6 @@ export class SessionProviderSwitchCoordinator {
       };
     }
     if (transition.phase === "failed") {
-      this.pendingTargetProviders.delete(transitionId);
       throw new Error(`Provider transition ${transitionId} has already failed.`);
     }
     const sourceLogical = logical
@@ -133,13 +135,14 @@ export class SessionProviderSwitchCoordinator {
         instructionSummary: context.instructionSummary ?? null,
         cwd: sourceLogical.activeBinding.boundCwd,
         agentId: context.agentId ?? null,
+        sessionKind: context.sessionKind ?? reference?.metadata?.session?.sessionKind ?? "legacy",
         input: context.input ?? {}
       });
       const newThreadId = created?.providerThreadId
         ?? created?.external?.threadId
         ?? created?.external?.sessionId;
       if (!newThreadId) {
-        throw new Error(`Agent Provider ${resolvedTargetProviderId} did not return a thread id.`);
+        throw new Error(`Session Provider ${resolvedTargetProviderId} did not return a thread id.`);
       }
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "committingRoute",
@@ -158,7 +161,6 @@ export class SessionProviderSwitchCoordinator {
           switchedFromProviderId: sourceLogical.activeBinding.providerId
         }
       });
-      this.pendingTargetProviders.delete(transitionId);
       this.onTransitionEvent("ProviderSwitched", {
         sessionId: reference.sessionId,
         logicalSessionId: switched.logicalSessionId,
@@ -197,7 +199,6 @@ export class SessionProviderSwitchCoordinator {
         newThreadId,
         error: { message: error.message }
       });
-      this.pendingTargetProviders.delete(transitionId);
       this.onTransitionEvent("ProviderSwitchFailed", {
         sessionId: reference.sessionId,
         logicalSessionId: transition.logicalSessionId,

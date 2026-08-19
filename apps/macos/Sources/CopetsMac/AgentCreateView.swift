@@ -5,7 +5,6 @@ import SwiftUI
 
 struct AgentCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
-    @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
     /// 创建成功后的回调（如 AgentPickerView 用来把新 Agent 加入已选集合）。
     var onCreated: ((Agent) -> Void)? = nil
@@ -14,7 +13,6 @@ struct AgentCreateView: View {
     @State private var name = ""
     @State private var detail = ""
     @State private var role = "independentContributor"
-    @State private var provider = ""
     @State private var systemPrompt = ""
     @State private var capabilitiesText = ""
     @State private var workDir = ""
@@ -51,20 +49,6 @@ struct AgentCreateView: View {
                     }
                     field(L10n("职责描述")) {
                         TextField(L10n("如：后端接口与数据库专家"), text: $detail)
-                    }
-
-                    field(L10n("底层模型（Provider）")) {
-                        Picker("", selection: $provider) {
-                            if !provider.isEmpty,
-                               !creatableProviders.contains(where: { $0.matches(provider) }) {
-                                Text(backendClient.providerDisplayName(for: provider) ?? provider).tag(provider)
-                            }
-                            ForEach(creatableProviders) { descriptor in
-                                Text(descriptor.displayName).tag(descriptor.id)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 200, alignment: .leading)
                     }
 
                     field(L10n("类型")) {
@@ -147,8 +131,6 @@ struct AgentCreateView: View {
                 .keyboardShortcut(.defaultAction)
                 .disabled(
                     name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || (!selectedSkillIds.isEmpty && !providerSupportsSkillLoading)
                 )
             }
             .padding(16)
@@ -162,13 +144,7 @@ struct AgentCreateView: View {
             if client.skills.isEmpty {
                 await client.refreshSkills()
             }
-            if backendClient.agentProviders.isEmpty {
-                await backendClient.loadProviders()
-            }
-            reconcileProviderSelection()
         }
-        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
-        .onChange(of: backendClient.defaultAgentProviderId) { _, _ in reconcileProviderSelection() }
         .sheet(isPresented: $showSkillRegister) {
             SkillRegisterView { skill in
                 if let skill { selectedSkillIds.insert(skill.skillId) }
@@ -226,44 +202,17 @@ struct AgentCreateView: View {
             systemPrompt = ""
             capabilitiesText = ""
             workDir = ""
-            provider = defaultProviderId ?? ""
             role = "independentContributor"
             selectedSkillIds = []
             return
         }
         name = base.name
         detail = base.description
-        provider = canonicalProviderId(base.provider) ?? base.provider ?? defaultProviderId ?? ""
         role = base.role.isEmpty ? "independentContributor" : base.role
         systemPrompt = base.systemPrompt
         capabilitiesText = base.capabilities.joined(separator: ", ")
         workDir = base.workDir ?? ""
         selectedSkillIds = Set(base.skillIds ?? [])
-    }
-
-    private func canonicalProviderId(_ value: String?) -> String? {
-        backendClient.agentProviders.canonicalProviderId(for: value)
-    }
-
-    private var creatableProviders: [AgentProviderDescriptor] {
-        backendClient.agentProviders.filter { $0.supports("session.create") }
-    }
-
-    private var defaultProviderId: String? {
-        if let defaultId = backendClient.defaultAgentProviderId,
-           creatableProviders.contains(where: { $0.id == defaultId }) {
-            return defaultId
-        }
-        return creatableProviders.first?.id
-    }
-
-    private func reconcileProviderSelection() {
-        if let canonical = canonicalProviderId(provider),
-           creatableProviders.contains(where: { $0.id == canonical }) {
-            provider = canonical
-        } else if provider.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            provider = defaultProviderId ?? ""
-        }
     }
 
     // MARK: - Skill 预装
@@ -272,14 +221,9 @@ struct AgentCreateView: View {
         AgentSkillSelectionView(
             skills: client.skills,
             selectedSkillIds: $selectedSkillIds,
-            isEnabled: providerSupportsSkillLoading,
+            isEnabled: true,
             onRegister: { showSkillRegister = true }
         )
-    }
-
-    private var providerSupportsSkillLoading: Bool {
-        guard let descriptor = backendClient.agentProviders.first(where: { $0.matches(provider) }) else { return false }
-        return descriptor.supports("agent.skills.lazyLoad")
     }
 
     // MARK: - 创建
@@ -306,7 +250,6 @@ struct AgentCreateView: View {
                 name: trimmed,
                 description: detail,
                 role: role,
-                provider: provider,
                 systemPrompt: systemPrompt,
                 capabilities: capabilities,
                 skillIds: Array(selectedSkillIds),

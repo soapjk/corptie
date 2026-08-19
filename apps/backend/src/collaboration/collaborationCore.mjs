@@ -1112,7 +1112,6 @@ function agentFromRow(row, store) {
     providerSessionId: row.current_session_id || null,
     description: row.description,
     role: row.role,
-    provider: row.provider ?? null,
     systemPrompt: row.system_prompt ?? "",
     status: "available",
     capabilities: parseJson(row.capabilities_json, []),

@@ -5,14 +5,12 @@ import SwiftUI
 
 struct AgentDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
-    @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @Environment(\.dismiss) private var dismiss
     let agent: Agent
 
     @State private var name: String
     @State private var detail: String
-    @State private var provider: String
     @State private var systemPrompt: String
     @State private var selectedSkillIds: Set<String>
     @State private var showSkillRegister = false
@@ -26,7 +24,6 @@ struct AgentDetailView: View {
         self.agent = agent
         _name = State(initialValue: agent.name)
         _detail = State(initialValue: agent.description)
-        _provider = State(initialValue: agent.provider ?? "")
         _systemPrompt = State(initialValue: agent.systemPrompt)
         _selectedSkillIds = State(initialValue: Set(agent.skillIds ?? []))
     }
@@ -63,17 +60,12 @@ struct AgentDetailView: View {
             }
         }
         .task {
-            if backendClient.agentProviders.isEmpty {
-                await backendClient.loadProviders()
-            }
             await client.refreshSkills()
             await client.refreshAgents()
             if let latest = client.agents.first(where: { $0.agentId == agent.agentId }) {
                 selectedSkillIds = Set(latest.skillIds ?? [])
             }
-            reconcileProviderSelection()
         }
-        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
     }
 
     // MARK: - 头部
@@ -147,7 +139,7 @@ struct AgentDetailView: View {
                 TextField(L10n("名称"), text: $name)
             }
             if agent.isPlatformAssistant {
-                Text(L10n("这是 Corptie 内置的平台助手。它的 Provider、提示词、Skill 和平台权限由应用管理，不能由用户修改。"))
+                Text(L10n("这是 Corptie 内置的平台助手。它的提示词、Skill 和平台权限由应用管理，不能由用户修改。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -156,20 +148,6 @@ struct AgentDetailView: View {
                     TextField(L10n("描述"), text: $detail)
                 } trailing: {
                     AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)")
-                }
-                field("Provider") {
-                    Picker("", selection: $provider) {
-                        Text(L10n("无")).tag("")
-                        if !provider.isEmpty,
-                           !creatableProviders.contains(where: { $0.matches(provider) }) {
-                            Text(backendClient.providerDisplayName(for: provider) ?? provider).tag(provider)
-                        }
-                        ForEach(creatableProviders) { descriptor in
-                            Text(descriptor.displayName).tag(descriptor.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 200, alignment: .leading)
                 }
                 field("System Prompt") {
                     TextEditor(text: $systemPrompt)
@@ -183,7 +161,7 @@ struct AgentDetailView: View {
                 AgentSkillSelectionView(
                     skills: client.skills,
                     selectedSkillIds: $selectedSkillIds,
-                    isEnabled: providerSupportsSkillLoading,
+                    isEnabled: true,
                     onRegister: { showSkillRegister = true }
                 )
             }
@@ -196,21 +174,6 @@ struct AgentDetailView: View {
     }
 
     // MARK: - 操作
-
-    private var creatableProviders: [AgentProviderDescriptor] {
-        backendClient.agentProviders.filter { $0.supports("session.create") }
-    }
-
-    private func reconcileProviderSelection() {
-        if let canonical = backendClient.agentProviders.canonicalProviderId(for: provider) {
-            provider = canonical
-        }
-    }
-
-    private var providerSupportsSkillLoading: Bool {
-        guard let descriptor = backendClient.agentProviders.first(where: { $0.matches(provider) }) else { return false }
-        return descriptor.supports("agent.skills.lazyLoad")
-    }
 
     private var actions: some View {
         HStack(spacing: 12) {
@@ -242,7 +205,6 @@ struct AgentDetailView: View {
                             agentId: agent.agentId,
                             name: name,
                             description: detail,
-                            provider: provider.isEmpty ? nil : provider,
                             systemPrompt: systemPrompt,
                             skillIds: Array(selectedSkillIds)
                         )
@@ -256,8 +218,7 @@ struct AgentDetailView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || (!agent.isPlatformAssistant && !selectedSkillIds.isEmpty && !providerSupportsSkillLoading))
+            .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 

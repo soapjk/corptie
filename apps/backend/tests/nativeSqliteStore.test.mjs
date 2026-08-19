@@ -20,6 +20,8 @@ test("Session tables do not own avatar columns while Agents still do", async () 
     const legacyDatabase = new DatabaseSync(dbPath);
     legacyDatabase.exec("ALTER TABLE sessions ADD COLUMN avatar_path TEXT");
     legacyDatabase.exec("ALTER TABLE logical_sessions ADD COLUMN avatar_path TEXT");
+    legacyDatabase.exec("ALTER TABLE agents ADD COLUMN provider TEXT");
+    legacyDatabase.exec("UPDATE agents SET provider = 'codex-app-server'");
     legacyDatabase.close();
 
     const migratedStore = new CorptieStore({ dbPath, configPath });
@@ -27,6 +29,7 @@ test("Session tables do not own avatar columns while Agents still do", async () 
     assert.equal(migratedStore.selectAll("PRAGMA table_info(sessions)").some((column) => column.name === "avatar_path"), false);
     assert.equal(migratedStore.selectAll("PRAGMA table_info(logical_sessions)").some((column) => column.name === "avatar_path"), false);
     assert.equal(migratedStore.selectAll("PRAGMA table_info(agents)").some((column) => column.name === "avatar_path"), true);
+    assert.equal(migratedStore.selectAll("PRAGMA table_info(agents)").some((column) => column.name === "provider"), false);
     await migratedStore.close();
   } finally {
     await initialStore.close().catch(() => {});
@@ -735,7 +738,7 @@ test("logical session transitions reject stale routing versions without changing
   }
 });
 
-test("Agent Provider binding migration backfills legacy thread identities idempotently", async () => {
+test("Session Provider binding migration backfills legacy thread identities idempotently", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-binding-migration-"));
   const dbPath = join(directory, "corptie.sqlite");
   const configPath = join(directory, "config.json");

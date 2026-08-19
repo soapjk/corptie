@@ -59,9 +59,6 @@ struct AgentOrbView: View {
             agentAvatar
                 .frame(width: 72, height: 72)
 
-            AgentProviderBadge(provider: agent.provider)
-                .offset(x: 24, y: -24)
-
             if badgeCount > 0 {
                 AgentOrbBadge(count: badgeCount)
                     .offset(x: 26, y: 26)
@@ -125,17 +122,17 @@ struct AgentOrbDemoView: View {
 
     static let assistant = Agent(
         agentId: "assistant", name: "Corptie", description: "", role: "assistant",
-        status: "available", provider: nil, systemPrompt: "", capabilities: [],
+        status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
     static let contributor = Agent(
         agentId: "backend-dev", name: "后端开发", description: "", role: "independentContributor",
-        status: "available", provider: "codex-app-server", systemPrompt: "", capabilities: [],
+        status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
     static let claude = Agent(
         agentId: "frontend-dev", name: "前端开发", description: "", role: "independentContributor",
-        status: "available", provider: "claude-sdk", systemPrompt: "", capabilities: [],
+        status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
 }

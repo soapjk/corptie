@@ -124,7 +124,6 @@ struct SessionCollectionPatchTests {
             description: "",
             role: "independentContributor",
             status: "active",
-            provider: "codex",
             systemPrompt: "",
             capabilities: [],
             workDir: nil,

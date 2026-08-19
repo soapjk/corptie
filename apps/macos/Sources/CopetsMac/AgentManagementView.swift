@@ -4,7 +4,6 @@ import SwiftUI
 // Agent 是低频变更的基础设施，单独一个 Tab 管理，控制台侧栏不再列出 Agent。
 struct AgentManagementView: View {
     @ObservedObject private var client = EntityAPIClient.shared
-    @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @State private var isCreatingAgent = false
     @State private var selectedAgentForDetail: Agent?
@@ -68,9 +67,6 @@ struct AgentManagementView: View {
         }
         .task {
             await client.refreshAgents()
-            if backendClient.agentProviders.isEmpty {
-                await backendClient.loadProviders()
-            }
         }
     }
 
@@ -119,7 +115,6 @@ struct AgentManagementView: View {
 
 // 单个 Agent 的网格卡片：Assistant 直接建聊天；IC 选择 WorkItem 后建 Worker Session。
 struct AgentCard: View {
-    @ObservedObject private var backendClient = BackendClient.shared
     let agent: Agent
     var onStartSession: (() -> Void)? = nil
 
@@ -167,15 +162,8 @@ struct AgentCard: View {
 
             Spacer(minLength: 0)
 
-            // 底部：provider + 状态文字
+            // 底部：Session action + 状态文字
             HStack(spacing: 6) {
-                if let provider = agent.provider, !provider.isEmpty {
-                    Text(backendClient.providerDisplayName(for: provider) ?? provider)
-                        .font(.caption2)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.quaternary, in: Capsule())
-                }
                 Spacer()
                 if let onStartSession {
                     Button {

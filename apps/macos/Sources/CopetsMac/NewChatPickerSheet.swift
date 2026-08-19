@@ -26,6 +26,7 @@ struct NewSessionCreationSheet: View {
 
     let fixedAgent: Agent?
     let fixedObjective: Objective?
+    let fixedWorkItem: WorkItem?
     var onCreated: (TaskSession) -> Void
 
     @State private var kind: NewSessionKind
@@ -33,6 +34,7 @@ struct NewSessionCreationSheet: View {
     @State private var selectedWorkItemId: String?
     @State private var selectedObjectiveId: String?
     @State private var sessionTitle = ""
+    @State private var selectedProviderId = ""
     @State private var titleWasEdited = false
     @State private var workItems: [WorkItem] = []
     @State private var isLoadingWorkItems = false
@@ -42,14 +44,17 @@ struct NewSessionCreationSheet: View {
     init(
         fixedAgent: Agent? = nil,
         fixedObjective: Objective? = nil,
+        fixedWorkItem: WorkItem? = nil,
         onCreated: @escaping (TaskSession) -> Void = { _ in }
     ) {
         self.fixedAgent = fixedAgent
         self.fixedObjective = fixedObjective
+        self.fixedWorkItem = fixedWorkItem
         self.onCreated = onCreated
-        _kind = State(initialValue: fixedObjective != nil ? .objectiveChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat))
+        _kind = State(initialValue: fixedWorkItem != nil ? .worker : (fixedObjective != nil ? .objectiveChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
         _selectedObjectiveId = State(initialValue: fixedObjective?.id)
+        _selectedWorkItemId = State(initialValue: fixedWorkItem?.id)
         _sessionTitle = State(initialValue: fixedAgent?.suggestedSessionTitle ?? Self.fallbackTitle(for: fixedAgent))
     }
 
@@ -74,6 +79,7 @@ struct NewSessionCreationSheet: View {
             }
 
             sessionIdentitySection
+            providerSection
 
             switch kind {
             case .assistantChat:
@@ -113,14 +119,17 @@ struct NewSessionCreationSheet: View {
         .padding(20)
         .frame(width: 500, height: 620)
         .task {
-            await client.refreshAgents()
+            async let agents: Void = client.refreshAgents()
+            if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
+            _ = await agents
+            reconcileProviderSelection()
             normalizeAgentSelection()
             applySuggestedTitle()
         }
         .task(id: kind) {
             creationError = nil
             normalizeAgentSelection()
-            if kind == .worker, workItems.isEmpty {
+            if kind == .worker, fixedWorkItem == nil, workItems.isEmpty {
                 await loadWorkItems()
             }
             if kind == .objectiveChat, client.objectives.isEmpty {
@@ -132,6 +141,7 @@ struct NewSessionCreationSheet: View {
         .onChange(of: selectedObjectiveId) { _, _ in
             if kind == .objectiveChat { normalizeAgentSelection() }
         }
+        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
     }
 
     private var sessionIdentitySection: some View {
@@ -143,6 +153,26 @@ struct NewSessionCreationSheet: View {
             }
         ))
             .textFieldStyle(.roundedBorder)
+    }
+
+    private var providerSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L10n("Provider"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Picker(L10n("Provider"), selection: $selectedProviderId) {
+                ForEach(creatableProviders) { provider in
+                    Text(provider.displayName).tag(provider.id)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if creatableProviders.isEmpty {
+                Text(L10n("没有可创建 Session 的 Provider。"))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
     }
 
     @ViewBuilder
@@ -181,7 +211,13 @@ struct NewSessionCreationSheet: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            if isLoadingWorkItems {
+            if let fixedWorkItem {
+                selectedRow(
+                    title: fixedWorkItem.title,
+                    subtitle: fixedWorkItem.description,
+                    systemImage: "checklist"
+                )
+            } else if isLoadingWorkItems {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 100)
             } else if let error = client.workItemsLoadError {
@@ -289,11 +325,25 @@ struct NewSessionCreationSheet: View {
     }
 
     private var canCreate: Bool {
-        guard selectedAgentId != nil else { return false }
+        guard selectedAgentId != nil, !selectedProviderId.isEmpty else { return false }
         switch kind {
         case .assistantChat: return true
         case .objectiveChat: return selectedObjectiveId != nil
         case .worker: return selectedWorkItemId != nil
+        }
+    }
+
+    private var creatableProviders: [AgentProviderDescriptor] {
+        backendClient.agentProviders.filter { $0.supports("session.create") }
+    }
+
+    private func reconcileProviderSelection() {
+        guard !creatableProviders.contains(where: { $0.id == selectedProviderId }) else { return }
+        if let preferred = backendClient.defaultSessionProviderId,
+           creatableProviders.contains(where: { $0.id == preferred }) {
+            selectedProviderId = preferred
+        } else {
+            selectedProviderId = creatableProviders.first?.id ?? ""
         }
     }
 
@@ -406,6 +456,7 @@ struct NewSessionCreationSheet: View {
             case .assistantChat:
                 result = await client.startAgentSession(
                     agentId: agentId,
+                    providerId: selectedProviderId,
                     title: requestedTitle
                 )
             case .objectiveChat:
@@ -416,6 +467,7 @@ struct NewSessionCreationSheet: View {
                 result = await client.startObjectiveChat(
                     objectiveId: objectiveId,
                     agentId: agentId,
+                    providerId: selectedProviderId,
                     title: requestedTitle
                 )
             case .worker:
@@ -426,6 +478,7 @@ struct NewSessionCreationSheet: View {
                 result = await client.createSession(
                     workItemId: workItemId,
                     agentId: agentId,
+                    providerId: selectedProviderId,
                     title: requestedTitle
                 )
             }

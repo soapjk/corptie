@@ -2193,7 +2193,7 @@ private struct NewPtyAgentTaskSheet: View {
             reconcileProviderSelection()
             loadModelsForCurrentAgent()
         }
-        .onChange(of: backendClient.defaultAgentProviderId) { _, _ in
+        .onChange(of: backendClient.defaultSessionProviderId) { _, _ in
             reconcileProviderSelection()
         }
         .onChange(of: backendClient.codexDefaultModel) { _, value in
@@ -2318,7 +2318,7 @@ private struct NewPtyAgentTaskSheet: View {
 
     private func reconcileProviderSelection() {
         guard !creatableProviders.contains(where: { $0.id == selectedProviderId }) else { return }
-        if let defaultProviderId = backendClient.defaultAgentProviderId,
+        if let defaultProviderId = backendClient.defaultSessionProviderId,
            creatableProviders.contains(where: { $0.id == defaultProviderId }) {
             selectedProviderId = defaultProviderId
         } else {

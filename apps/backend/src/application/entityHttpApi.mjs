@@ -173,7 +173,6 @@ export function handleEntityHttpRequest({
           name,
           description: input.description ?? "",
           role: input.role === "assistant" ? "assistant" : "independentContributor",
-          provider: input.provider ?? null,
           systemPrompt: input.systemPrompt ?? "",
           capabilities: Array.isArray(input.capabilities) ? input.capabilities : [],
           workDir: input.workDir
@@ -202,8 +201,10 @@ export function handleEntityHttpRequest({
           }
           const input = await readJson(request);
           rejectSessionAvatarInput(input);
+          const providerId = requiredProviderId(input);
           const session = await launchAgentSession({
             agent,
+            providerId,
             title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
             prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
           });
@@ -362,9 +363,11 @@ export function handleEntityHttpRequest({
           if (!objective.contributorAgentIds.includes(agent.agentId)) {
             throw apiError("AGENT_OUTSIDE_OBJECTIVE", "只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。", 403);
           }
+          const providerId = requiredProviderId(input);
           const session = await launchObjectiveChatSession({
             agent,
             objective,
+            providerId,
             title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
             prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
           });
@@ -493,6 +496,7 @@ export function handleEntityHttpRequest({
             400
           );
         }
+        const providerId = requiredProviderId(input);
         const objective = objectiveService.getObjective(workItem.objective_id);
         objectiveService.store.assertWorkItemAssociations(
           {
@@ -520,6 +524,7 @@ export function handleEntityHttpRequest({
         const session = await launchSession({
           agent,
           workItem,
+          providerId,
           title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined
         });
         // 1:1 归属：把启动后的 session 绑定到 work_item（更新 current_session_id），并把状态推进到「进行中」，
@@ -608,6 +613,12 @@ export function handleEntityHttpRequest({
     });
 
   return true;
+}
+
+function requiredProviderId(input = {}) {
+  const providerId = String(input.providerId ?? "").trim();
+  if (!providerId) throw apiError("INVALID_INPUT", "providerId is required.", 400);
+  return providerId;
 }
 
 function rejectSessionAvatarInput(input) {

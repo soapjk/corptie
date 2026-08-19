@@ -639,6 +639,12 @@ struct SessionDetailPanel: View {
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
     @State private var providerCatalogRevision = 0
+    @State private var pendingProviderId: String?
+    @State private var showProviderSwitchConfirmation = false
+    @State private var isSwitchingProvider = false
+    @State private var providerSwitchError: String?
+    @State private var isLoadingProviderCatalog = false
+    @State private var providerCatalogLoadFailed = false
 
     /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
     private static let railWidth: CGFloat = 280
@@ -674,9 +680,7 @@ struct SessionDetailPanel: View {
         }
         .frame(width: Self.railWidth)
         .task(id: session.id) {
-            if backendClient.agentProviders.isEmpty {
-                await backendClient.loadProviders()
-            }
+            await loadProviderCatalogIfNeeded()
         }
         .onReceive(backendClient.$selectedContextReferences) { references in
             contextReferences = references
@@ -689,6 +693,12 @@ struct SessionDetailPanel: View {
         }
         .sheet(item: $contextReferenceAddMode) { mode in
             ContextReferenceAddSheet(session: session, mode: mode)
+        }
+        .alert(L10n("切换 Provider？"), isPresented: $showProviderSwitchConfirmation) {
+            Button(L10n("切换")) { performProviderSwitch() }
+            Button(L10n("取消"), role: .cancel) { pendingProviderId = nil }
+        } message: {
+            Text(providerSwitchConfirmationMessage)
         }
     }
 
@@ -716,6 +726,7 @@ struct SessionDetailPanel: View {
                     }
 
                     detailSection(title: "运行环境", systemImage: "cpu") {
+                        providerPicker
                         detailFields(primaryFields)
                     }
 
@@ -921,6 +932,142 @@ struct SessionDetailPanel: View {
         }
     }
 
+    private var providerPicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Provider")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            if session.external?.providerSwitchInFlight == true || isSwitchingProvider {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(L10n("正在切换 Provider…"))
+                        .font(.system(size: 11, weight: .medium))
+                }
+            } else if isLoadingProviderCatalog && creatableProviders.isEmpty {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(L10n("正在加载 Provider…"))
+                        .font(.system(size: 11, weight: .medium))
+                }
+            } else if alternativeProviders.isEmpty {
+                providerValueRow
+                if providerCatalogLoadFailed {
+                    Button(L10n("重新加载 Provider")) {
+                        Task { await reloadProviderCatalog() }
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 10))
+                } else {
+                    Text(L10n("没有其他可用 Provider"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Menu {
+                    ForEach(creatableProviders) { provider in
+                        Button {
+                            guard !provider.matches(session.external?.provider) else { return }
+                            pendingProviderId = provider.id
+                            showProviderSwitchConfirmation = true
+                        } label: {
+                            if provider.matches(session.external?.provider) {
+                                Label(provider.displayName, systemImage: "checkmark")
+                            } else {
+                                Text(provider.displayName)
+                            }
+                        }
+                        .disabled(provider.matches(session.external?.provider))
+                    }
+                } label: {
+                    HStack {
+                        Text(currentProviderDisplayName)
+                            .font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 28)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+                }
+                .menuStyle(.borderlessButton)
+            }
+            if let providerSwitchError {
+                Text(providerSwitchError)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(.bottom, 4)
+    }
+
+    private var creatableProviders: [AgentProviderDescriptor] {
+        _ = providerCatalogRevision
+        return backendClient.agentProviders.filter { $0.supports("session.create") }
+    }
+
+    private var alternativeProviders: [AgentProviderDescriptor] {
+        _ = providerCatalogRevision
+        return backendClient.agentProviders.sessionProviderAlternatives(to: session.external?.provider)
+    }
+
+    private var providerValueRow: some View {
+        HStack {
+            Text(currentProviderDisplayName)
+                .font(.system(size: 12, weight: .medium))
+            Spacer()
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private var currentProviderDisplayName: String {
+        guard let provider = session.external?.provider, !provider.isEmpty else { return L10n("未知") }
+        return backendClient.providerDisplayName(for: provider) ?? provider
+    }
+
+    private var pendingProviderDisplayName: String {
+        guard let pendingProviderId else { return L10n("未知") }
+        return backendClient.providerDisplayName(for: pendingProviderId) ?? pendingProviderId
+    }
+
+    private var providerSwitchConfirmationMessage: String {
+        L10nFormat("系统会为当前会话创建新的 Provider 线程。现有聊天记录和工作空间会保留，后续消息将从 %@ 切换到 %@。", currentProviderDisplayName, pendingProviderDisplayName)
+    }
+
+    private func performProviderSwitch() {
+        guard let target = pendingProviderId else { return }
+        pendingProviderId = nil
+        providerSwitchError = nil
+        isSwitchingProvider = true
+        Task {
+            let success = await backendClient.switchProvider(session: session, to: target)
+            isSwitchingProvider = false
+            if !success {
+                providerSwitchError = backendClient.lastError ?? L10n("Provider 切换失败")
+            }
+        }
+    }
+
+    private func loadProviderCatalogIfNeeded() async {
+        guard backendClient.agentProviders.isEmpty else {
+            providerCatalogLoadFailed = false
+            return
+        }
+        await reloadProviderCatalog()
+    }
+
+    private func reloadProviderCatalog() async {
+        guard !isLoadingProviderCatalog else { return }
+        isLoadingProviderCatalog = true
+        providerCatalogLoadFailed = false
+        await backendClient.loadProviders()
+        isLoadingProviderCatalog = false
+        providerCatalogLoadFailed = backendClient.agentProviders.isEmpty
+    }
+
     private var primaryFields: [(String, String)] {
         _ = providerCatalogRevision
         var fields = [("Agent", agentDisplayName)]
@@ -929,9 +1076,6 @@ struct SessionDetailPanel: View {
         }
         if let reasoning = session.external?.currentReasoningLevel {
             fields.append(("推理强度", reasoning.capitalized))
-        }
-        if let provider = session.external?.provider {
-            fields.append(("Provider", backendClient.providerDisplayName(for: provider) ?? provider))
         }
         return fields
     }
