@@ -329,6 +329,13 @@
 "Reply..." = "回复…";
 "Reply" = "回复";
 "Show Main Window" = "显示主窗口";
+"Skills" = "Skills";
+"Show Skills" = "查看 Skills";
+"No Skills" = "暂无 Skills";
+"Registered" = "已登记";
+"No description" = "暂无描述";
+"Git" = "Git";
+"Local" = "本地";
 "Open Session" = "打开会话";
 "Close Floating Orb" = "关闭悬浮头像";
 "Participants" = "参与者";
