@@ -192,20 +192,12 @@ struct WarRoomView: View {
             .background(.regularMaterial)
         }
         .overlay(alignment: .top) {
-            if let error = client.objectivesLoadError {
-                if backendClient.isOnline {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Label(L10n("Connecting to the server…"), systemImage: "network")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            if let error = client.objectivesLoadError, backendClient.isOnline {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .sheet(isPresented: $isCreatingObjective) {

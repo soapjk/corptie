@@ -139,6 +139,8 @@ private struct UnderlineTabButton: View {
 // 主窗口顶层容器：顶部中间 Tab 切换器（控制台 / Sessions / Agents / 设置）+ 对应内容。
 struct MainTabView: View {
     @StateObject private var router = AppTabRouter.shared
+    @StateObject private var backendClient = BackendClient.shared
+    @StateObject private var entityClient = EntityAPIClient.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -206,6 +208,19 @@ struct MainTabView: View {
             }
         }
         .environmentObject(router)
+        .overlay(alignment: .topTrailing) {
+            if !backendClient.isOnline, entityClient.objectivesLoadError != nil {
+                Label(L10n("Connecting to the server…"), systemImage: "network")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 8)
+                    .padding(.trailing, 12)
+                    .allowsHitTesting(false)
+            }
+        }
     }
 
     @ViewBuilder
