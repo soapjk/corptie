@@ -81,6 +81,7 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     launchObjectiveChatSession: services.launchObjectiveChatSession,
     inspectWorkItemWorktree: services.inspectWorkItemWorktree,
     reclaimWorkItemWorktree: services.reclaimWorkItemWorktree,
+    restoreWorkItemExecution: services.restoreWorkItemExecution,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     onEntityChanged: services.onEntityChanged
@@ -130,6 +131,47 @@ test("WorkItem Worktree endpoints inspect and reclaim through the project servic
       ["inspect", "work-item:one"],
       ["reclaim", "work-item:one"]
     ]);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem restore endpoint delegates the atomic execution recovery flow", async () => {
+  const services = await createServices();
+  try {
+    const workItem = services.objectiveService.createWorkItem({
+      objectiveId: services.objectiveService.createObjective({
+        name: "Recovery objective",
+        idealState: "Recovered"
+      }).id,
+      title: "Recover me",
+      status: "todo"
+    });
+    services.store.updateWorkItem(workItem.id, { status: "done" });
+    const calls = [];
+    const restored = await callApi({
+      method: "POST",
+      pathname: `/work-items/${encodeURIComponent(workItem.id)}/actions/restore`,
+      restoreWorkItemExecution: async (workItemId) => {
+        calls.push(workItemId);
+        return {
+          workItem: services.store.updateWorkItem(workItemId, {
+            status: "in_progress",
+            executionStatus: "idle"
+          }),
+          session: { id: "session:one" },
+          workspace: { worktreeId: "worktree:one", reused: true },
+          transition: null
+        };
+      },
+      ...services
+    });
+
+    assert.equal(restored.statusCode, 200);
+    assert.equal(restored.body.workItem.status, "in_progress");
+    assert.equal(restored.body.workspace.reused, true);
+    assert.deepEqual(calls, [workItem.id]);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -438,7 +480,7 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
   }
 });
 
-test("POST /objectives/:id/sessions creates Objective Chat with any attached contributor and rejects outsiders", async () => {
+test("POST /objectives/:id/sessions creates at most one Objective Chat and rejects invalid configurations", async () => {
   const services = await createServices();
   try {
     const planner = services.store.createAgent({ name: "Planner", role: "independentContributor" });
@@ -457,20 +499,31 @@ test("POST /objectives/:id/sessions creates Objective Chat with any attached con
         status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
       };
     };
-    for (const agent of [planner, builder]) {
-      const result = await callApi({
-        method: "POST",
-        pathname: `/objectives/${objective.id}/sessions`,
-        body: { agentId: agent.agentId, providerId: "codex-app-server", title: "Planning" },
-        launchObjectiveChatSession,
-        ...services
-      });
-      assert.equal(result.statusCode, 201);
-      assert.equal(result.body.session.sessionKind, "objectiveChat");
-      assert.equal(result.body.session.objectiveId, objective.id);
-      assert.equal(result.body.session.workItemId, null);
-    }
-    assert.deepEqual(calls.map((call) => call.agent.agentId), [planner.agentId, builder.agentId]);
+    const created = await callApi({
+      method: "POST",
+      pathname: `/objectives/${objective.id}/sessions`,
+      body: { agentId: planner.agentId, providerId: "codex-app-server", title: "Planning" },
+      launchObjectiveChatSession,
+      ...services
+    });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.body.session.sessionKind, "objectiveChat");
+    assert.equal(created.body.session.objectiveId, objective.id);
+    assert.equal(created.body.session.workItemId, null);
+
+    services.store.upsertSession(created.body.session);
+    services.store.bindSessionToObjective(created.body.session.id, objective.id);
+    const reused = await callApi({
+      method: "POST",
+      pathname: `/objectives/${objective.id}/sessions`,
+      body: { agentId: builder.agentId, providerId: "codex-app-server", title: "Duplicate" },
+      launchObjectiveChatSession,
+      ...services
+    });
+    assert.equal(reused.statusCode, 200);
+    assert.equal(reused.body.session.id, created.body.session.id);
+    assert.equal(reused.body.created, false);
+    assert.deepEqual(calls.map((call) => call.agent.agentId), [planner.agentId]);
     assert.equal(calls[0].objective.id, objective.id);
 
     const rejected = await callApi({
@@ -482,7 +535,20 @@ test("POST /objectives/:id/sessions creates Objective Chat with any attached con
     });
     assert.equal(rejected.statusCode, 403);
     assert.equal(rejected.body.code, "AGENT_OUTSIDE_OBJECTIVE");
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 1);
+
+    const invalidProvider = await callApi({
+      method: "POST",
+      pathname: `/objectives/${objective.id}/sessions`,
+      body: { agentId: planner.agentId },
+      launchObjectiveChatSession,
+      ...services
+    });
+    assert.equal(invalidProvider.statusCode, 400);
+    assert.equal(invalidProvider.body.code, "INVALID_INPUT");
+    assert.equal(services.store.listSessionsByObjective(objective.id).filter(
+      (session) => session.sessionKind === "objectiveChat"
+    ).length, 1);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -677,6 +743,40 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     assert.equal(assessed.body.status, "in_progress");
     assert.equal(assessed.body.completionSuggestion.recommended, true);
     assert.equal(assessed.body.completionSuggestion.results.length, 2);
+
+    const rejectedByUser = await callApi({
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/reject-acceptance`,
+      body: { rejected: true },
+      ...services
+    });
+    assert.equal(rejectedByUser.statusCode, 200);
+    assert.equal(rejectedByUser.body.status, "in_progress");
+    assert.equal(rejectedByUser.body.acceptanceAssessment.status, "rejected");
+    assert.equal(rejectedByUser.body.completionSuggestion, null);
+
+    const reassessed = await callApi({
+      method: "PUT",
+      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      body: {
+        sourceSessionId: "acceptance-session",
+        results: [
+          {
+            criterion: "Tests pass",
+            verdict: "passed",
+            evidence: [{ summary: "Backend tests passed", reference: "npm test" }]
+          },
+          {
+            criterion: "App starts",
+            verdict: "passed",
+            evidence: [{ summary: "Development processes healthy", reference: "dev-rebuild-restart" }]
+          }
+        ]
+      },
+      ...services
+    });
+    assert.equal(reassessed.statusCode, 200);
+    assert.equal(reassessed.body.completionSuggestion.recommended, true);
 
     const completed = await callApi({
       method: "POST",

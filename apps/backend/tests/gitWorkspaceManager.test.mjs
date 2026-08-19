@@ -445,6 +445,35 @@ test("creates a dedicated Integration Worktree from the current main revision", 
   }
 });
 
+test("ensures one deterministic WorkItem Worktree and reuses it on retry", async () => {
+  const fixture = await createFixture("workitem-worktree");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const created = await manager.ensureWorkItemWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workItemId: "work_item:one"
+    });
+    const retried = await manager.ensureWorkItemWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workItemId: "work_item:one"
+    });
+
+    assert.equal(created.branchName, "workitem/one");
+    assert.equal(created.reused, false);
+    assert.equal(retried.reused, true);
+    assert.equal(retried.worktreeId, created.worktreeId);
+    assert.equal(retried.path, created.path);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], created.path)).trim(), created.headOid);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("stage merge retains and synchronizes the source worktree", async () => {
   const fixture = await createFixture("stage-merge", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({

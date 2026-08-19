@@ -374,6 +374,78 @@ export class GitWorkspaceManager {
     };
   }
 
+  async ensureWorkItemWorktreeForProject(input) {
+    const repositoryId = requiredText(input.repositoryId, "repositoryId");
+    const workItemId = requiredText(input.workItemId, "workItemId");
+    const workingDirectory = absolutePath(input.workingDirectory);
+    let snapshot = await createGitWorkspaceSnapshot(workingDirectory);
+    if (snapshot.repository.id !== repositoryId) {
+      throw new Error("The WorkItem project no longer belongs to the registered repository.");
+    }
+    let main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    if (!main) throw new Error("The repository's main worktree is unavailable.");
+
+    const suffix = workItemWorkspaceSuffix(workItemId);
+    const branchName = `workitem/${suffix}`;
+    const targetPath = resolve(dirname(main.path), `${basename(main.path)}-workitem-${suffix}`);
+    const matchingBranch = (worktree) => worktree.branchName === branchName;
+    const matchingPath = (worktree) => resolve(worktree.path) === targetPath;
+    const resolveExisting = (worktrees) => {
+      const byBranch = worktrees.find(matchingBranch);
+      const byPath = worktrees.find(matchingPath);
+      if (byPath && byPath.branchName !== branchName) {
+        throw new Error(`The WorkItem Worktree path is already bound to branch ${byPath.branchName ?? "<detached>"}.`);
+      }
+      return byBranch ?? byPath;
+    };
+    let existing = resolveExisting(snapshot.worktrees);
+    if (existing?.availability === "available") {
+      return presentEnsuredWorkItemWorkspace(existing, true, null);
+    }
+
+    if (existing) {
+      await this.runGit(main.path, ["worktree", "prune"]);
+      snapshot = await createGitWorkspaceSnapshot(main.path);
+      this.store.upsertGitWorkspaceSnapshot(snapshot);
+      main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+      if (!main) throw new Error("The repository's main worktree is unavailable.");
+      existing = resolveExisting(snapshot.worktrees);
+      if (existing?.availability === "available") {
+        return presentEnsuredWorkItemWorkspace(existing, true, null);
+      }
+    }
+
+    await assertPathMissing(targetPath);
+    const branchExists = await this.gitSucceeds(main.path, [
+      "show-ref", "--verify", `refs/heads/${branchName}`
+    ]);
+    const args = branchExists
+      ? [targetPath, branchName]
+      : ["-b", branchName, targetPath, main.headOid];
+    try {
+      await this.execFile(
+        "git",
+        ["-C", main.path, "worktree", "add", ...args],
+        { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
+      );
+    } catch (error) {
+      throw new Error(safeGitError(error, "Could not create the WorkItem Worktree"));
+    }
+
+    const updated = await createGitWorkspaceSnapshot(targetPath);
+    this.store.upsertGitWorkspaceSnapshot(updated);
+    const created = resolveExisting(updated.worktrees);
+    if (!created || created.availability !== "available") {
+      throw new Error("The WorkItem Worktree was created but could not be inventoried.");
+    }
+    const sharedAgentConfiguration = await linkSharedAgentConfiguration({
+      mainPath: main.canonicalPath || main.path,
+      targetPath: created.canonicalPath || created.path,
+      commonGitDir: updated.repository.commonGitDirCanonicalPath
+    });
+    return presentEnsuredWorkItemWorkspace(created, false, sharedAgentConfiguration);
+  }
+
   async mergeWorktreeIntoMain(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
     return this.mergeWorktreeIntoMainForProject({
@@ -894,6 +966,31 @@ export class GitWorkspaceManager {
       return false;
     }
   }
+}
+
+function workItemWorkspaceSuffix(workItemId) {
+  return String(workItemId)
+    .replace(/^work[_-]?item:/i, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48) || "work";
+}
+
+function presentEnsuredWorkItemWorkspace(worktree, reused, sharedAgentConfiguration) {
+  return {
+    worktreeId: worktree.worktreeId,
+    path: worktree.canonicalPath || worktree.path,
+    branchName: worktree.branchName,
+    headOid: worktree.headOid,
+    reused,
+    sharedAgentConfiguration
+  };
+}
+
+function requiredText(value, field) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw new TypeError(`${field} is required.`);
+  return text;
 }
 
 function absolutePath(value) {

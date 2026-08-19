@@ -354,6 +354,31 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
     assert.equal(session.rawStatus.workspaceRetired.worktreeId, "worktree:feature");
     assert.equal(store.getWorkItem("work-item:retired").current_session_id, "worker-session:retired");
     assert.equal(store.assertLogicalSessionRoute("logical:retired"), true);
+
+    store.beginWorkspaceTransition({
+      transitionId: "transition:restore-retired",
+      logicalSessionId: "logical:retired",
+      targetWorktreeId: "worktree:feature",
+      sourceRoutingVersion: retired.routingVersion,
+      lastCompletedTurnId: "turn:completed",
+      strategy: "fork",
+      phase: "forking"
+    });
+    store.updateWorkspaceTransition("transition:restore-retired", {
+      phase: "validatingInstructions",
+      newThreadId: "thread:restored"
+    });
+    store.commitWorkspaceTransition("transition:restore-retired", {
+      providerThreadId: "thread:restored",
+      providerSessionId: "thread:restored",
+      providerId: "codex-app-server",
+      boundCwd: "/repo/feature worktree"
+    });
+    const restored = store.restoreLogicalSessionWorkspace("logical:retired");
+    assert.equal(restored.archived, false);
+    assert.equal(restored.activeWorkspaceId, "worktree:feature");
+    assert.equal(store.getSession("worker-session:retired").archived, false);
+    assert.equal(store.getSession("worker-session:retired").rawStatus.workspaceRetired, undefined);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

@@ -164,6 +164,10 @@ struct SessionCreateEnvelope: Codable {
     let session: TaskSession
 }
 
+struct WorkItemRestoreEnvelope: Decodable {
+    let workItem: WorkItem
+}
+
 // 后端错误响应：关联校验失败时同时返回稳定 code、field 与 expected。
 struct EntityErrorEnvelope: Codable {
     let error: String
@@ -195,6 +199,19 @@ struct EntitySessionLaunchResult {
 
     static func failure(message: String, code: String? = nil) -> Self {
         Self(session: nil, error: EntityLaunchError(message: message, code: code))
+    }
+}
+
+struct EntityWorkItemRestoreResult {
+    let workItem: WorkItem?
+    let error: EntityLaunchError?
+
+    static func success(_ workItem: WorkItem) -> Self {
+        Self(workItem: workItem, error: nil)
+    }
+
+    static func failure(message: String, code: String? = nil) -> Self {
+        Self(workItem: nil, error: EntityLaunchError(message: message, code: code))
     }
 }
 

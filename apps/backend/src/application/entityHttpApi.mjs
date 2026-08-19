@@ -29,6 +29,7 @@ export function handleEntityHttpRequest({
   skillRegistryService,
   inspectWorkItemWorktree,
   reclaimWorkItemWorktree,
+  restoreWorkItemExecution,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
   onEntityChanged
@@ -366,6 +367,10 @@ export function handleEntityHttpRequest({
             throw apiError("AGENT_OUTSIDE_OBJECTIVE", "只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。", 403);
           }
           const providerId = requiredProviderId(input);
+          const existingSession = objectiveService.store.getObjectiveChatSession(id);
+          if (existingSession) {
+            return sendJson(response, 200, { session: existingSession, created: false });
+          }
           const session = await launchObjectiveChatSession({
             agent,
             objective,
@@ -453,6 +458,19 @@ export function handleEntityHttpRequest({
         );
       }
 
+      const executionRestoreMatch = path.match(/^\/work-items\/([^/]+)\/actions\/restore$/);
+      if (request.method === "POST" && executionRestoreMatch) {
+        if (typeof restoreWorkItemExecution !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem recovery is unavailable.", 503);
+        }
+        const id = decodeURIComponent(executionRestoreMatch[1]);
+        const result = await restoreWorkItemExecution(id);
+        return sendJson(response, 200, {
+          ...result,
+          workItem: presentWorkItemAcceptance(result.workItem)
+        });
+      }
+
       const workItemWorktreeMatch = path.match(/^\/work-items\/([^/]+)\/worktree$/);
       if (workItemWorktreeMatch) {
         const id = decodeURIComponent(workItemWorktreeMatch[1]);
@@ -471,6 +489,18 @@ export function handleEntityHttpRequest({
         }
         const id = decodeURIComponent(reclaimWorktreeMatch[1]);
         return sendJson(response, 200, await reclaimWorkItemWorktree(id));
+      }
+
+      const acceptanceRejectionMatch = path.match(/^\/work-items\/([^/]+)\/reject-acceptance$/);
+      if (request.method === "POST" && acceptanceRejectionMatch) {
+        const id = decodeURIComponent(acceptanceRejectionMatch[1]);
+        return sendJson(
+          response,
+          200,
+          presentWorkItemAcceptance(
+            objectiveService.rejectWorkItemAcceptance(id, await readJson(request))
+          )
+        );
       }
 
       const workItemSessionsMatch = path.match(/^\/work-items\/([^/]+)\/sessions$/);

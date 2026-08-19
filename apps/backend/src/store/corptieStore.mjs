@@ -1127,6 +1127,26 @@ export class CorptieStore {
       WHERE objective_id IS NOT NULL AND TRIM(objective_id) <> ''
         AND (work_item_id IS NULL OR TRIM(work_item_id) = '')
         AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+    // Objective discussion is a one-to-one association. Preserve the oldest
+    // discussion as canonical and retain historical duplicates as ordinary,
+    // unbound chats before installing the durable uniqueness guard.
+    this.db.run(`UPDATE sessions AS duplicate
+      SET objective_id = NULL, session_kind = 'assistantChat'
+      WHERE duplicate.session_kind = 'objectiveChat'
+        AND duplicate.objective_id IS NOT NULL
+        AND TRIM(duplicate.objective_id) <> ''
+        AND EXISTS (
+          SELECT 1 FROM sessions AS canonical
+          WHERE canonical.session_kind = 'objectiveChat'
+            AND canonical.objective_id = duplicate.objective_id
+            AND (
+              canonical.created_at < duplicate.created_at
+              OR (canonical.created_at = duplicate.created_at AND canonical.id < duplicate.id)
+            )
+        )`);
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_objective_chat
+      ON sessions(objective_id)
+      WHERE session_kind = 'objectiveChat' AND objective_id IS NOT NULL`);
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
       WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
         AND EXISTS (SELECT 1 FROM agents
@@ -2681,6 +2701,39 @@ export class CorptieStore {
     return this.getLogicalSession(logicalSessionId);
   }
 
+  restoreLogicalSessionWorkspace(logicalSessionId) {
+    const logical = this.getLogicalSession(logicalSessionId);
+    if (!logical?.activeBinding || !logical.activeWorkspaceId) {
+      const error = new Error(`Logical Session ${logicalSessionId} has no active Workspace to restore.`);
+      error.code = "WORKSPACE_ROUTE_UNAVAILABLE";
+      throw error;
+    }
+    const timestamp = new Date().toISOString();
+    const session = logical.legacySessionId ? this.getSession(logical.legacySessionId) : null;
+    const rawStatus = { ...(session?.rawStatus ?? {}) };
+    delete rawStatus.workspaceRetired;
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `UPDATE logical_sessions SET archived = 0, updated_at = ? WHERE logical_session_id = ?`,
+        [timestamp, logicalSessionId]
+      );
+      if (logical.legacySessionId) {
+        this.db.run(
+          `UPDATE sessions SET archived = 0, raw_json = ?, updated_at = ? WHERE id = ?`,
+          [JSON.stringify(rawStatus), timestamp, logical.legacySessionId]
+        );
+      }
+      this.assertLogicalSessionRoute(logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getLogicalSession(logicalSessionId);
+  }
+
   // A Work Session keeps one stable product Session identity while its Provider
   // binding is replaced during a workspace transition. The WorkItem ownership
   // must therefore remain intact before and after every route commit.
@@ -2952,6 +3005,8 @@ export class CorptieStore {
       error.code = "OBJECTIVE_NOT_FOUND";
       throw error;
     }
+    const existing = this.getObjectiveChatSession(objectiveId);
+    if (existing && existing.id !== sessionId) return existing;
     this.db.run(
       "UPDATE sessions SET objective_id = ?, work_item_id = NULL, session_kind = 'objectiveChat', updated_at = ? WHERE id = ?",
       [objectiveId, createdAtFromOrNow(), sessionId]
@@ -3383,6 +3438,16 @@ export class CorptieStore {
       [objectiveId]
     );
     return rows.map((row) => this.rowToSession(row));
+  }
+
+  getObjectiveChatSession(objectiveId) {
+    const row = this.selectOne(
+      `SELECT * FROM sessions
+       WHERE objective_id = ? AND session_kind = 'objectiveChat'
+       ORDER BY created_at ASC, id ASC LIMIT 1`,
+      [objectiveId]
+    );
+    return row ? this.rowToSession(row) : null;
   }
 
   listSessionsByAgent(agentId) {

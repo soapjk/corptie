@@ -10,8 +10,9 @@ struct WorkItemStatusAdvanceDecisionTests {
         #expect(WorkItemStatusAdvanceDecision.resolve(status: "in_progress") == .advance(to: "done"))
     }
 
-    @Test func completedAndFailedWorkItemsCannotAdvance() {
-        #expect(WorkItemStatusAdvanceDecision.resolve(status: "done") == .unavailable)
+    @Test func completedWorkItemsCanBeRestoredWhileFailedItemsRemainUnavailable() {
+        #expect(WorkItemStatusAdvanceDecision.resolve(status: "done") == .restore)
+        #expect(WorkItemStatusAdvanceDecision.resolve(status: "completed") == .restore)
         #expect(WorkItemStatusAdvanceDecision.resolve(status: "failed") == .unavailable)
     }
 }

@@ -196,6 +196,37 @@ export class ObjectiveApplicationService {
     );
   }
 
+  rejectWorkItemAcceptance(id, input = {}) {
+    const current = this.getWorkItem(id);
+    if (input.rejected !== true) {
+      throw new WorkItemAcceptanceError(
+        "USER_REJECTION_REQUIRED",
+        "Rejecting an automated acceptance result requires explicit user confirmation."
+      );
+    }
+    const suggestion = completionSuggestionForWorkItem(current);
+    if (!suggestion) {
+      throw new WorkItemAcceptanceError(
+        "ACCEPTANCE_NOT_PASSED",
+        "This WorkItem does not have a current passing automated acceptance result."
+      );
+    }
+    const assessment = {
+      ...suggestion,
+      status: "rejected",
+      rejectedAt: new Date().toISOString()
+    };
+    delete assessment.recommended;
+    return this.emit(
+      "WorkItemChanged",
+      this.store.updateWorkItem(id, {
+        acceptanceAssessment: assessment,
+        status: current.status
+      }),
+      "acceptance-rejected-by-user"
+    );
+  }
+
   recordAcceptanceAssessment(id, input = {}) {
     const workItem = this.getWorkItem(id);
     const sourceSessionId = String(input.sourceSessionId ?? "").trim();

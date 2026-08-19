@@ -52,6 +52,7 @@ import {
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
+import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -216,6 +217,7 @@ const stateSyncClients = new Set();
 let stateSyncConsistencyTimer = null;
 let stateSyncPublishedRevision = 0;
 let stateSyncService = null;
+let workItemExecutionOrchestrator = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -750,6 +752,31 @@ const projectApplicationService = new ProjectApplicationService({
   inspectDevelopmentService: (project) => projectToolsetStatusForPath(project.mainPath),
   performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
   performWorkspaceAction: performProjectWorkspaceAction
+});
+workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
+  getWorkItem: (workItemId) => store.getWorkItem(workItemId),
+  getSession: (sessionId) => store.getSession(sessionId),
+  getSessionRoute: (sessionId) => store.getLogicalSessionByLegacySessionId(sessionId),
+  ensureWorkspace: ensureWorkItemWorkspace,
+  switchWorkspace: (sessionId, worktreeId) => sessionWorktrees.switchWorkspace(
+    sessionId,
+    worktreeId,
+    "Resume the bound WorkItem in its restored Worktree."
+  ),
+  restoreSessionRoute: (sessionId) => {
+    const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+    if (!logical) {
+      const error = new Error("The bound Session has no logical Workspace route.");
+      error.code = "WORK_ITEM_SESSION_ROUTE_REQUIRED";
+      throw error;
+    }
+    return store.restoreLogicalSessionWorkspace(logical.logicalSessionId);
+  },
+  resumeSession: (sessionId) => sessionApplicationService.resumeSession(sessionId, {
+    source: "work-item-restore"
+  }),
+  updateWorkItem: (workItemId, patch) => store.updateWorkItem(workItemId, patch),
+  onChanged: (type, payload) => emitEvent(type, payload)
 });
 const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
   store,
@@ -3330,9 +3357,15 @@ async function launchWorkItemSession({ agent, workItem, providerId: requestedPro
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
+  const previousSession = workItem.current_session_id
+    ? store.getSession(workItem.current_session_id)
+    : null;
+  const preparedWorkspace = typeof workingDirectory === "string" && workingDirectory.trim()
+    ? null
+    : await workItemExecutionOrchestrator.prepareWorkspace(workItem, previousSession);
   const cwd = typeof workingDirectory === "string" && workingDirectory.trim()
     ? resolve(workingDirectory.trim())
-    : store.resolveWorkspacePath(workItem.main_workspace_id);
+    : preparedWorkspace?.path;
   if (!cwd) {
     const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
     error.code = "WORKSPACE_REQUIRED";
@@ -5289,6 +5322,61 @@ function completedWorkItemStatus(status) {
   return ["done", "complete", "completed"].includes(String(status ?? ""));
 }
 
+async function ensureWorkItemWorkspace({ workItem, session = null }) {
+  const repositoryId = typeof workItem?.main_workspace_id === "string"
+    ? workItem.main_workspace_id.trim()
+    : "";
+  if (!repositoryId) {
+    const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
+    error.code = "WORKSPACE_REQUIRED";
+    error.statusCode = 409;
+    throw error;
+  }
+  const project = await projectApplicationService.requireProject(repositoryId);
+  const inspection = await gitWorkspaces.projectStatusForPath(project.mainPath, repositoryId);
+  const route = session?.id ? store.getLogicalSessionByLegacySessionId(session.id) : null;
+  const previous = route?.activeWorkspaceId
+    ? inspection.worktrees.find((candidate) => candidate.worktreeId === route.activeWorkspaceId)
+    : null;
+  if (previous?.availability === "available" && previous.isMain !== true) {
+    return {
+      worktreeId: previous.worktreeId,
+      path: previous.canonicalPath || previous.path,
+      branchName: previous.branchName,
+      headOid: previous.headOid,
+      reused: true,
+      requiresSessionTransition: false
+    };
+  }
+  if (previous && previous.isMain !== true && route?.logicalSessionId) {
+    try {
+      const rebuilt = await gitWorkspaces.restoreMissingWorktree({
+        logicalSessionId: route.logicalSessionId
+      });
+      return {
+        worktreeId: rebuilt.restored.worktreeId,
+        path: rebuilt.restored.canonicalPath || rebuilt.restored.path,
+        branchName: rebuilt.restored.branchName,
+        headOid: rebuilt.restored.headOid,
+        reused: false,
+        rebuilt: true,
+        requiresSessionTransition: true
+      };
+    } catch (error) {
+      if (!String(error?.message ?? "").includes("no longer exists")) throw error;
+    }
+  }
+  const workspace = await gitWorkspaces.ensureWorkItemWorktreeForProject({
+    repositoryId,
+    workingDirectory: project.mainPath,
+    workItemId: workItem.id
+  });
+  return {
+    ...workspace,
+    requiresSessionTransition: Boolean(session)
+  };
+}
+
 async function inspectWorkItemWorktree(workItemId) {
   const workItem = store.getWorkItem(workItemId);
   if (!workItem) {
@@ -5820,6 +5908,7 @@ function route(request, response) {
     skillRegistryService,
     inspectWorkItemWorktree,
     reclaimWorkItemWorktree,
+    restoreWorkItemExecution: (workItemId) => workItemExecutionOrchestrator.restore(workItemId),
     resolveAgentAvailability: (agent) => {
       return { status: "available", reason: null };
     },

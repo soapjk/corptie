@@ -35,6 +35,28 @@ test("objectiveChat is a distinct persisted Session kind bound to an Objective w
   }
 });
 
+test("an Objective keeps only its first bound Objective Chat Session", async () => {
+  const { directory, store, objectiveService } = await fixture();
+  try {
+    const objective = objectiveService.createObjective({ name: "Unique Objective Chat" });
+    store.createSession({ id: "first-chat", title: "First", sessionKind: "assistantChat" });
+    store.createSession({ id: "second-chat", title: "Second", sessionKind: "assistantChat" });
+
+    const first = store.bindSessionToObjective("first-chat", objective.id);
+    const reused = store.bindSessionToObjective("second-chat", objective.id);
+
+    assert.equal(reused.id, first.id);
+    assert.equal(store.getSession("second-chat").objectiveId, null);
+    assert.deepEqual(
+      store.listSessionsByObjective(objective.id).filter((session) => session.sessionKind === "objectiveChat").map((session) => session.id),
+      ["first-chat"]
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Objective Chat context is bounded and includes traceable Objective state", async () => {
   const { directory, store, objectiveService } = await fixture();
   try {
