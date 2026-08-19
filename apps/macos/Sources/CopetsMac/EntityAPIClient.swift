@@ -213,6 +213,32 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: WorkItem.self)
     }
 
+    func restoreWorkItemExecution(workItemId: String) async -> EntityWorkItemRestoreResult {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItemId)/actions/restore")
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                let message = envelope?.error ?? L10n("Unable to restore WorkItem execution")
+                errorMessage = message
+                return .failure(message: message, code: envelope?.code)
+            }
+            let restored = try decoder.decode(WorkItemRestoreEnvelope.self, from: data).workItem
+            errorMessage = nil
+            return .success(restored)
+        } catch {
+            let message = error.localizedDescription
+            errorMessage = message
+            return .failure(message: message)
+        }
+    }
+
     func worktreeStatus(workItemId: String) async -> WorkItemWorktreeStatus? {
         do {
             let url = baseURL.appending(path: "work-items/\(workItemId)/worktree")

@@ -5,6 +5,16 @@ import SwiftUI
 //
 // 左栏使用原生 Objective Sidebar；中栏平铺 WorkItem 看板；右栏是独立的详情卡片。
 
+enum WarRoomObjectiveScope {
+    static let allSelectionId = "war-room:all-objectives"
+
+    static func restoredSelection(savedId: String?, objectives: [Objective]) -> String {
+        if savedId == allSelectionId { return allSelectionId }
+        if let savedId, objectives.contains(where: { $0.id == savedId }) { return savedId }
+        return allSelectionId
+    }
+}
+
 struct WarRoomView: View {
     @StateObject private var client = EntityAPIClient.shared
     @StateObject private var backendClient = BackendClient.shared
@@ -13,7 +23,6 @@ struct WarRoomView: View {
     @State private var selectedWorkItemId: String?
     @State private var workItems: [WorkItem] = []
     @State private var workItemsReloadToken = 0
-    @State private var objectiveExpanded = true
     @State private var isCreatingObjective = false
     @State private var objectivePendingEdit: Objective?
     /// 记录用户最后选中的 Objective，跨窗口/重启恢复，避免有 Objective 时看板空白。
@@ -51,7 +60,11 @@ struct WarRoomView: View {
         }
         .task(id: selectedObjectiveId) {
             // 选中目标变化时拉取其工作项（三栏共享同一份 workItems）
-            if let objectiveId = selectedObjectiveId,
+            if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId {
+                if let loaded = await client.allWorkItems() {
+                    workItems = loaded
+                }
+            } else if let objectiveId = selectedObjectiveId,
                let objective = client.objectives.first(where: { $0.id == objectiveId }) {
                 if let loaded = await client.workItems(for: objective) {
                     workItems = loaded
@@ -64,7 +77,11 @@ struct WarRoomView: View {
         .task(id: workItemsReloadToken) {
             // 执行/换 Agent/保存后强制重新拉取，看板列与「当前执行」才能反映真实状态。
             guard workItemsReloadToken != 0 else { return }
-            if let objectiveId = selectedObjectiveId,
+            if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId {
+                if let loaded = await client.allWorkItems() {
+                    workItems = loaded
+                }
+            } else if let objectiveId = selectedObjectiveId,
                let objective = client.objectives.first(where: { $0.id == objectiveId }) {
                 if let loaded = await client.workItems(for: objective) {
                     workItems = loaded
@@ -72,7 +89,7 @@ struct WarRoomView: View {
             }
         }
         .onChange(of: client.objectives) { _, objectives in
-            // 优先恢复上次选中的 Objective；否则回退到第一个。
+            // 优先恢复仍存在的 Objective；已删除或无记录时回到“全部”。
             restoreSelectionIfNeeded(objectives)
         }
         .onChange(of: selectedObjectiveId) { _, newValue in
@@ -141,31 +158,40 @@ struct WarRoomView: View {
 
     private var objectiveSidebar: some View {
         List(selection: $selectedObjectiveId) {
-            Section {
-                DisclosureGroup(isExpanded: $objectiveExpanded) {
-                    if client.isLoading && client.objectives.isEmpty {
-                        ProgressView()
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    } else if client.objectives.isEmpty {
-                        sidebarEmptyState(L10n("No Objectives"))
-                    } else {
-                        ForEach(client.objectives) { objective in
-                            Label(objective.name, systemImage: "target")
-                                .tag(objective.id)
-                                .contextMenu {
-                                    Button(L10n("编辑")) {
-                                        objectivePendingEdit = objective
-                                    }
-                                }
+            Label(L10n("All"), systemImage: "square.grid.2x2")
+                .tag(WarRoomObjectiveScope.allSelectionId)
+
+            if client.isLoading && client.objectives.isEmpty {
+                ProgressView()
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else if client.objectives.isEmpty {
+                sidebarEmptyState(L10n("No Objectives"))
+            } else {
+                ForEach(client.objectives) { objective in
+                    Label(objective.name, systemImage: "target")
+                        .tag(objective.id)
+                        .contextMenu {
+                            Button(L10n("编辑")) {
+                                objectivePendingEdit = objective
+                            }
                         }
-                    }
-                } label: {
-                    sidebarSectionHeader("Objective", systemImage: "target", action: { isCreatingObjective = true })
                 }
             }
         }
         .listStyle(.sidebar)
-        .overlay(alignment: .bottom) {
+        .safeAreaInset(edge: .bottom) {
+            Button {
+                isCreatingObjective = true
+            } label: {
+                Label(L10n("New Objective"), systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(.regularMaterial)
+        }
+        .overlay(alignment: .top) {
             if let error = client.objectivesLoadError {
                 if backendClient.isOnline {
                     Text(error)
@@ -187,20 +213,7 @@ struct WarRoomView: View {
         }
     }
 
-    // 展开区 header：名称 + 右侧加号
-    private func sidebarSectionHeader(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        HStack {
-            Label(title, systemImage: systemImage)
-            Spacer()
-            Button(action: action) {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(.borderless)
-            .help(L10nFormat("New %@", title))
-        }
-    }
-
-    // 空状态：仅提示文字（header 已有常驻加号）
+    // 空状态：新建入口常驻在 Sidebar 底部。
     private func sidebarEmptyState(_ text: String) -> some View {
         Text(text)
             .font(.callout)
@@ -213,7 +226,8 @@ struct WarRoomView: View {
     @ViewBuilder
     private var warRoomContent: some View {
         if let error = client.workItemsLoadError,
-           client.objectives.contains(where: { $0.id == selectedObjectiveId }) {
+           (selectedObjectiveId == WarRoomObjectiveScope.allSelectionId
+            || client.objectives.contains(where: { $0.id == selectedObjectiveId })) {
             ContentUnavailableView {
                 Label(L10n("WorkItem 加载失败"), systemImage: "exclamationmark.triangle")
             } description: {
@@ -223,18 +237,25 @@ struct WarRoomView: View {
                     workItemsReloadToken &+= 1
                 }
             }
+        } else if client.objectives.isEmpty {
+            ContentUnavailableView(
+                L10n("No Objectives"),
+                systemImage: "target",
+                description: Text(L10n("通过助手对话或快捷输入创建第一个目标"))
+            )
+        } else if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId {
+            WorkItemBoardView(
+                objective: nil,
+                items: workItems,
+                selectedWorkItemId: $selectedWorkItemId,
+                onRequestReload: { workItemsReloadToken &+= 1 }
+            )
         } else if let objective = client.objectives.first(where: { $0.id == selectedObjectiveId }) {
             WorkItemBoardView(
                 objective: objective,
                 items: workItems,
                 selectedWorkItemId: $selectedWorkItemId,
                 onRequestReload: { workItemsReloadToken &+= 1 }
-            )
-        } else if client.objectives.isEmpty {
-            ContentUnavailableView(
-                L10n("No Objectives"),
-                systemImage: "target",
-                description: Text(L10n("通过助手对话或快捷输入创建第一个目标"))
             )
         } else {
             ContentUnavailableView(L10n("选择目标"), systemImage: "sidebar.left")
@@ -246,10 +267,11 @@ struct WarRoomView: View {
     @ViewBuilder
     private var workItemDetail: some View {
         if let workItem = workItems.first(where: { $0.id == selectedWorkItemId }) {
+            let owningObjective = client.objectives.first(where: { $0.id == workItem.objectiveId })
             WorkItemDetailView(
                 workItem: workItem,
-                workspaceIds: client.objectives.first(where: { $0.id == selectedObjectiveId })?.workspaceIds ?? [],
-                contributorAgentIds: client.objectives.first(where: { $0.id == selectedObjectiveId })?.contributorAgentIds ?? [],
+                workspaceIds: owningObjective?.workspaceIds ?? [],
+                contributorAgentIds: owningObjective?.contributorAgentIds ?? [],
                 onRequestReload: { workItemsReloadToken &+= 1 }
             )
         } else {
@@ -260,13 +282,22 @@ struct WarRoomView: View {
     // MARK: - 上次选中 Objective 的持久化
 
     private func restoreSelectionIfNeeded(_ objectives: [Objective]) {
-        guard selectedObjectiveId == nil, !objectives.isEmpty else { return }
-        let lastId = Self.restoredObjectiveId()
-        if let last = objectives.first(where: { $0.id == lastId }) {
-            selectedObjectiveId = last.id
-        } else if let first = objectives.first {
-            selectedObjectiveId = first.id
+        if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId { return }
+        if let selectedObjectiveId,
+           objectives.contains(where: { $0.id == selectedObjectiveId }) {
+            return
         }
+        let savedId = Self.restoredObjectiveId()
+        // 初次进入时快照可能尚未返回；先保留 Objective 选择，避免把它过早覆盖为“全部”。
+        if objectives.isEmpty,
+           let savedId,
+           savedId != WarRoomObjectiveScope.allSelectionId {
+            return
+        }
+        selectedObjectiveId = WarRoomObjectiveScope.restoredSelection(
+            savedId: savedId,
+            objectives: objectives
+        )
     }
 
     private static func recordObjectiveId(_ id: String) {
@@ -336,11 +367,74 @@ enum WorkItemAcceptancePresentationDecision {
     }
 }
 
+enum WorkItemBoundSessionActivity: Equatable {
+    case noSession
+    case processing
+    case waitingForInput
+    case idle
+    case paused
+    case interrupted
+    case failed
+    case unknown
+
+    static func resolve(workItem: WorkItem, sessions: [TaskSession]) -> Self {
+        guard let currentSessionId = workItem.currentSessionId,
+              !currentSessionId.isEmpty else { return .noSession }
+        let boundSession = sessions.first(where: { $0.id == currentSessionId })
+            ?? sessions
+                .filter { $0.workItemId == workItem.id }
+                .max(by: { $0.updatedAt < $1.updatedAt })
+
+        if let status = boundSession?.status {
+            switch status {
+            case .running: return .processing
+            case .blocked: return .waitingForInput
+            case .complete: return .idle
+            case .cancelled: return .interrupted
+            case .failed: return .failed
+            }
+        }
+
+        switch workItem.executionStatus {
+        case "running": return .processing
+        case "blocked": return .waitingForInput
+        case "idle", "completed": return .idle
+        case "paused": return .paused
+        case "cancelled", "canceled": return .interrupted
+        case "failed": return .failed
+        default: return .unknown
+        }
+    }
+
+    @MainActor var label: String {
+        switch self {
+        case .noSession: L10n("No Session")
+        case .processing: L10n("Processing")
+        case .waitingForInput: L10n("Waiting for Input")
+        case .idle: L10n("Idle")
+        case .paused: L10n("Paused")
+        case .interrupted: L10n("Interrupted")
+        case .failed: L10n("Failed")
+        case .unknown: L10n("Unknown")
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .processing: CorptiePalette.connected
+        case .waitingForInput, .paused: .orange
+        case .idle: .blue
+        case .interrupted, .failed: .red
+        case .noSession, .unknown: .secondary
+        }
+    }
+}
+
 struct WorkItemBoardView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
-    let objective: Objective
+    let objective: Objective?
     let items: [WorkItem]
     @Binding var selectedWorkItemId: String?
     var onRequestReload: () -> Void = {}
@@ -352,18 +446,20 @@ struct WorkItemBoardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(objective.name)
+                Text(objective?.name ?? L10n("All"))
                     .font(.title3.bold())
                 Spacer()
-                Button {
-                    openOrCreateObjectiveDiscussion()
-                } label: {
-                    Label(L10n("讨论"), systemImage: "bubble.left.and.bubble.right")
-                }
-                Button {
-                    isCreating = true
-                } label: {
-                    Label(L10n("新建工作项"), systemImage: "plus")
+                if objective != nil {
+                    Button {
+                        openOrCreateObjectiveDiscussion()
+                    } label: {
+                        Label(L10n("讨论"), systemImage: "bubble.left.and.bubble.right")
+                    }
+                    Button {
+                        isCreating = true
+                    } label: {
+                        Label(L10n("新建工作项"), systemImage: "plus")
+                    }
                 }
             }
             HStack(alignment: .top, spacing: 12) {
@@ -371,6 +467,7 @@ struct WorkItemBoardView: View {
                     WorkItemColumnView(
                         column: column,
                         items: boardItems.filter { WorkItemColumn.column(for: $0.status) == column },
+                        sessions: backendClient.sessions,
                         selectedWorkItemId: $selectedWorkItemId,
                         isCollapsed: Binding(
                             get: { collapsedColumns.contains(column) },
@@ -387,19 +484,24 @@ struct WorkItemBoardView: View {
         .onAppear { boardItems = items }
         .onChange(of: items) { _, newValue in boardItems = newValue }
         .sheet(isPresented: $isCreating) {
-            WorkItemCreateView(objectiveId: objective.id, workspaceIds: objective.workspaceIds) { created in
-                boardItems.append(created)
-                onRequestReload()
+            if let objective {
+                WorkItemCreateView(objectiveId: objective.id, workspaceIds: objective.workspaceIds) { created in
+                    boardItems.append(created)
+                    onRequestReload()
+                }
             }
         }
         .sheet(isPresented: $isCreatingObjectiveChat) {
-            NewSessionCreationSheet(fixedObjective: objective) { session in
-                router.openSession(session.id)
+            if let objective {
+                NewSessionCreationSheet(fixedObjective: objective) { session in
+                    router.openSession(session.id)
+                }
             }
         }
     }
 
     private func openOrCreateObjectiveDiscussion() {
+        guard let objective else { return }
         switch ObjectiveDiscussionRouteDecision.resolve(
             objectiveId: objective.id,
             sessions: backendClient.sessions
@@ -417,6 +519,7 @@ struct WorkItemBoardView: View {
 struct WorkItemColumnView: View {
     let column: WorkItemColumn
     let items: [WorkItem]
+    let sessions: [TaskSession]
     @Binding var selectedWorkItemId: String?
     @Binding var isCollapsed: Bool
 
@@ -453,7 +556,11 @@ struct WorkItemColumnView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            WorkItemCard(item: item, isSelected: selectedWorkItemId == item.id)
+                            WorkItemCard(
+                                item: item,
+                                sessions: sessions,
+                                isSelected: selectedWorkItemId == item.id
+                            )
                                 .onTapGesture { selectedWorkItemId = item.id }
 
                             if index < items.count - 1 {
@@ -474,6 +581,7 @@ struct WorkItemColumnView: View {
 
 struct WorkItemCard: View {
     let item: WorkItem
+    let sessions: [TaskSession]
     let isSelected: Bool
 
     var body: some View {
@@ -497,6 +605,18 @@ struct WorkItemCard: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        lifecycleStatusPill
+                        sessionStatusPill
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        lifecycleStatusPill
+                        sessionStatusPill
+                    }
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -504,6 +624,52 @@ struct WorkItemCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
         .contentShape(Rectangle())
+    }
+
+    private var sessionActivity: WorkItemBoundSessionActivity {
+        WorkItemBoundSessionActivity.resolve(workItem: item, sessions: sessions)
+    }
+
+    private var lifecycleLabel: String {
+        switch WorkItemColumn.column(for: item.status) {
+        case .todo: L10n("Not Started")
+        case .inProgress: L10n("In Progress")
+        case .done: L10n("Completed")
+        }
+    }
+
+    private var lifecycleColor: Color {
+        switch WorkItemColumn.column(for: item.status) {
+        case .todo: .secondary
+        case .inProgress: .orange
+        case .done: .green
+        }
+    }
+
+    private var lifecycleStatusPill: some View {
+        statusPill(lifecycleLabel, color: lifecycleColor)
+    }
+
+    private var sessionStatusPill: some View {
+        statusPill(
+            L10nFormat("Session: %@", sessionActivity.label),
+            color: sessionActivity.color
+        )
+    }
+
+    private func statusPill(_ label: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .lineLimit(1)
+        }
+        .font(.system(size: 9.5, weight: .medium))
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.1), in: Capsule())
     }
 }
 
@@ -583,6 +749,7 @@ enum WorkItemExecutionStartDecision: Equatable {
 
 enum WorkItemStatusAdvanceDecision: Equatable {
     case advance(to: String)
+    case restore
     case unavailable
 
     static func resolve(status: String) -> Self {
@@ -591,6 +758,8 @@ enum WorkItemStatusAdvanceDecision: Equatable {
             .advance(to: "in_progress")
         case "in_progress", "doing", "running":
             .advance(to: "done")
+        case "done", "complete", "completed":
+            .restore
         default:
             .unavailable
         }
@@ -619,6 +788,7 @@ struct WorkItemDetailView: View {
     @State private var isLaunchingExecution = false
     @State private var pendingStatusAdvance: String?
     @State private var showStatusAdvanceConfirmation = false
+    @State private var isRestoreConfirmation = false
     @State private var isAdvancingStatus = false
     @State private var isConfirmingCompletion = false
     @State private var isRejectingAcceptance = false
@@ -744,17 +914,25 @@ struct WorkItemDetailView: View {
                 }
             )
         }
-        .alert(L10n("Advance WorkItem Status"), isPresented: $showStatusAdvanceConfirmation) {
+        .alert(
+            L10n(isRestoreConfirmation ? "Restore WorkItem" : "Advance WorkItem Status"),
+            isPresented: $showStatusAdvanceConfirmation
+        ) {
             Button(L10n("Confirm")) {
-                if let pendingStatusAdvance {
+                if isRestoreConfirmation {
+                    Task { await restoreCompletedWorkItem() }
+                } else if let pendingStatusAdvance {
                     Task { await advanceStatus(to: pendingStatusAdvance) }
                 }
             }
             Button(L10n("取消"), role: .cancel) {
                 pendingStatusAdvance = nil
+                isRestoreConfirmation = false
             }
         } message: {
-            if let pendingStatusAdvance {
+            if isRestoreConfirmation {
+                Text(L10n("Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session."))
+            } else if let pendingStatusAdvance {
                 Text(L10nFormat(
                     "Change WorkItem status from “%@” to “%@”? This manually overrides the execution-managed status.",
                     workItemStatusLabel(workItem.status),
@@ -1288,6 +1466,17 @@ struct WorkItemDetailView: View {
                 .disabled(isAdvancingStatus)
                 .help(L10nFormat("Advance status to %@", workItemStatusLabel(targetStatus)))
             }
+        case .restore:
+            Button {
+                pendingStatusAdvance = nil
+                isRestoreConfirmation = true
+                showStatusAdvanceConfirmation = true
+            } label: {
+                statusBadgeLabel(status)
+            }
+            .buttonStyle(.plain)
+            .disabled(isLaunchingExecution)
+            .help(L10n("Restore WorkItem execution"))
         case .unavailable:
             statusBadgeLabel(status)
         }
@@ -1335,6 +1524,31 @@ struct WorkItemDetailView: View {
         } else {
             executionError = EntityLaunchError(message: client.errorMessage ?? L10n("Unable to update WorkItem status"), code: nil)
         }
+    }
+
+    private func restoreCompletedWorkItem() async {
+        guard !isLaunchingExecution else { return }
+        isLaunchingExecution = true
+        defer {
+            isLaunchingExecution = false
+            isRestoreConfirmation = false
+        }
+        let result = await client.restoreWorkItemExecution(workItemId: workItem.id)
+        if result.workItem != nil {
+            await refreshExecution()
+            onRequestReload()
+            return
+        }
+        if result.error?.code == "WORK_ITEM_SESSION_REQUIRED" {
+            currentSession = nil
+            isLaunchingExecution = false
+            await startOrResumeExecution()
+            return
+        }
+        executionError = result.error ?? EntityLaunchError(
+            message: L10n("Unable to restore WorkItem execution"),
+            code: nil
+        )
     }
 
     private func metadataPill(_ text: String, systemImage: String) -> some View {

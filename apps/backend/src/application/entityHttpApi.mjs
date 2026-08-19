@@ -29,6 +29,7 @@ export function handleEntityHttpRequest({
   skillRegistryService,
   inspectWorkItemWorktree,
   reclaimWorkItemWorktree,
+  restoreWorkItemExecution,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
   onEntityChanged
@@ -455,6 +456,19 @@ export function handleEntityHttpRequest({
             objectiveService.confirmWorkItemCompletion(id, await readJson(request))
           )
         );
+      }
+
+      const executionRestoreMatch = path.match(/^\/work-items\/([^/]+)\/actions\/restore$/);
+      if (request.method === "POST" && executionRestoreMatch) {
+        if (typeof restoreWorkItemExecution !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem recovery is unavailable.", 503);
+        }
+        const id = decodeURIComponent(executionRestoreMatch[1]);
+        const result = await restoreWorkItemExecution(id);
+        return sendJson(response, 200, {
+          ...result,
+          workItem: presentWorkItemAcceptance(result.workItem)
+        });
       }
 
       const workItemWorktreeMatch = path.match(/^\/work-items\/([^/]+)\/worktree$/);

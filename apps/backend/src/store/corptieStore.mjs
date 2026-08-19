@@ -2701,6 +2701,39 @@ export class CorptieStore {
     return this.getLogicalSession(logicalSessionId);
   }
 
+  restoreLogicalSessionWorkspace(logicalSessionId) {
+    const logical = this.getLogicalSession(logicalSessionId);
+    if (!logical?.activeBinding || !logical.activeWorkspaceId) {
+      const error = new Error(`Logical Session ${logicalSessionId} has no active Workspace to restore.`);
+      error.code = "WORKSPACE_ROUTE_UNAVAILABLE";
+      throw error;
+    }
+    const timestamp = new Date().toISOString();
+    const session = logical.legacySessionId ? this.getSession(logical.legacySessionId) : null;
+    const rawStatus = { ...(session?.rawStatus ?? {}) };
+    delete rawStatus.workspaceRetired;
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `UPDATE logical_sessions SET archived = 0, updated_at = ? WHERE logical_session_id = ?`,
+        [timestamp, logicalSessionId]
+      );
+      if (logical.legacySessionId) {
+        this.db.run(
+          `UPDATE sessions SET archived = 0, raw_json = ?, updated_at = ? WHERE id = ?`,
+          [JSON.stringify(rawStatus), timestamp, logical.legacySessionId]
+        );
+      }
+      this.assertLogicalSessionRoute(logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getLogicalSession(logicalSessionId);
+  }
+
   // A Work Session keeps one stable product Session identity while its Provider
   // binding is replaced during a workspace transition. The WorkItem ownership
   // must therefore remain intact before and after every route commit.

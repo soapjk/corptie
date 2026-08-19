@@ -81,6 +81,7 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     launchObjectiveChatSession: services.launchObjectiveChatSession,
     inspectWorkItemWorktree: services.inspectWorkItemWorktree,
     reclaimWorkItemWorktree: services.reclaimWorkItemWorktree,
+    restoreWorkItemExecution: services.restoreWorkItemExecution,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     onEntityChanged: services.onEntityChanged
@@ -130,6 +131,47 @@ test("WorkItem Worktree endpoints inspect and reclaim through the project servic
       ["inspect", "work-item:one"],
       ["reclaim", "work-item:one"]
     ]);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem restore endpoint delegates the atomic execution recovery flow", async () => {
+  const services = await createServices();
+  try {
+    const workItem = services.objectiveService.createWorkItem({
+      objectiveId: services.objectiveService.createObjective({
+        name: "Recovery objective",
+        idealState: "Recovered"
+      }).id,
+      title: "Recover me",
+      status: "todo"
+    });
+    services.store.updateWorkItem(workItem.id, { status: "done" });
+    const calls = [];
+    const restored = await callApi({
+      method: "POST",
+      pathname: `/work-items/${encodeURIComponent(workItem.id)}/actions/restore`,
+      restoreWorkItemExecution: async (workItemId) => {
+        calls.push(workItemId);
+        return {
+          workItem: services.store.updateWorkItem(workItemId, {
+            status: "in_progress",
+            executionStatus: "idle"
+          }),
+          session: { id: "session:one" },
+          workspace: { worktreeId: "worktree:one", reused: true },
+          transition: null
+        };
+      },
+      ...services
+    });
+
+    assert.equal(restored.statusCode, 200);
+    assert.equal(restored.body.workItem.status, "in_progress");
+    assert.equal(restored.body.workspace.reused, true);
+    assert.deepEqual(calls, [workItem.id]);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
