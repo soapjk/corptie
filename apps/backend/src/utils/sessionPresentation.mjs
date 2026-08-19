@@ -2,6 +2,12 @@ export function mergeStoredSessionPresentation(session, stored) {
   if (!stored) {
     return session;
   }
+  const liveProvider = nonEmptyText(session.external?.provider);
+  const storedProvider = nonEmptyText(stored.external?.provider);
+  const liveProviderSessionId = providerSessionId(session);
+  const storedProviderSessionId = providerSessionId(stored);
+  const runtimeConfigurationMatches = (!liveProvider || !storedProvider || liveProvider === storedProvider)
+    && (!liveProviderSessionId || !storedProviderSessionId || liveProviderSessionId === storedProviderSessionId);
   return {
     ...session,
     title: nonEmptyText(stored.title) || session.title,
@@ -16,14 +22,24 @@ export function mergeStoredSessionPresentation(session, stored) {
     external: {
       ...(session.external ?? {}),
       cwd: nonEmptyText(stored.external?.cwd) || session.external?.cwd,
-      sandbox: stored.external?.sandbox ?? session.external?.sandbox,
-      approvalPolicy: stored.external?.approvalPolicy ?? session.external?.approvalPolicy,
-      currentModel: nonEmptyText(stored.external?.currentModel) || session.external?.currentModel || null,
-      currentReasoningLevel: nonEmptyText(stored.external?.currentReasoningLevel)
-        || session.external?.currentReasoningLevel
-        || null
+      sandbox: runtimeConfigurationMatches
+        ? (session.external?.sandbox ?? stored.external?.sandbox)
+        : session.external?.sandbox,
+      approvalPolicy: runtimeConfigurationMatches
+        ? (session.external?.approvalPolicy ?? stored.external?.approvalPolicy)
+        : session.external?.approvalPolicy,
+      currentModel: runtimeConfigurationMatches
+        ? (nonEmptyText(session.external?.currentModel) || stored.external?.currentModel || null)
+        : (session.external?.currentModel || null),
+      currentReasoningLevel: runtimeConfigurationMatches
+        ? (nonEmptyText(session.external?.currentReasoningLevel) || stored.external?.currentReasoningLevel || null)
+        : (session.external?.currentReasoningLevel || null)
     }
   };
+}
+
+function providerSessionId(session) {
+  return nonEmptyText(session?.external?.sessionId) || nonEmptyText(session?.external?.threadId);
 }
 
 export function preferredSessionTitle(summary, detail) {
