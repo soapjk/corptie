@@ -1136,6 +1136,11 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let status: String?
     let createdAt: String?
     var rawMetadataJSON: String? = nil
+    /// Presentation-only lifecycle bounds derived from the complete turn.
+    /// Process cards contain only execution items, so their own timestamps are
+    /// insufficient to measure a single-step turn accurately.
+    var processStartedAt: String? = nil
+    var processEndedAt: String? = nil
     var userMessageStatus: String? = nil
     var queuePosition: Int? = nil
     var processingError: String? = nil

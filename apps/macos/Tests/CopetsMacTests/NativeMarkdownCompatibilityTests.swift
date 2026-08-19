@@ -82,6 +82,43 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertEqual(projectedProcessState(for: processItems), .running)
     }
 
+    func testExecutionDurationUsesTheCompleteTurnInsteadOfOnlyProcessItems() {
+        let user = item(
+            id: "user",
+            type: "userMessage",
+            text: "run tests",
+            createdAt: "2026-08-12T03:55:40.000Z"
+        )
+        let command = item(
+            id: "command",
+            type: "commandExecution",
+            text: "swift test",
+            createdAt: "2026-08-12T03:55:44.000Z"
+        )
+        var final = item(
+            id: "final",
+            type: "agentMessage",
+            text: "Done",
+            createdAt: "2026-08-12T03:55:52.000Z"
+        )
+        final.presentationRole = "final_answer"
+
+        let entries = makeChatDisplayEntriesForTurn([user, command, final])
+        guard case .process(_, let processItems) = entries[1].kind else {
+            return XCTFail("Expected an execution process")
+        }
+
+        XCTAssertEqual(processItems.first?.processStartedAt, user.createdAt)
+        XCTAssertEqual(processItems.first?.processEndedAt, final.createdAt)
+        XCTAssertEqual(executionProcessDurationText(for: processItems), "12s")
+    }
+
+    func testSingleTimestampDoesNotInventSubsecondExecutionDuration() {
+        let command = item(id: "command", type: "commandExecution", text: "swift test")
+
+        XCTAssertNil(executionProcessDurationText(for: [command]))
+    }
+
     @MainActor
     func testExpandedExecutionRawStatusUsesLatestProviderItem() {
         var first = item(id: "command", type: "commandExecution", text: "$ npm test")
@@ -144,7 +181,8 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         id: String,
         type: String,
         text: String,
-        turnStatus: String = "complete"
+        turnStatus: String = "complete",
+        createdAt: String = "2026-08-12T03:55:44.520Z"
     ) -> CodexThreadItem {
         CodexThreadItem(
             id: id,
@@ -155,7 +193,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             text: text,
             options: nil,
             status: nil,
-            createdAt: "2026-08-12T03:55:44.520Z"
+            createdAt: createdAt
         )
     }
 }

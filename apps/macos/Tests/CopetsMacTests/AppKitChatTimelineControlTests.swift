@@ -116,6 +116,67 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
     }
 
+    func testRunningExecutionSummaryIncludesElapsedDurationWhenAvailable() throws {
+        let harness = makeHarness(followsLatest: true)
+        let process = AppKitChatTimelineRow(
+            id: "running-process",
+            contentRevision: 0,
+            nativeText: "",
+            copyText: "command",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "turn",
+            isExpanded: false,
+            processCount: 2,
+            processDuration: "1m 12s",
+            processState: .running
+        )
+        harness.coordinator.apply(rows: [process])
+
+        let cell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        let processButton = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
+
+        XCTAssertTrue(processButton.attributedTitle.string.contains("Working for 1m 12s"))
+        XCTAssertTrue(processButton.attributedTitle.string.contains("2 steps"))
+    }
+
+    func testTerminalExecutionSummariesKeepElapsedDurationAcrossOutcomes() {
+        let failed = AppKitChatTimelineRow(
+            id: "failed",
+            contentRevision: 0,
+            nativeText: "",
+            copyText: "",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "failed-turn",
+            isExpanded: false,
+            processCount: 1,
+            processDuration: "17s",
+            processState: .failed
+        )
+        let cancelled = AppKitChatTimelineRow(
+            id: "cancelled",
+            contentRevision: 0,
+            nativeText: "",
+            copyText: "",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "cancelled-turn",
+            isExpanded: false,
+            processCount: 3,
+            processDuration: "1m 4s",
+            processState: .cancelled
+        )
+
+        XCTAssertEqual(failed.processSummary, "Execution failed after 17s · 1 step")
+        XCTAssertEqual(cancelled.processSummary, "Execution stopped after 1m 4s · 3 steps")
+    }
+
     func testExpandedExecutionPlacesSummaryBeforeStepDetails() throws {
         let harness = makeHarness(followsLatest: true)
         let process = AppKitChatTimelineRow(
@@ -144,7 +205,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let summary = try XCTUnwrap(button(in: cell, identifier: "chat.timeline.process"))
         let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
 
-        XCTAssertTrue(summary.attributedTitle.string.contains("Working…"))
+        XCTAssertTrue(summary.attributedTitle.string.contains("Working for 4.2s"))
         XCTAssertGreaterThan(summary.frame.minY, body.frame.maxY)
         XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 54)
     }

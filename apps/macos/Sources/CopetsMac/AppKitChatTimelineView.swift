@@ -547,6 +547,9 @@ struct AppKitChatTimelineRow: Identifiable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         switch processState {
         case .running:
+            if let normalizedDuration, !normalizedDuration.isEmpty {
+                return "Working for \(normalizedDuration) · \(steps)"
+            }
             return "Working… · \(steps)"
         case .completed:
             if let normalizedDuration, !normalizedDuration.isEmpty {
@@ -554,8 +557,14 @@ struct AppKitChatTimelineRow: Identifiable {
             }
             return "Completed · \(steps)"
         case .failed:
+            if let normalizedDuration, !normalizedDuration.isEmpty {
+                return "Execution failed after \(normalizedDuration) · \(steps)"
+            }
             return "Execution failed · \(steps)"
         case .cancelled:
+            if let normalizedDuration, !normalizedDuration.isEmpty {
+                return "Execution stopped after \(normalizedDuration) · \(steps)"
+            }
             return "Execution stopped · \(steps)"
         }
     }

@@ -267,8 +267,13 @@ struct SessionsView: View {
                     ForEach(groupedSessions) { group in
                         Section {
                             if !collapsedGroupKeys.contains(group.key) {
-                                ForEach(group.rows) { row in
-                                    sessionRow(row)
+                                ForEach(group.subgroups) { subgroup in
+                                    if let title = subgroup.title {
+                                        sessionSubgroupHeader(title, count: subgroup.rows.count)
+                                    }
+                                    ForEach(subgroup.rows) { row in
+                                        sessionRow(row)
+                                    }
                                 }
                             }
                         } header: {
@@ -411,6 +416,22 @@ struct SessionsView: View {
         .buttonStyle(.plain)
     }
 
+    private func sessionSubgroupHeader(_ title: String, count: Int) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+            Spacer()
+            Text("\(count)")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.quaternary)
+        }
+        .padding(.leading, 18)
+        .padding(.top, 2)
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+    }
+
     // MARK: - 会话分组
 
     /// 一级分类依据 provider-neutral sessionKind；Worker 子分类依据关联 WorkItem 的业务状态。
@@ -419,6 +440,7 @@ struct SessionsView: View {
             rows: searchFilteredRows,
             agents: entityClient.agents,
             workItems: entityClient.workItems,
+            objectives: entityClient.objectives,
             category: selectedCategory
         )
     }
@@ -477,12 +499,33 @@ func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [
     return sessions.first { $0.id == pendingSessionId }
 }
 
-struct SessionGroup: Identifiable {
+struct SessionSubgroup: Identifiable {
     let key: String
-    let title: String
+    let title: String?
     let rows: [SessionRowModel]
 
     var id: String { key }
+}
+
+struct SessionGroup: Identifiable {
+    let key: String
+    let title: String
+    let subgroups: [SessionSubgroup]
+
+    var id: String { key }
+    var rows: [SessionRowModel] { subgroups.flatMap(\.rows) }
+
+    init(key: String, title: String, rows: [SessionRowModel]) {
+        self.key = key
+        self.title = title
+        subgroups = [SessionSubgroup(key: "\(key):all", title: nil, rows: rows)]
+    }
+
+    init(key: String, title: String, subgroups: [SessionSubgroup]) {
+        self.key = key
+        self.title = title
+        self.subgroups = subgroups
+    }
 }
 
 enum SessionCategory: String, CaseIterable, Identifiable {
@@ -522,16 +565,32 @@ func makeSessionGroups(
     rows: [SessionRowModel],
     agents: [Agent],
     workItems: [WorkItem],
+    objectives: [Objective],
     category: SessionCategory
 ) -> [SessionGroup] {
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
     let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    let objectivesByID = Dictionary(uniqueKeysWithValues: objectives.map { ($0.id, $0) })
     var assistantOrder: [String] = []
     var assistantRows: [String: [SessionRowModel]] = [:]
-    var activeWorkerRows: [SessionRowModel] = []
-    var completedWorkerRows: [SessionRowModel] = []
-    var objectiveRows: [SessionRowModel] = []
+    var objectiveOrder: [String] = []
+    var objectiveTitles: [String: String] = [:]
+    var activeWorkerRows: [String: [SessionRowModel]] = [:]
+    var completedWorkerRows: [String: [SessionRowModel]] = [:]
+    var objectiveRows: [String: [SessionRowModel]] = [:]
     var legacyRows: [SessionRowModel] = []
+
+    func registerObjective(_ objectiveID: String?) -> String {
+        let trimmedID = objectiveID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedID = trimmedID.flatMap { $0.isEmpty ? nil : $0 }
+        let key = normalizedID ?? "__no_objective__"
+        if objectiveTitles[key] == nil {
+            objectiveOrder.append(key)
+            objectiveTitles[key] = normalizedID.flatMap { objectivesByID[$0]?.name }
+                ?? (normalizedID == nil ? L10n("No Objective") : L10n("Unknown Objective"))
+        }
+        return key
+    }
 
     for row in rows where SessionCategory(session: row.session) == category {
         switch row.session.resolvedSessionKind {
@@ -540,13 +599,15 @@ func makeSessionGroups(
             if assistantRows[key] == nil { assistantOrder.append(key) }
             assistantRows[key, default: []].append(row)
         case .objectiveChat:
-            objectiveRows.append(row)
+            let objectiveKey = registerObjective(row.session.objectiveId)
+            objectiveRows[objectiveKey, default: []].append(row)
         case .worker:
             let workItem = row.session.workItemId.flatMap { workItemsByID[$0] }
+            let objectiveKey = registerObjective(workItem?.objectiveId ?? row.session.objectiveId)
             if workItem.map({ WorkItemColumn.column(for: $0.status) == .done }) == true {
-                completedWorkerRows.append(row)
+                completedWorkerRows[objectiveKey, default: []].append(row)
             } else {
-                activeWorkerRows.append(row)
+                activeWorkerRows[objectiveKey, default: []].append(row)
             }
         case .legacy:
             legacyRows.append(row)
@@ -560,26 +621,39 @@ func makeSessionGroups(
             rows: assistantRows[key] ?? []
         )
     }
-    if !activeWorkerRows.isEmpty {
-        groups.append(SessionGroup(
-            key: "__worker_active__",
-            title: L10n("In Progress"),
-            rows: activeWorkerRows
-        ))
-    }
-    if !completedWorkerRows.isEmpty {
-        groups.append(SessionGroup(
-            key: "__worker_completed__",
-            title: L10n("Completed"),
-            rows: completedWorkerRows
-        ))
-    }
-    if !objectiveRows.isEmpty {
-        groups.append(SessionGroup(
-            key: "__objective__",
-            title: L10n("Objective Session"),
-            rows: objectiveRows
-        ))
+    for objectiveKey in objectiveOrder {
+        if category == .worker {
+            var subgroups: [SessionSubgroup] = []
+            if let rows = activeWorkerRows[objectiveKey], !rows.isEmpty {
+                subgroups.append(SessionSubgroup(
+                    key: "worker:\(objectiveKey):active",
+                    title: L10n("In Progress"),
+                    rows: rows
+                ))
+            }
+            if let rows = completedWorkerRows[objectiveKey], !rows.isEmpty {
+                subgroups.append(SessionSubgroup(
+                    key: "worker:\(objectiveKey):completed",
+                    title: L10n("Completed"),
+                    rows: rows
+                ))
+            }
+            if !subgroups.isEmpty {
+                groups.append(SessionGroup(
+                    key: "worker-objective:\(objectiveKey)",
+                    title: objectiveTitles[objectiveKey] ?? L10n("Unknown Objective"),
+                    subgroups: subgroups
+                ))
+            }
+        } else if category == .objective,
+                  let rows = objectiveRows[objectiveKey],
+                  !rows.isEmpty {
+            groups.append(SessionGroup(
+                key: "objective:\(objectiveKey)",
+                title: objectiveTitles[objectiveKey] ?? L10n("Unknown Objective"),
+                rows: rows
+            ))
+        }
     }
     if !legacyRows.isEmpty {
         groups.append(SessionGroup(

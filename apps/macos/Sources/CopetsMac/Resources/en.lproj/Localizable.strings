@@ -454,6 +454,8 @@
 "Not Started" = "Not Started";
 "In Progress" = "In Progress";
 "Completed" = "Completed";
+"No Objective" = "No Objective";
+"Unknown Objective" = "Unknown Objective";
 "Awaiting Completion Approval" = "Awaiting Completion Approval";
 "Assistant" = "Assistant";
 "Independent Contributor" = "Independent Contributor";
