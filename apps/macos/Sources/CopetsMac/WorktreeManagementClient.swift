@@ -43,6 +43,7 @@ final class WorktreeManagementClient: ObservableObject {
                 job = nil
             }
         } catch {
+            guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -94,6 +95,78 @@ final class WorktreeManagementClient: ObservableObject {
                 body: [:]
             )
             await self.loadRepository(repositoryId)
+        }
+    }
+
+    func prepareIndividualOperation(
+        for worktree: ManagedWorktree
+    ) async -> IndividualWorktreeOperationPreparation? {
+        guard let repositoryId = selection.repositoryId else { return nil }
+        guard worktree.dirty == true else {
+            return IndividualWorktreeOperationPreparation(commitMessage: nil, protection: nil)
+        }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let protection: ProjectWorkspaceActionEnvelope<GitCommitProtectionStatus> = try await post(
+                "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit-prepare",
+                body: [:]
+            )
+            let message: ProjectWorkspaceActionEnvelope<WorktreeCommitMessageResult> = try await post(
+                "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit-message",
+                body: [:]
+            )
+            errorMessage = nil
+            return IndividualWorktreeOperationPreparation(
+                commitMessage: message.result.commitMessage,
+                protection: protection.result
+            )
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func executeIndividualOperation(
+        worktree: ManagedWorktree,
+        mergeIntoMain: Bool,
+        synchronizeWithMain: Bool,
+        restartService: Bool,
+        commitMessage: String?,
+        privateFilesDecision: String?,
+        neverRemindPrivateFiles: Bool
+    ) async -> Bool {
+        guard let repositoryId = selection.repositoryId else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            if mergeIntoMain {
+                var body: [String: Any] = ["synchronizeSource": synchronizeWithMain]
+                if let commitMessage { body["commitMessage"] = commitMessage }
+                if let privateFilesDecision { body["privateFilesDecision"] = privateFilesDecision }
+                body["neverRemindPrivateFiles"] = neverRemindPrivateFiles
+                let _: WorktreeActionAcknowledgement = try await post(
+                    "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/merge",
+                    body: body
+                )
+            } else if synchronizeWithMain {
+                let _: WorktreeActionAcknowledgement = try await post(
+                    "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/synchronize",
+                    body: [:]
+                )
+            }
+            if restartService {
+                let _: WorktreeActionAcknowledgement = try await post(
+                    "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/restart",
+                    body: [:]
+                )
+            }
+            await loadRepository(repositoryId)
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 
@@ -174,6 +247,7 @@ final class WorktreeManagementClient: ObservableObject {
             selection.reconcile(repositories: repositories, worktrees: response.project.worktrees)
             errorMessage = nil
         } catch {
+            guard !Self.isCancellation(error) else { return }
             guard generation == detailGeneration else { return }
             detail = nil
             projectStatus = nil
@@ -221,9 +295,22 @@ final class WorktreeManagementClient: ObservableObject {
         }
         return try decoder.decode(Response.self, from: data)
     }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
+    }
 }
 
 private struct WorktreeActionAcknowledgement: Decodable {}
+
+private struct ProjectWorkspaceActionEnvelope<Result: Decodable>: Decodable {
+    let result: Result
+}
+
+private struct WorktreeCommitMessageResult: Decodable {
+    let commitMessage: String
+}
 
 private struct WorktreeManagementErrorEnvelope: Decodable {
     let error: String

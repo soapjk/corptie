@@ -63,7 +63,9 @@ export class WorktreeIntegrationJobService {
       return `${left.branchName ?? ""}\0${left.path}`.localeCompare(`${right.branchName ?? ""}\0${right.path}`);
     });
     const blockingRisks = [];
-    const items = ordered.map((worktree, ordinal) => {
+    let mergeOrdinal = 0;
+    const items = ordered.filter(requiresIntegration).map((worktree) => {
+      const ordinal = worktree.isMain ? 0 : ++mergeOrdinal;
       const risks = risksFor(worktree);
       blockingRisks.push(...risks.map((risk) => ({ worktreeId: worktree.worktreeId, ...risk })));
       const label = worktree.branchName ?? worktree.path.split("/").filter(Boolean).at(-1) ?? "Worktree";
@@ -107,16 +109,26 @@ export class WorktreeIntegrationJobService {
       items
     };
     const planFingerprint = fingerprint(plan);
-    const job = this.store.createWorktreeIntegrationJob({
+    const noWorkRequired = items.length === 0;
+    let job = this.store.createWorktreeIntegrationJob({
       repositoryId: repository.id,
       planFingerprint,
+      status: noWorkRequired ? "completed" : "awaiting_confirmation",
+      phase: noWorkRequired ? "completed" : "preflight_complete",
       details: {
         plan,
         currentWorktreeId: null,
         progress: progressFor(items),
-        audit: [{ at: new Date().toISOString(), event: "preflight_created", planFingerprint }]
+        audit: [{
+          at: new Date().toISOString(),
+          event: noWorkRequired ? "preflight_no_changes" : "preflight_created",
+          planFingerprint
+        }]
       }
     });
+    if (noWorkRequired) {
+      job = this.store.updateWorktreeIntegrationJob(job.id, { completedAt: new Date().toISOString() });
+    }
     return presentJob(job);
   }
 
@@ -150,6 +162,25 @@ export class WorktreeIntegrationJobService {
 
   get(jobId) {
     return presentJob(this.#requireJob(jobId));
+  }
+
+  cancel(jobId) {
+    const job = this.#requireJob(jobId);
+    if (!["awaiting_confirmation", "paused"].includes(job.status) || this.activeJobs.has(job.id)) {
+      throw new WorktreeIntegrationJobError(
+        "JOB_NOT_CANCELABLE",
+        "Only an inactive review or paused integration task can be canceled.",
+        409
+      );
+    }
+    return presentJob(this.#update(job, {
+      status: "canceled",
+      phase: "canceled",
+      error: null,
+      currentWorktreeId: null,
+      completedAt: new Date().toISOString(),
+      auditEvent: "plan_canceled"
+    }));
   }
 
   retry(jobId) {
@@ -357,6 +388,12 @@ function risksFor(worktree) {
   }
   if ((worktree.conflictFiles ?? []).length > 0) risks.push({ code: "UNRESOLVED_CONFLICTS", message: "Worktree has unresolved conflict files." });
   return risks;
+}
+
+function requiresIntegration(worktree) {
+  if (worktree.dirty === true) return true;
+  if (worktree.isMain) return false;
+  return worktree.mergedIntoMain !== true;
 }
 
 function progressFor(items) {
