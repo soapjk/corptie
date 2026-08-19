@@ -14,7 +14,14 @@ function providerSession(store) {
     title: "Provider switch",
     agent: "Codex",
     provider: "codex-app-server",
-    status: "complete"
+    status: "complete",
+    external: {
+      provider: "codex-app-server",
+      threadId: "thread:codex-a",
+      sessionId: "thread:codex-a",
+      currentModel: "source-provider-model",
+      currentReasoningLevel: "high"
+    }
   });
   store.createLogicalSessionRoute({
     logicalSessionId: "logical:provider-switch",
@@ -118,14 +125,34 @@ test("provider switch forks the binding, preserves workspace identity, and bumps
       instructionSources: [
         { kind: "sessionTitle", title: "Provider switch" },
         { kind: "instructionSummary", summary: "continue the work" }
-      ]
+      ],
+      sessionProjection: {
+        status: "running",
+        progress: 0.5,
+        summary: "Initializing target Provider session…",
+        external: {
+          provider: "claude-sdk",
+          threadId: "thread:claude-b",
+          sessionId: "thread:claude-b",
+          currentModel: "target-provider-model",
+          currentReasoningLevel: "medium",
+          sandbox: "target-sandbox"
+        }
+      }
     });
 
     const after = store.getLogicalSession("logical:provider-switch");
     assert.equal(after.activeBinding.providerId, "claude-sdk");
     assert.equal(after.activeThreadId, "thread:claude-b");
     assert.equal(after.routingVersion, 2);
-    assert.equal(store.getSession("codex:provider-switch").external.provider, "claude-sdk");
+    const stored = store.getSession("codex:provider-switch");
+    assert.equal(stored.external.provider, "claude-sdk");
+    assert.equal(stored.external.threadId, "thread:claude-b");
+    assert.equal(stored.external.currentModel, "target-provider-model");
+    assert.equal(stored.external.currentReasoningLevel, "medium");
+    assert.equal(stored.external.sandbox, "target-sandbox");
+    assert.equal(stored.rawStatus.currentModel, "target-provider-model");
+    assert.notEqual(stored.rawStatus.currentModel, "source-provider-model");
     // Workspace identity is preserved across a Provider switch (no worktree move).
     assert.equal(after.activeWorkspaceId, before.activeWorkspaceId);
     assert.equal(after.repositoryId, before.repositoryId);
@@ -206,7 +233,17 @@ test("provider switch coordinator preserves Session kind and rejects a stale rou
       resolveTargetContext: async () => ({ sessionKind: "assistantChat", agentId: "assistant" }),
       createTargetSession: async (input) => {
         createdInput = input;
-        return { providerThreadId: "thread:claude-coordinator" };
+        return {
+          providerThreadId: "thread:claude-coordinator",
+          sessionProjection: {
+            external: {
+              provider: "claude-sdk",
+              threadId: "thread:claude-coordinator",
+              sandbox: "target-sandbox",
+              approvalPolicy: "target-approval"
+            }
+          }
+        };
       }
     });
 
@@ -229,6 +266,10 @@ test("provider switch coordinator preserves Session kind and rejects a stale rou
     assert.equal(createdInput.sessionKind, "assistantChat");
     assert.equal(createdInput.agentId, "assistant");
     assert.equal(result.logicalSession.activeBinding.providerId, "claude-sdk");
+    assert.deepEqual(result.logicalSession.activeBinding.permissionSnapshot, {
+      sandbox: "target-sandbox",
+      approvalPolicy: "target-approval"
+    });
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

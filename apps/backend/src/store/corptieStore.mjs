@@ -2453,10 +2453,43 @@ export class CorptieStore {
           [boundCwd, timestamp, transition.logicalSessionId]
         );
       } else {
+        const targetSession = binding.sessionProjection ?? {};
+        const targetExternal = targetSession.external ?? {};
+        const routedTargetSession = {
+          ...targetSession,
+          provider: providerId,
+          command: targetSession.command ?? targetExternal.source ?? providerId,
+          args: targetSession.args ?? targetExternal.args ?? [],
+          external: {
+            ...targetExternal,
+            provider: providerId,
+            threadId: newThreadId,
+            sessionId: providerSessionId,
+            logicalSessionId: transition.logicalSessionId,
+            routingVersion: Number(logical.routing_version) + 1
+          }
+        };
+        const targetStatus = targetSession.status ?? null;
+        const targetProgress = Number.isFinite(targetSession.progress) ? targetSession.progress : null;
+        const targetSummary = targetSession.summary ?? null;
         this.db.run(
-          `UPDATE sessions SET provider = ?, updated_at = ?
+          `UPDATE sessions
+           SET provider = ?, command = ?, args_json = ?, cwd = COALESCE(?, cwd),
+               status = COALESCE(?, status), progress = COALESCE(?, progress),
+               summary = COALESCE(?, summary), raw_json = ?, updated_at = ?
            WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
-          [providerId, timestamp, transition.logicalSessionId]
+          [
+            providerId,
+            routedTargetSession.command,
+            JSON.stringify(routedTargetSession.args),
+            targetExternal.cwd ?? boundCwd ?? null,
+            targetStatus,
+            targetProgress,
+            targetSummary,
+            JSON.stringify(toRawStatus(routedTargetSession)),
+            timestamp,
+            transition.logicalSessionId
+          ]
         );
       }
       this.db.run(
@@ -5352,9 +5385,8 @@ export class CorptieStore {
     const status = row.status;
     const isCodexAppServer = row.provider === "codex-app-server";
     const publicId = row.id;
-    const threadId = isCodexAppServer
-      ? rawStatus.threadId ?? String(row.id).replace(/^codex:/, "")
-      : row.id;
+    const threadId = rawStatus.threadId
+      ?? (isCodexAppServer ? String(row.id).replace(/^codex:/, "") : row.id);
     const displayStatus = status;
     const activeChoicePrompt = parseActiveChoicePrompt(row.active_choice_json);
     const suggestedOptions = activeChoicePrompt?.options ?? null;

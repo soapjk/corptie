@@ -38,6 +38,7 @@ export function resolveRoutedProviderSessionProjection(store, session, {
         ...session,
         id: logical.legacySessionId,
         title: logical.sessionName || logical.title || stable?.title || session.title,
+        sessionName: logical.sessionName || logical.title || stable?.title || session.sessionName || session.title,
         agent: stable?.agent ?? session.agent,
         agentId: stable?.agentId ?? session.agentId ?? null,
         sessionKind: stable?.sessionKind ?? session.sessionKind ?? "legacy",
@@ -62,6 +63,48 @@ export function resolveRoutedProviderSessionProjection(store, session, {
     return { disposition: "historical", session: null, logical: null };
   }
   return { disposition: "unbound", session, logical: null };
+}
+
+export function isBoundPhysicalProviderSession(store, session) {
+  if (!store?.db || !session?.id) return false;
+  const providerId = session.external?.provider;
+  const providerSessionId = session.external?.sessionId ?? session.external?.threadId;
+  if (!providerId || !providerSessionId) return false;
+  const logical = store.getLogicalSessionByProviderSessionId(providerId, providerSessionId);
+  return Boolean(logical && logical.legacySessionId !== session.id);
+}
+
+export function repairStableSessionFromBoundPhysicalProjection(store, session) {
+  if (!isBoundPhysicalProviderSession(store, session)) return null;
+  const providerId = session.external.provider;
+  const providerSessionId = session.external.sessionId ?? session.external.threadId;
+  const logical = store.getLogicalSessionByProviderSessionId(providerId, providerSessionId);
+  const stable = store.getSession(logical.legacySessionId);
+  if (!stable) return null;
+  store.upsertSession({
+    ...session,
+    id: stable.id,
+    title: logical.sessionName || logical.title || stable.title,
+    agent: stable.agent,
+    agentId: stable.agentId,
+    sessionKind: stable.sessionKind,
+    objectiveId: stable.objectiveId,
+    workItemId: stable.workItemId,
+    archived: stable.archived,
+    pinned: stable.pinned,
+    sortOrder: stable.sortOrder,
+    createdAt: stable.createdAt,
+    updatedAt: stable.updatedAt,
+    external: {
+      ...(session.external ?? {}),
+      provider: logical.activeBinding.providerId,
+      threadId: logical.activeThreadId,
+      sessionId: logical.activeBinding.providerSessionId,
+      logicalSessionId: logical.logicalSessionId,
+      routingVersion: logical.routingVersion
+    }
+  });
+  return store.getSession(stable.id);
 }
 
 // Repairs the historical state where a Corptie-owned Provider session had a
