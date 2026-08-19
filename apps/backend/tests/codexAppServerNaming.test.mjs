@@ -418,7 +418,9 @@ test("a completed item does not prematurely complete its active turn", () => {
     }
   });
 
-  assert.deepEqual(client.liveItemsForThread("thread-a"), [{
+  const liveItems = client.liveItemsForThread("thread-a");
+  assert.equal(JSON.parse(liveItems[0].rawMetadataJSON).provider, "codex-app-server");
+  assert.deepEqual(liveItems.map(({ rawMetadataJSON: _, ...item }) => item), [{
     id: "message-a",
     turnId: "turn-a",
     turnStatus: "inProgress",
@@ -449,4 +451,8 @@ test("thread detail preserves the Codex message phase for presentation", () => {
 
   assert.equal(detail.items[0].turnStatus, "inProgress");
   assert.equal(detail.items[0].presentationRole, "final_answer");
+  const raw = JSON.parse(detail.items[0].rawMetadataJSON);
+  assert.equal(raw.source, "provider_item");
+  assert.equal(raw.payload.id, "message-a");
+  assert.equal(raw.payload.phase, "final_answer");
 });
