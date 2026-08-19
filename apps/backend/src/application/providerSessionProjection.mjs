@@ -74,6 +74,15 @@ export function isBoundPhysicalProviderSession(store, session) {
   return Boolean(logical && logical.legacySessionId !== session.id);
 }
 
+// Provider runtimes may persist their newly-created physical thread before the
+// stable Session projection is refreshed. Those rows are implementation
+// details of an existing logical Session, never independent product Sessions.
+// Keep this rule at the projection boundary so snapshots and incremental state
+// sync expose exactly one identity with its original kind/entity ownership.
+export function visibleStoredSessionProjections(store, sessions = []) {
+  return sessions.filter((session) => !isBoundPhysicalProviderSession(store, session));
+}
+
 export function repairStableSessionFromBoundPhysicalProjection(store, session) {
   if (!isBoundPhysicalProviderSession(store, session)) return null;
   const providerId = session.external.provider;
