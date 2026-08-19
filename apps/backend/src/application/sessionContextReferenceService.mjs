@@ -273,7 +273,7 @@ export class SessionContextReferenceService {
       title: `Objective: ${value.name}`,
       text: lines([
         ["Status", value.status], ["Priority", value.priority], ["Description", value.description],
-        ["Acceptance criteria", value.acceptanceCriteria], ["Target date", value.targetDate]
+        ["Ideal state", value.idealState], ["Target date", value.targetDate]
       ])
     };
   }

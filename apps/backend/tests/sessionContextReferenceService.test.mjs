@@ -12,7 +12,7 @@ async function fixture() {
   await store.initialize();
   store.createSession({ id: "assistant-session", title: "Assistant", sessionKind: "assistantChat", status: "complete" });
   store.createSession({ id: "referenced-session", title: "Research", sessionKind: "assistantChat", status: "complete", summary: "Stored preview" });
-  const objective = store.createObjective({ id: "objective-a", name: "Ship context", description: "Build references", acceptanceCriteria: "All Providers work" });
+  const objective = store.createObjective({ id: "objective-a", name: "Ship context", description: "Build references", idealState: "Every Provider shares reliable context" });
   store.createWorkItem({ id: "work-item-a", objectiveId: objective.id, title: "Implement resolver", description: "Resolve structured context" });
   const agent = store.createAgent({ name: "Researcher", description: "Finds primary sources", role: "independentContributor", capabilities: ["research"] });
   const localPath = join(directory, "reference.md");
@@ -50,6 +50,7 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
     assert.match(resolved.prompt, /Local reference/);
     assert.match(resolved.prompt, /Web reference body/);
     assert.match(resolved.prompt, /Objective: Ship context/);
+    assert.match(resolved.prompt, /Ideal state: Every Provider shares reliable context/);
     assert.match(resolved.prompt, /WorkItem: Implement resolver/);
     assert.match(resolved.prompt, /Agent: Researcher/);
     assert.match(resolved.prompt, /The contract changed/);

@@ -22,7 +22,7 @@ const objectivePatch = {
   properties: {
     name: { type: "string", minLength: 1 },
     description: { type: "string" },
-    acceptanceCriteria: { type: "string" },
+    idealState: { type: "string" },
     status: { type: "string", minLength: 1 },
     budgetConfig: { type: "object" },
     priority: nullableString,

@@ -59,8 +59,8 @@ test("Objective and WorkItem inputs reject unknown fields and invalid types befo
     assert.equal(store.listObjectives().length, 0);
 
     assert.throws(
-      () => service.createObjective({ name: "Strict", acceptanceCriteria: ["not", "text"] }),
-      { code: "INVALID_FIELD_TYPE", field: "acceptanceCriteria", expected: "string" }
+      () => service.createObjective({ name: "Strict", idealState: ["not", "text"] }),
+      { code: "INVALID_FIELD_TYPE", field: "idealState", expected: "string" }
     );
     assert.equal(store.listObjectives().length, 0);
 

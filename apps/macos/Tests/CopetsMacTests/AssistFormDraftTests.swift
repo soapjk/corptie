@@ -59,7 +59,7 @@ final class AssistFormDraftTests: XCTestCase {
           "fields": {
             "name": "统一创建页辅助填写",
             "description": "统一三个实体创建页的生成体验。",
-            "acceptanceCriteria": "- 草稿可检查\n- 草稿可编辑",
+            "idealState": "创建体验持续一致，草稿始终可检查、可编辑。",
             "priority": "high",
             "targetDate": "2026-09-01",
             "tags": "macos, forms"

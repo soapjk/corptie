@@ -37,6 +37,39 @@ test("Session tables do not own avatar columns while Agents still do", async () 
   }
 });
 
+test("legacy Objective acceptance criteria migrate to the evolving ideal state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-objective-ideal-state-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const initialStore = new CorptieStore({ dbPath, configPath });
+  try {
+    await initialStore.initialize();
+    initialStore.createObjective({ id: "objective:legacy", name: "Long-lived objective" });
+    await initialStore.close();
+
+    const legacyDatabase = new DatabaseSync(dbPath);
+    legacyDatabase.exec("ALTER TABLE objectives RENAME COLUMN ideal_state TO acceptance_criteria");
+    legacyDatabase.prepare(
+      "UPDATE objectives SET acceptance_criteria = ? WHERE id = ?"
+    ).run("The system continuously becomes easier to evolve.", "objective:legacy");
+    legacyDatabase.close();
+
+    const migratedStore = new CorptieStore({ dbPath, configPath });
+    await migratedStore.initialize();
+    assert.equal(
+      migratedStore.getObjective("objective:legacy").idealState,
+      "The system continuously becomes easier to evolve."
+    );
+    const columns = migratedStore.selectAll("PRAGMA table_info(objectives)").map((column) => column.name);
+    assert.equal(columns.includes("ideal_state"), true);
+    assert.equal(columns.includes("acceptance_criteria"), false);
+    await migratedStore.close();
+  } finally {
+    await initialStore.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("native SQLite persists committed writes immediately in WAL mode", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-native-sqlite-"));
   const dbPath = join(directory, "corptie.sqlite");
@@ -266,6 +299,61 @@ test("workspace route replacement preserves the stable Work Session and WorkItem
       }),
       (error) => error.code === "WORK_SESSION_BINDING_STALE"
     );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retiring a Worktree preserves the Work Session while making its workspace route read-only", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-worktree-retirement-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertGitWorkspaceSnapshot(workspaceSnapshot());
+    store.upsertSession({
+      id: "worker-session:retired",
+      title: "Retained history",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete",
+      rawStatus: { capabilities: { canSend: true, canInterrupt: true } }
+    });
+    store.createObjective({ id: "objective:retired", name: "Objective" });
+    store.createWorkItem({
+      id: "work-item:retired",
+      objectiveId: "objective:retired",
+      title: "Completed item"
+    });
+    store.bindSessionToWorkItem("worker-session:retired", "work-item:retired", "objective:retired");
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:retired",
+      legacySessionId: "worker-session:retired",
+      providerThreadId: "thread:retired",
+      repositoryId: "repository:one",
+      worktreeId: "worktree:feature",
+      boundCwd: "/repo/feature",
+      title: "Retained history"
+    });
+
+    const retired = store.retireLogicalSessionWorkspace("logical:retired", "worktree:feature");
+    assert.equal(retired.activeWorkspaceId, null);
+    assert.equal(retired.activeBinding.worktreeId, null);
+    assert.equal(retired.archived, true);
+
+    const session = store.getSession("worker-session:retired");
+    assert.equal(session.workItemId, "work-item:retired");
+    assert.equal(session.archived, true);
+    assert.equal(session.status, "complete");
+    assert.equal(session.rawStatus.capabilities.canSend, false);
+    assert.equal(session.rawStatus.capabilities.canInterrupt, false);
+    assert.equal(session.rawStatus.capabilities.canReconnect, false);
+    assert.equal(session.rawStatus.workspaceRetired.worktreeId, "worktree:feature");
+    assert.equal(store.getWorkItem("work-item:retired").current_session_id, "worker-session:retired");
+    assert.equal(store.assertLogicalSessionRoute("logical:retired"), true);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

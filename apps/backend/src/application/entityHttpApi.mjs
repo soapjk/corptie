@@ -27,6 +27,8 @@ export function handleEntityHttpRequest({
   createSession,
   backgroundAgentService,
   skillRegistryService,
+  inspectWorkItemWorktree,
+  reclaimWorkItemWorktree,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
   onEntityChanged
@@ -451,6 +453,26 @@ export function handleEntityHttpRequest({
         );
       }
 
+      const workItemWorktreeMatch = path.match(/^\/work-items\/([^/]+)\/worktree$/);
+      if (workItemWorktreeMatch) {
+        const id = decodeURIComponent(workItemWorktreeMatch[1]);
+        if (request.method === "GET") {
+          if (typeof inspectWorkItemWorktree !== "function") {
+            throw apiError("CAPABILITY_UNAVAILABLE", "Worktree inspection is unavailable.", 503);
+          }
+          return sendJson(response, 200, await inspectWorkItemWorktree(id));
+        }
+      }
+
+      const reclaimWorktreeMatch = path.match(/^\/work-items\/([^/]+)\/worktree\/reclaim$/);
+      if (request.method === "POST" && reclaimWorktreeMatch) {
+        if (typeof reclaimWorkItemWorktree !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Worktree reclamation is unavailable.", 503);
+        }
+        const id = decodeURIComponent(reclaimWorktreeMatch[1]);
+        return sendJson(response, 200, await reclaimWorkItemWorktree(id));
+      }
+
       const workItemSessionsMatch = path.match(/^\/work-items\/([^/]+)\/sessions$/);
       if (request.method === "GET" && workItemSessionsMatch) {
         const id = decodeURIComponent(workItemSessionsMatch[1]);
@@ -696,7 +718,7 @@ const FORM_DRAFT_SCHEMAS = Object.freeze({
   objective: Object.freeze({
     name: "Short objective name",
     description: "Objective scope and desired outcome",
-    acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
+    idealState: "Evolving description of the ideal state this Objective continuously moves toward",
     priority: 'Empty, or exactly one of "low", "medium", "high", "urgent"',
     targetDate: "Empty, or an ISO calendar date in YYYY-MM-DD format",
     tags: "Comma-separated tags"
@@ -745,7 +767,9 @@ function formDraftPrompt(formType, intent, currentValues, schema) {
   return [
     `Draft all fields for the Corptie ${formType} creation form.`,
     "Preserve useful non-empty current values unless the user's request clearly replaces or improves them.",
-    "Use the language of the user's request. Keep names concise and acceptance criteria objectively verifiable.",
+    formType === "objective"
+      ? "Use the language of the user's request. Keep names concise and describe the ideal state as an evolving direction, not a completion checklist."
+      : "Use the language of the user's request. Keep names concise and acceptance criteria objectively verifiable.",
     "",
     "Field contract:",
     fieldGuide,

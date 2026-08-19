@@ -8,7 +8,7 @@ struct Objective: Identifiable, Codable, Hashable {
     let id: String
     var name: String
     var description: String
-    var acceptanceCriteria: String
+    var idealState: String
     var status: String
     var priority: String?
     var targetDate: String?
@@ -72,6 +72,23 @@ struct WorkItemCompletionSuggestion: Codable, Hashable {
     let assessedAt: String
     let criteriaSnapshot: String
     let results: [WorkItemAcceptanceResult]
+}
+
+struct WorkItemRetiredWorkspace: Codable, Hashable {
+    let worktreeId: String
+    let path: String
+    let retiredAt: String
+}
+
+struct WorkItemWorktreeStatus: Decodable, Equatable {
+    let status: String
+    let sessionId: String?
+    let repositoryId: String?
+    let worktree: ProjectWorktreeStatus?
+    let canReclaim: Bool
+    let blocker: String?
+    let detail: String?
+    let retiredWorkspace: WorkItemRetiredWorkspace?
 }
 
 // 后端响应 envelope：GET /objectives → { objectives: [...] }；GET /work-items → { workItems: [...] }

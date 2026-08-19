@@ -31,7 +31,7 @@ export class ObjectiveChatContextService {
         id: objective.id,
         name: objective.name,
         description: objective.description,
-        acceptanceCriteria: objective.acceptanceCriteria,
+        idealState: objective.idealState,
         status: objective.status,
         priority: objective.priority,
         targetDate: objective.targetDate,

@@ -19,14 +19,16 @@ test("Worker Session context makes its bound WorkItem authoritative", () => {
     },
     objective: {
       id: "objective:quality",
-      title: "Improve reliability",
-      acceptance_criteria: "All provider paths remain neutral."
+      name: "Improve reliability",
+      idealState: "Every provider path remains neutral as the system evolves."
     }
   });
 
   assert.match(context.prompt, /authoritative task identity/);
   assert.match(context.prompt, /Strict association validation/);
   assert.match(context.prompt, /No partial writes/);
+  assert.match(context.prompt, /Objective ideal state/);
+  assert.match(context.prompt, /Every provider path remains neutral/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
 });
 

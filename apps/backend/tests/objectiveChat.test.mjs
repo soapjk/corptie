@@ -39,13 +39,13 @@ test("Objective Chat context is bounded and includes traceable Objective state",
   const { directory, store, objectiveService } = await fixture();
   try {
     const objective = objectiveService.createObjective({
-      name: "Ship feature", description: "Discuss and decompose", acceptanceCriteria: "All paths tested"
+      name: "Ship feature", description: "Discuss and decompose", idealState: "Delivery remains reliable across every path"
     });
     objectiveService.createWorkItem({ objectiveId: objective.id, title: "Backend" });
     const context = new ObjectiveChatContextService({ store, characterBudget: 2_000 }).build(objective.id);
     assert.equal(context.objectiveId, objective.id);
     assert.ok(context.characters <= 2_100);
-    assert.match(context.prompt, /All paths tested/);
+    assert.match(context.prompt, /Delivery remains reliable across every path/);
     assert.match(context.prompt, /Backend/);
     assert.ok(context.generatedAt);
   } finally {
