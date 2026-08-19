@@ -17,9 +17,18 @@ export class WorktreeIntegrationJobService {
     this.inspectRepository = options.inspectRepository;
     this.commitChanges = options.commitChanges;
     this.mergeSource = options.mergeSource;
+    this.prepareConflictResolution = options.prepareConflictResolution;
+    this.launchConflictResolution = options.launchConflictResolution;
     this.onEvent = options.onEvent ?? (() => {});
     this.activeJobs = new Set();
-    for (const name of ["inspectRepository", "commitChanges", "mergeSource"]) {
+    this.activeConflictResolutions = new Set();
+    for (const name of [
+      "inspectRepository",
+      "commitChanges",
+      "mergeSource",
+      "prepareConflictResolution",
+      "launchConflictResolution"
+    ]) {
       if (typeof this[name] !== "function") throw new TypeError(`${name}() is required.`);
     }
   }
@@ -161,7 +170,7 @@ export class WorktreeIntegrationJobService {
   }
 
   get(jobId) {
-    return presentJob(this.#requireJob(jobId));
+    return presentJob(this.#reconcileConflictResolution(this.#requireJob(jobId)));
   }
 
   cancel(jobId) {
@@ -193,6 +202,99 @@ export class WorktreeIntegrationJobService {
     });
     this.#schedule(updated.id);
     return presentJob(updated);
+  }
+
+  async resolveConflictWithAgent(jobId) {
+    const key = String(jobId);
+    if (this.activeConflictResolutions.has(key)) {
+      throw new WorktreeIntegrationJobError(
+        "CONFLICT_RESOLUTION_ALREADY_STARTING",
+        "The conflict-resolution Agent is already being started.",
+        409
+      );
+    }
+    this.activeConflictResolutions.add(key);
+    try {
+      let job = this.#requireJob(key);
+      const item = job.details.plan.items.find((candidate) => candidate.worktreeId === job.details.currentWorktreeId);
+      if (job.status !== "paused"
+        || !["conflict", "conflict_resolution_preparing"].includes(job.phase)
+        || item?.mergeStatus !== "conflict") {
+        throw new WorktreeIntegrationJobError(
+          "MERGE_CONFLICT_REQUIRED",
+          "This integration task does not have an Agent-resolvable merge conflict.",
+          409
+        );
+      }
+      if (job.details.conflictResolution?.sessionId) return presentJob(job);
+
+      const sourceHead = item.commitHead ?? item.sourceHeadBefore;
+      const expectedMainHead = expectedMainHeadBefore(job.details.plan, item.worktreeId);
+      let workspace = job.details.conflictResolution?.workspace ?? null;
+      if (!workspace) {
+        workspace = await this.prepareConflictResolution({
+          repositoryId: job.repositoryId,
+          mainPath: job.details.plan.mainPath,
+          jobId: job.id,
+          sourceHead,
+          expectedMainHead,
+          conflictFiles: item.conflictFiles
+        });
+        job = this.#update(job, {
+          phase: "conflict_resolution_preparing",
+          details: {
+            ...job.details,
+            conflictResolution: { status: "preparing", workspace }
+          },
+          auditEvent: "conflict_workspace_created",
+          auditData: { worktreeId: item.worktreeId }
+        });
+      }
+
+      const created = await this.launchConflictResolution({
+        job: presentJob(job),
+        item,
+        workspace,
+        sourceHead,
+        expectedMainHead
+      });
+      return presentJob(this.#update(job, {
+        status: "paused",
+        phase: "conflict_resolution_running",
+        error: null,
+        details: {
+          ...job.details,
+          conflictResolution: {
+            status: "running",
+            workspace,
+            workItemId: created.workItemId,
+            sessionId: created.sessionId,
+            agentId: created.agentId,
+            agentName: created.agentName
+          }
+        },
+        auditEvent: "conflict_agent_started",
+        auditData: { worktreeId: item.worktreeId }
+      }));
+    } catch (error) {
+      const job = this.store.getWorktreeIntegrationJob(key);
+      if (job?.details?.conflictResolution?.workspace && !job.details.conflictResolution?.sessionId) {
+        this.#update(job, {
+          status: "paused",
+          phase: "conflict",
+          error: error.message,
+          details: {
+            ...job.details,
+            conflictResolution: { ...job.details.conflictResolution, status: "failed" }
+          },
+          auditEvent: "conflict_agent_failed",
+          auditData: { code: error.code ?? "CONFLICT_AGENT_FAILED" }
+        });
+      }
+      throw error;
+    } finally {
+      this.activeConflictResolutions.delete(key);
+    }
   }
 
   recover() {
@@ -346,6 +448,28 @@ export class WorktreeIntegrationJobService {
     return updated;
   }
 
+  #reconcileConflictResolution(job) {
+    const resolution = job.details.conflictResolution;
+    if (!["running", "failed"].includes(resolution?.status) || !resolution.sessionId) return job;
+    const session = this.store.getSession(resolution.sessionId);
+    if (!session) return job;
+    const nextStatus = session.status === "complete"
+      ? "ready"
+      : (["failed", "cancelled"].includes(session.status) ? "failed" : "running");
+    if (nextStatus === resolution.status) return job;
+    return this.#update(job, {
+      status: "paused",
+      phase: nextStatus === "ready" ? "conflict_resolution_ready" : "conflict",
+      error: nextStatus === "failed" ? "The conflict-resolution Agent stopped before completing." : null,
+      details: {
+        ...job.details,
+        conflictResolution: { ...resolution, status: nextStatus, sessionStatus: session.status }
+      },
+      auditEvent: nextStatus === "ready" ? "conflict_agent_completed" : "conflict_agent_stopped",
+      auditData: { worktreeId: job.details.currentWorktreeId }
+    });
+  }
+
   #associate(inspection) {
     return {
       ...inspection,
@@ -353,10 +477,14 @@ export class WorktreeIntegrationJobService {
         ...worktree,
         associations: (worktree.sessions ?? []).map((association) => {
           const session = association.sessionId ? this.store.getSession(association.sessionId) : null;
-          const workItem = session?.workItemId ? this.store.getWorkItem(session.workItemId) : null;
+          const logical = association.logicalSessionId && this.store.getLogicalSession
+            ? this.store.getLogicalSession(association.logicalSessionId)
+            : null;
+          const workItemId = association.workItemId ?? session?.workItemId ?? logical?.workItemId ?? null;
+          const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
           return {
             ...association,
-            workItemId: workItem?.id ?? session?.workItemId ?? null,
+            workItemId: workItem?.id ?? workItemId,
             workItemTitle: workItem?.title ?? null
           };
         })
@@ -394,6 +522,15 @@ function requiresIntegration(worktree) {
   if (worktree.dirty === true) return true;
   if (worktree.isMain) return false;
   return worktree.mergedIntoMain !== true;
+}
+
+function expectedMainHeadBefore(plan, worktreeId) {
+  let head = plan.items.find((item) => item.isMain)?.commitHead ?? plan.mainHeadBefore;
+  for (const item of plan.items) {
+    if (item.worktreeId === worktreeId) return head;
+    if (item.mergeMainHead) head = item.mergeMainHead;
+  }
+  return head;
 }
 
 function progressFor(items) {

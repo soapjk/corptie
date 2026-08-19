@@ -564,3 +564,8 @@
 "Raw status" = "Raw status";
 "Regenerate Plan" = "Regenerate Plan";
 "The integration plan is stale. Regenerate and review it before continuing." = "The integration plan is stale. Regenerate and review it before continuing.";
+"Ask Agent to Resolve" = "Ask Agent to Resolve";
+"Open Conflict Agent" = "Open Conflict Agent";
+"Agent %@ is resolving conflicts in %@. Return here and retry after it finishes." = "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes.";
+"The conflict Agent finished. Retry to verify and resume the integration task." = "The conflict Agent finished. Retry to verify and resume the integration task.";
+"The conflict Agent stopped before completing. Open its Session to inspect or resume it." = "The conflict Agent stopped before completing. Open its Session to inspect or resume it.";

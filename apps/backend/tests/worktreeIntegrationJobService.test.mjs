@@ -58,7 +58,7 @@ function memoryFixture({
       Object.assign(jobs.get(id), patch, { updatedAt: new Date(Date.now() + sequence++).toISOString() });
       return structuredClone(jobs.get(id));
     },
-    getSession: () => null,
+    getSession: (id) => id === "session:conflict" ? { id, status: "complete" } : null,
     getWorkItem: () => null
   };
   const calls = [];
@@ -89,6 +89,20 @@ function memoryFixture({
       worktrees[0].headOid = `${input.expectedMainHead}:merge`;
       worktrees[1].mergedIntoMain = true;
       return { merged: true, alreadyMerged: false, recovered: conflictOnce, mainHead: worktrees[0].headOid };
+    },
+    prepareConflictResolution: async (input) => {
+      calls.push(`prepare-conflict:${input.sourceHead}`);
+      return {
+        worktreeId: "wt:integration", path: "/repo-integration", branchName: "integration/job-1",
+        headOid: input.expectedMainHead
+      };
+    },
+    launchConflictResolution: async (input) => {
+      calls.push(`launch-agent:${input.item.worktreeId}`);
+      return {
+        workItemId: "work_item:conflict", sessionId: "session:conflict",
+        agentId: "agent:one", agentName: "Conflict Agent"
+      };
     }
   });
   return { service, store, calls };
@@ -159,6 +173,31 @@ test("merge conflict preserves a paused item and retry resumes the same idempote
   const completed = await waitForJob(service, plan.id, "completed");
   assert.equal(completed.plan.items[1].mergeStatus, "recovered");
   assert.equal(completed.plan.items[0].commitStatus, "completed");
+});
+
+test("a paused merge conflict can launch an Agent in a dedicated Integration Worktree", async () => {
+  const { service, calls } = memoryFixture({ conflictOnce: true });
+  const plan = await service.preflight("repository:1");
+  service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  const delegated = await service.resolveConflictWithAgent(paused.id);
+
+  assert.equal(delegated.status, "paused");
+  assert.equal(delegated.phase, "conflict_resolution_running");
+  assert.equal(delegated.conflictResolution.workspace.path, "/repo-integration");
+  assert.equal(delegated.conflictResolution.sessionId, "session:conflict");
+  assert.equal(delegated.conflictResolution.agentName, "Conflict Agent");
+  assert.deepEqual(calls.slice(-2), [
+    "prepare-conflict:feature:1:commit",
+    "launch-agent:wt:feature"
+  ]);
+  assert.ok(delegated.audit.some((entry) => entry.event === "conflict_workspace_created"));
+  assert.ok(delegated.audit.some((entry) => entry.event === "conflict_agent_started"));
+  const ready = service.get(paused.id);
+  assert.equal(ready.phase, "conflict_resolution_ready");
+  assert.equal(ready.conflictResolution.status, "ready");
+  assert.ok(ready.audit.some((entry) => entry.event === "conflict_agent_completed"));
 });
 
 test("blocking preflight risks cannot be confirmed", async () => {

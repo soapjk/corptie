@@ -86,11 +86,35 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let currentWorktreeId: String?
     let progress: WorktreeIntegrationProgress
     let audit: [WorktreeIntegrationAuditEvent]
+    let conflictResolution: WorktreeConflictResolution?
 
     var isActive: Bool { ["queued", "running"].contains(status) }
+    var shouldPoll: Bool {
+        isActive || ["running", "failed"].contains(conflictResolution?.status ?? "")
+    }
     var requiresPlanRegeneration: Bool {
         status == "paused" && audit.last(where: { $0.code != nil })?.code == "PLAN_STALE"
     }
+    var hasMergeConflict: Bool {
+        status == "paused" && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
+    }
+}
+
+struct WorktreeConflictResolution: Decodable, Equatable, Sendable {
+    let status: String
+    let workspace: WorktreeConflictResolutionWorkspace
+    let workItemId: String?
+    let sessionId: String?
+    let agentId: String?
+    let agentName: String?
+    let sessionStatus: String?
+}
+
+struct WorktreeConflictResolutionWorkspace: Decodable, Equatable, Sendable {
+    let worktreeId: String
+    let path: String
+    let branchName: String?
+    let headOid: String?
 }
 
 struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {

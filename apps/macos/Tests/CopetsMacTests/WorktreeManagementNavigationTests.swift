@@ -113,6 +113,30 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/integration-plans"))
     }
 
+    func testMergeConflictCanLaunchAndOpenAProviderNeutralAgentSession() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("worktree.integrate.resolve-with-agent"))
+        XCTAssertTrue(view.contains("worktree.integrate.open-conflict-agent"))
+        XCTAssertTrue(view.contains("router.openSession(sessionId)"))
+        XCTAssertTrue(view.contains("job.conflictResolution?.status != \"ready\""))
+        XCTAssertTrue(view.contains("client.job?.shouldPoll == true"))
+        XCTAssertTrue(client.contains("worktree-management/jobs/\\(job.id)/resolve-conflict"))
+        XCTAssertFalse(client.contains("codex"))
+        XCTAssertFalse(client.contains("claude"))
+    }
+
     func testWorktreeTabHasChineseTranslationsForUIAndBackendStatuses() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -138,7 +162,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Operations run in the displayed order. No remote push or deletion is performed.\" = \"操作将按显示顺序执行；不会远程推送或删除任何内容。\";",
             "\"No Worktree changes require integration.\" = \"没有需要集成的 Worktree 修改。\";",
             "\"Regenerate Plan\" = \"重新生成计划\";",
-            "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";"
+            "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";",
+            "\"Ask Agent to Resolve\" = \"让 Agent 处理冲突\";",
+            "\"Open Conflict Agent\" = \"打开冲突处理 Agent\";",
+            "\"The conflict Agent finished. Retry to verify and resume the integration task.\" = \"冲突处理 Agent 已完成。请点击重试以验证结果并继续集成任务。\";"
         ] {
             XCTAssertTrue(localization.contains(expected), "Missing localization: \(expected)")
         }
@@ -175,7 +202,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
           "planFingerprint":"abc","error":"Resolve conflicts","createdAt":"2026-08-19T00:00:00Z",
           "updatedAt":"2026-08-19T00:01:00Z","confirmedAt":"2026-08-19T00:00:30Z","completedAt":null,
           "currentWorktreeId":"wt:feature","progress":{"completed":2,"total":3,"fraction":0.666},
-          "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"PLAN_STALE"}],
+          "conflictResolution":{"status":"running","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"workItemId":"work_item:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
+          "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"MERGE_CONFLICT"}],
           "plan":{"repositoryId":"repository:1","mainWorktreeId":"wt:main","mainPath":"/repo",
             "mainHeadBefore":"main:1","inventoryVersion":"inventory:1","mergeOrder":["wt:feature"],
             "blockingRisks":[],"items":[{"ordinal":1,"worktreeId":"wt:feature","path":"/feature",
@@ -192,7 +220,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(job.plan.items[0].conflictFiles, ["shared.swift"])
         XCTAssertEqual(job.audit[0].event, "merge_paused")
         XCTAssertFalse(job.isActive)
-        XCTAssertTrue(job.requiresPlanRegeneration)
+        XCTAssertFalse(job.requiresPlanRegeneration)
+        XCTAssertTrue(job.hasMergeConflict)
+        XCTAssertEqual(job.conflictResolution?.sessionId, "session:conflict")
+        XCTAssertEqual(job.conflictResolution?.workspace.path, "/integration")
     }
 
     private func repository(_ id: String) -> ManagedRepository {

@@ -424,6 +424,49 @@ test("project merge preserves conflict diagnostics and aborts the failed merge",
   }
 });
 
+test("Agent conflict delegation safely moves a task-owned merge into a dedicated Integration Worktree", async () => {
+  const fixture = await createFixture("agent-conflict", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+  await git(["add", "shared.txt"], fixture.repository);
+  await git(["commit", "-m", "Main version"], fixture.repository);
+  await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+  await git(["add", "shared.txt"], fixture.activeWorktree);
+  await git(["commit", "-m", "Feature version"], fixture.activeWorktree);
+
+  try {
+    const mainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    await assert.rejects(
+      () => manager.mergeIntegrationSource({
+        mainPath: fixture.repository,
+        sourceHead,
+        expectedMainHead: mainHead,
+        jobId: "worktree_integration:agent-conflict"
+      }),
+      (error) => error?.code === "MERGE_CONFLICT"
+    );
+
+    const workspace = await manager.prepareIntegrationConflictResolutionForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      sourceHead,
+      expectedMainHead: mainHead,
+      jobId: "worktree_integration:agent-conflict"
+    });
+
+    assert.match(workspace.branchName, /^integration\/worktree-integration-/);
+    assert.equal(workspace.headOid, mainHead);
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], fixture.repository)).trim(), "");
+    await assert.rejects(() => gitOutput(["rev-parse", "-q", "--verify", "MERGE_HEAD"], fixture.repository));
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("creates a dedicated Integration Worktree from the current main revision", async () => {
   const fixture = await createFixture("integration-worktree");
   const manager = new GitWorkspaceManager({

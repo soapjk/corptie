@@ -47,9 +47,9 @@ struct WorktreeManagementView: View {
             await client.navigate(to: target)
             router.consumeWorktreeTarget(target)
         }
-        .task(id: client.job.map { "\($0.id):\($0.isActive)" }) {
+        .task(id: client.job.map { "\($0.id):\($0.shouldPoll)" }) {
             guard let jobId = client.job?.id else { return }
-            while !Task.isCancelled, client.job?.id == jobId, client.job?.isActive == true {
+            while !Task.isCancelled, client.job?.id == jobId, client.job?.shouldPoll == true {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { return }
                 await client.pollJob()
@@ -304,6 +304,21 @@ struct WorktreeManagementView: View {
                     .controlSize(.small)
                     .disabled(client.isMutating)
                     .accessibilityIdentifier("worktree.integrate.regenerate")
+                } else if job.hasMergeConflict, let sessionId = job.conflictResolution?.sessionId {
+                    Button(L10n("Open Conflict Agent")) { router.openSession(sessionId) }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("worktree.integrate.open-conflict-agent")
+                    Button(L10n("Retry")) { Task { await client.retryJob() } }
+                        .controlSize(.small)
+                        .disabled(client.isMutating || job.conflictResolution?.status != "ready")
+                        .accessibilityIdentifier("worktree.integrate.retry")
+                } else if job.hasMergeConflict {
+                    Button(L10n("Ask Agent to Resolve")) {
+                        Task { _ = await client.resolveConflictWithAgent() }
+                    }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.resolve-with-agent")
                 } else if job.status == "paused" {
                     Button(L10n("Retry")) { Task { await client.retryJob() } }
                         .controlSize(.small)
@@ -319,6 +334,18 @@ struct WorktreeManagementView: View {
                 Text(L10n("The integration plan is stale. Regenerate and review it before continuing."))
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if let resolution = job.conflictResolution {
+                Text(resolution.status == "ready"
+                    ? L10n("The conflict Agent finished. Retry to verify and resume the integration task.")
+                    : (resolution.status == "failed"
+                        ? L10n("The conflict Agent stopped before completing. Open its Session to inspect or resume it.")
+                        : L10nFormat(
+                            "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes.",
+                            resolution.agentName ?? L10n("Agent"),
+                            resolution.workspace.branchName ?? resolution.workspace.path
+                        )))
+                .font(.caption)
+                .foregroundStyle(.orange)
             } else if let error = job.error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
