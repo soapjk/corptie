@@ -72,6 +72,19 @@ test("Tool Host does not attach tools when a Provider does not declare support",
   assert.equal(await service.prepareSession("plain"), null);
 });
 
+test("Tool Host fails loudly when an unsupported Provider would drop assigned Skill MCP dependencies", async () => {
+  const registry = new AgentProviderRegistry([provider("plain", [])]);
+  const service = new ToolHostService({
+    registry,
+    catalog: new HostToolCatalog(),
+    resolveMcpServers: async () => ({ compound: { type: "stdio", command: "node" } })
+  });
+  await assert.rejects(
+    service.prepareSession("plain", { actorId: "agent-compound" }),
+    (error) => error.code === "MCP_PROVIDER_UNSUPPORTED" && /plain/.test(error.message)
+  );
+});
+
 test("Host Tool Catalog dispatches by tool name without Provider knowledge", async () => {
   const catalog = new HostToolCatalog([{
     id: "collaboration",
@@ -123,6 +136,51 @@ test("Codex Provider maps the common attachment to its native dynamic-tool optio
   assert.equal(mapped.dynamicToolAgentId, "agent-one");
   assert.equal(mapped.dynamicTools[0].name, "corptie_agents_discover");
   assert.equal(mapped.developerInstructions, "Provider runtime instructions");
+});
+
+test("Codex and Claude Provider adapters configure assigned Skill MCP dependencies", () => {
+  const attachment = {
+    actorId: "agent-compound",
+    tools: [],
+    mcpServers: {
+      compound_tools: {
+        type: "stdio",
+        command: "node",
+        args: ["/runtime/skills/compound/server.mjs"],
+        cwd: "/runtime/skills/compound"
+      }
+    }
+  };
+  const codex = codexToolHostAttachment(attachment, {
+    config: { mcp_servers: { corptie: { command: "corptie-mcp" } } }
+  });
+  assert.equal(codex.config.mcp_servers.compound_tools.command, "node");
+  assert.equal(codex.config.mcp_servers.compound_tools.type, undefined);
+  assert.equal(codex.config.mcp_servers.corptie.command, "corptie-mcp");
+
+  const claude = claudeToolHostAttachment(attachment, {
+    mcpServers: { corptie: { type: "stdio", command: "corptie-mcp" } }
+  });
+  assert.equal(claude.mcpServers.compound_tools.type, "stdio");
+  assert.equal(claude.mcpServers.compound_tools.cwd, "/runtime/skills/compound");
+  assert.equal(claude.mcpServers.corptie.command, "corptie-mcp");
+});
+
+test("Tool Host resolves Agent Skill MCP dependencies before Provider attachment", async () => {
+  const calls = [];
+  const registry = new AgentProviderRegistry([provider("hosted", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+    attachTools(attachment) { calls.push(attachment); return attachment; }
+  })]);
+  const service = new ToolHostService({
+    registry,
+    catalog: new HostToolCatalog(),
+    resolveMcpServers: async ({ actorId, providerId }) => ({
+      assigned: { type: "stdio", command: "node", args: [`/${providerId}/${actorId}/server.mjs`] }
+    })
+  });
+  const prepared = await service.prepareSession("hosted", { actorId: "agent-compound" });
+  assert.equal(calls[0].mcpServers.assigned.command, "node");
+  assert.equal(prepared.providerAttachment.mcpServers.assigned.args[0], "/hosted/agent-compound/server.mjs");
 });
 
 test("Claude Provider maps the common attachment to MCP, skills, and project settings", () => {

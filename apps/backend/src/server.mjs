@@ -283,8 +283,8 @@ const corptieOpenClackyRuntimePaths = resolveCorptieOpenClackyRuntimePaths({ env
 const skillRegistryService = new SkillRegistryService({
   store,
   skillsDirs: {
-    codex: corptieCodexRuntimePaths.skillsDir,
-    claude: join(corptieClaudeRuntimePaths.pluginPath, "skills")
+    "codex-app-server": corptieCodexRuntimePaths.skillsDir,
+    "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
   }
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
@@ -560,7 +560,11 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   additionalProviders: [openClackyProvider]
 });
-toolHostService = new ToolHostService({ registry: agentProviderRegistry, catalog: hostToolCatalog });
+toolHostService = new ToolHostService({
+  registry: agentProviderRegistry,
+  catalog: hostToolCatalog,
+  resolveMcpServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId)
+});
 // Re-register the OpenClacky Provider after its runtime probe produces a fresh,
 // honest capability snapshot. This is how the bridge handshake gates TOOL_HOST_ATTACH
 // and WORKSPACE_TRANSITION: they are only declared after a healthy bridge confirms
@@ -1082,10 +1086,12 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
     ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
     : null;
   if (!transition || transition.phase !== "waitingForTurn") return null;
-  return workspaceTransitionManager.continueWorkspaceTransition(transition.transitionId, {
-    lastCompletedTurnId,
-    ...collaborationThreadOptionsForSession(logical.legacySessionId)
-  }).catch((error) => {
+  return collaborationThreadOptionsForSession(logical.legacySessionId).then((options) => (
+    workspaceTransitionManager.continueWorkspaceTransition(transition.transitionId, {
+      lastCompletedTurnId,
+      ...options
+    })
+  )).catch((error) => {
     console.error(`[workspace-transition] failed transition=${transition.transitionId} error=${error.message}`);
     emitEvent("SessionWorkspaceSwitchFailed", {
       logicalSessionId: logical.logicalSessionId,
@@ -1198,7 +1204,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       try {
         await workspaceTransitionManager.reconcileActiveWorkspacePath(
           logical.logicalSessionId,
-          collaborationThreadOptionsForSession(logical.legacySessionId)
+          await collaborationThreadOptionsForSession(logical.legacySessionId)
         );
       } catch (error) {
         console.warn(`[workspace-route] path rebind failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
@@ -2172,33 +2178,24 @@ async function claudeRuntimeOptionsForSession(providerSessionId) {
   }
   const session = store.getSession(providerSessionId);
   const metadata = sessionToolMetadata(session);
-  return agent
-    ? claudeToolHostAttachment(
-        {
-          actorId: agent.agentId,
-          tools: hostToolCatalog.definitions({ actorId: agent.agentId, metadata }),
-          metadata
-        },
-        withObjectiveChatClaudeContext(
-          await claudeCollaborationRuntimeOptionsWithAgentContext(agent.agentId, metadata),
-          metadata
-        )
-      )
-    : {};
+  if (!agent) return {};
+  return (await toolHostService.prepareSession("claude-sdk", {
+    actorId: agent.agentId,
+    ...metadata
+  }))?.providerAttachment ?? {};
 }
 
-function collaborationThreadOptionsForSession(sessionId) {
+async function collaborationThreadOptionsForSession(sessionId) {
   if (!sessionId) return {};
   const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
   const agent = collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(session);
   if (!agent?.agentId) return {};
   const metadata = sessionToolMetadata(session);
-  return codexToolHostAttachment({
+  return (await toolHostService.prepareSession("codex-app-server", {
     actorId: agent.agentId,
-    tools: hostToolCatalog.definitions({ actorId: agent.agentId, metadata }),
-    metadata
-  }, withObjectiveChatCodexContext(collaborationProviderRuntimeOptions(agent.agentId), metadata));
+    ...metadata
+  }))?.providerAttachment ?? {};
 }
 
 function sessionToolMetadata(session) {
@@ -3578,7 +3575,7 @@ async function resumeCodexProviderSession(reference) {
   if (!previous) throw new Error("Session not found.");
   const result = await codexRuntime.resumeThread(
     reference.providerSessionId,
-    collaborationThreadOptionsForSession(reference.sessionId)
+    await collaborationThreadOptionsForSession(reference.sessionId)
   );
   const session = mergeStoredSessionPresentation(
     mapCodexThreadToSession(result.thread ?? result),
@@ -3944,7 +3941,7 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
     await codexRuntime.resumeThread(threadId, {
       cwd: activeCwd,
       runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
-      ...collaborationThreadOptionsForSession(sessionId)
+      ...await collaborationThreadOptionsForSession(sessionId)
     });
     const result = await codexRuntime.startTurn(threadId, value, {
       cwd: activeCwd,
@@ -4220,7 +4217,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
     cwd,
     ...permissions,
     model,
-    ...collaborationThreadOptionsForSession(sessionId)
+    ...await collaborationThreadOptionsForSession(sessionId)
   });
   await codexRuntime.setThreadName(started.thread.id, title).catch((error) => {
     console.log(`[codex] clear created thread=${started.thread.id} but could not preserve title: ${error.message}`);
@@ -4780,7 +4777,7 @@ async function switchCodexProviderWorkspace(reference, input = {}) {
     activeTurnId,
     lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
     continuationPrompt: input.continuationPrompt,
-    ...collaborationThreadOptionsForSession(sessionId)
+    ...await collaborationThreadOptionsForSession(sessionId)
   });
   emitEvent(
     result.status === "waitingForTurn"
@@ -4943,7 +4940,7 @@ async function restartCodexProviderSession(reference) {
     logicalSessionId: logical.logicalSessionId,
     activeTurnId: session.external?.activeTurnId ?? null,
     lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
-    ...collaborationThreadOptionsForSession(sessionId)
+    ...await collaborationThreadOptionsForSession(sessionId)
   });
   emitEvent(
     result.status === "waitingForTurn" ? "SessionRestartWaiting" : "SessionRestartCompleted",
@@ -7175,7 +7172,7 @@ for (const transition of store.listPendingWorkspaceTransitions()) {
       : workspaceTransitionManager;
     const recovered = await transitionManager.recoverWorkspaceTransition(
       transition.transitionId,
-      collaborationThreadOptionsForSession(logical?.legacySessionId)
+      await collaborationThreadOptionsForSession(logical?.legacySessionId)
     );
     console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
   } catch (error) {

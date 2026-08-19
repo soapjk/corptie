@@ -35,6 +35,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
         ? [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]
         : []),
       AGENT_PROVIDER_CAPABILITIES.SKILL_LAZY_LOAD,
+      AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES,
       AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT
@@ -75,9 +76,21 @@ export function claudeToolHostAttachment(attachment, providerOptions = {}) {
   if (!attachment?.actorId || !Array.isArray(attachment?.tools)) {
     throw new TypeError("Claude Tool Host attachment requires an actor id and tool catalog.");
   }
+  const skillMcpServers = Object.fromEntries(Object.entries(attachment.mcpServers ?? {}).map(([name, server]) => [
+    name,
+    { type: server.type ?? (server.url ? "http" : "stdio"), ...server }
+  ]));
+  const configuredMcpServers = providerOptions.mcpServers ?? {};
+  const conflict = Object.keys(skillMcpServers)
+    .find((name) => Object.prototype.hasOwnProperty.call(configuredMcpServers, name));
+  if (conflict) {
+    const error = new Error(`MCP server name conflicts with an existing Provider server: ${conflict}`);
+    error.code = "MCP_SERVER_NAME_CONFLICT";
+    throw error;
+  }
   return {
     actorId: attachment.actorId,
-    mcpServers: { ...(providerOptions.mcpServers ?? {}) },
+    mcpServers: { ...configuredMcpServers, ...skillMcpServers },
     plugins: Array.isArray(providerOptions.plugins)
       ? providerOptions.plugins.map((plugin) => ({ ...plugin }))
       : [],
