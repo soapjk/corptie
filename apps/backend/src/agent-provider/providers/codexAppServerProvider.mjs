@@ -31,6 +31,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
       AGENT_PROVIDER_CAPABILITIES.SKILL_LAZY_LOAD,
+      AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES,
       AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE
     ]
   }, operations);
@@ -40,10 +41,34 @@ export function codexToolHostAttachment(attachment, providerOptions = {}) {
   if (!attachment?.actorId || !Array.isArray(attachment?.tools)) {
     throw new TypeError("Codex Tool Host attachment requires an actor id and tool catalog.");
   }
+  const skillMcpServers = Object.fromEntries(Object.entries(attachment.mcpServers ?? {}).map(([name, server]) => [
+    name,
+    codexMcpServer(server)
+  ]));
+  const configuredMcpServers = providerOptions.config?.mcp_servers ?? {};
+  assertNoMcpServerConflicts(configuredMcpServers, skillMcpServers);
   return {
     ...providerOptions,
+    config: {
+      ...(providerOptions.config ?? {}),
+      mcp_servers: { ...configuredMcpServers, ...skillMcpServers }
+    },
     dynamicTools: attachment.tools.map((tool) => ({ ...tool })),
     dynamicToolAgentId: attachment.actorId,
     dynamicToolMetadata: attachment.metadata ?? null
   };
+}
+
+function codexMcpServer(server = {}) {
+  const result = { ...server };
+  delete result.type;
+  return result;
+}
+
+function assertNoMcpServerConflicts(existing, incoming) {
+  const conflict = Object.keys(incoming).find((name) => Object.prototype.hasOwnProperty.call(existing, name));
+  if (!conflict) return;
+  const error = new Error(`MCP server name conflicts with an existing Provider server: ${conflict}`);
+  error.code = "MCP_SERVER_NAME_CONFLICT";
+  throw error;
 }

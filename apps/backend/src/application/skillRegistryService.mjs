@@ -31,6 +31,8 @@ const execFileAsync = promisify(execFile);
 
 // 递归定位 SKILL.md 时的最大搜索深度（防止误匹配太深层的无关 SKILL.md）。
 const MAX_SKILL_SEARCH_DEPTH = 5;
+const MCP_DESCRIPTOR_NAMES = Object.freeze([".mcp.json", "mcp.json", "mcp.config.json"]);
+const SKILL_ROOT_TOKENS = Object.freeze(["${SKILL_ROOT}", "${SKILL_DIR}", "${CLAUDE_PLUGIN_ROOT}"]);
 
 export class SkillRegistryService {
   constructor({ store, skillsDirs = {}, cacheRoot, exec = execFileAsync } = {}) {
@@ -107,7 +109,7 @@ export class SkillRegistryService {
         throw error;
       }
 
-      return this.store.getRegistrySkill(skill.skillId);
+      return { ...this.store.getRegistrySkill(skill.skillId), composition: candidate.composition };
     } catch (error) {
       if (cachePath && !this.store.listRegistrySkills().some((skill) => skill.cachePath === cachePath)) {
         await rm(cachePath, { recursive: true, force: true });
@@ -145,7 +147,7 @@ export class SkillRegistryService {
       if (existing.sourceType === "git" && existing.cachePath && existing.cachePath !== cachePath) {
         await rm(existing.cachePath, { recursive: true, force: true });
       }
-      return updated;
+      return { ...updated, composition: candidate.composition };
     } catch (error) {
       if (createdCache && cachePath) await rm(cachePath, { recursive: true, force: true });
       throw error;
@@ -184,13 +186,49 @@ export class SkillRegistryService {
     // 这样即使 SKILL.md 藏在子目录里，物化后也会被放到 <skillId>/ 顶层，
     // 满足运行时对 skills/<id>/SKILL.md 的扫描约定。
     const { rootDir } = await this.#resolveSkillRoot(skill);
+    await this.#inspectPackage(rootDir);
     const results = [];
     for (const [providerId, skillsRoot] of Object.entries(this.skillsDirs)) {
       const targetDir = join(skillsRoot, skill.skillId);
       await this.#mirrorDirectory(rootDir, targetDir);
-      results.push({ providerId, installedAt: targetDir });
+      const composition = await this.#inspectPackage(targetDir);
+      results.push({ providerId, installedAt: targetDir, composition });
     }
     return results;
+  }
+
+  // 返回某个 Agent 在指定 Provider 运行时中需要启用的 MCP server 配置。
+  // 配置从已物化目录读取并解析，因此 command/args/cwd 指向安装结果，而不是易失的来源目录。
+  async mcpServersForAgent(agentId, providerId) {
+    if (!agentId || !this.store.getAgent(agentId)) {
+      throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
+    }
+    const assigned = this.store.listRegistrySkillsForAgent(agentId);
+    if (assigned.length === 0) return {};
+    const skillsRoot = this.skillsDirs[providerId];
+    const result = {};
+    for (const skill of assigned) {
+      const sourceComposition = await this.#inspectPackage((await this.#resolveSkillRoot(skill)).rootDir);
+      if (!sourceComposition.mcp) continue;
+      if (!skillsRoot) {
+        throw skillError(
+          "MCP_PROVIDER_UNSUPPORTED",
+          `Provider ${providerId} 未配置复合 Skill 运行时目录，无法加载 Skill ${skill.name} 的 MCP 依赖。`
+        );
+      }
+      const installedRoot = join(skillsRoot, skill.skillId);
+      const installed = await this.#inspectPackage(installedRoot, { resolveServers: true });
+      for (const [serverName, server] of Object.entries(installed.mcp?.servers ?? {})) {
+        if (Object.prototype.hasOwnProperty.call(result, serverName)) {
+          throw skillError(
+            "MCP_SERVER_NAME_CONFLICT",
+            `Agent ${agentId} 分配的 Skill 存在重复 MCP server 名称：${serverName}`
+          );
+        }
+        result[serverName] = server;
+      }
+    }
+    return result;
   }
 
   // 卸载：从所有 Provider 的 skills 目录移除该 Skill 的物化。
@@ -321,11 +359,77 @@ export class SkillRegistryService {
       realpath(sourceRoot),
       realpath(dirname(markerPath))
     ]);
+    const composition = await this.#inspectPackage(resolvedSkillRoot);
     return {
       relativePath: normalizeSubpath(relative(resolvedSourceRoot, resolvedSkillRoot)),
       manifestName: manifest.name,
       manifestDescription: manifest.description,
-      contentHash: hashContent(content)
+      contentHash: hashContent(content),
+      composition
+    };
+  }
+
+  async #inspectPackage(rootDir, options = {}) {
+    if (!(await isDirectory(rootDir))) {
+      throw skillError("SOURCE_MISSING", `Skill 来源目录不存在：${rootDir}`);
+    }
+    const markerPath = await this.#markerAtRoot(rootDir);
+    if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${rootDir}`);
+    const descriptorPaths = [];
+    for (const name of MCP_DESCRIPTOR_NAMES) {
+      const candidate = join(rootDir, name);
+      if (await isFile(candidate)) descriptorPaths.push(candidate);
+    }
+    if (descriptorPaths.length > 1) {
+      throw skillError(
+        "MCP_CONFIG_AMBIGUOUS",
+        `Skill 根目录包含多个 MCP 描述文件：${descriptorPaths.map((item) => basename(item)).join(", ")}`
+      );
+    }
+    const entries = await readdir(rootDir, { withFileTypes: true });
+    const files = entries
+      .filter((entry) => entry.isFile() || entry.isDirectory() || entry.isSymbolicLink())
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b));
+    if (descriptorPaths.length === 0) {
+      return { kind: "plain", files, mcp: null };
+    }
+    const descriptorPath = descriptorPaths[0];
+    const descriptor = await readJsonDescriptor(descriptorPath);
+    const declared = descriptor.mcpServers ?? descriptor.mcp_servers;
+    if (!isRecord(declared) || Object.keys(declared).length === 0) {
+      throw skillError(
+        "MCP_CONFIG_INCOMPLETE",
+        `MCP 描述 ${basename(descriptorPath)} 必须包含非空的 mcpServers（或 mcp_servers）。`
+      );
+    }
+    if (descriptor.resources != null && !Array.isArray(descriptor.resources)) {
+      throw skillError("MCP_CONFIG_INCOMPLETE", `MCP 描述 ${basename(descriptorPath)} 的 resources 必须是路径数组。`);
+    }
+    const resources = new Set();
+    for (const resource of descriptor.resources ?? []) {
+      if (typeof resource !== "string" || !resource.trim()) {
+        throw skillError("MCP_CONFIG_INCOMPLETE", `MCP 描述 ${basename(descriptorPath)} 包含无效 resource 路径。`);
+      }
+      resources.add(await validatePackageResource(rootDir, resource, "resources"));
+    }
+    const servers = {};
+    for (const [serverName, rawServer] of Object.entries(declared)) {
+      const name = String(serverName ?? "").trim();
+      if (!name || !isRecord(rawServer)) {
+        throw skillError("MCP_CONFIG_INCOMPLETE", `MCP 描述 ${basename(descriptorPath)} 包含无效 server：${serverName}`);
+      }
+      servers[name] = await normalizeMcpServer(rootDir, name, rawServer, resources, options.resolveServers === true);
+    }
+    return {
+      kind: "mcp",
+      files,
+      mcp: {
+        descriptor: basename(descriptorPath),
+        serverNames: Object.keys(servers),
+        resources: [...resources].sort((a, b) => a.localeCompare(b)),
+        ...(options.resolveServers ? { servers } : {})
+      }
     };
   }
 
@@ -411,6 +515,139 @@ export class SkillRegistryService {
     await rm(targetDir, { recursive: true, force: true });
     await rename(temporary, targetDir);
   }
+}
+
+async function readJsonDescriptor(descriptorPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(descriptorPath, "utf8"));
+  } catch (error) {
+    throw skillError(
+      "MCP_CONFIG_INVALID",
+      `无法解析 MCP 描述 ${basename(descriptorPath)}：${error?.message ?? String(error)}`
+    );
+  }
+  if (!isRecord(parsed)) {
+    throw skillError("MCP_CONFIG_INVALID", `MCP 描述 ${basename(descriptorPath)} 的根节点必须是 JSON 对象。`);
+  }
+  if (parsed.mcpServers != null && parsed.mcp_servers != null) {
+    throw skillError(
+      "MCP_CONFIG_AMBIGUOUS",
+      `MCP 描述 ${basename(descriptorPath)} 不能同时声明 mcpServers 和 mcp_servers。`
+    );
+  }
+  return parsed;
+}
+
+async function normalizeMcpServer(rootDir, serverName, input, resources, resolveServers) {
+  const type = String(input.type ?? (input.url ? "http" : "stdio")).trim().toLowerCase();
+  if (!new Set(["stdio", "http", "sse"]).has(type)) {
+    throw skillError("MCP_CONFIG_INCOMPLETE", `MCP server ${serverName} 使用不支持的 type：${type || "(empty)"}`);
+  }
+  if (type !== "stdio") {
+    if (typeof input.url !== "string" || !input.url.trim()) {
+      throw skillError("MCP_CONFIG_INCOMPLETE", `MCP server ${serverName} 缺少 url。`);
+    }
+    return cloneJsonValue(input);
+  }
+  if (typeof input.command !== "string" || !input.command.trim()) {
+    throw skillError("MCP_CONFIG_INCOMPLETE", `MCP server ${serverName} 缺少 command。`);
+  }
+  if (input.args != null && (!Array.isArray(input.args) || input.args.some((arg) => typeof arg !== "string"))) {
+    throw skillError("MCP_CONFIG_INCOMPLETE", `MCP server ${serverName} 的 args 必须是字符串数组。`);
+  }
+  if (input.env != null && (!isRecord(input.env)
+    || Object.values(input.env).some((value) => typeof value !== "string"))) {
+    throw skillError("MCP_CONFIG_INCOMPLETE", `MCP server ${serverName} 的 env 必须是字符串键值对象。`);
+  }
+  if (input.cwd != null && (typeof input.cwd !== "string" || !input.cwd.trim())) {
+    throw skillError("MCP_CONFIG_INCOMPLETE", `MCP server ${serverName} 的 cwd 必须是非空路径。`);
+  }
+
+  const output = cloneJsonValue(input);
+  output.type = "stdio";
+  output.command = await resolveMcpPathValue(rootDir, input.command, `${serverName}.command`, resources, {
+    validateBarePath: false,
+    resolveServers
+  });
+  output.args = [];
+  for (let index = 0; index < (input.args ?? []).length; index += 1) {
+    output.args.push(await resolveMcpPathValue(
+      rootDir,
+      input.args[index],
+      `${serverName}.args[${index}]`,
+      resources,
+      { validateBarePath: looksLikeResourcePath(input.args[index]), resolveServers }
+    ));
+  }
+  if (input.cwd) {
+    output.cwd = await resolveMcpPathValue(rootDir, input.cwd, `${serverName}.cwd`, resources, {
+      validateBarePath: true,
+      resolveServers
+    });
+  } else if (resolveServers) {
+    output.cwd = rootDir;
+  }
+  if (input.env) {
+    output.env = Object.fromEntries(Object.entries(input.env).map(([key, value]) => [
+      key,
+      replaceSkillRootTokens(value, rootDir)
+    ]));
+  }
+  return output;
+}
+
+async function resolveMcpPathValue(rootDir, value, field, resources, options = {}) {
+  const raw = String(value).trim();
+  const hasRootToken = SKILL_ROOT_TOKENS.some((token) => raw.includes(token));
+  const explicitlyRelative = raw.startsWith("./") || raw.startsWith("../");
+  if (raw.includes("${") && !hasRootToken) {
+    throw skillError("MCP_CONFIG_INCOMPLETE", `MCP 配置字段 ${field} 包含不支持的路径占位符：${raw}`);
+  }
+  const shouldResolve = hasRootToken || explicitlyRelative || options.validateBarePath;
+  if (!shouldResolve) return raw;
+  const replaced = replaceSkillRootTokens(raw, rootDir);
+  const absolutePath = isAbsolute(replaced) ? resolve(replaced) : resolve(rootDir, replaced);
+  const relativePath = await validatePackageResource(rootDir, absolutePath, field);
+  resources.add(relativePath);
+  return options.resolveServers ? absolutePath : raw;
+}
+
+async function validatePackageResource(rootDir, value, field) {
+  const replaced = replaceSkillRootTokens(String(value).trim(), rootDir);
+  const candidate = isAbsolute(replaced) ? resolve(replaced) : resolve(rootDir, replaced);
+  const rootRealPath = await realpath(rootDir);
+  let resourceRealPath;
+  try {
+    resourceRealPath = await realpath(candidate);
+  } catch {
+    throw skillError("MCP_RESOURCE_MISSING", `MCP 配置字段 ${field} 引用的资源不存在：${value}`);
+  }
+  const rel = relative(rootRealPath, resourceRealPath);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw skillError("MCP_RESOURCE_OUTSIDE_SKILL", `MCP 配置字段 ${field} 引用的资源超出 Skill 根目录：${value}`);
+  }
+  return normalizeSubpath(rel) || ".";
+}
+
+function replaceSkillRootTokens(value, rootDir) {
+  return SKILL_ROOT_TOKENS.reduce((result, token) => result.replaceAll(token, rootDir), String(value));
+}
+
+function looksLikeResourcePath(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text.startsWith("-")) return false;
+  if (SKILL_ROOT_TOKENS.some((token) => text.includes(token))) return true;
+  if (text.startsWith("./") || text.startsWith("../")) return true;
+  return /[\\/]|\.(?:c?m?js|ts|py|rb|sh|jar|json|ya?ml|toml)$/i.test(text);
+}
+
+function cloneJsonValue(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function skillError(code, message) {
