@@ -1014,7 +1014,7 @@ private struct SessionIdentityLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            SessionAgentIdentity(session: session)
+            SessionProviderIdentity(session: session)
 
             if let branchName {
                 HStack(spacing: 2) {
@@ -1065,17 +1065,32 @@ private struct SessionIdentityLine: View {
     }
 }
 
-private struct SessionAgentIdentity: View {
+private struct SessionProviderIdentity: View {
+    @ObservedObject private var backendClient = BackendClient.shared
     let session: TaskSession
 
     var body: some View {
         HStack(spacing: 2) {
             Image(systemName: "cpu")
-            Text(session.agent)
+            Text(sessionProviderIdentityLabel(
+                providerIdentity: session.external?.provider,
+                legacyAgentLabel: session.agent,
+                providers: backendClient.agentProviders
+            ))
         }
         .foregroundStyle(session.accent.color)
         .fixedSize(horizontal: true, vertical: false)
     }
+}
+
+func sessionProviderIdentityLabel(
+    providerIdentity: String?,
+    legacyAgentLabel: String,
+    providers: [AgentProviderDescriptor]
+) -> String {
+    let identity = providerIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !identity.isEmpty else { return legacyAgentLabel }
+    return providers.displayName(for: identity) ?? identity
 }
 
 private struct SessionContextMenuContent: View {
@@ -5048,7 +5063,7 @@ struct DetailHeaderView: View {
                 if let cwd = workspacePath, !cwd.isEmpty {
                     HStack(alignment: .center, spacing: 6) {
                         if let selectedSession = backendClient.selectedSession {
-                            SessionAgentIdentity(session: selectedSession)
+                            SessionProviderIdentity(session: selectedSession)
                                 .font(.system(size: 11, weight: .semibold))
                         }
 

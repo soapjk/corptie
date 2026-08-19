@@ -62,5 +62,21 @@ final class AgentProviderDescriptorTests: XCTestCase {
             response.providers.sessionProviderAlternatives(to: "unknown").map(\.id),
             ["openclacky", "codex-app-server"]
         )
+        XCTAssertEqual(
+            sessionProviderIdentityLabel(
+                providerIdentity: "codex-app-server",
+                legacyAgentLabel: "OpenClacky",
+                providers: response.providers
+            ),
+            "Codex"
+        )
+        XCTAssertEqual(
+            sessionProviderIdentityLabel(
+                providerIdentity: nil,
+                legacyAgentLabel: "Legacy Provider",
+                providers: response.providers
+            ),
+            "Legacy Provider"
+        )
     }
 }
