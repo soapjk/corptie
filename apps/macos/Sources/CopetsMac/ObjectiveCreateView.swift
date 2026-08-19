@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Objective 创建弹窗（模块 C）：名称 + 描述 + 验收标准 + 优先级 + 目标日期 + 高级折叠（标签/预算）。
+// Objective 创建弹窗（模块 C）：名称 + 描述 + 理想状态 + 优先级 + 目标日期 + 高级折叠（标签/预算）。
 
 struct ObjectiveCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -8,7 +8,7 @@ struct ObjectiveCreateView: View {
 
     @State private var name = ""
     @State private var detail = ""
-    @State private var acceptanceCriteria = ""
+    @State private var idealState = ""
     @State private var priority: String? = nil
     @State private var hasTargetDate = false
     @State private var targetDate = Date()
@@ -32,7 +32,7 @@ struct ObjectiveCreateView: View {
                             [
                                 "name": name,
                                 "description": detail,
-                                "acceptanceCriteria": acceptanceCriteria,
+                                "idealState": idealState,
                                 "priority": priority ?? "",
                                 "targetDate": hasTargetDate ? Self.dateString(targetDate) : "",
                                 "tags": tagsText
@@ -53,8 +53,8 @@ struct ObjectiveCreateView: View {
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
                     }
-                    field(L10n("验收标准")) {
-                        TextEditor(text: $acceptanceCriteria)
+                    field(L10n("理想状态")) {
+                        TextEditor(text: $idealState)
                             .font(.body)
                             .frame(height: 70)
                             .scrollContentBackground(.hidden)
@@ -139,7 +139,7 @@ struct ObjectiveCreateView: View {
             await client.createObjective(
                 name: trimmed,
                 description: detail.isEmpty ? nil : detail,
-                acceptanceCriteria: acceptanceCriteria.isEmpty ? nil : acceptanceCriteria,
+                idealState: idealState.isEmpty ? nil : idealState,
                 priority: priority,
                 targetDate: hasTargetDate ? Self.dateString(targetDate) : nil,
                 tags: tags,
@@ -153,7 +153,7 @@ struct ObjectiveCreateView: View {
     private func applyGeneratedFields(_ fields: [String: String]) {
         name = fields["name"] ?? name
         detail = fields["description"] ?? detail
-        acceptanceCriteria = fields["acceptanceCriteria"] ?? acceptanceCriteria
+        idealState = fields["idealState"] ?? idealState
         if let generatedPriority = fields["priority"] {
             priority = generatedPriority.isEmpty ? nil : generatedPriority
         }

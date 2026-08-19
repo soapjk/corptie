@@ -21,8 +21,8 @@ export function buildWorkSessionContext({ session, workItem, objective } = {}) {
     `WorkItem title: ${text(workItem.title)}`,
     workItem.description ? `WorkItem description:\n${text(workItem.description)}` : "",
     workItem.acceptance_criteria ? `WorkItem acceptance criteria:\n${text(workItem.acceptance_criteria)}` : "",
-    objective?.title ? `Parent Objective: ${text(objective.title)}` : "",
-    objective?.acceptance_criteria ? `Objective acceptance criteria:\n${text(objective.acceptance_criteria)}` : "",
+    objective?.name ? `Parent Objective: ${text(objective.name)}` : "",
+    objective?.idealState ? `Objective ideal state:\n${text(objective.idealState)}` : "",
     "</corptie_work_session_binding>"
   ].filter(Boolean);
   return { prompt: lines.join("\n") };

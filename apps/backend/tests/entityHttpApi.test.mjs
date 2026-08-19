@@ -79,6 +79,8 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     launchSession: services.launchSession,
     launchAgentSession: services.launchAgentSession,
     launchObjectiveChatSession: services.launchObjectiveChatSession,
+    inspectWorkItemWorktree: services.inspectWorkItemWorktree,
+    reclaimWorkItemWorktree: services.reclaimWorkItemWorktree,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     onEntityChanged: services.onEntityChanged
@@ -90,6 +92,49 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     body: response.body ? JSON.parse(response.body) : null
   };
 }
+
+test("WorkItem Worktree endpoints inspect and reclaim through the project service", async () => {
+  const services = await createServices();
+  const calls = [];
+  try {
+    const inspection = {
+      status: "available",
+      workItemId: "work-item:one",
+      canReclaim: true,
+      worktree: { worktreeId: "worktree:feature", branchName: "feature/one" }
+    };
+    const inspected = await callApi({
+      method: "GET",
+      pathname: "/work-items/work-item%3Aone/worktree",
+      inspectWorkItemWorktree: async (workItemId) => {
+        calls.push(["inspect", workItemId]);
+        return inspection;
+      },
+      ...services
+    });
+    assert.equal(inspected.statusCode, 200);
+    assert.deepEqual(inspected.body, inspection);
+
+    const reclaimed = await callApi({
+      method: "POST",
+      pathname: "/work-items/work-item%3Aone/worktree/reclaim",
+      reclaimWorkItemWorktree: async (workItemId) => {
+        calls.push(["reclaim", workItemId]);
+        return { ...inspection, status: "retired", canReclaim: false };
+      },
+      ...services
+    });
+    assert.equal(reclaimed.statusCode, 200);
+    assert.equal(reclaimed.body.status, "retired");
+    assert.deepEqual(calls, [
+      ["inspect", "work-item:one"],
+      ["reclaim", "work-item:one"]
+    ]);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
 
 function registerRepository(store, repositoryId = "repository:test", worktreeId = "worktree:test") {
   const observedAt = "2026-08-17T00:00:00.000Z";
@@ -191,7 +236,7 @@ test("POST /assist/form-draft shares one structured contract across Agent and Ob
           text: JSON.stringify({
             name: "统一创建页辅助填写",
             description: "统一三个实体创建页的草稿生成体验。",
-            acceptanceCriteria: "- Agent 创建页可回填\n- Objective 创建页可回填\n- WorkItem 创建页可回填",
+            idealState: "创建体验持续保持一致，生成内容始终可检查、可编辑。",
             priority: "high",
             targetDate: "2026-09-01",
             tags: "macos, forms"
@@ -227,7 +272,7 @@ test("POST /assist/form-draft shares one structured contract across Agent and Ob
         currentValues: {
           name: "",
           description: "",
-          acceptanceCriteria: "",
+          idealState: "",
           priority: "",
           targetDate: "",
           tags: ""
@@ -347,12 +392,12 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
     const wrongType = await callApi({
       method: "POST",
       pathname: "/objectives",
-      body: { name: "Invalid", acceptanceCriteria: { invalid: true } },
+      body: { name: "Invalid", idealState: { invalid: true } },
       ...services
     });
     assert.equal(wrongType.statusCode, 400);
     assert.equal(wrongType.body.code, "INVALID_FIELD_TYPE");
-    assert.equal(wrongType.body.field, "acceptanceCriteria");
+    assert.equal(wrongType.body.field, "idealState");
     assert.equal(wrongType.body.expected, "string");
     assert.doesNotMatch(wrongType.body.error, /SQLite|bind|constraint/i);
     assert.equal(services.store.listObjectives().length, 0);

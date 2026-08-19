@@ -183,10 +183,14 @@ test("platform operations are denied to user Agents and use product services for
 });
 
 test("platform Objective and WorkItem tool patch schemas reject additional properties", () => {
-  for (const name of ["corptie_platform_objectives_manage", "corptie_platform_work_items_manage"]) {
-    const schema = platformDynamicTools.find((tool) => tool.name === name).inputSchema.properties.patch;
-    assert.equal(schema.additionalProperties, false);
-    assert.ok(schema.properties.acceptanceCriteria);
+  const objectiveSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_objectives_manage").inputSchema.properties.patch;
+  const workItemSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_work_items_manage").inputSchema.properties.patch;
+  assert.equal(objectiveSchema.additionalProperties, false);
+  assert.ok(objectiveSchema.properties.idealState);
+  assert.equal(Object.hasOwn(objectiveSchema.properties, "acceptanceCriteria"), false);
+  assert.equal(workItemSchema.additionalProperties, false);
+  assert.ok(workItemSchema.properties.acceptanceCriteria);
+  for (const schema of [objectiveSchema, workItemSchema]) {
     assert.equal(Object.hasOwn(schema.properties, "workspacePath"), false);
     assert.equal(Object.hasOwn(schema.properties, "main_agent_id"), false);
   }

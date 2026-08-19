@@ -10,7 +10,7 @@ struct ObjectiveDetailView: View {
 
     @State private var name: String
     @State private var detail: String
-    @State private var acceptanceCriteria: String
+    @State private var idealState: String
     @State private var priority: String?
     @State private var hasTargetDate: Bool
     @State private var targetDate: Date
@@ -27,7 +27,7 @@ struct ObjectiveDetailView: View {
         self.objective = objective
         _name = State(initialValue: objective.name)
         _detail = State(initialValue: objective.description)
-        _acceptanceCriteria = State(initialValue: objective.acceptanceCriteria)
+        _idealState = State(initialValue: objective.idealState)
         _priority = State(initialValue: objective.priority)
         _hasTargetDate = State(initialValue: objective.targetDate != nil)
         _targetDate = State(initialValue: Self.parseDate(objective.targetDate) ?? Date())
@@ -58,8 +58,8 @@ struct ObjectiveDetailView: View {
                     } trailing: {
                         AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
                     }
-                    field(L10n("验收标准")) {
-                        TextEditor(text: $acceptanceCriteria)
+                    field(L10n("理想状态")) {
+                        TextEditor(text: $idealState)
                             .font(.body)
                             .frame(height: 70)
                             .scrollContentBackground(.hidden)
@@ -67,7 +67,7 @@ struct ObjectiveDetailView: View {
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
                     } trailing: {
-                        AgentAssistButton(fieldLabel: "验收标准", text: $acceptanceCriteria, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
+                        AgentAssistButton(fieldLabel: "理想状态", text: $idealState, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
                     }
 
                     HStack(spacing: 24) {
@@ -166,7 +166,7 @@ struct ObjectiveDetailView: View {
                 objectiveId: objective.id,
                 name: trimmed,
                 description: detail,
-                acceptanceCriteria: acceptanceCriteria,
+                idealState: idealState,
                 priority: priority ?? "",
                 targetDate: hasTargetDate ? Self.dateString(targetDate) : "",
                 tags: tags,

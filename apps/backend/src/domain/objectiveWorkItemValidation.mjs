@@ -1,5 +1,5 @@
 const OBJECTIVE_CREATE_FIELDS = [
-  "id", "name", "description", "acceptanceCriteria", "status", "budgetConfig",
+  "id", "name", "description", "idealState", "status", "budgetConfig",
   "priority", "targetDate", "tags", "workspaceIds", "relatedObjectiveIds",
   "contributorAgentIds"
 ];
@@ -44,7 +44,7 @@ export function validateObjectiveInput(input, operation = "create") {
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
   if (has(input, "name")) normalized.name = string(input.name, "name", { nonEmpty: true, trim: true });
   if (has(input, "description")) normalized.description = string(input.description, "description");
-  if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");
+  if (has(input, "idealState")) normalized.idealState = string(input.idealState, "idealState");
   if (has(input, "status")) normalized.status = string(input.status, "status", { nonEmpty: true, trim: true });
   if (has(input, "budgetConfig")) normalized.budgetConfig = jsonObject(input.budgetConfig, "budgetConfig");
   if (has(input, "priority")) normalized.priority = optionalString(input.priority, "priority");

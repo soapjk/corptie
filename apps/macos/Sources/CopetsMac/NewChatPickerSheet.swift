@@ -16,6 +16,21 @@ enum NewSessionKind: String, CaseIterable, Identifiable {
     }
 }
 
+enum SessionCreationTitlePolicy {
+    static func defaultTitle(
+        workItemTitle: String?,
+        suggestedAgentTitle: String?,
+        agentName: String?
+    ) -> String {
+        let workItemTitle = workItemTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !workItemTitle.isEmpty { return workItemTitle }
+        let suggestedAgentTitle = suggestedAgentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !suggestedAgentTitle.isEmpty { return suggestedAgentTitle }
+        let agentName = agentName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return "\(agentName.isEmpty ? "Agent" : agentName)_Session"
+    }
+}
+
 /// 统一 Session 创建入口。
 /// Assistant Chat 只绑定 Assistant；Objective Chat 绑定 Objective 与其 Contributor；
 /// Worker Session 强制同时绑定 WorkItem 与 IC Agent。
@@ -55,7 +70,11 @@ struct NewSessionCreationSheet: View {
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
         _selectedObjectiveId = State(initialValue: fixedObjective?.id)
         _selectedWorkItemId = State(initialValue: fixedWorkItem?.id)
-        _sessionTitle = State(initialValue: fixedAgent?.suggestedSessionTitle ?? Self.fallbackTitle(for: fixedAgent))
+        _sessionTitle = State(initialValue: SessionCreationTitlePolicy.defaultTitle(
+            workItemTitle: fixedWorkItem?.title,
+            suggestedAgentTitle: fixedAgent?.suggestedSessionTitle,
+            agentName: fixedAgent?.name
+        ))
     }
 
     var body: some View {
@@ -138,6 +157,7 @@ struct NewSessionCreationSheet: View {
             }
         }
         .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
+        .onChange(of: selectedWorkItemId) { _, _ in applySuggestedTitle() }
         .onChange(of: selectedObjectiveId) { _, _ in
             if kind == .objectiveChat { normalizeAgentSelection() }
         }
@@ -431,7 +451,11 @@ struct NewSessionCreationSheet: View {
 
     private func applySuggestedTitle() {
         guard !titleWasEdited, let agent = selectedAgent else { return }
-        sessionTitle = agent.suggestedSessionTitle ?? Self.fallbackTitle(for: agent)
+        sessionTitle = SessionCreationTitlePolicy.defaultTitle(
+            workItemTitle: selectedWorkItem?.title,
+            suggestedAgentTitle: agent.suggestedSessionTitle,
+            agentName: agent.name
+        )
     }
 
     private var selectedAgent: Agent? {
@@ -439,9 +463,8 @@ struct NewSessionCreationSheet: View {
         return client.agents.first(where: { $0.agentId == selectedAgentId })
     }
 
-    private static func fallbackTitle(for agent: Agent?) -> String {
-        let name = agent?.name.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return "\(name.isEmpty ? "Agent" : name)_Session"
+    private var selectedWorkItem: WorkItem? {
+        fixedWorkItem ?? workItems.first(where: { $0.id == selectedWorkItemId })
     }
 
     private func createSession() {

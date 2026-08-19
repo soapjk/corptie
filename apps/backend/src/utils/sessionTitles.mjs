@@ -10,6 +10,11 @@ export function defaultSessionTitleForAgent(agentName) {
   return `${normalizedName}_Session`;
 }
 
+export function defaultSessionTitleForWorkItem(workItemTitle, agentName = null) {
+  const normalizedTitle = String(workItemTitle ?? "").trim();
+  return normalizedTitle || defaultSessionTitleForAgent(agentName);
+}
+
 export function resolveAvailableAgentSessionTitle(
   sessions,
   agentName,

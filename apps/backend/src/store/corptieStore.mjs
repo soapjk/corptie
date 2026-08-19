@@ -811,7 +811,7 @@ export class CorptieStore {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
-        acceptance_criteria TEXT NOT NULL DEFAULT '',
+        ideal_state TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'active',
         budget_config TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
@@ -1043,6 +1043,15 @@ export class CorptieStore {
     this.ensureColumn("agents", "work_dir", "TEXT");
     this.ensureColumn("agents", "avatar_path", "TEXT");
     this.ensureColumn("objectives", "priority", "TEXT");
+    this.ensureColumn("objectives", "ideal_state", "TEXT NOT NULL DEFAULT ''");
+    const objectiveColumns = this.selectAll("PRAGMA table_info(objectives)");
+    if (objectiveColumns.some((entry) => entry.name === "acceptance_criteria")) {
+      this.db.run(
+        `UPDATE objectives SET ideal_state = acceptance_criteria
+         WHERE ideal_state = '' AND acceptance_criteria <> ''`
+      );
+      this.dropColumnIfExists("objectives", "acceptance_criteria");
+    }
     this.ensureColumn("objectives", "target_date", "TEXT");
     this.ensureColumn("objectives", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("objectives", "workspace_ids_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -2597,6 +2606,61 @@ export class CorptieStore {
       throw new Error(`Logical session ${logicalSessionId} has mismatched thread and workspace bindings.`);
     }
     return true;
+  }
+
+  retireLogicalSessionWorkspace(logicalSessionId, expectedWorktreeId) {
+    const logical = this.getLogicalSession(logicalSessionId);
+    if (!logical?.activeBinding || logical.activeWorkspaceId !== expectedWorktreeId) {
+      const error = new Error(`Logical Session ${logicalSessionId} is no longer bound to the selected Worktree.`);
+      error.code = "WORKSPACE_ROUTE_CHANGED";
+      throw error;
+    }
+    const timestamp = new Date().toISOString();
+    const session = logical.legacySessionId ? this.getSession(logical.legacySessionId) : null;
+    const rawStatus = {
+      ...(session?.rawStatus ?? {}),
+      capabilities: {
+        ...(session?.rawStatus?.capabilities ?? session?.capabilities ?? {}),
+        canSend: false,
+        canInterrupt: false,
+        canReconnect: false
+      },
+      workspaceRetired: {
+        worktreeId: expectedWorktreeId,
+        path: logical.activeBinding.boundCwd,
+        retiredAt: timestamp
+      }
+    };
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(
+        `UPDATE provider_thread_bindings
+         SET worktree_id = NULL, updated_at = ?
+         WHERE provider_thread_id = ? AND state = 'active'`,
+        [timestamp, logical.activeThreadId]
+      );
+      this.db.run(
+        `UPDATE logical_sessions
+         SET active_workspace_id = NULL, archived = 1, updated_at = ?
+         WHERE logical_session_id = ?`,
+        [timestamp, logicalSessionId]
+      );
+      if (logical.legacySessionId) {
+        this.db.run(
+          `UPDATE sessions
+           SET archived = 1, status = 'complete', raw_json = ?, updated_at = ?
+           WHERE id = ?`,
+          [JSON.stringify(rawStatus), timestamp, logical.legacySessionId]
+        );
+      }
+      this.assertLogicalSessionRoute(logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getLogicalSession(logicalSessionId);
   }
 
   // A Work Session keeps one stable product Session identity while its Provider
@@ -4331,13 +4395,13 @@ export class CorptieStore {
     this.assertObjectiveAssociations(normalized, { objectiveId: id });
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO objectives (id, name, description, acceptance_criteria, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
+      `INSERT INTO objectives (id, name, description, ideal_state, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         normalized.name,
         normalized.description ?? "",
-        normalized.acceptanceCriteria ?? "",
+        normalized.idealState ?? "",
         normalized.status ?? "active",
         JSON.stringify(normalized.budgetConfig ?? {}),
         normalized.priority ?? null,
@@ -4371,11 +4435,11 @@ export class CorptieStore {
     this.assertObjectiveAssociations(prospective, { objectiveId: id, validateWorkItemScope: true });
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
     this.db.run(
-      `UPDATE objectives SET name=?, description=?, acceptance_criteria=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
+      `UPDATE objectives SET name=?, description=?, ideal_state=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
       [
         has("name") ? normalized.name : current.name,
         has("description") ? normalized.description : current.description,
-        has("acceptanceCriteria") ? normalized.acceptanceCriteria : current.acceptanceCriteria,
+        has("idealState") ? normalized.idealState : current.idealState,
         has("status") ? normalized.status : current.status,
         has("budgetConfig") ? JSON.stringify(normalized.budgetConfig) : JSON.stringify(current.budgetConfig ?? {}),
         has("priority") ? normalized.priority : current.priority,
@@ -5611,7 +5675,7 @@ function objectiveFromRow(row) {
     id: row.id,
     name: row.name,
     description: row.description ?? "",
-    acceptanceCriteria: row.acceptance_criteria ?? "",
+    idealState: row.ideal_state ?? "",
     status: row.status,
     priority: row.priority ?? null,
     targetDate: row.target_date ?? null,

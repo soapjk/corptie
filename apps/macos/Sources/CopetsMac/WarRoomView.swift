@@ -582,6 +582,10 @@ struct WorkItemDetailView: View {
     @State private var isAdvancingStatus = false
     @State private var isConfirmingCompletion = false
     @State private var sessionCreationAgent: Agent?
+    @State private var worktreeStatus: WorkItemWorktreeStatus?
+    @State private var isLoadingWorktree = false
+    @State private var isReclaimingWorktree = false
+    @State private var showReclaimConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -610,6 +614,12 @@ struct WorkItemDetailView: View {
 
                     executionSection
 
+                    if isCompleted {
+                        Divider()
+
+                        worktreeSection
+                    }
+
                     Divider()
 
                     memorySection
@@ -622,6 +632,7 @@ struct WorkItemDetailView: View {
             // 以 workItem 作为 task 标识：当父层重新拉取、currentSessionId 等字段变化时，
             // 本视图会拿到新的 workItem 值并重新刷新「当前执行」，避免依赖陈旧的 currentSessionId。
             await refreshExecution()
+            if isCompleted { await refreshWorktree() }
             presentCompletionSuggestionIfEligible()
         }
         .onChange(of: workItem.completionSuggestion) { _, _ in
@@ -721,6 +732,18 @@ struct WorkItemDetailView: View {
                     onRequestReload()
                 }
             }
+        }
+        .confirmationDialog(
+            L10n("Reclaim this Worktree?"),
+            isPresented: $showReclaimConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Reclaim Worktree"), role: .destructive) {
+                Task { await reclaimWorktree() }
+            }
+            Button(L10n("Cancel"), role: .cancel) {}
+        } message: {
+            Text(L10n("The merged Worktree and its local branch will be removed. Session history will be archived and preserved."))
         }
     }
 
@@ -907,6 +930,116 @@ struct WorkItemDetailView: View {
     private var isRunning: Bool {
         guard let s = currentSession?.status else { return false }
         return ["running", "blocked"].contains(s)
+    }
+
+    @ViewBuilder
+    private var worktreeSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(L10n("Worktree"), systemImage: "arrow.triangle.branch")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if isLoadingWorktree || isReclaimingWorktree {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if let status = worktreeStatus {
+                switch status.status {
+                case "retired":
+                    Label(L10n("Worktree reclaimed"), systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.green)
+                case "available":
+                    if let worktree = status.worktree {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(worktree.branchName ?? worktree.path)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            HStack(spacing: 6) {
+                                worktreeBadge(
+                                    worktree.mergedIntoMain == true ? L10n("Merged") : L10n("Not merged"),
+                                    color: worktree.mergedIntoMain == true ? .green : .orange
+                                )
+                                if worktree.dirty == true {
+                                    worktreeBadge(L10n("Uncommitted changes"), color: .orange)
+                                }
+                            }
+                        }
+                        if status.canReclaim {
+                            Button {
+                                showReclaimConfirmation = true
+                            } label: {
+                                Label(L10n("Reclaim Worktree"), systemImage: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(isReclaimingWorktree)
+                        } else if let blocker = status.blocker {
+                            Text(worktreeBlockerMessage(blocker))
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                case "none":
+                    Text(L10n("No dedicated Worktree"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                default:
+                    Text(status.detail ?? L10n("Worktree unavailable"))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                }
+            } else if !isLoadingWorktree {
+                Text(L10n("Unable to inspect the Worktree."))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func worktreeBadge(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.09), in: Capsule())
+    }
+
+    private func worktreeBlockerMessage(_ blocker: String) -> String {
+        switch blocker {
+        case "UNCOMMITTED_CHANGES": L10n("Commit the Worktree changes before reclaiming it.")
+        case "NOT_MERGED_INTO_MAIN", "INTEGRATION_PENDING": L10n("Merge this Worktree into main before reclaiming it.")
+        case "SESSION_BUSY": L10n("Wait for the Session to finish before reclaiming its Worktree.")
+        case "SHARED_WITH_ACTIVE_WORK_ITEM": L10n("This Worktree is still used by an active WorkItem.")
+        default: L10n("This Worktree is not safe to reclaim yet.")
+        }
+    }
+
+    private func refreshWorktree() async {
+        guard !isLoadingWorktree else { return }
+        isLoadingWorktree = true
+        defer { isLoadingWorktree = false }
+        worktreeStatus = await client.worktreeStatus(workItemId: workItem.id)
+    }
+
+    private func reclaimWorktree() async {
+        guard !isReclaimingWorktree else { return }
+        isReclaimingWorktree = true
+        defer { isReclaimingWorktree = false }
+        if let status = await client.reclaimWorktree(workItemId: workItem.id) {
+            worktreeStatus = status
+            await refreshExecution()
+            onRequestReload()
+        } else {
+            executionError = EntityLaunchError(
+                message: client.errorMessage ?? L10n("Unable to reclaim the Worktree."),
+                code: nil
+            )
+        }
     }
 
     // 执行/终止/确认完成控制按钮：圆形、仅图标。

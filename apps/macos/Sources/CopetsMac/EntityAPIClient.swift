@@ -213,6 +213,53 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: WorkItem.self)
     }
 
+    func worktreeStatus(workItemId: String) async -> WorkItemWorktreeStatus? {
+        do {
+            let url = baseURL.appending(path: "work-items/\(workItemId)/worktree")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(
+                    message: envelope?.error ?? L10n("Unable to inspect the Worktree."),
+                    code: envelope?.code
+                )
+            }
+            let status = try decoder.decode(WorkItemWorktreeStatus.self, from: data)
+            errorMessage = nil
+            return status
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return nil
+        }
+    }
+
+    func reclaimWorktree(workItemId: String) async -> WorkItemWorktreeStatus? {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItemId)/worktree/reclaim")
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(
+                    message: envelope?.error ?? L10n("Unable to reclaim the Worktree."),
+                    code: envelope?.code
+                )
+            }
+            let status = try decoder.decode(WorkItemWorktreeStatus.self, from: data)
+            errorMessage = nil
+            return status
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return nil
+        }
+    }
+
     // 提交独立的验收评估。该接口要求逐条标准、结论和可核验证据；
     // Session 生命周期状态不能通过此方法隐式转换为验收通过。
     @discardableResult
@@ -451,7 +498,7 @@ final class EntityAPIClient: ObservableObject {
     // priority/targetDate 传 "" 表示清除；tags/workspaceIds/relatedObjectiveIds/contributorAgentIds 传数组整体替换。
     @discardableResult
     func updateObjective(objectiveId: String, name: String? = nil, description: String? = nil,
-                         acceptanceCriteria: String? = nil, priority: String? = nil, targetDate: String? = nil,
+                         idealState: String? = nil, priority: String? = nil, targetDate: String? = nil,
                          tags: [String]? = nil, workspaceIds: [String]? = nil,
                          relatedObjectiveIds: [String]? = nil, contributorAgentIds: [String]? = nil) async -> Objective? {
         var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
@@ -460,7 +507,7 @@ final class EntityAPIClient: ObservableObject {
         var body: [String: Any] = [:]
         if let name { body["name"] = name }
         if let description { body["description"] = description }
-        if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
+        if let idealState { body["idealState"] = idealState }
         if let priority { body["priority"] = priority }
         if let targetDate { body["targetDate"] = targetDate }
         if let tags { body["tags"] = tags }
@@ -572,7 +619,7 @@ final class EntityAPIClient: ObservableObject {
 
     // 创建 Objective：POST /objectives { name, ... } → 直接返回 objective
     @discardableResult
-    func createObjective(name: String, description: String? = nil, acceptanceCriteria: String? = nil,
+    func createObjective(name: String, description: String? = nil, idealState: String? = nil,
                          priority: String? = nil, targetDate: String? = nil, tags: [String] = [],
                          workspaceIds: [String] = [], relatedObjectiveIds: [String] = [],
                          contributorAgentIds: [String] = []) async -> Objective? {
@@ -581,7 +628,7 @@ final class EntityAPIClient: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["name": name]
         if let description { body["description"] = description }
-        if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
+        if let idealState { body["idealState"] = idealState }
         if let priority { body["priority"] = priority }
         if let targetDate { body["targetDate"] = targetDate }
         if !tags.isEmpty { body["tags"] = tags }

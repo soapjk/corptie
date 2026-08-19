@@ -124,6 +124,7 @@ import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePat
 import {
   assertSessionTitleAvailable,
   defaultSessionTitleForAgent,
+  defaultSessionTitleForWorkItem,
   defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   normalizeSessionTitle,
@@ -3333,7 +3334,7 @@ async function launchWorkItemSession({ agent, workItem, providerId: requestedPro
     {
       cwd,
       title,
-      defaultTitle: defaultSessionTitleForAgent(agent.name),
+      defaultTitle: defaultSessionTitleForWorkItem(workItem.title, agent.name),
       prompt,
       agent: agent.name,
       sessionKind: "worker"
@@ -5271,6 +5272,113 @@ async function projectWorktreeStatus(sessionId) {
   return { project, ...runtime, gitHubPush };
 }
 
+function completedWorkItemStatus(status) {
+  return ["done", "complete", "completed"].includes(String(status ?? ""));
+}
+
+async function inspectWorkItemWorktree(workItemId) {
+  const workItem = store.getWorkItem(workItemId);
+  if (!workItem) {
+    const error = new Error(`WorkItem not found: ${workItemId}`);
+    error.code = "WORK_ITEM_NOT_FOUND";
+    error.statusCode = 404;
+    throw error;
+  }
+  const sessions = store.listSessionsByWorkItem(workItemId);
+  const session = sessions.find((candidate) => candidate.id === workItem.current_session_id)
+    ?? sessions.at(-1)
+    ?? null;
+  if (!session) {
+    return { status: "none", sessionId: null, worktree: null, canReclaim: false, blocker: "NO_WORK_SESSION" };
+  }
+  const logical = store.getLogicalSessionByLegacySessionId(session.id);
+  if (!logical?.activeBinding) {
+    return { status: "unavailable", sessionId: session.id, worktree: null, canReclaim: false, blocker: "NO_WORKSPACE_ROUTE" };
+  }
+  if (!logical.activeWorkspaceId) {
+    return {
+      status: session.rawStatus?.workspaceRetired ? "retired" : "none",
+      sessionId: session.id,
+      worktree: null,
+      canReclaim: false,
+      blocker: null,
+      retiredWorkspace: session.rawStatus?.workspaceRetired ?? null
+    };
+  }
+  let project;
+  try {
+    project = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+  } catch (error) {
+    return {
+      status: "unavailable",
+      sessionId: session.id,
+      worktree: null,
+      canReclaim: false,
+      blocker: "WORKTREE_UNAVAILABLE",
+      detail: error.message
+    };
+  }
+  const worktree = project.worktrees.find((candidate) => candidate.worktreeId === logical.activeWorkspaceId) ?? null;
+  if (!worktree || worktree.availability !== "available") {
+    return { status: "unavailable", sessionId: session.id, worktree, canReclaim: false, blocker: "WORKTREE_UNAVAILABLE" };
+  }
+  const boundSessions = worktree.sessions
+    .map((binding) => binding.sessionId ? store.getSession(binding.sessionId) : null)
+    .filter(Boolean);
+  const hasBusySession = boundSessions.some((candidate) => sessionHasActiveRun(candidate));
+  const hasIncompleteWorkItem = boundSessions.some((candidate) => {
+    const boundWorkItem = candidate.workItemId ? store.getWorkItem(candidate.workItemId) : null;
+    return boundWorkItem && !completedWorkItemStatus(boundWorkItem.status);
+  });
+  let blocker = null;
+  if (!completedWorkItemStatus(workItem.status)) blocker = "WORK_ITEM_NOT_COMPLETED";
+  else if (worktree.isMain) blocker = "MAIN_WORKTREE";
+  else if (hasBusySession) blocker = "SESSION_BUSY";
+  else if (hasIncompleteWorkItem) blocker = "SHARED_WITH_ACTIVE_WORK_ITEM";
+  else if (worktree.dirty) blocker = "UNCOMMITTED_CHANGES";
+  else if (worktree.mergedIntoMain !== true) blocker = "NOT_MERGED_INTO_MAIN";
+  else if (worktree.pendingIntegration) blocker = "INTEGRATION_PENDING";
+  return {
+    status: "available",
+    sessionId: session.id,
+    repositoryId: project.repositoryId,
+    worktree,
+    canReclaim: blocker == null,
+    blocker
+  };
+}
+
+async function reclaimWorkItemWorktree(workItemId) {
+  const inspection = await inspectWorkItemWorktree(workItemId);
+  if (!inspection.canReclaim || !inspection.worktree || !inspection.sessionId) {
+    const error = new Error("This Worktree is not safe to reclaim yet.");
+    error.code = inspection.blocker ?? "WORKTREE_NOT_RECLAIMABLE";
+    error.statusCode = 409;
+    throw error;
+  }
+  const logical = store.getLogicalSessionByLegacySessionId(inspection.sessionId);
+  const logicalSessionIds = inspection.worktree.sessions.map((item) => item.logicalSessionId);
+  const cleanup = await gitWorkspaces.removeMergedWorktree({
+    logicalSessionId: logical.logicalSessionId,
+    sourceWorktreeId: inspection.worktree.worktreeId,
+    ignoreLogicalSessionIds: logicalSessionIds,
+    deleteBranch: true
+  });
+  for (const logicalSessionId of logicalSessionIds) {
+    store.retireLogicalSessionWorkspace(logicalSessionId, inspection.worktree.worktreeId);
+  }
+  emitEvent("WorkItemWorktreeReclaimed", {
+    workItemId,
+    sourceWorktreeId: inspection.worktree.worktreeId,
+    logicalSessionIds,
+    cleanup
+  });
+  return {
+    ...(await inspectWorkItemWorktree(workItemId)),
+    cleanup
+  };
+}
+
 async function commitMessageForProjectWorktree(worktree, requestedMessage, requestingSessionId) {
   return resolveProjectWorktreeCommitMessage({
     worktree,
@@ -5697,6 +5805,8 @@ function route(request, response) {
     },
     backgroundAgentService,
     skillRegistryService,
+    inspectWorkItemWorktree,
+    reclaimWorkItemWorktree,
     resolveAgentAvailability: (agent) => {
       return { status: "available", reason: null };
     },
