@@ -149,6 +149,50 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 54)
     }
 
+    func testExpandedExecutionShowsRawStatusInBoundedScrollableArea() throws {
+        let harness = makeHarness(followsLatest: true, height: 520)
+        let rawStatus = "Raw status\n" + String(repeating: "{\"event\":\"tool\",\"status\":\"running\"}\n", count: 80)
+        let process = AppKitChatTimelineRow(
+            id: "process-with-raw-status",
+            contentRevision: 1,
+            nativeText: "⌘  Running command",
+            rawStatusText: rawStatus,
+            copyText: "Running command\n\n\(rawStatus)",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "turn",
+            isExpanded: true,
+            processCount: 1,
+            processState: .running,
+            showsHeader: false
+        )
+        harness.coordinator.apply(rows: [process])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        cell.layoutSubtreeIfNeeded()
+        let rawArea = try XCTUnwrap(
+            view(in: cell, identifier: "chat.timeline.raw-status") as? NSScrollView
+        )
+        let rawTextView = try XCTUnwrap(rawArea.documentView as? NSTextView)
+
+        XCTAssertFalse(rawArea.isHidden)
+        XCTAssertTrue(rawArea.hasVerticalScroller)
+        XCTAssertEqual(
+            NativeTimelineLayoutCache.shared.layout(
+                for: process,
+                columnWidth: harness.tableView.tableColumns[0].width
+            ).rawStatusHeight,
+            160
+        )
+        XCTAssertLessThanOrEqual(rawArea.frame.height, 164)
+        XCTAssertEqual(rawTextView.string, rawStatus)
+        XCTAssertTrue(rawTextView.font.map { NSFontManager.shared.traits(of: $0).contains(.fixedPitchFontMask) } == true)
+    }
+
     func testOrdinaryNativeMessagePlacesHoverTimestampBesideCopyAction() throws {
         let harness = makeHarness(followsLatest: true)
         let message = row(

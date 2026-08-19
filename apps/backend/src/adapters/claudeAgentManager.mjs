@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { forkSession, getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
+import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { providerMessageWithSessionContext, userMessageWithoutSessionContext } from "../utils/sessionContextMessage.mjs";
 
@@ -1084,7 +1085,12 @@ export class ClaudeAgentManager {
       status: item.status ?? null,
       createdAt,
       presentationRole: item.presentationRole ?? null,
-      presentationText: item.presentationText ?? null
+      presentationText: item.presentationText ?? null,
+      rawMetadataJSON: item.rawMetadataJSON ?? providerRawMetadataJSON(
+        "claude-sdk",
+        item.rawPayload ?? item,
+        { source: item.rawPayload ? "provider_event" : "normalized_item" }
+      )
     };
     session.items.push(appendedItem);
     this.store?.appendItem?.(session.id, appendedItem);

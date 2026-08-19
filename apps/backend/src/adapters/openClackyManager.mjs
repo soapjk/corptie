@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { providerMessageWithSessionContext, userMessageWithoutSessionContext } from "../utils/sessionContextMessage.mjs";
+import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:7070";
 
@@ -719,6 +720,7 @@ function openClackyEventItems(sessionId, event, index, fallbackTurnId) {
     turnId: String(event?.turn_id ?? fallbackTurnId ?? fallbackOpenClackyTurnId(sessionId, index)),
     turnStatus: "complete",
     title: "OpenClacky",
+    rawMetadataJSON: providerRawMetadataJSON("openclacky", event, { source: "provider_event" }),
     // OpenClacky history commonly exposes Unix seconds for authored messages
     // and no timestamp at all for assistant/tool events. Preserve the absence
     // instead of fabricating a snapshot-read time: a made-up "now" would make

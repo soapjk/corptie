@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import CorptieMac
 
@@ -79,6 +80,22 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         }
         XCTAssertEqual(processItems.map(\.id), [reasoning.id])
         XCTAssertEqual(projectedProcessState(for: processItems), .running)
+    }
+
+    @MainActor
+    func testExpandedExecutionRawStatusUsesLatestProviderItem() {
+        var first = item(id: "command", type: "commandExecution", text: "$ npm test")
+        first.rawMetadataJSON = "{\"command\":\"npm test\"}"
+        var latest = item(id: "reasoning", type: "reasoning", text: "Thinking", turnStatus: "inProgress")
+        latest.rawMetadataJSON = "{\"type\":\"reasoning\",\"summary\":[]}"
+
+        let rawStatus = processRawStatusText(for: [first, latest])
+
+        XCTAssertTrue(rawStatus.contains("item_id: reasoning"))
+        XCTAssertTrue(rawStatus.contains("turn_status: inProgress"))
+        XCTAssertTrue(rawStatus.contains("provider_metadata:"))
+        XCTAssertTrue(rawStatus.contains("\"summary\":[]"))
+        XCTAssertFalse(rawStatus.contains("npm test"))
     }
 
     func testPlainUserAndAgentMessagesRemainNative() {

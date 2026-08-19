@@ -309,11 +309,13 @@ final class NativeTimelineLayoutCache {
         let attributedText: NSAttributedString
         let cardWidth: CGFloat
         let textHeight: CGFloat
+        let rawStatusHeight: CGFloat
         let rowHeight: CGFloat
     }
 
     private struct Key: Hashable {
         let text: String
+        let rawStatusText: String
         let style: AppKitChatTimelineRow.NativeStyle
         let title: String
         let metadata: String
@@ -336,6 +338,7 @@ final class NativeTimelineLayoutCache {
         let normalizedWidth = max(120, columnWidth)
         let key = Key(
             text: row.nativeText,
+            rawStatusText: row.rawStatusText,
             style: row.nativeStyle,
             title: row.title,
             metadata: row.metadata,
@@ -360,6 +363,22 @@ final class NativeTimelineLayoutCache {
                 of: attributed,
                 width: max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
             )
+        let rawStatusHeight: CGFloat
+        if row.nativeStyle == .process,
+           row.isExpanded,
+           !row.rawStatusText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let rawStatus = NSAttributedString(
+                string: row.rawStatusText,
+                attributes: [.font: NSFont.monospacedSystemFont(ofSize: 9.5, weight: .regular)]
+            )
+            let measuredHeight = NativeTextKitLayout.height(
+                of: rawStatus,
+                width: max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding - 8)
+            ) + 8
+            rawStatusHeight = min(160, max(48, measuredHeight))
+        } else {
+            rawStatusHeight = 0
+        }
         let rowHeight: CGFloat
         if row.nativeStyle == .process && !row.isExpanded {
             rowHeight = 32
@@ -367,7 +386,7 @@ final class NativeTimelineLayoutCache {
             // This exactly matches the native cell's 10pt leading/trailing
             // constraints and the NativeTimelineTextView's TextKit container.
             if row.nativeStyle == .process {
-                rowHeight = max(54, textHeight + 48)
+                rowHeight = max(54, textHeight + 48 + (rawStatusHeight > 0 ? rawStatusHeight + 8 : 0))
             } else {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
@@ -383,11 +402,12 @@ final class NativeTimelineLayoutCache {
             attributedText: attributed,
             cardWidth: cardWidth,
             textHeight: textHeight,
+            rawStatusHeight: rawStatusHeight,
             rowHeight: rowHeight
         )
         values[key] = layout
         recency.append(key)
-        estimatedBytes += (key.text.utf16.count * 8) + attributed.length * 8 + 192
+        estimatedBytes += ((key.text.utf16.count + key.rawStatusText.utf16.count) * 8) + attributed.length * 8 + 192
         evictIfNeeded()
         return layout
     }
@@ -403,7 +423,10 @@ final class NativeTimelineLayoutCache {
             guard let removed = values.removeValue(forKey: oldest) else { continue }
             estimatedBytes = max(
                 0,
-                estimatedBytes - (oldest.text.utf16.count * 8) - removed.attributedText.length * 8 - 192
+                estimatedBytes
+                    - ((oldest.text.utf16.count + oldest.rawStatusText.utf16.count) * 8)
+                    - removed.attributedText.length * 8
+                    - 192
             )
         }
     }
@@ -454,6 +477,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let id: String
     let contentRevision: Int
     let nativeText: String
+    let rawStatusText: String
     let copyText: String
     let nativeStyle: NativeStyle
     let title: String
@@ -477,6 +501,7 @@ struct AppKitChatTimelineRow: Identifiable {
         id: String,
         contentRevision: Int,
         nativeText: String,
+        rawStatusText: String = "",
         copyText: String,
         nativeStyle: NativeStyle,
         title: String,
@@ -493,6 +518,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.id = id
         self.contentRevision = contentRevision
         self.nativeText = nativeText
+        self.rawStatusText = rawStatusText
         self.copyText = copyText
         self.nativeStyle = nativeStyle
         self.title = title
@@ -1173,6 +1199,8 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private let metadataLabel = NSTextField(labelWithString: "")
     private let hoverTimestampLabel = NSTextField(labelWithString: "")
     private let label = NativeTimelineTextView()
+    private let rawStatusScrollView = NSScrollView()
+    private let rawStatusTextView = NSTextView()
     private let disclosureButton = NSButton()
     private let copyButton = NSButton()
     private let messageActionBar = NSStackView()
@@ -1198,6 +1226,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var labelTopToProcessButtonConstraint: NSLayoutConstraint!
     private var labelBottomToCardConstraint: NSLayoutConstraint!
     private var labelHeightConstraint: NSLayoutConstraint!
+    private var rawStatusTopConstraint: NSLayoutConstraint!
+    private var rawStatusBottomConstraint: NSLayoutConstraint!
+    private var rawStatusHeightConstraint: NSLayoutConstraint!
     private var expandableTurnId: String?
     private var onToggleExpansion: ((String) -> Void)?
     private var timelineActions: [AppKitChatTimelineRow.Action] = []
@@ -1221,6 +1252,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         metadataLabel.translatesAutoresizingMaskIntoConstraints = false
         hoverTimestampLabel.translatesAutoresizingMaskIntoConstraints = false
         label.translatesAutoresizingMaskIntoConstraints = false
+        rawStatusScrollView.translatesAutoresizingMaskIntoConstraints = false
         disclosureButton.translatesAutoresizingMaskIntoConstraints = false
         copyButton.translatesAutoresizingMaskIntoConstraints = false
         messageActionBar.translatesAutoresizingMaskIntoConstraints = false
@@ -1235,6 +1267,31 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         processSeparator.wantsLayer = true
         processButton.translatesAutoresizingMaskIntoConstraints = false
         label.isSelectable = true
+        rawStatusScrollView.identifier = NSUserInterfaceItemIdentifier("chat.timeline.raw-status")
+        rawStatusScrollView.drawsBackground = true
+        rawStatusScrollView.backgroundColor = NSColor.black.withAlphaComponent(0.035)
+        rawStatusScrollView.borderType = .noBorder
+        rawStatusScrollView.hasVerticalScroller = true
+        rawStatusScrollView.autohidesScrollers = true
+        rawStatusScrollView.scrollerStyle = .overlay
+        rawStatusScrollView.wantsLayer = true
+        rawStatusScrollView.layer?.cornerRadius = 6
+        rawStatusTextView.isEditable = false
+        rawStatusTextView.isSelectable = true
+        rawStatusTextView.isRichText = false
+        rawStatusTextView.drawsBackground = false
+        rawStatusTextView.font = .monospacedSystemFont(ofSize: 9.5, weight: .regular)
+        rawStatusTextView.textColor = NativeTimelineCardPalette.mutedText
+        rawStatusTextView.textContainerInset = NSSize(width: 4, height: 4)
+        rawStatusTextView.isHorizontallyResizable = false
+        rawStatusTextView.isVerticallyResizable = true
+        rawStatusTextView.autoresizingMask = [.width]
+        rawStatusTextView.textContainer?.widthTracksTextView = true
+        rawStatusTextView.textContainer?.containerSize = NSSize(
+            width: 0,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        rawStatusScrollView.documentView = rawStatusTextView
         disclosureButton.isBordered = false
         disclosureButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.disclosure")
         disclosureButton.imagePosition = .imageOnly
@@ -1269,7 +1326,16 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         hoverTimestampLabel.alphaValue = 1
         addSubview(cardView)
         addSubview(messageActionBar)
-        [titleLabel, metadataLabel, label, disclosureButton, actionStack, processSeparator, processButton].forEach(cardView.addSubview)
+        [
+            titleLabel,
+            metadataLabel,
+            label,
+            rawStatusScrollView,
+            disclosureButton,
+            actionStack,
+            processSeparator,
+            processButton
+        ].forEach(cardView.addSubview)
         processSeparatorHeight = processSeparator.heightAnchor.constraint(equalToConstant: 0)
         processButtonHeight = processButton.heightAnchor.constraint(equalToConstant: 0)
         processButtonTopConstraint = processButton.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 3)
@@ -1289,6 +1355,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         labelTopToProcessButtonConstraint = label.topAnchor.constraint(equalTo: processButton.bottomAnchor, constant: 8)
         labelBottomToCardConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10)
         labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: 0)
+        rawStatusTopConstraint = rawStatusScrollView.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 8)
+        rawStatusBottomConstraint = rawStatusScrollView.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -10)
+        rawStatusHeightConstraint = rawStatusScrollView.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             cardWidthConstraint,
             cardLeadingConstraint,
@@ -1309,6 +1378,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             label.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             label.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             labelHeightConstraint,
+            rawStatusScrollView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
+            rawStatusScrollView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
+            rawStatusHeightConstraint,
             labelTopToTitleConstraint,
             labelBottomToProcessConstraint,
             actionStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
@@ -1340,6 +1412,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
         label.textStorage?.setAttributedString(layout.attributedText)
         labelHeightConstraint.constant = layout.textHeight
+        rawStatusTextView.string = row.rawStatusText
+        rawStatusHeightConstraint.constant = layout.rawStatusHeight
+        rawStatusScrollView.isHidden = layout.rawStatusHeight == 0
         titleLabel.stringValue = row.title
         titleLabel.font = .systemFont(ofSize: 11, weight: .bold)
         metadataLabel.stringValue = row.metadata
@@ -1390,6 +1465,8 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             labelTopToCardConstraint,
             labelTopToProcessButtonConstraint,
             labelBottomToCardConstraint,
+            rawStatusTopConstraint,
+            rawStatusBottomConstraint,
             processButtonTopConstraint,
             processButtonBottomConstraint
         ])
@@ -1398,7 +1475,12 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             processButtonTopConstraint.isActive = true
             if row.isExpanded {
                 labelTopToProcessButtonConstraint.isActive = true
-                labelBottomToCardConstraint.isActive = true
+                if layout.rawStatusHeight > 0 {
+                    rawStatusTopConstraint.isActive = true
+                    rawStatusBottomConstraint.isActive = true
+                } else {
+                    labelBottomToCardConstraint.isActive = true
+                }
             }
         } else {
             (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true

@@ -1135,6 +1135,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let options: [CodexApprovalOption]?
     let status: String?
     let createdAt: String?
+    var rawMetadataJSON: String? = nil
     var userMessageStatus: String? = nil
     var queuePosition: Int? = nil
     var processingError: String? = nil

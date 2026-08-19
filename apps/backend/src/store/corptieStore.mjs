@@ -303,6 +303,7 @@ export class CorptieStore {
         title TEXT NOT NULL,
         text TEXT NOT NULL,
         options_json TEXT,
+        raw_metadata_json TEXT,
         status TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -1135,6 +1136,7 @@ export class CorptieStore {
     this.ensureColumn("workspace_transitions", "transition_kind", "TEXT NOT NULL DEFAULT 'workspace'");
     this.ensureColumn("workspace_transitions", "target_provider_id", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
+    this.ensureColumn("session_items", "raw_metadata_json", "TEXT");
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
     this.ensureColumn("feishu_bots", "brand", "TEXT NOT NULL DEFAULT 'feishu'");
@@ -3126,8 +3128,8 @@ export class CorptieStore {
     );
     this.db.run(
       `INSERT OR REPLACE INTO session_items (
-        id, session_id, turn_id, turn_status, type, title, text, options_json, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         item.id,
         sessionId,
@@ -3137,6 +3139,7 @@ export class CorptieStore {
         item.title || "Agent",
         item.text || "",
         Array.isArray(item.options) ? JSON.stringify(item.options) : null,
+        typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null,
         item.status || null,
         createdAt
       ]
@@ -3412,6 +3415,7 @@ export class CorptieStore {
         title: row.title,
         text: normalizeStoredText(row.text, provider),
         options: parseJson(row.options_json, null),
+        rawMetadataJSON: row.raw_metadata_json ?? null,
         status: row.status,
         createdAt: row.created_at
       }))

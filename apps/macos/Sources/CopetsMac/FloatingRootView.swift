@@ -3581,6 +3581,7 @@ struct DetailView: View {
         expandedTurnIds: Set<String>
     ) -> AppKitChatTimelineRow {
         let text: String
+        let rawStatusText: String
         let copyText: String
         let style: AppKitChatTimelineRow.NativeStyle
         let title: String
@@ -3615,12 +3616,15 @@ struct DetailView: View {
             processCount = nil
             processDuration = nil
             actions = nativeTimelineActions(for: item)
+            rawStatusText = ""
         case .process(let turnId, let items):
             let expanded = expandedTurnIds.contains(turnId)
-            copyText = items.map { nativeTimelineText(for: $0) }.joined(separator: "\n")
-            text = expanded
-                ? items.map(nativeProcessStepText).joined(separator: "\n\n")
-                : ""
+            let processStepsText = items.map(nativeProcessStepText).joined(separator: "\n\n")
+            rawStatusText = expanded ? processRawStatusText(for: items) : ""
+            copyText = rawStatusText.isEmpty
+                ? processStepsText
+                : processStepsText + "\n\n" + rawStatusText
+            text = expanded ? processStepsText : ""
             style = .process
             title = ""
             metadata = ""
@@ -3637,6 +3641,7 @@ struct DetailView: View {
             id: entry.id,
             contentRevision: appKitContentRevision(entry, expandedTurnIds: expandedTurnIds),
             nativeText: text,
+            rawStatusText: rawStatusText,
             copyText: copyText,
             nativeStyle: style,
             title: title,
@@ -4961,6 +4966,33 @@ func projectedProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRo
     }
 }
 
+@MainActor
+func processRawStatusText(for items: [CodexThreadItem]) -> String {
+    guard let item = items.last else { return "" }
+    let rawMetadata = item.rawMetadataJSON?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let status = item.status?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var lines = [
+        L10n("Raw status"),
+        "item_id: \(item.id)",
+        "turn_id: \(item.turnId)",
+        "item_type: \(item.type)",
+        "turn_status: \(item.turnStatus)"
+    ]
+    if let status, !status.isEmpty {
+        lines.append("item_status: \(status)")
+    }
+    if let createdAt = item.createdAt, !createdAt.isEmpty {
+        lines.append("created_at: \(createdAt)")
+    }
+    if let rawMetadata, !rawMetadata.isEmpty {
+        lines.append("provider_metadata:")
+        lines.append(rawMetadata)
+    } else {
+        lines.append("provider_metadata: unavailable")
+    }
+    return lines.joined(separator: "\n")
+}
+
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
     if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
         return true
@@ -4995,6 +5027,9 @@ private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visi
 private func detailItemSignature(_ item: CodexThreadItem) -> String {
     let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
     let presentationText = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let rawMetadata = item.rawMetadataJSON ?? ""
+    let rawMetadataCount = String(rawMetadata.count)
+    let rawMetadataSuffix = String(rawMetadata.suffix(96))
     return [
         item.id,
         item.type,
@@ -5009,6 +5044,8 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         String(text.suffix(96)),
         "\(presentationText.count)",
         String(presentationText.suffix(96)),
+        rawMetadataCount,
+        rawMetadataSuffix,
         fileChangesSignature(item)
     ].joined(separator: ":")
 }

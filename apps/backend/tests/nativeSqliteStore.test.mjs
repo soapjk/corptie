@@ -102,6 +102,44 @@ test("native SQLite persists committed writes immediately in WAL mode", async ()
   }
 });
 
+test("Session items persist Provider raw metadata for diagnostics", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-item-raw-metadata-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "raw-session",
+      title: "Raw metadata",
+      agent: "Claude Code",
+      provider: "claude-sdk",
+      status: "running"
+    });
+    const rawMetadataJSON = JSON.stringify({ provider: "claude-sdk", payload: { command: "npm test" } });
+    store.appendItem("raw-session", {
+      id: "command-1",
+      turnId: "turn-1",
+      turnStatus: "running",
+      type: "commandExecution",
+      title: "Bash",
+      text: "npm test",
+      status: "running",
+      rawMetadataJSON
+    });
+
+    assert.equal(store.getItems("raw-session", 10, "claude-sdk")[0].rawMetadataJSON, rawMetadataJSON);
+    assert.equal(
+      store.selectOne("SELECT raw_metadata_json FROM session_items WHERE id = ?", ["command-1"]).raw_metadata_json,
+      rawMetadataJSON
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("state revision log commits and rolls back atomically with entity writes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-state-revision-"));
   const store = new CorptieStore({

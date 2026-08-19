@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
+import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 
 export class CodexAppServerClient {
@@ -1444,7 +1445,8 @@ function mapThreadItem(turn, item) {
     text: itemText(item),
     status: item.status ?? null,
     presentationRole: item.phase ?? item.presentationRole ?? null,
-    createdAt: createdAtFrom(item, turn)
+    createdAt: createdAtFrom(item, turn),
+    rawMetadataJSON: providerRawMetadataJSON("codex-app-server", item, { source: "provider_item" })
   };
   if (item.type === "fileChange") {
     mapped.fileChanges = (item.changes ?? []).map((change) => ({
