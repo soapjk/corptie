@@ -122,6 +122,37 @@ final class ChatDisplayOrderTests: XCTestCase {
         )
     }
 
+    func testMixedFractionalTimestampFormatsUseChronologicalFallback() {
+        let items = [
+            item(
+                id: "later-fractional",
+                type: "agentMessage",
+                turnId: "turn-2",
+                createdAt: "2026-08-17T00:00:00.500Z"
+            ),
+            item(
+                id: "earlier-whole",
+                type: "userMessage",
+                turnId: "turn-1",
+                createdAt: "2026-08-17T00:00:00Z"
+            )
+        ]
+
+        XCTAssertEqual(
+            stableChronologicalChatItems(items).map(\.id),
+            ["earlier-whole", "later-fractional"]
+        )
+    }
+
+    func testMalformedFixedWidthTimestampPreservesProviderOrder() {
+        let items = [
+            item(id: "first", type: "agentMessage", turnId: "turn-1", createdAt: "2026-99-99T99:99:99Z"),
+            item(id: "second", type: "userMessage", turnId: "turn-2", createdAt: "2026-00-00T00:00:00Z")
+        ]
+
+        XCTAssertEqual(stableChronologicalChatItems(items).map(\.id), ["first", "second"])
+    }
+
     func testOpenClackyPartialHistoryDoesNotStackDatedUserMessagesAtTheTop() {
         let items = [
             item(

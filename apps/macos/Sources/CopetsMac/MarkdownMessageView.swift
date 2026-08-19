@@ -195,7 +195,12 @@ enum ClickableMessageText {
         options: [.caseInsensitive]
     )
 
+    @MainActor
     static func markdown(from text: String, baseDirectory: String?) -> String {
+        ClickableMessageTextCache.shared.markdown(from: text, baseDirectory: baseDirectory)
+    }
+
+    static func rewriteLinks(in text: String, baseDirectory: String?) -> String {
         var inFence = false
         return text.components(separatedBy: "\n").map { line in
             if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
@@ -266,6 +271,70 @@ enum ClickableMessageText {
             result.removeLast()
         }
         return result
+    }
+}
+
+/// 缓存链接重写结果。此前 `ClickableMessageText.markdown` 在每次消息行重建时都会
+/// 重跑两个正则 + 对文件路径候选做磁盘 IO，而结果并未缓存（`NativeMarkdownTextCache`
+/// 只缓存了后续的 attributed-string 转换）。这里补上输入侧缓存，与 MarkdownUI 的
+/// `MarkdownRenderCache` 对称。
+@MainActor
+final class ClickableMessageTextCache {
+    private struct Key: Hashable {
+        let text: String
+        let baseDirectory: String?
+    }
+
+    static let shared = ClickableMessageTextCache()
+
+    private var values: [Key: String] = [:]
+    private var recency: [Key] = []
+    private var totalCharacterCost = 0
+    private let entryLimit = 1_000
+    private let characterLimit = 2_000_000
+
+    func markdown(from text: String, baseDirectory: String?) -> String {
+        let key = Key(text: text, baseDirectory: normalized(baseDirectory))
+        if let cached = values[key] {
+            touch(key)
+            return cached
+        }
+        let result = ClickableMessageText.rewriteLinks(in: text, baseDirectory: key.baseDirectory)
+        values[key] = result
+        recency.append(key)
+        totalCharacterCost += max(1, text.count)
+        evictIfNeeded()
+        return result
+    }
+
+    func contains(text: String, baseDirectory: String?) -> Bool {
+        values[Key(text: text, baseDirectory: normalized(baseDirectory))] != nil
+    }
+
+    func removeAllForTesting() {
+        values.removeAll(keepingCapacity: false)
+        recency.removeAll(keepingCapacity: false)
+        totalCharacterCost = 0
+    }
+
+    private func normalized(_ baseDirectory: String?) -> String? {
+        guard let value = baseDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private func touch(_ key: Key) {
+        recency.removeAll { $0 == key }
+        recency.append(key)
+    }
+
+    private func evictIfNeeded() {
+        while recency.count > entryLimit || totalCharacterCost > characterLimit,
+              let oldest = recency.first {
+            recency.removeFirst()
+            guard values.removeValue(forKey: oldest) != nil else { continue }
+            totalCharacterCost = max(0, totalCharacterCost - max(1, oldest.text.count))
+        }
     }
 }
 

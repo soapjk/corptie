@@ -5,6 +5,20 @@ import XCTest
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testDuplicateRowsAreCollapsedBeforeBuildingRevisionIndex() {
+        let rows = [
+            row(id: "same", revision: 1, text: "old"),
+            row(id: "other", revision: 1, text: "other"),
+            row(id: "same", revision: 2, text: "new")
+        ]
+
+        let unique = AppKitChatTimelineView.Coordinator.uniquedRows(rows)
+
+        XCTAssertEqual(unique.map(\.id), ["same", "other"])
+        XCTAssertEqual(unique.first?.contentRevision, 2)
+        XCTAssertEqual(unique.first?.nativeText, "new")
+    }
+
     func testTimelineOwnsVerticalButNotHorizontalCodeBlockWheelGestures() {
         XCTAssertTrue(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 0, deltaY: 12))
         XCTAssertTrue(ChatTimelineScrollView.shouldOwnVerticalWheel(deltaX: 4, deltaY: 12))
@@ -424,6 +438,25 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         XCTAssertEqual(after.id, before.id)
         XCTAssertEqual(after.offset, before.offset, accuracy: 4)
+    }
+
+    func testSavedSessionPositionRestoresMessageAnchorAndFollowMode() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "session-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.tableView.layoutSubtreeIfNeeded()
+
+        harness.coordinator.restore(position: AppKitChatTimelinePosition(
+            rowID: "session-row-12",
+            offset: 6,
+            followsLatest: false
+        ))
+        await settleMainQueue()
+
+        let anchor = visibleAnchor(in: harness.tableView, rows: rows)
+        XCTAssertEqual(anchor.id, "session-row-12")
+        XCTAssertEqual(anchor.offset, 6, accuracy: 4)
+        XCTAssertFalse(harness.followState.value)
     }
 
     func testTailRevisionFollowsLatestButHistoryReadingDoesNot() async {

@@ -36,6 +36,8 @@ enum BackendResponseDecoder {
                 capabilities: snapshot.capabilities,
                 turnCount: snapshot.turnCount,
                 items: snapshot.items,
+                hasMoreHistory: snapshot.hasMoreHistory,
+                historyItemsCount: snapshot.historyItemsCount,
                 actions: snapshot.actions
             )
         }.value

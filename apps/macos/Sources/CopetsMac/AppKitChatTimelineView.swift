@@ -3,6 +3,9 @@ import SwiftUI
 
 @MainActor
 enum NativeMarkdownAttributedText {
+    private static let unorderedListItemRegex = try! NSRegularExpression(pattern: #"^(\s*)[-+*]\s+(.+)$"#)
+    private static let orderedListItemRegex = try! NSRegularExpression(pattern: #"^(\s*)(\d+)[.)]\s+(.+)$"#)
+
     static func make(
         text: String,
         style: AppKitChatTimelineRow.NativeStyle
@@ -153,21 +156,19 @@ enum NativeMarkdownAttributedText {
     }
 
     private static func unorderedListItem(in line: String) -> (depth: Int, text: String)? {
-        listItem(in: line, pattern: #"^(\s*)[-+*]\s+(.+)$"#).map { ($0.depth, $0.text) }
+        matchListItem(in: line, regex: unorderedListItemRegex).map { ($0.depth, $0.text) }
     }
 
     private static func orderedListItem(in line: String) -> (depth: Int, ordinal: String, text: String)? {
-        guard let regex = try? NSRegularExpression(pattern: #"^(\s*)(\d+)[.)]\s+(.+)$"#),
-              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+        guard let match = orderedListItemRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
               let indentRange = Range(match.range(at: 1), in: line),
               let ordinalRange = Range(match.range(at: 2), in: line),
               let textRange = Range(match.range(at: 3), in: line) else { return nil }
         return (String(line[indentRange]).count / 2, String(line[ordinalRange]), String(line[textRange]))
     }
 
-    private static func listItem(in line: String, pattern: String) -> (depth: Int, text: String)? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+    private static func matchListItem(in line: String, regex: NSRegularExpression) -> (depth: Int, text: String)? {
+        guard let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
               let indentRange = Range(match.range(at: 1), in: line),
               let textRange = Range(match.range(at: 2), in: line) else { return nil }
         return (String(line[indentRange]).count / 2, String(line[textRange]))
@@ -410,18 +411,29 @@ enum ChatBubbleWidthPolicy {
     }
 }
 
+struct AppKitChatTimelinePosition: Equatable, Sendable {
+    let rowID: String
+    let offset: Double
+    let followsLatest: Bool
+}
+
 struct AppKitChatTimelineView: NSViewRepresentable {
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
     let usesNativeText: Bool
     @Binding var followsLatest: Bool
     let onToggleExpansion: (String) -> Void
+    var onNearTop: () -> Void = {}
+    var initialPosition: AppKitChatTimelinePosition? = nil
+    var onPositionChange: (AppKitChatTimelinePosition) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
             usesNativeText: usesNativeText,
             followsLatest: $followsLatest,
-            onToggleExpansion: onToggleExpansion
+            onToggleExpansion: onToggleExpansion,
+            onNearTop: onNearTop,
+            onPositionChange: onPositionChange
         )
     }
 
@@ -431,7 +443,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
         context.coordinator.apply(rows: rows, animated: false)
-        if followsLatest {
+        context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
+        if let initialPosition, !initialPosition.followsLatest {
+            context.coordinator.restore(position: initialPosition)
+        } else {
             context.coordinator.scrollToBottom()
         }
         return scrollView
@@ -473,6 +488,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.followsLatest = followsLatest
         context.coordinator.onToggleExpansion = onToggleExpansion
+        context.coordinator.onNearTop = onNearTop
+        context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
         if context.coordinator.lastScrollToBottomRevision != scrollToBottomRevision {
             context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
@@ -489,14 +506,22 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private let usesNativeText: Bool
         private let followsLatestBinding: Binding<Bool>
         var onToggleExpansion: (String) -> Void
+        var onNearTop: () -> Void
+        var onPositionChange: (AppKitChatTimelinePosition) -> Void
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
         private var rows: [AppKitChatTimelineRow] = []
         private var revisionsByID: [String: Int] = [:]
         private var heightCache: [HeightCacheKey: CGFloat] = [:]
         private var lastMeasuredWidth: CGFloat = 0
+        private var scrollCommandGeneration = 0
+        private var nearTopSuppressionGeneration = 0
+        private var suppressesNearTopTrigger = false
         var lastScrollToBottomRevision = Int.min
         var followsLatest = true
+        private var nearTopTriggered = false
+        private var positionPublishWorkItem: DispatchWorkItem?
+        private var lastPublishedPosition: AppKitChatTimelinePosition?
 
         private struct HeightCacheKey: Hashable {
             let id: String
@@ -507,11 +532,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         init(
             usesNativeText: Bool,
             followsLatest: Binding<Bool>,
-            onToggleExpansion: @escaping (String) -> Void
+            onToggleExpansion: @escaping (String) -> Void,
+            onNearTop: @escaping () -> Void = {},
+            onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
         ) {
             self.usesNativeText = usesNativeText
             self.followsLatestBinding = followsLatest
             self.onToggleExpansion = onToggleExpansion
+            self.onNearTop = onNearTop
+            self.onPositionChange = onPositionChange
         }
 
         func attach(tableView: NSTableView, scrollView: NSScrollView) {
@@ -604,6 +633,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func apply(rows nextRows: [AppKitChatTimelineRow], animated: Bool = false) {
+            let nextRows = Self.uniquedRows(nextRows)
+            suppressNearTopDuringLayout()
             guard let tableView else {
                 rows = nextRows
                 revisionsByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0.contentRevision) })
@@ -706,7 +737,14 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func scrollToBottom() {
             guard let tableView, !rows.isEmpty else { return }
-            DispatchQueue.main.async {
+            suppressNearTopDuringLayout()
+            scrollCommandGeneration &+= 1
+            let generation = scrollCommandGeneration
+            DispatchQueue.main.async { [weak self, weak tableView] in
+                guard let self,
+                      self.scrollCommandGeneration == generation,
+                      let tableView,
+                      !self.rows.isEmpty else { return }
                 tableView.scrollRowToVisible(self.rows.count - 1)
             }
         }
@@ -720,6 +758,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             if followsLatestBinding.wrappedValue != nearBottom {
                 followsLatestBinding.wrappedValue = nearBottom
             }
+
+            // 滚动到顶时触发一次历史补拉（微信/Discord 式「上滑自动加载」）。
+            // 离开顶部后复位，允许再次触发。
+            let visibleMinY = scrollView.contentView.bounds.minY
+            let nearTop = visibleMinY <= 8
+            if nearTop && !nearTopTriggered && !suppressesNearTopTrigger {
+                nearTopTriggered = true
+                onNearTop()
+            } else if !nearTop {
+                nearTopTriggered = false
+            }
+            schedulePositionPublish()
         }
 
         @objc private func viewportBoundsDidChange(_ notification: Notification) {
@@ -758,11 +808,71 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private func restore(anchor: (id: String, offset: CGFloat), in tableView: NSTableView) {
             guard let row = rows.firstIndex(where: { $0.id == anchor.id }),
                   let clipView = scrollView?.contentView else { return }
-            DispatchQueue.main.async {
+            suppressNearTopDuringLayout()
+            scrollCommandGeneration &+= 1
+            let generation = scrollCommandGeneration
+            DispatchQueue.main.async { [weak self, weak tableView, weak clipView] in
+                guard let self,
+                      self.scrollCommandGeneration == generation,
+                      let tableView,
+                      let clipView else { return }
                 let y = max(0, tableView.rect(ofRow: row).minY + anchor.offset)
                 clipView.scroll(to: NSPoint(x: 0, y: y))
                 self.scrollView?.reflectScrolledClipView(clipView)
             }
+        }
+
+        func restore(position: AppKitChatTimelinePosition) {
+            guard let tableView else { return }
+            followsLatest = position.followsLatest
+            if followsLatestBinding.wrappedValue != position.followsLatest {
+                followsLatestBinding.wrappedValue = position.followsLatest
+            }
+            restore(anchor: (position.rowID, CGFloat(position.offset)), in: tableView)
+        }
+
+        private func schedulePositionPublish() {
+            positionPublishWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self, let tableView = self.tableView,
+                      let anchor = self.visibleAnchor(in: tableView) else { return }
+                let position = AppKitChatTimelinePosition(
+                    rowID: anchor.id,
+                    offset: Double(anchor.offset),
+                    followsLatest: self.followsLatest
+                )
+                guard position != self.lastPublishedPosition else { return }
+                self.lastPublishedPosition = position
+                self.onPositionChange(position)
+            }
+            positionPublishWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+        }
+
+        private func suppressNearTopDuringLayout() {
+            nearTopSuppressionGeneration &+= 1
+            let generation = nearTopSuppressionGeneration
+            suppressesNearTopTrigger = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.nearTopSuppressionGeneration == generation else { return }
+                self.suppressesNearTopTrigger = false
+            }
+        }
+
+        static func uniquedRows(_ rows: [AppKitChatTimelineRow]) -> [AppKitChatTimelineRow] {
+            var indexesByID: [String: Int] = [:]
+            indexesByID.reserveCapacity(rows.count)
+            var result: [AppKitChatTimelineRow] = []
+            result.reserveCapacity(rows.count)
+            for row in rows {
+                if let index = indexesByID[row.id] {
+                    result[index] = row
+                } else {
+                    indexesByID[row.id] = result.count
+                    result.append(row)
+                }
+            }
+            return result
         }
     }
 }

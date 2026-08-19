@@ -183,12 +183,23 @@ struct MainTabView: View {
             }
             .padding(.horizontal, 12)
 
-            ZStack {
-                content(for: router.selectedTab)
-                    .id(router.selectedTab)
-                    .transition(.opacity)
+            GeometryReader { geo in
+                ZStack {
+                    ForEach(AppTab.allCases) { tab in
+                        content(for: tab)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .offset(x: slideOffset(for: tab, width: geo.size.width))
+                            .opacity(tab == router.selectedTab ? 1 : 0)
+                            .allowsHitTesting(tab == router.selectedTab)
+                            .zIndex(tab == router.selectedTab ? 1 : 0)
+                    }
+                }
+                .clipped()
+                .animation(
+                    .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
+                    value: router.selectedTab
+                )
             }
-            .clipped()
         }
         .environmentObject(router)
     }
@@ -205,6 +216,14 @@ struct MainTabView: View {
         case .agents:
             AgentManagementView()
         }
+    }
+
+    // 常驻滑动：选中 Tab 居中（offset 0），其余 Tab 按相对位置停靠在
+    // 左/右屏幕外。切 Tab 时 withAnimation 让新 Tab 从对应侧滑入、旧 Tab 滑出，
+    // 方向天然由 index 相对关系决定，无需显式 slideForward。
+    private func slideOffset(for tab: AppTab, width: CGFloat) -> CGFloat {
+        if tab == router.selectedTab { return 0 }
+        return tab.index < router.selectedTab.index ? -width : width
     }
 
     private func openSettings() {
@@ -236,6 +255,7 @@ final class AppTabRouter: ObservableObject {
     func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
         slideForward = tab.index > selectedTab.index
+        PerfStopwatch.event("Tab切换", value: 1)
         selectedTab = tab
     }
 

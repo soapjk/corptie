@@ -832,6 +832,14 @@ struct UnifiedSessionSnapshotResponse: Decodable, Sendable {
     let session: CodexThreadDetail
 }
 
+struct SessionHistoryResponse: Decodable, Sendable {
+    let sessionId: String?
+    let logicalSessionId: String?
+    let items: [CodexThreadItem]
+    let hasMoreHistory: Bool?
+    let historyItemsCount: Int?
+}
+
 struct SessionUsageResponse: Decodable, Equatable {
     let account: CodexAccountUsage
     let context: CodexContextUsage?
@@ -941,6 +949,8 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
+    var hasMoreHistory: Bool? = nil
+    var historyItemsCount: Int? = nil
     var actions: SessionActions? = nil
 
     var isConnected: Bool {
@@ -996,6 +1006,8 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
               lhs.sendUnavailableReason == rhs.sendUnavailableReason,
               lhs.capabilities == rhs.capabilities,
               lhs.turnCount == rhs.turnCount,
+              lhs.hasMoreHistory == rhs.hasMoreHistory,
+              lhs.historyItemsCount == rhs.historyItemsCount,
               lhs.actions == rhs.actions else {
             return false
         }

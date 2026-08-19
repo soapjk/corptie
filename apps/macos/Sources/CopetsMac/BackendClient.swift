@@ -14,7 +14,9 @@ struct SessionRestartActivity: Equatable {
 }
 
 enum SessionDetailPreloadPolicy {
-    static let batchLimit = 8
+    // 只预热当前选中项附近的一个会话。批量预热 8 个会话会在切 Tab 时把
+    // 8 份整段消息历史的 Markdown 解析全挤上主线程，其中绝大多数永远不会打开。
+    static let batchLimit = 1
 
     /// Prefer the rows nearest to the current selection so normal up/down
     /// browsing hits memory. With no selection, warm the first visible page.
@@ -58,6 +60,9 @@ final class BackendClient: ObservableObject {
     private let appState = AppStateStore.shared
     var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
     let sessionListStore = SessionListStore()
+
+    private static let iso8601Formatter = ISO8601DateFormatter()
+
     let sessionsDidChange = CurrentValueSubject<[TaskSession], Never>([])
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
@@ -122,6 +127,8 @@ final class BackendClient: ObservableObject {
     private var eventStreamTask: Task<Void, Never>?
     private var detailStreamTask: Task<Void, Never>?
     private var detailStreamWatchdogTask: Task<Void, Never>?
+    private var initialDetailFallbackTask: Task<Void, Never>?
+    private var selectionGeneration = 0
     private var detailStreamGeneration = 0
     private(set) var detailStreamHealth: ChatDetailStreamHealth = .inactive
     private(set) var detailStreamLastDiagnostic = "inactive"
@@ -135,6 +142,8 @@ final class BackendClient: ObservableObject {
     private var detailCacheRecency: [String] = []
     private var detailPrefetchTasks: [String: Task<CodexThreadDetail?, Never>] = [:]
     private static let detailCacheCapacity = 12
+    private static let historyPageSize = 200
+    private var historyLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
@@ -157,6 +166,7 @@ final class BackendClient: ObservableObject {
     )?
     private var appStateCancellable: AnyCancellable?
     private var reachabilityCancellable: AnyCancellable?
+    private var lastProjectedSessions: [TaskSession]?
 
     init() {
         appStateCancellable = appState.$state
@@ -180,6 +190,8 @@ final class BackendClient: ObservableObject {
         eventStreamTask?.cancel()
         detailStreamTask?.cancel()
         detailStreamWatchdogTask?.cancel()
+        initialDetailFallbackTask?.cancel()
+        initialDetailFallbackTask = nil
         detailStreamGeneration &+= 1
         detailStreamHealth = .inactive
         detailStreamLastActivity = nil
@@ -231,6 +243,8 @@ final class BackendClient: ObservableObject {
         detailStreamTask = nil
         detailStreamWatchdogTask?.cancel()
         detailStreamWatchdogTask = nil
+        initialDetailFallbackTask?.cancel()
+        initialDetailFallbackTask = nil
         detailStreamGeneration &+= 1
         detailStreamHealth = .inactive
         detailStreamLastActivity = nil
@@ -919,6 +933,12 @@ final class BackendClient: ObservableObject {
 
     private func projectSessionsFromAppState() {
         let nextSessions = sessions
+        // `appState.$state` 对任何实体（workItems/objectives/agents…）变化都会发射，
+        // 但这里只关心活动会话集合是否真的变了。相等时短路，避免无关实体的
+        // 高频更新反复触发 sessionsDidChange → 下游预加载/列表重算。
+        guard nextSessions != lastProjectedSessions else { return }
+        lastProjectedSessions = nextSessions
+
         let previous = sessionListStore.sessions
         let patch = SessionCollectionDiffer.patch(from: previous, to: nextSessions, revision: UInt64(max(0, appState.revision)))
         sessionListStore.apply(patch, authoritativeSessions: nextSessions)
@@ -1383,6 +1403,13 @@ final class BackendClient: ObservableObject {
     }
 
     func select(session: TaskSession) {
+        PerfStopwatch.event("会话切换.select", value: 1)
+        selectionGeneration &+= 1
+        let generation = selectionGeneration
+        initialDetailFallbackTask?.cancel()
+        initialDetailFallbackTask = nil
+        deferredDetailPublishTask?.cancel()
+        deferredDetailPublishTask = nil
         viewingHistoricalThreadId = nil
         selectedSession = session
         let cachedDetail = cachedDetail(for: session.id)
@@ -1422,7 +1449,8 @@ final class BackendClient: ObservableObject {
         }
         Task {
             await Task.yield()
-            guard selectedSession?.id == session.id else {
+            guard selectionGeneration == generation,
+                  selectedSession?.id == session.id else {
                 return
             }
             startDetailStream(for: session)
@@ -1431,7 +1459,25 @@ final class BackendClient: ObservableObject {
                 // front of the message snapshot on the critical click path.
                 Task { await loadContextReferences(for: session) }
             }
-            await loadDetail(for: session, showLoading: cachedDetail == nil)
+            // The canonical SSE endpoint immediately emits a full snapshot.
+            // Let it be the single initial authority and use HTTP only as a
+            // short fallback when the stream cannot establish. This avoids
+            // decoding and publishing the same large history twice on every
+            // click while keeping cold/offline recovery deterministic.
+            if cachedDetail == nil {
+                initialDetailFallbackTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !Task.isCancelled, let self,
+                          self.selectionGeneration == generation,
+                          self.selectedSession?.id == session.id,
+                          !self.detailStreamHealth.isHealthy(for: session.id),
+                          self.selectedDetail == nil else { return }
+                    await self.loadDetail(
+                        for: session,
+                        expectedSelectionGeneration: generation
+                    )
+                }
+            }
         }
     }
 
@@ -1546,6 +1592,8 @@ final class BackendClient: ObservableObject {
         detailStreamTask = nil
         detailStreamWatchdogTask?.cancel()
         detailStreamWatchdogTask = nil
+        initialDetailFallbackTask?.cancel()
+        initialDetailFallbackTask = nil
         detailStreamGeneration &+= 1
         detailStreamHealth = .inactive
         detailStreamLastActivity = nil
@@ -2613,7 +2661,7 @@ final class BackendClient: ObservableObject {
         guard selectedSession?.id == session.id || selectedDetail?.id == threadId else {
             return
         }
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.iso8601Formatter.string(from: Date())
         let optimisticTurnId = "optimistic-turn:\(session.id):\(UUID().uuidString)"
         let item = CodexThreadItem(
             id: "optimistic:\(session.id):\(UUID().uuidString)",
@@ -3256,7 +3304,11 @@ final class BackendClient: ObservableObject {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not load session details.")
             }
 
-            let detail = try await decodeDetail(data, for: session, threadId: threadId)
+            let decoded = try await PerfStopwatch.measure("fetchDetail.全量解码") {
+                try await decodeDetail(data, for: session, threadId: threadId)
+            }
+            PerfStopwatch.event("fetchDetail.items数量", value: decoded.items.count)
+            let detail = decoded
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
             storeCachedDetail(mergedDetail, for: session.id)
             if reportsErrors, lastError != nil {
@@ -3268,6 +3320,76 @@ final class BackendClient: ObservableObject {
                 lastError = error.localizedDescription
             }
             return nil
+        }
+    }
+
+    /// 补拉更早的历史消息，prepend 到当前选中会话的 detail.items 头部。
+    /// 只在用户滚动到顶时触发（低频），因此直接请求后端切片端点即可。
+    func loadEarlierMessages(for session: TaskSession) async {
+        let threadId = session.external?.threadId ?? session.id
+        guard let current = selectedDetail,
+              current.id == threadId,
+              let oldest = current.items.first,
+              current.hasMoreHistory == true,
+              historyLoadSessionIDs.insert(session.id).inserted else {
+            return
+        }
+        defer { historyLoadSessionIDs.remove(session.id) }
+
+        do {
+            var components = URLComponents(
+                url: baseURL.appending(path: "sessions/\(session.id)/history"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "before", value: oldest.id),
+                URLQueryItem(name: "limit", value: String(Self.historyPageSize))
+            ]
+            guard let url = components?.url else {
+                throw BackendError.message("Could not build history request.")
+            }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw BackendError.message("Could not load earlier messages.")
+            }
+            let page = try await Task.detached(priority: .userInitiated) {
+                try JSONDecoder().decode(SessionHistoryResponse.self, from: data)
+            }.value
+
+            guard let current = selectedDetail,
+                  current.id == threadId,
+                  selectedSession?.id == session.id else {
+                return
+            }
+            guard let mergedItems = SessionHistoryPageMerger.prepend(
+                pageItems: page.items,
+                to: current.items,
+                requestedBeforeID: oldest.id
+            ) else { return }
+            let merged = CodexThreadDetail(
+                id: current.id,
+                title: current.title,
+                status: current.status,
+                source: current.source,
+                connectionStatus: current.connectionStatus,
+                currentModel: current.currentModel,
+                currentReasoningLevel: current.currentReasoningLevel,
+                activityStatus: current.activityStatus,
+                cwd: current.cwd,
+                createdAt: current.createdAt,
+                updatedAt: current.updatedAt,
+                canSend: current.canSend,
+                sendUnavailableReason: current.sendUnavailableReason,
+                capabilities: current.capabilities,
+                turnCount: current.turnCount,
+                items: mergedItems,
+                hasMoreHistory: page.hasMoreHistory,
+                historyItemsCount: page.historyItemsCount,
+                actions: current.actions
+            )
+            publishSelectedDetailIfSafe(merged)
+        } catch {
+            // 补拉失败不打断当前视图，用户可再次上滑重试。
         }
     }
 
@@ -3338,7 +3460,8 @@ final class BackendClient: ObservableObject {
                                 eventName: eventName,
                                 data: dataLines.joined(separator: "\n"),
                                 expectedSession: session,
-                                expectedThreadId: threadId
+                                expectedThreadId: threadId,
+                                expectedStreamGeneration: generation
                             )
                             eventName = ""
                             dataLines.removeAll(keepingCapacity: true)
@@ -3354,7 +3477,8 @@ final class BackendClient: ObservableObject {
                                     eventName: eventName,
                                     data: dataLines[0],
                                     expectedSession: session,
-                                    expectedThreadId: threadId
+                                    expectedThreadId: threadId,
+                                    expectedStreamGeneration: generation
                                 )
                                 eventName = ""
                                 dataLines.removeAll(keepingCapacity: true)
@@ -3376,8 +3500,15 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private func handleDetailStreamEvent(eventName: String, data: String, expectedSession: TaskSession, expectedThreadId: String) async {
+    private func handleDetailStreamEvent(
+        eventName: String,
+        data: String,
+        expectedSession: TaskSession,
+        expectedThreadId: String,
+        expectedStreamGeneration: Int
+    ) async {
         guard !data.isEmpty,
+              detailStreamGeneration == expectedStreamGeneration,
               selectedSession?.id == expectedSession.id,
               let payload = data.data(using: .utf8) else {
             return
@@ -3386,18 +3517,25 @@ final class BackendClient: ObservableObject {
             await handleDetailStreamSnapshot(
                 payload,
                 expectedSession: expectedSession,
-                expectedThreadId: expectedThreadId
+                expectedThreadId: expectedThreadId,
+                expectedStreamGeneration: expectedStreamGeneration
             )
             return
         }
         guard let kind = ChatTimelineDeltaKind(rawValue: eventName) else { return }
-        await handleDetailStreamDelta(kind, payload: payload, expectedSession: expectedSession)
+        await handleDetailStreamDelta(
+            kind,
+            payload: payload,
+            expectedSession: expectedSession,
+            expectedStreamGeneration: expectedStreamGeneration
+        )
     }
 
     private func handleDetailStreamSnapshot(
         _ payload: Data,
         expectedSession: TaskSession,
-        expectedThreadId: String
+        expectedThreadId: String,
+        expectedStreamGeneration: Int
     ) async {
         ChatPerformanceRecorder.shared.increment(.sseSnapshots)
         ChatPerformanceRecorder.shared.increment(.sseSnapshotBytes, by: Int64(payload.count))
@@ -3412,7 +3550,9 @@ final class BackendClient: ObservableObject {
                 )
             }
             let decodedHeader = try await header
-            guard selectedSession?.id == expectedSession.id else { return }
+            PerfStopwatch.event("SSE快照.items数量", value: canonicalDetail.items.count)
+            guard detailStreamGeneration == expectedStreamGeneration,
+                  selectedSession?.id == expectedSession.id else { return }
             detailStreamCanonicalDetail = canonicalDetail
             detailTimelineRevision = decodedHeader.protocolVersion == 1 ? decodedHeader.revision : nil
             let mergedDetail = presentationDetail(from: canonicalDetail)
@@ -3433,7 +3573,8 @@ final class BackendClient: ObservableObject {
     private func handleDetailStreamDelta(
         _ kind: ChatTimelineDeltaKind,
         payload: Data,
-        expectedSession: TaskSession
+        expectedSession: TaskSession,
+        expectedStreamGeneration: Int
     ) async {
         ChatPerformanceRecorder.shared.increment(.sseDeltas)
         ChatPerformanceRecorder.shared.increment(.sseDeltaBytes, by: Int64(payload.count))
@@ -3441,7 +3582,8 @@ final class BackendClient: ObservableObject {
             let envelope = try await ChatPerformanceTrace.measure("timeline.delta.decode") {
                 try await ChatTimelineDeltaDecoder.delta(from: payload)
             }
-            guard selectedSession?.id == expectedSession.id else { return }
+            guard detailStreamGeneration == expectedStreamGeneration,
+                  selectedSession?.id == expectedSession.id else { return }
             let preferredCwd = BackendResponseDecoder.preferredWorkspacePath(
                 authoritativePath: expectedSession.external?.cwd,
                 providerPath: envelope.metadata.cwd,
@@ -3480,6 +3622,11 @@ final class BackendClient: ObservableObject {
     }
 
     private func markDetailStreamHealthy(for session: TaskSession) {
+        initialDetailFallbackTask?.cancel()
+        initialDetailFallbackTask = nil
+        if selectedSession?.id == session.id {
+            isLoadingDetail = false
+        }
         detailStreamLastActivity = .now
         detailStreamHealth = .healthy(sessionId: session.id)
         let revisionDescription = detailTimelineRevision.map(String.init) ?? "legacy"
@@ -3515,12 +3662,22 @@ final class BackendClient: ObservableObject {
         eventName == "snapshot" || ChatTimelineDeltaKind(rawValue: eventName) != nil
     }
 
-    private func loadDetail(for session: TaskSession, showLoading: Bool = true) async {
+    private func loadDetail(
+        for session: TaskSession,
+        showLoading: Bool = true,
+        expectedSelectionGeneration: Int? = nil
+    ) async {
+        let requiredGeneration = expectedSelectionGeneration ?? selectionGeneration
+        guard !Task.isCancelled,
+              selectionGeneration == requiredGeneration,
+              selectedSession?.id == session.id else { return }
         if showLoading {
             isLoadingDetail = true
         }
         defer {
-            if showLoading, selectedSession?.id == session.id {
+            if showLoading,
+               selectionGeneration == requiredGeneration,
+               selectedSession?.id == session.id {
                 isLoadingDetail = false
             }
         }
@@ -3539,7 +3696,10 @@ final class BackendClient: ObservableObject {
         } else {
             detail = await fetchDetail(for: session)
         }
-        guard selectedSession?.id == session.id, let detail else { return }
+        guard !Task.isCancelled,
+              selectionGeneration == requiredGeneration,
+              selectedSession?.id == session.id,
+              let detail else { return }
         publishSelectedDetailIfSafe(detail)
         syncSessionSummary(from: detail)
     }
@@ -3745,6 +3905,8 @@ final class BackendClient: ObservableObject {
     private var deferredDetailPublishTask: Task<Void, Never>?
 
     private func publishSelectedDetailIfSafe(_ detail: CodexThreadDetail) {
+        guard let currentSession = selectedSession,
+              detailBelongsToSelectedSession(detail, currentSession) else { return }
         if let selectedDetail,
            detailPublicationRevision(selectedDetail) == detailPublicationRevision(detail),
            selectedDetail == detail {
@@ -3756,10 +3918,14 @@ final class BackendClient: ObservableObject {
         // instead of silently dropping the update — dropping it here left the
         // detail view stuck on an empty placeholder with no way to recover.
         guard NSEvent.pressedMouseButtons == 0 else {
+            let publicationGeneration = selectionGeneration
             deferredDetailPublishTask?.cancel()
             deferredDetailPublishTask = Task { @MainActor [weak self] in
                 await Task.yield()
-                guard let self, self.selectedSession != nil else { return }
+                guard let self,
+                      self.selectionGeneration == publicationGeneration,
+                      let current = self.selectedSession,
+                      self.detailBelongsToSelectedSession(detail, current) else { return }
                 self.publishSelectedDetailIfSafe(detail)
             }
             return
@@ -3769,6 +3935,11 @@ final class BackendClient: ObservableObject {
         ChatPerformanceRecorder.shared.increment(.detailPublishes)
         ChatPerformanceTrace.event("ui.detail.publish", value: detail.items.count)
         selectedDetail = detail
+    }
+
+    private func detailBelongsToSelectedSession(_ detail: CodexThreadDetail, _ session: TaskSession) -> Bool {
+        let threadId = session.external?.threadId ?? session.id
+        return detail.id == threadId
     }
 
     private func detailPublicationRevision(_ detail: CodexThreadDetail) -> String {

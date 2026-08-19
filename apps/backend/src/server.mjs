@@ -184,9 +184,17 @@ import {
 } from "./utils/sessionTimelineRefreshPolicy.mjs";
 import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
 import { StateSyncService } from "./application/stateSyncService.mjs";
+import {
+  MAX_SESSION_HISTORY_PAGE,
+  normalizeSessionHistoryLimit,
+  pageSessionItems,
+  windowSessionItems
+} from "./application/sessionHistoryWindow.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
+// 会话快照只返回尾部窗口的完整消息，更早的历史通过补拉端点按需获取。
+// 打开会话时前端只渲染尾部一屏，全量 text（千级消息约 1MB+）是切会话延迟的主因。
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
 const sessionPresentationCache = new Map();
@@ -3538,6 +3546,9 @@ async function getUnifiedSessionSnapshot(sessionId) {
   const detail = await sessionApplicationService.readSession(sessionId);
   const publicSessionId = reference.logicalSessionId ?? reference.sessionId;
 
+  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []);
+  const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(allItems);
+
   return {
     ...summary,
     ...(detail ?? {}),
@@ -3549,8 +3560,27 @@ async function getUnifiedSessionSnapshot(sessionId) {
     cwd: preferredSessionCwd(summary, detail),
     status: detail?.status || summary.status,
     activityStatus: detail?.activityStatus ?? summary.activityStatus ?? null,
-    items: agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []),
+    items,
+    hasMoreHistory,
+    historyItemsCount,
     lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
+  };
+}
+
+// 会话快照仅保留尾部窗口的完整消息；更早历史按需经补拉端点获取。
+// 裁剪只移除 items 数组头部（最旧消息），尾部窗口与 agent work queue 追加项均不受影响。
+// 按游标补拉更早的历史消息。Codex 等 provider 无法按 turn 分页历史，只能全量
+// 读 thread 后在服务层切片——补拉是低频操作（用户滚到顶才触发），响应体只含切片，
+// 传输开销远小于首屏，故可接受。切片逻辑 provider-neutral，不触碰 provider 边界。
+async function readSessionHistory(sessionId, beforeId, limit) {
+  const reference = requireSessionReference(sessionId);
+  const detail = await sessionApplicationService.readSession(sessionId);
+  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []);
+  const page = pageSessionItems(allItems, { beforeId, limit });
+  return {
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    ...page
   };
 }
 
@@ -5886,6 +5916,20 @@ function route(request, response) {
         error: error.message,
         code: error.code ?? null
       }));
+    return;
+  }
+
+  const sessionHistoryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/history$/);
+  if (request.method === "GET" && sessionHistoryMatch) {
+    const sessionId = decodeURIComponent(sessionHistoryMatch[1]);
+    const before = url.searchParams.get("before") || null;
+    const limit = normalizeSessionHistoryLimit(
+      url.searchParams.get("limit"),
+      MAX_SESSION_HISTORY_PAGE
+    );
+    readSessionHistory(sessionId, before, limit)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
   }
 

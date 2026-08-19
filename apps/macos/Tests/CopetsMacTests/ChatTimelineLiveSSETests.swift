@@ -4,6 +4,36 @@ import Darwin
 
 @MainActor
 final class ChatTimelineLiveSSETests: XCTestCase {
+    func testRapidSelectionKeepsOnlyLatestStreamGeneration() async throws {
+        guard ProcessInfo.processInfo.environment["CORPTIE_RUN_LIVE_SSE_TEST"] == "1" else {
+            throw XCTSkip("Set CORPTIE_RUN_LIVE_SSE_TEST=1 with the Development backend running.")
+        }
+        let client = BackendClient()
+        client.start()
+        defer { client.stop() }
+
+        try await eventually(stage: { "load sessions for rapid switching" }, timeout: .seconds(8)) {
+            client.sessions.count >= 2
+        }
+        let first = client.sessions[0]
+        let second = client.sessions[1]
+        for index in 0..<20 {
+            client.select(session: index.isMultiple(of: 2) ? first : second)
+            await Task.yield()
+        }
+        let expected = second
+        let expectedThreadID = expected.external?.threadId ?? expected.id
+        try await eventually(stage: { "latest rapid selection (expected.id)" }, timeout: .seconds(8)) {
+            client.selectedSession?.id == expected.id
+                && client.selectedDetail?.id == expectedThreadID
+                && client.detailStreamHealth == .healthy(sessionId: expected.id)
+        }
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(client.selectedSession?.id, expected.id)
+        XCTAssertEqual(client.selectedDetail?.id, expectedThreadID)
+        XCTAssertEqual(client.detailStreamHealth, .healthy(sessionId: expected.id))
+    }
+
     func testDevelopmentBackendStreamSuppressesPollingAndRecovers() async throws {
         guard ProcessInfo.processInfo.environment["CORPTIE_RUN_LIVE_SSE_TEST"] == "1" else {
             throw XCTSkip("Set CORPTIE_RUN_LIVE_SSE_TEST=1 with the Development backend running.")
