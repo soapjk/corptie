@@ -1,0 +1,237 @@
+import Foundation
+
+@MainActor
+final class WorktreeManagementClient: ObservableObject {
+    @Published private(set) var repositories: [ManagedRepository] = []
+    @Published private(set) var detail: ManagedRepositoryDetail?
+    @Published private(set) var projectStatus: ProjectWorktreeStatusResponse?
+    @Published private(set) var job: WorktreeIntegrationJob?
+    @Published var selection = WorktreeManagementSelection()
+    @Published private(set) var isLoading = false
+    @Published private(set) var isMutating = false
+    @Published private(set) var errorMessage: String?
+
+    private let baseURL: URL
+    private var detailGeneration = 0
+    private let decoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return decoder
+    }()
+
+    init(baseURL: URL = CorptieAppEnvironment.backendBaseURL) {
+        self.baseURL = baseURL
+    }
+
+    var selectedWorktree: ManagedWorktree? {
+        detail?.project.worktrees.first { $0.worktreeId == selection.worktreeId }
+    }
+
+    func loadRepositories() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let envelope: ManagedRepositoryListEnvelope = try await get("worktree-management/repositories")
+            repositories = envelope.repositories
+            selection.reconcile(repositories: repositories)
+            errorMessage = nil
+            if let repositoryId = selection.repositoryId {
+                await loadRepository(repositoryId)
+            } else {
+                detail = nil
+                projectStatus = nil
+                job = nil
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func selectRepository(_ id: String?) async {
+        guard selection.repositoryId != id else { return }
+        selection.repositoryId = id
+        selection.worktreeId = nil
+        detail = nil
+        projectStatus = nil
+        job = nil
+        guard let id else { return }
+        await loadRepository(id)
+    }
+
+    func refreshSelected() async {
+        guard let repositoryId = selection.repositoryId else {
+            await loadRepositories()
+            return
+        }
+        await loadRepository(repositoryId)
+    }
+
+    func navigate(to target: WorktreeNavigationTarget) async {
+        if repositories.isEmpty { await loadRepositories() }
+        if let repositoryId = target.repositoryId,
+           repositories.contains(where: { $0.id == repositoryId }) {
+            if selection.repositoryId != repositoryId {
+                await selectRepository(repositoryId)
+            } else if detail == nil {
+                await loadRepository(repositoryId)
+            }
+        }
+        guard let worktreePath = target.worktreePath else { return }
+        let normalized = URL(fileURLWithPath: worktreePath).standardizedFileURL.path
+        if let worktree = detail?.project.worktrees.first(where: {
+            URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
+        }) {
+            selection.worktreeId = worktree.worktreeId
+        }
+    }
+
+    func synchronizeSelectedWorktree() async {
+        guard let repositoryId = selection.repositoryId,
+              let worktreeId = selection.worktreeId else { return }
+        await mutate {
+            let _: WorktreeActionAcknowledgement = try await self.post(
+                "projects/\(repositoryId)/workspaces/\(worktreeId)/actions/synchronize",
+                body: [:]
+            )
+            await self.loadRepository(repositoryId)
+        }
+    }
+
+    func runDevelopmentServiceAction(_ action: String, profileId: String? = nil) async {
+        guard let repositoryId = selection.repositoryId else { return }
+        await mutate {
+            var body: [String: Any] = [:]
+            if let profileId { body["profileId"] = profileId }
+            let _: WorktreeActionAcknowledgement = try await self.post(
+                "projects/\(repositoryId)/development-service/actions/\(action)",
+                body: body
+            )
+            await self.loadRepository(repositoryId)
+        }
+    }
+
+    func createPreflight() async {
+        guard let repositoryId = selection.repositoryId else { return }
+        await mutate {
+            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
+                "worktree-management/repositories/\(repositoryId)/integration-plans",
+                body: [:]
+            )
+            self.job = envelope.job
+        }
+    }
+
+    func confirmPlan() async {
+        guard let job, job.status == "awaiting_confirmation" else { return }
+        await mutate {
+            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
+                "worktree-management/jobs/\(job.id)/confirm",
+                body: ["confirmed": true, "planFingerprint": job.planFingerprint]
+            )
+            self.job = envelope.job
+        }
+    }
+
+    func retryJob() async {
+        guard let job, job.status == "paused" else { return }
+        await mutate {
+            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
+                "worktree-management/jobs/\(job.id)/retry",
+                body: [:]
+            )
+            self.job = envelope.job
+        }
+    }
+
+    func pollJob() async {
+        guard let current = job, current.isActive else { return }
+        do {
+            let envelope: WorktreeIntegrationJobEnvelope = try await get(
+                "worktree-management/jobs/\(current.id)"
+            )
+            job = envelope.job
+            if !envelope.job.isActive { await refreshSelected() }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func dismissError() { errorMessage = nil }
+
+    private func loadRepository(_ id: String) async {
+        detailGeneration &+= 1
+        let generation = detailGeneration
+        isLoading = true
+        defer { if generation == detailGeneration { isLoading = false } }
+        do {
+            let response: ManagedRepositoryDetail = try await get("worktree-management/repositories/\(id)")
+            guard generation == detailGeneration, selection.repositoryId == id else { return }
+            detail = response
+            job = response.latestJob
+            let refreshedProjectStatus: ProjectWorktreeStatusResponse? = try? await get("projects/\(id)/workspaces")
+            guard generation == detailGeneration, selection.repositoryId == id else { return }
+            projectStatus = refreshedProjectStatus
+            selection.reconcile(repositories: repositories, worktrees: response.project.worktrees)
+            errorMessage = nil
+        } catch {
+            guard generation == detailGeneration else { return }
+            detail = nil
+            projectStatus = nil
+            job = nil
+            selection.worktreeId = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func mutate(_ operation: () async throws -> Void) async {
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            try await operation()
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func get<Response: Decodable>(_ path: String) async throws -> Response {
+        try await request(path, method: "GET", body: nil)
+    }
+
+    private func post<Response: Decodable>(_ path: String, body: [String: Any]) async throws -> Response {
+        try await request(path, method: "POST", body: body)
+    }
+
+    private func request<Response: Decodable>(
+        _ path: String,
+        method: String,
+        body: [String: Any]?
+    ) async throws -> Response {
+        var request = URLRequest(url: baseURL.appending(path: path))
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            let envelope = try? decoder.decode(WorktreeManagementErrorEnvelope.self, from: data)
+            throw WorktreeManagementClientError(
+                message: envelope?.error ?? "HTTP \(http.statusCode)",
+                code: envelope?.code
+            )
+        }
+        return try decoder.decode(Response.self, from: data)
+    }
+}
+
+private struct WorktreeActionAcknowledgement: Decodable {}
+
+private struct WorktreeManagementErrorEnvelope: Decodable {
+    let error: String
+    let code: String?
+}
+
+private struct WorktreeManagementClientError: LocalizedError {
+    let message: String
+    let code: String?
+    var errorDescription: String? { code.map { "\(message) (\($0))" } ?? message }
+}

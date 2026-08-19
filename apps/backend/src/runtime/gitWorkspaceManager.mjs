@@ -206,6 +206,125 @@ export class GitWorkspaceManager {
     };
   }
 
+  async integrationInspectionForProject(workingDirectory, expectedRepositoryId = null) {
+    const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId);
+    const worktrees = [];
+    for (const worktree of status.worktrees) {
+      if (worktree.availability !== "available") {
+        worktrees.push({ ...worktree, operationState: null, conflictFiles: [], changedFiles: [] });
+        continue;
+      }
+      const [porcelain, operationState, conflicts] = await Promise.all([
+        this.gitOutput(worktree.path, ["status", "--porcelain=v1"]),
+        this.integrationOperationState(worktree.path),
+        this.gitOutput(worktree.path, ["diff", "--name-only", "--diff-filter=U"])
+      ]);
+      worktrees.push({
+        ...worktree,
+        statusSummary: porcelain.trim(),
+        changedFiles: changedFilesFromPorcelain(porcelain),
+        operationState,
+        conflictFiles: conflicts.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
+      });
+    }
+    return { ...status, worktrees };
+  }
+
+  async integrationOperationState(workingDirectory) {
+    if (await this.gitSucceeds(workingDirectory, ["rev-parse", "-q", "--verify", "MERGE_HEAD"])) {
+      return "merge";
+    }
+    if (await this.gitSucceeds(workingDirectory, ["rev-parse", "-q", "--verify", "CHERRY_PICK_HEAD"])) {
+      return "cherry_pick";
+    }
+    if (await this.gitSucceeds(workingDirectory, ["rev-parse", "-q", "--verify", "REVERT_HEAD"])) {
+      return "revert";
+    }
+    for (const [name, gitPath] of [["rebase", "rebase-merge"], ["rebase", "rebase-apply"]]) {
+      const path = (await this.gitOutput(workingDirectory, ["rev-parse", "--git-path", gitPath])).trim();
+      if (await pathExists(isAbsolute(path) ? path : resolve(workingDirectory, path))) return name;
+    }
+    return null;
+  }
+
+  async commitIntegrationChanges(input) {
+    const currentHead = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    const marker = `Corptie-Integration-Job: ${input.jobId}`;
+    if (currentHead !== input.expectedHead) {
+      const body = await this.gitOutput(input.path, ["show", "-s", "--format=%B", "HEAD"]);
+      if (body.includes(marker)) return { committed: true, recovered: true, headOid: currentHead };
+      throw integrationGitError("WORKTREE_HEAD_CHANGED", "The Worktree HEAD changed after confirmation.");
+    }
+    const operationState = await this.integrationOperationState(input.path);
+    if (operationState) {
+      throw integrationGitError("GIT_OPERATION_IN_PROGRESS", `The Worktree has an existing ${operationState} operation.`);
+    }
+    const status = (await this.gitOutput(input.path, ["status", "--porcelain=v1"])).trim();
+    if (!status) return { committed: false, recovered: false, headOid: currentHead };
+    if (input.expectedStatusSummary != null && status !== input.expectedStatusSummary.trim()) {
+      throw integrationGitError("WORKTREE_CHANGES_CHANGED", "The uncommitted changes changed after confirmation.");
+    }
+    try {
+      await this.runGit(input.path, ["add", "--all"]);
+      await this.runGit(input.path, ["commit", "-m", input.commitMessage, "-m", marker]);
+    } catch (error) {
+      throw integrationGitError("WORKTREE_COMMIT_FAILED", safeGitError(error, "Could not commit Worktree changes"));
+    }
+    const headOid = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    return { committed: true, recovered: false, headOid };
+  }
+
+  async mergeIntegrationSource(input) {
+    if (await this.gitSucceeds(input.mainPath, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
+      const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+      return { merged: false, alreadyMerged: true, recovered: mainHead !== input.expectedMainHead, mainHead };
+    }
+    const operationState = await this.integrationOperationState(input.mainPath);
+    if (operationState === "merge") {
+      const mergeHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "MERGE_HEAD"])).trim();
+      if (mergeHead !== input.sourceHead) {
+        throw integrationGitError("UNRELATED_MERGE_IN_PROGRESS", "main has a merge in progress for a different source.");
+      }
+      const conflicts = (await this.gitOutput(input.mainPath, ["diff", "--name-only", "--diff-filter=U"]))
+        .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      if (conflicts.length > 0) {
+        const error = integrationGitError("MERGE_CONFLICT", "Resolve the merge conflicts in main, then retry.");
+        error.conflictFiles = conflicts;
+        throw error;
+      }
+      try {
+        await this.runGit(input.mainPath, ["commit", "--no-edit"]);
+      } catch (error) {
+        throw integrationGitError("MERGE_COMMIT_FAILED", safeGitError(error, "Could not finish the resolved merge"));
+      }
+      const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+      return { merged: true, alreadyMerged: false, recovered: true, mainHead };
+    }
+    if (operationState) {
+      throw integrationGitError("GIT_OPERATION_IN_PROGRESS", `main has an existing ${operationState} operation.`);
+    }
+    const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (mainHead !== input.expectedMainHead) {
+      throw integrationGitError("MAIN_HEAD_CHANGED", "main HEAD changed while the integration task was running.");
+    }
+    const mainStatus = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
+    if (mainStatus) throw integrationGitError("MAIN_DIRTY", "main gained uncommitted changes while integrating.");
+    try {
+      await this.runGit(input.mainPath, ["merge", "--no-ff", "--no-edit", input.sourceHead]);
+    } catch (error) {
+      const conflicts = (await this.gitOutput(input.mainPath, ["diff", "--name-only", "--diff-filter=U"]))
+        .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      if (conflicts.length > 0) {
+        const conflict = integrationGitError("MERGE_CONFLICT", safeGitError(error, "Merge conflict"));
+        conflict.conflictFiles = conflicts;
+        throw conflict;
+      }
+      throw integrationGitError("MERGE_FAILED", safeGitError(error, "Could not merge the Worktree into main"));
+    }
+    const updatedHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
+  }
+
   async createIntegrationWorktreeForProject(input) {
     const snapshot = await createGitWorkspaceSnapshot(absolutePath(input.workingDirectory));
     if (snapshot.repository.id !== input.repositoryId) {
@@ -791,6 +910,33 @@ async function assertPathMissing(path) {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+function changedFilesFromPorcelain(output) {
+  const files = [];
+  for (const line of String(output ?? "").split(/\r?\n/)) {
+    if (line.length < 4) continue;
+    const path = line.slice(3).trim();
+    if (!path) continue;
+    files.push(path.includes(" -> ") ? path.split(" -> ").at(-1) : path);
+  }
+  return files;
+}
+
+function integrationGitError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function requiredBranch(value) {

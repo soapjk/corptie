@@ -361,6 +361,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         warRoomWindow = window
     }
 
+    func openWorktreeManagement(repositoryId: String?, worktreePath: String?) {
+        openWarRoom()
+        AppTabRouter.shared.openWorktrees(
+            repositoryId: repositoryId,
+            worktreePath: worktreePath
+        )
+    }
+
     @objc private func openAssistant() {
         NSApp.activate(ignoringOtherApps: true)
 

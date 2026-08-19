@@ -1,0 +1,377 @@
+import { createHash } from "node:crypto";
+
+export class WorktreeIntegrationJobError extends Error {
+  constructor(code, message, statusCode = 400) {
+    super(message);
+    this.name = "WorktreeIntegrationJobError";
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
+// Repository-wide Git integration is a project capability. It deliberately has
+// no Agent Provider dependency: Sessions and WorkItems are presentation links.
+export class WorktreeIntegrationJobService {
+  constructor(options = {}) {
+    this.store = options.store;
+    this.inspectRepository = options.inspectRepository;
+    this.commitChanges = options.commitChanges;
+    this.mergeSource = options.mergeSource;
+    this.onEvent = options.onEvent ?? (() => {});
+    this.activeJobs = new Set();
+    for (const name of ["inspectRepository", "commitChanges", "mergeSource"]) {
+      if (typeof this[name] !== "function") throw new TypeError(`${name}() is required.`);
+    }
+  }
+
+  repositories() {
+    return this.store.listGitRepositories().map((repository) => {
+      const main = this.store.listGitWorktrees(repository.id).find((worktree) => worktree.isMain);
+      return {
+        ...repository,
+        mainPath: main?.path ?? this.store.resolveWorkspacePath(repository.id),
+        availability: main?.availability ?? "missing",
+        worktreeCount: this.store.listGitWorktrees(repository.id).length
+      };
+    });
+  }
+
+  async repository(repositoryId) {
+    const repository = this.#requireRepository(repositoryId);
+    const inspection = await this.inspectRepository(repository.id);
+    return {
+      repository: this.repositories().find((entry) => entry.id === repository.id),
+      project: this.#associate(inspection),
+      latestJob: presentJob(this.store.getLatestWorktreeIntegrationJob(repository.id))
+    };
+  }
+
+  async preflight(repositoryId) {
+    const repository = this.#requireRepository(repositoryId);
+    const active = this.store.listWorktreeIntegrationJobs(repository.id)
+      .find((job) => ["awaiting_confirmation", "queued", "running", "paused"].includes(job.status));
+    if (active) {
+      throw new WorktreeIntegrationJobError(
+        "INTEGRATION_JOB_ACTIVE",
+        "Resolve or complete the existing Worktree integration task first.",
+        409
+      );
+    }
+    const inspection = this.#associate(await this.inspectRepository(repository.id));
+    const ordered = [...inspection.worktrees].sort((left, right) => {
+      if (left.isMain !== right.isMain) return left.isMain ? -1 : 1;
+      return `${left.branchName ?? ""}\0${left.path}`.localeCompare(`${right.branchName ?? ""}\0${right.path}`);
+    });
+    const blockingRisks = [];
+    const items = ordered.map((worktree, ordinal) => {
+      const risks = risksFor(worktree);
+      blockingRisks.push(...risks.map((risk) => ({ worktreeId: worktree.worktreeId, ...risk })));
+      const label = worktree.branchName ?? worktree.path.split("/").filter(Boolean).at(-1) ?? "Worktree";
+      return {
+        ordinal,
+        worktreeId: worktree.worktreeId,
+        path: worktree.path,
+        branchName: worktree.branchName,
+        isMain: worktree.isMain,
+        availability: worktree.availability,
+        sourceHeadBefore: worktree.headOid,
+        statusSummary: worktree.statusSummary ?? "",
+        changedFiles: worktree.changedFiles ?? [],
+        dirty: worktree.dirty === true,
+        aheadOfMain: worktree.aheadOfMain,
+        behindMain: worktree.behindMain,
+        mergedIntoMain: worktree.mergedIntoMain,
+        associations: worktree.associations,
+        risks,
+        commitMessage: worktree.dirty === true ? `Corptie: preserve changes in ${label}`.slice(0, 120) : null,
+        commitStatus: worktree.dirty === true ? "pending" : "not_needed",
+        commitHead: null,
+        // A dirty branch needs merging even when its current HEAD is already an
+        // ancestor of main: the planned local commit will create a new source HEAD.
+        mergeStatus: worktree.isMain
+          ? "not_needed"
+          : (worktree.dirty === true || worktree.mergedIntoMain !== true ? "pending" : "not_needed"),
+        mergeMainHead: null,
+        conflictFiles: [],
+        error: null
+      };
+    });
+    const plan = {
+      repositoryId: repository.id,
+      mainWorktreeId: inspection.mainWorktreeId,
+      mainPath: inspection.mainPath,
+      mainHeadBefore: inspection.mainHeadOid,
+      inventoryVersion: inspection.inventoryVersion,
+      mergeOrder: items.filter((item) => !item.isMain && item.mergeStatus === "pending").map((item) => item.worktreeId),
+      blockingRisks,
+      items
+    };
+    const planFingerprint = fingerprint(plan);
+    const job = this.store.createWorktreeIntegrationJob({
+      repositoryId: repository.id,
+      planFingerprint,
+      details: {
+        plan,
+        currentWorktreeId: null,
+        progress: progressFor(items),
+        audit: [{ at: new Date().toISOString(), event: "preflight_created", planFingerprint }]
+      }
+    });
+    return presentJob(job);
+  }
+
+  confirm(jobId, input = {}) {
+    const job = this.#requireJob(jobId);
+    if (job.status !== "awaiting_confirmation") {
+      throw new WorktreeIntegrationJobError("JOB_NOT_CONFIRMABLE", "This task is not awaiting confirmation.", 409);
+    }
+    if (input.confirmed !== true || input.planFingerprint !== job.planFingerprint) {
+      throw new WorktreeIntegrationJobError(
+        "EXPLICIT_CONFIRMATION_REQUIRED",
+        "Confirm the exact reviewed plan fingerprint before starting."
+      );
+    }
+    if ((job.details.plan?.blockingRisks ?? []).length > 0) {
+      throw new WorktreeIntegrationJobError(
+        "PREFLIGHT_RISKS_UNRESOLVED",
+        "Resolve the blocking Worktree risks and run preflight again.",
+        409
+      );
+    }
+    const updated = this.#update(job, {
+      status: "queued",
+      phase: "queued",
+      confirmedAt: new Date().toISOString(),
+      auditEvent: "plan_confirmed"
+    });
+    this.#schedule(updated.id);
+    return presentJob(updated);
+  }
+
+  get(jobId) {
+    return presentJob(this.#requireJob(jobId));
+  }
+
+  retry(jobId) {
+    const job = this.#requireJob(jobId);
+    if (job.status !== "paused") {
+      throw new WorktreeIntegrationJobError("JOB_NOT_PAUSED", "Only a paused task can be retried.", 409);
+    }
+    const updated = this.#update(job, {
+      status: "queued", phase: "retry_queued", error: null, auditEvent: "retry_requested"
+    });
+    this.#schedule(updated.id);
+    return presentJob(updated);
+  }
+
+  recover() {
+    const jobs = this.store.listRecoverableWorktreeIntegrationJobs();
+    for (const job of jobs) {
+      this.#update(job, { status: "queued", phase: "recovery_queued", auditEvent: "backend_recovered" });
+      this.#schedule(job.id);
+    }
+    return jobs.length;
+  }
+
+  #schedule(jobId) {
+    setImmediate(() => this.#run(jobId).catch((error) => {
+      const job = this.store.getWorktreeIntegrationJob(jobId);
+      if (job && !["paused", "completed"].includes(job.status)) this.#pause(job, error);
+    }));
+  }
+
+  async #run(jobId) {
+    if (this.activeJobs.has(jobId)) return;
+    this.activeJobs.add(jobId);
+    try {
+      let job = this.#requireJob(jobId);
+      if (!['queued', 'running'].includes(job.status)) return;
+      job = this.#update(job, { status: "running", phase: "validating", auditEvent: "execution_started" });
+      let items = job.details.plan.items;
+      const completedAny = items.some((item) => ["completed", "recovered"].includes(item.commitStatus)
+        || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus));
+      if (!completedAny) {
+        const current = await this.inspectRepository(job.repositoryId);
+        const currentPlanShape = job.details.plan.items.map((item) => {
+          const worktree = current.worktrees.find((entry) => entry.worktreeId === item.worktreeId);
+          return { id: item.worktreeId, head: worktree?.headOid, status: worktree?.statusSummary ?? "" };
+        });
+        const expectedShape = job.details.plan.items.map((item) => ({
+          id: item.worktreeId, head: item.sourceHeadBefore, status: item.statusSummary
+        }));
+        if (JSON.stringify(currentPlanShape) !== JSON.stringify(expectedShape)) {
+          throw new WorktreeIntegrationJobError(
+            "PLAN_STALE", "Worktree state changed after preflight. Create and review a new plan.", 409
+          );
+        }
+      }
+
+      for (const item of items) {
+        if (item.commitStatus === "not_needed" || ["completed", "recovered"].includes(item.commitStatus)) continue;
+        job = this.#item(job, item.worktreeId, { commitStatus: "running", error: null }, "committing", "commit_started");
+        const result = await this.commitChanges({
+          path: item.path,
+          expectedHead: item.sourceHeadBefore,
+          expectedStatusSummary: item.statusSummary,
+          commitMessage: item.commitMessage,
+          jobId
+        });
+        job = this.#item(job, item.worktreeId, {
+          commitStatus: result.recovered ? "recovered" : (result.committed ? "completed" : "not_needed"),
+          commitHead: result.headOid,
+          error: null
+        }, "committing", "commit_completed");
+        items = job.details.plan.items;
+      }
+
+      let expectedMainHead = items.find((item) => item.isMain)?.commitHead
+        ?? job.details.plan.mainHeadBefore;
+      for (const item of items) {
+        if (item.isMain || item.mergeStatus === "not_needed"
+          || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus)) {
+          if (item.mergeMainHead) expectedMainHead = item.mergeMainHead;
+          continue;
+        }
+        const sourceHead = item.commitHead ?? item.sourceHeadBefore;
+        job = this.#item(job, item.worktreeId, { mergeStatus: "running", error: null }, "merging", "merge_started");
+        try {
+          const result = await this.mergeSource({
+            mainPath: job.details.plan.mainPath,
+            sourceHead,
+            expectedMainHead,
+            jobId
+          });
+          expectedMainHead = result.mainHead;
+          job = this.#item(job, item.worktreeId, {
+            mergeStatus: result.alreadyMerged ? "already_integrated" : (result.recovered ? "recovered" : "completed"),
+            mergeMainHead: result.mainHead,
+            conflictFiles: [],
+            error: null
+          }, "merging", "merge_completed");
+        } catch (error) {
+          job = this.#item(job, item.worktreeId, {
+            mergeStatus: error.code === "MERGE_CONFLICT" ? "conflict" : "failed",
+            conflictFiles: error.conflictFiles ?? [],
+            error: error.message
+          }, "paused", "merge_paused");
+          this.#pause(job, error);
+          return;
+        }
+        items = job.details.plan.items;
+      }
+      this.#update(job, {
+        status: "completed",
+        phase: "completed",
+        completedAt: new Date().toISOString(),
+        error: null,
+        currentWorktreeId: null,
+        auditEvent: "execution_completed"
+      });
+    } catch (error) {
+      const job = this.store.getWorktreeIntegrationJob(jobId);
+      if (job) this.#pause(job, error);
+    } finally {
+      this.activeJobs.delete(jobId);
+    }
+  }
+
+  #pause(job, error) {
+    const updated = this.#update(job, {
+      status: "paused",
+      phase: error.code === "MERGE_CONFLICT" ? "conflict" : "failed",
+      error: error.message,
+      auditEvent: "execution_paused",
+      auditData: { code: error.code ?? "INTEGRATION_FAILED" }
+    });
+    this.onEvent("WorktreeIntegrationJobPaused", { job: presentJob(updated) });
+    return updated;
+  }
+
+  #item(job, worktreeId, patch, phase, event) {
+    const items = job.details.plan.items.map((item) => item.worktreeId === worktreeId ? { ...item, ...patch } : item);
+    return this.#update(job, {
+      phase,
+      details: { ...job.details, plan: { ...job.details.plan, items }, progress: progressFor(items) },
+      currentWorktreeId: worktreeId,
+      auditEvent: event,
+      auditData: { worktreeId }
+    });
+  }
+
+  #update(job, patch) {
+    const at = new Date().toISOString();
+    let details = patch.details ?? job.details;
+    if (Object.prototype.hasOwnProperty.call(patch, "currentWorktreeId")) {
+      details = { ...details, currentWorktreeId: patch.currentWorktreeId };
+    }
+    if (patch.auditEvent) {
+      details = {
+        ...details,
+        audit: [...(details.audit ?? []), { at, event: patch.auditEvent, ...(patch.auditData ?? {}) }]
+      };
+    }
+    const updated = this.store.updateWorktreeIntegrationJob(job.id, { ...patch, details });
+    this.onEvent("WorktreeIntegrationJobChanged", { job: presentJob(updated) });
+    return updated;
+  }
+
+  #associate(inspection) {
+    return {
+      ...inspection,
+      worktrees: inspection.worktrees.map((worktree) => ({
+        ...worktree,
+        associations: (worktree.sessions ?? []).map((association) => {
+          const session = association.sessionId ? this.store.getSession(association.sessionId) : null;
+          const workItem = session?.workItemId ? this.store.getWorkItem(session.workItemId) : null;
+          return {
+            ...association,
+            workItemId: workItem?.id ?? session?.workItemId ?? null,
+            workItemTitle: workItem?.title ?? null
+          };
+        })
+      }))
+    };
+  }
+
+  #requireRepository(repositoryId) {
+    const repository = this.store.getGitRepository(String(repositoryId ?? "").trim());
+    if (!repository) throw new WorktreeIntegrationJobError("REPOSITORY_NOT_FOUND", "Repository not found.", 404);
+    return repository;
+  }
+
+  #requireJob(jobId) {
+    const job = this.store.getWorktreeIntegrationJob(String(jobId ?? "").trim());
+    if (!job) throw new WorktreeIntegrationJobError("INTEGRATION_JOB_NOT_FOUND", "Integration task not found.", 404);
+    return job;
+  }
+}
+
+function risksFor(worktree) {
+  const risks = [];
+  if (worktree.availability !== "available") risks.push({ code: "WORKTREE_UNAVAILABLE", message: "Worktree is unavailable." });
+  if (worktree.isLocked) risks.push({ code: "WORKTREE_LOCKED", message: worktree.lockReason || "Worktree is locked." });
+  if (worktree.isPrunable) risks.push({ code: "WORKTREE_PRUNABLE", message: worktree.pruneReason || "Worktree metadata is prunable." });
+  if (worktree.operationState) risks.push({ code: "GIT_OPERATION_IN_PROGRESS", message: `${worktree.operationState} is already in progress.` });
+  if (!worktree.isMain && (worktree.isDetached || !worktree.branchName)) {
+    risks.push({ code: "WORKTREE_BRANCH_AMBIGUOUS", message: "A non-main Worktree must have an attributable branch." });
+  }
+  if ((worktree.conflictFiles ?? []).length > 0) risks.push({ code: "UNRESOLVED_CONFLICTS", message: "Worktree has unresolved conflict files." });
+  return risks;
+}
+
+function progressFor(items) {
+  const commitDone = items.filter((item) => ["not_needed", "completed", "recovered"].includes(item.commitStatus)).length;
+  const mergeItems = items.filter((item) => !item.isMain);
+  const mergeDone = mergeItems.filter((item) => ["not_needed", "completed", "already_integrated", "recovered"].includes(item.mergeStatus)).length;
+  const total = items.length + mergeItems.length;
+  return { completed: commitDone + mergeDone, total, fraction: total ? (commitDone + mergeDone) / total : 1 };
+}
+
+function fingerprint(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function presentJob(job) {
+  if (!job) return null;
+  return { ...job, ...job.details, details: undefined };
+}

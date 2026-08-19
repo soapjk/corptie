@@ -12,6 +12,7 @@ enum TwoPaneLayoutMetrics {
 enum AppTab: String, CaseIterable, Identifiable {
     case console
     case sessions
+    case worktrees
     case sessionDSH
     case agents
 
@@ -22,8 +23,9 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: 0
         case .sessions: 1
-        case .sessionDSH: 2
-        case .agents: 3
+        case .worktrees: 2
+        case .sessionDSH: 3
+        case .agents: 4
         }
     }
 
@@ -31,6 +33,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: L10n("Console")
         case .sessions: L10n("Sessions")
+        case .worktrees: L10n("Worktrees")
         case .sessionDSH: L10n("Session DSH")
         case .agents: L10n("Agents")
         }
@@ -40,6 +43,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: "square.grid.2x2"
         case .sessions: "bubble.left.and.bubble.right"
+        case .worktrees: "arrow.triangle.branch"
         case .sessionDSH: "globe"
         case .agents: "person.2"
         }
@@ -134,7 +138,7 @@ private struct UnderlineTabButton: View {
 
 // 主窗口顶层容器：顶部中间 Tab 切换器（控制台 / Sessions / Agents / 设置）+ 对应内容。
 struct MainTabView: View {
-    @StateObject private var router = AppTabRouter()
+    @StateObject private var router = AppTabRouter.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -211,6 +215,8 @@ struct MainTabView: View {
             WarRoomView()
         case .sessions:
             SessionsView()
+        case .worktrees:
+            WorktreeManagementView()
         case .sessionDSH:
             SessionDSHView()
         case .agents:
@@ -235,15 +241,18 @@ struct MainTabView: View {
 // 同时持有侧栏可见性状态，供各 NavigationSplitView 页面共享（自定义左上角开关按钮控制）。
 @MainActor
 final class AppTabRouter: ObservableObject {
+    static let shared = AppTabRouter()
+
     @Published private(set) var selectedTab: AppTab = .console
     // 必须先于 selectedTab 更新，确保 SwiftUI 创建 transition 时读到本次切换的方向。
     @Published private(set) var slideForward = true
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
+    @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
     @Published var navigationError: String?
 
-    // 当前主页面外层均为两栏 NavigationSplitView：.all 显示 sidebar，
-    // .detailOnly 收起 sidebar。不要使用三栏布局的 .doubleColumn。
+    // .all displays the leading navigation columns. Worktree management uses
+    // all three native split columns; the other tabs use sidebar + detail.
     @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
 
     var isSidebarVisible: Bool { sidebarVisibility != .detailOnly }
@@ -265,8 +274,26 @@ final class AppTabRouter: ObservableObject {
         selectTab(.sessions)
     }
 
+    func openWorktrees(repositoryId: String?, worktreePath: String?) {
+        pendingWorktreeTarget = WorktreeNavigationTarget(
+            repositoryId: repositoryId,
+            worktreePath: worktreePath
+        )
+        sidebarVisibility = .all
+        selectTab(.worktrees)
+    }
+
+    func consumeWorktreeTarget(_ target: WorktreeNavigationTarget) {
+        if pendingWorktreeTarget == target { pendingWorktreeTarget = nil }
+    }
+
     func failSessionNavigation(_ sessionId: String) {
         navigationError = L10nFormat("Session %@ could not be loaded.", sessionId)
         pendingSessionId = nil
     }
+}
+
+struct WorktreeNavigationTarget: Equatable {
+    let repositoryId: String?
+    let worktreePath: String?
 }
