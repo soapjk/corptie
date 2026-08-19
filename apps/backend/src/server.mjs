@@ -26,6 +26,7 @@ import {
   ProjectWorktreeIntegrationService,
   presentProjectIntegrationRun
 } from "./application/projectWorktreeIntegrationService.mjs";
+import { WorktreeIntegrationJobService } from "./application/worktreeIntegrationJobService.mjs";
 import {
   applyPersistedSessionOrder,
   storedSessionIdForListSession
@@ -814,6 +815,21 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
   },
   isSessionActive: sessionHasActiveRun,
   presentWorkItem: presentWorkItemAcceptance,
+  onEvent: (type, payload) => emitEvent(type, payload)
+});
+const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
+  store,
+  inspectRepository: async (repositoryId) => {
+    const path = store.resolveWorkspacePath(repositoryId);
+    if (!path) {
+      const error = new Error("The repository main checkout is unavailable.");
+      error.code = "REPOSITORY_MAIN_UNAVAILABLE";
+      throw error;
+    }
+    return gitWorkspaces.integrationInspectionForProject(path, repositoryId);
+  },
+  commitChanges: (input) => gitWorkspaces.commitIntegrationChanges(input),
+  mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const feishuGateway = new FeishuGatewayManager({
@@ -6359,6 +6375,18 @@ function route(request, response) {
   }
 
   const projectWorkspacesMatch = url.pathname.match(/^\/projects\/([^/]+)\/workspaces$/);
+  const worktreeManagementRepositoryMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)$/
+  );
+  const worktreeManagementPreflightMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/integration-plans$/
+  );
+  const worktreeManagementJobMatch = url.pathname.match(
+    /^\/worktree-management\/jobs\/([^/]+)$/
+  );
+  const worktreeManagementJobActionMatch = url.pathname.match(
+    /^\/worktree-management\/jobs\/([^/]+)\/(confirm|retry)$/
+  );
   const projectWorkspaceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/
   );
@@ -6373,6 +6401,51 @@ function route(request, response) {
     /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations\/([^/]+)\/conflict-work-item$/
   );
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+  if (request.method === "GET" && url.pathname === "/worktree-management/repositories") {
+    sendJson(response, 200, { repositories: worktreeIntegrationJobService.repositories() });
+    return;
+  }
+  if (request.method === "GET" && worktreeManagementRepositoryMatch) {
+    const repositoryId = decodeURIComponent(worktreeManagementRepositoryMatch[1]);
+    worktreeIntegrationJobService.repository(repositoryId)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code
+      }));
+    return;
+  }
+  if (request.method === "POST" && worktreeManagementPreflightMatch) {
+    const repositoryId = decodeURIComponent(worktreeManagementPreflightMatch[1]);
+    worktreeIntegrationJobService.preflight(repositoryId)
+      .then((result) => sendJson(response, 201, { job: result }))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code
+      }));
+    return;
+  }
+  if (request.method === "GET" && worktreeManagementJobMatch) {
+    try {
+      sendJson(response, 200, { job: worktreeIntegrationJobService.get(
+        decodeURIComponent(worktreeManagementJobMatch[1])
+      ) });
+    } catch (error) {
+      sendJson(response, error.statusCode ?? unifiedErrorStatus(error), { error: error.message, code: error.code });
+    }
+    return;
+  }
+  if (request.method === "POST" && worktreeManagementJobActionMatch) {
+    const jobId = decodeURIComponent(worktreeManagementJobActionMatch[1]);
+    const action = worktreeManagementJobActionMatch[2];
+    readJson(request)
+      .then((input) => action === "confirm"
+        ? worktreeIntegrationJobService.confirm(jobId, input)
+        : worktreeIntegrationJobService.retry(jobId))
+      .then((result) => sendJson(response, 202, { job: result }))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code
+      }));
+    return;
+  }
   if (request.method === "GET" && projectObjectiveIntegrationsMatch) {
     const projectId = decodeURIComponent(projectObjectiveIntegrationsMatch[1]);
     const objectiveId = decodeURIComponent(projectObjectiveIntegrationsMatch[2]);
@@ -7158,6 +7231,10 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+const recoveredWorktreeIntegrationJobs = worktreeIntegrationJobService.recover();
+if (recoveredWorktreeIntegrationJobs > 0) {
+  console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
+}
 stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
 stateSyncPublishedRevision = store.stateRevision();
 const legacySkillRepair = await skillRegistryService.repairLegacyRegistrations();

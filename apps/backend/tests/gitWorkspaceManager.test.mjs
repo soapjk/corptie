@@ -675,6 +675,84 @@ test("a manually deleted worktree can be rebuilt from its surviving branch", asy
   }
 });
 
+test("integration commit is traceable and a retry recognizes its persisted job marker", async () => {
+  const fixture = await createFixture("integration-commit-marker", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.activeWorktree, "traceable.txt"), "traceable\n");
+    const expectedHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    const expectedStatusSummary = (await gitOutput(["status", "--porcelain=v1"], fixture.activeWorktree)).trim();
+    const first = await manager.commitIntegrationChanges({
+      path: fixture.activeWorktree,
+      expectedHead,
+      expectedStatusSummary,
+      commitMessage: "Corptie: preserve changes in feature/session-worktree",
+      jobId: "job:traceable"
+    });
+    assert.equal(first.committed, true);
+    assert.match(
+      await gitOutput(["show", "-s", "--format=%B", "HEAD"], fixture.activeWorktree),
+      /Corptie-Integration-Job: job:traceable/
+    );
+
+    const recovered = await manager.commitIntegrationChanges({
+      path: fixture.activeWorktree,
+      expectedHead,
+      expectedStatusSummary,
+      commitMessage: "Corptie: preserve changes in feature/session-worktree",
+      jobId: "job:traceable"
+    });
+    assert.equal(recovered.recovered, true);
+    assert.equal(recovered.headOid, first.headOid);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("integration merge keeps conflicts in main and safely finishes them on retry", async () => {
+  const fixture = await createFixture("integration-conflict-preserved", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+    await git(["add", "shared.txt"], fixture.repository);
+    await git(["commit", "-m", "main version"], fixture.repository);
+    await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+    await git(["add", "shared.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "feature version"], fixture.activeWorktree);
+    const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+
+    await assert.rejects(
+      () => manager.mergeIntegrationSource({
+        mainPath: fixture.repository, sourceHead, expectedMainHead, jobId: "job:conflict"
+      }),
+      (error) => error.code === "MERGE_CONFLICT" && error.conflictFiles.includes("shared.txt")
+    );
+    assert.equal(
+      (await gitOutput(["rev-parse", "--verify", "MERGE_HEAD"], fixture.repository)).trim(),
+      sourceHead
+    );
+    assert.match((await gitOutput(["status", "--porcelain=v1"], fixture.repository)).trim(), /^AA shared\.txt$/);
+
+    await writeFile(join(fixture.repository, "shared.txt"), "main and feature\n");
+    await git(["add", "shared.txt"], fixture.repository);
+    const completed = await manager.mergeIntegrationSource({
+      mainPath: fixture.repository, sourceHead, expectedMainHead, jobId: "job:conflict"
+    });
+    assert.equal(completed.recovered, true);
+    assert.equal(await readFile(join(fixture.repository, "shared.txt"), "utf8"), "main and feature\n");
+    await git(["merge-base", "--is-ancestor", sourceHead, "HEAD"], fixture.repository);
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, "main repo");

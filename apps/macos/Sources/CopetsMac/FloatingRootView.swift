@@ -5099,7 +5099,7 @@ struct DetailHeaderView: View {
                         if let gitHeadState,
                            gitHeadState.stampText != nil {
                             Button {
-                                ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+                                openWorktreeManagement()
                             } label: {
                                 GitBranchStamp(headState: gitHeadState)
                             }
@@ -5248,7 +5248,7 @@ struct DetailHeaderView: View {
         case .manageWorktrees:
             if let status = backendClient.selectedProjectWorktreeStatus {
                 Button {
-                    ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+                    openWorktreeManagement()
                 } label: {
                     ProjectWorktreeStatusChip(status: status)
                 }
@@ -5289,7 +5289,7 @@ struct DetailHeaderView: View {
         )
 
         Button {
-            ProjectWorktreeWindowManager.shared.show(backendClient: backendClient)
+            openWorktreeManagement()
         } label: {
             Label(L10n("Manage project worktrees and service"), systemImage: "arrow.triangle.branch")
         }
@@ -5314,6 +5314,13 @@ struct DetailHeaderView: View {
         }
         guard gitHubPushHasPendingChanges else { return CorptiePalette.mutedText }
         return worktree?.dirty == true ? CorptiePalette.amber : CorptiePalette.connected
+    }
+
+    private func openWorktreeManagement() {
+        AppDelegate.shared?.openWorktreeManagement(
+            repositoryId: backendClient.selectedProjectWorktreeStatus?.project.repositoryId,
+            worktreePath: workspacePath
+        )
     }
 
     private var gitHubPushHasPendingChanges: Bool {
