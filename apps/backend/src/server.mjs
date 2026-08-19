@@ -102,6 +102,10 @@ import {
 } from "./dsh-adapter/dshWebSocket.mjs";
 import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
+import {
+  buildHistoricalSessionContext,
+  composeLogicalSessionTimeline
+} from "./application/logicalSessionTimeline.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
@@ -202,6 +206,7 @@ const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "de
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
 const sessionPresentationCache = new Map();
+const historicalSessionBindingDetailCache = new Map();
 const eventLog = [];
 const sseClients = new Set();
 const stateSyncClients = new Set();
@@ -577,19 +582,27 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  resolveMessageContext: (reference) => {
+  resolveMessageContext: async (reference) => {
     const session = store.getSession(reference.sessionId);
+    let baseContext = null;
     if (session?.sessionKind === "objectiveChat" && session.objectiveId) {
-      return objectiveChatContextService.build(session.objectiveId);
+      baseContext = objectiveChatContextService.build(session.objectiveId);
+    } else if (session?.sessionKind === "assistantChat") {
+      baseContext = await sessionContextReferenceService.resolve(reference.sessionId);
+    } else if (session?.sessionKind === "worker") {
+      const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
+      const workItem = store.getWorkItem(ownership.workItemId);
+      const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
+      baseContext = buildWorkSessionContext({ session, workItem, objective });
     }
-    if (session?.sessionKind === "assistantChat") {
-      return sessionContextReferenceService.resolve(reference.sessionId);
-    }
-    if (session?.sessionKind !== "worker") return null;
-    const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
-    const workItem = store.getWorkItem(ownership.workItemId);
-    const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
-    return buildWorkSessionContext({ session, workItem, objective });
+    const historicalContext = await historicalProviderMessageContext(reference);
+    if (!historicalContext?.prompt) return baseContext;
+    if (!baseContext?.prompt) return historicalContext;
+    return {
+      ...baseContext,
+      prompt: `${historicalContext.prompt}\n\n${baseContext.prompt}`,
+      providerHandoffMessageCount: historicalContext.messageCount
+    };
   },
   bindCreatedSession: async ({ providerId, session, input, context }) => {
     persistProviderSessionProjection(store, session, {
@@ -3593,7 +3606,8 @@ async function getUnifiedSessionSnapshot(sessionId) {
   const detail = await sessionApplicationService.readSession(sessionId);
   const publicSessionId = reference.logicalSessionId ?? reference.sessionId;
 
-  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []);
+  const timelineItems = await logicalSessionTimelineItems(reference, detail);
+  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
   const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(allItems);
 
   return {
@@ -3622,13 +3636,49 @@ async function getUnifiedSessionSnapshot(sessionId) {
 async function readSessionHistory(sessionId, beforeId, limit) {
   const reference = requireSessionReference(sessionId);
   const detail = await sessionApplicationService.readSession(sessionId);
-  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, detail?.items ?? []);
+  const timelineItems = await logicalSessionTimelineItems(reference, detail);
+  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
   const page = pageSessionItems(allItems, { beforeId, limit });
   return {
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
     ...page
   };
+}
+
+async function logicalSessionTimelineItems(reference, activeDetail) {
+  if (!reference.logicalSessionId) return activeDetail?.items ?? [];
+  const bindings = store.listProviderThreadBindings(reference.logicalSessionId);
+  return composeLogicalSessionTimeline({
+    bindings,
+    activeDetail,
+    readHistoricalBinding: (binding) => readCachedHistoricalSessionBinding(reference.sessionId, binding)
+  });
+}
+
+async function historicalProviderMessageContext(reference) {
+  if (!reference.logicalSessionId) return null;
+  const bindings = store.listProviderThreadBindings(reference.logicalSessionId);
+  if (!bindings.some((binding) => binding.state === "superseded")) return null;
+  return buildHistoricalSessionContext({
+    bindings,
+    readHistoricalBinding: (binding) => readCachedHistoricalSessionBinding(reference.sessionId, binding)
+  });
+}
+
+async function readCachedHistoricalSessionBinding(sessionId, binding) {
+  const cacheKey = binding.bindingId;
+  if (historicalSessionBindingDetailCache.has(cacheKey)) {
+    return historicalSessionBindingDetailCache.get(cacheKey);
+  }
+  const loading = sessionApplicationService.readSessionBinding(sessionId, binding.bindingId)
+    .catch((error) => {
+      historicalSessionBindingDetailCache.delete(cacheKey);
+      console.warn(`[session-history] historical binding unavailable binding=${binding.bindingId} error=${error.message}`);
+      return { items: [] };
+    });
+  historicalSessionBindingDetailCache.set(cacheKey, loading);
+  return loading;
 }
 
 function requireSessionReference(sessionId) {
