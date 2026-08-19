@@ -411,6 +411,8 @@ test("project merge preserves conflict diagnostics and aborts the failed merge",
         synchronizeSource: false
       }),
       (error) => {
+        assert.match(error.message, /CONFLICT .*shared\.txt/);
+        assert.match(error.message, /Automatic merge failed/);
         assert.match(`${String(error.stdout)}\n${String(error.stderr)}`, /CONFLICT .*shared\.txt/);
         return true;
       }

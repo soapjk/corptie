@@ -216,6 +216,32 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
+    @discardableResult
+    func regeneratePlan() async -> Bool {
+        guard let staleJob = job,
+              staleJob.requiresPlanRegeneration,
+              let repositoryId = selection.repositoryId else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let canceled: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/jobs/\(staleJob.id)/cancel",
+                body: [:]
+            )
+            job = canceled.job
+            let fresh: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/repositories/\(repositoryId)/integration-plans",
+                body: [:]
+            )
+            job = fresh.job
+            errorMessage = nil
+            return fresh.job.status == "awaiting_confirmation"
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func pollJob() async {
         guard let current = job, current.isActive else { return }
         do {

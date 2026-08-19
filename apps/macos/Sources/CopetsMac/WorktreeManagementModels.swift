@@ -88,6 +88,9 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let audit: [WorktreeIntegrationAuditEvent]
 
     var isActive: Bool { ["queued", "running"].contains(status) }
+    var requiresPlanRegeneration: Bool {
+        status == "paused" && audit.last(where: { $0.code != nil })?.code == "PLAN_STALE"
+    }
 }
 
 struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {

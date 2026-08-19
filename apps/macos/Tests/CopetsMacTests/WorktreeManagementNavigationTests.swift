@@ -91,6 +91,28 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(client.contains("body: body"))
     }
 
+    func testStaleIntegrationPlanCanBeRegeneratedAndMustBeReviewedAgain() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("job.requiresPlanRegeneration"))
+        XCTAssertTrue(view.contains("worktree.integrate.regenerate"))
+        XCTAssertTrue(view.contains("if await client.regeneratePlan()"))
+        XCTAssertTrue(view.contains("showingPlan = true"))
+        XCTAssertTrue(client.contains("worktree-management/jobs/\\(staleJob.id)/cancel"))
+        XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/integration-plans"))
+    }
+
     func testWorktreeTabHasChineseTranslationsForUIAndBackendStatuses() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -114,7 +136,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Inspecting Worktree changes…\" = \"正在检查 Worktree 修改…\";",
             "\"Protected local files were detected.\" = \"检测到受保护的本地文件。\";",
             "\"Operations run in the displayed order. No remote push or deletion is performed.\" = \"操作将按显示顺序执行；不会远程推送或删除任何内容。\";",
-            "\"No Worktree changes require integration.\" = \"没有需要集成的 Worktree 修改。\";"
+            "\"No Worktree changes require integration.\" = \"没有需要集成的 Worktree 修改。\";",
+            "\"Regenerate Plan\" = \"重新生成计划\";",
+            "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";"
         ] {
             XCTAssertTrue(localization.contains(expected), "Missing localization: \(expected)")
         }
@@ -151,7 +175,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
           "planFingerprint":"abc","error":"Resolve conflicts","createdAt":"2026-08-19T00:00:00Z",
           "updatedAt":"2026-08-19T00:01:00Z","confirmedAt":"2026-08-19T00:00:30Z","completedAt":null,
           "currentWorktreeId":"wt:feature","progress":{"completed":2,"total":3,"fraction":0.666},
-          "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature"}],
+          "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"PLAN_STALE"}],
           "plan":{"repositoryId":"repository:1","mainWorktreeId":"wt:main","mainPath":"/repo",
             "mainHeadBefore":"main:1","inventoryVersion":"inventory:1","mergeOrder":["wt:feature"],
             "blockingRisks":[],"items":[{"ordinal":1,"worktreeId":"wt:feature","path":"/feature",
@@ -168,6 +192,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(job.plan.items[0].conflictFiles, ["shared.swift"])
         XCTAssertEqual(job.audit[0].event, "merge_paused")
         XCTAssertFalse(job.isActive)
+        XCTAssertTrue(job.requiresPlanRegeneration)
     }
 
     private func repository(_ id: String) -> ManagedRepository {
