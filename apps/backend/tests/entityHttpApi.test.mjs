@@ -190,6 +190,7 @@ test("GET /skills/runtime-events exposes filterable persisted stage diagnostics"
       method: "GET",
       pathname: "/skills/runtime-events",
       search: "?agentId=agent%3Ainvestor&sessionId=session%3A1&stage=session-recovery&limit=25",
+      ...services,
       skillRegistryService: {
         runtimeEvents(filters) {
           calls.push(filters);
@@ -204,8 +205,7 @@ test("GET /skills/runtime-events exposes filterable persisted stage diagnostics"
             toolCount: 24
           }];
         }
-      },
-      ...services
+      }
     });
 
     assert.equal(result.statusCode, 200);
