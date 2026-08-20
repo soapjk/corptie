@@ -11,11 +11,15 @@ function memoryFixture({
   blockingRisk = false,
   featureAlreadyMerged = false,
   featureDirty = true,
-  mainDirty = true,
+  featureConflict = false,
+  mainDirty = false,
   externalConflictResolved = false,
   commitGate = null,
   conflictAttempts = null,
   inspectRepositorySummary = null,
+  resolutionInspectionError = null,
+  abortMergeError = null,
+  conflictSessionStatus = "complete",
   protectedPaths = [],
   activeFeatureSession = false
 } = {}) {
@@ -38,7 +42,8 @@ function memoryFixture({
       changedFiles: featureDirty ? ["feature.txt"] : [],
       aheadOfMain: 1, behindMain: 0, mergedIntoMain: featureAlreadyMerged,
       isLocked: blockingRisk, lockReason: blockingRisk ? "owned by another process" : null,
-      isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: activeFeatureSession ? [{
+      isPrunable: false, isDetached: false, operationState: featureConflict ? "merge" : null,
+      conflictFiles: featureConflict ? ["shared.txt"] : [], sessions: activeFeatureSession ? [{
         logicalSessionId: "logical:active", sessionId: "session:active", title: "Active Agent", active: true
       }] : []
     }
@@ -76,7 +81,7 @@ function memoryFixture({
       return structuredClone(jobs.get(id));
     },
     getSession: (id) => id?.startsWith("session:conflict")
-      ? { id, status: "complete" }
+      ? { id, status: conflictSessionStatus }
       : (id === "session:active" ? { id, status: "running" } : null),
     getWorkItem: () => null
   };
@@ -116,9 +121,9 @@ function memoryFixture({
     },
     mergeSource: async (input) => {
       calls.push(`merge:${input.sourceHead}`);
-      const worktreeIndex = worktrees.findIndex((entry) => !entry.isMain && input.sourceHead.startsWith(entry.headOid));
+      const worktreeIndex = worktrees.findIndex((entry) => !entry.isMain && input.sourceHead.includes(entry.headOid));
       const featureIndex = worktreeIndex - 1;
-      if (remainingConflicts[featureIndex] > 0) {
+      if (!input.sourceHead.startsWith("integration:") && remainingConflicts[featureIndex] > 0) {
         remainingConflicts[featureIndex] -= 1;
         const error = new Error("Resolve the conflict");
         error.code = "MERGE_CONFLICT";
@@ -136,6 +141,7 @@ function memoryFixture({
     },
     abortMerge: async (input) => {
       calls.push(`abort-merge:${input.sourceHead}`);
+      if (abortMergeError) throw abortMergeError;
       return { aborted: true, alreadyClean: false, mainHead: input.expectedMainHead };
     },
     prepareConflictResolution: async (input) => {
@@ -148,6 +154,17 @@ function memoryFixture({
       return {
         worktreeId: "wt:integration", path: "/repo-integration", branchName: "integration/job-1",
         headOid: input.expectedMainHead
+      };
+    },
+    inspectConflictResolution: async (input) => {
+      calls.push(`inspect-resolution:${input.workspace.path}`);
+      if (resolutionInspectionError) throw resolutionInspectionError;
+      return {
+        resolvedHead: `integration:${input.sourceHead}`,
+        mainHead: input.expectedMainHead,
+        workspaceId: input.workspace.worktreeId,
+        workspacePath: input.workspace.path,
+        branchName: input.workspace.branchName
       };
     },
     launchConflictResolution: async (input) => {
@@ -217,7 +234,7 @@ async function waitForJobWhere(service, id, predicate) {
   assert.fail(`job ${id} did not reach the expected state`);
 }
 
-test("reviewed plan commits main and every dirty Worktree separately before deterministic merge", async () => {
+test("reviewed plan preserves main and commits each dirty task Worktree before deterministic merge", async () => {
   const { service, calls } = memoryFixture();
   const plan = await service.preflight("repository:1");
   assert.deepEqual(plan.plan.items.map((item) => item.worktreeId), ["wt:main", "wt:feature"]);
@@ -229,7 +246,7 @@ test("reviewed plan commits main and every dirty Worktree separately before dete
 
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
   const completed = await waitForJob(service, plan.id, "completed");
-  assert.deepEqual(calls, ["commit:/repo", "commit:/repo-feature", "merge:feature:1:commit"]);
+  assert.deepEqual(calls, ["commit:/repo-feature", "merge:feature:1:commit"]);
   assert.equal(completed.progress.fraction, 1);
   assert.equal(completed.plan.items[1].mergeStatus, "completed");
   assert.ok(completed.audit.some((entry) => entry.event === "plan_confirmed"));
@@ -277,6 +294,25 @@ test("confirmation revalidates the reviewed plan before queuing any Git operatio
   assert.deepEqual(calls, []);
 });
 
+test("main changes introduced after review produce a recoverable stale plan without Git operations", async () => {
+  const { service, calls, worktrees } = memoryFixture();
+  const plan = await service.preflight("repository:1");
+  worktrees[0].dirty = true;
+  worktrees[0].statusSummary = " M local-main.txt";
+  worktrees[0].changedFiles = ["local-main.txt"];
+
+  const stale = await service.confirm(plan.id, {
+    confirmed: true,
+    planFingerprint: plan.planFingerprint
+  });
+
+  assert.equal(stale.status, "awaiting_confirmation");
+  assert.equal(stale.phase, "plan_stale");
+  assert.equal(stale.audit.at(-1).code, "MAIN_DIRTY");
+  assert.match(stale.error, /Nothing was changed/);
+  assert.deepEqual(calls, []);
+});
+
 test("a running task stops at the next safe boundary and automatically creates a fresh plan", async () => {
   let releaseCommit;
   const commitGate = new Promise((resolve) => { releaseCommit = resolve; });
@@ -291,8 +327,8 @@ test("a running task stops at the next safe boundary and automatically creates a
   releaseCommit();
 
   const canceled = await waitForJob(service, plan.id, "canceled");
-  assert.equal(canceled.plan.items[0].commitStatus, "completed");
-  assert.deepEqual(calls, ["commit:/repo"]);
+  assert.equal(canceled.plan.items.find((item) => item.worktreeId === "wt:feature").commitStatus, "completed");
+  assert.deepEqual(calls, ["commit:/repo-feature"]);
   const replacement = store.listWorktreeIntegrationJobs("repository:1")
     .find((job) => job.id !== plan.id && job.status === "awaiting_confirmation");
   assert.ok(replacement, JSON.stringify(store.listWorktreeIntegrationJobs("repository:1")));
@@ -338,7 +374,7 @@ test("merge conflict preserves a paused item and retry resumes the same idempote
   service.retry(plan.id);
   const completed = await waitForJob(service, plan.id, "completed");
   assert.equal(completed.plan.items[1].mergeStatus, "recovered");
-  assert.equal(completed.plan.items[0].commitStatus, "completed");
+  assert.equal(completed.plan.items[0].commitStatus, "not_needed");
 });
 
 test("stop and re-preflight aborts the task-owned main merge before creating a replacement plan", async () => {
@@ -359,7 +395,27 @@ test("stop and re-preflight aborts the task-owned main merge before creating a r
   assert.ok(canceled.details.audit.some((entry) => entry.event === "replacement_preflight_ready"));
 });
 
-test("a paused merge conflict can launch an Agent in a dedicated Integration Worktree", async () => {
+test("stop and re-preflight never creates a replacement plan when main cannot be restored", async () => {
+  const restoreError = new Error("Git aborted the merge, but main did not return to its recorded clean state.");
+  restoreError.code = "MAIN_NOT_RESTORED";
+  const { service, store, calls } = memoryFixture({ conflictOnce: true, abortMergeError: restoreError });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  const failed = await service.cancel(paused.id, { replan: true });
+
+  assert.equal(failed.id, plan.id);
+  assert.equal(failed.status, "paused");
+  assert.equal(failed.phase, "replanning_cleanup_failed");
+  assert.match(failed.error, /did not return to its recorded clean state/);
+  assert.deepEqual(calls.slice(-1), ["abort-merge:feature:1:commit"]);
+  assert.equal(store.listWorktreeIntegrationJobs("repository:1").length, 1);
+  assert.ok(failed.audit.some((entry) =>
+    entry.event === "conflict_merge_cleanup_failed" && entry.code === "MAIN_NOT_RESTORED"));
+});
+
+test("a paused merge conflict launches an Agent and resumes automatically when its Session completes", async () => {
   const { service, calls } = memoryFixture({ conflictOnce: true });
   const plan = await service.preflight("repository:1");
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
@@ -380,14 +436,40 @@ test("a paused merge conflict can launch an Agent in a dedicated Integration Wor
   ]);
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_workspace_created"));
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_agent_started"));
-  const ready = service.get(paused.id);
-  assert.equal(ready.phase, "conflict_resolution_ready");
-  assert.equal(ready.conflictResolution.status, "ready");
-  assert.ok(ready.audit.some((entry) => entry.event === "conflict_agent_completed"));
+  const [resuming] = service.reconcileConflictResolutionSession(delegated.conflictResolution.sessionId);
+  assert.equal(resuming.status, "queued");
+  assert.equal(resuming.phase, "conflict_resolution_resume_queued");
+  assert.equal(resuming.conflictResolution.status, "ready");
+  assert.ok(resuming.audit.some((entry) =>
+    entry.event === "conflict_agent_completed" && entry.automaticResume === true));
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.ok(completed.audit.some((entry) => entry.event === "conflict_resolution_verified"));
 });
 
-test("successive conflicting Worktrees and repeated retries never reuse a stale ready resolution", async () => {
-  const { service } = memoryFixture({ conflictAttempts: [1, 2], mainDirty: false, featureDirty: false });
+test("an unrelated Agent completion signal does not change a paused conflict task", async () => {
+  const { service } = memoryFixture({ conflictOnce: true, conflictSessionStatus: "running" });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.resolveConflictWithAgent(plan.id);
+
+  assert.deepEqual(service.reconcileConflictResolutionSession("session:unrelated"), []);
+  assert.equal(service.get(plan.id).phase, "conflict_resolution_running");
+});
+
+test("retry is rejected while the conflict Agent is still running", async () => {
+  const { service, calls } = memoryFixture({ conflictOnce: true, conflictSessionStatus: "running" });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.resolveConflictWithAgent(plan.id);
+
+  assert.throws(() => service.retry(plan.id), { code: "CONFLICT_AGENT_RUNNING" });
+  assert.equal(calls.filter((call) => call.startsWith("merge:")).length, 1);
+});
+
+test("successive conflicting Worktrees promote only their matching verified Agent result", async () => {
+  const { service, calls } = memoryFixture({ conflictAttempts: [1, 1], mainDirty: false, featureDirty: false });
   const plan = await service.preflight("repository:1");
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
 
@@ -395,40 +477,45 @@ test("successive conflicting Worktrees and repeated retries never reuse a stale 
     job.status === "paused" && job.currentWorktreeId === "wt:feature");
   assert.equal(firstConflict.conflictResolution, undefined);
   const firstReady = await service.resolveConflictWithAgent(plan.id);
-  assert.equal(service.get(plan.id).conflictResolution.status, "ready");
   assert.equal(firstReady.conflictResolution.worktreeId, "wt:feature");
-
-  service.retry(plan.id);
+  assert.equal(service.get(plan.id).phase, "conflict_resolution_resume_queued");
   const secondConflict = await waitForJobWhere(service, plan.id, (job) =>
     job.status === "paused" && job.currentWorktreeId === "wt:feature-two");
-  assert.equal(secondConflict.plan.items[0].mergeStatus, "recovered");
-  assert.equal(secondConflict.plan.items[1].mergeStatus, "conflict");
+  assert.equal(secondConflict.plan.items.find((item) => item.worktreeId === "wt:feature").mergeStatus, "recovered");
+  assert.equal(secondConflict.plan.items.find((item) => item.worktreeId === "wt:feature-two").mergeStatus, "conflict");
   assert.equal(secondConflict.conflictResolution, undefined);
 
   const secondReady = await service.resolveConflictWithAgent(plan.id);
   assert.equal(secondReady.conflictResolution.worktreeId, "wt:feature-two");
   assert.notEqual(secondReady.conflictResolution.sessionId, firstReady.conflictResolution.sessionId);
-  assert.equal(service.get(plan.id).conflictResolution.status, "ready");
-
-  service.retry(plan.id);
-  const repeatedConflict = await waitForJobWhere(service, plan.id, (job) => {
-    const secondMergePauses = job.audit.filter((entry) =>
-      entry.event === "merge_paused" && entry.worktreeId === "wt:feature-two");
-    return job.status === "paused" && secondMergePauses.length === 2;
-  });
-  assert.equal(repeatedConflict.conflictResolution, undefined);
-  assert.deepEqual(
-    repeatedConflict.audit.slice(-4).map((entry) => entry.event),
-    ["execution_started", "merge_started", "merge_paused", "execution_paused"]
-  );
-
-  const repeatedReady = await service.resolveConflictWithAgent(plan.id);
-  assert.notEqual(repeatedReady.conflictResolution.sessionId, secondReady.conflictResolution.sessionId);
-  service.retry(plan.id);
+  assert.equal(service.get(plan.id).phase, "conflict_resolution_resume_queued");
   const completed = await waitForJob(service, plan.id, "completed");
   assert.equal(completed.conflictResolution, undefined);
-  assert.equal(completed.plan.items[1].mergeStatus, "recovered");
-  assert.equal(completed.audit.filter((entry) => entry.event === "retry_requested").length, 3);
+  assert.equal(completed.plan.items.find((item) => item.worktreeId === "wt:feature-two").mergeStatus, "recovered");
+  assert.equal(completed.audit.filter((entry) => entry.event === "conflict_resolution_verified").length, 2);
+  assert.equal(completed.audit.filter((entry) =>
+    entry.event === "conflict_agent_completed" && entry.automaticResume === true).length, 2);
+  assert.equal(completed.audit.filter((entry) => entry.event === "retry_requested").length, 0);
+  assert.equal(calls.includes("merge:integration:feature:1"), true);
+  assert.equal(calls.includes("merge:integration:feature:2"), true);
+});
+
+test("an invalid Agent result stays paused and is never promoted into main", async () => {
+  const invalid = new Error("Commit every resolved project change, then retry.");
+  invalid.code = "RESOLUTION_WORKTREE_DIRTY";
+  const { service, calls } = memoryFixture({ conflictOnce: true, resolutionInspectionError: invalid });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+  await service.resolveConflictWithAgent(plan.id);
+  assert.equal(service.get(plan.id).phase, "conflict_resolution_resume_queued");
+  const rejected = await waitForJobWhere(service, plan.id, (job) =>
+    job.status === "paused" && job.phase === "failed");
+
+  assert.equal(rejected.phase, "failed");
+  assert.equal(rejected.audit.some((entry) => entry.code === "RESOLUTION_WORKTREE_DIRTY"), true);
+  assert.match(rejected.error, /Commit every resolved project change/);
+  assert.equal(calls.some((call) => call.startsWith("merge:integration:")), false);
 });
 
 test("an externally resolved conflict is detected and the paused job resumes idempotently", async () => {
@@ -497,13 +584,47 @@ test("a dirty branch still has a merge step when its pre-commit HEAD is already 
   assert.equal(plan.plan.items[1].mergeStatus, "pending");
 });
 
-test("preflight omits clean Worktrees whose HEAD is already integrated into main", async () => {
+test("preflight completes when all task Worktrees are already integrated and main is clean", async () => {
   const { service } = memoryFixture({ featureAlreadyMerged: true, featureDirty: false });
   const plan = await service.preflight("repository:1");
 
-  assert.deepEqual(plan.plan.items.map((item) => item.worktreeId), ["wt:main"]);
+  assert.deepEqual(plan.plan.items, []);
   assert.deepEqual(plan.plan.mergeOrder, []);
-  assert.equal(plan.plan.items.some((item) => item.mergeStatus === "not_needed" && !item.isMain), false);
+  assert.equal(plan.status, "completed");
+});
+
+test("dirty main is detected as a read-only blocker and is never committed", async () => {
+  const { service, calls, worktrees } = memoryFixture({ mainDirty: true });
+  const before = structuredClone(worktrees[0]);
+  const plan = await service.preflight("repository:1");
+  const main = plan.plan.items.find((item) => item.isMain);
+
+  assert.equal(plan.status, "awaiting_confirmation");
+  assert.equal(main.dirty, true);
+  assert.equal(main.commitStatus, "not_needed");
+  assert.equal(main.commitMessage, null);
+  assert.equal(plan.plan.blockingRisks.some((risk) => risk.code === "MAIN_UNCOMMITTED_CHANGES"), true);
+  await assert.rejects(
+    () => service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint }),
+    { code: "PREFLIGHT_RISKS_UNRESOLVED" }
+  );
+  assert.deepEqual(calls, []);
+  assert.deepEqual(worktrees[0], before);
+});
+
+test("task conflicts and dirty main are reported together without mutating either workspace", async () => {
+  const { service, calls, worktrees } = memoryFixture({ mainDirty: true, featureConflict: true });
+  const before = structuredClone(worktrees);
+  const plan = await service.preflight("repository:1");
+  const codes = new Set(plan.plan.blockingRisks.map((risk) => risk.code));
+
+  assert.equal(codes.has("MAIN_UNCOMMITTED_CHANGES"), true);
+  assert.equal(codes.has("UNRESOLVED_CONFLICTS"), true);
+  assert.equal(codes.has("GIT_OPERATION_IN_PROGRESS"), true);
+  const canceled = await service.cancel(plan.id);
+  assert.equal(canceled.status, "canceled");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(worktrees, before);
 });
 
 test("preflight completes immediately when every Worktree is already integrated and clean", async () => {

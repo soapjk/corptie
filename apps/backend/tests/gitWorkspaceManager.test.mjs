@@ -519,6 +519,66 @@ test("Agent conflict delegation safely moves a task-owned merge into a dedicated
   }
 });
 
+test("verified Agent resolution stays isolated until the backend promotes its Integration commit", async () => {
+  const fixture = await createFixture("agent-resolution-promotion", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+  await git(["add", "shared.txt"], fixture.repository);
+  await git(["commit", "-m", "Main version"], fixture.repository);
+  await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+  await git(["add", "shared.txt"], fixture.activeWorktree);
+  await git(["commit", "-m", "Feature version"], fixture.activeWorktree);
+
+  try {
+    const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    await assert.rejects(
+      () => manager.mergeIntegrationSource({
+        mainPath: fixture.repository, sourceHead, expectedMainHead, jobId: "job:agent-resolution"
+      }),
+      { code: "MERGE_CONFLICT" }
+    );
+    const workspace = await manager.prepareIntegrationConflictResolutionForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      sourceHead,
+      expectedMainHead,
+      jobId: "job:agent-resolution"
+    });
+
+    await assert.rejects(() => git(["merge", "--no-ff", "--no-edit", sourceHead], workspace.path));
+    await writeFile(join(workspace.path, "shared.txt"), "main and feature\n");
+    await git(["add", "shared.txt"], workspace.path);
+    await git(["commit", "--no-edit"], workspace.path);
+
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim(), expectedMainHead);
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], fixture.repository)).trim(), "");
+    const verified = await manager.inspectIntegrationConflictResolutionForProject({
+      repositoryId: fixture.repositoryId,
+      mainPath: fixture.repository,
+      workspace,
+      sourceHead,
+      expectedMainHead
+    });
+    assert.equal(verified.resolvedHead, (await gitOutput(["rev-parse", "HEAD"], workspace.path)).trim());
+
+    const promoted = await manager.mergeIntegrationSource({
+      mainPath: fixture.repository,
+      sourceHead: verified.resolvedHead,
+      expectedMainHead,
+      jobId: "job:agent-resolution"
+    });
+    assert.equal(promoted.merged, true);
+    assert.equal(await readFile(join(fixture.repository, "shared.txt"), "utf8"), "main and feature\n");
+    await git(["merge-base", "--is-ancestor", sourceHead, "HEAD"], fixture.repository);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("Agent conflict delegation recognizes a source already merged after the recorded conflict", async () => {
   const fixture = await createFixture("externally-resolved-conflict", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({

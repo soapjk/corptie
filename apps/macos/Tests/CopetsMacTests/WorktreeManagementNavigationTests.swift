@@ -255,6 +255,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("Stop this task and generate a new integration plan?"))
         XCTAssertTrue(view.contains("worktree.integrate.stop-and-repreflight"))
         XCTAssertTrue(view.contains("Task { await client.stopAndRepreflight() }"))
+        XCTAssertTrue(view.contains("Corptie aborts only that merge and verifies main is clean"))
+        XCTAssertTrue(view.contains("replanning_cleanup_failed"))
+        XCTAssertFalse(view.contains("Conflicts are preserved for review"))
         XCTAssertTrue(client.contains("func stopAndRepreflight() async"))
         XCTAssertTrue(client.contains("body: [\"replan\": true]"))
         XCTAssertTrue(models.contains("cancellation_requested"))
@@ -279,14 +282,22 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("worktree.integrate.resolve-with-agent"))
         XCTAssertTrue(view.contains("worktree.integrate.open-conflict-agent"))
         XCTAssertTrue(view.contains("router.openSession(sessionId)"))
-        XCTAssertTrue(view.contains("if let sessionId = await client.resolveConflictWithAgent()"))
+        XCTAssertTrue(view.contains("Task { await client.resolveConflictWithAgent() }"))
         XCTAssertTrue(view.contains("job.currentConflictResolution"))
-        XCTAssertTrue(view.contains("resolution.status != \"ready\""))
+        XCTAssertTrue(view.contains("Let Agent Resolve Conflicts"))
+        XCTAssertTrue(view.contains("View Agent Session"))
+        XCTAssertTrue(view.contains("conflictAgentProgress(job: job, resolution: resolution)"))
+        XCTAssertTrue(view.contains("validating and continuing automatically"))
+        XCTAssertTrue(view.contains("main remains untouched until validation passes"))
+        XCTAssertTrue(view.contains("The Agent result was not promoted"))
+        XCTAssertTrue(view.contains("Revalidate and Continue"))
+        XCTAssertFalse(view.contains("resolution.status != \"ready\""))
+        XCTAssertFalse(view.contains("if let sessionId = await client.resolveConflictWithAgent()"))
         XCTAssertTrue(view.contains("client.job?.shouldPoll == true"))
         XCTAssertTrue(client.contains("worktree-management/jobs/\\(job.id)/resolve-conflict"))
-        XCTAssertTrue(client.contains("func resolveConflictWithAgent() async -> String?"))
+        XCTAssertTrue(client.contains("func resolveConflictWithAgent() async"))
         XCTAssertTrue(client.contains("await AppStateSyncController.shared.refreshSnapshot()"))
-        XCTAssertTrue(client.contains("return envelope.job.currentConflictResolution?.sessionId"))
+        XCTAssertFalse(client.contains("return envelope.job.currentConflictResolution?.sessionId"))
         XCTAssertFalse(client.contains("codex"))
         XCTAssertFalse(client.contains("claude"))
     }
@@ -320,9 +331,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Stop and Re-preflight\" = \"停止并重新生成计划\";",
             "\"Stopping at a safe boundary\" = \"正在安全步骤边界停止\";",
             "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";",
-            "\"Ask Agent to Resolve\" = \"让 Agent 处理冲突\";",
-            "\"Open Conflict Agent\" = \"打开冲突处理 Agent\";",
-            "\"The conflict Agent finished. Retry to verify and resume the integration task.\" = \"冲突处理 Agent 已完成。请点击重试以验证结果并继续集成任务。\";"
+            "\"Let Agent Resolve Conflicts\" = \"让 Agent 一键解决冲突\";",
+            "\"View Agent Session\" = \"查看 Agent 会话\";",
+            "\"Conflict resolved; continuing automatically\" = \"冲突已解决，正在自动继续\";",
+            "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";"
         ] {
             XCTAssertTrue(localization.contains(expected), "Missing localization: \(expected)")
         }

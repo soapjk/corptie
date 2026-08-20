@@ -951,6 +951,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     expectedMainHead: input.expectedMainHead,
     jobId: input.jobId
   }),
+  inspectConflictResolution: (input) => gitWorkspaces.inspectIntegrationConflictResolutionForProject(input),
   launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
     const sourceWorkItem = (item.associations ?? [])
       .map((association) => association.workItemId ? store.getWorkItem(association.workItemId) : null)
@@ -977,8 +978,8 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       "- 来源分支的有效修改已完整进入 Integration 分支",
       "- 所有冲突均按双方语义解决，且不存在未合并文件或冲突标记",
       "- 相关测试通过，Development App 与后端重建及健康检查成功",
-      "- Integration 分支已安全合入本地 main",
-      "- 未推送远端，未删除任何来源分支或 Worktree"
+      "- Integration Worktree 中的解决结果已提交且工作区干净",
+      "- 未直接修改 main，未推送远端，未删除任何来源分支或 Worktree"
     ].join("\n");
     const prompt = [
       description,
@@ -988,9 +989,9 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       `2. 在当前 Integration 分支合并来源提交 ${sourceHead}，逐文件分析并解决冲突；不得简单全选 ours 或 theirs。`,
       "3. 确认没有冲突标记或未合并文件后创建清晰的本地提交。",
       "4. 运行相关测试，并按 AGENTS.md 重建、启动 Development App 与后端并检查健康状态。",
-      `5. 将 Integration 分支 ${workspace.branchName} 安全合入最新本地 main；如果 main 已推进，先把最新 main 集成到当前分支并解决差异。`,
-      "6. 验证来源提交已成为 main 的祖先。不得推送远端，不得删除来源分支或 Worktree。",
-      "7. 完成后提醒用户回到 Worktree Tab 对原集成任务点击重试，让后台幂等完成剩余步骤。"
+      `5. 验证来源提交 ${sourceHead} 已成为当前 Integration HEAD 的祖先，并确认 Integration Worktree 干净。`,
+      "6. 不得切换、提交、清理或合并 main；不得推送远端，不得删除来源分支或 Worktree。",
+      "7. 完成后在最终消息中明确说明“冲突已解决并已提交”，然后正常结束当前执行；Corptie 会以 Session 完成状态为信号，自动校验结果并继续原集成任务，无需用户点击重试。"
     ].join("\n");
     const workItem = objectiveService.createWorkItem({
       objectiveId: objective.id,
@@ -1771,6 +1772,15 @@ function emitEvent(type, payload, options = {}) {
       // 事件落库失败不得阻断 SSE 广播；记录告警供后续对账。
       console.error(`[session-events] append failed for type=${type} session=${sessionId}: ${error.message}`);
     }
+  }
+  if (type === "AgentWorkCompleted" && sessionId) {
+    setImmediate(() => {
+      try {
+        worktreeIntegrationJobService.reconcileConflictResolutionSession(sessionId);
+      } catch (error) {
+        console.error(`[worktree-integration] conflict completion reconciliation failed session=${sessionId}: ${error.message}`);
+      }
+    });
   }
 }
 
