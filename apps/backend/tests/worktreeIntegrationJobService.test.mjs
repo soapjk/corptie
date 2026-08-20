@@ -26,6 +26,7 @@ function memoryFixture({
   const jobs = new Map();
   let sequence = 0;
   const repository = { id: "repository:1", commonGitDirCanonicalPath: "/repo/.git" };
+  const workItems = new Map();
   const worktrees = [
     {
       worktreeId: "wt:main", path: "/repo", isMain: true, availability: "available",
@@ -83,7 +84,7 @@ function memoryFixture({
     getSession: (id) => id?.startsWith("session:conflict")
       ? { id, status: conflictSessionStatus }
       : (id === "session:active" ? { id, status: "running" } : null),
-    getWorkItem: () => null
+    getWorkItem: (id) => workItems.get(id) ?? null
   };
   const calls = [];
   const remainingConflicts = conflictAttempts
@@ -183,7 +184,7 @@ function memoryFixture({
       return { removed: true, branchDeleted: true };
     }
   });
-  return { service, store, calls, worktrees };
+  return { service, store, calls, worktrees, workItems };
 }
 
 test("repository listing uses the lightweight summary while preflight keeps the deep inspection", async () => {
@@ -233,6 +234,57 @@ async function waitForJobWhere(service, id, predicate) {
   }
   assert.fail(`job ${id} did not reach the expected state`);
 }
+
+test("repository summary counts only currently available Worktrees", () => {
+  const { service, worktrees } = memoryFixture();
+  worktrees.push({
+    worktreeId: "wt:historical", path: "/repo-removed", isMain: false, availability: "missing"
+  });
+
+  const [repository] = service.repositories();
+
+  assert.equal(repository.worktreeCount, 2);
+  assert.equal(repository.mainPath, "/repo");
+  assert.equal(repository.availability, "available");
+});
+
+test("completed WorkItem bindings stop occupying a Worktree after their Session settles", async () => {
+  const { service, calls, worktrees, workItems } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  workItems.set("work_item:done", { id: "work_item:done", title: "Finished", status: "done" });
+  worktrees[1].sessions = [{
+    logicalSessionId: "logical:done", sessionId: null, active: false, workItemId: "work_item:done"
+  }];
+
+  const detail = await service.repository("repository:1");
+  assert.deepEqual(detail.project.worktrees[1].associations, []);
+
+  const result = await service.deleteWorktree("repository:1", "wt:feature");
+  assert.equal(result.status, "removed");
+  assert.deepEqual(calls, ["remove:wt:feature"]);
+});
+
+test("a running Session still blocks deletion after its WorkItem completes", async () => {
+  const { service, calls, worktrees, workItems } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  workItems.set("work_item:done", { id: "work_item:done", title: "Finished", status: "completed" });
+  worktrees[1].sessions = [{
+    logicalSessionId: "logical:done", sessionId: null, active: true, workItemId: "work_item:done"
+  }];
+
+  const detail = await service.repository("repository:1");
+  assert.deepEqual(detail.project.worktrees[1].associations.map((entry) => entry.workItemId), [null]);
+  await assert.rejects(() => service.deleteWorktree("repository:1", "wt:feature"), {
+    code: "WORKTREE_IN_USE"
+  });
+  assert.deepEqual(calls, []);
+});
 
 test("reviewed plan preserves main and commits each dirty task Worktree before deterministic merge", async () => {
   const { service, calls } = memoryFixture();

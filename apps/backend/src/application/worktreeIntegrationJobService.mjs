@@ -44,12 +44,14 @@ export class WorktreeIntegrationJobService {
 
   repositories() {
     return this.store.listGitRepositories().map((repository) => {
-      const main = this.store.listGitWorktrees(repository.id).find((worktree) => worktree.isMain);
+      const worktrees = this.store.listGitWorktrees(repository.id);
+      const main = worktrees.find((worktree) => worktree.isMain && worktree.availability === "available")
+        ?? worktrees.find((worktree) => worktree.isMain);
       return {
         ...repository,
         mainPath: main?.path ?? this.store.resolveWorkspacePath(repository.id),
         availability: main?.availability ?? "missing",
-        worktreeCount: this.store.listGitWorktrees(repository.id).length
+        worktreeCount: worktrees.filter((worktree) => worktree.availability === "available").length
       };
     });
   }
@@ -887,13 +889,24 @@ export class WorktreeIntegrationJobService {
             : null;
           const workItemId = association.workItemId ?? session?.workItemId ?? logical?.workItemId ?? null;
           const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
+          const active = session ? this.isSessionActive(session) : association.active === true;
+          if (isCompletedWorkItem(workItem)) {
+            // A completed WorkItem no longer owns its historical Worktree. Keep only
+            // a still-running Session as an unbound occupancy safety signal.
+            return active ? {
+              ...association,
+              active,
+              workItemId: null,
+              workItemTitle: null
+            } : null;
+          }
           return {
             ...association,
-            active: session ? this.isSessionActive(session) : association.active === true,
+            active,
             workItemId: workItem?.id ?? workItemId,
             workItemTitle: workItem?.title ?? null
           };
-        })
+        }).filter(Boolean)
       }))
     };
   }
@@ -909,6 +922,11 @@ export class WorktreeIntegrationJobService {
     if (!job) throw new WorktreeIntegrationJobError("INTEGRATION_JOB_NOT_FOUND", "Integration task not found.", 404);
     return job;
   }
+}
+
+function isCompletedWorkItem(workItem) {
+  const status = String(workItem?.status ?? "").trim().toLowerCase();
+  return new Set(["done", "complete", "completed"]).has(status);
 }
 
 export function worktreeDeletionBlocker(worktree) {
