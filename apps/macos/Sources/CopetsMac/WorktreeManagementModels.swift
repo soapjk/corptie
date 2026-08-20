@@ -192,19 +192,33 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let progress: WorktreeIntegrationProgress
     let audit: [WorktreeIntegrationAuditEvent]
     let conflictResolution: WorktreeConflictResolution?
+    let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
 
     var isActive: Bool { ["queued", "running", "cancellation_requested", "replanning"].contains(status) }
     var shouldPoll: Bool {
         isActive || ["running", "failed"].contains(conflictResolution?.status ?? "")
     }
     var requiresPlanRegeneration: Bool {
-        phase == "plan_stale" || (status == "paused" && audit.last(where: { $0.code != nil })?.code == "PLAN_STALE")
+        let code = audit.last(where: { $0.code != nil })?.code
+        return WorktreeIntegrationRecoveryPolicy.requiresRepreflight(status: status, phase: phase, auditCode: code)
     }
     var canStopAndRepreflight: Bool {
-        ["queued", "running", "paused"].contains(status) && conflictResolution?.status != "running"
+        ["awaiting_confirmation", "queued", "running", "paused"].contains(status)
+            && conflictResolution?.status != "running"
     }
     var hasMergeConflict: Bool {
         status == "paused" && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
+    }
+}
+
+enum WorktreeIntegrationRecoveryPolicy {
+    private static let stateDriftCodes: Set<String> = [
+        "PLAN_STALE", "MAIN_HEAD_CHANGED", "MAIN_DIRTY",
+        "WORKTREE_HEAD_CHANGED", "WORKTREE_CHANGES_CHANGED", "UNRELATED_MERGE_IN_PROGRESS"
+    ]
+
+    static func requiresRepreflight(status: String, phase: String, auditCode: String?) -> Bool {
+        phase == "plan_stale" || (status == "paused" && auditCode.map(stateDriftCodes.contains) == true)
     }
 }
 
@@ -253,6 +267,7 @@ struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {
     let mergedIntoMain: Bool?
     let associations: [ManagedWorktreeAssociation]
     let risks: [WorktreeIntegrationRisk]
+    let commitProtection: GitCommitProtectionStatus?
     let commitMessage: String?
     let commitStatus: String
     let commitHead: String?
@@ -260,6 +275,17 @@ struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {
     let mergeMainHead: String?
     let conflictFiles: [String]
     let error: String?
+}
+
+struct WorktreeCommitProtectionDecision: Equatable, Sendable {
+    let worktreeId: String
+    let decision: String
+    let neverRemind: Bool
+}
+
+struct WorktreePersistedCommitProtectionDecision: Decodable, Equatable, Sendable {
+    let decision: String
+    let neverRemind: Bool
 }
 
 struct WorktreeIntegrationRisk: Decodable, Equatable, Sendable {

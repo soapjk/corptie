@@ -265,6 +265,7 @@ export class GitWorkspaceManager {
       throw integrationGitError("WORKTREE_CHANGES_CHANGED", "The uncommitted changes changed after confirmation.");
     }
     try {
+      if (typeof input.prepare === "function") await input.prepare();
       await this.runGit(input.path, ["add", "--all"]);
       await this.runGit(input.path, ["commit", "-m", input.commitMessage, "-m", marker]);
     } catch (error) {
