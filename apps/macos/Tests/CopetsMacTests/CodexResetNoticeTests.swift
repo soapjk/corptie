@@ -127,15 +127,15 @@ struct CodexResetNoticeTests {
     }
 
     @Test
-    func resetTimeDriftWithinFiveMinutesDoesNotCreateANewNotice() {
+    func resetTimeDriftWithinTheSameDayDoesNotCreateANewNotice() {
         let acknowledged = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",
-            window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 100_000),
+            window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: resetTime(day: 20, hour: 1)),
             forecast: nil
         )!
         let current = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",
-            window: CodexRateLimitWindow(usedPercent: 25, windowDurationMins: 10_080, resetsAt: 100_299),
+            window: CodexRateLimitWindow(usedPercent: 25, windowDurationMins: 300, resetsAt: resetTime(day: 20, hour: 23)),
             forecast: nil
         )!
         #expect(!CodexResetNotificationPolicy.shouldNotify(
@@ -145,15 +145,15 @@ struct CodexResetNoticeTests {
     }
 
     @Test
-    func meaningfulResetTimeChangeCreatesANewNotice() {
+    func resetDateChangeCreatesANewNotice() {
         let acknowledged = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",
-            window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 100_000),
+            window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: resetTime(day: 20, hour: 23)),
             forecast: nil
         )!
         let current = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",
-            window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 100_600),
+            window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: resetTime(day: 21, hour: 0)),
             forecast: nil
         )!
         #expect(CodexResetNotificationPolicy.shouldNotify(
@@ -283,6 +283,26 @@ struct CodexResetNoticeTests {
         #expect(delivered.count == 2)
     }
 
+    @Test @MainActor
+    func systemNotificationIgnoresSameDayResetChangesButSendsOnDateChange() {
+        let suite = "CodexResetSystemNotificationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = BackendClient()
+        var delivered: [CodexResetSystemNotification] = []
+        let manager = CodexResetSystemNotificationManager(
+            client: client,
+            defaults: defaults,
+            delivery: { delivered.append($0) }
+        )
+
+        manager.handle(usageSnapshot(forecast: nil, resetsAt: resetTime(day: 20, hour: 1)))
+        manager.handle(usageSnapshot(forecast: nil, resetsAt: resetTime(day: 20, hour: 23)))
+        manager.handle(usageSnapshot(forecast: nil, resetsAt: resetTime(day: 21, hour: 0)))
+
+        #expect(delivered.count == 2)
+    }
+
     @Test
     func ClaudeDoesNotCreateACodexResetNotice() {
         #expect(CodexResetNoticeIdentity.fingerprint(
@@ -303,7 +323,21 @@ struct CodexResetNoticeTests {
         )
     }
 
-    private func usageSnapshot(forecast: CodexResetForecast?) -> SessionUsageResponse {
+    private func resetTime(day: Int, hour: Int) -> Double {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .autoupdatingCurrent
+        return calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: day,
+            hour: hour
+        ))!.timeIntervalSince1970
+    }
+
+    private func usageSnapshot(
+        forecast: CodexResetForecast?,
+        resetsAt: Double = 200_000
+    ) -> SessionUsageResponse {
         SessionUsageResponse(
             account: CodexAccountUsage(
                 available: true,
@@ -316,7 +350,7 @@ struct CodexResetNoticeTests {
                     secondary: CodexRateLimitWindow(
                         usedPercent: 20,
                         windowDurationMins: 10_080,
-                        resetsAt: 200_000
+                        resetsAt: resetsAt
                     )
                 ),
                 rateLimitsByLimitId: nil

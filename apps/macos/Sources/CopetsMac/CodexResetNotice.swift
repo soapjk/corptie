@@ -3,8 +3,6 @@ import Combine
 import UserNotifications
 
 enum CodexResetNoticeIdentity {
-    private static let resetDriftToleranceMinutes = 5
-
     static func fingerprint(
         provider: String?,
         window: CodexRateLimitWindow?,
@@ -26,14 +24,14 @@ enum CodexResetNoticeIdentity {
     static func isAcknowledged(current: String, by acknowledged: String) -> Bool {
         guard let currentNotice = notice(from: current),
               let acknowledgedNotice = notice(from: acknowledged),
-              currentNotice.duration == acknowledgedNotice.duration,
               resetMatches(currentNotice.resetMinute, acknowledgedNotice.resetMinute) else {
             return current == acknowledged
         }
 
         // A forecast naturally expiring is not useful new information. A new or
-        // changed forecast still becomes unread, as does a meaningful official
-        // reset-time change.
+        // changed forecast still becomes unread. Official reset-time changes
+        // only become unread when their local calendar date changes; minute,
+        // hour, and window-duration drift within the same day is noise.
         guard currentNotice.post != "none" else { return true }
         guard currentNotice.post == acknowledgedNotice.post else { return false }
         if currentNotice.version >= 2, acknowledgedNotice.version >= 2 {
@@ -69,7 +67,11 @@ enum CodexResetNoticeIdentity {
     private static func resetMatches(_ left: Int?, _ right: Int?) -> Bool {
         switch (left, right) {
         case (nil, nil): true
-        case let (left?, right?): abs(left - right) <= resetDriftToleranceMinutes
+        case let (left?, right?):
+            let calendar = Calendar.autoupdatingCurrent
+            let leftDate = Date(timeIntervalSince1970: TimeInterval(left * 60))
+            let rightDate = Date(timeIntervalSince1970: TimeInterval(right * 60))
+            return calendar.isDate(leftDate, inSameDayAs: rightDate)
         default: false
         }
     }
