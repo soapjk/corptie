@@ -1155,6 +1155,8 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationSenderName: String? = nil
     var collaborationRecipientAgentId: String? = nil
     var collaborationRecipientName: String? = nil
+    var collaborationRecipientSessionId: String? = nil
+    var collaborationRecipientSessionTitle: String? = nil
     var collaborationTaskTitle: String? = nil
     var collaborationMessageKind: String? = nil
     var collaborationProcessingStatus: String? = nil

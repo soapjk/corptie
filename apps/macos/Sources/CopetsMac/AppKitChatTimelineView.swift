@@ -319,6 +319,7 @@ final class NativeTimelineLayoutCache {
         let style: AppKitChatTimelineRow.NativeStyle
         let title: String
         let metadata: String
+        let isCollaboration: Bool
         let processCount: Int?
         let processDuration: String?
         let processState: AppKitChatTimelineRow.ProcessState
@@ -342,6 +343,7 @@ final class NativeTimelineLayoutCache {
             style: row.nativeStyle,
             title: row.title,
             metadata: row.metadata,
+            isCollaboration: row.isCollaboration,
             processCount: row.processCount,
             processDuration: row.processDuration,
             processState: row.processState,
@@ -482,6 +484,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let nativeStyle: NativeStyle
     let title: String
     let metadata: String
+    let isCollaboration: Bool
     let expandableTurnId: String?
     let isExpanded: Bool
     let processCount: Int?
@@ -506,6 +509,7 @@ struct AppKitChatTimelineRow: Identifiable {
         nativeStyle: NativeStyle,
         title: String,
         metadata: String,
+        isCollaboration: Bool = false,
         expandableTurnId: String?,
         isExpanded: Bool,
         processCount: Int? = nil,
@@ -523,6 +527,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.nativeStyle = nativeStyle
         self.title = title
         self.metadata = metadata
+        self.isCollaboration = isCollaboration
         self.expandableTurnId = expandableTurnId
         self.isExpanded = isExpanded
         self.processCount = processCount
@@ -1429,9 +1434,11 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         metadataLabel.stringValue = row.metadata
         metadataLabel.font = .systemFont(ofSize: 10, weight: .semibold)
         metadataLabel.textColor = NativeTimelineCardPalette.mutedText
-        titleLabel.textColor = row.nativeStyle == .user
-            ? NativeTimelineCardPalette.userText
-            : NativeTimelineCardPalette.agentText
+        titleLabel.textColor = row.isCollaboration
+            ? NativeTimelineCardPalette.collaborationText
+            : (row.nativeStyle == .user
+                ? NativeTimelineCardPalette.userText
+                : NativeTimelineCardPalette.agentText)
         disclosureButton.isHidden = true
         disclosureButton.image = NSImage(
             systemSymbolName: row.isExpanded ? "chevron.down" : "chevron.right",
@@ -1520,18 +1527,33 @@ final class AppKitChatNativeTextCell: NSTableCellView {
                 ]
             )
         }
-        switch row.nativeStyle {
-        case .user:
-            cardView.layer?.backgroundColor = NativeTimelineCardPalette.userBackground.cgColor
-            cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
-        case .agent:
-            cardView.layer?.backgroundColor = NSColor.white.cgColor
-            cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
-        case .process:
-            let tint = row.processState.color
-            cardView.layer?.backgroundColor = tint.withAlphaComponent(row.isExpanded ? 0.055 : 0.035).cgColor
-            cardView.layer?.borderColor = tint.withAlphaComponent(0.16).cgColor
-            cardView.layer?.cornerRadius = row.isExpanded ? 12 : 10
+        if row.isCollaboration {
+            cardView.layer?.backgroundColor = NSColor(
+                calibratedRed: 0.945,
+                green: 0.955,
+                blue: 0.995,
+                alpha: 1
+            ).cgColor
+            cardView.layer?.borderColor = NSColor(
+                calibratedRed: 0.42,
+                green: 0.47,
+                blue: 0.78,
+                alpha: 0.24
+            ).cgColor
+        } else {
+            switch row.nativeStyle {
+            case .user:
+                cardView.layer?.backgroundColor = NativeTimelineCardPalette.userBackground.cgColor
+                cardView.layer?.borderColor = NativeTimelineCardPalette.userBorder.cgColor
+            case .agent:
+                cardView.layer?.backgroundColor = NSColor.white.cgColor
+                cardView.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
+            case .process:
+                let tint = row.processState.color
+                cardView.layer?.backgroundColor = tint.withAlphaComponent(row.isExpanded ? 0.055 : 0.035).cgColor
+                cardView.layer?.borderColor = tint.withAlphaComponent(0.16).cgColor
+                cardView.layer?.cornerRadius = row.isExpanded ? 12 : 10
+            }
         }
         if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
         processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
@@ -1611,6 +1633,7 @@ private enum NativeTimelineCardPalette {
     static let mutedText = NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1)
     static let userText = NSColor(calibratedRed: 0.22, green: 0.35, blue: 0.62, alpha: 1)
     static let agentText = NSColor(calibratedRed: 0.18, green: 0.48, blue: 0.27, alpha: 1)
+    static let collaborationText = NSColor(calibratedRed: 0.30, green: 0.34, blue: 0.68, alpha: 1)
     static let userBackground = NSColor(calibratedRed: 0.945, green: 0.965, blue: 0.988, alpha: 1)
     static let userBorder = NSColor(calibratedRed: 0.45, green: 0.58, blue: 0.76, alpha: 0.22)
 }

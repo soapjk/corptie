@@ -116,6 +116,39 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertLessThan(processCell.subviews[0].frame.width, harness.tableView.tableColumns[0].width)
     }
 
+    func testCollaborationCardShowsHeaderMetadataAndDistinctVisualTreatment() throws {
+        let harness = makeHarness(followsLatest: true)
+        let collaboration = AppKitChatTimelineRow(
+            id: "collaboration",
+            contentRevision: 1,
+            nativeText: "**From Agent**  Platform Agent\n\n**Message**\nPlease review this change.",
+            copyText: "Please review this change.",
+            nativeStyle: .agent,
+            title: "Agent Collaboration · Change request",
+            metadata: "Processing · 08/20, 14:30",
+            isCollaboration: true,
+            expandableTurnId: nil,
+            isExpanded: false,
+            showsHeader: true
+        )
+        harness.coordinator.apply(rows: [collaboration])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        cell.layoutSubtreeIfNeeded()
+        let title = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.title"))
+        let metadata = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.metadata"))
+        let card = try XCTUnwrap(cell.subviews.first)
+
+        XCTAssertFalse(title.isHidden)
+        XCTAssertEqual(title.stringValue, "Agent Collaboration · Change request")
+        XCTAssertEqual(metadata.stringValue, "Processing · 08/20, 14:30")
+        XCTAssertNotEqual(card.layer?.backgroundColor, NSColor.white.cgColor)
+        XCTAssertLessThan(card.frame.midX, cell.bounds.midX)
+    }
+
     func testRunningExecutionSummaryIncludesElapsedDurationWhenAvailable() throws {
         let harness = makeHarness(followsLatest: true)
         let process = AppKitChatTimelineRow(

@@ -120,6 +120,57 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testCollaborationCardPresentsRouteSessionTaskStatusAndMessage() throws {
+        var collaboration = item(
+            id: "collaboration",
+            type: "userMessage",
+            text: "trusted envelope"
+        )
+        collaboration.sourceType = "collaboration"
+        collaboration.presentationRole = "collaboration"
+        collaboration.presentationText = "Please review the API contract."
+        collaboration.collaborationSenderName = "Platform Agent"
+        collaboration.collaborationSenderAgentId = "agent:platform"
+        collaboration.collaborationRecipientName = "macOS Agent"
+        collaboration.collaborationRecipientAgentId = "agent:macos"
+        collaboration.collaborationRecipientSessionTitle = "Sessions UI"
+        collaboration.collaborationRecipientSessionId = "session:ui"
+        collaboration.collaborationTaskTitle = "Review collaboration card"
+        collaboration.collaborationMessageKind = "change_request"
+        collaboration.collaborationProcessingStatus = "running"
+
+        let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
+            for: collaboration,
+            currentSessionTitle: "Fallback Session"
+        ))
+
+        XCTAssertTrue(presentation.title.contains(L10n("Agent 协作")))
+        XCTAssertTrue(presentation.title.contains(L10n("修改请求")))
+        XCTAssertTrue(presentation.metadata.contains(L10n("处理中")))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Platform Agent · agent:platform"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("macOS Agent · agent:macos"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Sessions UI · session:ui"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Review collaboration card"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Please review the API contract."))
+        XCTAssertEqual(presentation.messageText, "Please review the API contract.")
+    }
+
+    @MainActor
+    func testInboundCollaborationFallsBackToCurrentSessionTitle() throws {
+        var collaboration = item(id: "collaboration", type: "userMessage", text: "Need context")
+        collaboration.sourceType = "collaboration"
+        collaboration.collaborationSenderName = "Peer Agent"
+        collaboration.collaborationRecipientName = "Current Agent"
+
+        let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
+            for: collaboration,
+            currentSessionTitle: "Current Work Session"
+        ))
+
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Current Work Session"))
+    }
+
+    @MainActor
     func testExpandedExecutionRawStatusUsesLatestProviderItem() {
         var first = item(id: "command", type: "commandExecution", text: "$ npm test")
         first.rawMetadataJSON = "{\"command\":\"npm test\"}"
