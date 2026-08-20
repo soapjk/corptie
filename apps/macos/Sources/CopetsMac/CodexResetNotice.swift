@@ -156,6 +156,18 @@ enum CodexResetNoticePresentation {
         }
     }
 
+    static func shouldAutomaticallyPresent(
+        fingerprint: String,
+        lastAutomaticallyPresentedFingerprint: String?,
+        acknowledgedFingerprints: [String]
+    ) -> Bool {
+        fingerprint != lastAutomaticallyPresentedFingerprint
+            && shouldPresent(
+                fingerprint: fingerprint,
+                acknowledgedFingerprints: acknowledgedFingerprints
+            )
+    }
+
     static func shouldPresent(
         fingerprint: String,
         acknowledgedFingerprint: String
@@ -164,5 +176,22 @@ enum CodexResetNoticePresentation {
             fingerprint: fingerprint,
             acknowledgedFingerprints: acknowledgedFingerprint.isEmpty ? [] : [acknowledgedFingerprint]
         )
+    }
+}
+
+enum SessionUsagePresentation {
+    static func preferredRateLimitWindow(_ account: CodexAccountUsage) -> CodexRateLimitWindow? {
+        var snapshots = account.rateLimitsByLimitId?.values.map { $0 } ?? []
+        if let fallback = account.rateLimits {
+            snapshots.append(fallback)
+        }
+        return snapshots
+            .flatMap { [$0.primary, $0.secondary].compactMap { $0 } }
+            .max { left, right in
+                let leftDuration = left.windowDurationMins ?? -1
+                let rightDuration = right.windowDurationMins ?? -1
+                if leftDuration != rightDuration { return leftDuration < rightDuration }
+                return (left.resetsAt ?? 0) < (right.resetsAt ?? 0)
+            }
     }
 }

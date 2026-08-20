@@ -53,6 +53,7 @@ import {
 } from "./application/objectiveChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
+import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
@@ -6360,14 +6361,17 @@ function route(request, response) {
       sendJson(response, 404, { error: "Session not found." });
       return;
     }
-    sessionApplicationService.readAccountUsage(sessionId)
-      .then(async (account) => ({
-        account,
-        context: await sessionApplicationService.readSessionUsage(sessionId),
-        resetForecast: session.external?.provider === "codex-app-server"
-          ? codexResetForecastMonitor?.snapshot() ?? null
-          : null
-      }))
+    const provider = session.external?.provider === "codex-app-server"
+      ? "codex"
+      : session.external?.provider ?? "unknown";
+    loadSessionUsageSnapshot({
+      loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
+      loadContext: () => sessionApplicationService.readSessionUsage(sessionId),
+      fallbackAccount: { available: false, provider, model: session.external?.currentModel ?? null },
+      resetForecast: session.external?.provider === "codex-app-server"
+        ? codexResetForecastMonitor?.snapshot() ?? null
+        : null
+    })
       .then((usage) => sendJson(response, 200, usage))
       .catch((error) => sendJson(response, 503, { error: error.message }));
     return;
