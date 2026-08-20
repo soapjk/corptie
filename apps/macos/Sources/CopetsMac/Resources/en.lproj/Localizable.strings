@@ -687,3 +687,4 @@
 "正在扫描项目…" = "Scanning project…";
 "发现 %d 个可安装 Skill" = "Found %d installable Skills";
 "选择项目目录，Corptie 将扫描其中所有可安装 Skill" = "Choose a project directory; Corptie will scan it for all installable Skills";
+"部分目录不是可安装 Skill，已跳过" = "Some directories are not installable Skills and were skipped";
