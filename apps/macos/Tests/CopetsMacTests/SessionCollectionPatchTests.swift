@@ -195,7 +195,7 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func workerSessionsAreSplitByTheirWorkItemCompletionState() {
+    func activeWorkerSessionsExcludeCompletedWorkItemsAndGroupByObjective() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
@@ -225,10 +225,73 @@ struct SessionCollectionPatchTests {
 
         #expect(groups.map(\.key) == ["worker-objective:objective:1", "worker-objective:__no_objective__"])
         #expect(groups.map(\.title) == ["Sessions UI", L10n("No Objective")])
-        #expect(groups[0].subgroups.map(\.title) == [L10n("In Progress"), L10n("Completed")])
-        #expect(groups[0].subgroups[0].rows.map(\.id) == ["active-worker"])
-        #expect(groups[0].subgroups[1].rows.map(\.id) == ["completed-worker"])
-        #expect(groups[1].subgroups[0].rows.map(\.id) == ["orphaned-worker"])
+        #expect(groups[0].rows.map(\.id) == ["active-worker"])
+        #expect(groups[1].rows.map(\.id) == ["orphaned-worker"])
+        #expect(!groups.flatMap(\.rows).contains(where: { $0.id == completed.id }))
+    }
+
+    @Test
+    func archivedWorkerSessionsContainOnlyCompletedWorkItemsGroupedByObjective() {
+        let active = SessionRowModel(session: makeSession(
+            id: "active-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:active"
+        ))
+        let completed = SessionRowModel(session: makeSession(
+            id: "completed-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:completed"
+        ))
+
+        let groups = makeSessionGroups(
+            rows: [active, completed],
+            agents: [],
+            workItems: [
+                makeWorkItem(id: "work-item:active", status: "in_progress"),
+                makeWorkItem(id: "work-item:completed", status: "completed")
+            ],
+            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            category: .worker,
+            workerScope: .archived
+        )
+
+        #expect(groups.map(\.title) == ["Sessions UI"])
+        #expect(groups.flatMap(\.rows).map(\.id) == ["completed-worker"])
+    }
+
+    @Test
+    func workerSelectionRespectsActiveAndArchiveScopes() {
+        let active = SessionRowModel(session: makeSession(
+            id: "active-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:active"
+        ))
+        let completed = SessionRowModel(session: makeSession(
+            id: "completed-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:completed"
+        ))
+        let workItems = [
+            makeWorkItem(id: "work-item:active", status: "in_progress"),
+            makeWorkItem(id: "work-item:completed", status: "done")
+        ]
+
+        #expect(resolvedSessionSelection(
+            category: .worker,
+            rows: [completed, active],
+            selectedSessionId: "completed-worker",
+            lastSelectedId: nil,
+            workItems: workItems,
+            workerScope: .active
+        ) == "active-worker")
+        #expect(resolvedSessionSelection(
+            category: .worker,
+            rows: [active, completed],
+            selectedSessionId: "active-worker",
+            lastSelectedId: nil,
+            workItems: workItems,
+            workerScope: .archived
+        ) == "completed-worker")
     }
 
     @Test

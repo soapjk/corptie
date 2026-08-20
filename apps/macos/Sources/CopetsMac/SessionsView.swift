@@ -24,6 +24,7 @@ struct SessionsView: View {
     @State private var selectedSession: TaskSession?
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
+    @State private var isShowingWorkerArchive = false
     @EnvironmentObject private var router: AppTabRouter
     /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
     @State private var showNewSessionCreation = false
@@ -80,7 +81,7 @@ struct SessionsView: View {
             presentationStore.prune(to: activeSessionIDs)
             SessionTimelineRepository.shared.prune(to: activeSessionIDs)
             attemptPendingSelection(sessions)
-            restoreLastSelectedSession(sessions)
+            restoreSelection(for: selectedCategory)
             preloadSessionMessages(sessions)
         }
         .onChange(of: router.pendingSessionId) { _, _ in
@@ -93,11 +94,24 @@ struct SessionsView: View {
                 Self.recordSessionId(session.id, category: selectedCategory)
                 visuallySelectedSessionID = session.id
                 selectedCategory = SessionCategory(session: session)
+                if selectedCategory == .worker {
+                    isShowingWorkerArchive = isArchivedWorkerSession(
+                        session,
+                        workItems: entityClient.workItems
+                    )
+                }
             }
             preloadSessionMessages(backendClient.sessions)
         }
         .onChange(of: selectedCategory) { _, newValue in
+            if newValue != .worker {
+                isShowingWorkerArchive = false
+            }
             restoreSelection(for: newValue)
+        }
+        .onChange(of: entityClient.workItemsRevision) { _, _ in
+            guard selectedCategory == .worker else { return }
+            restoreSelection(for: .worker)
         }
     }
 
@@ -149,6 +163,12 @@ struct SessionsView: View {
         if let session = sessionMatchingPendingSelection(pendingId, in: sessions) {
             pendingSelectionTask?.cancel()
             selectedCategory = SessionCategory(session: session)
+            if selectedCategory == .worker {
+                isShowingWorkerArchive = isArchivedWorkerSession(
+                    session,
+                    workItems: entityClient.workItems
+                )
+            }
             backendClient.select(session: session)
             router.pendingSessionId = nil
             return
@@ -158,6 +178,12 @@ struct SessionsView: View {
             defer { pendingSelectionTask = nil }
             if let session = await AppStateSyncController.shared.hydrateSession(pendingId) {
                 selectedCategory = SessionCategory(session: session)
+                if selectedCategory == .worker {
+                    isShowingWorkerArchive = isArchivedWorkerSession(
+                        session,
+                        workItems: entityClient.workItems
+                    )
+                }
                 backendClient.select(session: session)
                 router.pendingSessionId = nil
             } else {
@@ -187,9 +213,18 @@ struct SessionsView: View {
             category: category,
             rows: sessionListStore.rows,
             selectedSessionId: selectedSession?.id,
-            lastSelectedId: Self.restoredSessionId(for: category)
+            lastSelectedId: Self.restoredSessionId(for: category),
+            workItems: entityClient.workItems,
+            workerScope: workerSessionScope
         )
-        guard let targetId, targetId != selectedSession?.id else { return }
+        guard let targetId else {
+            if let selectedSession, SessionCategory(session: selectedSession) == category {
+                self.selectedSession = nil
+                visuallySelectedSessionID = nil
+            }
+            return
+        }
+        guard targetId != selectedSession?.id else { return }
         if let session = backendClient.sessions.first(where: { $0.id == targetId }) {
             selectSessionAfterHighlight(session)
         }
@@ -236,10 +271,29 @@ struct SessionsView: View {
     private var sessionListSidebar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                sessionCategoryPicker
-                    .frame(maxWidth: .infinity)
+                if isShowingWorkerArchive {
+                    Button {
+                        setWorkerArchiveVisible(false)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 22, height: 22)
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("Back to Active Work Sessions"))
+
+                    Text(L10n("Work Session Archive"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                } else {
+                    sessionCategoryPicker
+                        .frame(maxWidth: .infinity)
+                }
                 searchToggleButton
-                newChatToolbarButton
+                if !isShowingWorkerArchive {
+                    newChatToolbarButton
+                }
             }
             .padding(.horizontal, 8)
             .padding(.top, 8)
@@ -257,7 +311,9 @@ struct SessionsView: View {
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                 } else if groupedSessions.isEmpty {
-                    Text(L10n("No Sessions in This Category"))
+                    Text(isShowingWorkerArchive
+                        ? L10n("No Archived Work Sessions")
+                        : L10n("No Sessions in This Category"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
@@ -267,14 +323,7 @@ struct SessionsView: View {
                     ForEach(groupedSessions) { group in
                         Section {
                             if !collapsedGroupKeys.contains(group.key) {
-                                ForEach(group.subgroups) { subgroup in
-                                    if let title = subgroup.title {
-                                        sessionSubgroupHeader(title, count: subgroup.rows.count)
-                                    }
-                                    ForEach(subgroup.rows) { row in
-                                        sessionRow(row)
-                                    }
-                                }
+                                ForEach(group.rows) { row in sessionRow(row) }
                             }
                         } header: {
                             sessionGroupHeader(group)
@@ -283,6 +332,21 @@ struct SessionsView: View {
                 }
             }
             .listStyle(.sidebar)
+            .overlay(alignment: .bottomTrailing) {
+                if selectedCategory == .worker && !isShowingWorkerArchive {
+                    Button {
+                        setWorkerArchiveVisible(true)
+                    } label: {
+                        Image(systemName: "archivebox")
+                            .font(.system(size: 12, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                            .background(.regularMaterial, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("View Archived Work Sessions"))
+                    .padding(10)
+                }
+            }
         }
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet()
@@ -416,33 +480,31 @@ struct SessionsView: View {
         .buttonStyle(.plain)
     }
 
-    private func sessionSubgroupHeader(_ title: String, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            Spacer()
-            Text("\(count)")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.quaternary)
-        }
-        .padding(.leading, 18)
-        .padding(.top, 2)
-        .listRowSeparator(.hidden)
-        .listRowBackground(Color.clear)
-    }
-
     // MARK: - 会话分组
 
-    /// 一级分类依据 provider-neutral sessionKind；Worker 子分类依据关联 WorkItem 的业务状态。
+    private var workerSessionScope: WorkerSessionScope {
+        isShowingWorkerArchive ? .archived : .active
+    }
+
+    /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Objective 分组。
     private var groupedSessions: [SessionGroup] {
         makeSessionGroups(
             rows: searchFilteredRows,
             agents: entityClient.agents,
             workItems: entityClient.workItems,
             objectives: entityClient.objectives,
-            category: selectedCategory
+            category: selectedCategory,
+            workerScope: workerSessionScope
         )
+    }
+
+    private func setWorkerArchiveVisible(_ isVisible: Bool) {
+        guard isShowingWorkerArchive != isVisible else { return }
+        isShowingWorkerArchive = isVisible
+        searchText = ""
+        isSearching = false
+        isSearchFieldFocused = false
+        restoreSelection(for: .worker)
     }
 
     // 按搜索词筛选当前 Tab 下的会话（匹配标题/摘要/Agent/工作目录）。
@@ -499,33 +561,17 @@ func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [
     return sessions.first { $0.id == pendingSessionId }
 }
 
-struct SessionSubgroup: Identifiable {
+struct SessionGroup: Identifiable {
     let key: String
-    let title: String?
+    let title: String
     let rows: [SessionRowModel]
 
     var id: String { key }
 }
 
-struct SessionGroup: Identifiable {
-    let key: String
-    let title: String
-    let subgroups: [SessionSubgroup]
-
-    var id: String { key }
-    var rows: [SessionRowModel] { subgroups.flatMap(\.rows) }
-
-    init(key: String, title: String, rows: [SessionRowModel]) {
-        self.key = key
-        self.title = title
-        subgroups = [SessionSubgroup(key: "\(key):all", title: nil, rows: rows)]
-    }
-
-    init(key: String, title: String, subgroups: [SessionSubgroup]) {
-        self.key = key
-        self.title = title
-        self.subgroups = subgroups
-    }
+enum WorkerSessionScope: Equatable {
+    case active
+    case archived
 }
 
 enum SessionCategory: String, CaseIterable, Identifiable {
@@ -566,7 +612,8 @@ func makeSessionGroups(
     agents: [Agent],
     workItems: [WorkItem],
     objectives: [Objective],
-    category: SessionCategory
+    category: SessionCategory,
+    workerScope: WorkerSessionScope = .active
 ) -> [SessionGroup] {
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
     let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
@@ -575,8 +622,7 @@ func makeSessionGroups(
     var assistantRows: [String: [SessionRowModel]] = [:]
     var objectiveOrder: [String] = []
     var objectiveTitles: [String: String] = [:]
-    var activeWorkerRows: [String: [SessionRowModel]] = [:]
-    var completedWorkerRows: [String: [SessionRowModel]] = [:]
+    var workerRows: [String: [SessionRowModel]] = [:]
     var objectiveRows: [String: [SessionRowModel]] = [:]
     var legacyRows: [SessionRowModel] = []
 
@@ -603,12 +649,10 @@ func makeSessionGroups(
             objectiveRows[objectiveKey, default: []].append(row)
         case .worker:
             let workItem = row.session.workItemId.flatMap { workItemsByID[$0] }
+            let isArchived = workItem.map { WorkItemColumn.column(for: $0.status) == .done } == true
+            guard (workerScope == .archived) == isArchived else { continue }
             let objectiveKey = registerObjective(workItem?.objectiveId ?? row.session.objectiveId)
-            if workItem.map({ WorkItemColumn.column(for: $0.status) == .done }) == true {
-                completedWorkerRows[objectiveKey, default: []].append(row)
-            } else {
-                activeWorkerRows[objectiveKey, default: []].append(row)
-            }
+            workerRows[objectiveKey, default: []].append(row)
         case .legacy:
             legacyRows.append(row)
         }
@@ -622,29 +666,14 @@ func makeSessionGroups(
         )
     }
     for objectiveKey in objectiveOrder {
-        if category == .worker {
-            var subgroups: [SessionSubgroup] = []
-            if let rows = activeWorkerRows[objectiveKey], !rows.isEmpty {
-                subgroups.append(SessionSubgroup(
-                    key: "worker:\(objectiveKey):active",
-                    title: L10n("In Progress"),
-                    rows: rows
-                ))
-            }
-            if let rows = completedWorkerRows[objectiveKey], !rows.isEmpty {
-                subgroups.append(SessionSubgroup(
-                    key: "worker:\(objectiveKey):completed",
-                    title: L10n("Completed"),
-                    rows: rows
-                ))
-            }
-            if !subgroups.isEmpty {
-                groups.append(SessionGroup(
-                    key: "worker-objective:\(objectiveKey)",
-                    title: objectiveTitles[objectiveKey] ?? L10n("Unknown Objective"),
-                    subgroups: subgroups
-                ))
-            }
+        if category == .worker,
+           let rows = workerRows[objectiveKey],
+           !rows.isEmpty {
+            groups.append(SessionGroup(
+                key: "worker-objective:\(objectiveKey)",
+                title: objectiveTitles[objectiveKey] ?? L10n("Unknown Objective"),
+                rows: rows
+            ))
         } else if category == .objective,
                   let rows = objectiveRows[objectiveKey],
                   !rows.isEmpty {
@@ -687,9 +716,15 @@ func resolvedSessionSelection(
     category: SessionCategory,
     rows: [SessionRowModel],
     selectedSessionId: String?,
-    lastSelectedId: String?
+    lastSelectedId: String?,
+    workItems: [WorkItem] = [],
+    workerScope: WorkerSessionScope = .active
 ) -> String? {
-    let visibleRows = rows.filter { SessionCategory(session: $0.session) == category }
+    let visibleRows = rows.filter { row in
+        guard SessionCategory(session: row.session) == category else { return false }
+        guard category == .worker else { return true }
+        return (workerScope == .archived) == isArchivedWorkerSession(row.session, workItems: workItems)
+    }
     if let selectedSessionId,
        visibleRows.contains(where: { $0.id == selectedSessionId }) {
         return selectedSessionId
@@ -699,6 +734,15 @@ func resolvedSessionSelection(
         return lastSelectedId
     }
     return first.id
+}
+
+func isArchivedWorkerSession(_ session: TaskSession, workItems: [WorkItem]) -> Bool {
+    guard session.resolvedSessionKind == .worker,
+          let workItemID = session.workItemId,
+          let workItem = workItems.first(where: { $0.id == workItemID }) else {
+        return false
+    }
+    return WorkItemColumn.column(for: workItem.status) == .done
 }
 
 // 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。
