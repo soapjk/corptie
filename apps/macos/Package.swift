@@ -31,7 +31,8 @@ let package = Package(
                 .process("Resources/zh-Hans.lproj")
             ],
             linkerSettings: [
-                .linkedFramework("WebKit")
+                .linkedFramework("WebKit"),
+                .linkedFramework("UserNotifications")
             ]
         ),
         .testTarget(

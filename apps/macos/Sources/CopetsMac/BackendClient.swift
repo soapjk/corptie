@@ -6,6 +6,8 @@ extension Notification.Name {
     /// 请求在主悬浮窗（液态玻璃）打开某个 session 的对话，userInfo["sessionId"] 传 session id。
     /// 控制台 WorkItem 详情「打开对话」用，桥接新版控制台与旧版 session 对话视图。
     static let openSessionConversation = Notification.Name("openSessionConversation")
+    static let openSessionOverview = Notification.Name("openSessionOverview")
+    static let showAgentOrb = Notification.Name("showAgentOrb")
 }
 
 struct SessionRestartActivity: Equatable {
