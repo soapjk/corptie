@@ -10,6 +10,8 @@ final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isMutating = false
     @Published private(set) var errorMessage: String?
+    @Published var cleanupResult: WorktreeCleanupResult?
+    @Published private(set) var operationNotice: String?
 
     private let baseURL: URL
     private var detailGeneration = 0
@@ -91,6 +93,43 @@ final class WorktreeManagementClient: ObservableObject {
                 body: [:]
             )
             await self.loadRepository(repositoryId)
+        }
+    }
+
+    @discardableResult
+    func deleteWorktree(_ worktree: ManagedWorktree) async -> Bool {
+        guard let repositoryId = selection.repositoryId else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeDeletionResultEnvelope = try await post(
+                "worktree-management/repositories/\(repositoryId)/worktrees/\(worktree.worktreeId)/delete",
+                body: [:]
+            )
+            operationNotice = "Removed \(envelope.result.branchName ?? envelope.result.path) and its local branch."
+            errorMessage = nil
+            await loadRepository(repositoryId)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func cleanupMergedWorktrees(_ worktrees: [ManagedWorktree]) async {
+        guard let repositoryId = selection.repositoryId else { return }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let envelope: WorktreeCleanupResultEnvelope = try await post(
+                "worktree-management/repositories/\(repositoryId)/cleanup",
+                body: ["worktreeIds": worktrees.map(\.worktreeId)]
+            )
+            cleanupResult = envelope.result
+            errorMessage = nil
+            await loadRepository(repositoryId)
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 
@@ -277,6 +316,7 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func dismissError() { errorMessage = nil }
+    func dismissOperationNotice() { operationNotice = nil }
 
     private func loadRepository(_ id: String) async {
         detailGeneration &+= 1

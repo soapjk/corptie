@@ -937,6 +937,13 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       agentName: agent.name
     };
   },
+  removeWorktree: ({ repositoryId, mainPath, worktreeId }) => gitWorkspaces.removeWorktreeForProject({
+    repositoryId,
+    workingDirectory: mainPath,
+    sourceWorktreeId: worktreeId,
+    deleteBranch: true,
+    safeOnly: true
+  }),
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const feishuGateway = new FeishuGatewayManager({
@@ -6569,6 +6576,12 @@ function route(request, response) {
   const worktreeManagementPreflightMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)\/integration-plans$/
   );
+  const worktreeManagementCleanupMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/cleanup$/
+  );
+  const worktreeManagementDeleteMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/delete$/
+  );
   const worktreeManagementJobMatch = url.pathname.match(
     /^\/worktree-management\/jobs\/([^/]+)$/
   );
@@ -6606,6 +6619,33 @@ function route(request, response) {
     const repositoryId = decodeURIComponent(worktreeManagementPreflightMatch[1]);
     worktreeIntegrationJobService.preflight(repositoryId)
       .then((result) => sendJson(response, 201, { job: result }))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code
+      }));
+    return;
+  }
+  if (request.method === "POST" && worktreeManagementCleanupMatch) {
+    const repositoryId = decodeURIComponent(worktreeManagementCleanupMatch[1]);
+    readJson(request)
+      .then((input) => worktreeIntegrationJobService.cleanupMergedWorktrees(repositoryId, input))
+      .then((result) => {
+        emitEvent("WorktreeCleanupCompleted", { repositoryId, result });
+        sendJson(response, 200, { result });
+      })
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code
+      }));
+    return;
+  }
+  if (request.method === "POST" && worktreeManagementDeleteMatch) {
+    const repositoryId = decodeURIComponent(worktreeManagementDeleteMatch[1]);
+    const worktreeId = decodeURIComponent(worktreeManagementDeleteMatch[2]);
+    readJson(request)
+      .then(() => worktreeIntegrationJobService.deleteWorktree(repositoryId, worktreeId))
+      .then((result) => {
+        emitEvent("WorktreeDeleted", { repositoryId, worktreeId, result });
+        sendJson(response, 200, { result });
+      })
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code
       }));

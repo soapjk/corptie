@@ -43,6 +43,8 @@ struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
     let isDetached: Bool
     let isLocked: Bool
     let lockReason: String?
+    let isPrunable: Bool?
+    let pruneReason: String?
     let state: String
     let dirty: Bool?
     let statusSummary: String?
@@ -56,6 +58,71 @@ struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
     let behindMain: Int?
     let pendingIntegration: Bool
     let associations: [ManagedWorktreeAssociation]
+}
+
+struct ManagedWorktreeDeletionBlocker: Equatable, Sendable {
+    let code: String
+    let reason: String
+}
+
+enum ManagedWorktreeDeletionPolicy {
+    static func blocker(for worktree: ManagedWorktree) -> ManagedWorktreeDeletionBlocker? {
+        if worktree.isMain { return .init(code: "MAIN_WORKTREE", reason: "The main Worktree cannot be deleted.") }
+        if worktree.availability != "available" { return .init(code: "WORKTREE_UNAVAILABLE", reason: "This Worktree is unavailable and cannot be removed safely.") }
+        if worktree.isLocked { return .init(code: "WORKTREE_LOCKED", reason: worktree.lockReason ?? "This Worktree is locked by another operation.") }
+        if worktree.isPrunable == true { return .init(code: "WORKTREE_PRUNABLE", reason: worktree.pruneReason ?? "This Worktree has invalid or prunable Git metadata.") }
+        if let operation = worktree.operationState { return .init(code: "GIT_OPERATION_IN_PROGRESS", reason: "A \(operation) operation is in progress in this Worktree.") }
+        if !worktree.conflictFiles.isEmpty { return .init(code: "UNRESOLVED_CONFLICTS", reason: "This Worktree contains unresolved conflicts.") }
+        if worktree.dirty != false {
+            return .init(
+                code: "UNCOMMITTED_CHANGES",
+                reason: worktree.dirty == true
+                    ? "This Worktree has uncommitted changes. Commit or discard them before deleting it."
+                    : "Corptie could not verify that this Worktree has no uncommitted changes."
+            )
+        }
+        if worktree.mergedIntoMain != true { return .init(code: "NOT_MERGED_INTO_MAIN", reason: "This Worktree has commits that are not merged into main.") }
+        if worktree.isDetached || worktree.branchName == nil { return .init(code: "WORKTREE_BRANCH_AMBIGUOUS", reason: "The branch for this Worktree cannot be determined safely.") }
+        if worktree.associations.contains(where: { $0.workItemId != nil }) { return .init(code: "WORK_ITEM_ASSOCIATED", reason: "This Worktree is associated with a WorkItem and cannot be deleted.") }
+        if !worktree.associations.isEmpty { return .init(code: "WORKTREE_IN_USE", reason: "This Worktree is being used by a Session. Switch or remove the Session before deleting it.") }
+        return nil
+    }
+
+    static func eligibleWorktrees(from worktrees: [ManagedWorktree]) -> [ManagedWorktree] {
+        worktrees.filter { blocker(for: $0) == nil }
+    }
+}
+
+struct WorktreeDeletionResultEnvelope: Decodable, Sendable {
+    let result: WorktreeDeletionResult
+}
+
+struct WorktreeCleanupResultEnvelope: Decodable, Sendable {
+    let result: WorktreeCleanupResult
+}
+
+struct WorktreeDeletionResult: Decodable, Equatable, Sendable, Identifiable {
+    var id: String { worktreeId }
+    let worktreeId: String
+    let branchName: String?
+    let path: String
+    let status: String
+    let code: String?
+    let reason: String?
+}
+
+struct WorktreeCleanupCounts: Decodable, Equatable, Sendable {
+    let removed: Int
+    let skipped: Int
+    let failed: Int
+}
+
+struct WorktreeCleanupResult: Decodable, Equatable, Sendable, Identifiable {
+    var id: String { "\(counts.removed):\(counts.skipped):\(counts.failed):\(removed.map(\.worktreeId).joined(separator: ","))" }
+    let removed: [WorktreeDeletionResult]
+    let skipped: [WorktreeDeletionResult]
+    let failed: [WorktreeDeletionResult]
+    let counts: WorktreeCleanupCounts
 }
 
 struct ManagedWorktreeAssociation: Decodable, Equatable, Sendable {

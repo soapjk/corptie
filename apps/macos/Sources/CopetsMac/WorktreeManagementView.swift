@@ -15,6 +15,9 @@ struct WorktreeManagementView: View {
     @State private var showingSynchronizationConfirmation = false
     @State private var showingStopAndRepreflightConfirmation = false
     @State private var pendingOperation: ManagedWorktree?
+    @State private var pendingDeletion: ManagedWorktree?
+    @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
+    @State private var pendingCleanup: [ManagedWorktree]?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
@@ -92,6 +95,67 @@ struct WorktreeManagementView: View {
         } message: {
             Text(L10n("Remaining steps will stop at the next safe boundary. Completed local commits and merges are kept. Conflicts are preserved for review."))
         }
+        .confirmationDialog(
+            L10n("Delete this Worktree?"),
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { worktree in
+            Button(L10n("Delete Worktree and Local Branch"), role: .destructive) {
+                pendingDeletion = nil
+                Task { _ = await client.deleteWorktree(worktree) }
+            }
+            Button(L10n("Cancel"), role: .cancel) { pendingDeletion = nil }
+        } message: { worktree in
+            Text(L10nFormat(
+                "Corptie will permanently remove exactly this Worktree and its local branch:\n%@\n%@",
+                worktree.branchName ?? L10n("Detached HEAD"),
+                worktree.path
+            ))
+        }
+        .confirmationDialog(
+            L10nFormat("Clean up %d merged Worktrees?", pendingCleanup?.count ?? 0),
+            isPresented: Binding(
+                get: { pendingCleanup != nil },
+                set: { if !$0 { pendingCleanup = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Clean Up Worktrees"), role: .destructive) {
+                let worktrees = pendingCleanup ?? []
+                pendingCleanup = nil
+                Task { await client.cleanupMergedWorktrees(worktrees) }
+            }
+            Button(L10n("Cancel"), role: .cancel) { pendingCleanup = nil }
+        } message: {
+            Text(L10nFormat(
+                "Only these Worktrees, whose branches are merged into main and have no WorkItem or Session association, will be removed with their local branches:\n%@",
+                (pendingCleanup ?? []).map { "\($0.branchName ?? L10n("Detached HEAD")) — \($0.path)" }.joined(separator: "\n")
+            ))
+        }
+        .alert(item: $deletionBlocker) { presentation in
+            Alert(
+                title: Text(L10n("Worktree cannot be deleted")),
+                message: Text("\(presentation.worktree.branchName ?? presentation.worktree.path): \(localizedDeletionBlocker(presentation.blocker))"),
+                dismissButton: .cancel(Text(L10n("OK")))
+            )
+        }
+        .alert(L10n("Worktree deleted"), isPresented: Binding(
+            get: { client.operationNotice != nil },
+            set: { if !$0 { client.dismissOperationNotice() } }
+        )) {
+            Button(L10n("OK"), role: .cancel) { client.dismissOperationNotice() }
+        } message: {
+            Text(client.operationNotice ?? "")
+        }
+        .sheet(item: $client.cleanupResult) { result in
+            WorktreeCleanupResultView(result: result) {
+                client.cleanupResult = nil
+            }
+        }
         .alert(L10n("Worktree operation failed"), isPresented: Binding(
             get: { backendClient.isOnline && client.errorMessage != nil },
             set: { if !$0 { client.dismissError() } }
@@ -137,6 +201,7 @@ struct WorktreeManagementView: View {
             }
             if let project = client.detail?.project {
                 integrationAction(project)
+                cleanupAction(project)
                 if let job = client.job { jobProgress(job) }
                 List(selection: Binding(
                     get: { client.selection.worktreeId },
@@ -146,6 +211,14 @@ struct WorktreeManagementView: View {
                         worktreeRow(worktree)
                             .tag(worktree.worktreeId)
                             .accessibilityIdentifier("worktree.item.\(worktree.worktreeId)")
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    requestDeletion(of: worktree)
+                                } label: {
+                                    Label(L10n("Delete Worktree"), systemImage: "trash")
+                                }
+                                .accessibilityIdentifier("worktree.delete.\(worktree.worktreeId)")
+                            }
                     }
                 }
                 .listStyle(.inset)
@@ -207,6 +280,12 @@ struct WorktreeManagementView: View {
                                         || worktree.availability != "available"
                                         || worktree.operationState != nil
                                 )
+                                Button(role: .destructive) {
+                                    requestDeletion(of: worktree)
+                                } label: {
+                                    Label(L10n("Delete Worktree"), systemImage: "trash")
+                                }
+                                .disabled(client.isMutating)
                             }
                         }
                         .controlSize(.small)
@@ -300,6 +379,35 @@ struct WorktreeManagementView: View {
         }
         .padding(12)
         .background(Color.primary.opacity(0.035))
+    }
+
+    private func cleanupAction(_ project: ManagedGitProject) -> some View {
+        let eligible = ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: project.worktrees)
+        return HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n("Clean Up Merged Worktrees")).fontWeight(.semibold)
+                Text(L10n("Remove merged Worktrees that have no WorkItem or Session association."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                pendingCleanup = eligible
+            } label: {
+                Label(L10nFormat("Clean Up (%d)", eligible.count), systemImage: "trash")
+            }
+            .disabled(eligible.isEmpty || client.isMutating)
+            .accessibilityIdentifier("worktree.cleanup")
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.035))
+    }
+
+    private func requestDeletion(of worktree: ManagedWorktree) {
+        if let blocker = ManagedWorktreeDeletionPolicy.blocker(for: worktree) {
+            deletionBlocker = WorktreeDeletionBlockerPresentation(worktree: worktree, blocker: blocker)
+        } else {
+            pendingDeletion = worktree
+        }
     }
 
     private func jobProgress(_ job: WorktreeIntegrationJob) -> some View {
@@ -717,6 +825,62 @@ private struct IndividualWorktreeOperationView: View {
     }
 }
 
+private struct WorktreeDeletionBlockerPresentation: Identifiable {
+    let id = UUID()
+    let worktree: ManagedWorktree
+    let blocker: ManagedWorktreeDeletionBlocker
+}
+
+private struct WorktreeCleanupResultView: View {
+    let result: WorktreeCleanupResult
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10n("Worktree Cleanup Results")).font(.title2.weight(.semibold))
+            Text(L10nFormat(
+                "Removed: %d   Skipped: %d   Failed: %d",
+                result.counts.removed,
+                result.counts.skipped,
+                result.counts.failed
+            ))
+            .font(.headline.monospacedDigit())
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    resultSection(L10n("Removed"), entries: result.removed, color: .green)
+                    resultSection(L10n("Skipped"), entries: result.skipped, color: .orange)
+                    resultSection(L10n("Failed"), entries: result.failed, color: .red)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Spacer()
+                Button(L10n("Done"), action: onClose).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(minWidth: 560, idealWidth: 680, minHeight: 360, idealHeight: 500)
+    }
+
+    @ViewBuilder
+    private func resultSection(_ title: String, entries: [WorktreeDeletionResult], color: Color) -> some View {
+        if !entries.isEmpty {
+            VStack(alignment: .leading, spacing: 7) {
+                Text("\(title) (\(entries.count))").font(.headline).foregroundStyle(color)
+                ForEach(entries) { entry in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(entry.branchName ?? entry.path).fontWeight(.medium)
+                        Text(entry.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        if let reason = entry.reason {
+                            Text(reason).font(.caption).foregroundStyle(color).textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @MainActor
 private func localizedIntegrationStatus(_ value: String) -> String {
     switch value {
@@ -738,6 +902,24 @@ private func localizedIntegrationStatus(_ value: String) -> String {
     case "replanning": L10n("Generating a new plan")
     case "replanning_failed": L10n("Could not generate a new plan")
     default: value.replacingOccurrences(of: "_", with: " ")
+    }
+}
+
+@MainActor
+private func localizedDeletionBlocker(_ blocker: ManagedWorktreeDeletionBlocker) -> String {
+    switch blocker.code {
+    case "MAIN_WORKTREE": L10n("The main Worktree cannot be deleted.")
+    case "WORKTREE_UNAVAILABLE": L10n("This Worktree is unavailable and cannot be removed safely.")
+    case "WORKTREE_LOCKED": L10n("This Worktree is locked by another operation.")
+    case "WORKTREE_PRUNABLE": L10n("This Worktree has invalid or prunable Git metadata.")
+    case "GIT_OPERATION_IN_PROGRESS": L10n("A Git operation is already in progress in this Worktree.")
+    case "UNRESOLVED_CONFLICTS": L10n("This Worktree contains unresolved conflicts.")
+    case "UNCOMMITTED_CHANGES": L10n("This Worktree has uncommitted changes. Commit or discard them before deleting it.")
+    case "NOT_MERGED_INTO_MAIN": L10n("This Worktree has commits that are not merged into main.")
+    case "WORKTREE_BRANCH_AMBIGUOUS": L10n("The branch for this Worktree cannot be determined safely.")
+    case "WORK_ITEM_ASSOCIATED": L10n("This Worktree is associated with a WorkItem and cannot be deleted.")
+    case "WORKTREE_IN_USE": L10n("This Worktree is being used by a Session. Switch or remove the Session before deleting it.")
+    default: blocker.reason
     }
 }
 

@@ -112,6 +112,12 @@ function memoryFixture({
         workItemId: "work_item:conflict", sessionId: "session:conflict",
         agentId: "agent:one", agentName: "Conflict Agent"
       };
+    },
+    removeWorktree: async (input) => {
+      calls.push(`remove:${input.worktreeId}`);
+      const index = worktrees.findIndex((entry) => entry.worktreeId === input.worktreeId);
+      if (index >= 0) worktrees.splice(index, 1);
+      return { removed: true, branchDeleted: true };
     }
   });
   return { service, store, calls, worktrees };
@@ -340,6 +346,41 @@ test("preflight completes immediately when every Worktree is already integrated 
   assert.equal(plan.progress.fraction, 1);
   assert.ok(plan.completedAt);
   assert.equal(plan.audit[0].event, "preflight_no_changes");
+});
+
+test("cleanup removes only confirmed merged clean unassociated Worktrees and reports every skip", async () => {
+  const { service, calls, worktrees } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  worktrees.push(
+    { ...structuredClone(worktrees[1]), worktreeId: "wt:unmerged", path: "/repo-unmerged", branchName: "feature/unmerged", mergedIntoMain: false },
+    { ...structuredClone(worktrees[1]), worktreeId: "wt:dirty", path: "/repo-dirty", branchName: "feature/dirty", dirty: true },
+    {
+      ...structuredClone(worktrees[1]), worktreeId: "wt:owned", path: "/repo-owned", branchName: "feature/owned",
+      sessions: [{ logicalSessionId: "logical:owned", sessionId: null, active: true, workItemId: "work_item:owned" }]
+    }
+  );
+
+  const result = await service.cleanupMergedWorktrees("repository:1", { worktreeIds: ["wt:feature"] });
+
+  assert.deepEqual(result.counts, { removed: 1, skipped: 3, failed: 0 });
+  assert.deepEqual(result.removed.map((entry) => entry.worktreeId), ["wt:feature"]);
+  assert.deepEqual(new Set(result.skipped.map((entry) => entry.code)), new Set([
+    "NOT_MERGED_INTO_MAIN", "UNCOMMITTED_CHANGES", "WORK_ITEM_ASSOCIATED"
+  ]));
+  assert.deepEqual(calls, ["remove:wt:feature"]);
+});
+
+test("individual safe deletion returns a concrete blocker and never calls Git", async () => {
+  const { service, calls } = memoryFixture({ featureAlreadyMerged: true, featureDirty: true });
+
+  await assert.rejects(
+    () => service.deleteWorktree("repository:1", "wt:feature"),
+    (error) => error.code === "UNCOMMITTED_CHANGES" && /uncommitted changes/.test(error.message)
+  );
+  assert.deepEqual(calls, []);
 });
 
 test("integration job, per-item state, and audit survive Store restart", async () => {
