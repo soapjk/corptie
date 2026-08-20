@@ -347,6 +347,51 @@ export class GitWorkspaceManager {
     return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
   }
 
+  async abortIntegrationMerge(input) {
+    const operationState = await this.integrationOperationState(input.mainPath);
+    const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (!operationState) {
+      const status = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
+      if (status) {
+        throw integrationGitError(
+          "MAIN_NOT_RESTORED",
+          "main no longer contains the task-owned merge and has uncommitted changes."
+        );
+      }
+      return { aborted: false, alreadyClean: true, mainHead };
+    }
+    if (operationState !== "merge") {
+      throw integrationGitError(
+        "GIT_OPERATION_IN_PROGRESS",
+        `main has an unrelated ${operationState} operation in progress.`
+      );
+    }
+    const mergeHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "MERGE_HEAD"])).trim();
+    if (mergeHead !== input.sourceHead) {
+      throw integrationGitError(
+        "UNRELATED_MERGE_IN_PROGRESS",
+        "main contains a merge for a different source. Resolve it manually before replanning."
+      );
+    }
+    if (mainHead !== input.expectedMainHead) {
+      throw integrationGitError(
+        "MAIN_HEAD_CHANGED",
+        "main HEAD changed after the integration conflict was recorded."
+      );
+    }
+    await this.runGit(input.mainPath, ["merge", "--abort"]);
+    const remainingOperation = await this.integrationOperationState(input.mainPath);
+    const status = (await this.gitOutput(input.mainPath, ["status", "--porcelain=v1"])).trim();
+    const restoredHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (remainingOperation || status || restoredHead !== input.expectedMainHead) {
+      throw integrationGitError(
+        "MAIN_NOT_RESTORED",
+        "Git aborted the task-owned merge, but main did not return to its recorded clean state."
+      );
+    }
+    return { aborted: true, alreadyClean: false, mainHead: restoredHead };
+  }
+
   async createIntegrationWorktreeForProject(input) {
     const snapshot = await createGitWorkspaceSnapshot(absolutePath(input.workingDirectory));
     if (snapshot.repository.id !== input.repositoryId) {

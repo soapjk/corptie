@@ -875,6 +875,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   },
   commitChanges: (input) => gitWorkspaces.commitIntegrationChanges(input),
   mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
+  abortMerge: (input) => gitWorkspaces.abortIntegrationMerge(input),
   prepareConflictResolution: (input) => gitWorkspaces.prepareIntegrationConflictResolutionForProject({
     repositoryId: input.repositoryId,
     workingDirectory: input.mainPath,

@@ -17,6 +17,7 @@ export class WorktreeIntegrationJobService {
     this.inspectRepository = options.inspectRepository;
     this.commitChanges = options.commitChanges;
     this.mergeSource = options.mergeSource;
+    this.abortMerge = options.abortMerge;
     this.prepareConflictResolution = options.prepareConflictResolution;
     this.launchConflictResolution = options.launchConflictResolution;
     this.onEvent = options.onEvent ?? (() => {});
@@ -26,6 +27,7 @@ export class WorktreeIntegrationJobService {
       "inspectRepository",
       "commitChanges",
       "mergeSource",
+      "abortMerge",
       "prepareConflictResolution",
       "launchConflictResolution"
     ]) {
@@ -219,6 +221,26 @@ export class WorktreeIntegrationJobService {
   }
 
   async #finishCancellation(job, { replan = false, conflictPreserved = false } = {}) {
+    if (replan) {
+      try {
+        const cleanup = await this.#abortConflictMergeForReplan(job);
+        if (cleanup) {
+          job = this.#update(job, {
+            auditEvent: cleanup.aborted ? "conflict_merge_aborted" : "conflict_merge_cleanup_verified",
+            auditData: { worktreeId: job.details.currentWorktreeId }
+          });
+          conflictPreserved = false;
+        }
+      } catch (error) {
+        return this.#update(job, {
+          status: "paused",
+          phase: "replanning_cleanup_failed",
+          error: error.message,
+          auditEvent: "conflict_merge_cleanup_failed",
+          auditData: { code: error.code ?? "MERGE_CLEANUP_FAILED" }
+        });
+      }
+    }
     const finalPhase = conflictPreserved ? "canceled_conflict_preserved" : "canceled";
     let canceled = this.#update(job, {
       status: replan ? "replanning" : "canceled",
@@ -254,6 +276,20 @@ export class WorktreeIntegrationJobService {
       auditData: { replacementJobId: replacement.id }
     });
     return replacement ?? canceled;
+  }
+
+  async #abortConflictMergeForReplan(job) {
+    const item = job.details.plan.items.find((candidate) =>
+      candidate.worktreeId === job.details.currentWorktreeId);
+    if (item?.mergeStatus !== "conflict") return null;
+    const sourceHead = item.commitHead ?? item.sourceHeadBefore;
+    return this.abortMerge({
+      repositoryId: job.repositoryId,
+      mainPath: job.details.plan.mainPath,
+      sourceHead,
+      expectedMainHead: expectedMainHeadBefore(job.details.plan, item.worktreeId),
+      jobId: job.id
+    });
   }
 
   async #replacementPlan(canceled, replan) {
