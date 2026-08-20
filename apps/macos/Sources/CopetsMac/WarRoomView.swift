@@ -504,7 +504,9 @@ struct WorkItemBoardView: View {
                     workspaceIds: objective.workspaceIds,
                     contributorAgentIds: objective.contributorAgentIds
                 ) { created in
-                    boardItems.append(created)
+                    if !boardItems.contains(where: { $0.id == created.id }) {
+                        boardItems.append(created)
+                    }
                     onRequestReload()
                 }
             }

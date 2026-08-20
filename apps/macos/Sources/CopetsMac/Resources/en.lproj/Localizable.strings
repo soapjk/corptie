@@ -139,6 +139,10 @@
 "This Objective has no available IC Agent." = "This Objective has no available IC Agent.";
 "Create and Start WorkItem" = "Create and Start WorkItem";
 "Connecting to the server…" = "Connecting to the server…";
+"Connect to the server" = "Connect to the server";
+"Connected to the server" = "Connected to the server";
+"Could not connect to the server. Check that the server is running, then retry." = "Could not connect to the server. Check that the server is running, then retry.";
+"Could not connect to the server: %@ Check that the server is running, then retry." = "Could not connect to the server: %@ Check that the server is running, then retry.";
 "No merged Worktrees without associated sessions" = "No merged Worktrees without associated sessions";
 "Remove all merged Worktrees that have no associated sessions" = "Remove all merged Worktrees that have no associated sessions";
 "Remove %d merged Worktrees?" = "Remove %d merged Worktrees?";

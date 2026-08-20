@@ -141,6 +141,7 @@ struct MainTabView: View {
     @StateObject private var router = AppTabRouter.shared
     @StateObject private var backendClient = BackendClient.shared
     @StateObject private var entityClient = EntityAPIClient.shared
+    @StateObject private var backgroundTasks = BackgroundTaskCenter.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -171,6 +172,7 @@ struct MainTabView: View {
                     .buttonStyle(.plain)
                     .help(L10n("设置"))
                 }
+                .frame(width: 220, alignment: .leading)
                 .offset(x: 64, y: -32)
 
                 Spacer()
@@ -183,9 +185,24 @@ struct MainTabView: View {
 
                 Spacer()
 
-                // 与左侧工具组等宽，确保中间四个 Tab 始终按窗口居中。
-                Color.clear
-                    .frame(width: 52, height: 1)
+                Group {
+                    if !backendClient.isOnline,
+                       entityClient.objectivesLoadError != nil,
+                       !backgroundTasks.records.contains(where: {
+                           $0.id == BackgroundTaskCenter.backendConnectionTaskID
+                               && $0.state != .succeeded
+                       }) {
+                        Label(L10n("Connecting to the server…"), systemImage: "network")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .allowsHitTesting(false)
+                    } else {
+                        BackgroundTaskStatusBar(center: backgroundTasks)
+                    }
+                }
+                .frame(width: 220, alignment: .trailing)
+                .offset(y: -32)
             }
             .padding(.horizontal, 12)
 
@@ -208,19 +225,6 @@ struct MainTabView: View {
             }
         }
         .environmentObject(router)
-        .overlay(alignment: .topTrailing) {
-            if !backendClient.isOnline, entityClient.objectivesLoadError != nil {
-                Label(L10n("Connecting to the server…"), systemImage: "network")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.regularMaterial, in: Capsule())
-                    .padding(.top, 8)
-                    .padding(.trailing, 12)
-                    .allowsHitTesting(false)
-            }
-        }
     }
 
     @ViewBuilder

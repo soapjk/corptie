@@ -656,7 +656,7 @@ final class EntityAPIClient: ObservableObject {
 
     // 创建 Objective：POST /objectives { name, ... } → 直接返回 objective
     @discardableResult
-    func createObjective(name: String, description: String? = nil, idealState: String? = nil,
+    func createObjective(id: String? = nil, name: String, description: String? = nil, idealState: String? = nil,
                          priority: String? = nil, targetDate: String? = nil, tags: [String] = [],
                          workspaceIds: [String] = [], relatedObjectiveIds: [String] = [],
                          contributorAgentIds: [String] = []) async -> Objective? {
@@ -664,6 +664,7 @@ final class EntityAPIClient: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["name": name]
+        if let id, !id.isEmpty { body["id"] = id }
         if let description { body["description"] = description }
         if let idealState { body["idealState"] = idealState }
         if let priority { body["priority"] = priority }

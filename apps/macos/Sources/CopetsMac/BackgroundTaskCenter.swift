@@ -1,0 +1,221 @@
+import SwiftUI
+
+enum BackgroundTaskState: Equatable {
+    case running
+    case succeeded
+    case failed
+}
+
+struct BackgroundTaskRecord: Identifiable, Equatable {
+    let id: String
+    let title: String
+    var state: BackgroundTaskState
+    var detail: String
+}
+
+enum BackgroundTaskOutcome: Equatable {
+    case success(String)
+    case failure(String)
+}
+
+/// Owns user-initiated work that must outlive its presenting sheet.
+///
+/// A caller-supplied stable ID is both the UI identity and the duplicate-submission
+/// guard. Failed operations retain their closure so the global status panel can
+/// retry the exact same request rather than reconstructing input from a dismissed
+/// form.
+@MainActor
+final class BackgroundTaskCenter: ObservableObject {
+    typealias Operation = @MainActor () async -> BackgroundTaskOutcome
+
+    static let shared = BackgroundTaskCenter()
+    static let backendConnectionTaskID = "backend.connection"
+
+    @Published private(set) var records: [BackgroundTaskRecord] = []
+    private var operations: [String: Operation] = [:]
+
+    @discardableResult
+    func start(id: String, title: String, operation: @escaping Operation) -> Bool {
+        guard records.first(where: { $0.id == id }) == nil else { return false }
+        operations[id] = operation
+        records.insert(
+            BackgroundTaskRecord(id: id, title: title, state: .running, detail: L10n("正在后台执行…")),
+            at: 0
+        )
+        run(id: id)
+        return true
+    }
+
+    @discardableResult
+    func retry(id: String) -> Bool {
+        guard let index = records.firstIndex(where: { $0.id == id }),
+              records[index].state == .failed,
+              operations[id] != nil else { return false }
+        records[index].state = .running
+        records[index].detail = L10n("正在重试…")
+        run(id: id)
+        return true
+    }
+
+    func dismiss(id: String) {
+        guard let record = records.first(where: { $0.id == id }), record.state != .running else { return }
+        records.removeAll(where: { $0.id == id })
+        operations[id] = nil
+    }
+
+    private func run(id: String) {
+        guard let operation = operations[id] else { return }
+        Task { @MainActor [weak self] in
+            let outcome = await operation()
+            guard let self,
+                  let index = self.records.firstIndex(where: { $0.id == id }),
+                  self.records[index].state == .running else { return }
+            switch outcome {
+            case .success(let detail):
+                self.records[index].state = .succeeded
+                self.records[index].detail = detail
+                self.operations[id] = nil
+            case .failure(let detail):
+                self.records[index].state = .failed
+                self.records[index].detail = detail
+            }
+        }
+    }
+}
+
+/// Adapts the app's authoritative backend reachability to a retryable entry in
+/// the global background-task panel. The first run only observes the startup
+/// flow that is already in progress; later runs actively request a fresh state
+/// snapshot before waiting, so launch does not issue duplicate probes.
+@MainActor
+final class BackendConnectionStatusOperation {
+    typealias IsConnected = @MainActor () -> Bool
+    typealias ErrorMessage = @MainActor () -> String?
+    typealias RetryConnection = @MainActor () async -> Void
+
+    private let timeout: Duration
+    private let pollInterval: Duration
+    private let isConnected: IsConnected
+    private let errorMessage: ErrorMessage
+    private let retryConnection: RetryConnection
+    private var attemptCount = 0
+
+    init(
+        timeout: Duration = .seconds(12),
+        pollInterval: Duration = .milliseconds(100),
+        isConnected: @escaping IsConnected,
+        errorMessage: @escaping ErrorMessage,
+        retryConnection: @escaping RetryConnection
+    ) {
+        self.timeout = timeout
+        self.pollInterval = pollInterval
+        self.isConnected = isConnected
+        self.errorMessage = errorMessage
+        self.retryConnection = retryConnection
+    }
+
+    func run() async -> BackgroundTaskOutcome {
+        attemptCount += 1
+        if attemptCount > 1 {
+            await retryConnection()
+        }
+
+        let deadline = ContinuousClock.now + timeout
+        while !isConnected(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: pollInterval)
+        }
+
+        if isConnected() {
+            return .success(L10n("Connected to the server"))
+        }
+
+        if let reason = errorMessage()?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reason.isEmpty {
+            return .failure(L10nFormat(
+                "Could not connect to the server: %@ Check that the server is running, then retry.",
+                reason
+            ))
+        }
+        return .failure(L10n("Could not connect to the server. Check that the server is running, then retry."))
+    }
+}
+
+struct BackgroundTaskStatusBar: View {
+    @ObservedObject var center: BackgroundTaskCenter
+
+    var body: some View {
+        if let record = featuredRecord {
+            HStack(spacing: 5) {
+                statusIcon(record.state)
+                    .frame(width: 14, height: 14)
+
+                Text(record.title)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .layoutPriority(1)
+
+                Text(record.detail)
+                    .font(.caption2)
+                    .foregroundStyle(record.state == .failed ? Color.red : Color.secondary)
+                    .lineLimit(1)
+
+                if center.records.count > 1 {
+                    Text("+\(center.records.count - 1)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                if record.state == .failed {
+                    Button {
+                        center.retry(id: record.id)
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("重试"))
+                }
+
+                if record.state != .running {
+                    Button {
+                        center.dismiss(id: record.id)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .help(L10n("关闭"))
+                }
+            }
+            .frame(maxWidth: 220, alignment: .trailing)
+            .help("\(record.title)\n\(record.detail)")
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("background-task.\(record.id)")
+        }
+    }
+
+    /// Keep active work visible first, then failures that need attention, then
+    /// the newest completed item. This stays useful without expanding into a
+    /// notification stack over the window content.
+    private var featuredRecord: BackgroundTaskRecord? {
+        center.records.first(where: { $0.state == .running })
+            ?? center.records.first(where: { $0.state == .failed })
+            ?? center.records.first
+    }
+
+    @ViewBuilder
+    private func statusIcon(_ state: BackgroundTaskState) -> some View {
+        switch state {
+        case .running:
+            ProgressView().controlSize(.mini)
+        case .succeeded:
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.green)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.red)
+        }
+    }
+}

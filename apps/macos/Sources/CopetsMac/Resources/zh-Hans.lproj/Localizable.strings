@@ -465,6 +465,10 @@
 "This Objective has no available IC Agent." = "此 Objective 中没有可用的 IC Agent。";
 "Create and Start WorkItem" = "创建并开始运行";
 "Connecting to the server…" = "正在连接服务器…";
+"Connect to the server" = "连接服务器";
+"Connected to the server" = "已连接到服务器";
+"Could not connect to the server. Check that the server is running, then retry." = "无法连接服务器。请确认服务器已启动，然后重试。";
+"Could not connect to the server: %@ Check that the server is running, then retry." = "无法连接服务器：%@ 请确认服务器已启动，然后重试。";
 "No merged Worktrees without associated sessions" = "没有可清除的已合并且无关联会话的 Worktree";
 "Remove all merged Worktrees that have no associated sessions" = "清除所有已合并且无关联会话的 Worktree";
 "Remove %d merged Worktrees?" = "清除 %d 个已合并的 Worktree？";
