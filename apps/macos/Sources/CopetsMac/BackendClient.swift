@@ -163,6 +163,7 @@ final class BackendClient: ObservableObject {
     private static let historyPageSize = 200
     private var historyLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
+    private var usageEventRefreshTask: Task<Void, Never>?
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
@@ -271,6 +272,8 @@ final class BackendClient: ObservableObject {
         performanceFixtureStreamTask = nil
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
         detailPrefetchTasks.values.forEach { $0.cancel() }
@@ -545,6 +548,23 @@ final class BackendClient: ObservableObject {
         )
         usageBySessionId[event.payload.sessionId] = usage
         selectedSessionUsage = usage
+        scheduleUsageRefreshAfterLiveUpdate(sessionID: event.payload.sessionId)
+    }
+
+    private func scheduleUsageRefreshAfterLiveUpdate(sessionID: String) {
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = Task { [weak self] in
+            do {
+                // Token-usage notifications may arrive in a short burst. One
+                // authoritative account read after the burst keeps the plan
+                // balance current without issuing a request for every event.
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
+            guard let self, self.selectedSession?.id == sessionID else { return }
+            await self.refreshSelectedUsage()
+        }
     }
 
     func loadSettings() async {
@@ -1460,6 +1480,8 @@ final class BackendClient: ObservableObject {
         selectedSessionUsage = usageBySessionId[session.id]
         selectedContextReferences = []
         usageRefreshTask?.cancel()
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = nil
         // Usage is part of the visible chat header, not optional background
         // project polling. Keep it current even in the lightweight Sessions tab.
         usageRefreshTask = Task { [weak self] in
@@ -1625,6 +1647,8 @@ final class BackendClient: ObservableObject {
     func closeDetail() {
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
         detailStreamTask?.cancel()
@@ -3408,9 +3432,45 @@ final class BackendClient: ObservableObject {
                   httpResponse.statusCode == 200 else {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not update the Session read receipt.")
             }
+            let receipt = try JSONDecoder().decode(SessionReadReceiptResponse.self, from: data)
+            let nextSessions = Self.applyingReadReceipt(
+                receipt,
+                requestedSessionID: sessionID,
+                to: sessions
+            )
+            applySessionSnapshot(nextSessions, allowDuringReorder: true)
+            // The response is enough to clear the indicator immediately. The
+            // revisioned snapshot remains authoritative and reconciles any
+            // concurrent agent message that arrived after this exact cursor.
+            await AppStateSyncController.shared.refreshSnapshot()
             return true
         } catch {
             return false
+        }
+    }
+
+    nonisolated static func applyingReadReceipt(
+        _ receipt: SessionReadReceiptResponse,
+        requestedSessionID: String,
+        to sessions: [TaskSession]
+    ) -> [TaskSession] {
+        let matchingIDs = Set([
+            requestedSessionID,
+            receipt.sessionId,
+            receipt.legacySessionId
+        ].compactMap { $0 })
+        return sessions.map { session in
+            guard matchingIDs.contains(session.id) else { return session }
+            var updated = session
+            updated.lastAgentMessageSequence = max(
+                session.lastAgentMessageSequence ?? 0,
+                receipt.lastAgentMessageSequence
+            )
+            updated.lastReadMessageSequence = max(
+                session.lastReadMessageSequence ?? 0,
+                receipt.lastReadMessageSequence
+            )
+            return updated
         }
     }
 

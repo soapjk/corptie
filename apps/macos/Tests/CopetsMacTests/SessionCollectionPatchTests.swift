@@ -398,6 +398,51 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func readReceiptResponseClearsUnreadImmediatelyWithoutClearingConcurrentMessages() {
+        let unread = makeSession(
+            id: "logical-session",
+            lastAgentMessageSequence: 8,
+            lastReadMessageSequence: 3
+        )
+        let untouched = makeSession(
+            id: "other-session",
+            lastAgentMessageSequence: 4,
+            lastReadMessageSequence: 1
+        )
+        let receipt = SessionReadReceiptResponse(
+            sessionId: "logical-session",
+            legacySessionId: "provider-session",
+            lastAgentMessageSequence: 8,
+            lastReadMessageSequence: 8
+        )
+
+        let updated = BackendClient.applyingReadReceipt(
+            receipt,
+            requestedSessionID: "logical-session",
+            to: [unread, untouched]
+        )
+
+        #expect(updated[0].lastAgentMessageSequence == 8)
+        #expect(updated[0].lastReadMessageSequence == 8)
+        #expect(!isSessionUnread(updated[0]))
+        #expect(updated[1] == untouched)
+
+        let concurrent = makeSession(
+            id: "logical-session",
+            lastAgentMessageSequence: 9,
+            lastReadMessageSequence: 3
+        )
+        let concurrentUpdate = BackendClient.applyingReadReceipt(
+            receipt,
+            requestedSessionID: "logical-session",
+            to: [concurrent]
+        )
+        #expect(concurrentUpdate[0].lastAgentMessageSequence == 9)
+        #expect(concurrentUpdate[0].lastReadMessageSequence == 8)
+        #expect(isSessionUnread(concurrentUpdate[0]))
+    }
+
+    @Test
     func completionNotificationPendingCountMeansUnreadAgentMessages() {
         let summary = SessionCompletionNotificationSummary.make(from: [
             makeSession(

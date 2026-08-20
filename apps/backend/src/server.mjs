@@ -216,9 +216,11 @@ const sessionPresentationCache = new Map();
 const historicalSessionBindingDetailCache = new Map();
 const eventLog = [];
 const sseClients = new Set();
-const stateSyncClients = new Set();
+// Each state-stream client owns its own delivered revision. A shared cursor
+// lets a newly connected client advance past a change before existing clients
+// receive it, leaving their Session list stale until another mutation occurs.
+const stateSyncClients = new Map();
 let stateSyncConsistencyTimer = null;
-let stateSyncPublishedRevision = 0;
 let stateSyncService = null;
 let workItemExecutionOrchestrator = null;
 const sessionEventListeners = new Set();
@@ -1942,21 +1944,20 @@ function writeStateSyncFrame(response, name, data) {
 function publishStateChangesIfNeeded() {
   if (!stateSyncService) return;
   const current = store.stateRevision();
-  if (current === stateSyncPublishedRevision) return;
-  const changes = stateSyncService.changesAfter(stateSyncPublishedRevision);
-  if (changes.snapshotRequired) {
-    const snapshot = stateSyncService.snapshot();
-    if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
-      console.log(`[state-sync] SNAPSHOT published rev=${snapshot.revision} sessions=${snapshot.state.sessions.length} ` +
-        `dbSessions=${store.listSessions({ archived: false }).length + store.listSessions({ archived: true }).length} ` +
-        `clients=${stateSyncClients.size}`);
+  const deliveryByRevision = new Map();
+  for (const [response, deliveredRevision] of stateSyncClients) {
+    if (deliveredRevision === current) continue;
+    let delivery = deliveryByRevision.get(deliveredRevision);
+    if (!delivery) {
+      const changes = stateSyncService.changesAfter(deliveredRevision);
+      delivery = changes.snapshotRequired
+        ? { name: "state-snapshot", data: stateSyncService.snapshot() }
+        : { name: "state-change-set", data: changes };
+      deliveryByRevision.set(deliveredRevision, delivery);
     }
-    for (const response of stateSyncClients) writeStateSyncFrame(response, "state-snapshot", snapshot);
-    stateSyncPublishedRevision = snapshot.revision;
-    return;
+    writeStateSyncFrame(response, delivery.name, delivery.data);
+    stateSyncClients.set(response, delivery.data.revision);
   }
-  for (const response of stateSyncClients) writeStateSyncFrame(response, "state-change-set", changes);
-  stateSyncPublishedRevision = changes.revision;
 }
 
 function updateStateSyncConsistencyTimer() {
@@ -7532,8 +7533,9 @@ function route(request, response) {
     } else if (changes.revision > changes.baseRevision) {
       writeStateSyncFrame(response, "state-change-set", changes);
     }
-    stateSyncPublishedRevision = store.stateRevision();
-    stateSyncClients.add(response);
+    stateSyncClients.set(response, changes.snapshotRequired
+      ? store.stateRevision()
+      : changes.revision);
     updateStateSyncConsistencyTimer();
     const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
     heartbeat.unref?.();

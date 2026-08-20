@@ -482,7 +482,9 @@ struct SessionsView: View {
                 Text(mode.title).tag(mode)
             }
         }
-        .pickerStyle(.segmented)
+        .pickerStyle(.menu)
+        .controlSize(.small)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .labelsHidden()
     }
 
@@ -746,7 +748,7 @@ enum WorkerSessionGroupingMode: String, CaseIterable, Identifiable {
     @MainActor var title: String {
         switch self {
         case .objective: L10n("Group by Objective")
-        case .none: L10n("No Grouping")
+        case .none: L10n("All")
         }
     }
 }

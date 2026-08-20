@@ -64,6 +64,36 @@ test("change set emits deletes and requires snapshot beyond replay window", () =
   assert.deepEqual(changes.deletes.sessions, ["gone"]);
 });
 
+test("clients at different revisions receive independent catch-up ranges", () => {
+  const service = fixture({
+    revision: 11,
+    oldest: 9,
+    changes: [
+      { revision: 9, entityType: "session", entityId: "s1", operation: "upsert" },
+      { revision: 10, entityType: "session", entityId: "s2", operation: "upsert" },
+      { revision: 11, entityType: "session", entityId: "s1", operation: "upsert" }
+    ],
+    state: {
+      sessions: [
+        { id: "s1", status: "complete", lastAgentMessageSequence: 7 },
+        { id: "s2", status: "running", lastAgentMessageSequence: 0 }
+      ]
+    }
+  });
+
+  const existingClient = service.changesAfter(10);
+  const newlyConnectedClient = service.changesAfter(11);
+
+  assert.equal(existingClient.baseRevision, 10);
+  assert.equal(existingClient.revision, 11);
+  assert.deepEqual(existingClient.upserts.sessions, [
+    { id: "s1", status: "complete", lastAgentMessageSequence: 7 }
+  ]);
+  assert.equal(newlyConnectedClient.baseRevision, 11);
+  assert.equal(newlyConnectedClient.revision, 11);
+  assert.deepEqual(newlyConnectedClient.upserts.sessions, []);
+});
+
 test("upsert missing from provider-memory snapshot is skipped, not deleted", () => {
   // operation='upsert' means the row still exists in the database (INSERT/UPDATE
   // trigger). A missing snapshot projection (e.g. an OpenClacky session whose
