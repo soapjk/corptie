@@ -129,6 +129,37 @@ test("plain Skill with only SKILL.md remains installable and loadable", async ()
   }
 });
 
+test("Skill update keeps identity and assignments while replacing validated runtime content", async () => {
+  const value = await fixture();
+  try {
+    const source = join(value.source, "skills", "alpha");
+    const skill = await value.service.register({ sourceType: "local", source });
+    const agent = value.store.createAgent({ name: "Updater", provider: "codex-app-server" });
+    value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+
+    await writeFile(join(source, "SKILL.md"), [
+      "---", "name: alpha", "description: Updated workflow", "---", "Updated instructions"
+    ].join("\n"));
+    const updated = await value.service.update(skill.skillId, {});
+
+    assert.equal(updated.skillId, skill.skillId);
+    assert.notEqual(updated.contentHash, skill.contentHash);
+    assert.deepEqual(value.store.listRegistrySkillsForAgent(agent.agentId).map((item) => item.skillId), [skill.skillId]);
+    assert.match(await readFile(join(value.runtime, skill.skillId, "SKILL.md"), "utf8"), /Updated instructions/);
+    assert.match((await value.service.loadForAgent(agent.agentId, skill.skillId)).content, /Updated instructions/);
+
+    await assert.rejects(
+      value.service.update(skill.skillId, { sourceSubpath: "missing" }),
+      (error) => error.code === "INVALID_SKILL_SUBPATH"
+    );
+    assert.equal(value.service.get(skill.skillId).contentHash, updated.contentHash);
+    assert.match(await readFile(join(value.runtime, skill.skillId, "SKILL.md"), "utf8"), /Updated instructions/);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("compound Skill discovers, copies, and resolves MCP descriptor resources", async () => {
   const value = await fixture();
   try {
@@ -443,6 +474,32 @@ test("multiple Skills from one plugin share one MCP dependency without a false n
     assert.deepEqual(await value.service.mcpServersForAgent(agent.agentId, "test"), {
       shared: { url: "http://127.0.0.1:8765/mcp" }
     });
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("different Skill packages with the same MCP server name fail explicitly when enabled together", async () => {
+  const value = await fixture();
+  try {
+    const skills = [];
+    for (const packageName of ["first-package", "second-package"]) {
+      const packageRoot = join(value.directory, packageName);
+      await mkdir(packageRoot, { recursive: true });
+      await writeFile(join(packageRoot, "SKILL.md"), `---\nname: ${packageName}\n---\n${packageName}\n`);
+      await writeFile(join(packageRoot, ".mcp.json"), JSON.stringify({
+        mcpServers: { duplicate: { url: `http://127.0.0.1/${packageName}` } }
+      }));
+      skills.push(await value.service.register({ sourceType: "local", source: packageRoot }));
+    }
+
+    const agent = value.store.createAgent({ name: "Conflict", provider: "codex-app-server" });
+    value.store.setAgentRegistrySkills(agent.agentId, skills.map((skill) => skill.skillId));
+    await assert.rejects(
+      value.service.mcpServersForAgent(agent.agentId, "test"),
+      (error) => error.code === "MCP_SERVER_NAME_CONFLICT" && /duplicate/.test(error.message)
+    );
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });
