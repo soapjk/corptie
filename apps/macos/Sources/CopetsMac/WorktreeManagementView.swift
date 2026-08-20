@@ -320,7 +320,9 @@ struct WorktreeManagementView: View {
                         } else {
                             ForEach(worktree.associations, id: \.logicalSessionId) { association in
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(association.workItemTitle ?? L10n("Unbound WorkItem")).fontWeight(.medium)
+                                    if let workItem = association.workItemTitle ?? association.workItemId {
+                                        Text(workItem).fontWeight(.medium)
+                                    }
                                     if let sessionId = association.sessionId {
                                         Button(association.title ?? sessionId) {
                                             router.openSession(sessionId)
