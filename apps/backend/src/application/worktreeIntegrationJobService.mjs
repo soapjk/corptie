@@ -15,6 +15,7 @@ export class WorktreeIntegrationJobService {
   constructor(options = {}) {
     this.store = options.store;
     this.inspectRepository = options.inspectRepository;
+    this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
     this.commitChanges = options.commitChanges;
     this.mergeSource = options.mergeSource;
     this.prepareConflictResolution = options.prepareConflictResolution;
@@ -47,7 +48,7 @@ export class WorktreeIntegrationJobService {
 
   async repository(repositoryId) {
     const repository = this.#requireRepository(repositoryId);
-    const inspection = await this.inspectRepository(repository.id);
+    const inspection = await this.inspectRepositorySummary(repository.id);
     return {
       repository: this.repositories().find((entry) => entry.id === repository.id),
       project: this.#associate(inspection),

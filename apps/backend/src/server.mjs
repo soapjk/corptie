@@ -849,6 +849,15 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
 });
 const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   store,
+  inspectRepositorySummary: async (repositoryId) => {
+    const path = store.resolveWorkspacePath(repositoryId);
+    if (!path) {
+      const error = new Error("The repository main checkout is unavailable.");
+      error.code = "REPOSITORY_MAIN_UNAVAILABLE";
+      throw error;
+    }
+    return gitWorkspaces.managementInspectionForProject(path, repositoryId);
+  },
   inspectRepository: async (repositoryId) => {
     const path = store.resolveWorkspacePath(repositoryId);
     if (!path) {

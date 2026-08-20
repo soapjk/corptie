@@ -291,6 +291,58 @@ test("project status can be inspected by repository path without an Agent Sessio
   }
 });
 
+test("management inspection preserves list fields while avoiding deep per-Worktree Git probes", async () => {
+  const fixture = await createFixture("management-inspection", { activeFeatureWorktree: true });
+  const calls = [];
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    execFile: async (file, args, options) => {
+      calls.push(args.slice(2));
+      return execFileAsync(file, args, options);
+    }
+  });
+  try {
+    await writeFile(join(fixture.activeWorktree, "working.txt"), "working\n");
+    const summary = await manager.managementInspectionForProject(
+      fixture.repository,
+      fixture.repositoryId
+    );
+    const summaryCalls = structuredClone(calls);
+    calls.length = 0;
+    const deep = await manager.integrationInspectionForProject(
+      fixture.repository,
+      fixture.repositoryId
+    );
+
+    const listFields = (inspection) => inspection.worktrees.map((worktree) => ({
+      worktreeId: worktree.worktreeId,
+      path: worktree.path,
+      branchName: worktree.branchName,
+      headOid: worktree.headOid,
+      isMain: worktree.isMain,
+      state: worktree.state,
+      dirty: worktree.dirty,
+      aheadOfMain: worktree.aheadOfMain,
+      behindMain: worktree.behindMain,
+      mergedIntoMain: worktree.mergedIntoMain,
+      synchronizedWithMain: worktree.synchronizedWithMain,
+      pendingIntegration: worktree.pendingIntegration,
+      changedFiles: worktree.changedFiles,
+      operationState: worktree.operationState,
+      sessions: worktree.sessions
+    }));
+    assert.deepEqual(listFields(summary), listFields(deep));
+    assert.deepEqual(summaryCalls.map((args) => args[0]).sort(), ["rev-list", "status", "status"]);
+    assert.equal(summaryCalls.some((args) => args[0] === "diff"), false);
+    assert.equal(summaryCalls.some((args) => args[0] === "merge-base"), false);
+    assert.equal(summaryCalls.some((args) => args[0] === "rev-parse"), false);
+    assert.ok(calls.length >= summaryCalls.length + summary.worktrees.length * 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("project status excludes stale logical routes whose Sessions were deleted", async () => {
   const fixture = await createFixture("project-status-live-sessions");
   const manager = new GitWorkspaceManager({
