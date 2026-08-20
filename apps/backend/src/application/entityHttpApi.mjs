@@ -5,6 +5,7 @@ import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentWorkItemAcceptance } from "./workItemAcceptance.mjs";
+import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 
 function normalizeEnvironment(value = "") {
@@ -32,7 +33,8 @@ export function handleEntityHttpRequest({
   restoreWorkItemExecution,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
-  onEntityChanged
+  onEntityChanged,
+  auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
   const presentAgent = (agent) => {
@@ -172,16 +174,71 @@ export function handleEntityHttpRequest({
         const name = String(input.name ?? "").trim();
         if (!name) throw apiError("INVALID_INPUT", "name is required.", 400);
         const skillIds = validateSkillIds(input.skillIds);
-        const agent = objectiveService.store.createAgentWithRegistrySkills({
+        const requestId = boundedHeaderText(request, "x-request-id") || randomUUID();
+        const idempotencyKey = boundedHeaderText(request, "idempotency-key");
+        if (!idempotencyKey) {
+          throw apiError("IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key header is required.", 400);
+        }
+        const deviceId = boundedHeaderText(request, "x-corptie-device-id");
+        const actorId = boundedHeaderText(request, "x-corptie-agent-id");
+        const agentInput = {
           name,
           description: input.description ?? "",
           role: input.role === "assistant" ? "assistant" : "independentContributor",
           systemPrompt: input.systemPrompt ?? "",
           capabilities: Array.isArray(input.capabilities) ? input.capabilities : [],
           workDir: input.workDir
-        }, skillIds);
-        onEntityChanged?.("AgentChanged", { action: "created", entity: agent });
-        return sendJson(response, 201, { agent: presentAgent(agent) });
+        };
+        const requestHash = agentCreationRequestHash(agentInput, skillIds);
+        const audit = {
+          timestamp: new Date().toISOString(),
+          requestId,
+          idempotencyKey,
+          idempotencyProvided: true,
+          deviceId,
+          actorId,
+          remoteAddress: request.socket?.remoteAddress ?? null,
+          userAgent: boundedHeaderText(request, "user-agent", 512),
+          parameters: {
+            name,
+            role: agentInput.role,
+            skillIds,
+            capabilities: agentInput.capabilities,
+            hasDescription: Boolean(String(agentInput.description).trim()),
+            hasSystemPrompt: Boolean(String(agentInput.systemPrompt).trim()),
+            hasExplicitWorkDir: Boolean(String(agentInput.workDir ?? "").trim())
+          }
+        };
+        try {
+          const result = objectiveService.store.createAgentWithRegistrySkillsIdempotently(
+            agentInput,
+            skillIds,
+            { idempotencyKey, requestHash, requestId, deviceId }
+          );
+          auditLog({
+            ...audit,
+            outcome: result.replayed ? "replayed" : "created",
+            agentId: result.agent.agentId,
+            originalRequestId: result.originalRequestId
+          });
+          if (!result.replayed) {
+            onEntityChanged?.("AgentChanged", { action: "created", entity: result.agent });
+          }
+          return sendJson(
+            response,
+            result.replayed ? 200 : 201,
+            {
+              agent: presentAgent(result.agent),
+              idempotentReplay: result.replayed,
+              requestId,
+              originalRequestId: result.originalRequestId
+            },
+            { "x-request-id": requestId, "x-idempotent-replay": result.replayed ? "true" : "false" }
+          );
+        } catch (error) {
+          auditLog({ ...audit, outcome: "rejected", code: error.code ?? "INTERNAL" });
+          throw error;
+        }
       }
 
       const agentSessionsMatch = path.match(/^\/agents\/([^/]+)\/sessions$/);
@@ -754,7 +811,8 @@ function statusForCode(code) {
   if (["INTERNAL", "SKILL_CLEANUP_FAILED", "SKILL_DATABASE_DELETE_FAILED"].includes(code)) return 500;
   if ([
     "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "SKILL_HAS_ACTIVE_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
-    "ASSOCIATION_OUT_OF_SCOPE", "OBJECTIVE_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR"
+    "ASSOCIATION_OUT_OF_SCOPE", "OBJECTIVE_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR",
+    "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_RESOURCE_GONE"
   ].includes(code)) return 409;
   if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN", "SKILL_DELETE_CONFIRMATION_REQUIRED"].includes(code)) return 403;
   return 400;
@@ -780,6 +838,34 @@ function apiError(code, message, statusCode) {
   error.code = code;
   error.statusCode = statusCode;
   return error;
+}
+
+function headerText(request, name) {
+  const value = request.headers?.[name];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function boundedHeaderText(request, name, maxLength = 200) {
+  const value = headerText(request, name);
+  if (value && value.length > maxLength) {
+    throw apiError("INVALID_INPUT", `${name} must not exceed ${maxLength} characters.`, 400);
+  }
+  return value;
+}
+
+function agentCreationRequestHash(agentInput, skillIds) {
+  const canonical = {
+    name: agentInput.name,
+    description: String(agentInput.description ?? ""),
+    role: agentInput.role,
+    systemPrompt: String(agentInput.systemPrompt ?? ""),
+    capabilities: agentInput.capabilities.map(String),
+    skillIds: [...skillIds].sort(),
+    workDir: typeof agentInput.workDir === "string" && agentInput.workDir.trim()
+      ? agentInput.workDir.trim()
+      : null
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 // 辅助填写：限制 Agent 只输出文本、只读、不写文件、不产生会话。
@@ -956,8 +1042,8 @@ async function readJson(request) {
   }
 }
 
-function sendJson(response, status, payload) {
+function sendJson(response, status, payload, extraHeaders = {}) {
   if (response.headersSent) return;
-  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8", ...extraHeaders });
   response.end(JSON.stringify(payload));
 }

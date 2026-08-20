@@ -708,10 +708,14 @@ final class EntityAPIClient: ObservableObject {
     @discardableResult
     func createAgent(name: String, description: String? = nil, role: String = "independentContributor",
                      systemPrompt: String? = nil, capabilities: [String] = [],
-                     skillIds: [String] = [], workDir: String? = nil) async -> Agent? {
+                     skillIds: [String] = [], workDir: String? = nil,
+                     idempotencyKey: String = UUID().uuidString) async -> Agent? {
         var request = URLRequest(url: baseURL.appending(path: "agents"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
+        request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Request-ID")
+        request.setValue(CorptieInstallationIdentity.id(), forHTTPHeaderField: "X-Corptie-Device-ID")
         var body: [String: Any] = ["name": name, "role": role]
         if let description, !description.isEmpty { body["description"] = description }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
