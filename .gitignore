@@ -85,5 +85,6 @@ docs/**
 !docs/skill-management-page-proposal.md
 !docs/detached-orb-and-task-notifications.md
 !docs/agent-collaboration.md
+!docs/copilot-assistant-mcp-skill-coverage.md
 # Corptie local Agent configuration
 /.corptie/
