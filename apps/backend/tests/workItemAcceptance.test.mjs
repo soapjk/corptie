@@ -52,6 +52,27 @@ test("legacy empty acceptance objects are presented as absent", () => {
     acceptance_assessment_json: "{}"
   }), {
     id: "wi-legacy",
+    acceptanceCriteria: "",
+    acceptanceAssessment: null,
+    completionSuggestion: null
+  });
+});
+
+test("legacy collaboration acceptance metadata and nullable criteria are normalized at the wire boundary", () => {
+  const legacyAssessment = {
+    status: "passed",
+    source: "collaboration",
+    collaborationTaskId: "task-legacy",
+    assessedAt: "2026-08-19T23:59:34.703Z"
+  };
+  assert.equal(parseAcceptanceAssessment(legacyAssessment), null);
+  assert.deepEqual(presentWorkItemAcceptance({
+    id: "wi-collaboration-legacy",
+    acceptanceCriteria: null,
+    acceptance_assessment_json: JSON.stringify(legacyAssessment)
+  }), {
+    id: "wi-collaboration-legacy",
+    acceptanceCriteria: "",
     acceptanceAssessment: null,
     completionSuggestion: null
   });

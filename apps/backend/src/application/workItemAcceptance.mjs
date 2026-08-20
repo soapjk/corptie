@@ -40,21 +40,44 @@ export function workItemExecutionPrompt(workItem) {
 }
 
 export function parseAcceptanceAssessment(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return Object.keys(value).length > 0 ? value : null;
+  let parsed = value;
+  if (typeof value === "string") {
+    if (!value.trim()) return null;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
   }
-  if (typeof value !== "string" || !value.trim()) return null;
-  try {
-    const parsed = JSON.parse(value);
-    return parsed
-      && typeof parsed === "object"
-      && !Array.isArray(parsed)
-      && Object.keys(parsed).length > 0
-      ? parsed
-      : null;
-  } catch {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+
+  // Historical collaboration WorkItems stored delivery metadata in the same
+  // column before acceptance assessments had a wire contract. Never publish
+  // such objects as an assessment: one malformed entity must not make the
+  // complete application snapshot undecodable for every client.
+  if (typeof parsed.status !== "string"
+    || typeof parsed.criteriaSnapshot !== "string"
+    || typeof parsed.sourceSessionId !== "string"
+    || typeof parsed.assessedAt !== "string"
+    || !Array.isArray(parsed.results)) {
     return null;
   }
+  const validResults = parsed.results.every((result) => (
+    result
+    && typeof result === "object"
+    && !Array.isArray(result)
+    && typeof result.criterion === "string"
+    && typeof result.verdict === "string"
+    && Array.isArray(result.evidence)
+    && result.evidence.every((evidence) => (
+      evidence
+      && typeof evidence === "object"
+      && !Array.isArray(evidence)
+      && typeof evidence.summary === "string"
+      && typeof evidence.reference === "string"
+    ))
+  ));
+  return validResults ? parsed : null;
 }
 
 export function buildAcceptanceAssessment(workItem, input, { now = new Date().toISOString() } = {}) {
@@ -177,6 +200,10 @@ export function presentWorkItemAcceptance(workItem) {
   const { acceptance_assessment_json: _storedAssessment, ...presented } = workItem;
   return {
     ...presented,
+    // Rows created before acceptance criteria became part of the WorkItem
+    // contract legitimately contain NULL. The public state contract is a
+    // string, so normalize at the presentation boundary.
+    acceptanceCriteria: String(presented.acceptanceCriteria ?? ""),
     acceptanceAssessment,
     completionSuggestion: completionSuggestionForWorkItem(workItem)
   };

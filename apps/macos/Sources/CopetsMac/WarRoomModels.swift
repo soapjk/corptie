@@ -45,6 +45,38 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var completionSuggestion: WorkItemCompletionSuggestion?
     var createdAt: String
     var updatedAt: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id, objectiveId, title, description, acceptanceCriteria, priority, status
+        case mainWorkspaceId, mainAgentId, currentSessionId, executionStatus
+        case acceptanceAssessment, completionSuggestion, createdAt, updatedAt
+    }
+}
+
+extension WorkItem {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        objectiveId = try container.decode(String.self, forKey: .objectiveId)
+        title = try container.decode(String.self, forKey: .title)
+        description = try container.decode(String.self, forKey: .description)
+        // Old databases contain NULL here. Treat absence, NULL, and a legacy
+        // non-string value as an empty criterion instead of rejecting the
+        // entire state snapshot.
+        acceptanceCriteria = (try? container.decodeIfPresent(String.self, forKey: .acceptanceCriteria)) ?? nil ?? ""
+        priority = try container.decode(String.self, forKey: .priority)
+        status = try container.decode(String.self, forKey: .status)
+        mainWorkspaceId = try container.decodeIfPresent(String.self, forKey: .mainWorkspaceId)
+        mainAgentId = try container.decodeIfPresent(String.self, forKey: .mainAgentId)
+        currentSessionId = try container.decodeIfPresent(String.self, forKey: .currentSessionId)
+        executionStatus = try container.decodeIfPresent(String.self, forKey: .executionStatus)
+        // A pre-contract collaboration object used this field for unrelated
+        // metadata. Drop only that invalid optional field; keep the WorkItem.
+        acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
+        completionSuggestion = (try? container.decodeIfPresent(WorkItemCompletionSuggestion.self, forKey: .completionSuggestion)) ?? nil
+        createdAt = try container.decode(String.self, forKey: .createdAt)
+        updatedAt = try container.decode(String.self, forKey: .updatedAt)
+    }
 }
 
 struct WorkItemAcceptanceEvidence: Codable, Hashable {

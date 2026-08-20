@@ -7692,8 +7692,6 @@ await reconcileMovedWorkspaceRoutes([...knownActiveWorktrees.values()], {
 });
 migrateLegacyQueuedSessionItems();
 sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
-await feishuGateway.initialize();
-console.log(`[feishu] gateway ready cli=${feishuGateway.status().cliAvailable ? feishuGateway.status().cliPath : "unavailable"}`);
 configureChoiceParserRuntime({
   ...(store.settings().choiceParser ?? {}),
   agentProxy: store.settings().agentProxy
@@ -7711,6 +7709,19 @@ setInterval(updateMockProgress, 2500).unref();
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
+  // Feishu reconciliation may stop daemons and call remote identity/model
+  // services for every configured bot. It is maintenance, not an API
+  // readiness dependency, so never hold the loopback server closed for it.
+  setImmediate(() => {
+    feishuGateway.initialize()
+      .then(() => {
+        const status = feishuGateway.status();
+        console.log(`[feishu] gateway ready cli=${status.cliAvailable ? status.cliPath : "unavailable"}`);
+      })
+      .catch((error) => {
+        console.warn(`[feishu] gateway initialization failed error=${error?.message ?? error}`);
+      });
+  });
   // Legacy Skill repair is maintenance, not a readiness dependency. Run it
   // only after the API is healthy so an invalid external package cannot block
   // every App launch. Persistent failure fingerprints suppress unchanged,

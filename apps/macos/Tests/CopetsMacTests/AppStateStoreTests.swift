@@ -114,6 +114,18 @@ struct AppStateStoreTests {
             #expect(message.contains("字段"))
         }
     }
+
+    @Test func snapshotToleratesLegacyWorkItemAcceptanceShapeAndNullCriteria() throws {
+        let payload = Data(#"{"revision":13,"state":{"sessions":[],"workItems":[{"id":"work_item:legacy","objectiveId":"objective:1","title":"Legacy collaboration item","description":"","acceptanceCriteria":null,"priority":"medium","status":"done","mainWorkspaceId":null,"mainAgentId":null,"currentSessionId":null,"executionStatus":null,"acceptanceAssessment":{"status":"passed","source":"collaboration","collaborationTaskId":"task:1","assessedAt":"2026-08-19T23:59:34.703Z"},"completionSuggestion":null,"createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:01:00Z"}],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]}}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: payload)
+
+        #expect(snapshot.state.workItems.count == 1)
+        #expect(snapshot.state.workItems[0].acceptanceCriteria == "")
+        #expect(snapshot.state.workItems[0].acceptanceAssessment == nil)
+    }
 }
 
 private extension ControlPlaneStatePayload {
