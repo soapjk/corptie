@@ -110,15 +110,22 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let audit: [WorktreeIntegrationAuditEvent]
     let conflictResolution: WorktreeConflictResolution?
 
+    var currentConflictResolution: WorktreeConflictResolution? {
+        guard hasMergeConflict,
+              let currentWorktreeId,
+              conflictResolution?.worktreeId == currentWorktreeId else { return nil }
+        return conflictResolution
+    }
+
     var isActive: Bool { ["queued", "running", "cancellation_requested", "replanning"].contains(status) }
     var shouldPoll: Bool {
-        isActive || ["running", "failed"].contains(conflictResolution?.status ?? "")
+        isActive || ["running", "failed"].contains(currentConflictResolution?.status ?? "")
     }
     var requiresPlanRegeneration: Bool {
         phase == "plan_stale" || (status == "paused" && audit.last(where: { $0.code != nil })?.code == "PLAN_STALE")
     }
     var canStopAndRepreflight: Bool {
-        ["queued", "running", "paused"].contains(status) && conflictResolution?.status != "running"
+        ["queued", "running", "paused"].contains(status) && currentConflictResolution?.status != "running"
     }
     var hasMergeConflict: Bool {
         status == "paused" && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
@@ -127,6 +134,8 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
 
 struct WorktreeConflictResolution: Decodable, Equatable, Sendable {
     let status: String
+    let worktreeId: String?
+    let conflictKey: String?
     let workspace: WorktreeConflictResolutionWorkspace
     let workItemId: String?
     let sessionId: String?

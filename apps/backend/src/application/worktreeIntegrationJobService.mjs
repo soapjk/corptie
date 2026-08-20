@@ -313,11 +313,21 @@ export class WorktreeIntegrationJobService {
           409
         );
       }
-      if (job.details.conflictResolution?.sessionId) return presentJob(job);
-
       const sourceHead = item.commitHead ?? item.sourceHeadBefore;
       const expectedMainHead = expectedMainHeadBefore(job.details.plan, item.worktreeId);
-      let workspace = job.details.conflictResolution?.workspace ?? null;
+      const conflictKey = conflictResolutionKey(job, item, sourceHead, expectedMainHead);
+      let resolution = job.details.conflictResolution;
+      if (resolution && !conflictResolutionMatches(job, resolution, item, conflictKey)) {
+        job = this.#update(job, {
+          details: withoutConflictResolution(job.details),
+          auditEvent: "stale_conflict_resolution_cleared",
+          auditData: { worktreeId: item.worktreeId }
+        });
+        resolution = null;
+      }
+      if (resolution?.sessionId) return presentJob(job);
+
+      let workspace = resolution?.workspace ?? null;
       if (!workspace) {
         const preparation = await this.prepareConflictResolution({
           repositoryId: job.repositoryId,
@@ -358,7 +368,12 @@ export class WorktreeIntegrationJobService {
           phase: "conflict_resolution_preparing",
           details: {
             ...job.details,
-            conflictResolution: { status: "preparing", workspace }
+            conflictResolution: {
+              status: "preparing",
+              worktreeId: item.worktreeId,
+              conflictKey,
+              workspace
+            }
           },
           auditEvent: "conflict_workspace_created",
           auditData: { worktreeId: item.worktreeId }
@@ -380,6 +395,8 @@ export class WorktreeIntegrationJobService {
           ...job.details,
           conflictResolution: {
             status: "running",
+            worktreeId: item.worktreeId,
+            conflictKey,
             workspace,
             workItemId: created.workItemId,
             sessionId: created.sessionId,
@@ -486,7 +503,14 @@ export class WorktreeIntegrationJobService {
         }
         if (await this.#stopIfRequested(jobId)) return;
         const sourceHead = item.commitHead ?? item.sourceHeadBefore;
-        job = this.#item(job, item.worktreeId, { mergeStatus: "running", error: null }, "merging", "merge_started");
+        job = this.#item(
+          job,
+          item.worktreeId,
+          { mergeStatus: "running", error: null },
+          "merging",
+          "merge_started",
+          { clearConflictResolution: true }
+        );
         try {
           const result = await this.mergeSource({
             mainPath: job.details.plan.mainPath,
@@ -560,12 +584,15 @@ export class WorktreeIntegrationJobService {
     return updated;
   }
 
-  #item(job, worktreeId, patch, phase, event) {
+  #item(job, worktreeId, patch, phase, event, { clearConflictResolution = false } = {}) {
     const latest = this.store.getWorktreeIntegrationJob(job.id) ?? job;
     const items = latest.details.plan.items.map((item) => item.worktreeId === worktreeId ? { ...item, ...patch } : item);
+    const details = clearConflictResolution
+      ? withoutConflictResolution(latest.details)
+      : latest.details;
     return this.#update(latest, {
       phase,
-      details: { ...latest.details, plan: { ...latest.details.plan, items }, progress: progressFor(items) },
+      details: { ...details, plan: { ...details.plan, items }, progress: progressFor(items) },
       currentWorktreeId: worktreeId,
       auditEvent: event,
       auditData: { worktreeId }
@@ -592,6 +619,17 @@ export class WorktreeIntegrationJobService {
 
   #reconcileConflictResolution(job) {
     const resolution = job.details.conflictResolution;
+    const item = job.details.plan.items.find((candidate) => candidate.worktreeId === job.details.currentWorktreeId);
+    const sourceHead = item ? (item.commitHead ?? item.sourceHeadBefore) : null;
+    const expectedMainHead = item ? expectedMainHeadBefore(job.details.plan, item.worktreeId) : null;
+    const conflictKey = item ? conflictResolutionKey(job, item, sourceHead, expectedMainHead) : null;
+    if (resolution && !conflictResolutionMatches(job, resolution, item, conflictKey)) {
+      return this.#update(job, {
+        details: withoutConflictResolution(job.details),
+        auditEvent: "stale_conflict_resolution_cleared",
+        auditData: { worktreeId: job.details.currentWorktreeId }
+      });
+    }
     if (!["running", "failed"].includes(resolution?.status) || !resolution.sessionId) return job;
     const session = this.store.getSession(resolution.sessionId);
     if (!session) return job;
@@ -704,6 +742,28 @@ function expectedMainHeadBefore(plan, worktreeId) {
     if (item.mergeMainHead) head = item.mergeMainHead;
   }
   return head;
+}
+
+function conflictResolutionKey(job, item, sourceHead, expectedMainHead) {
+  return fingerprint({
+    jobId: job.id,
+    worktreeId: item.worktreeId,
+    sourceHead,
+    expectedMainHead,
+    conflictFiles: [...(item.conflictFiles ?? [])].sort()
+  });
+}
+
+function conflictResolutionMatches(job, resolution, item, conflictKey) {
+  return job.status === "paused"
+    && item?.mergeStatus === "conflict"
+    && resolution?.worktreeId === item.worktreeId
+    && resolution?.conflictKey === conflictKey;
+}
+
+function withoutConflictResolution(details) {
+  const { conflictResolution: _discarded, ...remaining } = details;
+  return remaining;
 }
 
 function progressFor(items) {

@@ -13,7 +13,8 @@ function memoryFixture({
   featureDirty = true,
   mainDirty = true,
   externalConflictResolved = false,
-  commitGate = null
+  commitGate = null,
+  conflictAttempts = null
 } = {}) {
   const jobs = new Map();
   let sequence = 0;
@@ -37,6 +38,14 @@ function memoryFixture({
       isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: []
     }
   ];
+  if ((conflictAttempts?.length ?? 0) > 1) {
+    worktrees.push({
+      worktreeId: "wt:feature-two", path: "/repo-feature-two", isMain: false, availability: "available",
+      headOid: "feature:2", branchName: "feature/two", dirty: false,
+      statusSummary: "", changedFiles: [], aheadOfMain: 1, behindMain: 0, mergedIntoMain: false,
+      isLocked: false, isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: []
+    });
+  }
   const store = {
     listGitRepositories: () => [{ id: repository.id, path: "/repo/.git", name: "repo" }],
     getGitRepository: (id) => id === repository.id ? repository : null,
@@ -61,11 +70,15 @@ function memoryFixture({
       Object.assign(jobs.get(id), patch, { updatedAt: new Date(Date.now() + sequence++).toISOString() });
       return structuredClone(jobs.get(id));
     },
-    getSession: (id) => id === "session:conflict" ? { id, status: "complete" } : null,
+    getSession: (id) => id?.startsWith("session:conflict") ? { id, status: "complete" } : null,
     getWorkItem: () => null
   };
   const calls = [];
-  let shouldConflict = conflictOnce;
+  const remainingConflicts = conflictAttempts
+    ? [...conflictAttempts]
+    : [conflictOnce ? 1 : 0];
+  const configuredConflicts = [...remainingConflicts];
+  let launchedSession = 0;
   const service = new WorktreeIntegrationJobService({
     store,
     inspectRepository: async () => ({
@@ -83,16 +96,23 @@ function memoryFixture({
     },
     mergeSource: async (input) => {
       calls.push(`merge:${input.sourceHead}`);
-      if (shouldConflict) {
-        shouldConflict = false;
+      const worktreeIndex = worktrees.findIndex((entry) => !entry.isMain && input.sourceHead.startsWith(entry.headOid));
+      const featureIndex = worktreeIndex - 1;
+      if (remainingConflicts[featureIndex] > 0) {
+        remainingConflicts[featureIndex] -= 1;
         const error = new Error("Resolve the conflict");
         error.code = "MERGE_CONFLICT";
         error.conflictFiles = ["shared.txt"];
         throw error;
       }
       worktrees[0].headOid = `${input.expectedMainHead}:merge`;
-      worktrees[1].mergedIntoMain = true;
-      return { merged: true, alreadyMerged: false, recovered: conflictOnce, mainHead: worktrees[0].headOid };
+      worktrees[worktreeIndex].mergedIntoMain = true;
+      return {
+        merged: true,
+        alreadyMerged: false,
+        recovered: configuredConflicts[featureIndex] > 0,
+        mainHead: worktrees[0].headOid
+      };
     },
     prepareConflictResolution: async (input) => {
       calls.push(`prepare-conflict:${input.sourceHead}`);
@@ -108,8 +128,10 @@ function memoryFixture({
     },
     launchConflictResolution: async (input) => {
       calls.push(`launch-agent:${input.item.worktreeId}`);
+      launchedSession += 1;
       return {
-        workItemId: "work_item:conflict", sessionId: "session:conflict",
+        workItemId: `work_item:conflict:${launchedSession}`,
+        sessionId: launchedSession === 1 ? "session:conflict" : `session:conflict:${launchedSession}`,
         agentId: "agent:one", agentName: "Conflict Agent"
       };
     }
@@ -271,6 +293,8 @@ test("a paused merge conflict can launch an Agent in a dedicated Integration Wor
   assert.equal(delegated.phase, "conflict_resolution_running");
   assert.equal(delegated.conflictResolution.workspace.path, "/repo-integration");
   assert.equal(delegated.conflictResolution.sessionId, "session:conflict");
+  assert.equal(delegated.conflictResolution.worktreeId, "wt:feature");
+  assert.ok(delegated.conflictResolution.conflictKey);
   assert.equal(delegated.conflictResolution.agentName, "Conflict Agent");
   assert.deepEqual(calls.slice(-2), [
     "prepare-conflict:feature:1:commit",
@@ -282,6 +306,51 @@ test("a paused merge conflict can launch an Agent in a dedicated Integration Wor
   assert.equal(ready.phase, "conflict_resolution_ready");
   assert.equal(ready.conflictResolution.status, "ready");
   assert.ok(ready.audit.some((entry) => entry.event === "conflict_agent_completed"));
+});
+
+test("successive conflicting Worktrees and repeated retries never reuse a stale ready resolution", async () => {
+  const { service } = memoryFixture({ conflictAttempts: [1, 2], mainDirty: false, featureDirty: false });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+
+  const firstConflict = await waitForJobWhere(service, plan.id, (job) =>
+    job.status === "paused" && job.currentWorktreeId === "wt:feature");
+  assert.equal(firstConflict.conflictResolution, undefined);
+  const firstReady = await service.resolveConflictWithAgent(plan.id);
+  assert.equal(service.get(plan.id).conflictResolution.status, "ready");
+  assert.equal(firstReady.conflictResolution.worktreeId, "wt:feature");
+
+  service.retry(plan.id);
+  const secondConflict = await waitForJobWhere(service, plan.id, (job) =>
+    job.status === "paused" && job.currentWorktreeId === "wt:feature-two");
+  assert.equal(secondConflict.plan.items[0].mergeStatus, "recovered");
+  assert.equal(secondConflict.plan.items[1].mergeStatus, "conflict");
+  assert.equal(secondConflict.conflictResolution, undefined);
+
+  const secondReady = await service.resolveConflictWithAgent(plan.id);
+  assert.equal(secondReady.conflictResolution.worktreeId, "wt:feature-two");
+  assert.notEqual(secondReady.conflictResolution.sessionId, firstReady.conflictResolution.sessionId);
+  assert.equal(service.get(plan.id).conflictResolution.status, "ready");
+
+  service.retry(plan.id);
+  const repeatedConflict = await waitForJobWhere(service, plan.id, (job) => {
+    const secondMergePauses = job.audit.filter((entry) =>
+      entry.event === "merge_paused" && entry.worktreeId === "wt:feature-two");
+    return job.status === "paused" && secondMergePauses.length === 2;
+  });
+  assert.equal(repeatedConflict.conflictResolution, undefined);
+  assert.deepEqual(
+    repeatedConflict.audit.slice(-4).map((entry) => entry.event),
+    ["execution_started", "merge_started", "merge_paused", "execution_paused"]
+  );
+
+  const repeatedReady = await service.resolveConflictWithAgent(plan.id);
+  assert.notEqual(repeatedReady.conflictResolution.sessionId, secondReady.conflictResolution.sessionId);
+  service.retry(plan.id);
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.conflictResolution, undefined);
+  assert.equal(completed.plan.items[1].mergeStatus, "recovered");
+  assert.equal(completed.audit.filter((entry) => entry.event === "retry_requested").length, 3);
 });
 
 test("an externally resolved conflict is detected and the paused job resumes idempotently", async () => {
