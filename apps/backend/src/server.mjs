@@ -4109,7 +4109,7 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
     const work = item.workItemId ? workItems.find((candidate) => candidate.workItemId === item.workItemId) : null;
     if (!work) return item;
     const presentation = item.type === "userMessage"
-      ? collaborationPresentationForWorkItem(work)
+      ? collaborationPresentationForWorkItem(work, sessionId)
       : {};
     return {
       ...item,
@@ -4137,7 +4137,7 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
       return String(left.createdAt).localeCompare(String(right.createdAt));
     })
     .map((item) => {
-      const presentation = collaborationPresentationForWorkItem(item);
+      const presentation = collaborationPresentationForWorkItem(item, sessionId);
       const userMessageStatus = userMessageStatusForAgentWork(item.status);
       return {
         id: `work:${item.workItemId}`,
@@ -4158,38 +4158,50 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
         ...presentation
       };
     });
-  const confirmations = collaborationCore.listTaskConfirmationsForSession(sessionId).map((confirmation) => ({
-    id: `collaboration-confirmation:${confirmation.confirmationId}`,
-    turnId: confirmation.sourceTurnId ?? `collaboration-confirmation:${confirmation.confirmationId}`,
-    turnStatus: confirmation.status === "pending" ? "waiting_approval" : "completed",
-    type: "collaborationConfirmation",
-    title: "Confirm Agent Collaboration",
-    text: "",
-    status: confirmation.status,
-    createdAt: confirmation.createdAt,
-    sourceType: "collaboration_confirmation",
-    presentationRole: "collaboration_confirmation",
-    presentationText: confirmation.request.summary,
-    collaborationConfirmationId: confirmation.confirmationId,
-    collaborationSenderAgentId: confirmation.initiatorAgentId,
-    collaborationSenderName: confirmation.initiatorAgentName,
-    collaborationRecipientAgentId: confirmation.recipientAgentId,
-    collaborationRecipientName: confirmation.recipientAgentName,
-    collaborationTaskTitle: confirmation.request.title,
-    collaborationMessageKind: confirmation.request.type,
-    collaborationAcceptanceCriteria: confirmation.request.acceptanceCriteria ?? [],
-    collaborationConfirmationStatus: confirmation.status,
-    collaborationTaskId: confirmation.taskId
-  }));
+  const confirmations = collaborationCore.listTaskConfirmationsForSession(sessionId).map((confirmation) => {
+    const recipientAgent = collaborationCore.getAgent(confirmation.recipientAgentId);
+    const recipientSessionId = recipientAgent?.currentSessionId ?? null;
+    const recipientSession = recipientSessionId
+      ? sessionPresentationCache.get(recipientSessionId) ?? store.getSession(recipientSessionId)
+      : null;
+    return {
+      id: `collaboration-confirmation:${confirmation.confirmationId}`,
+      turnId: confirmation.sourceTurnId ?? `collaboration-confirmation:${confirmation.confirmationId}`,
+      turnStatus: confirmation.status === "pending" ? "waiting_approval" : "completed",
+      type: "collaborationConfirmation",
+      title: "Confirm Agent Collaboration",
+      text: "",
+      status: confirmation.status,
+      createdAt: confirmation.createdAt,
+      sourceType: "collaboration_confirmation",
+      presentationRole: "collaboration_confirmation",
+      presentationText: confirmation.request.summary,
+      collaborationConfirmationId: confirmation.confirmationId,
+      collaborationSenderAgentId: confirmation.initiatorAgentId,
+      collaborationSenderName: confirmation.initiatorAgentName,
+      collaborationRecipientAgentId: confirmation.recipientAgentId,
+      collaborationRecipientName: confirmation.recipientAgentName,
+      collaborationRecipientSessionId: recipientSessionId,
+      collaborationRecipientSessionTitle: recipientSession?.title ?? null,
+      collaborationTaskTitle: confirmation.request.title,
+      collaborationMessageKind: confirmation.request.type,
+      collaborationAcceptanceCriteria: confirmation.request.acceptanceCriteria ?? [],
+      collaborationConfirmationStatus: confirmation.status,
+      collaborationTaskId: confirmation.taskId
+    };
+  });
   return [...mergeSupplementalTimelineItems(annotated, confirmations), ...pending];
 }
 
-function collaborationPresentationForWorkItem(workItem) {
+function collaborationPresentationForWorkItem(workItem, sessionId = workItem.sessionId) {
   if (workItem.kind !== "collaboration") return {};
   const envelope = workItem.deliveryId
     ? collaborationCore.getDeliveryEnvelope(workItem.deliveryId)
     : null;
   const recipient = collaborationCore.getAgent(workItem.agentId);
+  const recipientSession = sessionId
+    ? sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
+    : null;
   return {
     presentationRole: "collaboration",
     presentationText: envelope?.message.body ?? workItem.source?.presentationText ?? "",
@@ -4198,6 +4210,8 @@ function collaborationPresentationForWorkItem(workItem) {
     collaborationSenderName: envelope?.message.senderAgentName ?? workItem.source?.senderAgentName ?? "Peer Agent",
     collaborationRecipientAgentId: recipient?.agentId ?? workItem.agentId,
     collaborationRecipientName: recipient?.name ?? "Current Agent",
+    collaborationRecipientSessionId: sessionId ?? null,
+    collaborationRecipientSessionTitle: recipientSession?.title ?? null,
     collaborationTaskTitle: envelope?.task.title ?? workItem.source?.taskTitle ?? null,
     collaborationMessageKind: envelope?.message.messageType ?? workItem.source?.messageKind ?? "message",
     collaborationProcessingStatus: workItem.status

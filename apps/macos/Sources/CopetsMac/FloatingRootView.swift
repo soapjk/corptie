@@ -3593,22 +3593,28 @@ struct DetailView: View {
         var processState: AppKitChatTimelineRow.ProcessState = .completed
         var showsHeader: Bool
         var hoverTimestamp: String
+        let isCollaboration: Bool
         let actions: [AppKitChatTimelineRow.Action]
         switch entry.kind {
         case .message(let item):
-            style = item.type == "userMessage" ? .user : .agent
-            copyText = nativeTimelineText(for: item)
+            let collaboration = nativeCollaborationCardPresentation(
+                for: item,
+                currentSessionTitle: displayedDetail?.title ?? backendClient.selectedSession?.title
+            )
+            style = collaboration == nil && item.type == "userMessage" ? .user : .agent
+            copyText = collaboration?.messageText ?? nativeTimelineText(for: item)
             let supplementalText = nativeTimelineSupplementalText(for: item)
-            let presentedText = supplementalText.isEmpty
+            let presentedText = collaboration?.bodyMarkdown ?? (supplementalText.isEmpty
                 ? copyText
-                : "\(copyText)\n\n\(supplementalText)"
+                : "\(copyText)\n\n\(supplementalText)")
             text = ClickableMessageText.markdown(
                 from: presentedText,
                 baseDirectory: displayedDetail?.cwd
             )
-            let isOrdinaryMessage = item.type == "userMessage" || item.type == "agentMessage"
-            title = isOrdinaryMessage ? "" : item.title
-            metadata = isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item)
+            let isOrdinaryMessage = collaboration == nil
+                && (item.type == "userMessage" || item.type == "agentMessage")
+            title = collaboration?.title ?? (isOrdinaryMessage ? "" : item.title)
+            metadata = collaboration?.metadata ?? (isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item))
             showsHeader = !isOrdinaryMessage
             hoverTimestamp = isOrdinaryMessage ? nativeTimelineMetadata(for: item) : ""
             expandableTurnId = nil
@@ -3617,6 +3623,7 @@ struct DetailView: View {
             processDuration = nil
             actions = nativeTimelineActions(for: item)
             rawStatusText = ""
+            isCollaboration = collaboration != nil
         case .process(let turnId, let items):
             let expanded = expandedTurnIds.contains(turnId)
             let processStepsText = items.map(nativeProcessStepText).joined(separator: "\n\n")
@@ -3636,6 +3643,7 @@ struct DetailView: View {
             showsHeader = false
             hoverTimestamp = ""
             actions = []
+            isCollaboration = false
         }
         return AppKitChatTimelineRow(
             id: entry.id,
@@ -3646,6 +3654,7 @@ struct DetailView: View {
             nativeStyle: style,
             title: title,
             metadata: metadata,
+            isCollaboration: isCollaboration,
             expandableTurnId: expandableTurnId,
             isExpanded: isExpanded,
             processCount: processCount,
@@ -4191,6 +4200,10 @@ struct DetailView: View {
             item.presentationRole ?? "",
             item.collaborationProcessingStatus ?? "",
             item.collaborationSenderName ?? "",
+            item.collaborationRecipientName ?? "",
+            item.collaborationRecipientSessionId ?? "",
+            item.collaborationRecipientSessionTitle ?? "",
+            item.collaborationTaskTitle ?? "",
             "\(text.count)",
             String(text.suffix(96)),
             "\(presentationText.count)",
@@ -4678,6 +4691,10 @@ private func makeDetailSourceSignature(
             item.presentationRole ?? "",
             item.collaborationProcessingStatus ?? "",
             item.collaborationSenderName ?? "",
+            item.collaborationRecipientName ?? "",
+            item.collaborationRecipientSessionId ?? "",
+            item.collaborationRecipientSessionTitle ?? "",
+            item.collaborationTaskTitle ?? "",
             "\(item.text.count)",
             "\(item.presentationText?.count ?? 0)",
             fileChangesSignature(item)
@@ -4995,6 +5012,110 @@ func executionProcessDurationText(
     return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
 }
 
+struct NativeCollaborationCardPresentation: Equatable {
+    let title: String
+    let metadata: String
+    let bodyMarkdown: String
+    let messageText: String
+}
+
+@MainActor
+func nativeCollaborationCardPresentation(
+    for item: CodexThreadItem,
+    currentSessionTitle: String?
+) -> NativeCollaborationCardPresentation? {
+    let isConfirmation = item.presentationRole == "collaboration_confirmation"
+        || item.type == "collaborationConfirmation"
+    let isMessage = item.presentationRole == "collaboration"
+        || item.sourceType == "collaboration"
+    guard isConfirmation || isMessage else { return nil }
+
+    func nonEmpty(_ source: String?) -> String? {
+        guard let value = source?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+    func markdownEscaped(_ source: String) -> String {
+        source
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "*", with: "\\*")
+            .replacingOccurrences(of: "_", with: "\\_")
+            .replacingOccurrences(of: "`", with: "\\`")
+            .replacingOccurrences(of: "[", with: "\\[")
+    }
+    func party(name: String?, id: String?, fallback: String) -> String {
+        let resolvedName = nonEmpty(name) ?? fallback
+        guard let id = nonEmpty(id) else { return resolvedName }
+        return "\(resolvedName) · \(id)"
+    }
+
+    let kind: String = switch item.collaborationMessageKind?.lowercased() {
+    case "change_request": L10n("修改请求")
+    case "needs_information": L10n("澄清请求")
+    case "update_ready": L10n("结果")
+    case "verification_result": L10n("验收结果")
+    case "question": L10n("请求")
+    default: L10n("协作消息")
+    }
+    let statusSource = (item.collaborationConfirmationStatus
+        ?? item.collaborationProcessingStatus
+        ?? item.status
+        ?? "queued").lowercased()
+    let status: String = switch statusSource {
+    case "confirmed", "completed", "complete": L10n("已处理")
+    case "running", "processing": L10n("处理中")
+    case "failed": L10n("处理失败")
+    case "rejected", "cancelled", "canceled": L10n("已取消")
+    default: isConfirmation ? L10n("等待确认") : L10n("等待处理")
+    }
+    let sender = party(
+        name: item.collaborationSenderName,
+        id: item.collaborationSenderAgentId,
+        fallback: L10n("未知 Agent")
+    )
+    let recipient = party(
+        name: item.collaborationRecipientName,
+        id: item.collaborationRecipientAgentId,
+        fallback: L10n("当前 Agent")
+    )
+    let targetSessionFallback = isMessage
+        ? nonEmpty(currentSessionTitle) ?? L10n("当前 Session")
+        : L10n("未知 Session")
+    let targetSession = party(
+        name: item.collaborationRecipientSessionTitle,
+        id: item.collaborationRecipientSessionId,
+        fallback: targetSessionFallback
+    )
+    let task = nonEmpty(item.collaborationTaskTitle) ?? L10n("未命名协作任务")
+    let message = nonEmpty(item.presentationText)
+        ?? nonEmpty(item.text)
+        ?? L10n("协作消息正文不可用")
+    var lines = [
+        "**\(L10n("来自 Agent"))**  \(markdownEscaped(sender))",
+        "**\(L10n("发送至 Agent"))**  \(markdownEscaped(recipient))",
+        "**\(L10n("目标 Session"))**  \(markdownEscaped(targetSession))",
+        "**\(L10n("协作任务"))**  \(markdownEscaped(task))",
+        "",
+        "**\(L10n("消息"))**",
+        message
+    ]
+    if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
+        lines.append("")
+        lines.append("**\(L10n("验收标准"))**")
+        lines.append(contentsOf: criteria.map { "- \(markdownEscaped($0))" })
+    }
+    let timestamp = item.createdAt
+        .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+        .map { $0.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) }
+    return NativeCollaborationCardPresentation(
+        title: "\(L10n("Agent 协作")) · \(kind)",
+        metadata: [status, timestamp].compactMap { $0 }.joined(separator: " · "),
+        bodyMarkdown: lines.joined(separator: "\n"),
+        messageText: message
+    )
+}
+
 @MainActor
 func processRawStatusText(for items: [CodexThreadItem]) -> String {
     guard let item = items.last else { return "" }
@@ -5071,6 +5192,10 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.presentationRole ?? "",
         item.collaborationProcessingStatus ?? "",
         item.collaborationSenderName ?? "",
+        item.collaborationRecipientName ?? "",
+        item.collaborationRecipientSessionId ?? "",
+        item.collaborationRecipientSessionTitle ?? "",
+        item.collaborationTaskTitle ?? "",
         "\(text.count)",
         String(text.suffix(96)),
         "\(presentationText.count)",
