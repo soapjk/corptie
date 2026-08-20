@@ -235,18 +235,13 @@ final class WorktreeManagementClient: ObservableObject {
     func regeneratePlan() async -> Bool {
         guard let staleJob = job,
               staleJob.requiresPlanRegeneration,
-              let repositoryId = selection.repositoryId else { return false }
+              selection.repositoryId != nil else { return false }
         isMutating = true
         defer { isMutating = false }
         do {
-            let canceled: WorktreeIntegrationJobEnvelope = try await post(
-                "worktree-management/jobs/\(staleJob.id)/cancel",
-                body: [:]
-            )
-            job = canceled.job
             let fresh: WorktreeIntegrationJobEnvelope = try await post(
-                "worktree-management/repositories/\(repositoryId)/integration-plans",
-                body: [:]
+                "worktree-management/jobs/\(staleJob.id)/cancel",
+                body: ["replan": true]
             )
             job = fresh.job
             errorMessage = nil
@@ -254,6 +249,17 @@ final class WorktreeManagementClient: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
             return false
+        }
+    }
+
+    func stopAndRepreflight() async {
+        guard let job, job.canStopAndRepreflight else { return }
+        await mutate {
+            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
+                "worktree-management/jobs/\(job.id)/cancel",
+                body: ["replan": true]
+            )
+            self.job = envelope.job
         }
     }
 

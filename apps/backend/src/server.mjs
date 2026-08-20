@@ -6613,7 +6613,7 @@ function route(request, response) {
       .then((input) => action === "confirm"
         ? worktreeIntegrationJobService.confirm(jobId, input)
         : action === "cancel"
-          ? worktreeIntegrationJobService.cancel(jobId)
+          ? worktreeIntegrationJobService.cancel(jobId, input)
           : action === "resolve-conflict"
             ? worktreeIntegrationJobService.resolveConflictWithAgent(jobId)
             : worktreeIntegrationJobService.retry(jobId))
@@ -7408,7 +7408,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
-const recoveredWorktreeIntegrationJobs = worktreeIntegrationJobService.recover();
+const recoveredWorktreeIntegrationJobs = await worktreeIntegrationJobService.recover();
 if (recoveredWorktreeIntegrationJobs > 0) {
   console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
 }

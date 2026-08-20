@@ -836,6 +836,8 @@
 "Integrate all Worktrees into main" = "将全部 Worktree 集成到 main";
 "Preflight creates a reviewable local-only plan." = "预检会生成一份仅在本地执行、可审阅的处理计划。";
 "Preflight" = "预检";
+"Generate a reviewable local-only integration plan before anything is changed." = "在执行任何修改前，先生成一份仅在本地执行、可审阅的集成计划。";
+"Generate Integration Plan" = "生成集成计划";
 "Review Plan" = "查看计划";
 "Review Worktree Integration Plan" = "审阅 Worktree 集成计划";
 "Only local commits and merges will be performed. Nothing is pushed, deleted, reset, or force-cleaned." = "只会执行本地提交与合并；不会推送、删除、重置或强制清理任何内容。";
@@ -844,6 +846,9 @@
 "Merge order #%d: %@" = "合并顺序 #%d：%@";
 "Resolve all blocking risks and run preflight again before confirming." = "请先处理所有阻断风险，重新预检后再确认。";
 "Confirm and Start" = "确认并开始";
+"Stop this task and generate a new integration plan?" = "停止此任务并生成新的集成计划？";
+"Stop and Re-preflight" = "停止并重新生成计划";
+"Remaining steps will stop at the next safe boundary. Completed local commits and merges are kept. Conflicts are preserved for review." = "剩余步骤将在下一个安全边界停止；已完成的本地提交和合并会保留，冲突现场也会保留以供检查。";
 "This fast-forwards an already integrated Worktree to the current main revision. Uncommitted or unmerged changes are never overwritten." = "此操作只会将已经集成的 Worktree 快进到当前 main 版本，不会覆盖未提交或尚未合并的修改。";
 "Awaiting confirmation" = "等待确认";
 "Queued" = "等待处理";
@@ -858,6 +863,12 @@
 "Creating local commits" = "正在创建本地提交";
 "Merging into main" = "正在合并到 main";
 "Waiting for conflict resolution" = "等待处理冲突";
+"Stopping" = "正在停止";
+"Generating a new plan" = "正在生成新计划";
+"Could not generate a new plan" = "无法生成新计划";
+"Plan changed" = "计划已变化";
+"Stopping at a safe boundary" = "正在安全步骤边界停止";
+"Stopped; conflict preserved" = "已停止；冲突现场已保留";
 "Retry queued" = "已进入重试队列";
 "Recovery queued" = "已进入恢复队列";
 "Merge in progress" = "正在合并";

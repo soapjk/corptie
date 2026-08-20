@@ -55,10 +55,11 @@ export class WorktreeIntegrationJobService {
     };
   }
 
-  async preflight(repositoryId) {
+  async preflight(repositoryId, options = {}) {
     const repository = this.#requireRepository(repositoryId);
     const active = this.store.listWorktreeIntegrationJobs(repository.id)
-      .find((job) => ["awaiting_confirmation", "queued", "running", "paused"].includes(job.status));
+      .find((job) => job.id !== options.ignoreJobId
+        && ["awaiting_confirmation", "queued", "running", "paused", "cancellation_requested", "replanning"].includes(job.status));
     if (active) {
       throw new WorktreeIntegrationJobError(
         "INTEGRATION_JOB_ACTIVE",
@@ -113,6 +114,7 @@ export class WorktreeIntegrationJobService {
       mainPath: inspection.mainPath,
       mainHeadBefore: inspection.mainHeadOid,
       inventoryVersion: inspection.inventoryVersion,
+      validationSnapshot: planValidationSnapshot(inspection),
       mergeOrder: items.filter((item) => !item.isMain && item.mergeStatus === "pending").map((item) => item.worktreeId),
       blockingRisks,
       items
@@ -141,7 +143,7 @@ export class WorktreeIntegrationJobService {
     return presentJob(job);
   }
 
-  confirm(jobId, input = {}) {
+  async confirm(jobId, input = {}) {
     const job = this.#requireJob(jobId);
     if (job.status !== "awaiting_confirmation") {
       throw new WorktreeIntegrationJobError("JOB_NOT_CONFIRMABLE", "This task is not awaiting confirmation.", 409);
@@ -159,6 +161,15 @@ export class WorktreeIntegrationJobService {
         409
       );
     }
+    const current = await this.inspectRepository(job.repositoryId);
+    if (!planMatchesInspection(job.details.plan, current)) {
+      return presentJob(this.#update(job, {
+        phase: "plan_stale",
+        error: "Worktree state changed after preflight. Regenerate and review the plan before continuing.",
+        auditEvent: "plan_validation_failed",
+        auditData: { code: "PLAN_STALE" }
+      }));
+    }
     const updated = this.#update(job, {
       status: "queued",
       phase: "queued",
@@ -173,23 +184,99 @@ export class WorktreeIntegrationJobService {
     return presentJob(this.#reconcileConflictResolution(this.#requireJob(jobId)));
   }
 
-  cancel(jobId) {
-    const job = this.#requireJob(jobId);
-    if (!["awaiting_confirmation", "paused"].includes(job.status) || this.activeJobs.has(job.id)) {
+  async cancel(jobId, input = {}) {
+    let job = this.#requireJob(jobId);
+    const replan = input.replan === true || job.details.replanAfterCancel === true;
+    if (job.status === "canceled") {
+      return presentJob(await this.#replacementPlan(job, replan));
+    }
+    if (["cancellation_requested", "replanning"].includes(job.status)) {
+      if (replan && job.details.replanAfterCancel !== true) {
+        job = this.#update(job, {
+          details: { ...job.details, replanAfterCancel: true },
+          auditEvent: "replan_requested"
+        });
+      }
+      return presentJob(job);
+    }
+    if (!["awaiting_confirmation", "queued", "running", "paused"].includes(job.status)) {
       throw new WorktreeIntegrationJobError(
         "JOB_NOT_CANCELABLE",
-        "Only an inactive review or paused integration task can be canceled.",
+        "Only a review, queued, running, or paused integration task can be stopped.",
         409
       );
     }
-    return presentJob(this.#update(job, {
-      status: "canceled",
-      phase: "canceled",
-      error: null,
+    if (job.status === "running" || this.activeJobs.has(job.id)) {
+      return presentJob(this.#update(job, {
+        status: "cancellation_requested",
+        phase: "stopping",
+        error: null,
+        details: { ...job.details, replanAfterCancel: replan },
+        auditEvent: "cancellation_requested"
+      }));
+    }
+    return presentJob(await this.#finishCancellation(job, { replan }));
+  }
+
+  async #finishCancellation(job, { replan = false, conflictPreserved = false } = {}) {
+    const finalPhase = conflictPreserved ? "canceled_conflict_preserved" : "canceled";
+    let canceled = this.#update(job, {
+      status: replan ? "replanning" : "canceled",
+      phase: replan ? "replanning" : finalPhase,
+      error: conflictPreserved
+        ? "The remaining steps were stopped. The merge conflict was preserved for review."
+        : null,
       currentWorktreeId: null,
       completedAt: new Date().toISOString(),
-      auditEvent: "plan_canceled"
-    }));
+      details: { ...job.details, replanAfterCancel: replan },
+      auditEvent: "execution_canceled",
+      auditData: conflictPreserved ? { code: "CONFLICT_PRESERVED" } : undefined
+    });
+    if (!replan) return canceled;
+    let replacement;
+    try {
+      replacement = await this.#replacementPlan(canceled, true);
+    } catch (error) {
+      return this.#update(this.#requireJob(canceled.id), {
+        status: "paused",
+        phase: "replanning_failed",
+        error: error.message,
+        completedAt: null,
+        auditEvent: "replacement_preflight_failed",
+        auditData: { code: error.code ?? "PREFLIGHT_FAILED" }
+      });
+    }
+    canceled = this.#update(this.#requireJob(canceled.id), {
+      status: "canceled",
+      phase: finalPhase,
+      completedAt: new Date().toISOString(),
+      auditEvent: "replacement_preflight_ready",
+      auditData: { replacementJobId: replacement.id }
+    });
+    return replacement ?? canceled;
+  }
+
+  async #replacementPlan(canceled, replan) {
+    if (!replan) return canceled;
+    if (canceled.details.replacementJobId) {
+      return this.store.getWorktreeIntegrationJob(canceled.details.replacementJobId) ?? canceled;
+    }
+    let replacement;
+    try {
+      replacement = await this.preflight(canceled.repositoryId, { ignoreJobId: canceled.id });
+    } catch (error) {
+      if (error.code !== "INTEGRATION_JOB_ACTIVE") throw error;
+      replacement = this.store.listWorktreeIntegrationJobs(canceled.repositoryId)
+        .find((candidate) => candidate.id !== canceled.id
+          && ["awaiting_confirmation", "queued", "running", "paused"].includes(candidate.status));
+      if (!replacement) throw error;
+    }
+    this.#update(canceled, {
+      details: { ...canceled.details, replacementJobId: replacement.id },
+      auditEvent: "replacement_preflight_created",
+      auditData: { replacementJobId: replacement.id }
+    });
+    return replacement;
   }
 
   retry(jobId) {
@@ -324,9 +411,13 @@ export class WorktreeIntegrationJobService {
     }
   }
 
-  recover() {
+  async recover() {
     const jobs = this.store.listRecoverableWorktreeIntegrationJobs();
     for (const job of jobs) {
+      if (["cancellation_requested", "replanning"].includes(job.status)) {
+        await this.#finishCancellation(job, { replan: job.details.replanAfterCancel === true });
+        continue;
+      }
       this.#update(job, { status: "queued", phase: "recovery_queued", auditEvent: "backend_recovered" });
       this.#schedule(job.id);
     }
@@ -336,7 +427,9 @@ export class WorktreeIntegrationJobService {
   #schedule(jobId) {
     setImmediate(() => this.#run(jobId).catch((error) => {
       const job = this.store.getWorktreeIntegrationJob(jobId);
-      if (job && !["paused", "completed"].includes(job.status)) this.#pause(job, error);
+      if (job && !["paused", "completed", "canceled", "cancellation_requested"].includes(job.status)) {
+        this.#pause(job, error);
+      }
     }));
   }
 
@@ -345,6 +438,10 @@ export class WorktreeIntegrationJobService {
     this.activeJobs.add(jobId);
     try {
       let job = this.#requireJob(jobId);
+      if (job.status === "cancellation_requested") {
+        await this.#finishCancellation(job, { replan: job.details.replanAfterCancel === true });
+        return;
+      }
       if (!['queued', 'running'].includes(job.status)) return;
       job = this.#update(job, { status: "running", phase: "validating", auditEvent: "execution_started" });
       let items = job.details.plan.items;
@@ -352,14 +449,7 @@ export class WorktreeIntegrationJobService {
         || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus));
       if (!completedAny) {
         const current = await this.inspectRepository(job.repositoryId);
-        const currentPlanShape = job.details.plan.items.map((item) => {
-          const worktree = current.worktrees.find((entry) => entry.worktreeId === item.worktreeId);
-          return { id: item.worktreeId, head: worktree?.headOid, status: worktree?.statusSummary ?? "" };
-        });
-        const expectedShape = job.details.plan.items.map((item) => ({
-          id: item.worktreeId, head: item.sourceHeadBefore, status: item.statusSummary
-        }));
-        if (JSON.stringify(currentPlanShape) !== JSON.stringify(expectedShape)) {
+        if (!planMatchesInspection(job.details.plan, current)) {
           throw new WorktreeIntegrationJobError(
             "PLAN_STALE", "Worktree state changed after preflight. Create and review a new plan.", 409
           );
@@ -368,6 +458,7 @@ export class WorktreeIntegrationJobService {
 
       for (const item of items) {
         if (item.commitStatus === "not_needed" || ["completed", "recovered"].includes(item.commitStatus)) continue;
+        if (await this.#stopIfRequested(jobId)) return;
         job = this.#item(job, item.worktreeId, { commitStatus: "running", error: null }, "committing", "commit_started");
         const result = await this.commitChanges({
           path: item.path,
@@ -382,6 +473,7 @@ export class WorktreeIntegrationJobService {
           error: null
         }, "committing", "commit_completed");
         items = job.details.plan.items;
+        if (await this.#stopIfRequested(jobId)) return;
       }
 
       let expectedMainHead = items.find((item) => item.isMain)?.commitHead
@@ -392,6 +484,7 @@ export class WorktreeIntegrationJobService {
           if (item.mergeMainHead) expectedMainHead = item.mergeMainHead;
           continue;
         }
+        if (await this.#stopIfRequested(jobId)) return;
         const sourceHead = item.commitHead ?? item.sourceHeadBefore;
         job = this.#item(job, item.worktreeId, { mergeStatus: "running", error: null }, "merging", "merge_started");
         try {
@@ -414,10 +507,19 @@ export class WorktreeIntegrationJobService {
             conflictFiles: error.conflictFiles ?? [],
             error: error.message
           }, "paused", "merge_paused");
+          const latest = this.#requireJob(jobId);
+          if (latest.status === "cancellation_requested") {
+            await this.#finishCancellation(latest, {
+              replan: latest.details.replanAfterCancel === true,
+              conflictPreserved: error.code === "MERGE_CONFLICT"
+            });
+            return;
+          }
           this.#pause(job, error);
           return;
         }
         items = job.details.plan.items;
+        if (await this.#stopIfRequested(jobId)) return;
       }
       this.#update(job, {
         status: "completed",
@@ -429,10 +531,21 @@ export class WorktreeIntegrationJobService {
       });
     } catch (error) {
       const job = this.store.getWorktreeIntegrationJob(jobId);
-      if (job) this.#pause(job, error);
+      if (job?.status === "cancellation_requested") {
+        await this.#finishCancellation(job, { replan: job.details.replanAfterCancel === true });
+      } else if (job) {
+        this.#pause(job, error);
+      }
     } finally {
       this.activeJobs.delete(jobId);
     }
+  }
+
+  async #stopIfRequested(jobId) {
+    const latest = this.#requireJob(jobId);
+    if (latest.status !== "cancellation_requested") return false;
+    await this.#finishCancellation(latest, { replan: latest.details.replanAfterCancel === true });
+    return true;
   }
 
   #pause(job, error) {
@@ -448,10 +561,11 @@ export class WorktreeIntegrationJobService {
   }
 
   #item(job, worktreeId, patch, phase, event) {
-    const items = job.details.plan.items.map((item) => item.worktreeId === worktreeId ? { ...item, ...patch } : item);
-    return this.#update(job, {
+    const latest = this.store.getWorktreeIntegrationJob(job.id) ?? job;
+    const items = latest.details.plan.items.map((item) => item.worktreeId === worktreeId ? { ...item, ...patch } : item);
+    return this.#update(latest, {
       phase,
-      details: { ...job.details, plan: { ...job.details.plan, items }, progress: progressFor(items) },
+      details: { ...latest.details, plan: { ...latest.details.plan, items }, progress: progressFor(items) },
       currentWorktreeId: worktreeId,
       auditEvent: event,
       auditData: { worktreeId }
@@ -460,7 +574,8 @@ export class WorktreeIntegrationJobService {
 
   #update(job, patch) {
     const at = new Date().toISOString();
-    let details = patch.details ?? job.details;
+    const stored = this.store.getWorktreeIntegrationJob(job.id) ?? job;
+    let details = patch.details ?? stored.details;
     if (Object.prototype.hasOwnProperty.call(patch, "currentWorktreeId")) {
       details = { ...details, currentWorktreeId: patch.currentWorktreeId };
     }
@@ -549,6 +664,37 @@ function requiresIntegration(worktree) {
   if (worktree.dirty === true) return true;
   if (worktree.isMain) return false;
   return worktree.mergedIntoMain !== true;
+}
+
+function planValidationSnapshot(inspection) {
+  return [...inspection.worktrees]
+    .sort((left, right) => left.worktreeId.localeCompare(right.worktreeId))
+    .map((worktree) => ({
+      worktreeId: worktree.worktreeId,
+      path: worktree.path,
+      headOid: worktree.headOid,
+      branchName: worktree.branchName,
+      availability: worktree.availability,
+      dirty: worktree.dirty === true,
+      statusSummary: worktree.statusSummary ?? "",
+      isLocked: worktree.isLocked === true,
+      operationState: worktree.operationState ?? null,
+      conflictFiles: [...(worktree.conflictFiles ?? [])].sort()
+    }));
+}
+
+function planMatchesInspection(plan, inspection) {
+  if (plan.validationSnapshot) {
+    return JSON.stringify(plan.validationSnapshot) === JSON.stringify(planValidationSnapshot(inspection));
+  }
+  const currentShape = plan.items.map((item) => {
+    const worktree = inspection.worktrees.find((entry) => entry.worktreeId === item.worktreeId);
+    return { id: item.worktreeId, head: worktree?.headOid, status: worktree?.statusSummary ?? "" };
+  });
+  const expectedShape = plan.items.map((item) => ({
+    id: item.worktreeId, head: item.sourceHeadBefore, status: item.statusSummary
+  }));
+  return JSON.stringify(currentShape) === JSON.stringify(expectedShape);
 }
 
 function expectedMainHeadBefore(plan, worktreeId) {

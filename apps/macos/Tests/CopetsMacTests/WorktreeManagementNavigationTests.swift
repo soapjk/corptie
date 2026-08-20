@@ -147,7 +147,35 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("if await client.regeneratePlan()"))
         XCTAssertTrue(view.contains("showingPlan = true"))
         XCTAssertTrue(client.contains("worktree-management/jobs/\\(staleJob.id)/cancel"))
-        XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/integration-plans"))
+        XCTAssertTrue(client.contains("body: [\"replan\": true]"))
+    }
+
+    func testRunningIntegrationCanStopSafelyAndAutomaticallyRepreflight() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+        let models = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementModels.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("Stop this task and generate a new integration plan?"))
+        XCTAssertTrue(view.contains("worktree.integrate.stop-and-repreflight"))
+        XCTAssertTrue(view.contains("Task { await client.stopAndRepreflight() }"))
+        XCTAssertTrue(client.contains("func stopAndRepreflight() async"))
+        XCTAssertTrue(client.contains("body: [\"replan\": true]"))
+        XCTAssertTrue(models.contains("cancellation_requested"))
+        XCTAssertTrue(models.contains("replanning"))
+        XCTAssertTrue(models.contains("phase == \"plan_stale\""))
     }
 
     func testMergeConflictCanLaunchAndOpenAProviderNeutralAgentSession() throws {
@@ -199,6 +227,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Operations run in the displayed order. No remote push or deletion is performed.\" = \"操作将按显示顺序执行；不会远程推送或删除任何内容。\";",
             "\"No Worktree changes require integration.\" = \"没有需要集成的 Worktree 修改。\";",
             "\"Regenerate Plan\" = \"重新生成计划\";",
+            "\"Generate Integration Plan\" = \"生成集成计划\";",
+            "\"Stop and Re-preflight\" = \"停止并重新生成计划\";",
+            "\"Stopping at a safe boundary\" = \"正在安全步骤边界停止\";",
             "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";",
             "\"Ask Agent to Resolve\" = \"让 Agent 处理冲突\";",
             "\"Open Conflict Agent\" = \"打开冲突处理 Agent\";",
