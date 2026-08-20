@@ -20,16 +20,18 @@ struct CodexResetNoticeTests {
     }
 
     @Test
-    func chatUsageBarNoLongerContainsAResetPopover() throws {
+    func chatUsageBarOffersAManualResetPopoverWithoutAutomaticPresentation() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/FloatingRootView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
-        #expect(!contents.contains("resetNoticePopover"))
-        #expect(!contents.contains("isResetNoticePresented"))
-        #expect(!contents.contains("presentResetNoticeManually"))
+        #expect(contents.contains("resetNoticePopover"))
+        #expect(contents.contains("isResetNoticePresented.toggle()"))
+        #expect(contents.contains(".popover(isPresented: $isResetNoticePresented"))
+        #expect(!contents.contains("scheduleResetNoticeIfNeeded"))
+        #expect(!contents.contains("automaticPresentationDelay"))
     }
 
     @Test

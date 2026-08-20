@@ -161,6 +161,7 @@ final class BackendClient: ObservableObject {
     private static let historyPageSize = 200
     private var historyLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
+    private var usageEventRefreshTask: Task<Void, Never>?
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
@@ -269,6 +270,8 @@ final class BackendClient: ObservableObject {
         performanceFixtureStreamTask = nil
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
         detailPrefetchTasks.values.forEach { $0.cancel() }
@@ -543,6 +546,23 @@ final class BackendClient: ObservableObject {
         )
         usageBySessionId[event.payload.sessionId] = usage
         selectedSessionUsage = usage
+        scheduleUsageRefreshAfterLiveUpdate(sessionID: event.payload.sessionId)
+    }
+
+    private func scheduleUsageRefreshAfterLiveUpdate(sessionID: String) {
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = Task { [weak self] in
+            do {
+                // Token-usage notifications may arrive in a short burst. One
+                // authoritative account read after the burst keeps the plan
+                // balance current without issuing a request for every event.
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
+            guard let self, self.selectedSession?.id == sessionID else { return }
+            await self.refreshSelectedUsage()
+        }
     }
 
     func loadSettings() async {
@@ -1458,6 +1478,8 @@ final class BackendClient: ObservableObject {
         selectedSessionUsage = usageBySessionId[session.id]
         selectedContextReferences = []
         usageRefreshTask?.cancel()
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = nil
         // Usage is part of the visible chat header, not optional background
         // project polling. Keep it current even in the lightweight Sessions tab.
         usageRefreshTask = Task { [weak self] in
@@ -1623,6 +1645,8 @@ final class BackendClient: ObservableObject {
     func closeDetail() {
         usageRefreshTask?.cancel()
         usageRefreshTask = nil
+        usageEventRefreshTask?.cancel()
+        usageEventRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
         detailStreamTask?.cancel()
