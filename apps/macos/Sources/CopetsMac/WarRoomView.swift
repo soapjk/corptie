@@ -477,7 +477,11 @@ struct WorkItemBoardView: View {
         .onChange(of: items) { _, newValue in boardItems = newValue }
         .sheet(isPresented: $isCreating) {
             if let objective {
-                WorkItemCreateView(objectiveId: objective.id, workspaceIds: objective.workspaceIds) { created in
+                WorkItemCreateView(
+                    objectiveId: objective.id,
+                    workspaceIds: objective.workspaceIds,
+                    contributorAgentIds: objective.contributorAgentIds
+                ) { created in
                     boardItems.append(created)
                     onRequestReload()
                 }
@@ -1048,11 +1052,14 @@ struct WorkItemDetailView: View {
 
                 Spacer(minLength: 4)
 
-                if let currentSession {
-                    Text(statusLabel(currentSession.status))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.secondary)
+                Text(WorkItemExecutionPresentation.label(
+                    executionStatus: workItem.executionStatus,
+                    sessionStatus: currentSession?.status
+                ))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
 
+                if let currentSession {
                     Button {
                         router.openSession(currentSession.id)
                     } label: {
@@ -1063,10 +1070,6 @@ struct WorkItemDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .help(currentSession.title.isEmpty ? L10n("Open Session") : L10nFormat("Open: %@", currentSession.title))
-                } else {
-                    Text(L10n("无会话"))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
                 }
             }
         }

@@ -330,18 +330,21 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 创建 WorkItem：POST /work-items { objectiveId, title, description?, mainWorkspaceId?, priority? } → workItem
+    // 创建 WorkItem：POST /work-items { objectiveId, title, mainAgentId, ... } → workItem
     @discardableResult
-    func createWorkItem(objectiveId: String, title: String, description: String? = nil,
+    func createWorkItem(id: String? = nil, objectiveId: String, title: String, description: String? = nil,
                         acceptanceCriteria: String? = nil,
-                        mainWorkspaceId: String? = nil, priority: String? = nil) async -> WorkItem? {
+                        mainWorkspaceId: String? = nil, mainAgentId: String? = nil,
+                        priority: String? = nil) async -> WorkItem? {
         var request = URLRequest(url: baseURL.appending(path: "work-items"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["objectiveId": objectiveId, "title": title]
+        if let id, !id.isEmpty { body["id"] = id }
         if let description, !description.isEmpty { body["description"] = description }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
         if let mainWorkspaceId, !mainWorkspaceId.isEmpty { body["mainWorkspaceId"] = mainWorkspaceId }
+        if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
         if let priority { body["priority"] = priority }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return await performEntityMutation(request, as: WorkItem.self)
