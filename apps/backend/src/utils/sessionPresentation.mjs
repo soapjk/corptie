@@ -83,6 +83,11 @@ export function sessionHasActiveRun(session) {
     || Boolean(activeTurnId);
 }
 
+export function sessionNeedsAuthoritativeProjectionRecovery(session) {
+  return (session?.external?.routingVersion ?? 1) > 1
+    || sessionHasActiveRun(session);
+}
+
 export function applyWorkspaceContinuationPresentation(session, transition) {
   if (!session || !transition) return session;
   const state = transition.continuationState;

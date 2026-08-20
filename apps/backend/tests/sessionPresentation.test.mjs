@@ -8,6 +8,7 @@ import {
   preferredSessionTitle,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
+  sessionNeedsAuthoritativeProjectionRecovery,
   workspaceContinuationKeepsSessionActive
 } from "../src/utils/sessionPresentation.mjs";
 
@@ -43,6 +44,21 @@ test("a queued continuation presentation does not block its own Provider turn", 
       activeTurnId: null,
       workspace: { continuationState: "running" }
     }
+  }), false);
+});
+
+test("startup projection recovery covers stale active rows and switched routes", () => {
+  assert.equal(sessionNeedsAuthoritativeProjectionRecovery({
+    status: "running",
+    external: { activeTurnId: "turn:stale", routingVersion: 1 }
+  }), true);
+  assert.equal(sessionNeedsAuthoritativeProjectionRecovery({
+    status: "complete",
+    external: { activeTurnId: null, routingVersion: 2 }
+  }), true);
+  assert.equal(sessionNeedsAuthoritativeProjectionRecovery({
+    status: "complete",
+    external: { activeTurnId: null, routingVersion: 1 }
   }), false);
 });
 

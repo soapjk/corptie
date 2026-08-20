@@ -123,6 +123,7 @@ import {
   preferredSessionTitle,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
+  sessionNeedsAuthoritativeProjectionRecovery,
   workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
@@ -1785,16 +1786,20 @@ function emitEvent(type, payload, options = {}) {
 }
 
 function scheduleSessionProviderProjectionReconciliation(sessionId, reason) {
-  setImmediate(async () => {
-    try {
-      await sessionApplicationService.readSession(sessionId);
-      const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-      if (!session) return;
-      emitEvent("SessionProviderProjectionReconciled", { session, reason }, { sessionId });
-    } catch (error) {
-      console.warn(`[session-projection] authoritative reconciliation deferred session=${sessionId} reason=${reason} error=${error.message}`);
-    }
-  });
+  setImmediate(() => void reconcileSessionProviderProjection(sessionId, reason));
+}
+
+async function reconcileSessionProviderProjection(sessionId, reason) {
+  try {
+    await sessionApplicationService.readSession(sessionId);
+    const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+    if (!session) return null;
+    emitEvent("SessionProviderProjectionReconciled", { session, reason }, { sessionId });
+    return session;
+  } catch (error) {
+    console.warn(`[session-projection] authoritative reconciliation deferred session=${sessionId} reason=${reason} error=${error.message}`);
+    return null;
+  }
 }
 
 function dshLiveEvents(sessionEvent) {
@@ -7657,7 +7662,6 @@ if (recoveredWorktreeIntegrationJobs > 0) {
   console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
 }
 stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
-stateSyncPublishedRevision = store.stateRevision();
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
@@ -7768,15 +7772,14 @@ for (const storedSession of storedSessionsAtStartup) {
     ensureCollaborationAgentForSession(session);
   }
 }
-// Older builds could persist the target Provider's bootstrap projection after
-// a route switch and then miss the completion notification. Re-read switched
-// Sessions through the shared Provider contract so that existing stale rows
-// self-heal without requiring the user to open each conversation.
-for (const storedSession of storedSessionsAtStartup) {
-  if ((storedSession.external?.routingVersion ?? 1) > 1) {
-    scheduleSessionProviderProjectionReconciliation(storedSession.id, "startup-route-recovery");
-  }
-}
+// A process can stop after the Provider reached a terminal state but before its
+// completion notification updated Corptie's durable list projection. Re-read
+// every projection that still looks active, plus switched routes covered by
+// the older recovery rule, through the shared Provider contract. Awaiting this
+// bounded set prevents the health endpoint from exposing stale running rows.
+await Promise.all(storedSessionsAtStartup
+  .filter(sessionNeedsAuthoritativeProjectionRecovery)
+  .map((session) => reconcileSessionProviderProjection(session.id, "startup-authoritative-recovery")));
 for (const transition of store.listPendingWorkspaceTransitions()) {
   const logical = store.getLogicalSession(transition.logicalSessionId);
   try {
