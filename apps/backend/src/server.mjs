@@ -7532,6 +7532,10 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+const collaborationMigration = collaborationCore.initialize();
+if (collaborationMigration.status === "applied") {
+  console.log(`[collaboration-migration] id=${collaborationMigration.migrationId} migratedTasks=${collaborationMigration.migratedTaskCount}`);
+}
 const recoveredWorktreeIntegrationJobs = await worktreeIntegrationJobService.recover();
 if (recoveredWorktreeIntegrationJobs > 0) {
   console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);

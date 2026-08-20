@@ -20,7 +20,11 @@ export class CollaborationCore {
     this.store = store;
     this.idFactory = options.idFactory ?? randomUUID;
     this.clock = options.clock ?? (() => new Date().toISOString());
-    this.#migrateLegacyCollaborationTasks();
+    this.initialize();
+  }
+
+  initialize() {
+    return this.#migrateLegacyCollaborationTasks();
   }
 
   registerAgent(input) {
@@ -1195,8 +1199,14 @@ export class CollaborationCore {
     if (sessionObjectiveId !== objectiveId && !contributorIds.includes(agent.agentId) && !ownsWorkItem) {
       throw domainError("OBJECTIVE_AGENT_NOT_AUTHORIZED", `Agent ${agent.agentId} is not assigned to Objective ${objectiveId}.`);
     }
-    if (sessionObjectiveId === objectiveId) this.#ensureObjectiveContributor(objectiveId, agent.agentId);
+    if (sessionObjectiveId === objectiveId && this.#isAssignableContributor(agent)) {
+      this.#ensureObjectiveContributor(objectiveId, agent.agentId);
+    }
     return objectiveId;
+  }
+
+  #isAssignableContributor(agent) {
+    return agent.role === "independentContributor";
   }
 
   #ensureCompatibilityObjective(agent) {
@@ -1208,7 +1218,7 @@ export class CollaborationCore {
       idealState: "All peer requests execute and close through explicit WorkItems.",
       status: "active",
       tags: ["system:collaboration-compatibility"],
-      contributorAgentIds: [agent.agentId]
+      contributorAgentIds: this.#isAssignableContributor(agent) ? [agent.agentId] : []
     });
   }
 
@@ -1227,7 +1237,7 @@ export class CollaborationCore {
     if (workItem.objective_id !== targetObjectiveId) {
       throw domainError("WORK_ITEM_OBJECTIVE_MISMATCH", "The collaboration WorkItem must belong to the target Objective.");
     }
-    if (workItem.main_agent_id && workItem.main_agent_id !== recipientAgentId) {
+    if (recipientAgentId && workItem.main_agent_id && workItem.main_agent_id !== recipientAgentId) {
       throw domainError("WORK_ITEM_AGENT_MISMATCH", `WorkItem ${workItemId} is assigned to another Agent.`);
     }
     if (["done", "complete", "completed", "canceled", "cancelled"].includes(workItem.status)) {
@@ -1243,7 +1253,7 @@ export class CollaborationCore {
         input.targetObjectiveId,
         input.recipientAgentId
       );
-      if (!existing.main_agent_id) {
+      if (input.recipientAgentId && !existing.main_agent_id) {
         return this.store.updateWorkItem(existing.id, { mainAgentId: input.recipientAgentId });
       }
       return existing;
@@ -1292,10 +1302,15 @@ export class CollaborationCore {
 
   #migrateLegacyCollaborationTasks() {
     const migrationId = "collaboration-objective-work-item-v2";
-    if (!this.store.db || this.store.selectOne(
+    if (!this.store.db) {
+      return { status: "deferred", migrationId, migratedTaskCount: 0 };
+    }
+    if (this.store.selectOne(
       "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
       [migrationId]
-    )) return;
+    )) {
+      return { status: "already-applied", migrationId, migratedTaskCount: 0 };
+    }
     const rows = this.store.selectAll(
       `SELECT * FROM collaboration_tasks
        WHERE protocol_version <> ? OR source_objective_id IS NULL OR target_objective_id IS NULL OR work_item_id IS NULL`,
@@ -1313,13 +1328,17 @@ export class CollaborationCore {
         if (targetObjectiveId === sourceObjectiveId) {
           targetObjectiveId = this.#ensureCompatibilityObjective(recipient).id;
         }
-        this.#ensureObjectiveContributor(sourceObjectiveId, initiator.agentId);
-        this.#ensureObjectiveContributor(targetObjectiveId, recipient.agentId);
+        if (this.#isAssignableContributor(initiator)) {
+          this.#ensureObjectiveContributor(sourceObjectiveId, initiator.agentId);
+        }
+        if (this.#isAssignableContributor(recipient)) {
+          this.#ensureObjectiveContributor(targetObjectiveId, recipient.agentId);
+        }
         const workItem = this.#ensureCollaborationWorkItem({
           requestedWorkItemId: row.work_item_id,
           taskId: row.task_id,
           targetObjectiveId,
-          recipientAgentId: recipient.agentId,
+          recipientAgentId: this.#isAssignableContributor(recipient) ? recipient.agentId : null,
           title: row.title,
           summary: row.summary,
           acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
@@ -1376,6 +1395,7 @@ export class CollaborationCore {
       );
       this.store.db.run("COMMIT");
       this.store.scheduleSave();
+      return { status: "applied", migrationId, migratedTaskCount: rows.length };
     } catch (error) {
       this.store.db.run("ROLLBACK");
       throw error;
@@ -1459,6 +1479,7 @@ function agentFromRow(row, store) {
     providerSessionId: row.current_session_id || null,
     description: row.description,
     role: row.role,
+    agentKind: row.agent_kind ?? "user",
     systemPrompt: row.system_prompt ?? "",
     status: "available",
     capabilities: parseJson(row.capabilities_json, []),
