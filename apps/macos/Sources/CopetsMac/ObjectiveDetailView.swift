@@ -19,7 +19,6 @@ struct ObjectiveDetailView: View {
     @State private var workspaceIds = Set<String>()
     @State private var relatedObjectiveIds = Set<String>()
     @State private var contributorAgentIds = Set<String>()
-    @State private var didSave = false
     @State private var showDeleteConfirm = false
     @State private var assistAgentId: String?
 
@@ -125,11 +124,6 @@ struct ObjectiveDetailView: View {
                     Label(L10n("删除"), systemImage: "trash")
                         .foregroundStyle(.red)
                 }
-                if didSave {
-                    Text(L10n("已保存"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
                 Spacer()
                 Button(L10n("取消")) { dismiss() }
                 Button(L10n("保存")) {
@@ -162,7 +156,7 @@ struct ObjectiveDetailView: View {
             .filter { !$0.isEmpty }
 
         Task {
-            await client.updateObjective(
+            let updatedObjective = await client.updateObjective(
                 objectiveId: objective.id,
                 name: trimmed,
                 description: detail,
@@ -174,7 +168,9 @@ struct ObjectiveDetailView: View {
                 relatedObjectiveIds: Array(relatedObjectiveIds),
                 contributorAgentIds: Array(contributorAgentIds)
             )
-            didSave = true
+            if updatedObjective != nil {
+                dismiss()
+            }
         }
     }
 
