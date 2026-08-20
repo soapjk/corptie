@@ -1025,3 +1025,4 @@
 "This Worktree has commits that are not merged into main." = "此 Worktree 存在尚未合并到主分支的提交。";
 "This Worktree is associated with a WorkItem and cannot be deleted." = "此 Worktree 仍关联 WorkItem，不能删除。";
 "This Worktree is being used by a Session. Switch or remove the Session before deleting it." = "此 Worktree 正被 Session 占用，请先切换或移除该 Session。";
+"Deleting %d of %d: %@" = "正在删除第 %d 个，共 %d 个：%@";

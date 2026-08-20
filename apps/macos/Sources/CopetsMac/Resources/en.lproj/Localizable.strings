@@ -646,3 +646,4 @@
 "This Worktree has commits that are not merged into main." = "This Worktree has commits that are not merged into main.";
 "This Worktree is associated with a WorkItem and cannot be deleted." = "This Worktree is associated with a WorkItem and cannot be deleted.";
 "This Worktree is being used by a Session. Switch or remove the Session before deleting it." = "This Worktree is being used by a Session. Switch or remove the Session before deleting it.";
+"Deleting %d of %d: %@" = "Deleting %d of %d: %@";

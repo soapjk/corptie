@@ -149,8 +149,12 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("Only these Worktrees"))
         XCTAssertTrue(view.contains("WorktreeCleanupResultView"))
         XCTAssertTrue(view.contains("Removed: %d   Skipped: %d   Failed: %d"))
+        XCTAssertTrue(view.contains("worktree.cleanup.progress"))
+        XCTAssertTrue(view.contains("worktree.cleanup.command"))
+        XCTAssertTrue(view.contains("Deleting %d of %d: %@"))
         XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/worktrees/\\(worktree.worktreeId)/delete"))
-        XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/cleanup"))
+        XCTAssertTrue(client.contains("for (offset, worktree) in worktrees.enumerated()"))
+        XCTAssertTrue(client.contains("cleanupProgress = .deleting("))
         XCTAssertTrue(client.contains("await loadRepository(repositoryId)"))
     }
 
