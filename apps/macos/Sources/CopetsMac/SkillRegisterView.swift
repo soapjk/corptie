@@ -57,6 +57,21 @@ struct SkillRegisterView: View {
                                             .foregroundStyle(.secondary)
                                             .lineLimit(2)
                                     }
+                                    if let package = candidate.composition?.package,
+                                       let mcp = candidate.composition?.mcp {
+                                        Text("Package: \(candidate.packageRelativePath ?? ".") · MCP: \(mcp.serverNames.joined(separator: ", "))")
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(.secondary)
+                                        Text(package.discoveryMethod == "agent-assisted"
+                                             ? L10n("由 Agent 辅助识别，安装前将由后端重新校验")
+                                             : L10n("由插件清单或标准目录确定性识别"))
+                                            .font(.caption2)
+                                            .foregroundStyle(package.discoveryMethod == "agent-assisted" ? Color.orange : Color.secondary)
+                                    } else {
+                                        Text(L10n("普通 Skill（不包含 MCP 依赖）"))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
                                 Spacer()
                             }

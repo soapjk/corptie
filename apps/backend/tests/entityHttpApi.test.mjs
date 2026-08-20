@@ -74,6 +74,7 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     router: services.router,
     memoryExtractor: services.memoryExtractor,
     assistantService: services.assistantService,
+    skillRegistryService: services.skillRegistryService,
     backgroundAgentService: services.backgroundAgentService,
     createSession: services.createSession,
     launchSession: services.launchSession,
@@ -90,6 +91,43 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     body: response.body ? JSON.parse(response.body) : null
   };
 }
+
+test("GET /skills/runtime-events exposes filterable persisted stage diagnostics", async () => {
+  const services = await createServices();
+  try {
+    const calls = [];
+    const result = await callApi({
+      method: "GET",
+      pathname: "/skills/runtime-events",
+      search: "?agentId=agent%3Ainvestor&sessionId=session%3A1&stage=session-recovery&limit=25",
+      skillRegistryService: {
+        runtimeEvents(filters) {
+          calls.push(filters);
+          return [{
+            eventId: "skill_event:1",
+            stage: "session-recovery",
+            status: "success",
+            agentId: "agent:investor",
+            sessionId: "session:1",
+            providerId: "codex-app-server",
+            serverNames: ["investrace"],
+            toolCount: 24
+          }];
+        }
+      },
+      ...services
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.body.events[0].toolCount, 24);
+    assert.equal(calls[0].agentId, "agent:investor");
+    assert.equal(calls[0].stage, "session-recovery");
+    assert.equal(calls[0].limit, "25");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
 
 function registerRepository(store, repositoryId = "repository:test", worktreeId = "worktree:test") {
   const observedAt = "2026-08-17T00:00:00.000Z";

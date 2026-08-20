@@ -265,11 +265,13 @@ export function handleEntityHttpRequest({
           try {
             return sendJson(response, 200, await skillRegistryService.discover({
               sourceType: input.sourceType,
-              source: input.source
+              source: input.source,
+              assist: input.assist !== false
             }));
           } catch (error) {
             const wrapped = apiError(error?.code ?? "SKILL_DISCOVERY_FAILED", error?.message ?? "Skill 发现失败。", 400);
             wrapped.candidates = error?.candidates;
+            wrapped.stage = error?.stage ?? "discovery";
             throw wrapped;
           }
         }
@@ -284,12 +286,28 @@ export function handleEntityHttpRequest({
               description: input.description ?? "",
               sourceType,
               source,
-              sourceSubpath: input.sourceSubpath ?? ""
+              sourceSubpath: input.sourceSubpath ?? "",
+              assist: input.assist !== false
             });
             return sendJson(response, 201, { skill });
           } catch (error) {
-            throw apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。", 400);
+            const wrapped = apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。", 400);
+            wrapped.stage = error?.stage ?? "registration";
+            throw wrapped;
           }
+        }
+
+        if (request.method === "GET" && path === "/skills/runtime-events") {
+          return sendJson(response, 200, {
+            events: skillRegistryService.runtimeEvents({
+              skillId: url.searchParams.get("skillId"),
+              agentId: url.searchParams.get("agentId"),
+              sessionId: url.searchParams.get("sessionId"),
+              providerId: url.searchParams.get("providerId"),
+              stage: url.searchParams.get("stage"),
+              limit: url.searchParams.get("limit")
+            })
+          });
         }
 
         const skillMatch = path.match(/^\/skills\/([^/]+)$/);
@@ -306,7 +324,9 @@ export function handleEntityHttpRequest({
               const skill = await skillRegistryService.update(id, input);
               return sendJson(response, 200, { skill });
             } catch (error) {
-              throw apiError(error?.code ?? "SKILL_UPDATE_FAILED", error?.message ?? "Skill 更新失败。", 400);
+              const wrapped = apiError(error?.code ?? "SKILL_UPDATE_FAILED", error?.message ?? "Skill 更新失败。", 400);
+              wrapped.stage = error?.stage ?? "registration";
+              throw wrapped;
             }
           }
           if (request.method === "DELETE") {
@@ -605,6 +625,7 @@ export function handleEntityHttpRequest({
       sendJson(response, error.statusCode ?? statusForCode(code), {
         error: error.code ? error.message : "Entity operation failed.",
         code,
+        ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
         ...(typeof error.field === "string" ? { field: error.field } : {}),
         ...(typeof error.expected === "string" ? { expected: error.expected } : {}),
         ...(error.received && typeof error.received === "object" ? { received: error.received } : {}),

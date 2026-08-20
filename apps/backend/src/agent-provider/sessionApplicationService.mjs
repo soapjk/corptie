@@ -100,11 +100,25 @@ export class SessionApplicationService {
 
   async resumeSession(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const storedSession = reference.metadata?.session ?? null;
+    const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
+    const resumeContext = {
+      ...context,
+      purpose: "session-resume",
+      actorId,
+      sessionId: reference.sessionId,
+      sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
+      objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
+      workItemId: storedSession?.workItemId ?? context.workItemId ?? null
+    };
+    const toolHost = this.toolHostService && actorId
+      ? await this.toolHostService.prepareSession(reference.providerId, resumeContext)
+      : null;
     const session = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       reference,
-      context
+      toolHost ? { ...resumeContext, toolHost } : resumeContext
     );
     return this.decorateLifecycleSession(reference.providerId, session, reference);
   }
@@ -323,6 +337,10 @@ export class SessionApplicationService {
       publicSessionId: logicalSessionId ?? legacySessionId
     };
   }
+}
+
+function normalizedText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function requiredText(value, field) {

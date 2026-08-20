@@ -1360,6 +1360,9 @@ export class CorptieStore {
         source_type TEXT NOT NULL CHECK (source_type IN ('local', 'git')),
         source TEXT NOT NULL,
         source_subpath TEXT NOT NULL DEFAULT '',
+        package_subpath TEXT NOT NULL DEFAULT '',
+        mcp_descriptor_subpath TEXT NOT NULL DEFAULT '',
+        package_discovery_method TEXT NOT NULL DEFAULT '',
         cache_path TEXT,
         manifest_name TEXT NOT NULL DEFAULT '',
         manifest_description TEXT NOT NULL DEFAULT '',
@@ -1378,9 +1381,39 @@ export class CorptieStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_agent_skill_links_skill ON agent_skill_links(skill_id);
+
+      CREATE TABLE IF NOT EXISTS skill_runtime_events (
+        event_id TEXT PRIMARY KEY,
+        stage TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('info', 'success', 'failed', 'denied')),
+        error_code TEXT,
+        reason TEXT NOT NULL DEFAULT '',
+        skill_id TEXT,
+        agent_id TEXT,
+        session_id TEXT,
+        provider_id TEXT,
+        server_names_json TEXT NOT NULL DEFAULT '[]',
+        tool_count INTEGER,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (skill_id) REFERENCES skill_registry(skill_id) ON DELETE SET NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_skill_runtime_events_skill
+      ON skill_runtime_events(skill_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_skill_runtime_events_agent
+      ON skill_runtime_events(agent_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_skill_runtime_events_session
+      ON skill_runtime_events(session_id, created_at DESC);
     `);
 
     this.ensureColumn("skill_registry", "source_subpath", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("skill_registry", "package_subpath", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("skill_registry", "mcp_descriptor_subpath", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("skill_registry", "package_discovery_method", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("skill_registry", "manifest_name", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("skill_registry", "manifest_description", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("skill_registry", "content_hash", "TEXT NOT NULL DEFAULT ''");
@@ -1408,9 +1441,10 @@ export class CorptieStore {
     const now = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO skill_registry (
-         skill_id, name, description, source_type, source, source_subpath, cache_path,
+         skill_id, name, description, source_type, source, source_subpath, package_subpath,
+         mcp_descriptor_subpath, package_discovery_method, cache_path,
          manifest_name, manifest_description, content_hash, installed_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.name,
@@ -1418,6 +1452,9 @@ export class CorptieStore {
         input.sourceType ?? "local",
         input.source,
         input.sourceSubpath ?? "",
+        input.packageSubpath ?? "",
+        input.mcpDescriptorSubpath ?? "",
+        input.packageDiscoveryMethod ?? "",
         input.cachePath ?? null,
         input.manifestName ?? input.name ?? "",
         input.manifestDescription ?? input.description ?? "",
@@ -1436,7 +1473,8 @@ export class CorptieStore {
     const now = createdAtFromOrNow();
     this.db.run(
       `UPDATE skill_registry
-       SET name = ?, description = ?, source_type = ?, source = ?, source_subpath = ?, cache_path = ?,
+       SET name = ?, description = ?, source_type = ?, source = ?, source_subpath = ?, package_subpath = ?,
+           mcp_descriptor_subpath = ?, package_discovery_method = ?, cache_path = ?,
            manifest_name = ?, manifest_description = ?, content_hash = ?, updated_at = ?
        WHERE skill_id = ?`,
       [
@@ -1445,6 +1483,9 @@ export class CorptieStore {
         input.sourceType ?? existing.sourceType,
         input.source ?? existing.source,
         input.sourceSubpath ?? existing.sourceSubpath ?? "",
+        input.packageSubpath ?? existing.packageSubpath ?? "",
+        input.mcpDescriptorSubpath ?? existing.mcpDescriptorSubpath ?? "",
+        input.packageDiscoveryMethod ?? existing.packageDiscoveryMethod ?? "",
         input.cachePath ?? existing.cachePath,
         input.manifestName ?? existing.manifestName ?? existing.name,
         input.manifestDescription ?? existing.manifestDescription ?? existing.description,
@@ -1477,12 +1518,77 @@ export class CorptieStore {
     return ids.map((id) => this.getRegistrySkill(id)).filter(Boolean);
   }
 
+  recordSkillRuntimeEvent(input = {}) {
+    const eventId = input.eventId ?? `skill_event:${randomUUID()}`;
+    const stage = String(input.stage ?? "").trim();
+    const status = String(input.status ?? "").trim();
+    if (!stage) throw new TypeError("Skill runtime event stage is required.");
+    if (!new Set(["info", "success", "failed", "denied"]).has(status)) {
+      throw new TypeError(`Invalid Skill runtime event status: ${status || "(empty)"}`);
+    }
+    const createdAt = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO skill_runtime_events (
+         event_id, stage, status, error_code, reason, skill_id, agent_id, session_id,
+         provider_id, server_names_json, tool_count, details_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        eventId,
+        stage,
+        status,
+        input.errorCode ? String(input.errorCode) : null,
+        String(input.reason ?? ""),
+        input.skillId ?? null,
+        input.agentId ?? null,
+        input.sessionId ?? null,
+        input.providerId ?? null,
+        JSON.stringify(Array.isArray(input.serverNames) ? [...new Set(input.serverNames.map(String))] : []),
+        Number.isInteger(input.toolCount) ? input.toolCount : null,
+        JSON.stringify(input.details && typeof input.details === "object" ? input.details : {}),
+        createdAt
+      ]
+    );
+    this.scheduleSave();
+    return this.getSkillRuntimeEvent(eventId);
+  }
+
+  getSkillRuntimeEvent(eventId) {
+    const row = this.selectOne(`SELECT * FROM skill_runtime_events WHERE event_id = ?`, [eventId]);
+    return row ? skillRuntimeEventFromRow(row) : null;
+  }
+
+  listSkillRuntimeEvents(filters = {}) {
+    const clauses = [];
+    const values = [];
+    for (const [column, value] of [
+      ["skill_id", filters.skillId],
+      ["agent_id", filters.agentId],
+      ["session_id", filters.sessionId],
+      ["provider_id", filters.providerId],
+      ["stage", filters.stage]
+    ]) {
+      const normalized = typeof value === "string" ? value.trim() : "";
+      if (!normalized) continue;
+      clauses.push(`${column} = ?`);
+      values.push(normalized);
+    }
+    const requestedLimit = Number(filters.limit ?? 100);
+    const limit = Number.isInteger(requestedLimit) ? Math.max(1, Math.min(500, requestedLimit)) : 100;
+    values.push(limit);
+    return this.selectAll(
+      `SELECT * FROM skill_runtime_events${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY created_at DESC, event_id DESC LIMIT ?`,
+      values
+    ).map(skillRuntimeEventFromRow);
+  }
+
   createAgentWithRegistrySkills(agentInput, skillIds = []) {
     const normalized = this.#validateRegistrySkillIds(skillIds);
     this.db.run("BEGIN IMMEDIATE");
     try {
       const agent = this.createAgent(agentInput);
       this.#replaceAgentRegistrySkills(agent.agentId, normalized);
+      this.#recordSkillAssignmentDelta(agent.agentId, [], normalized);
       this.db.run("COMMIT");
       this.scheduleSave();
       return agent;
@@ -1497,6 +1603,7 @@ export class CorptieStore {
       throw platformAssistantProtectionError("The built-in Corptie Assistant Skill assignment is managed by the product.");
     }
     const normalized = skillIds == null ? null : this.#validateRegistrySkillIds(skillIds);
+    const previous = normalized ? this.listRegistrySkillIdsForAgent(agentId) : null;
     this.db.run("BEGIN IMMEDIATE");
     try {
       const agent = this.updateAgent(agentId, agentInput);
@@ -1506,6 +1613,7 @@ export class CorptieStore {
         throw error;
       }
       if (normalized) this.#replaceAgentRegistrySkills(agentId, normalized);
+      if (normalized) this.#recordSkillAssignmentDelta(agentId, previous, normalized);
       this.db.run("COMMIT");
       this.scheduleSave();
       return agent;
@@ -1520,6 +1628,7 @@ export class CorptieStore {
       throw platformAssistantProtectionError("The built-in Corptie Assistant Skill assignment is managed by the product.");
     }
     const normalized = this.#validateRegistrySkillIds(skillIds);
+    const previous = this.listRegistrySkillIdsForAgent(agentId);
     if (!this.getAgent(agentId)) {
       const error = new Error(`Agent not found: ${agentId}`);
       error.code = "AGENT_NOT_FOUND";
@@ -1528,6 +1637,7 @@ export class CorptieStore {
     this.db.run("BEGIN IMMEDIATE");
     try {
       this.#replaceAgentRegistrySkills(agentId, normalized);
+      this.#recordSkillAssignmentDelta(agentId, previous, normalized);
       this.db.run("COMMIT");
     } catch (error) {
       this.db.run("ROLLBACK");
@@ -1535,6 +1645,31 @@ export class CorptieStore {
     }
     this.scheduleSave();
     return normalized;
+  }
+
+  #recordSkillAssignmentDelta(agentId, previous = [], next = []) {
+    const before = new Set(previous);
+    const after = new Set(next);
+    for (const skillId of after) {
+      if (before.has(skillId)) continue;
+      this.recordSkillRuntimeEvent({
+        stage: "assignment",
+        status: "success",
+        skillId,
+        agentId,
+        reason: "Skill assigned to Agent."
+      });
+    }
+    for (const skillId of before) {
+      if (after.has(skillId)) continue;
+      this.recordSkillRuntimeEvent({
+        stage: "assignment",
+        status: "denied",
+        skillId,
+        agentId,
+        reason: "Skill assignment removed from Agent."
+      });
+    }
   }
 
   #validateRegistrySkillIds(skillIds) {
@@ -5676,12 +5811,33 @@ function skillFromRow(row) {
     sourceType: row.source_type ?? "local",
     source: row.source,
     sourceSubpath: row.source_subpath ?? "",
+    packageSubpath: row.package_subpath ?? "",
+    mcpDescriptorSubpath: row.mcp_descriptor_subpath ?? "",
+    packageDiscoveryMethod: row.package_discovery_method ?? "",
     cachePath: row.cache_path ?? null,
     manifestName: row.manifest_name || row.name,
     manifestDescription: row.manifest_description || row.description || "",
     contentHash: row.content_hash ?? "",
     installedAt: row.installed_at,
     updatedAt: row.updated_at
+  };
+}
+
+function skillRuntimeEventFromRow(row) {
+  return {
+    eventId: row.event_id,
+    stage: row.stage,
+    status: row.status,
+    errorCode: row.error_code ?? null,
+    reason: row.reason ?? "",
+    skillId: row.skill_id ?? null,
+    agentId: row.agent_id ?? null,
+    sessionId: row.session_id ?? null,
+    providerId: row.provider_id ?? null,
+    serverNames: parseJson(row.server_names_json, []),
+    toolCount: row.tool_count == null ? null : Number(row.tool_count),
+    details: parseJson(row.details_json, {}),
+    createdAt: row.created_at
   };
 }
 
