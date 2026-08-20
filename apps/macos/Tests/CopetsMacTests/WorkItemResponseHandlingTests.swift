@@ -91,7 +91,7 @@ final class WorkItemResponseHandlingTests: XCTestCase {
         XCTAssertEqual(item.completionSuggestion?.recommended, true)
     }
 
-    func testMalformedWorkItemResponseProducesExplicitDataSafetyMessage() {
+    func testMalformedLegacyAcceptanceAssessmentDoesNotHideTheWorkItem() throws {
         let data = Data(
             """
             {
@@ -111,12 +111,8 @@ final class WorkItemResponseHandlingTests: XCTestCase {
             """.utf8
         )
 
-        XCTAssertThrowsError(try decoder().decode(WorkItemListEnvelope.self, from: data)) { error in
-            let message = EntityAPIClient.workItemsLoadErrorMessage(error)
-            XCTAssertTrue(message.contains("WorkItem 加载失败"))
-            XCTAssertTrue(message.contains("未用空列表覆盖现有内容"))
-            XCTAssertTrue(message.contains("此错误不代表数据已删除"))
-            XCTAssertTrue(message.contains("acceptanceAssessment.status"))
-        }
+        let item = try XCTUnwrap(decoder().decode(WorkItemListEnvelope.self, from: data).workItems.first)
+        XCTAssertEqual(item.id, "work-item:legacy")
+        XCTAssertNil(item.acceptanceAssessment)
     }
 }
