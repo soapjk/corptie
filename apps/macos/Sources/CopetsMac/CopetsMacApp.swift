@@ -515,9 +515,16 @@ enum CorptieBackendSupervisor {
             let launchAgentsDir = fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library", isDirectory: true)
                 .appendingPathComponent("LaunchAgents", isDirectory: true)
+            let backendLogDir = fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Logs", isDirectory: true)
+                .appendingPathComponent("Corptie", isDirectory: true)
             let installedPlist = launchAgentsDir.appendingPathComponent("\(label).plist")
 
             try fileManager.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+            // launchd opens StandardOutPath/StandardErrorPath before executing
+            // the bundled launcher, so the parent directory must already exist.
+            try fileManager.createDirectory(at: backendLogDir, withIntermediateDirectories: true)
             if !fileManager.contentsEqual(atPath: bundledPlist.path, andPath: installedPlist.path) {
                 _ = try? runLaunchctl(["bootout", "gui/\(getuid())", installedPlist.path])
                 if fileManager.fileExists(atPath: installedPlist.path) {

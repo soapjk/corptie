@@ -6,8 +6,12 @@ APP_PATH="/Applications/Corptie.app"
 APP_EXECUTABLE="${APP_PATH}/Contents/MacOS/Corptie"
 BACKEND_PORT="${CORPTIE_PRODUCTION_PORT:-47321}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
+HEALTH_TIMEOUT_SECONDS="${CORPTIE_PRODUCTION_HEALTH_TIMEOUT_SECONDS:-180}"
 LAUNCH_AGENT_LABEL="com.corptie.backend"
 LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+BACKEND_LOG_DIR="${HOME}/Library/Logs/Corptie"
+BACKEND_STDOUT_LOG="${BACKEND_LOG_DIR}/backend.out.log"
+BACKEND_STDERR_LOG="${BACKEND_LOG_DIR}/backend.err.log"
 CHECK_ONLY=false
 MOUNT_POINT=""
 STAGED_APP=""
@@ -35,6 +39,11 @@ for argument in "$@"; do
     *) echo "Unknown argument: ${argument}" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if ! [[ "${HEALTH_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "CORPTIE_PRODUCTION_HEALTH_TIMEOUT_SECONDS must be a positive integer." >&2
+  exit 64
+fi
 
 find_node() {
   local login_node candidate
@@ -281,7 +290,8 @@ MOUNT_POINT=""
 
 echo "Opening the newly installed Corptie app..."
 open -na "${APP_PATH}"
-for _ in {1..60}; do
+health_attempts=$((HEALTH_TIMEOUT_SECONDS * 2))
+for ((attempt = 1; attempt <= health_attempts; attempt += 1)); do
   if curl --fail --silent --max-time 1 "${BACKEND_URL}/health" \
     | "${NODE_BIN}" -e '
         let input="";
@@ -297,8 +307,27 @@ for _ in {1..60}; do
     echo "Disk image: ${DMG_PATH}"
     exit 0
   fi
+  if (( attempt % 20 == 0 )); then
+    elapsed_seconds=$((attempt / 2))
+    if launchctl print "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1; then
+      echo "Waiting for production backend initialization (${elapsed_seconds}s/${HEALTH_TIMEOUT_SECONDS}s)..."
+    else
+      echo "Production backend LaunchAgent is not loaded after ${elapsed_seconds}s." >&2
+      break
+    fi
+  fi
   sleep 0.5
 done
 
 echo "The new app opened, but its production backend did not become healthy at ${BACKEND_URL}." >&2
+echo "Production backend diagnostics:" >&2
+launchctl print "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" 2>&1 | tail -80 >&2 || true
+if [[ -f "${BACKEND_STDERR_LOG}" ]]; then
+  echo "Recent backend stderr (${BACKEND_STDERR_LOG}):" >&2
+  tail -80 "${BACKEND_STDERR_LOG}" >&2 || true
+fi
+if [[ -f "${BACKEND_STDOUT_LOG}" ]]; then
+  echo "Recent backend stdout (${BACKEND_STDOUT_LOG}):" >&2
+  tail -80 "${BACKEND_STDOUT_LOG}" >&2 || true
+fi
 exit 1

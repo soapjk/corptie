@@ -175,9 +175,9 @@ cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
       <string>${BACKEND_BUILD_ID}</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/dev/null</string>
+    <string>${HOME}/Library/Logs/Corptie/backend.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/dev/null</string>
+    <string>${HOME}/Library/Logs/Corptie/backend.err.log</string>
   </dict>
 </plist>
 PLIST
