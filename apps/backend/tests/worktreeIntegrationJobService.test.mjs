@@ -14,7 +14,8 @@ function memoryFixture({
   mainDirty = true,
   externalConflictResolved = false,
   commitGate = null,
-  conflictAttempts = null
+  conflictAttempts = null,
+  inspectRepositorySummary = null
 } = {}) {
   const jobs = new Map();
   let sequence = 0;
@@ -81,6 +82,7 @@ function memoryFixture({
   let launchedSession = 0;
   const service = new WorktreeIntegrationJobService({
     store,
+    inspectRepositorySummary,
     inspectRepository: async () => ({
       repositoryId: repository.id, inventoryVersion: "inventory:1", mainWorktreeId: "wt:main",
       mainPath: "/repo", mainHeadOid: worktrees[0].headOid, worktrees: structuredClone(worktrees)
@@ -144,6 +146,36 @@ function memoryFixture({
   });
   return { service, store, calls, worktrees };
 }
+
+test("repository listing uses the lightweight summary while preflight keeps the deep inspection", async () => {
+  let summaryCalls = 0;
+  const summaryWorktrees = [{
+    worktreeId: "wt:summary", path: "/repo-summary", isMain: true,
+    availability: "available", headOid: "summary:1", branchName: "main",
+    dirty: false, statusSummary: "", changedFiles: [], aheadOfMain: 0,
+    behindMain: 0, mergedIntoMain: true, synchronizedWithMain: true,
+    pendingIntegration: false, isLocked: false, isPrunable: false,
+    isDetached: false, operationState: null, conflictFiles: [], sessions: []
+  }];
+  const { service } = memoryFixture({
+    inspectRepositorySummary: async () => {
+      summaryCalls += 1;
+      return {
+        repositoryId: "repository:1", inventoryVersion: "inventory:summary",
+        mainWorktreeId: "wt:summary", mainPath: "/repo-summary",
+        mainHeadOid: "summary:1", worktrees: structuredClone(summaryWorktrees)
+      };
+    }
+  });
+
+  const listed = await service.repository("repository:1");
+  assert.equal(summaryCalls, 1);
+  assert.deepEqual(listed.project.worktrees.map((worktree) => worktree.worktreeId), ["wt:summary"]);
+
+  const plan = await service.preflight("repository:1");
+  assert.equal(summaryCalls, 1);
+  assert.deepEqual(plan.plan.items.map((item) => item.worktreeId), ["wt:main", "wt:feature"]);
+});
 
 async function waitForJob(service, id, status) {
   for (let attempt = 0; attempt < 100; attempt += 1) {

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -112,10 +112,7 @@ export async function createGitWorkspaceSnapshot(workingDirectory, options = {})
     options.inspectionConcurrency ?? 8,
     async (record) => {
       try {
-        const identity = await inspectGitWorkspace(record.path, options);
-        if (identity.repositoryId !== anchor.repositoryId) {
-          throw new Error(`Worktree ${record.path} resolved to another repository`);
-        }
+        const identity = await inspectListedGitWorktree(record, anchor, options);
         return {
           ...record,
           ...identity,
@@ -152,6 +149,47 @@ export async function createGitWorkspaceSnapshot(workingDirectory, options = {})
     worktrees,
     inventoryVersion,
     observedAt: inspectedAt
+  };
+}
+
+async function inspectListedGitWorktree(record, anchor, options) {
+  if (record.isBare) return inspectGitWorkspace(record.path, options);
+  try {
+    return await inspectListedGitWorktreeFromMarker(record, anchor, options);
+  } catch {
+    const identity = await inspectGitWorkspace(record.path, options);
+    if (identity.repositoryId !== anchor.repositoryId) {
+      throw new Error(`Worktree ${record.path} resolved to another repository`);
+    }
+    return identity;
+  }
+}
+
+async function inspectListedGitWorktreeFromMarker(record, anchor, options) {
+  const resolveRealpath = options.realpath ?? realpath;
+  const read = options.readFile ?? readFile;
+  const inspectPath = options.stat ?? stat;
+  const markerPath = resolve(record.path, ".git");
+  const [canonicalPath, markerStat] = await Promise.all([
+    resolveRealpath(record.path),
+    inspectPath(markerPath)
+  ]);
+  let gitDirPath = markerPath;
+  if (!markerStat.isDirectory()) {
+    const marker = String(await read(markerPath, "utf8"));
+    const match = marker.match(/^gitdir:\s*(.+?)\s*$/m);
+    if (!match?.[1]) throw new Error(`Worktree ${record.path} has an invalid .git file`);
+    gitDirPath = resolve(dirname(markerPath), match[1]);
+  }
+  const gitDirCanonicalPath = await resolveRealpath(gitDirPath);
+  return {
+    repositoryId: anchor.repositoryId,
+    worktreeId: stableId("worktree", `${anchor.repositoryId}\0${gitDirCanonicalPath}`),
+    path: record.path,
+    canonicalPath,
+    gitDirCanonicalPath,
+    commonGitDirCanonicalPath: anchor.commonGitDirCanonicalPath,
+    isMain: gitDirCanonicalPath === anchor.commonGitDirCanonicalPath
   };
 }
 

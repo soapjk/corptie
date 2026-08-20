@@ -106,7 +106,7 @@ export class GitWorkspaceManager {
     return this.projectStatusForPath(logical.activeBinding.boundCwd, logical.repositoryId);
   }
 
-  async projectStatusForPath(workingDirectory, expectedRepositoryId = null) {
+  async projectStatusForPath(workingDirectory, expectedRepositoryId = null, options = {}) {
     const startedAt = performance.now();
     const snapshotStartedAt = performance.now();
     const snapshot = await createGitWorkspaceSnapshot(absolutePath(workingDirectory), {
@@ -148,7 +148,7 @@ export class GitWorkspaceManager {
         }
         const status = await this.gitOutput(worktree.path, ["status", "--porcelain=v1"]);
         const dirty = Boolean(status.trim());
-        const diffStat = dirty
+        const diffStat = dirty && options.includeDiffStat !== false
           ? (await this.gitOutput(worktree.path, ["diff", "--stat", "HEAD"])).trim()
           : "";
         if (worktree.isMain) {
@@ -173,12 +173,7 @@ export class GitWorkspaceManager {
           `${main.headOid}...${worktree.headOid}`
         ]);
         const [behindMain, aheadOfMain] = counts.trim().split(/\s+/).map((value) => Number(value) || 0);
-        const mergedIntoMain = await this.gitSucceeds(main.path, [
-          "merge-base",
-          "--is-ancestor",
-          worktree.headOid,
-          main.headOid
-        ]);
+        const mergedIntoMain = aheadOfMain === 0;
         const pendingIntegration = dirty || !mergedIntoMain;
         const synchronizedWithMain = !dirty
           && aheadOfMain === 0
@@ -225,7 +220,9 @@ export class GitWorkspaceManager {
 
   async integrationInspectionForProject(workingDirectory, expectedRepositoryId = null) {
     const startedAt = performance.now();
-    const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId);
+    const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId, {
+      includeDiffStat: false
+    });
     const enrichmentStartedAt = performance.now();
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => {
       if (worktree.availability !== "available") {
@@ -247,6 +244,30 @@ export class GitWorkspaceManager {
       repositoryId: status.repositoryId,
       worktreeCount: worktrees.length,
       enrichmentMs: roundedMilliseconds(performance.now() - enrichmentStartedAt),
+      totalMs: roundedMilliseconds(performance.now() - startedAt)
+    });
+    return { ...status, worktrees };
+  }
+
+  async managementInspectionForProject(workingDirectory, expectedRepositoryId = null) {
+    const startedAt = performance.now();
+    const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId, {
+      includeDiffStat: false
+    });
+    const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => ({
+      ...worktree,
+      changedFiles: worktree.availability === "available"
+        ? changedFilesFromPorcelain(worktree.statusSummary ?? "")
+        : [],
+      operationState: worktree.availability === "available"
+        ? await operationStateForGitDir(worktree.gitDirCanonicalPath)
+        : null,
+      conflictFiles: []
+    }));
+    this.observePerformance({
+      operation: "managementInspectionForProject",
+      repositoryId: status.repositoryId,
+      worktreeCount: worktrees.length,
       totalMs: roundedMilliseconds(performance.now() - startedAt)
     });
     return { ...status, worktrees };
@@ -1123,6 +1144,20 @@ async function pathExists(path) {
     if (error?.code === "ENOENT" || error?.code === "ENOTDIR") return false;
     throw error;
   }
+}
+
+async function operationStateForGitDir(gitDir) {
+  if (!gitDir) return null;
+  for (const [name, marker] of [
+    ["merge", "MERGE_HEAD"],
+    ["cherry_pick", "CHERRY_PICK_HEAD"],
+    ["revert", "REVERT_HEAD"],
+    ["rebase", "rebase-merge"],
+    ["rebase", "rebase-apply"]
+  ]) {
+    if (await pathExists(resolve(gitDir, marker))) return name;
+  }
+  return null;
 }
 
 async function mapConcurrentOrdered(values, concurrency, transform) {

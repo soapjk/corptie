@@ -154,7 +154,7 @@ test("createGitWorkspaceSnapshot captures every worktree with a stable inventory
   }
 });
 
-test("bounded parallel inspection preserves inventory order and measurably reduces load time", async () => {
+test("snapshot derives listed Worktree identities without per-Worktree Git subprocesses", async () => {
   const paths = ["/repo", ...Array.from({ length: 15 }, (_, index) => `/repo/worktree-${index + 1}`)];
   const porcelain = Buffer.from(paths.flatMap((path, index) => [
     `worktree ${path}`,
@@ -162,8 +162,9 @@ test("bounded parallel inspection preserves inventory order and measurably reduc
     `branch refs/heads/${index === 0 ? "main" : `feature/${index}`}`,
     ""
   ]).concat("").join("\0"));
-  const delayedGit = async (_file, args) => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
+  const calls = [];
+  const deterministicGit = async (_file, args) => {
+    calls.push(args);
     const cwd = args[1];
     if (args.includes("worktree")) return { stdout: porcelain };
     const flag = args.at(-1);
@@ -175,35 +176,22 @@ test("bounded parallel inspection preserves inventory order and measurably reduc
     throw new Error(`Unexpected git arguments: ${args.join(" ")}`);
   };
   const canonical = async (path) => path;
-  const measure = async (inspectionConcurrency) => {
-    const startedAt = performance.now();
-    const snapshot = await createGitWorkspaceSnapshot("/repo", {
-      execFile: delayedGit,
-      realpath: canonical,
-      inspectionConcurrency,
-      inspectedAt: "2026-08-20T00:00:00.000Z"
-    });
-    return { snapshot, durationMs: performance.now() - startedAt };
-  };
+  const snapshot = await createGitWorkspaceSnapshot("/repo", {
+    execFile: deterministicGit,
+    realpath: canonical,
+    stat: async (path) => ({ isDirectory: () => path === "/repo/.git" }),
+    readFile: async (path) => {
+      const name = path.match(/worktree-(\d+)/)?.[1];
+      return `gitdir: /repo/.git/worktrees/worktree-${name}\n`;
+    },
+    inspectedAt: "2026-08-20T00:00:00.000Z"
+  });
 
-  const serial = await measure(1);
-  const parallel = await measure(8);
-
-  assert.deepEqual(
-    parallel.snapshot.worktrees.map((worktree) => worktree.path),
-    serial.snapshot.worktrees.map((worktree) => worktree.path)
-  );
-  assert.equal(parallel.snapshot.inventoryVersion, serial.snapshot.inventoryVersion);
-  assert.ok(
-    parallel.durationMs < serial.durationMs * 0.6,
-    `expected parallel ${parallel.durationMs.toFixed(1)}ms to beat serial ${serial.durationMs.toFixed(1)}ms`
-  );
-  console.info(JSON.stringify({
-    benchmark: "git-worktree-identity-inspection",
-    worktreeCount: paths.length,
-    serialMs: Math.round(serial.durationMs * 10) / 10,
-    parallelMs: Math.round(parallel.durationMs * 10) / 10
-  }));
+  assert.deepEqual(snapshot.worktrees.map((worktree) => worktree.path), paths);
+  assert.equal(new Set(snapshot.worktrees.map((worktree) => worktree.worktreeId)).size, paths.length);
+  assert.equal(snapshot.worktrees[0].isMain, true);
+  assert.equal(snapshot.worktrees.slice(1).every((worktree) => !worktree.isMain), true);
+  assert.equal(calls.length, 4, `expected three anchor identity calls and one list call, got ${calls.length}`);
 });
 
 async function git(arguments_, cwd) {
