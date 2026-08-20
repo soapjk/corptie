@@ -4,6 +4,22 @@ import XCTest
 
 @MainActor
 final class ActivityStatusTextTests: XCTestCase {
+    func testTerminalAuthoritativeDetailClearsStaleStartingActivity() {
+        XCTAssertNil(BackendClient.reconciledActivityStatus(
+            authoritativeStatus: .complete,
+            authoritativeActivityStatus: nil,
+            fallbackActivityStatus: "Starting Codex"
+        ))
+    }
+
+    func testRunningAuthoritativeDetailMayRetainLastKnownActivity() {
+        XCTAssertEqual(BackendClient.reconciledActivityStatus(
+            authoritativeStatus: .running,
+            authoritativeActivityStatus: nil,
+            fallbackActivityStatus: "Running command"
+        ), "Running command")
+    }
+
     func testWideParentProposalCannotStretchStatusPastItsTextWidth() {
         let fitted = ActivityStatusText.fittedSize(
             proposedWidth: 900,

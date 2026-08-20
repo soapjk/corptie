@@ -25,6 +25,12 @@ struct SessionsView: View {
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
     @State private var isShowingWorkerArchive = false
+    @State private var readCompletionRevisionsBySessionID = SessionReadReceiptStore.load()
+    @State private var hasInitializedSessionReadReceipts = SessionReadReceiptStore.isInitialized
+    @AppStorage(
+        "sessions.workerGroupingMode",
+        store: CorptieAppEnvironment.userDefaults
+    ) private var workerGroupingModeRawValue = WorkerSessionGroupingMode.objective.rawValue
     @EnvironmentObject private var router: AppTabRouter
     /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
     @State private var showNewSessionCreation = false
@@ -77,6 +83,7 @@ struct SessionsView: View {
             }
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
+            reconcileSessionReadReceipts(sessions)
             let activeSessionIDs = Set(sessions.map(\.id))
             presentationStore.prune(to: activeSessionIDs)
             SessionTimelineRepository.shared.prune(to: activeSessionIDs)
@@ -90,6 +97,9 @@ struct SessionsView: View {
         .onReceive(backendClient.$selectedSession) { session in
             selectedSession = session
             if let session {
+                if router.selectedTab == .sessions {
+                    markSessionRead(session)
+                }
                 presentationStore.activateHost(for: session.id)
                 Self.recordSessionId(session.id, category: selectedCategory)
                 visuallySelectedSessionID = session.id
@@ -121,6 +131,7 @@ struct SessionsView: View {
         guard router.selectedTab == .sessions else { return }
         selectedSession = backendClient.selectedSession
         if let selectedSession {
+            markSessionRead(selectedSession)
             presentationStore.activateHost(for: selectedSession.id)
         }
         scheduleDetailRendering()
@@ -255,6 +266,7 @@ struct SessionsView: View {
 
     private func selectSessionAfterHighlight(_ session: TaskSession) {
         pendingSelectionTask?.cancel()
+        markSessionRead(session)
         visuallySelectedSessionID = session.id
         pendingSelectionTask = Task { @MainActor in
             // Give AppKit one display frame to paint the row selection before
@@ -298,6 +310,12 @@ struct SessionsView: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
+            if selectedCategory == .worker && !isShowingWorkerArchive {
+                workerGroupingPicker
+                    .padding(.horizontal, 8)
+                    .padding(.top, 6)
+            }
+
             if isSearching {
                 sessionSearchBar
                     .padding(.horizontal, 8)
@@ -321,12 +339,18 @@ struct SessionsView: View {
                         .listRowBackground(Color.clear)
                 } else {
                     ForEach(groupedSessions) { group in
-                        Section {
-                            if !collapsedGroupKeys.contains(group.key) {
-                                ForEach(group.rows) { row in sessionRow(row) }
+                        if group.showsHeader {
+                            Section {
+                                if !collapsedGroupKeys.contains(group.key) {
+                                    ForEach(group.rows) { row in sessionRow(row) }
+                                }
+                            } header: {
+                                sessionGroupHeader(group)
                             }
-                        } header: {
-                            sessionGroupHeader(group)
+                        } else {
+                            ForEach(group.rows) { row in
+                                sessionRow(row)
+                            }
                         }
                     }
                 }
@@ -399,14 +423,40 @@ struct SessionsView: View {
     }
 
     private var sessionCategoryPicker: some View {
-        Picker(L10n("Session Type"), selection: $selectedCategory) {
+        HStack(spacing: 2) {
             ForEach(SessionCategory.allCases) { category in
-                Label(category.title, systemImage: category.systemImage)
-                    .tag(category)
+                Button {
+                    selectedCategory = category
+                } label: {
+                    Label(category.title, systemImage: category.systemImage)
+                        .font(.system(size: 10, weight: .semibold))
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 24)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .topTrailing) {
+                            let count = unreadSessionCount(for: category)
+                            if count > 0 {
+                                SessionCountBadge(count: count, fill: .red, diameter: 15)
+                                    .padding(.top, 1)
+                                    .padding(.trailing, 1)
+                            }
+                        }
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(selectedCategory == category
+                                    ? Color(nsColor: .controlBackgroundColor)
+                                    : Color.clear)
+                        }
+                }
+                .buttonStyle(.plain)
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        .padding(2)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.35))
+        }
         .help(selectedCategory.title)
     }
 
@@ -421,6 +471,19 @@ struct SessionsView: View {
         }
         .buttonStyle(.plain)
         .help(L10n("Create an Assistant, Objective, or Worker Session"))
+    }
+
+    private var workerGroupingPicker: some View {
+        Picker(L10n("Work Session Grouping"), selection: Binding(
+            get: { workerGroupingMode },
+            set: { workerGroupingModeRawValue = $0.rawValue }
+        )) {
+            ForEach(WorkerSessionGroupingMode.allCases) { mode in
+                Text(mode.title).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
@@ -469,10 +532,12 @@ struct SessionsView: View {
                 Text(group.title)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
+                SessionCountBadge(
+                    count: group.rows.count,
+                    fill: Color.secondary.opacity(0.82),
+                    diameter: 16
+                )
                 Spacer()
-                Text("\(group.rows.count)")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
             }
             .padding(.top, 4)
             .contentShape(Rectangle())
@@ -486,6 +551,10 @@ struct SessionsView: View {
         isShowingWorkerArchive ? .archived : .active
     }
 
+    private var workerGroupingMode: WorkerSessionGroupingMode {
+        WorkerSessionGroupingMode(rawValue: workerGroupingModeRawValue) ?? .objective
+    }
+
     /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Objective 分组。
     private var groupedSessions: [SessionGroup] {
         makeSessionGroups(
@@ -494,7 +563,8 @@ struct SessionsView: View {
             workItems: entityClient.workItems,
             objectives: entityClient.objectives,
             category: selectedCategory,
-            workerScope: workerSessionScope
+            workerScope: workerSessionScope,
+            workerGroupingMode: workerGroupingMode
         )
     }
 
@@ -505,6 +575,42 @@ struct SessionsView: View {
         isSearching = false
         isSearchFieldFocused = false
         restoreSelection(for: .worker)
+    }
+
+    private func unreadSessionCount(for category: SessionCategory) -> Int {
+        countUnreadSessions(
+            in: sessionListStore.rows.map(\.session),
+            category: category,
+            workItems: entityClient.workItems,
+            readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID
+        )
+    }
+
+    private func reconcileSessionReadReceipts(_ sessions: [TaskSession]) {
+        if !hasInitializedSessionReadReceipts {
+            for session in sessions where session.status == .complete {
+                readCompletionRevisionsBySessionID[session.id] = session.updatedAt
+            }
+            hasInitializedSessionReadReceipts = true
+            SessionReadReceiptStore.save(
+                readCompletionRevisionsBySessionID,
+                initialized: true
+            )
+        }
+        guard router.selectedTab == .sessions,
+              let selectedID = selectedSession?.id,
+              let selected = sessions.first(where: { $0.id == selectedID }) else { return }
+        markSessionRead(selected)
+    }
+
+    private func markSessionRead(_ session: TaskSession) {
+        guard session.status == .complete,
+              readCompletionRevisionsBySessionID[session.id] != session.updatedAt else { return }
+        readCompletionRevisionsBySessionID[session.id] = session.updatedAt
+        SessionReadReceiptStore.save(
+            readCompletionRevisionsBySessionID,
+            initialized: hasInitializedSessionReadReceipts
+        )
     }
 
     // 按搜索词筛选当前 Tab 下的会话（匹配标题/摘要/Agent/工作目录）。
@@ -565,13 +671,97 @@ struct SessionGroup: Identifiable {
     let key: String
     let title: String
     let rows: [SessionRowModel]
+    let showsHeader: Bool
 
     var id: String { key }
+
+    init(key: String, title: String, rows: [SessionRowModel], showsHeader: Bool = true) {
+        self.key = key
+        self.title = title
+        self.rows = rows
+        self.showsHeader = showsHeader
+    }
+}
+
+struct SessionCountBadge: View {
+    let count: Int
+    let fill: Color
+    let diameter: CGFloat
+
+    var body: some View {
+        Text("\(count)")
+            .font(.system(size: diameter <= 15 ? 8 : 9, weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .minimumScaleFactor(0.65)
+            .lineLimit(1)
+            .frame(width: diameter, height: diameter)
+            .background(fill, in: Circle())
+            .accessibilityLabel(L10nFormat("%@ Sessions", "\(count)"))
+    }
+}
+
+@MainActor
+enum SessionReadReceiptStore {
+    private static let revisionsKey = "sessions.readCompletionRevisions"
+    private static let initializedKey = "sessions.readCompletionRevisions.initialized"
+
+    static var isInitialized: Bool {
+        CorptieAppEnvironment.userDefaults.bool(forKey: initializedKey)
+    }
+
+    static func load() -> [String: String] {
+        CorptieAppEnvironment.userDefaults.dictionary(forKey: revisionsKey) as? [String: String] ?? [:]
+    }
+
+    static func save(_ revisions: [String: String], initialized: Bool) {
+        CorptieAppEnvironment.userDefaults.set(revisions, forKey: revisionsKey)
+        CorptieAppEnvironment.userDefaults.set(initialized, forKey: initializedKey)
+    }
+}
+
+func isSessionUnread(
+    _ session: TaskSession,
+    readCompletionRevisionsBySessionID: [String: String]
+) -> Bool {
+    session.status == .complete
+        && readCompletionRevisionsBySessionID[session.id] != session.updatedAt
+}
+
+func countUnreadSessions(
+    in sessions: [TaskSession],
+    category: SessionCategory,
+    workItems: [WorkItem],
+    readCompletionRevisionsBySessionID: [String: String]
+) -> Int {
+    sessions.lazy.filter { session in
+        guard SessionCategory(session: session) == category else { return false }
+        if category == .worker, isArchivedWorkerSession(session, workItems: workItems) {
+            return false
+        }
+        return isSessionUnread(
+            session,
+            readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID
+        )
+    }.count
 }
 
 enum WorkerSessionScope: Equatable {
     case active
     case archived
+}
+
+enum WorkerSessionGroupingMode: String, CaseIterable, Identifiable {
+    case objective
+    case none
+
+    var id: String { rawValue }
+
+    @MainActor var title: String {
+        switch self {
+        case .objective: L10n("Group by Objective")
+        case .none: L10n("No Grouping")
+        }
+    }
 }
 
 enum SessionCategory: String, CaseIterable, Identifiable {
@@ -613,7 +803,8 @@ func makeSessionGroups(
     workItems: [WorkItem],
     objectives: [Objective],
     category: SessionCategory,
-    workerScope: WorkerSessionScope = .active
+    workerScope: WorkerSessionScope = .active,
+    workerGroupingMode: WorkerSessionGroupingMode = .objective
 ) -> [SessionGroup] {
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
     let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
@@ -622,6 +813,7 @@ func makeSessionGroups(
     var assistantRows: [String: [SessionRowModel]] = [:]
     var objectiveOrder: [String] = []
     var objectiveTitles: [String: String] = [:]
+    var visibleWorkerRows: [SessionRowModel] = []
     var workerRows: [String: [SessionRowModel]] = [:]
     var objectiveRows: [String: [SessionRowModel]] = [:]
     var legacyRows: [SessionRowModel] = []
@@ -651,6 +843,7 @@ func makeSessionGroups(
             let workItem = row.session.workItemId.flatMap { workItemsByID[$0] }
             let isArchived = workItem.map { WorkItemColumn.column(for: $0.status) == .done } == true
             guard (workerScope == .archived) == isArchived else { continue }
+            visibleWorkerRows.append(row)
             let objectiveKey = registerObjective(workItem?.objectiveId ?? row.session.objectiveId)
             workerRows[objectiveKey, default: []].append(row)
         case .legacy:
@@ -664,6 +857,18 @@ func makeSessionGroups(
             title: agentsByID[key]?.name ?? L10n("Assistant Session"),
             rows: assistantRows[key] ?? []
         )
+    }
+    if category == .worker,
+       workerScope == .active,
+       workerGroupingMode == .none,
+       !visibleWorkerRows.isEmpty {
+        groups.append(SessionGroup(
+            key: "worker-ungrouped",
+            title: "",
+            rows: visibleWorkerRows,
+            showsHeader: false
+        ))
+        return groups
     }
     for objectiveKey in objectiveOrder {
         if category == .worker,

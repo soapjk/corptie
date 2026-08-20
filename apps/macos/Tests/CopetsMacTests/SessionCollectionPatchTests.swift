@@ -231,6 +231,37 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func ungroupedWorkerSessionsAppearOnceWithoutAnObjectiveHeader() {
+        let first = SessionRowModel(session: makeSession(
+            id: "first-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:first"
+        ))
+        let second = SessionRowModel(session: makeSession(
+            id: "second-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:second"
+        ))
+
+        let groups = makeSessionGroups(
+            rows: [first, second],
+            agents: [],
+            workItems: [
+                makeWorkItem(id: "work-item:first", status: "in_progress"),
+                makeWorkItem(id: "work-item:second", status: "ready")
+            ],
+            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            category: .worker,
+            workerGroupingMode: .none
+        )
+
+        #expect(groups.count == 1)
+        #expect(groups[0].key == "worker-ungrouped")
+        #expect(groups[0].showsHeader == false)
+        #expect(groups[0].rows.map(\.id) == ["first-worker", "second-worker"])
+    }
+
+    @Test
     func archivedWorkerSessionsContainOnlyCompletedWorkItemsGroupedByObjective() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
@@ -257,6 +288,7 @@ struct SessionCollectionPatchTests {
 
         #expect(groups.map(\.title) == ["Sessions UI"])
         #expect(groups.flatMap(\.rows).map(\.id) == ["completed-worker"])
+        #expect(groups.map(\.showsHeader) == [true])
     }
 
     @Test
@@ -292,6 +324,77 @@ struct SessionCollectionPatchTests {
             workItems: workItems,
             workerScope: .archived
         ) == "completed-worker")
+    }
+
+    @Test
+    func completedSessionIsUnreadUntilItsCurrentCompletionRevisionIsOpened() {
+        let completed = makeSession(
+            id: "completed",
+            status: .complete,
+            updatedAt: "2026-08-20T01:00:00Z"
+        )
+
+        #expect(isSessionUnread(completed, readCompletionRevisionsBySessionID: [:]))
+        #expect(!isSessionUnread(
+            completed,
+            readCompletionRevisionsBySessionID: [completed.id: completed.updatedAt]
+        ))
+        #expect(isSessionUnread(
+            completed,
+            readCompletionRevisionsBySessionID: [completed.id: "2026-08-20T00:59:00Z"]
+        ))
+        #expect(!isSessionUnread(
+            makeSession(id: "running", status: .running),
+            readCompletionRevisionsBySessionID: [:]
+        ))
+    }
+
+    @Test
+    func unreadTabCountsUseSessionCategoryAndExcludeArchivedWorkSessions() {
+        let activeWorker = makeSession(
+            id: "active-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:active"
+        )
+        let archivedWorker = makeSession(
+            id: "archived-worker",
+            sessionKind: .worker,
+            workItemId: "work-item:done"
+        )
+        let objective = makeSession(
+            id: "objective",
+            sessionKind: .objectiveChat,
+            objectiveId: "objective:1"
+        )
+        let assistant = makeSession(
+            id: "assistant",
+            sessionKind: .assistantChat,
+            status: .running
+        )
+        let sessions = [activeWorker, archivedWorker, objective, assistant]
+        let workItems = [
+            makeWorkItem(id: "work-item:active", status: "in_progress"),
+            makeWorkItem(id: "work-item:done", status: "done")
+        ]
+
+        #expect(countUnreadSessions(
+            in: sessions,
+            category: .worker,
+            workItems: workItems,
+            readCompletionRevisionsBySessionID: [:]
+        ) == 1)
+        #expect(countUnreadSessions(
+            in: sessions,
+            category: .objective,
+            workItems: workItems,
+            readCompletionRevisionsBySessionID: [:]
+        ) == 1)
+        #expect(countUnreadSessions(
+            in: sessions,
+            category: .assistant,
+            workItems: workItems,
+            readCompletionRevisionsBySessionID: [:]
+        ) == 0)
     }
 
     @Test
@@ -382,7 +485,9 @@ private func makeSession(
     agentId: String? = nil,
     sessionKind: SessionKind? = nil,
     workItemId: String? = nil,
-    objectiveId: String? = nil
+    objectiveId: String? = nil,
+    status: TaskStatus = .complete,
+    updatedAt: String = "2026-08-12T00:00:00Z"
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -392,13 +497,13 @@ private func makeSession(
         sessionKind: sessionKind,
         objectiveId: objectiveId,
         workItemId: workItemId,
-        status: .complete,
+        status: status,
         progress: 1,
         summary: summary,
         suggestedOptions: nil,
         suggestedPrompt: nil,
         activityStatus: nil,
-        updatedAt: "2026-08-12T00:00:00Z",
+        updatedAt: updatedAt,
         accent: .cyan,
         archived: false,
         pinned: false,

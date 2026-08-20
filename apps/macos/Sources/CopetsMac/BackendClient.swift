@@ -63,6 +63,19 @@ final class BackendClient: ObservableObject {
 
     private static let iso8601Formatter = ISO8601DateFormatter()
 
+    nonisolated static func reconciledActivityStatus(
+        authoritativeStatus: TaskStatus,
+        authoritativeActivityStatus: String?,
+        fallbackActivityStatus: String?
+    ) -> String? {
+        switch authoritativeStatus {
+        case .running, .blocked:
+            return authoritativeActivityStatus ?? fallbackActivityStatus
+        case .complete, .failed, .cancelled:
+            return nil
+        }
+    }
+
     let sessionsDidChange = CurrentValueSubject<[TaskSession], Never>([])
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
@@ -441,6 +454,7 @@ final class BackendClient: ObservableObject {
             "CollaborationConfirmationResolved",
             "SessionWorkspaceSwitched",
             "SessionWorkspaceSwitchFailed",
+            "SessionProviderProjectionReconciled",
             "WorkspaceContinuationQueued",
             "WorkspaceContinuationStarted",
             "WorkspaceContinuationCompleted",
@@ -3761,7 +3775,11 @@ final class BackendClient: ObservableObject {
                 summary: latestSummary?.isEmpty == false ? latestSummary! : session.summary,
                 suggestedOptions: pendingChoice?.options ?? session.suggestedOptions,
                 suggestedPrompt: pendingPrompt?.isEmpty == false ? pendingPrompt : session.suggestedPrompt,
-                activityStatus: detail.activityStatus ?? session.activityStatus,
+                activityStatus: Self.reconciledActivityStatus(
+                    authoritativeStatus: detail.status,
+                    authoritativeActivityStatus: detail.activityStatus,
+                    fallbackActivityStatus: session.activityStatus
+                ),
                 updatedAt: detail.updatedAt,
                 accent: session.accent,
                 archived: session.archived,

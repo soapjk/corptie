@@ -103,7 +103,7 @@ export function repairStableSessionFromBoundPhysicalProjection(store, session) {
     pinned: stable.pinned,
     sortOrder: stable.sortOrder,
     createdAt: stable.createdAt,
-    updatedAt: stable.updatedAt,
+    updatedAt: session.updatedAt ?? stable.updatedAt,
     external: {
       ...(session.external ?? {}),
       provider: logical.activeBinding.providerId,
@@ -114,6 +114,27 @@ export function repairStableSessionFromBoundPhysicalProjection(store, session) {
     }
   });
   return store.getSession(stable.id);
+}
+
+// A newly-created Provider thread can finish its bootstrap turn before the
+// logical route switch is committed. In that window its freshest projection is
+// cached under the physical Provider identity. Once the route is active, copy
+// that projection back onto the stable product Session immediately so the UI
+// never remains stuck on the initial "Starting …" projection.
+export function repairStableSessionFromActiveProviderCache(store, logicalSessionId, sessions = []) {
+  if (!store?.db || !logicalSessionId) return null;
+  const logical = store.getLogicalSession(logicalSessionId);
+  if (!logical?.activeBinding) return null;
+  const activeProviderId = logical.activeBinding.providerId;
+  const activeProviderSessionId = logical.activeBinding.providerSessionId;
+  const activeThreadId = logical.activeThreadId;
+  const physical = sessions.find((session) => {
+    if (!session || session.id === logical.legacySessionId) return false;
+    const external = session.external ?? {};
+    return external.provider === activeProviderId
+      && (external.sessionId === activeProviderSessionId || external.threadId === activeThreadId);
+  });
+  return physical ? repairStableSessionFromBoundPhysicalProjection(store, physical) : null;
 }
 
 // Repairs the historical state where a Corptie-owned Provider session had a
