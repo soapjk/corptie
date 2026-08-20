@@ -537,7 +537,9 @@ export class ClaudeAgentManager {
       inputQueue: [],
       inputResolvers: []
     };
-    session.runtimeOptions = null;
+    session.runtimeOptions = options.runtimeOptions
+      ? normalizeClaudeRuntimeOptions(options.runtimeOptions)
+      : null;
     const storedItems = this.store?.getItems(id, this.maxItems, "claude-sdk") ?? [];
     const transcriptItems = agentSessionId ? await this.loadTranscriptItems(session) : [];
     session.items = mergeClaudeTranscriptItems(transcriptItems, storedItems)

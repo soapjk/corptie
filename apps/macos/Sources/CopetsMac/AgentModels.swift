@@ -46,6 +46,9 @@ struct Skill: Identifiable, Codable, Hashable {
     var sourceType: String
     var source: String
     var sourceSubpath: String?
+    var packageSubpath: String?
+    var mcpDescriptorSubpath: String?
+    var packageDiscoveryMethod: String?
     var cachePath: String?
     var manifestName: String?
     var manifestDescription: String?
@@ -60,11 +63,37 @@ struct Skill: Identifiable, Codable, Hashable {
 
 struct SkillCandidate: Codable, Hashable, Identifiable {
     let relativePath: String
+    let packageRelativePath: String?
     let manifestName: String
     let manifestDescription: String
     let contentHash: String
+    let composition: SkillPackageComposition?
 
     var id: String { relativePath.isEmpty ? manifestName : relativePath }
+}
+
+struct SkillPackageComposition: Codable, Hashable {
+    let kind: String
+    let package: SkillPackageMetadata?
+    let mcp: SkillMCPComposition?
+}
+
+struct SkillPackageMetadata: Codable, Hashable {
+    let discoveryMethod: String
+    let manifest: String?
+    let skillPath: String
+    let assistance: SkillDiscoveryAssistance?
+}
+
+struct SkillDiscoveryAssistance: Codable, Hashable {
+    let confidence: Double?
+    let evidence: [String]
+}
+
+struct SkillMCPComposition: Codable, Hashable {
+    let descriptor: String
+    let serverNames: [String]
+    let resources: [String]
 }
 
 struct SkillDiscoveryEnvelope: Codable {

@@ -26,16 +26,35 @@ import {
   stat
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
 const execFileAsync = promisify(execFile);
 
 // 递归定位 SKILL.md 时的最大搜索深度（防止误匹配太深层的无关 SKILL.md）。
 const MAX_SKILL_SEARCH_DEPTH = 5;
+const MAX_PACKAGE_PARENT_DEPTH = 6;
 const MCP_DESCRIPTOR_NAMES = Object.freeze([".mcp.json", "mcp.json", "mcp.config.json"]);
-const SKILL_ROOT_TOKENS = Object.freeze(["${SKILL_ROOT}", "${SKILL_DIR}", "${CLAUDE_PLUGIN_ROOT}"]);
+const PLUGIN_MANIFEST_PATHS = Object.freeze([join(".codex-plugin", "plugin.json")]);
+const SKILL_ROOT_TOKENS = Object.freeze([
+  "${SKILL_ROOT}",
+  "${SKILL_DIR}",
+  "${PLUGIN_ROOT}",
+  "${CLAUDE_PLUGIN_ROOT}"
+]);
+const CANDIDATE_INTERNAL = Symbol("skill-package-candidate");
 
 export class SkillRegistryService {
-  constructor({ store, skillsDirs = {}, cacheRoot, exec = execFileAsync, removePath = rm } = {}) {
+  constructor({
+    store,
+    skillsDirs = {},
+    cacheRoot,
+    exec = execFileAsync,
+    removePath = rm,
+    discoveryAssistant = null,
+    verifyMcp = true,
+    mcpVerificationTimeoutMs = 10_000
+  } = {}) {
     if (!store) throw new TypeError("SkillRegistryService requires a store.");
     // skillsDirs: { [providerId]: 绝对 skills 根目录 }，例如
     //   { codex: "~/.corptie/.../runtimes/codex/skills",
@@ -46,6 +65,15 @@ export class SkillRegistryService {
     this.cacheRoot = resolve(cacheRoot ?? join(process.env.CORPTIE_HOME ?? join(homedirFallback(), ".corptie"), "skill-cache"));
     this.exec = exec;
     this.removePath = removePath;
+    // 可选的 Provider 中立后台 Agent。它只提出结构化候选计划，所有路径、清单和资源
+    // 仍由本服务重新验证；标准插件和普通 Skill 不调用 Agent。
+    this.discoveryAssistant = discoveryAssistant;
+    this.verifyMcp = verifyMcp !== false;
+    this.mcpVerificationTimeoutMs = mcpVerificationTimeoutMs;
+  }
+
+  setDiscoveryAssistant(assistant) {
+    this.discoveryAssistant = typeof assistant === "function" ? assistant : null;
   }
 
   // 列出所有已登记 Skill。
@@ -57,7 +85,13 @@ export class SkillRegistryService {
     return this.store.getRegistrySkill(skillId);
   }
 
-  async discover({ sourceType, source }) {
+  runtimeEvents(filters = {}) {
+    return typeof this.store.listSkillRuntimeEvents === "function"
+      ? this.store.listSkillRuntimeEvents(filters)
+      : [];
+  }
+
+  async discover({ sourceType, source, assist = true }) {
     const type = sourceType === "git" ? "git" : "local";
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
@@ -66,7 +100,7 @@ export class SkillRegistryService {
       const rootDir = type === "git"
         ? (cachePath = await this.#cloneGitSource(rawSource))
         : resolve(rawSource);
-      const candidates = await this.#discoverCandidates(rootDir);
+      const candidates = await this.#discoverCandidates(rootDir, { assist });
       if (candidates.length === 0) {
         throw skillError("INVALID_SKILL", `所选来源不含 SKILL.md（或 skill.md）：${rawSource}`);
       }
@@ -77,7 +111,7 @@ export class SkillRegistryService {
   }
 
   // 登记一个 Skill。启动上下文只使用 manifest 索引；完整正文由 loadForAgent() 按需读取。
-  async register({ name, description = "", sourceType, source, sourceSubpath = "" }) {
+  async register({ name, description = "", sourceType, source, sourceSubpath = "", assist = true }) {
     const type = sourceType === "git" ? "git" : "local";
     const rawSource = String(source ?? "").trim();
     if (!rawSource) throw skillError("INVALID_INPUT", "source is required.");
@@ -87,7 +121,8 @@ export class SkillRegistryService {
       const sourceRoot = type === "git"
         ? (cachePath = await this.#cloneGitSource(rawSource))
         : resolve(rawSource);
-      const candidate = await this.#selectCandidate(sourceRoot, sourceSubpath);
+      const candidate = await this.#selectCandidate(sourceRoot, sourceSubpath, { assist });
+      const coordinates = this.#registrationCoordinates(type, rawSource, sourceRoot, candidate);
       const resolvedName = String(name ?? "").trim() || candidate.manifestName;
       const resolvedDescription = String(description ?? "").trim() || candidate.manifestDescription;
 
@@ -95,8 +130,11 @@ export class SkillRegistryService {
         name: resolvedName,
         description: resolvedDescription,
         sourceType: type,
-        source: rawSource,
-        sourceSubpath: candidate.relativePath,
+        source: coordinates.source,
+        sourceSubpath: coordinates.sourceSubpath,
+        packageSubpath: coordinates.packageSubpath,
+        mcpDescriptorSubpath: coordinates.mcpDescriptorSubpath,
+        packageDiscoveryMethod: coordinates.packageDiscoveryMethod,
         cachePath,
         manifestName: candidate.manifestName,
         manifestDescription: candidate.manifestDescription,
@@ -106,12 +144,34 @@ export class SkillRegistryService {
       try {
         await this.materialize(skill);
       } catch (error) {
+        this.#recordRuntimeEvent({
+          stage: "registration",
+          status: "failed",
+          skillId: skill.skillId,
+          errorCode: error?.code ?? "SKILL_MATERIALIZATION_FAILED",
+          reason: error?.message ?? String(error),
+          details: { sourceType: type }
+        });
         this.store.deleteRegistrySkill(skill.skillId);
         throw error;
       }
 
+      this.#recordRuntimeEvent({
+        stage: "registration",
+        status: "success",
+        skillId: skill.skillId,
+        reason: "Skill package registered and materialized.",
+        serverNames: candidate.composition.mcp?.serverNames ?? [],
+        toolCount: candidate.composition.mcp?.toolCount ?? null,
+        details: {
+          packageDiscoveryMethod: coordinates.packageDiscoveryMethod,
+          compound: Boolean(candidate.composition.mcp)
+        }
+      });
+
       return { ...this.store.getRegistrySkill(skill.skillId), composition: candidate.composition };
     } catch (error) {
+      error.stage ??= "registration";
       if (cachePath && !this.store.listRegistrySkills().some((skill) => skill.cachePath === cachePath)) {
         await rm(cachePath, { recursive: true, force: true });
       }
@@ -130,14 +190,22 @@ export class SkillRegistryService {
     try {
       if (createdCache) cachePath = await this.#cloneGitSource(source);
       const sourceRoot = type === "git" ? cachePath : resolve(source);
-      const candidate = await this.#selectCandidate(sourceRoot, input.sourceSubpath ?? existing.sourceSubpath ?? "");
+      const candidate = await this.#selectCandidate(
+        sourceRoot,
+        input.sourceSubpath ?? existing.sourceSubpath ?? "",
+        { assist: input.assist !== false }
+      );
+      const coordinates = this.#registrationCoordinates(type, source, sourceRoot, candidate);
       const next = {
         ...existing,
         name: String(input.name ?? existing.name).trim() || candidate.manifestName,
         description: String(input.description ?? existing.description).trim() || candidate.manifestDescription,
         sourceType: type,
-        source,
-        sourceSubpath: candidate.relativePath,
+        source: coordinates.source,
+        sourceSubpath: coordinates.sourceSubpath,
+        packageSubpath: coordinates.packageSubpath,
+        mcpDescriptorSubpath: coordinates.mcpDescriptorSubpath,
+        packageDiscoveryMethod: coordinates.packageDiscoveryMethod,
         cachePath,
         manifestName: candidate.manifestName,
         manifestDescription: candidate.manifestDescription,
@@ -145,11 +213,29 @@ export class SkillRegistryService {
       };
       await this.materialize(next);
       const updated = this.store.updateRegistrySkill(skillId, next);
+      this.#recordRuntimeEvent({
+        stage: "registration",
+        status: "success",
+        skillId,
+        reason: "Skill package registration updated and materialized.",
+        serverNames: candidate.composition.mcp?.serverNames ?? [],
+        toolCount: candidate.composition.mcp?.toolCount ?? null,
+        details: { packageDiscoveryMethod: coordinates.packageDiscoveryMethod, update: true }
+      });
       if (existing.sourceType === "git" && existing.cachePath && existing.cachePath !== cachePath) {
         await rm(existing.cachePath, { recursive: true, force: true });
       }
       return { ...updated, composition: candidate.composition };
     } catch (error) {
+      error.stage ??= "registration";
+      this.#recordRuntimeEvent({
+        stage: "registration",
+        status: "failed",
+        skillId,
+        errorCode: error?.code ?? "SKILL_UPDATE_FAILED",
+        reason: error?.message ?? String(error),
+        details: { update: true }
+      });
       if (createdCache && cachePath) await rm(cachePath, { recursive: true, force: true });
       throw error;
     }
@@ -161,7 +247,7 @@ export class SkillRegistryService {
     const repaired = [];
     const skipped = [];
     for (const skill of this.store.listRegistrySkills()) {
-      if (skill.sourceSubpath && skill.manifestName && skill.contentHash) continue;
+      if (skill.sourceSubpath && skill.manifestName && skill.contentHash && skill.packageDiscoveryMethod) continue;
       try {
         const sourceRoot = await this.#sourceDir(skill);
         const candidates = await this.#discoverCandidates(sourceRoot);
@@ -183,19 +269,46 @@ export class SkillRegistryService {
 
   // 物化安装：把 skill 内容落到每个 Provider 的 skills 目录（skill_id 命名子目录）。
   async materialize(skill) {
-    // 以 SKILL.md 所在目录为 skill 根（而非登记时的 source 本身），
-    // 这样即使 SKILL.md 藏在子目录里，物化后也会被放到 <skillId>/ 顶层，
-    // 满足运行时对 skills/<id>/SKILL.md 的扫描约定。
-    const { rootDir } = await this.#resolveSkillRoot(skill);
-    await this.#inspectPackage(rootDir);
-    const results = [];
-    for (const [providerId, skillsRoot] of Object.entries(this.skillsDirs)) {
-      const targetDir = join(skillsRoot, skill.skillId);
-      await this.#mirrorDirectory(rootDir, targetDir);
-      const composition = await this.#inspectPackage(targetDir);
-      results.push({ providerId, installedAt: targetDir, composition });
+    try {
+      const installation = await this.#resolveInstallation(skill);
+      await this.#inspectPackage(installation.packageRoot, installation);
+      const results = [];
+      for (const [providerId, skillsRoot] of Object.entries(this.skillsDirs)) {
+        const targetDir = join(skillsRoot, skill.skillId);
+        const composition = await this.#mirrorPackage(installation.packageRoot, installation.skillRoot, targetDir, {
+          descriptorRelativePath: installation.descriptorPath
+            ? normalizeSubpath(relative(installation.packageRoot, installation.descriptorPath))
+            : null,
+          manifestRelativePath: installation.manifestPath
+            ? normalizeSubpath(relative(installation.packageRoot, installation.manifestPath))
+            : null,
+          discoveryMethod: installation.discoveryMethod,
+          assistance: installation.assistance
+        });
+        results.push({ providerId, installedAt: targetDir, composition });
+        this.#recordRuntimeEvent({
+          stage: "materialization",
+          status: "success",
+          skillId: skill.skillId,
+          providerId,
+          reason: "Skill package materialized for Provider runtime.",
+          serverNames: composition.mcp?.serverNames ?? [],
+          toolCount: composition.mcp?.toolCount ?? null,
+          details: { compound: Boolean(composition.mcp) }
+        });
+      }
+      return results;
+    } catch (error) {
+      error.stage ??= "materialization";
+      this.#recordRuntimeEvent({
+        stage: "materialization",
+        status: "failed",
+        skillId: skill.skillId,
+        errorCode: error?.code ?? "SKILL_MATERIALIZATION_FAILED",
+        reason: error?.message ?? String(error)
+      });
+      throw error;
     }
-    return results;
   }
 
   // 返回某个 Agent 在指定 Provider 运行时中需要启用的 MCP server 配置。
@@ -208,9 +321,20 @@ export class SkillRegistryService {
     if (assigned.length === 0) return {};
     const skillsRoot = this.skillsDirs[providerId];
     const result = {};
+    const configuredPackages = new Set();
     for (const skill of assigned) {
-      const sourceComposition = await this.#inspectPackage((await this.#resolveSkillRoot(skill)).rootDir);
+      try {
+      const installation = await this.#resolveInstallation(skill);
+      const sourceComposition = await this.#inspectPackage(installation.packageRoot, installation);
       if (!sourceComposition.mcp) continue;
+      const packageKey = [
+        skill.sourceType,
+        skill.source,
+        skill.cachePath ?? "",
+        skill.packageSubpath ?? "",
+        skill.mcpDescriptorSubpath ?? ""
+      ].join("\u0000");
+      if (configuredPackages.has(packageKey)) continue;
       if (!skillsRoot) {
         throw skillError(
           "MCP_PROVIDER_UNSUPPORTED",
@@ -218,7 +342,14 @@ export class SkillRegistryService {
         );
       }
       const installedRoot = join(skillsRoot, skill.skillId);
-      const installed = await this.#inspectPackage(installedRoot, { resolveServers: true });
+      const installedDescriptor = installation.descriptorPath
+        ? join(installedRoot, normalizeSubpath(relative(installation.packageRoot, installation.descriptorPath)))
+        : null;
+      const installed = await this.#inspectPackage(installedRoot, {
+        skillRoot: installedRoot,
+        descriptorPath: installedDescriptor,
+        resolveServers: true
+      });
       for (const [serverName, server] of Object.entries(installed.mcp?.servers ?? {})) {
         if (Object.prototype.hasOwnProperty.call(result, serverName)) {
           throw skillError(
@@ -228,8 +359,43 @@ export class SkillRegistryService {
         }
         result[serverName] = server;
       }
+      configuredPackages.add(packageKey);
+      this.#recordRuntimeEvent({
+        stage: "mcp-loading",
+        status: "success",
+        skillId: skill.skillId,
+        agentId,
+        providerId,
+        reason: "Assigned Skill MCP dependency resolved for session attachment.",
+        serverNames: Object.keys(installed.mcp?.servers ?? {})
+      });
+      } catch (error) {
+        error.stage ??= "mcp-loading";
+        this.#recordRuntimeEvent({
+          stage: "mcp-loading",
+          status: error?.code === "SKILL_NOT_ASSIGNED" ? "denied" : "failed",
+          skillId: skill.skillId,
+          agentId,
+          providerId,
+          errorCode: error?.code ?? "MCP_LOADING_FAILED",
+          reason: error?.message ?? String(error)
+        });
+        throw error;
+      }
     }
     return result;
+  }
+
+  #recordRuntimeEvent(input) {
+    if (typeof this.store.recordSkillRuntimeEvent !== "function") return null;
+    const event = this.store.recordSkillRuntimeEvent(input);
+    const suffix = input.errorCode ? ` code=${input.errorCode}` : "";
+    const skill = input.skillId ? ` skill=${input.skillId}` : "";
+    const agent = input.agentId ? ` agent=${input.agentId}` : "";
+    console[input.status === "failed" ? "error" : input.status === "denied" ? "warn" : "log"](
+      `[skills] stage=${input.stage} status=${input.status}${suffix}${skill}${agent} reason=${input.reason ?? ""}`
+    );
+    return event;
   }
 
   // 卸载：从所有 Provider 的 skills 目录移除该 Skill 的物化。
@@ -399,6 +565,16 @@ export class SkillRegistryService {
       .map((skill) => ({ ...skill, score: skillSearchScore(skill, terms) }))
       .filter((skill) => terms.length === 0 || skill.score > 0)
       .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+    this.#recordRuntimeEvent({
+      stage: "skill-discovery",
+      status: candidates.length > 0 ? "success" : "denied",
+      skillId: candidates[0]?.skillId ?? null,
+      agentId,
+      reason: candidates.length > 0
+        ? `Found ${candidates.length} assigned Skill candidate(s).`
+        : "No assigned Skill matched the authenticated Agent request.",
+      details: { candidateCount: candidates.length }
+    });
     return { found: candidates.length > 0, candidates };
   }
 
@@ -406,6 +582,14 @@ export class SkillRegistryService {
     if (!agentId || !this.store.getAgent(agentId)) throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     const allowed = this.store.listRegistrySkillIdsForAgent(agentId);
     if (!allowed.includes(skillId)) {
+      this.#recordRuntimeEvent({
+        stage: "skill-load",
+        status: "denied",
+        skillId: this.store.getRegistrySkill(skillId) ? skillId : null,
+        agentId,
+        errorCode: "SKILL_NOT_ASSIGNED",
+        reason: `Skill is not assigned to Agent ${agentId}: ${skillId}`
+      });
       throw skillError("SKILL_NOT_ASSIGNED", `Skill is not assigned to Agent ${agentId}: ${skillId}`);
     }
     const skill = this.store.getRegistrySkill(skillId);
@@ -414,6 +598,13 @@ export class SkillRegistryService {
     if (!markerPath) throw skillError("INVALID_SKILL", `Skill marker is missing: ${skill.name}`);
     const content = await readFile(markerPath, "utf8");
     const contentHash = hashContent(content);
+    this.#recordRuntimeEvent({
+      stage: "skill-load",
+      status: "success",
+      skillId,
+      agentId,
+      reason: "Assigned Skill instructions loaded for authenticated Agent."
+    });
     return {
       skillId,
       name: skill.manifestName || skill.name,
@@ -442,22 +633,80 @@ export class SkillRegistryService {
   // 根目录 = 含 SKILL.md 的那一层（用于物化复制源）；markerPath = SKILL.md 绝对路径。
   // 支持 SKILL.md 藏在子目录里（递归搜索），优先取「最浅」命中。
   async #resolveSkillRoot(skill) {
-    const sourceRoot = await this.#sourceDir(skill);
-    const selectedRoot = await this.#resolveSubpath(sourceRoot, skill.sourceSubpath ?? "");
-    const markerPath = await this.#markerAtRoot(selectedRoot);
-    if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${selectedRoot}`);
-    return { rootDir: selectedRoot, markerPath };
+    const installation = await this.#resolveInstallation(skill);
+    return { rootDir: installation.skillRoot, markerPath: installation.markerPath };
   }
 
-  async #selectCandidate(sourceRoot, requestedSubpath = "") {
+  async #resolveInstallation(skill) {
+    const sourceRoot = await realpath(await this.#sourceDir(skill));
+    const skillRoot = await this.#resolveSubpath(sourceRoot, skill.sourceSubpath ?? "");
+    const markerPath = await this.#markerAtRoot(skillRoot);
+    if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${skillRoot}`);
+
+    let packageRoot = skill.packageSubpath
+      ? await this.#resolveSubpath(sourceRoot, skill.packageSubpath)
+      : sourceRoot;
+    let definition = await this.#packageDefinition(packageRoot, skillRoot);
+    if (skill.mcpDescriptorSubpath) {
+      definition = {
+        ...definition,
+        descriptorPath: await resolvePackagePath(
+          packageRoot,
+          skill.mcpDescriptorSubpath,
+          "stored MCP descriptor",
+          { missingCode: "MCP_DESCRIPTOR_MISSING" }
+        ),
+        discoveryMethod: skill.packageDiscoveryMethod || definition.discoveryMethod
+      };
+    }
+    // 兼容旧记录：历史 source 指向仓库根、sourceSubpath 指向嵌套 Skill，且没有包级字段。
+    if (!skill.packageSubpath && packageRoot !== skillRoot && !definition.manifestPath && !definition.descriptorPath) {
+      packageRoot = skillRoot;
+      definition = await this.#packageDefinition(packageRoot, skillRoot);
+    }
+    return { sourceRoot, packageRoot, skillRoot, markerPath, ...definition };
+  }
+
+  #registrationCoordinates(type, rawSource, sourceRoot, candidate) {
+    const internal = candidate[CANDIDATE_INTERNAL];
+    if (!internal) throw skillError("SKILL_DISCOVERY_INVALID", "Skill 发现结果缺少经过验证的 Package 信息。");
+    const resolvedSourceRoot = internal.sourceRoot ?? sourceRoot;
+    const packageRel = relative(resolvedSourceRoot, internal.packageRoot);
+    const packageOutsideSource = packageRel === ".." || packageRel.startsWith(`..${sep}`) || isAbsolute(packageRel);
+    if (packageOutsideSource) {
+      if (type === "git") {
+        throw skillError("PACKAGE_ROOT_OUTSIDE_SOURCE", "Git Skill 的 Package 根目录不能超出克隆来源。");
+      }
+      return {
+        source: internal.packageRoot,
+        packageSubpath: "",
+        sourceSubpath: normalizeSubpath(relative(internal.packageRoot, internal.skillRoot)),
+        mcpDescriptorSubpath: internal.descriptorPath
+          ? normalizeSubpath(relative(internal.packageRoot, internal.descriptorPath))
+          : "",
+        packageDiscoveryMethod: internal.discoveryMethod ?? "plain"
+      };
+    }
+    return {
+      source: rawSource,
+      packageSubpath: normalizeSubpath(packageRel),
+      sourceSubpath: normalizeSubpath(relative(resolvedSourceRoot, internal.skillRoot)),
+      mcpDescriptorSubpath: internal.descriptorPath
+        ? normalizeSubpath(relative(internal.packageRoot, internal.descriptorPath))
+        : "",
+      packageDiscoveryMethod: internal.discoveryMethod ?? "plain"
+    };
+  }
+
+  async #selectCandidate(sourceRoot, requestedSubpath = "", options = {}) {
     const normalizedSubpath = normalizeSubpath(requestedSubpath);
     if (normalizedSubpath) {
       const selectedRoot = await this.#resolveSubpath(sourceRoot, normalizedSubpath);
       const markerPath = await this.#markerAtRoot(selectedRoot);
       if (!markerPath) throw skillError("INVALID_SKILL_SUBPATH", `所选子目录根部不含 SKILL.md：${normalizedSubpath}`);
-      return this.#candidateFromMarker(sourceRoot, markerPath);
+      return this.#candidateFromMarker(sourceRoot, markerPath, options);
     }
-    const candidates = await this.#discoverCandidates(sourceRoot);
+    const candidates = await this.#discoverCandidates(sourceRoot, options);
     if (candidates.length === 0) throw skillError("INVALID_SKILL", `来源不含 SKILL.md：${sourceRoot}`);
     if (candidates.length > 1) {
       const error = skillError("AMBIGUOUS_SKILL_SOURCE", "该来源包含多个 Skill，请选择一个具体 Skill。");
@@ -467,55 +716,180 @@ export class SkillRegistryService {
     return candidates[0];
   }
 
-  async #discoverCandidates(sourceRoot) {
+  async #discoverCandidates(sourceRoot, options = {}) {
     if (!(await isDirectory(sourceRoot))) throw skillError("SOURCE_MISSING", `Skill 来源目录不存在：${sourceRoot}`);
     const markers = await this.#locateSkillMarkers(sourceRoot);
-    return Promise.all(markers.map((markerPath) => this.#candidateFromMarker(sourceRoot, markerPath)));
+    const candidates = [];
+    for (const markerPath of markers) {
+      candidates.push(await this.#candidateFromMarker(sourceRoot, markerPath, options));
+    }
+    return candidates;
   }
 
-  async #candidateFromMarker(sourceRoot, markerPath) {
+  async #candidateFromMarker(sourceRoot, markerPath, options = {}) {
     const content = await readFile(markerPath, "utf8");
     const manifest = parseSkillManifest(content, basename(dirname(markerPath)));
     const [resolvedSourceRoot, resolvedSkillRoot] = await Promise.all([
       realpath(sourceRoot),
       realpath(dirname(markerPath))
     ]);
-    const composition = await this.#inspectPackage(resolvedSkillRoot);
-    return {
+    const packageDefinition = await this.#findPackageForSkill(resolvedSourceRoot, resolvedSkillRoot, {
+      assist: options.assist !== false
+    });
+    const composition = await this.#inspectPackage(packageDefinition.packageRoot, {
+      skillRoot: resolvedSkillRoot,
+      ...packageDefinition
+    });
+    const candidate = {
       relativePath: normalizeSubpath(relative(resolvedSourceRoot, resolvedSkillRoot)),
+      packageRelativePath: safeRelativeDisplay(resolvedSourceRoot, packageDefinition.packageRoot),
       manifestName: manifest.name,
       manifestDescription: manifest.description,
       contentHash: hashContent(content),
       composition
     };
+    Object.defineProperty(candidate, CANDIDATE_INTERNAL, {
+      value: { sourceRoot: resolvedSourceRoot, skillRoot: resolvedSkillRoot, ...packageDefinition },
+      enumerable: false
+    });
+    return candidate;
   }
 
-  async #inspectPackage(rootDir, options = {}) {
-    if (!(await isDirectory(rootDir))) {
-      throw skillError("SOURCE_MISSING", `Skill 来源目录不存在：${rootDir}`);
+  async #findPackageForSkill(sourceRoot, skillRoot, options = {}) {
+    let current = skillRoot;
+    for (let depth = 0; depth <= MAX_PACKAGE_PARENT_DEPTH; depth += 1) {
+      for (const relativeManifest of PLUGIN_MANIFEST_PATHS) {
+        const manifestPath = join(current, relativeManifest);
+        if (await isFile(manifestPath)) {
+          const definition = await this.#packageDefinition(current, skillRoot, { manifestPath });
+          return { packageRoot: current, ...definition };
+        }
+      }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
     }
-    const markerPath = await this.#markerAtRoot(rootDir);
-    if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${rootDir}`);
+
+    const sameRoot = await this.#packageDefinition(skillRoot, skillRoot);
+    if (sameRoot.descriptorPath) return { packageRoot: skillRoot, ...sameRoot };
+
+    const hints = await this.#locateMcpDescriptors(sourceRoot);
+    const externalHints = hints.filter((item) => dirname(item) !== skillRoot);
+    if (options.assist && this.discoveryAssistant && externalHints.length > 0) {
+      const proposed = await this.discoveryAssistant({
+        sourceRoot,
+        skillRoot,
+        markerPath: await this.#markerAtRoot(skillRoot),
+        mcpDescriptorHints: externalHints.map((item) => safeRelativeDisplay(sourceRoot, item))
+      });
+      return this.#validateAssistedPackage(sourceRoot, skillRoot, proposed);
+    }
+    return { packageRoot: skillRoot, ...sameRoot };
+  }
+
+  async #packageDefinition(packageRoot, skillRoot, options = {}) {
+    if (!(await isDirectory(packageRoot))) {
+      throw skillError("SOURCE_MISSING", `Skill Package 根目录不存在：${packageRoot}`);
+    }
+    const explicitManifest = options.manifestPath ?? null;
+    const manifestPath = explicitManifest
+      ?? (await firstExistingFile(PLUGIN_MANIFEST_PATHS.map((item) => join(packageRoot, item))));
+    if (manifestPath) {
+      const plugin = await readPluginManifest(manifestPath);
+      const declaredSkillRoots = normalizeManifestPaths(plugin.skills, "skills", manifestPath);
+      if (declaredSkillRoots.length === 0) {
+        throw skillError("PACKAGE_MANIFEST_INVALID", `插件清单 ${manifestPath} 必须声明 skills 路径。`);
+      }
+      const ownsSkill = await anyPathContains(packageRoot, declaredSkillRoots, skillRoot);
+      if (!ownsSkill && !options.allowMissingManifestSkill) {
+        throw skillError("SKILL_ENTRY_MISSING", `插件清单 ${manifestPath} 未声明 Skill：${skillRoot}`);
+      }
+      let descriptorPath = null;
+      if (plugin.mcpServers != null) {
+        if (typeof plugin.mcpServers !== "string" || !plugin.mcpServers.trim()) {
+          throw skillError("PACKAGE_MANIFEST_INVALID", `插件清单 ${manifestPath} 的 mcpServers 必须是描述文件路径。`);
+        }
+        descriptorPath = await resolvePackagePath(packageRoot, plugin.mcpServers, "mcpServers", {
+          missingCode: "MCP_DESCRIPTOR_MISSING"
+        });
+      }
+      return { manifestPath, descriptorPath, discoveryMethod: "plugin-manifest" };
+    }
+
     const descriptorPaths = [];
     for (const name of MCP_DESCRIPTOR_NAMES) {
-      const candidate = join(rootDir, name);
+      const candidate = join(packageRoot, name);
       if (await isFile(candidate)) descriptorPaths.push(candidate);
     }
     if (descriptorPaths.length > 1) {
       throw skillError(
         "MCP_CONFIG_AMBIGUOUS",
-        `Skill 根目录包含多个 MCP 描述文件：${descriptorPaths.map((item) => basename(item)).join(", ")}`
+        `Skill Package 根目录包含多个 MCP 描述文件：${descriptorPaths.map((item) => basename(item)).join(", ")}`
       );
     }
+    return {
+      manifestPath: null,
+      descriptorPath: descriptorPaths[0] ?? null,
+      discoveryMethod: descriptorPaths.length > 0 ? "skill-root" : "plain"
+    };
+  }
+
+  async #validateAssistedPackage(sourceRoot, skillRoot, proposed) {
+    if (!isRecord(proposed)) {
+      throw skillError("SKILL_ASSISTANCE_INVALID", "后台 Agent 未返回结构化 Skill Package 安装计划。");
+    }
+    const packageRoot = await resolvePackagePath(sourceRoot, proposed.packageRoot ?? ".", "packageRoot", {
+      directory: true,
+      missingCode: "PACKAGE_ROOT_INVALID"
+    });
+    const skillRel = relative(packageRoot, skillRoot);
+    if (skillRel === ".." || skillRel.startsWith(`..${sep}`) || isAbsolute(skillRel)) {
+      throw skillError("SKILL_ASSISTANCE_INVALID", "后台 Agent 建议的 Package 根目录不包含所选 Skill。");
+    }
+    const descriptorText = typeof proposed.mcpDescriptor === "string" ? proposed.mcpDescriptor.trim() : "";
+    if (!descriptorText) {
+      throw skillError("SKILL_ASSISTANCE_INVALID", "后台 Agent 安装计划缺少 mcpDescriptor。 ");
+    }
+    const descriptorPath = await resolvePackagePath(packageRoot, descriptorText, "mcpDescriptor", {
+      missingCode: "MCP_DESCRIPTOR_MISSING"
+    });
+    // 在接受计划前完整解析一次，Agent 不能绕过确定性 MCP 校验。
+    await this.#inspectPackage(packageRoot, { skillRoot, descriptorPath });
+    return {
+      packageRoot,
+      manifestPath: null,
+      descriptorPath,
+      discoveryMethod: "agent-assisted",
+      assistance: {
+        confidence: normalizeConfidence(proposed.confidence),
+        evidence: normalizeEvidence(proposed.evidence)
+      }
+    };
+  }
+
+  async #inspectPackage(rootDir, options = {}) {
+    if (!(await isDirectory(rootDir))) {
+      throw skillError("SOURCE_MISSING", `Skill Package 来源目录不存在：${rootDir}`);
+    }
+    const skillRoot = options.skillRoot ?? rootDir;
+    const markerPath = await this.#markerAtRoot(skillRoot);
+    if (!markerPath) throw skillError("INVALID_SKILL", `Skill 根目录缺少 SKILL.md：${skillRoot}`);
     const entries = await readdir(rootDir, { withFileTypes: true });
     const files = entries
       .filter((entry) => entry.isFile() || entry.isDirectory() || entry.isSymbolicLink())
       .map((entry) => entry.name)
       .sort((a, b) => a.localeCompare(b));
-    if (descriptorPaths.length === 0) {
-      return { kind: "plain", files, mcp: null };
+    const descriptorPath = options.descriptorPath ?? null;
+    const packageMetadata = {
+      discoveryMethod: options.discoveryMethod ?? "plain",
+      manifest: options.manifestPath ? normalizeSubpath(relative(rootDir, options.manifestPath)) : null,
+      skillPath: normalizeSubpath(relative(rootDir, skillRoot)),
+      ...(options.assistance ? { assistance: options.assistance } : {})
+    };
+    if (!descriptorPath) {
+      return { kind: "plain", files, package: packageMetadata, mcp: null };
     }
-    const descriptorPath = descriptorPaths[0];
+    await validatePackageResource(rootDir, descriptorPath, "MCP descriptor");
     const descriptor = await readJsonDescriptor(descriptorPath);
     const declared = descriptor.mcpServers ?? descriptor.mcp_servers;
     if (!isRecord(declared) || Object.keys(declared).length === 0) {
@@ -545,8 +919,9 @@ export class SkillRegistryService {
     return {
       kind: "mcp",
       files,
+      package: packageMetadata,
       mcp: {
-        descriptor: basename(descriptorPath),
+        descriptor: normalizeSubpath(relative(rootDir, descriptorPath)),
         serverNames: Object.keys(servers),
         resources: [...resources].sort((a, b) => a.localeCompare(b)),
         ...(options.resolveServers ? { servers } : {})
@@ -604,6 +979,23 @@ export class SkillRegistryService {
     return found;
   }
 
+  async #locateMcpDescriptors(dir, depth = 0) {
+    if (!(await isDirectory(dir)) || depth > MAX_SKILL_SEARCH_DEPTH) return [];
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+    const found = [];
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const item = join(dir, entry.name);
+      if (entry.isFile() && MCP_DESCRIPTOR_NAMES.includes(entry.name)) found.push(item);
+      if (entry.isDirectory()) found.push(...await this.#locateMcpDescriptors(item, depth + 1));
+    }
+    return found;
+  }
+
   async #cloneGitSource(url) {
     await mkdir(this.cacheRoot, { recursive: true, mode: 0o700 });
     const dir = join(this.cacheRoot, `skill-${randomUUID()}`);
@@ -622,19 +1014,104 @@ export class SkillRegistryService {
     return dir;
   }
 
-  // 把 srcDir 的内容镜像到 targetDir（先清空 targetDir，再整体复制）。
-  async #mirrorDirectory(srcDir, targetDir) {
+  // 原子物化整个 Package，并把所选 Skill 的内容提升到目标根，使 Provider 仍能按
+  // <skillsRoot>/<skillId>/SKILL.md 加载，同时保留 ${PLUGIN_ROOT} 所需的包级资源。
+  async #mirrorPackage(packageRoot, skillRoot, targetDir, options = {}) {
     const parent = dirname(targetDir);
     const temporary = join(parent, `.${basename(targetDir)}.tmp-${randomUUID()}`);
     await mkdir(parent, { recursive: true, mode: 0o700 });
     await rm(temporary, { recursive: true, force: true });
-    await cp(srcDir, temporary, { recursive: true });
-    if (!(await this.#markerAtRoot(temporary))) {
+    try {
+      await cp(packageRoot, temporary, { recursive: true });
+      if (packageRoot !== skillRoot) {
+        const skillEntries = await readdir(skillRoot, { withFileTypes: true });
+        for (const entry of skillEntries) {
+          await cp(join(skillRoot, entry.name), join(temporary, entry.name), {
+            recursive: true,
+            force: true
+          });
+        }
+      }
+      if (!(await this.#markerAtRoot(temporary))) {
+        throw skillError("INVALID_SKILL", "物化后的 Skill 根目录缺少 SKILL.md。");
+      }
+      const composition = await this.#inspectPackage(temporary, {
+        skillRoot: temporary,
+        descriptorPath: options.descriptorRelativePath ? join(temporary, options.descriptorRelativePath) : null,
+        manifestPath: options.manifestRelativePath ? join(temporary, options.manifestRelativePath) : null,
+        discoveryMethod: options.discoveryMethod,
+        assistance: options.assistance,
+        resolveServers: true
+      });
+      if (this.verifyMcp && composition.mcp) {
+        const verification = await this.#verifyMcpServers(composition.mcp.servers);
+        composition.mcp.toolCount = verification.toolCount;
+      }
+      await rm(targetDir, { recursive: true, force: true });
+      await rename(temporary, targetDir);
+      return stripResolvedServers(composition);
+    } catch (error) {
       await rm(temporary, { recursive: true, force: true });
-      throw skillError("INVALID_SKILL", "物化后的 Skill 根目录缺少 SKILL.md。");
+      throw error;
     }
-    await rm(targetDir, { recursive: true, force: true });
-    await rename(temporary, targetDir);
+  }
+
+  async #verifyMcpServers(servers = {}) {
+    let toolCount = 0;
+    for (const [serverName, server] of Object.entries(servers)) {
+      if (server.type !== "stdio") continue;
+      const client = new Client({ name: "corptie-skill-installer", version: "1.0.0" });
+      const transport = new StdioClientTransport({
+        command: server.command,
+        args: server.args ?? [],
+        cwd: server.cwd,
+        env: { ...process.env, ...(server.env ?? {}) },
+        stderr: "pipe"
+      });
+      try {
+        await withTimeout(
+          client.connect(transport),
+          this.mcpVerificationTimeoutMs,
+          `MCP server ${serverName} initialize 超时。`
+        );
+        let listed;
+        try {
+          listed = await withTimeout(
+            client.listTools(),
+            this.mcpVerificationTimeoutMs,
+            `MCP server ${serverName} tools/list 超时。`
+          );
+        } catch (error) {
+          if (Number(error?.code) === -32601) {
+            throw skillError("MCP_TOOLS_EMPTY", `MCP server ${serverName} 未实现 tools/list，无法为 Skill 提供工具。`);
+          }
+          throw error;
+        }
+        if (!Array.isArray(listed?.tools) || listed.tools.length === 0) {
+          throw skillError("MCP_TOOLS_EMPTY", `MCP server ${serverName} 未暴露任何工具。`);
+        }
+        validateProviderToolSchemas(serverName, listed.tools);
+        toolCount += listed.tools.length;
+      } catch (error) {
+        if (new Set(["MCP_TOOLS_EMPTY", "MCP_TOOL_SCHEMA_INVALID", "MCP_TOOL_SCHEMA_UNSUPPORTED"]).has(error?.code)) {
+          throw error;
+        }
+        const schemaSummary = summarizeToolSchemaError(error);
+        if (schemaSummary) {
+          throw skillError(
+            "MCP_TOOL_SCHEMA_INVALID",
+            `MCP server ${serverName} 的 tools/list 响应不符合 MCP 工具 Schema：${schemaSummary}`
+          );
+        }
+        throw skillError(
+          "MCP_SERVER_START_FAILED",
+          `MCP server ${serverName} 安装验证失败：${error?.message ?? String(error)}`
+        );
+      } finally {
+        await client.close().catch(() => {});
+      }
+    }
+    return { serverNames: Object.keys(servers), toolCount };
   }
 }
 
@@ -658,6 +1135,187 @@ async function readJsonDescriptor(descriptorPath) {
     );
   }
   return parsed;
+}
+
+async function readPluginManifest(manifestPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch (error) {
+    throw skillError(
+      "PACKAGE_MANIFEST_INVALID",
+      `无法解析插件清单 ${manifestPath}：${error?.message ?? String(error)}`
+    );
+  }
+  if (!isRecord(parsed)) {
+    throw skillError("PACKAGE_MANIFEST_INVALID", `插件清单 ${manifestPath} 的根节点必须是 JSON 对象。`);
+  }
+  return parsed;
+}
+
+function normalizeManifestPaths(value, field, manifestPath) {
+  const values = typeof value === "string" ? [value] : (Array.isArray(value) ? value : []);
+  if (values.some((item) => typeof item !== "string" || !item.trim())) {
+    throw skillError("PACKAGE_MANIFEST_INVALID", `插件清单 ${manifestPath} 的 ${field} 必须是路径或路径数组。`);
+  }
+  return values.map((item) => item.trim());
+}
+
+async function anyPathContains(packageRoot, declaredPaths, targetPath) {
+  const targetRealPath = await realpath(targetPath);
+  for (const declaredPath of declaredPaths) {
+    const declaredRoot = await resolvePackagePath(packageRoot, declaredPath, "skills", {
+      directory: true,
+      missingCode: "SKILL_ENTRY_MISSING"
+    });
+    const rel = relative(declaredRoot, targetRealPath);
+    if (rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))) return true;
+  }
+  return false;
+}
+
+async function resolvePackagePath(packageRoot, value, field, options = {}) {
+  const raw = String(value ?? "").trim();
+  if (!raw) throw skillError(options.missingCode ?? "PACKAGE_RESOURCE_MISSING", `Package 字段 ${field} 缺少路径。`);
+  const replaced = replaceSkillRootTokens(raw, packageRoot);
+  const candidate = isAbsolute(replaced) ? resolve(replaced) : resolve(packageRoot, replaced);
+  const lexicalRel = relative(resolve(packageRoot), candidate);
+  if (lexicalRel === ".." || lexicalRel.startsWith(`..${sep}`) || isAbsolute(lexicalRel)) {
+    throw skillError("PACKAGE_RESOURCE_OUTSIDE_ROOT", `Package 字段 ${field} 超出 Package 根目录：${raw}`);
+  }
+  let rootRealPath;
+  let candidateRealPath;
+  try {
+    [rootRealPath, candidateRealPath] = await Promise.all([realpath(packageRoot), realpath(candidate)]);
+  } catch {
+    throw skillError(options.missingCode ?? "PACKAGE_RESOURCE_MISSING", `Package 字段 ${field} 引用不存在：${raw}`);
+  }
+  const rel = relative(rootRealPath, candidateRealPath);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw skillError("PACKAGE_RESOURCE_OUTSIDE_ROOT", `Package 字段 ${field} 超出 Package 根目录：${raw}`);
+  }
+  const info = await stat(candidateRealPath);
+  if (options.directory ? !info.isDirectory() : !info.isFile()) {
+    throw skillError(options.missingCode ?? "PACKAGE_RESOURCE_INVALID", `Package 字段 ${field} 类型不正确：${raw}`);
+  }
+  return candidateRealPath;
+}
+
+async function firstExistingFile(paths) {
+  for (const path of paths) {
+    if (await isFile(path)) return path;
+  }
+  return null;
+}
+
+function safeRelativeDisplay(rootDir, item) {
+  const value = relative(rootDir, item).replaceAll("\\", "/");
+  return value || ".";
+}
+
+function normalizeConfidence(value) {
+  const confidence = Number(value);
+  if (!Number.isFinite(confidence)) return null;
+  return Math.max(0, Math.min(1, confidence));
+}
+
+function normalizeEvidence(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((item) => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function summarizeToolSchemaError(error) {
+  const message = String(error?.message ?? "").trim();
+  if (!message.includes("inputSchema")) return null;
+  try {
+    const issues = JSON.parse(message);
+    if (!Array.isArray(issues)) return message.slice(0, 500);
+    return issues.slice(0, 5).map((issue) => {
+      const path = Array.isArray(issue?.path) ? issue.path.join(".") : "inputSchema";
+      return `${path}: ${issue?.message ?? "invalid schema"}`;
+    }).join("; ");
+  } catch {
+    return message.slice(0, 500);
+  }
+}
+
+function validateProviderToolSchemas(serverName, tools) {
+  for (const tool of tools) {
+    const toolName = typeof tool?.name === "string" && tool.name.trim() ? tool.name.trim() : "(unnamed)";
+    validateProviderJsonSchema(serverName, toolName, "inputSchema", tool?.inputSchema, { required: true });
+    if (tool?.outputSchema != null) {
+      validateProviderJsonSchema(serverName, toolName, "outputSchema", tool.outputSchema, { required: false });
+    }
+  }
+}
+
+function validateProviderJsonSchema(serverName, toolName, field, schema, options = {}) {
+  if (!isRecord(schema)) {
+    throw skillError(
+      "MCP_TOOL_SCHEMA_INVALID",
+      `MCP server ${serverName} 的工具 ${toolName}.${field} 必须是 JSON 对象。`
+    );
+  }
+  if (schema.type !== "object") {
+    throw skillError(
+      "MCP_TOOL_SCHEMA_INVALID",
+      `MCP server ${serverName} 的工具 ${toolName}.${field} 根 type 必须是 object。`
+    );
+  }
+  if (schema.properties != null && !isRecord(schema.properties)) {
+    throw skillError(
+      "MCP_TOOL_SCHEMA_INVALID",
+      `MCP server ${serverName} 的工具 ${toolName}.${field}.properties 必须是 JSON 对象。`
+    );
+  }
+  if (schema.required != null && (!Array.isArray(schema.required)
+    || schema.required.some((value) => typeof value !== "string" || !value.trim()))) {
+    throw skillError(
+      "MCP_TOOL_SCHEMA_INVALID",
+      `MCP server ${serverName} 的工具 ${toolName}.${field}.required 必须是非空字段名数组。`
+    );
+  }
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const unknownRequired = (schema.required ?? []).filter((name) => !Object.prototype.hasOwnProperty.call(properties, name));
+  if (unknownRequired.length > 0) {
+    throw skillError(
+      "MCP_TOOL_SCHEMA_INVALID",
+      `MCP server ${serverName} 的工具 ${toolName}.${field}.required 引用了未声明字段：${unknownRequired.join(", ")}`
+    );
+  }
+  const unsupported = findUnsupportedSchemaKeyword(schema);
+  if (unsupported) {
+    throw skillError(
+      "MCP_TOOL_SCHEMA_UNSUPPORTED",
+      `MCP server ${serverName} 的工具 ${toolName}.${field}${unsupported.path} 使用 Provider 不兼容的 ${unsupported.keyword}。`
+    );
+  }
+  if (options.required && Object.prototype.hasOwnProperty.call(schema, "required") && !Array.isArray(schema.required)) {
+    throw skillError("MCP_TOOL_SCHEMA_INVALID", `MCP server ${serverName} 的工具 ${toolName}.${field}.required 无效。`);
+  }
+}
+
+function findUnsupportedSchemaKeyword(value, path = "") {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const found = findUnsupportedSchemaKeyword(value[index], `${path}[${index}]`);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  for (const keyword of ["$ref", "$defs", "oneOf", "anyOf", "allOf"]) {
+    if (Object.prototype.hasOwnProperty.call(value, keyword)) return { keyword, path };
+  }
+  if (Array.isArray(value.type)) return { keyword: "联合 type 数组", path };
+  for (const [key, nested] of Object.entries(value)) {
+    const found = findUnsupportedSchemaKeyword(nested, `${path}.${key}`);
+    if (found) return found;
+  }
+  return null;
 }
 
 async function normalizeMcpServer(rootDir, serverName, input, resources, resolveServers) {
@@ -765,6 +1423,27 @@ function looksLikeResourcePath(value) {
 
 function cloneJsonValue(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function stripResolvedServers(composition) {
+  if (!composition?.mcp?.servers) return composition;
+  const cloned = cloneJsonValue(composition);
+  delete cloned.mcp.servers;
+  return cloned;
+}
+
+async function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function isRecord(value) {

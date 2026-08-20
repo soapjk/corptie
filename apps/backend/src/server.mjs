@@ -32,6 +32,7 @@ import {
   storedSessionIdForListSession
 } from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
+import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import {
@@ -567,7 +568,8 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
 toolHostService = new ToolHostService({
   registry: agentProviderRegistry,
   catalog: hostToolCatalog,
-  resolveMcpServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId)
+  resolveMcpServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId),
+  recordRuntimeEvent: (event) => store.recordSkillRuntimeEvent(event)
 });
 // Re-register the OpenClacky Provider after its runtime probe produces a fresh,
 // honest capability snapshot. This is how the bridge handshake gates TOOL_HOST_ATTACH
@@ -685,6 +687,9 @@ const backgroundAgentService = new BackgroundAgentService({
   resolveAgentContext: (agentId, { intent } = {}) => agentContextService.buildAgentContext(agentId, { intent }),
   onOperationEvent: (type, payload) => emitEvent(type, payload)
 });
+skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
+  backgroundAgent: backgroundAgentService
+}));
 const projectToolsetInitializer = new ProjectToolsetInitializer({
   manager: projectToolsets,
   backgroundAgent: backgroundAgentService,
@@ -3699,14 +3704,14 @@ async function createCodexProviderSession(input = {}) {
   }
 }
 
-async function resumeCodexProviderSession(reference) {
+async function resumeCodexProviderSession(reference, context = {}) {
   const previous = reference.metadata?.session
     ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
   const result = await codexRuntime.resumeThread(
     reference.providerSessionId,
-    await collaborationThreadOptionsForSession(reference.sessionId)
+    context.toolHost?.providerAttachment ?? await collaborationThreadOptionsForSession(reference.sessionId)
   );
   const session = mergeStoredSessionPresentation(
     mapCodexThreadToSession(result.thread ?? result),
@@ -7432,6 +7437,9 @@ stateSyncPublishedRevision = store.stateRevision();
 const legacySkillRepair = await skillRegistryService.repairLegacyRegistrations();
 if (legacySkillRepair.repaired.length > 0) {
   console.log(`[skills] repaired ${legacySkillRepair.repaired.length} legacy Skill registration(s)`);
+}
+for (const skipped of legacySkillRepair.skipped) {
+  console.warn(`[skills] legacy Skill repair skipped skill=${skipped.skillId} reason=${skipped.reason}`);
 }
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;

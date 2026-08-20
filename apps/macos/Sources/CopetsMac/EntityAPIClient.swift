@@ -811,7 +811,8 @@ final class EntityAPIClient: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
             "sourceType": sourceType,
-            "source": source
+            "source": source,
+            "assist": true
         ])
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -841,7 +842,7 @@ final class EntityAPIClient: ObservableObject {
         var request = URLRequest(url: baseURL.appending(path: "skills"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["sourceType": sourceType, "source": source]
+        var body: [String: Any] = ["sourceType": sourceType, "source": source, "assist": true]
         if let name, !name.isEmpty { body["name"] = name }
         if let description, !description.isEmpty { body["description"] = description }
         if let sourceSubpath { body["sourceSubpath"] = sourceSubpath }

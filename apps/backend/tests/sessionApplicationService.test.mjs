@@ -200,6 +200,62 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("Session recovery rebuilds and passes the Provider-neutral Tool Host attachment", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "recoverable",
+    displayName: "Recoverable",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
+      AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES
+    ]
+  }, {
+    listSessions: () => [],
+    readSession: () => null,
+    attachTools: (attachment) => attachment,
+    resumeSession: (reference, context) => {
+      calls.push({ reference, context });
+      return { id: reference.sessionId, title: "Recovered" };
+    }
+  });
+  const toolHostCalls = [];
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    toolHostService: {
+      async prepareSession(providerId, context) {
+        toolHostCalls.push({ providerId, context });
+        return {
+          actorId: context.actorId,
+          providerAttachment: {
+            dynamicToolAgentId: context.actorId,
+            config: { mcp_servers: { investrace: { command: "node" } } }
+          }
+        };
+      }
+    },
+    resolveSessionReference: async () => ({
+      sessionId: "session:recover",
+      providerId: "recoverable",
+      providerSessionId: "native:recover",
+      metadata: {
+        session: {
+          agentId: "agent:investor",
+          sessionKind: "assistantChat"
+        }
+      }
+    })
+  });
+
+  const resumed = await service.resumeSession("session:recover", { source: "desktop" });
+  assert.equal(resumed.title, "Recovered");
+  assert.equal(toolHostCalls.length, 1);
+  assert.equal(toolHostCalls[0].context.purpose, "session-resume");
+  assert.equal(toolHostCalls[0].context.actorId, "agent:investor");
+  assert.equal(calls[0].context.toolHost.providerAttachment.config.mcp_servers.investrace.command, "node");
+});
+
 test("Session application service rejects retired per-session avatar input", async () => {
   const { service } = fixture();
   await assert.rejects(

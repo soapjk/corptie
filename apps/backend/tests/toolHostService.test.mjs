@@ -54,7 +54,10 @@ test("Tool Host carries immutable Session scope metadata into authorization and 
     authorize: ({ metadata }) => metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId === "objective:1",
     execute: () => ({})
   }]);
-  const registry = new AgentProviderRegistry([provider("hosted", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+  const registry = new AgentProviderRegistry([provider("hosted", [
+    AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
+    AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES
+  ], {
     attachTools(attachment) { calls.push(attachment); return attachment; }
   })]);
   const service = new ToolHostService({ registry, catalog });
@@ -83,6 +86,28 @@ test("Tool Host fails loudly when an unsupported Provider would drop assigned Sk
     service.prepareSession("plain", { actorId: "agent-compound" }),
     (error) => error.code === "MCP_PROVIDER_UNSUPPORTED" && /plain/.test(error.message)
   );
+});
+
+test("Tool Host rejects a Provider that attaches host tools but does not advertise Skill MCP support", async () => {
+  const events = [];
+  const registry = new AgentProviderRegistry([provider("host-tools-only", [
+    AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+  ], {
+    attachTools: (attachment) => attachment
+  })]);
+  const service = new ToolHostService({
+    registry,
+    catalog: new HostToolCatalog(),
+    resolveMcpServers: async () => ({ investrace: { command: "node", args: ["server.mjs"] } }),
+    recordRuntimeEvent: (event) => events.push(event)
+  });
+  await assert.rejects(
+    service.prepareSession("host-tools-only", { actorId: "agent:investor", sessionId: "session:1" }),
+    (error) => error.code === "MCP_PROVIDER_UNSUPPORTED" && /host-tools-only/.test(error.message)
+  );
+  assert.equal(events[0].stage, "provider-materialization");
+  assert.equal(events[0].status, "failed");
+  assert.equal(events[0].errorCode, "MCP_PROVIDER_UNSUPPORTED");
 });
 
 test("Host Tool Catalog dispatches by tool name without Provider knowledge", async () => {
@@ -168,7 +193,10 @@ test("Codex and Claude Provider adapters configure assigned Skill MCP dependenci
 
 test("Tool Host resolves Agent Skill MCP dependencies before Provider attachment", async () => {
   const calls = [];
-  const registry = new AgentProviderRegistry([provider("hosted", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+  const registry = new AgentProviderRegistry([provider("hosted", [
+    AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
+    AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES
+  ], {
     attachTools(attachment) { calls.push(attachment); return attachment; }
   })]);
   const service = new ToolHostService({
