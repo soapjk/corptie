@@ -98,9 +98,11 @@ App Secrets are passed to `lark-cli` encrypted storage and are not stored in the
 
 ## 🤝 Agent collaboration
 
-Corptie assigns a stable agent identity to each managed Codex session and exposes local MCP collaboration tools. Agents can discover peers and services, then coordinate through focused tasks with explicit acceptance criteria and local artifact references.
+Corptie uses Objectives as collaboration responsibility boundaries and WorkItems as execution and acceptance records. Managed sessions receive stable Agent identities and local MCP tools for cross-Objective requests with explicit criteria and artifacts.
 
 Every new collaboration request is shown to the user as a confirmation card before delivery. The Collaboration window provides inbox, verification, escalated tasks, agent/service registry, and full task timelines, with controls to cancel tasks or retry failed deliveries.
+
+See [Agent collaboration protocol and workflow](docs/agent-collaboration.md) for the state machine, message envelope, compatibility migration, and development usage.
 
 ## 🚦 Environments
 

@@ -84,5 +84,6 @@ docs/**
 !docs/openclacky-provider-parity-audit-and-remediation.md
 !docs/skill-management-page-proposal.md
 !docs/detached-orb-and-task-notifications.md
+!docs/agent-collaboration.md
 # Corptie local Agent configuration
 /.corptie/

@@ -1,13 +1,26 @@
 import { randomUUID } from "node:crypto";
+import {
+  COLLABORATION_PROTOCOL_VERSION,
+  createCollaborationEnvelope
+} from "./collaborationProtocol.mjs";
 
 const TERMINAL_TASK_STATUSES = new Set(["completed", "rejected", "canceled", "escalated"]);
 const DELIVERY_STATUSES = new Set(["pending", "queued", "delivering", "delivered", "failed"]);
+const TASK_INPUT_FIELDS = new Set([
+  "taskId", "confirmationId", "initiatorAgentId", "recipientAgentId", "recipientSessionName",
+  "serviceId", "type", "title", "summary", "acceptanceCriteria", "evidence", "resourceVersion",
+  "maxIterations", "idempotencyKey", "messageIdempotencyKey", "parentTaskId", "contextId",
+  "contextTitle", "contextMetadata", "messageId", "deliveryId", "sourceSessionId", "sourceTurnId",
+  "initiatorSessionId", "recipientSessionId", "initiatorNameAtSend", "recipientNameAtSend",
+  "sourceObjectiveId", "targetObjectiveId", "sourceWorkItemId", "workItemId"
+]);
 
 export class CollaborationCore {
   constructor(store, options = {}) {
     this.store = store;
     this.idFactory = options.idFactory ?? randomUUID;
     this.clock = options.clock ?? (() => new Date().toISOString());
+    this.#migrateLegacyCollaborationTasks();
   }
 
   registerAgent(input) {
@@ -295,6 +308,7 @@ export class CollaborationCore {
   }
 
   createTask(input) {
+    assertKnownFields(input, TASK_INPUT_FIELDS);
     const initiator = this.#requireAgent(input.initiatorAgentId);
     const recipient = this.#requireAgent(input.recipientAgentId);
     if (initiator.agentId === recipient.agentId) {
@@ -326,8 +340,20 @@ export class CollaborationCore {
     const maxIterations = positiveInteger(input.maxIterations, 3);
     const title = requiredText(input.title, "title");
     const summary = requiredText(input.summary, "summary");
+    const acceptanceCriteria = stringList(input.acceptanceCriteria);
+    const scope = this.#resolveTaskScope(input, initiator, recipient);
 
     this.#transaction(() => {
+      const workItem = this.#ensureCollaborationWorkItem({
+        requestedWorkItemId: input.workItemId,
+        taskId,
+        targetObjectiveId: scope.targetObjectiveId,
+        recipientAgentId: recipient.agentId,
+        title,
+        summary,
+        acceptanceCriteria,
+        status: "todo"
+      });
       this.store.db.run(
         `INSERT OR IGNORE INTO collaboration_contexts (
           context_id, title, metadata_json, created_at, updated_at
@@ -336,15 +362,18 @@ export class CollaborationCore {
       );
       this.store.db.run(
         `INSERT INTO collaboration_tasks (
-          task_id, context_id, parent_task_id, initiator_agent_id, recipient_agent_id, service_id,
+          task_id, context_id, parent_task_id, protocol_version,
+          source_objective_id, target_objective_id, source_work_item_id, work_item_id,
+          initiator_agent_id, recipient_agent_id, service_id,
           type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
           idempotency_key, created_at, updated_at, completed_at,
           initiator_session_id, recipient_session_id, initiator_name_at_send, recipient_name_at_send
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
         [
-          taskId, contextId, optionalText(input.parentTaskId), initiator.agentId, recipient.agentId,
-          service?.serviceId ?? null, taskType, maxIterations, title, summary,
-          JSON.stringify(stringList(input.acceptanceCriteria)), idempotencyKey, timestamp, timestamp,
+          taskId, contextId, optionalText(input.parentTaskId), COLLABORATION_PROTOCOL_VERSION,
+          scope.sourceObjectiveId, scope.targetObjectiveId, scope.sourceWorkItemId, workItem.id,
+          initiator.agentId, recipient.agentId, service?.serviceId ?? null, taskType,
+          maxIterations, title, summary, JSON.stringify(acceptanceCriteria), idempotencyKey, timestamp, timestamp,
           input.initiatorSessionId ?? initiator.sessionId,
           input.recipientSessionId ?? recipient.sessionId,
           input.initiatorNameAtSend ?? initiator.sessionName,
@@ -361,6 +390,10 @@ export class CollaborationCore {
         taskId,
         senderAgentId: initiator.agentId,
         recipientAgentId: recipient.agentId,
+        sourceObjectiveId: scope.sourceObjectiveId,
+        targetObjectiveId: scope.targetObjectiveId,
+        sourceWorkItemId: scope.sourceWorkItemId,
+        workItemId: workItem.id,
         messageType: taskType,
         body: summary,
         evidence: input.evidence,
@@ -372,13 +405,17 @@ export class CollaborationCore {
       this.#appendEvent(taskId, "task_created", initiator.agentId, {
         status: "proposed",
         messageId,
-        recipientAgentId: recipient.agentId
+        recipientAgentId: recipient.agentId,
+        sourceObjectiveId: scope.sourceObjectiveId,
+        targetObjectiveId: scope.targetObjectiveId,
+        workItemId: workItem.id
       }, timestamp);
     });
     return this.getTask(taskId);
   }
 
   proposeTask(input) {
+    assertKnownFields(input, TASK_INPUT_FIELDS);
     const initiator = this.#requireAgent(input.initiatorAgentId);
     const recipient = this.#requireAgent(input.recipientAgentId);
     if (initiator.agentId === recipient.agentId) {
@@ -393,6 +430,10 @@ export class CollaborationCore {
       throw domainError("RECIPIENT_NOT_SERVICE_OWNER", `Agent ${recipient.agentId} does not own service ${service.serviceId}.`);
     }
     if (input.parentTaskId) this.#requireTask(input.parentTaskId);
+    const scope = this.#resolveTaskScope(input, initiator, recipient);
+    if (input.workItemId) {
+      this.#validateRequestedWorkItem(input.workItemId, scope.targetObjectiveId, recipient.agentId);
+    }
     const request = {
       ...input,
       initiatorAgentId: initiator.agentId,
@@ -401,6 +442,9 @@ export class CollaborationCore {
       recipientSessionId: recipient.sessionId,
       initiatorNameAtSend: initiator.sessionName,
       recipientNameAtSend: recipient.sessionName,
+      sourceObjectiveId: scope.sourceObjectiveId,
+      targetObjectiveId: scope.targetObjectiveId,
+      sourceWorkItemId: scope.sourceWorkItemId,
       type: taskType,
       title: requiredText(input.title, "title"),
       summary: requiredText(input.summary, "summary"),
@@ -603,17 +647,7 @@ export class CollaborationCore {
         { messageId: message.messageId },
         timestamp
       );
-      this.store.db.run(
-        `UPDATE collaboration_tasks
-         SET status = ?, updated_at = ?, completed_at = ?
-         WHERE task_id = ?`,
-        [
-          questionAnswered ? "completed" : task.status,
-          timestamp,
-          questionAnswered ? timestamp : task.completedAt,
-          taskId
-        ]
-      );
+      this.#updateTaskStatus(taskId, questionAnswered ? "completed" : task.status, timestamp);
     });
     return this.getTask(taskId);
   }
@@ -771,8 +805,12 @@ export class CollaborationCore {
   getDeliveryEnvelope(deliveryId) {
     const row = this.store.selectOne(
       `SELECT d.*, m.task_id, m.sender_agent_id, m.message_type, m.body,
-              m.evidence_json, m.resource_version, m.created_at AS message_created_at,
+              m.protocol_version, m.source_objective_id AS message_source_objective_id,
+              m.target_objective_id AS message_target_objective_id,
+              m.source_work_item_id AS message_source_work_item_id, m.work_item_id AS message_work_item_id,
+              m.evidence_json, m.payload_json, m.error_json, m.resource_version, m.created_at AS message_created_at,
               t.context_id, t.service_id, t.type AS task_type, t.status AS task_status,
+              t.source_objective_id, t.target_objective_id, t.source_work_item_id, t.work_item_id,
               t.iteration, t.max_iterations, t.title, t.summary,
               t.acceptance_criteria_json, a.name AS sender_agent_name,
               s.name AS service_name
@@ -798,11 +836,33 @@ export class CollaborationCore {
         body: row.body,
         evidence: parseJson(row.evidence_json, []),
         resourceVersion: row.resource_version || null,
-        createdAt: row.message_created_at
+        createdAt: row.message_created_at,
+        envelope: createCollaborationEnvelope({
+          messageId: row.message_id,
+          taskId: row.task_id,
+          messageType: row.message_type,
+          senderAgentId: row.sender_agent_id,
+          recipientAgentId: row.recipient_agent_id,
+          sourceObjectiveId: row.message_source_objective_id,
+          targetObjectiveId: row.message_target_objective_id,
+          sourceWorkItemId: row.message_source_work_item_id,
+          workItemId: row.message_work_item_id,
+          payload: parseJson(row.payload_json, {
+            body: row.body,
+            evidence: parseJson(row.evidence_json, []),
+            resourceVersion: row.resource_version || null
+          }),
+          timestamp: row.message_created_at,
+          error: parseJson(row.error_json, null)
+        })
       },
       task: {
         taskId: row.task_id,
         contextId: row.context_id,
+        sourceObjectiveId: row.source_objective_id,
+        targetObjectiveId: row.target_objective_id,
+        sourceWorkItemId: row.source_work_item_id || null,
+        workItemId: row.work_item_id,
         serviceId: row.service_id || null,
         serviceName: row.service_name || null,
         type: row.task_type,
@@ -984,14 +1044,48 @@ export class CollaborationCore {
     }
     const messageId = input.messageId ?? this.idFactory();
     const timestamp = input.timestamp ?? this.clock();
+    const taskScope = this.store.selectOne(
+      `SELECT initiator_agent_id, source_objective_id, target_objective_id, source_work_item_id, work_item_id
+       FROM collaboration_tasks WHERE task_id = ?`,
+      [input.taskId]
+    );
+    const sendsForward = input.senderAgentId === taskScope?.initiator_agent_id;
+    const sourceObjectiveId = input.sourceObjectiveId
+      ?? (sendsForward ? taskScope?.source_objective_id : taskScope?.target_objective_id);
+    const targetObjectiveId = input.targetObjectiveId
+      ?? (sendsForward ? taskScope?.target_objective_id : taskScope?.source_objective_id);
+    const sourceWorkItemId = input.sourceWorkItemId ?? taskScope?.source_work_item_id ?? null;
+    const workItemId = input.workItemId ?? taskScope?.work_item_id;
+    const payload = {
+      body: requiredText(input.body, "body"),
+      evidence: input.evidence ?? [],
+      resourceVersion: optionalText(input.resourceVersion)
+    };
+    const envelope = createCollaborationEnvelope({
+      messageId,
+      taskId: input.taskId,
+      messageType: input.messageType,
+      senderAgentId: input.senderAgentId,
+      recipientAgentId: input.recipientAgentId,
+      sourceObjectiveId,
+      targetObjectiveId,
+      sourceWorkItemId,
+      workItemId,
+      payload,
+      timestamp,
+      error: input.error ?? null
+    });
     this.store.db.run(
       `INSERT INTO collaboration_messages (
-        message_id, task_id, sender_agent_id, recipient_agent_id, message_type, body,
-        evidence_json, resource_version, idempotency_key, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        message_id, task_id, protocol_version, source_objective_id, target_objective_id,
+        source_work_item_id, work_item_id, sender_agent_id, recipient_agent_id, message_type, body,
+        evidence_json, payload_json, error_json, resource_version, idempotency_key, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        messageId, input.taskId, input.senderAgentId, input.recipientAgentId, input.messageType,
-        requiredText(input.body, "body"), JSON.stringify(input.evidence ?? []), optionalText(input.resourceVersion),
+        messageId, input.taskId, envelope.version, sourceObjectiveId, targetObjectiveId,
+        sourceWorkItemId, workItemId, input.senderAgentId, input.recipientAgentId, input.messageType,
+        payload.body, JSON.stringify(payload.evidence), JSON.stringify(payload),
+        envelope.error ? JSON.stringify(envelope.error) : null, payload.resourceVersion,
         idempotencyKey, timestamp
       ]
     );
@@ -1053,6 +1147,255 @@ export class CollaborationCore {
         [status, iteration, timestamp, completedAt, taskId]
       );
     }
+    const task = this.store.selectOne(
+      "SELECT work_item_id FROM collaboration_tasks WHERE task_id = ?",
+      [taskId]
+    );
+    if (task?.work_item_id) this.#syncWorkItemStatus(task.work_item_id, taskId, status, timestamp);
+  }
+
+  #resolveTaskScope(input, initiator, recipient) {
+    const sourceObjectiveId = this.#resolveObjectiveForAgent(
+      initiator,
+      optionalText(input.sourceObjectiveId),
+      "sourceObjectiveId"
+    );
+    const targetObjectiveId = this.#resolveObjectiveForAgent(
+      recipient,
+      optionalText(input.targetObjectiveId),
+      "targetObjectiveId"
+    );
+    if (sourceObjectiveId === targetObjectiveId) {
+      throw domainError(
+        "OBJECTIVE_BOUNDARY_REQUIRED",
+        "Peer collaboration requires distinct source and target Objectives; use the Objective's own WorkItem workflow for work inside one Objective."
+      );
+    }
+    const sourceWorkItemId = optionalText(input.sourceWorkItemId);
+    if (sourceWorkItemId) {
+      const workItem = this.store.getWorkItem(sourceWorkItemId);
+      if (!workItem) throw domainError("WORK_ITEM_NOT_FOUND", `WorkItem ${sourceWorkItemId} was not found.`);
+      if (workItem.objective_id !== sourceObjectiveId) {
+        throw domainError("WORK_ITEM_OBJECTIVE_MISMATCH", "The source WorkItem does not belong to the source Objective.");
+      }
+    }
+    return { sourceObjectiveId, targetObjectiveId, sourceWorkItemId };
+  }
+
+  #resolveObjectiveForAgent(agent, requestedObjectiveId, field) {
+    const session = agent.currentSessionId ? this.store.getSession(agent.currentSessionId) : null;
+    const sessionObjectiveId = session?.objectiveId ?? session?.objective_id ?? null;
+    const objectiveId = requestedObjectiveId ?? sessionObjectiveId;
+    if (!objectiveId) return this.#ensureCompatibilityObjective(agent).id;
+    const objective = this.store.getObjective(objectiveId);
+    if (!objective) throw domainError("OBJECTIVE_NOT_FOUND", `${field} ${objectiveId} was not found.`);
+    const contributorIds = objective.contributorAgentIds ?? objective.contributor_agent_ids ?? [];
+    const ownsWorkItem = this.store.listWorkItemsByObjective(objectiveId)
+      .some((workItem) => workItem.main_agent_id === agent.agentId);
+    if (sessionObjectiveId !== objectiveId && !contributorIds.includes(agent.agentId) && !ownsWorkItem) {
+      throw domainError("OBJECTIVE_AGENT_NOT_AUTHORIZED", `Agent ${agent.agentId} is not assigned to Objective ${objectiveId}.`);
+    }
+    if (sessionObjectiveId === objectiveId) this.#ensureObjectiveContributor(objectiveId, agent.agentId);
+    return objectiveId;
+  }
+
+  #ensureCompatibilityObjective(agent) {
+    const id = `objective:collaboration:${encodeURIComponent(agent.agentId)}`;
+    return this.store.getObjective(id) ?? this.store.createObjective({
+      id,
+      name: `${agent.name} collaboration boundary`,
+      description: "Compatibility Objective created for collaboration from an unscoped legacy Session.",
+      idealState: "All peer requests execute and close through explicit WorkItems.",
+      status: "active",
+      tags: ["system:collaboration-compatibility"],
+      contributorAgentIds: [agent.agentId]
+    });
+  }
+
+  #ensureObjectiveContributor(objectiveId, agentId) {
+    const objective = this.store.getObjective(objectiveId);
+    if (!objective) throw domainError("OBJECTIVE_NOT_FOUND", `Objective ${objectiveId} was not found.`);
+    if (objective.contributorAgentIds.includes(agentId)) return objective;
+    return this.store.updateObjective(objectiveId, {
+      contributorAgentIds: [...objective.contributorAgentIds, agentId]
+    });
+  }
+
+  #validateRequestedWorkItem(workItemId, targetObjectiveId, recipientAgentId) {
+    const workItem = this.store.getWorkItem(workItemId);
+    if (!workItem) throw domainError("WORK_ITEM_NOT_FOUND", `WorkItem ${workItemId} was not found.`);
+    if (workItem.objective_id !== targetObjectiveId) {
+      throw domainError("WORK_ITEM_OBJECTIVE_MISMATCH", "The collaboration WorkItem must belong to the target Objective.");
+    }
+    if (workItem.main_agent_id && workItem.main_agent_id !== recipientAgentId) {
+      throw domainError("WORK_ITEM_AGENT_MISMATCH", `WorkItem ${workItemId} is assigned to another Agent.`);
+    }
+    if (["done", "complete", "completed", "canceled", "cancelled"].includes(workItem.status)) {
+      throw domainError("WORK_ITEM_TERMINAL", `WorkItem ${workItemId} is already terminal.`);
+    }
+    return workItem;
+  }
+
+  #ensureCollaborationWorkItem(input) {
+    if (input.requestedWorkItemId) {
+      const existing = this.#validateRequestedWorkItem(
+        input.requestedWorkItemId,
+        input.targetObjectiveId,
+        input.recipientAgentId
+      );
+      if (!existing.main_agent_id) {
+        return this.store.updateWorkItem(existing.id, { mainAgentId: input.recipientAgentId });
+      }
+      return existing;
+    }
+    const id = `work_item:collaboration:${input.taskId}`;
+    return this.store.getWorkItem(id) ?? this.store.createWorkItem({
+      id,
+      objectiveId: input.targetObjectiveId,
+      title: input.title,
+      description: input.summary,
+      acceptanceCriteria: input.acceptanceCriteria.map((entry) => `- ${entry}`).join("\n"),
+      priority: "medium",
+      status: input.status ?? "todo",
+      mainAgentId: input.recipientAgentId
+    });
+  }
+
+  #syncWorkItemStatus(workItemId, taskId, taskStatus, timestamp) {
+    const status = taskStatus === "completed"
+      ? "done"
+      : ["rejected", "canceled", "escalated"].includes(taskStatus)
+        ? "canceled"
+        : ["working", "delivered", "verifying", "revision_requested"].includes(taskStatus)
+          ? "in_progress"
+          : "todo";
+    const executionStatus = taskStatus === "working" || taskStatus === "revision_requested"
+      ? "running"
+      : taskStatus === "completed"
+        ? "completed"
+        : ["rejected", "canceled", "escalated"].includes(taskStatus)
+          ? "failed"
+          : taskStatus === "delivered" || taskStatus === "verifying"
+            ? "awaiting_acceptance"
+            : "idle";
+    const patch = { status, executionStatus };
+    if (taskStatus === "completed") {
+      patch.acceptanceAssessment = {
+        status: "passed",
+        source: "collaboration",
+        collaborationTaskId: taskId,
+        assessedAt: timestamp
+      };
+    }
+    this.store.updateWorkItem(workItemId, patch);
+  }
+
+  #migrateLegacyCollaborationTasks() {
+    const migrationId = "collaboration-objective-work-item-v2";
+    if (!this.store.db || this.store.selectOne(
+      "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
+      [migrationId]
+    )) return;
+    const rows = this.store.selectAll(
+      `SELECT * FROM collaboration_tasks
+       WHERE protocol_version <> ? OR source_objective_id IS NULL OR target_objective_id IS NULL OR work_item_id IS NULL`,
+      [COLLABORATION_PROTOCOL_VERSION]
+    );
+    this.store.db.run("BEGIN IMMEDIATE TRANSACTION");
+    try {
+      for (const row of rows) {
+        const initiator = this.#requireAgent(row.initiator_agent_id);
+        const recipient = this.#requireAgent(row.recipient_agent_id);
+        const sourceObjectiveId = this.#objectiveForSession(row.initiator_session_id)
+          ?? this.#ensureCompatibilityObjective(initiator).id;
+        let targetObjectiveId = this.#objectiveForSession(row.recipient_session_id)
+          ?? this.#ensureCompatibilityObjective(recipient).id;
+        if (targetObjectiveId === sourceObjectiveId) {
+          targetObjectiveId = this.#ensureCompatibilityObjective(recipient).id;
+        }
+        this.#ensureObjectiveContributor(sourceObjectiveId, initiator.agentId);
+        this.#ensureObjectiveContributor(targetObjectiveId, recipient.agentId);
+        const workItem = this.#ensureCollaborationWorkItem({
+          requestedWorkItemId: row.work_item_id,
+          taskId: row.task_id,
+          targetObjectiveId,
+          recipientAgentId: recipient.agentId,
+          title: row.title,
+          summary: row.summary,
+          acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
+          status: this.#workItemStatusForTask(row.status)
+        });
+        this.store.db.run(
+          `UPDATE collaboration_tasks SET protocol_version = ?, source_objective_id = ?,
+           target_objective_id = ?, work_item_id = ? WHERE task_id = ?`,
+          [COLLABORATION_PROTOCOL_VERSION, sourceObjectiveId, targetObjectiveId, workItem.id, row.task_id]
+        );
+        const messages = this.store.selectAll(
+          "SELECT * FROM collaboration_messages WHERE task_id = ? ORDER BY created_at, message_id",
+          [row.task_id]
+        );
+        for (const message of messages) {
+          const forward = message.sender_agent_id === row.initiator_agent_id;
+          const messageSourceObjectiveId = forward ? sourceObjectiveId : targetObjectiveId;
+          const messageTargetObjectiveId = forward ? targetObjectiveId : sourceObjectiveId;
+          const payload = {
+            body: message.body,
+            evidence: parseJson(message.evidence_json, []),
+            resourceVersion: message.resource_version || null
+          };
+          const envelope = createCollaborationEnvelope({
+            messageId: message.message_id,
+            taskId: row.task_id,
+            messageType: message.message_type,
+            senderAgentId: message.sender_agent_id,
+            recipientAgentId: message.recipient_agent_id,
+            sourceObjectiveId: messageSourceObjectiveId,
+            targetObjectiveId: messageTargetObjectiveId,
+            sourceWorkItemId: row.source_work_item_id || null,
+            workItemId: workItem.id,
+            payload,
+            timestamp: message.created_at,
+            error: parseJson(message.error_json, null)
+          });
+          this.store.db.run(
+            `UPDATE collaboration_messages SET protocol_version = ?, source_objective_id = ?,
+             target_objective_id = ?, source_work_item_id = ?, work_item_id = ?, payload_json = ?, error_json = ?
+             WHERE message_id = ?`,
+            [
+              envelope.version, messageSourceObjectiveId, messageTargetObjectiveId,
+              row.source_work_item_id || null, workItem.id, JSON.stringify(payload),
+              envelope.error ? JSON.stringify(envelope.error) : null, message.message_id
+            ]
+          );
+        }
+        this.#syncWorkItemStatus(workItem.id, row.task_id, row.status, row.updated_at);
+      }
+      this.store.db.run(
+        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+        [migrationId, new Date().toISOString()]
+      );
+      this.store.db.run("COMMIT");
+      this.store.scheduleSave();
+    } catch (error) {
+      this.store.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #objectiveForSession(sessionId) {
+    if (!sessionId) return null;
+    const logical = this.store.getLogicalSession(sessionId);
+    const session = this.store.getSession(sessionId)
+      ?? (logical?.legacySessionId ? this.store.getSession(logical.legacySessionId) : null);
+    const objectiveId = session?.objectiveId ?? session?.objective_id ?? null;
+    return objectiveId && this.store.getObjective(objectiveId) ? objectiveId : null;
+  }
+
+  #workItemStatusForTask(taskStatus) {
+    if (taskStatus === "completed") return "done";
+    if (["rejected", "canceled", "escalated"].includes(taskStatus)) return "canceled";
+    if (["working", "delivered", "verifying", "revision_requested"].includes(taskStatus)) return "in_progress";
+    return "todo";
   }
 
   #assertActor(task, actorAgentId, role) {
@@ -1104,6 +1447,10 @@ function agentFromRow(row, store) {
   const logical = row.current_session_id
     ? (store.getLogicalSession(row.current_session_id) ?? store.getLogicalSessionByLegacySessionId(row.current_session_id))
     : null;
+  const session = row.current_session_id ? store.getSession(row.current_session_id) : null;
+  const objectiveIds = store.listObjectives()
+    .filter((objective) => (objective.contributorAgentIds ?? []).includes(row.agent_id))
+    .map((objective) => objective.id);
   return {
     agentId: row.agent_id,
     name: logical?.sessionName ?? row.name,
@@ -1116,6 +1463,9 @@ function agentFromRow(row, store) {
     status: "available",
     capabilities: parseJson(row.capabilities_json, []),
     currentSessionId: row.current_session_id || null,
+    currentObjectiveId: session?.objectiveId ?? null,
+    currentWorkItemId: session?.workItemId ?? null,
+    objectiveIds,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -1142,6 +1492,11 @@ function taskFromRow(row) {
     taskId: row.task_id,
     contextId: row.context_id,
     parentTaskId: row.parent_task_id || null,
+    protocolVersion: row.protocol_version,
+    sourceObjectiveId: row.source_objective_id,
+    targetObjectiveId: row.target_objective_id,
+    sourceWorkItemId: row.source_work_item_id || null,
+    workItemId: row.work_item_id,
     initiatorAgentId: row.initiator_agent_id,
     recipientAgentId: row.recipient_agent_id,
     initiatorSessionId: row.initiator_session_id || null,
@@ -1164,6 +1519,26 @@ function taskFromRow(row) {
 }
 
 function messageFromRow(row) {
+  const payload = parseJson(row.payload_json, {
+    body: row.body,
+    evidence: parseJson(row.evidence_json, []),
+    resourceVersion: row.resource_version || null
+  });
+  const error = parseJson(row.error_json, null);
+  const envelope = createCollaborationEnvelope({
+    messageId: row.message_id,
+    taskId: row.task_id,
+    messageType: row.message_type,
+    senderAgentId: row.sender_agent_id,
+    recipientAgentId: row.recipient_agent_id,
+    sourceObjectiveId: row.source_objective_id,
+    targetObjectiveId: row.target_objective_id,
+    sourceWorkItemId: row.source_work_item_id,
+    workItemId: row.work_item_id,
+    payload,
+    timestamp: row.created_at,
+    error
+  });
   return {
     messageId: row.message_id,
     taskId: row.task_id,
@@ -1174,7 +1549,8 @@ function messageFromRow(row) {
     evidence: parseJson(row.evidence_json, []),
     resourceVersion: row.resource_version || null,
     idempotencyKey: row.idempotency_key || null,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    envelope
   };
 }
 
@@ -1258,6 +1634,14 @@ function requiredText(value, field) {
 
 function optionalText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function assertKnownFields(input, allowed) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw domainError("INVALID_INPUT", "Collaboration task input must be an object.");
+  }
+  const unknown = Object.keys(input).find((field) => !allowed.has(field));
+  if (unknown) throw domainError("UNKNOWN_FIELD", `Unknown collaboration task field: ${unknown}.`);
 }
 
 function stringList(value) {

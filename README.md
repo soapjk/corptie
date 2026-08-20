@@ -167,6 +167,8 @@ curl -fsS "http://127.0.0.1:47322/sessions"
 
 受管 Session 可通过 Corptie Tool Host 发现其他 Agent 和服务，并发起带验收标准的点对点任务。新的协作请求先在发起者 Session 中显示确认卡片；用户确认后才投递。接收者可以交付 Artifact，发起者负责验证、请求修订或完成任务。
 
+协议、状态流转、兼容迁移和开发使用说明见 [Agent 协作机制](docs/agent-collaboration.md)。
+
 ### 可选飞书网关
 
 1. 安装 `lark-cli`，并在飞书开放平台准备已发布且启用机器人能力的企业应用。
@@ -377,6 +379,7 @@ OpenClacky 是外部生命周期 Provider；Corptie 不负责静默启动替代�
 ## 相关文档
 
 - [Agent Provider 开发指南](docs/agent-provider-development.md)
+- [Agent 协作机制](docs/agent-collaboration.md)
 - [Codex Worktree Session 切换验收记录](docs/codex-worktree-session-switching-acceptance.md)
 - [Session 生命周期监督器设计](docs/session-lifecycle-supervisor-design.md)
 - [OpenClacky Provider 对齐审计](docs/openclacky-provider-parity-audit-and-remediation.md)
