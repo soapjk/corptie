@@ -14,74 +14,37 @@
   <a href="https://youtu.be/OqqVC_ITiYc">视频演示</a>
 </p>
 
-Corptie 将 Agent、目标、工作项、会话和 Git Worktree 组织成一条可追踪的执行链。它用原生 SwiftUI/AppKit 悬浮界面管理多个本地 Agent，让任务在后台持续运行，只在需要输入、审批、验收或处理异常时占用注意力。
+Corptie 是一个帮助你同时组织、运行和监督多个 AI Agent 的桌面工作台。你可以随时发起一次对话，也可以把复杂目标拆成带验收标准的工作项，交给不同 Agent 在彼此隔离的工作区中完成。
 
-Corptie 不是某一个 Agent CLI 的外壳。Codex、Claude Code、OpenClacky 以及未来 Provider 均通过统一合约接入；产品层只依赖标准 Session、逻辑身份、能力声明和事件，不以 Provider 名称决定通用行为。
+任务运行期间，Corptie 会集中展示进展、待处理输入、审批和最终结果。你不需要来回盯着多个终端，只在真正需要判断或确认时介入。多个 Agent 也可以在你的确认下互相委派任务、交付结果并完成验收。
 
-> 当前版本为面向 macOS 的本地应用和本地 Node.js 后端。会话、队列、配置与 SQLite 数据默认保留在本机。
+> 会话、任务、队列和配置默认保留在本机；Development 与 Production 数据相互隔离。
 
 ## 目录
 
-- [项目定位](#项目定位)
-- [核心概念与设计原则](#核心概念与设计原则)
-- [主要能力](#主要能力)
+- [Corptie 能做什么](#corptie-能做什么)
 - [快速开始](#快速开始)
 - [核心使用流程](#核心使用流程)
-- [配置与数据目录](#配置与数据目录)
-- [系统架构](#系统架构)
-- [目录与模块职责](#目录与模块职责)
+- [配置与数据](#配置与数据)
+- [设计与项目结构](#设计与项目结构)
 - [开发与验证](#开发与验证)
 - [打包与本机安装](#打包与本机安装)
 - [常见问题](#常见问题)
-- [相关文档](#相关文档)
 
-## 项目定位
+## Corptie 能做什么
 
-Corptie 解决的是“Agent 工作持续时间长、任务彼此关联、执行环境需要隔离、用户不应持续盯着终端”的问题。
-
-它提供两种互补的使用方式：
-
-- **轻量会话**：直接与 Assistant 或 Independent Contributor Agent 对话，选择 Provider、模型、权限策略和工作目录。
-- **结构化执行**：把工作组织为 Objective 和带验收标准的 WorkItem，由 Agent 在绑定的 Workspace/Worktree 中执行、验证并回报结果。
+| 你需要做的事 | Corptie 提供的帮助 |
+| --- | --- |
+| 同时推进多个 Agent 任务 | 在一个工作台中查看所有任务的真实状态，只处理需要输入、审批或异常恢复的会话。 |
+| 把复杂目标拆解并落实 | 用 Objective 管理目标和参与者，用带验收标准的 WorkItem 跟踪具体交付。 |
+| 避免不同任务互相覆盖 | 为工作项准备独立 Worktree，并在本地集成前展示可审查的计划与风险。 |
+| 让不同 Agent 分工协作 | 通过带验收条件和交付物的协作任务完成委派、验证、修订和升级。 |
+| 随时发起轻量对话 | 直接创建 Assistant 或 Independent Contributor Session，按需切换模型、权限和工作目录。 |
+| 离开电脑后继续跟进 | 可选接入飞书，在可信账号中查看会话、回复消息、处理中断和审批。 |
 
 <p align="center">
   <img src="resources/imgs/screenshot-20260702-110500.png" alt="Corptie 主窗口，展示多个 Agent 会话和状态" width="100%">
 </p>
-
-## 核心概念与设计原则
-
-### 领域模型
-
-| 概念 | 职责 |
-| --- | --- |
-| **Agent** | 可复用的执行者身份，包含 Assistant 或 Independent Contributor 角色、系统提示、能力标签、工作目录和 Skills。 |
-| **Objective** | 描述目标、理想状态、优先级、Workspace 和参与 Agent 的长期工作范围。 |
-| **WorkItem** | Objective 下可执行、可验收的工作单元；包含描述、验收标准、优先级和主 Workspace。 |
-| **Session** | Provider 中立的逻辑会话，保存对话、状态、审批、Provider 绑定以及 Objective/WorkItem 关联。 |
-| **Workspace / Worktree** | Workspace 表示项目目录；Worktree 为工作项提供独立 Git 执行环境，避免不同任务互相覆盖。 |
-| **Skill** | 从本地目录或 Git 仓库登记的可复用能力，可绑定到 Agent 并物化到受支持的 Provider 运行时。 |
-
-### 设计原则
-
-1. **本地优先、环境隔离**：应用数据默认写入本机；Development 与 Production 使用不同端口、数据库、偏好设置和 Provider 运行时。
-2. **Provider 中立**：产品服务调用统一 Provider 合约；前端依据 capability 和 action 状态显示功能，不通过 Provider 名称硬编码行为。
-3. **逻辑 Session 稳定**：Corptie 的 Session ID 与 Provider 原生线程 ID 解耦，恢复、切换 Provider 和切换 Workspace 时保留产品层身份与关联。
-4. **真实状态，不伪造成功**：只展示 Provider 实际支持的能力；不支持的操作返回结构化错误，未知字段和失败不会被静默吞掉。
-5. **持久队列与增量同步**：桌面、飞书和 Agent 协作输入进入统一工作队列；后端通过快照、变更流和会话时间线向客户端同步状态。
-6. **Git 操作可审查**：工作项可使用专用 Worktree；集成前先生成本地计划并检查风险，不自动推送、强制清理或覆盖未提交改动。
-7. **人类保留最终控制权**：高影响操作、Agent 间新协作请求、审批和验收均保留明确的确认或验证步骤。
-
-## 主要能力
-
-- 原生 macOS 悬浮面板、主工作台和可分离会话浮球。
-- 统一管理 Codex、Claude Code 和 OpenClacky Session 的创建、恢复、消息、审批、中断、模型与权限设置。
-- Objective 看板、WorkItem 生命周期、验收标准和执行状态联动。
-- Git 仓库与 Worktree 清单、任务 Worktree、预检、提交及本地集成流程。
-- Agent 身份、Assistant/IC 角色、Skills、长期记忆和平台工具管理。
-- 基于稳定身份、验收条件和 Artifact 的 Agent 间结构化协作。
-- 可选飞书网关：可信用户配对、远程会话绑定、消息、审批和中断。
-- Session DSH Web 界面、SSE/状态增量同步、历史分页和会话恢复。
-- 单轮代码改动审阅与冲突安全撤销（仅在 Provider 声明对应 capability 时启用）。
 
 ## 快速开始
 
@@ -176,7 +139,7 @@ curl -fsS "http://127.0.0.1:47322/sessions"
 
 App Secret 交由 `lark-cli` 的加密存储处理，不写入 Corptie SQLite。卡片操作会验证配对用户、会话和权限。
 
-## 配置与数据目录
+## 配置与数据
 
 优先通过 App 右上角齿轮打开设置页。这里可以配置数据与日志目录、默认 Session 参数、代码 Diff 工具、Agent 代理、结构化选项解析器和飞书网关。通常不需要手工编辑 `config.json`。
 
@@ -207,58 +170,27 @@ Corptie 为 Codex、Claude Code 和 OpenClacky 创建独立运行时目录。首
 
 结构化选项解析器、表单辅助、Assistant 意图分析和记忆提取可使用设置页保存的 OpenAI-compatible 配置，也可读取 `OPENAI_API_KEY` 或 `CORPTIE_OPENAI_API_KEY`。这些增强能力是可选的，不是启动本地后端的前置条件。
 
-## 系统架构
+## 设计与项目结构
+
+Corptie 的设计围绕四个原则：任务状态必须真实可追踪；Agent 能力通过统一 Provider 合约接入；Session 在恢复、切换 Provider 或切换 Workspace 后仍保持稳定身份；高影响操作必须可审查、可确认，且不能覆盖未提交工作。
+
+运行关系可以概括为：
 
 ```text
-┌─────────────────────────────────────────────────────────────────┐
-│ macOS App · SwiftUI/AppKit                                      │
-│ Console · Sessions · Worktrees · Session DSH · Agents/Skills    │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ HTTP + SSE + WebSocket
-┌──────────────────────────────▼──────────────────────────────────┐
-│ Node.js local backend                                           │
-│ HTTP APIs · application services · state sync · durable queues  │
-│ Objective/WorkItem · collaboration · Feishu · Git/Worktree      │
-└──────────────┬───────────────────────────────┬──────────────────┘
-               │ provider-neutral contract     │ SQLite
-┌──────────────▼─────────────────────────┐  ┌──▼──────────────────┐
-│ Agent Provider adapters               │  │ CorptieStore         │
-│ Codex · Claude Code · OpenClacky       │  │ config + migrations  │
-└──────────────┬─────────────────────────┘  └─────────────────────┘
-               │ CLI / SDK / REST + WebSocket
-┌──────────────▼──────────────────────────────────────────────────┐
-│ Isolated Provider runtimes and project Worktrees                │
-└─────────────────────────────────────────────────────────────────┘
+macOS App → 本地后端 → Provider（Codex / Claude Code / OpenClacky）
+                      ↘ 本地数据、任务队列与 Git Worktree
 ```
 
-### 请求与状态流
+代码主要分为以下几部分：
 
-1. macOS 客户端只发送标准实体和 Session 请求。
-2. Application Service 完成输入校验、引用完整性、权限和业务状态检查。
-3. Session Application Service 通过 Provider Registry 按 capability 调度适配器。
-4. 适配器把 Provider 原生线程、事件、审批和错误映射为标准 Session 模型。
-5. Store 保存实体、逻辑绑定、队列、协作状态和时间线；State Sync 将快照或增量发布给客户端。
-
-旧的 `/codex/pty-sessions` 与 `/pty/*` 路由仅用于历史兼容，不是当前架构的扩展点，也不应作为新客户端或新 Provider 的示例。新功能使用统一的 `/sessions`、`/providers`、`/projects` 和实体 API。
-
-## 目录与模块职责
-
-| 路径 | 职责 |
+| 路径 | 主要职责 |
 | --- | --- |
-| `apps/macos/` | Swift Package 形式的原生 macOS App 与 XCTest；入口、状态 Store、HTTP Client、Console、Sessions、Worktrees、Agents/Skills 和悬浮窗均在此。 |
-| `apps/backend/src/server.mjs` | 后端 composition root 与 HTTP/SSE/WebSocket 路由装配。 |
-| `apps/backend/src/agent-provider/` | Provider 合约、Registry、Session Application Service、bootstrap 和协议适配器。 |
-| `apps/backend/src/application/` | Objective、Project、Session、Workspace、WorkItem 验收、状态同步、记忆、Skill、Tool Host 等用例服务。 |
-| `apps/backend/src/domain/` | 跨接口复用的领域校验和业务规则。 |
-| `apps/backend/src/store/` | `node:sqlite` 数据存储、schema 迁移、配置、队列和查询。 |
-| `apps/backend/src/runtime/` | 隔离 Provider 运行时、Agent 工作目录、Workspace/Worktree 转换及项目工具集。 |
-| `apps/backend/src/collaboration/` | Agent/Service 注册、协作任务状态机、投递、验证、修订和升级。 |
-| `apps/backend/src/feishu/` | 飞书机器人、配对、会话绑定、卡片和审批同步。 |
-| `apps/backend/src/dsh-adapter/` | Session DSH 的 RPC、WebSocket、事件映射和内嵌 Web 资源。 |
-| `apps/backend/tests/` | Node.js 单元、契约、迁移、接口和集成测试。 |
-| `scripts/` | Development 启动/重启、检查、性能实验、Production 打包与安全安装脚本。 |
-| `docs/` | Provider 边界、会话生命周期、Worktree 切换和专项设计文档。 |
-| `resources/` | README 与发行材料使用的项目资源。 |
+| `apps/macos/` | macOS 客户端、界面状态、后端 Client 与客户端测试。 |
+| `apps/backend/src/agent-provider/` | Provider 合约、能力声明、会话生命周期和适配器。 |
+| `apps/backend/src/application/`、`domain/`、`store/` | 业务用例、输入校验、SQLite 数据与迁移。 |
+| `apps/backend/src/runtime/`、`collaboration/`、`feishu/` | 运行时隔离、Worktree 路由、Agent 协作和飞书网关。 |
+| `apps/backend/tests/`、`apps/macos/Tests/` | 后端与客户端自动化测试。 |
+| `scripts/`、`docs/`、`resources/` | 开发与打包脚本、专项文档和项目资源。 |
 
 ## 开发与验证
 
