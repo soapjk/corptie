@@ -1003,3 +1003,5 @@
 "This permanently removes the Skill from %d Agent(s): %@." = "此操作会从 %d 个 Agent 中永久移除此 Skill：%@。";
 "All Provider runtime copies and the Git cache will be removed. This cannot be undone." = "所有 Provider 运行时副本和 Git 缓存都会被删除。此操作不可撤销。";
 "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first." = "有 %d 个活跃 Session 仍可使用此 Skill，因此当前禁止删除：%@。请先结束或中断这些 Session。";
+"No Git Worktrees" = "没有 Git Worktree";
+"Could Not Load Worktrees" = "无法加载 Worktree";

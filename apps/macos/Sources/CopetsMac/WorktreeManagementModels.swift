@@ -21,6 +21,28 @@ struct ManagedRepositoryDetail: Decodable, Sendable {
     let latestJob: WorktreeIntegrationJob?
 }
 
+struct ProjectDevelopmentServiceStatus: Decodable, Equatable, Sendable {
+    let projectId: String
+    let toolset: ProjectToolsetStatus
+    let service: ProjectServiceStatus
+}
+
+enum WorktreeListLoadState: Equatable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
+struct WorktreeLoadMetrics: Equatable, Sendable {
+    let repositoryId: String
+    let repositoryListMilliseconds: Int
+    let detailMilliseconds: Int
+    let serviceMilliseconds: Int
+    let listAvailableMilliseconds: Int
+    let cacheHit: Bool
+}
+
 struct ManagedGitProject: Decodable, Sendable {
     let repositoryId: String
     let inventoryVersion: String

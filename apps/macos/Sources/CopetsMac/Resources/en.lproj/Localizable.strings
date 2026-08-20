@@ -624,3 +624,5 @@
 "This permanently removes the Skill from %d Agent(s): %@." = "This permanently removes the Skill from %d Agent(s): %@.";
 "All Provider runtime copies and the Git cache will be removed. This cannot be undone." = "All Provider runtime copies and the Git cache will be removed. This cannot be undone.";
 "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first." = "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first.";
+"No Git Worktrees" = "No Git Worktrees";
+"Could Not Load Worktrees" = "Could Not Load Worktrees";

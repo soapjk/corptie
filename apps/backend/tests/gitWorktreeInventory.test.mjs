@@ -154,6 +154,58 @@ test("createGitWorkspaceSnapshot captures every worktree with a stable inventory
   }
 });
 
+test("bounded parallel inspection preserves inventory order and measurably reduces load time", async () => {
+  const paths = ["/repo", ...Array.from({ length: 15 }, (_, index) => `/repo/worktree-${index + 1}`)];
+  const porcelain = Buffer.from(paths.flatMap((path, index) => [
+    `worktree ${path}`,
+    `HEAD ${String(index).padStart(40, "0")}`,
+    `branch refs/heads/${index === 0 ? "main" : `feature/${index}`}`,
+    ""
+  ]).concat("").join("\0"));
+  const delayedGit = async (_file, args) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const cwd = args[1];
+    if (args.includes("worktree")) return { stdout: porcelain };
+    const flag = args.at(-1);
+    if (flag === "--show-toplevel") return { stdout: `${cwd}\n` };
+    if (flag === "--git-common-dir") return { stdout: "/repo/.git\n" };
+    if (flag === "--git-dir") {
+      return { stdout: `${cwd === "/repo" ? "/repo/.git" : `${cwd}/.git`}\n` };
+    }
+    throw new Error(`Unexpected git arguments: ${args.join(" ")}`);
+  };
+  const canonical = async (path) => path;
+  const measure = async (inspectionConcurrency) => {
+    const startedAt = performance.now();
+    const snapshot = await createGitWorkspaceSnapshot("/repo", {
+      execFile: delayedGit,
+      realpath: canonical,
+      inspectionConcurrency,
+      inspectedAt: "2026-08-20T00:00:00.000Z"
+    });
+    return { snapshot, durationMs: performance.now() - startedAt };
+  };
+
+  const serial = await measure(1);
+  const parallel = await measure(8);
+
+  assert.deepEqual(
+    parallel.snapshot.worktrees.map((worktree) => worktree.path),
+    serial.snapshot.worktrees.map((worktree) => worktree.path)
+  );
+  assert.equal(parallel.snapshot.inventoryVersion, serial.snapshot.inventoryVersion);
+  assert.ok(
+    parallel.durationMs < serial.durationMs * 0.6,
+    `expected parallel ${parallel.durationMs.toFixed(1)}ms to beat serial ${serial.durationMs.toFixed(1)}ms`
+  );
+  console.info(JSON.stringify({
+    benchmark: "git-worktree-identity-inspection",
+    worktreeCount: paths.length,
+    serialMs: Math.round(serial.durationMs * 10) / 10,
+    parallelMs: Math.round(parallel.durationMs * 10) / 10
+  }));
+});
+
 async function git(arguments_, cwd) {
   await execFileAsync("git", ["-C", cwd, ...arguments_], {
     env: {

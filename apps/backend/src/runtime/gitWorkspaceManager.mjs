@@ -15,6 +15,8 @@ export class GitWorkspaceManager {
     this.store = options.store;
     this.transitions = options.transitions;
     this.execFile = options.execFile ?? execFileAsync;
+    this.inspectionConcurrency = options.inspectionConcurrency ?? 8;
+    this.observePerformance = options.observePerformance ?? (() => {});
   }
 
   async createWorktree(input) {
@@ -105,7 +107,12 @@ export class GitWorkspaceManager {
   }
 
   async projectStatusForPath(workingDirectory, expectedRepositoryId = null) {
-    const snapshot = await createGitWorkspaceSnapshot(absolutePath(workingDirectory));
+    const startedAt = performance.now();
+    const snapshotStartedAt = performance.now();
+    const snapshot = await createGitWorkspaceSnapshot(absolutePath(workingDirectory), {
+      inspectionConcurrency: this.inspectionConcurrency
+    });
+    const snapshotMs = performance.now() - snapshotStartedAt;
     if (expectedRepositoryId && snapshot.repository.id !== expectedRepositoryId) {
       throw new Error("The active workspace no longer belongs to the registered repository.");
     }
@@ -114,87 +121,88 @@ export class GitWorkspaceManager {
     if (!main || main.availability !== "available") {
       throw new Error("The repository's main worktree is unavailable.");
     }
-    const worktrees = [];
-    for (const worktree of snapshot.worktrees) {
-      const sessions = this.store.listLogicalSessionsByWorkspaceId(worktree.worktreeId)
-        .filter((session) => Boolean(this.store.getSession(session.legacySessionId)))
-        .map((session) => ({
-          logicalSessionId: session.logicalSessionId,
-          sessionId: session.legacySessionId,
-          title: session.sessionName,
-          active: true
-        }));
-      if (worktree.availability !== "available") {
-        worktrees.push({
+    const worktrees = await mapConcurrentOrdered(
+      snapshot.worktrees,
+      this.inspectionConcurrency,
+      async (worktree) => {
+        const sessions = this.store.listLogicalSessionsByWorkspaceId(worktree.worktreeId)
+          .filter((session) => Boolean(this.store.getSession(session.legacySessionId)))
+          .map((session) => ({
+            logicalSessionId: session.logicalSessionId,
+            sessionId: session.legacySessionId,
+            title: session.sessionName,
+            active: true
+          }));
+        if (worktree.availability !== "available") {
+          return {
+            ...worktree,
+            state: "unavailable",
+            dirty: null,
+            mergedIntoMain: null,
+            synchronizedWithMain: null,
+            aheadOfMain: null,
+            behindMain: null,
+            pendingIntegration: true,
+            sessions
+          };
+        }
+        const status = await this.gitOutput(worktree.path, ["status", "--porcelain=v1"]);
+        const dirty = Boolean(status.trim());
+        const diffStat = dirty
+          ? (await this.gitOutput(worktree.path, ["diff", "--stat", "HEAD"])).trim()
+          : "";
+        if (worktree.isMain) {
+          return {
+            ...worktree,
+            state: dirty ? "mainDirty" : "main",
+            dirty,
+            statusSummary: status.trim(),
+            diffStat,
+            mergedIntoMain: true,
+            synchronizedWithMain: !dirty,
+            aheadOfMain: 0,
+            behindMain: 0,
+            pendingIntegration: false,
+            sessions
+          };
+        }
+        const counts = await this.gitOutput(main.path, [
+          "rev-list",
+          "--left-right",
+          "--count",
+          `${main.headOid}...${worktree.headOid}`
+        ]);
+        const [behindMain, aheadOfMain] = counts.trim().split(/\s+/).map((value) => Number(value) || 0);
+        const mergedIntoMain = await this.gitSucceeds(main.path, [
+          "merge-base",
+          "--is-ancestor",
+          worktree.headOid,
+          main.headOid
+        ]);
+        const pendingIntegration = dirty || !mergedIntoMain;
+        const synchronizedWithMain = !dirty
+          && aheadOfMain === 0
+          && behindMain === 0
+          && worktree.headOid === main.headOid;
+        const state = dirty
+          ? "working"
+          : (mergedIntoMain ? "synced" : (behindMain > 0 ? "diverged" : "readyToMerge"));
+        return {
           ...worktree,
-          state: "unavailable",
-          dirty: null,
-          mergedIntoMain: null,
-          synchronizedWithMain: null,
-          aheadOfMain: null,
-          behindMain: null,
-          pendingIntegration: true,
-          sessions
-        });
-        continue;
-      }
-      const status = await this.gitOutput(worktree.path, ["status", "--porcelain=v1"]);
-      const dirty = Boolean(status.trim());
-      const diffStat = dirty
-        ? (await this.gitOutput(worktree.path, ["diff", "--stat", "HEAD"])).trim()
-        : "";
-      if (worktree.isMain) {
-        worktrees.push({
-          ...worktree,
-          state: dirty ? "mainDirty" : "main",
+          state,
           dirty,
           statusSummary: status.trim(),
           diffStat,
-          mergedIntoMain: true,
-          synchronizedWithMain: !dirty,
-          aheadOfMain: 0,
-          behindMain: 0,
-          pendingIntegration: false,
+          mergedIntoMain,
+          synchronizedWithMain,
+          aheadOfMain,
+          behindMain,
+          pendingIntegration,
           sessions
-        });
-        continue;
+        };
       }
-      const counts = await this.gitOutput(main.path, [
-        "rev-list",
-        "--left-right",
-        "--count",
-        `${main.headOid}...${worktree.headOid}`
-      ]);
-      const [behindMain, aheadOfMain] = counts.trim().split(/\s+/).map((value) => Number(value) || 0);
-      const mergedIntoMain = await this.gitSucceeds(main.path, [
-        "merge-base",
-        "--is-ancestor",
-        worktree.headOid,
-        main.headOid
-      ]);
-      const pendingIntegration = dirty || !mergedIntoMain;
-      const synchronizedWithMain = !dirty
-        && aheadOfMain === 0
-        && behindMain === 0
-        && worktree.headOid === main.headOid;
-      const state = dirty
-        ? "working"
-        : (mergedIntoMain ? "synced" : (behindMain > 0 ? "diverged" : "readyToMerge"));
-      worktrees.push({
-        ...worktree,
-        state,
-        dirty,
-        statusSummary: status.trim(),
-        diffStat,
-        mergedIntoMain,
-        synchronizedWithMain,
-        aheadOfMain,
-        behindMain,
-        pendingIntegration,
-        sessions
-      });
-    }
-    return {
+    );
+    const result = {
       repositoryId: snapshot.repository.id,
       inventoryVersion: snapshot.inventoryVersion,
       mainWorktreeId: main.worktreeId,
@@ -204,29 +212,43 @@ export class GitWorkspaceManager {
       pendingWorktreeCount: worktrees.filter((worktree) => !worktree.isMain && worktree.pendingIntegration).length,
       worktrees
     };
+    this.observePerformance({
+      operation: "projectStatusForPath",
+      repositoryId: snapshot.repository.id,
+      worktreeCount: worktrees.length,
+      snapshotMs: roundedMilliseconds(snapshotMs),
+      enrichmentMs: roundedMilliseconds(performance.now() - snapshotStartedAt - snapshotMs),
+      totalMs: roundedMilliseconds(performance.now() - startedAt)
+    });
+    return result;
   }
 
   async integrationInspectionForProject(workingDirectory, expectedRepositoryId = null) {
+    const startedAt = performance.now();
     const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId);
-    const worktrees = [];
-    for (const worktree of status.worktrees) {
+    const enrichmentStartedAt = performance.now();
+    const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => {
       if (worktree.availability !== "available") {
-        worktrees.push({ ...worktree, operationState: null, conflictFiles: [], changedFiles: [] });
-        continue;
+        return { ...worktree, operationState: null, conflictFiles: [], changedFiles: [] };
       }
-      const [porcelain, operationState, conflicts] = await Promise.all([
-        this.gitOutput(worktree.path, ["status", "--porcelain=v1"]),
+      const [operationState, conflicts] = await Promise.all([
         this.integrationOperationState(worktree.path),
         this.gitOutput(worktree.path, ["diff", "--name-only", "--diff-filter=U"])
       ]);
-      worktrees.push({
+      return {
         ...worktree,
-        statusSummary: porcelain.trim(),
-        changedFiles: changedFilesFromPorcelain(porcelain),
+        changedFiles: changedFilesFromPorcelain(worktree.statusSummary ?? ""),
         operationState,
         conflictFiles: conflicts.split(/\r?\n/).map((value) => value.trim()).filter(Boolean)
-      });
-    }
+      };
+    });
+    this.observePerformance({
+      operation: "integrationInspectionForProject",
+      repositoryId: status.repositoryId,
+      worktreeCount: worktrees.length,
+      enrichmentMs: roundedMilliseconds(performance.now() - enrichmentStartedAt),
+      totalMs: roundedMilliseconds(performance.now() - startedAt)
+    });
     return { ...status, worktrees };
   }
 
@@ -1081,6 +1103,21 @@ async function pathExists(path) {
   }
 }
 
+async function mapConcurrentOrdered(values, concurrency, transform) {
+  const items = Array.from(values);
+  if (items.length === 0) return [];
+  const results = new Array(items.length);
+  const workerCount = Math.min(items.length, Math.max(1, Math.floor(concurrency)));
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await transform(items[index], index);
+    }
+  }));
+  return results;
+}
+
 function changedFilesFromPorcelain(output) {
   const files = [];
   for (const line of String(output ?? "").split(/\r?\n/)) {
@@ -1090,6 +1127,10 @@ function changedFilesFromPorcelain(output) {
     files.push(path.includes(" -> ") ? path.split(" -> ").at(-1) : path);
   }
   return files;
+}
+
+function roundedMilliseconds(value) {
+  return Math.round(value * 10) / 10;
 }
 
 function integrationGitError(code, message) {
