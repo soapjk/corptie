@@ -88,12 +88,15 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let audit: [WorktreeIntegrationAuditEvent]
     let conflictResolution: WorktreeConflictResolution?
 
-    var isActive: Bool { ["queued", "running"].contains(status) }
+    var isActive: Bool { ["queued", "running", "cancellation_requested", "replanning"].contains(status) }
     var shouldPoll: Bool {
         isActive || ["running", "failed"].contains(conflictResolution?.status ?? "")
     }
     var requiresPlanRegeneration: Bool {
-        status == "paused" && audit.last(where: { $0.code != nil })?.code == "PLAN_STALE"
+        phase == "plan_stale" || (status == "paused" && audit.last(where: { $0.code != nil })?.code == "PLAN_STALE")
+    }
+    var canStopAndRepreflight: Bool {
+        ["queued", "running", "paused"].contains(status) && conflictResolution?.status != "running"
     }
     var hasMergeConflict: Bool {
         status == "paused" && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }

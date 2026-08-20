@@ -572,6 +572,17 @@
 "New Objective" = "New Objective";
 "Raw status" = "Raw status";
 "Regenerate Plan" = "Regenerate Plan";
+"Generate a reviewable local-only integration plan before anything is changed." = "Generate a reviewable local-only integration plan before anything is changed.";
+"Generate Integration Plan" = "Generate Integration Plan";
+"Stop this task and generate a new integration plan?" = "Stop this task and generate a new integration plan?";
+"Stop and Re-preflight" = "Stop and Re-preflight";
+"Remaining steps will stop at the next safe boundary. Completed local commits and merges are kept. Conflicts are preserved for review." = "Remaining steps will stop at the next safe boundary. Completed local commits and merges are kept. Conflicts are preserved for review.";
+"Stopping" = "Stopping";
+"Generating a new plan" = "Generating a new plan";
+"Could not generate a new plan" = "Could not generate a new plan";
+"Plan changed" = "Plan changed";
+"Stopping at a safe boundary" = "Stopping at a safe boundary";
+"Stopped; conflict preserved" = "Stopped; conflict preserved";
 "The integration plan is stale. Regenerate and review it before continuing." = "The integration plan is stale. Regenerate and review it before continuing.";
 "执行状态" = "Execution Status";
 "Ask Agent to Resolve" = "Ask Agent to Resolve";

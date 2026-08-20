@@ -13,6 +13,7 @@ struct WorktreeManagementView: View {
     @StateObject private var client = WorktreeManagementClient()
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
+    @State private var showingStopAndRepreflightConfirmation = false
     @State private var pendingOperation: ManagedWorktree?
 
     var body: some View {
@@ -78,6 +79,18 @@ struct WorktreeManagementView: View {
             Button(L10n("Cancel"), role: .cancel) {}
         } message: {
             Text(L10n("This fast-forwards an already integrated Worktree to the current main revision. Uncommitted or unmerged changes are never overwritten."))
+        }
+        .confirmationDialog(
+            L10n("Stop this task and generate a new integration plan?"),
+            isPresented: $showingStopAndRepreflightConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L10n("Stop and Re-preflight"), role: .destructive) {
+                Task { await client.stopAndRepreflight() }
+            }
+            Button(L10n("Cancel"), role: .cancel) {}
+        } message: {
+            Text(L10n("Remaining steps will stop at the next safe boundary. Completed local commits and merges are kept. Conflicts are preserved for review."))
         }
         .alert(L10n("Worktree operation failed"), isPresented: Binding(
             get: { backendClient.isOnline && client.errorMessage != nil },
@@ -262,7 +275,7 @@ struct WorktreeManagementView: View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(L10n("Integrate all Worktrees into main")).fontWeight(.semibold)
-                Text(L10n("Preflight creates a reviewable local-only plan."))
+                Text(L10n("Generate a reviewable local-only integration plan before anything is changed."))
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -277,7 +290,7 @@ struct WorktreeManagementView: View {
                 }
             } label: {
                 Label(
-                    L10n(client.job?.status == "awaiting_confirmation" ? "Review Plan" : "Preflight"),
+                    L10n(client.job?.status == "awaiting_confirmation" ? "Review Plan" : "Generate Integration Plan"),
                     systemImage: "checklist"
                 )
             }
@@ -325,6 +338,14 @@ struct WorktreeManagementView: View {
                     Button(L10n("Retry")) { Task { await client.retryJob() } }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.retry")
+                }
+                if job.canStopAndRepreflight {
+                    Button(L10n("Stop and Re-preflight")) {
+                        showingStopAndRepreflightConfirmation = true
+                    }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.stop-and-repreflight")
                 }
             }
             ProgressView(value: job.progress.fraction)
@@ -713,6 +734,9 @@ private func localizedIntegrationStatus(_ value: String) -> String {
     case "conflict": L10n("Conflict")
     case "skipped": L10n("Skipped")
     case "canceled": L10n("Canceled")
+    case "cancellation_requested": L10n("Stopping")
+    case "replanning": L10n("Generating a new plan")
+    case "replanning_failed": L10n("Could not generate a new plan")
     default: value.replacingOccurrences(of: "_", with: " ")
     }
 }
@@ -727,6 +751,10 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "conflict": L10n("Waiting for conflict resolution")
     case "retry_queued": L10n("Retry queued")
     case "recovery_queued": L10n("Recovery queued")
+    case "plan_stale": L10n("Plan changed")
+    case "stopping": L10n("Stopping at a safe boundary")
+    case "replanning": L10n("Generating a new plan")
+    case "canceled_conflict_preserved": L10n("Stopped; conflict preserved")
     case "completed": L10n("Completed")
     default: localizedIntegrationStatus(value)
     }
