@@ -217,8 +217,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
 
     var currentConflictResolution: WorktreeConflictResolution? {
-        guard hasMergeConflict,
-              let currentWorktreeId,
+        guard let currentWorktreeId,
               conflictResolution?.worktreeId == currentWorktreeId else { return nil }
         return conflictResolution
     }
@@ -279,6 +278,34 @@ struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {
     let mergeOrder: [String]
     let blockingRisks: [WorktreeIntegrationRisk]
     let items: [WorktreeIntegrationItem]
+
+    var preflightState: WorktreeIntegrationPreflightState {
+        WorktreeIntegrationPreflightState(risks: blockingRisks)
+    }
+}
+
+enum WorktreeIntegrationPreflightState: Equatable, Sendable {
+    case ready
+    case taskConflict
+    case mainUncommittedChanges
+    case taskConflictAndMainUncommittedChanges
+    case otherBlockingRisks
+
+    init(risks: [WorktreeIntegrationRisk]) {
+        let hasMainChanges = risks.contains { $0.code == "MAIN_UNCOMMITTED_CHANGES" }
+        let hasTaskConflict = risks.contains { $0.code == "UNRESOLVED_CONFLICTS" && $0.worktreeId != nil }
+        let hasOther = risks.contains { risk in
+            risk.code != "MAIN_UNCOMMITTED_CHANGES"
+                && !(risk.code == "UNRESOLVED_CONFLICTS" && risk.worktreeId != nil)
+        }
+        switch (hasMainChanges, hasTaskConflict, hasOther) {
+        case (false, false, false): self = .ready
+        case (true, true, _): self = .taskConflictAndMainUncommittedChanges
+        case (true, false, false): self = .mainUncommittedChanges
+        case (false, true, false): self = .taskConflict
+        default: self = .otherBlockingRisks
+        }
+    }
 }
 
 struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {

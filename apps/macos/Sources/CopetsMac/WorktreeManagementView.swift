@@ -88,7 +88,7 @@ struct WorktreeManagementView: View {
             }
             Button(L10n("Cancel"), role: .cancel) {}
         } message: {
-            Text(L10n("Remaining steps will stop at the next safe boundary. Completed local commits and merges are kept. Conflicts are preserved for review."))
+            Text(L10n("Remaining steps stop at the next safe boundary. If this task left a merge conflict in main, Corptie aborts only that merge and verifies main is clean before generating a new plan. Completed commits and earlier merges are kept."))
         }
         .confirmationDialog(
             L10n("Delete this Worktree?"),
@@ -478,24 +478,21 @@ struct WorktreeManagementView: View {
                 } else if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
-                    Button(L10n("Open Conflict Agent")) { router.openSession(sessionId) }
+                    Button(L10n("View Agent Session")) { router.openSession(sessionId) }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.open-conflict-agent")
-                    Button(L10n("Retry")) { Task { await client.retryJob() } }
-                        .controlSize(.small)
-                        .disabled(client.isMutating || resolution.status != "ready")
-                        .accessibilityIdentifier("worktree.integrate.retry")
-                    if resolution.status == "failed" {
+                    if job.phase == "failed", resolution.status == "ready" {
+                        Button(L10n("Revalidate and Continue")) { Task { await client.retryJob() } }
+                            .controlSize(.small)
+                            .disabled(client.isMutating)
+                            .accessibilityIdentifier("worktree.integrate.revalidate")
+                    } else if resolution.status == "failed" {
                         manualConflictRetryButton()
                     }
                 } else if job.hasMergeConflict {
                     if currentConflictItem(job)?.associations.contains(where: { $0.workItemId != nil }) == true {
-                        Button(L10n("Ask Agent to Resolve")) {
-                            Task {
-                                if let sessionId = await client.resolveConflictWithAgent() {
-                                    router.openSession(sessionId)
-                                }
-                            }
+                        Button(L10n("Let Agent Resolve Conflicts")) {
+                            Task { await client.resolveConflictWithAgent() }
                         }
                         .controlSize(.small)
                         .disabled(client.isMutating)
@@ -526,17 +523,28 @@ struct WorktreeManagementView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if let resolution = job.currentConflictResolution {
-                Text(resolution.status == "ready"
-                    ? L10n("The conflict Agent finished. Retry to verify and resume the integration task.")
-                    : (resolution.status == "failed"
-                        ? L10n("The conflict Agent stopped before completing. Open its Session to inspect or resume it.")
-                        : L10nFormat(
-                            "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes.",
-                            resolution.agentName ?? L10n("Agent"),
-                            resolution.workspace.branchName ?? resolution.workspace.path
-                        )))
-                .font(.caption)
-                .foregroundStyle(.orange)
+                conflictAgentProgress(job: job, resolution: resolution)
+                if job.phase == "failed", let error = job.error {
+                    Text(L10nFormat(
+                        "The Agent result was not promoted: %@ Nothing changed in main. Fix the dedicated Integration Worktree, then revalidate and continue, or stop and re-preflight.",
+                        error
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                } else {
+                    Text(resolution.status == "ready"
+                        ? L10n("The conflict Agent finished in its dedicated Integration Worktree. Corptie is validating the committed result and will continue automatically; main remains untouched until validation passes.")
+                        : (resolution.status == "failed"
+                            ? L10n("The conflict Agent stopped before completing. Corptie did not promote anything to main; open its Session to inspect or resume it.")
+                            : L10nFormat(
+                                "Agent %@ is resolving conflicts only in %@. main remains unchanged; Corptie will validate the result and continue automatically when it finishes.",
+                                resolution.agentName ?? L10n("Agent"),
+                                resolution.workspace.branchName ?? resolution.workspace.path
+                            )))
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                }
             } else if job.hasMergeConflict, let item = currentConflictItem(job) {
                 Text(L10nFormat(
                     "Resolve the conflicts in main (%@), stage the resolved files, then choose Retry after Manual Resolution. Conflicts: %@",
@@ -553,6 +561,29 @@ struct WorktreeManagementView: View {
         .padding(10)
         .background((job.status == "paused" ? Color.orange : Color.accentColor).opacity(0.08))
         .accessibilityIdentifier("worktree.integration.progress")
+    }
+
+    @ViewBuilder
+    private func conflictAgentProgress(
+        job: WorktreeIntegrationJob,
+        resolution: WorktreeConflictResolution
+    ) -> some View {
+        HStack(spacing: 7) {
+            if resolution.status == "running" {
+                ProgressView().controlSize(.small)
+                Text(L10n("Agent is resolving conflicts…"))
+            } else if resolution.status == "ready" {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                Text(job.phase == "failed"
+                    ? L10n("Agent finished; automatic validation needs attention")
+                    : L10n("Agent resolved the conflicts; validating and continuing automatically…"))
+            } else {
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
+                Text(L10n("Agent stopped before resolving the conflicts"))
+            }
+        }
+        .font(.caption.weight(.semibold))
+        .accessibilityIdentifier("worktree.integrate.conflict-agent-progress")
     }
 
     private func currentConflictItem(_ job: WorktreeIntegrationJob) -> WorktreeIntegrationItem? {
@@ -1002,6 +1033,7 @@ private func localizedIntegrationStatus(_ value: String) -> String {
     case "canceled": L10n("Canceled")
     case "cancellation_requested": L10n("Stopping")
     case "replanning": L10n("Generating a new plan")
+    case "replanning_cleanup_failed": L10n("Could not restore main for re-preflight")
     case "replanning_failed": L10n("Could not generate a new plan")
     default: value.replacingOccurrences(of: "_", with: " ")
     }
@@ -1033,6 +1065,10 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "committing": L10n("Creating local commits")
     case "merging": L10n("Merging into main")
     case "conflict": L10n("Waiting for conflict resolution")
+    case "conflict_resolution_preparing": L10n("Preparing the Agent conflict workspace")
+    case "conflict_resolution_running": L10n("Agent is resolving conflicts")
+    case "conflict_resolution_resume_queued": L10n("Conflict resolved; continuing automatically")
+    case "validating_resolution": L10n("Validating the Agent result")
     case "retry_queued": L10n("Retry queued")
     case "recovery_queued": L10n("Recovery queued")
     case "plan_stale": L10n("Plan changed")
@@ -1058,6 +1094,7 @@ private func localizedGitOperation(_ value: String) -> String {
 @MainActor
 private func localizedIntegrationRisk(_ risk: WorktreeIntegrationRisk) -> String {
     switch risk.code {
+    case "MAIN_UNCOMMITTED_CHANGES": L10n("main contains uncommitted changes. Corptie will leave them untouched.")
     case "WORKTREE_UNAVAILABLE": L10n("This Worktree is unavailable.")
     case "WORKTREE_LOCKED": L10n("This Worktree is locked by another operation.")
     case "WORKTREE_PRUNABLE": L10n("This Worktree has invalid or prunable Git metadata.")
@@ -1084,6 +1121,7 @@ private struct WorktreeIntegrationPlanReview: View {
                 .foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    preflightStatus
                     if reviewItems.isEmpty {
                         ContentUnavailableView(
                             L10n("No Worktree changes require integration."),
@@ -1137,8 +1175,12 @@ private struct WorktreeIntegrationPlanReview: View {
             }
             .frame(maxHeight: 420)
             if !job.plan.blockingRisks.isEmpty {
-                Text(L10n("Resolve all blocking risks and run preflight again before confirming."))
-                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n("Before re-checking: preserve main changes manually, resolve task conflicts, and stop any active Git or Session operation."))
+                    Text(L10n("Success creates a fresh reviewable plan. If detection fails or you cancel, Corptie returns here without changing either main or task Worktrees."))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             HStack {
                 Button(L10n("Cancel"), role: .cancel) { isPresented = false }
@@ -1162,6 +1204,90 @@ private struct WorktreeIntegrationPlanReview: View {
         }
         .padding(20)
         .frame(width: 680, height: 620)
+    }
+
+    @ViewBuilder
+    private var preflightStatus: some View {
+        switch job.plan.preflightState {
+        case .ready:
+            Label(L10n("Preflight passed. The reviewed local-only plan can be started."), systemImage: "checkmark.shield.fill")
+                .foregroundStyle(.green)
+        case .taskConflict:
+            taskConflictNotice
+        case .mainUncommittedChanges:
+            mainChangesNotice
+        case .taskConflictAndMainUncommittedChanges:
+            VStack(alignment: .leading, spacing: 10) {
+                Label(L10n("Two independent blockers were detected"), systemImage: "exclamationmark.octagon.fill")
+                    .font(.headline)
+                    .foregroundStyle(.orange)
+                mainChangesNotice
+                taskConflictNotice
+            }
+        case .otherBlockingRisks:
+            Label(
+                L10n("The plan is blocked by the risks listed below. Resolve them in the affected Worktrees, then re-run preflight."),
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .foregroundStyle(.orange)
+        }
+    }
+
+    private var mainChangesNotice: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(L10n("main has uncommitted local changes"), systemImage: "externaldrive.badge.exclamationmark")
+                .fontWeight(.semibold)
+            Text(L10n("Impact: integration is blocked. Corptie will not switch main, commit it, clean it, or overwrite any file."))
+                .font(.caption)
+            if let main = job.plan.items.first(where: \.isMain) {
+                Text(main.path).font(.caption.monospaced()).textSelection(.enabled)
+                Button(L10n("Show main in Finder")) { reveal(main.path) }
+                    .buttonStyle(.link)
+            }
+            Text(L10n("Next: preserve these changes yourself (for example commit or stash them), then return and re-run preflight."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var taskConflictNotice: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Label(L10n("Task Worktree changes are conflicted"), systemImage: "arrow.triangle.merge")
+                .fontWeight(.semibold)
+            Text(L10n("Impact: only the listed task Worktrees require manual repair, but no plan step can start until their Git conflicts are resolved."))
+                .font(.caption)
+            ForEach(conflictedTaskItems) { item in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.branchName ?? item.path).font(.caption.weight(.semibold))
+                        Text(item.path).font(.caption2.monospaced()).textSelection(.enabled)
+                        if !item.conflictFiles.isEmpty {
+                            Text(item.conflictFiles.joined(separator: ", ")).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button(L10n("Show in Finder")) { reveal(item.path) }
+                }
+            }
+            Text(L10n("Next: finish or abort the existing Git operation in each task Worktree, resolve all conflict files, then re-run preflight."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var conflictedTaskItems: [WorktreeIntegrationItem] {
+        let ids = Set(job.plan.blockingRisks.compactMap { risk in
+            risk.code == "UNRESOLVED_CONFLICTS" ? risk.worktreeId : nil
+        })
+        return job.plan.items.filter { !$0.isMain && ids.contains($0.worktreeId) }
+    }
+
+    private func reveal(_ path: String) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
     private var reviewItems: [WorktreeIntegrationItem] {

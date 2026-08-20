@@ -597,6 +597,67 @@ export class GitWorkspaceManager {
     });
   }
 
+  async inspectIntegrationConflictResolutionForProject(input) {
+    const workspacePath = absolutePath(input.workspace?.path);
+    const snapshot = await createGitWorkspaceSnapshot(workspacePath);
+    if (snapshot.repository.id !== input.repositoryId) {
+      throw integrationGitError("RESOLUTION_REPOSITORY_CHANGED", "The conflict-resolution Worktree belongs to a different repository.");
+    }
+    const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    const workspace = snapshot.worktrees.find((worktree) => (
+      worktree.availability === "available"
+        && (worktree.worktreeId === input.workspace?.worktreeId || resolve(worktree.path) === workspacePath)
+    ));
+    if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree is unavailable.");
+    if (!workspace || workspace.isMain) {
+      throw integrationGitError("RESOLUTION_WORKTREE_UNAVAILABLE", "The dedicated conflict-resolution Worktree is unavailable.");
+    }
+    if (input.workspace?.branchName && workspace.branchName !== input.workspace.branchName) {
+      throw integrationGitError("RESOLUTION_BRANCH_CHANGED", "The conflict-resolution Worktree is no longer on its recorded Integration branch.");
+    }
+
+    const mainOperation = await this.integrationOperationState(main.path);
+    const mainHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    const mainStatus = (await this.gitOutput(main.path, ["status", "--porcelain=v1"])).trim();
+    if (mainOperation || mainStatus || mainHead !== input.expectedMainHead) {
+      throw integrationGitError(
+        mainStatus ? "MAIN_DIRTY" : (mainHead !== input.expectedMainHead ? "MAIN_HEAD_CHANGED" : "GIT_OPERATION_IN_PROGRESS"),
+        "main changed while the conflict Agent was working. Corptie did not promote the Agent result; preserve main manually, then re-preflight."
+      );
+    }
+
+    const workspaceOperation = await this.integrationOperationState(workspace.path);
+    const trackedDirty = !await this.gitSucceeds(workspace.path, ["diff", "--quiet"])
+      || !await this.gitSucceeds(workspace.path, ["diff", "--cached", "--quiet"]);
+    const untracked = changedFilesFromPorcelain(
+      await this.gitOutput(workspace.path, ["status", "--porcelain=v1", "--untracked-files=all"])
+    ).filter((path) => !DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS.includes(path));
+    if (workspaceOperation || trackedDirty || untracked.length > 0) {
+      throw integrationGitError(
+        "RESOLUTION_WORKTREE_DIRTY",
+        "The conflict Agent result is not a clean commit. Commit every resolved project change in the dedicated Integration Worktree, then retry."
+      );
+    }
+
+    const resolvedHead = (await this.gitOutput(workspace.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (!await this.gitSucceeds(workspace.path, ["merge-base", "--is-ancestor", input.expectedMainHead, resolvedHead])) {
+      throw integrationGitError("RESOLUTION_BASE_MISSING", "The Agent result is not based on the recorded main revision.");
+    }
+    if (!await this.gitSucceeds(workspace.path, ["merge-base", "--is-ancestor", input.sourceHead, resolvedHead])) {
+      throw integrationGitError("RESOLUTION_SOURCE_MISSING", "The Agent result does not contain the conflicted source changes.");
+    }
+    if (resolvedHead === input.expectedMainHead) {
+      throw integrationGitError("RESOLUTION_COMMIT_MISSING", "The conflict Agent did not create a resolved Integration commit.");
+    }
+    return {
+      resolvedHead,
+      mainHead,
+      workspaceId: workspace.worktreeId,
+      workspacePath: workspace.path,
+      branchName: workspace.branchName
+    };
+  }
+
   async mergeWorktreeIntoMain(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
     return this.mergeWorktreeIntoMainForProject({

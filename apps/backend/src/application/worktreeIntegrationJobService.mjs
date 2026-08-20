@@ -21,6 +21,7 @@ export class WorktreeIntegrationJobService {
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
     this.prepareConflictResolution = options.prepareConflictResolution;
+    this.inspectConflictResolution = options.inspectConflictResolution;
     this.launchConflictResolution = options.launchConflictResolution;
     this.removeWorktree = options.removeWorktree;
     this.isSessionActive = options.isSessionActive ?? (() => false);
@@ -34,6 +35,7 @@ export class WorktreeIntegrationJobService {
       "mergeSource",
       "abortMerge",
       "prepareConflictResolution",
+      "inspectConflictResolution",
       "launchConflictResolution"
     ]) {
       if (typeof this[name] !== "function") throw new TypeError(`${name}() is required.`);
@@ -161,10 +163,22 @@ export class WorktreeIntegrationJobService {
     const blockingRisks = [];
     let mergeOrdinal = 0;
     const items = [];
-    for (const worktree of ordered.filter(requiresIntegration)) {
+    const requiredWorktrees = ordered.filter((worktree) => (
+      requiresIntegration(worktree) || risksFor(worktree).length > 0
+    ));
+    const includeMainContext = requiredWorktrees.some((worktree) => !worktree.isMain);
+    const plannedWorktrees = ordered.filter((worktree) => (
+      requiredWorktrees.some((required) => required.worktreeId === worktree.worktreeId)
+        || (worktree.isMain && includeMainContext)
+    ));
+    for (const worktree of plannedWorktrees) {
       const ordinal = worktree.isMain ? 0 : ++mergeOrdinal;
       const risks = risksFor(worktree);
-      const commitProtection = worktree.dirty === true
+      // The integration task must never preserve main changes on the user's
+      // behalf. A dirty main is a read-only blocker that the user resolves
+      // outside this flow; only task Worktrees may receive a planned commit.
+      const shouldCommit = !worktree.isMain && worktree.dirty === true;
+      const commitProtection = shouldCommit
         ? await this.inspectCommitProtection(worktree.path)
         : null;
       if ((commitProtection?.localSymlinkPaths ?? []).length > 0) {
@@ -192,8 +206,8 @@ export class WorktreeIntegrationJobService {
         associations: worktree.associations,
         risks,
         commitProtection,
-        commitMessage: worktree.dirty === true ? `Corptie: preserve changes in ${label}`.slice(0, 120) : null,
-        commitStatus: worktree.dirty === true ? "pending" : "not_needed",
+        commitMessage: shouldCommit ? `Corptie: preserve changes in ${label}`.slice(0, 120) : null,
+        commitStatus: shouldCommit ? "pending" : "not_needed",
         commitHead: null,
         // A dirty branch needs merging even when its current HEAD is already an
         // ancestor of main: the planned local commit will create a new source HEAD.
@@ -201,7 +215,8 @@ export class WorktreeIntegrationJobService {
           ? "not_needed"
           : (worktree.dirty === true || worktree.mergedIntoMain !== true ? "pending" : "not_needed"),
         mergeMainHead: null,
-        conflictFiles: [],
+        resolutionHead: null,
+        conflictFiles: [...(worktree.conflictFiles ?? [])],
         error: null
       });
     }
@@ -271,12 +286,13 @@ export class WorktreeIntegrationJobService {
       }
     }
     const current = this.#associate(await this.inspectRepository(job.repositoryId));
-    if (!planMatchesInspection(job.details.plan, current)) {
+    const mismatch = planInspectionMismatch(job.details.plan, current);
+    if (mismatch) {
       return presentJob(this.#update(job, {
         phase: "plan_stale",
-        error: "Worktree state changed after preflight. Regenerate and review the plan before continuing.",
+        error: mismatch.message,
         auditEvent: "plan_validation_failed",
-        auditData: { code: "PLAN_STALE" }
+        auditData: { code: mismatch.code }
       }));
     }
     const updated = this.#update(job, {
@@ -292,6 +308,18 @@ export class WorktreeIntegrationJobService {
 
   get(jobId) {
     return presentJob(this.#reconcileConflictResolution(this.#requireJob(jobId)));
+  }
+
+  reconcileConflictResolutionSession(sessionId) {
+    const id = String(sessionId ?? "").trim();
+    if (!id) return [];
+    const matchingJobs = this.store.listGitRepositories().flatMap((repository) =>
+      this.store.listWorktreeIntegrationJobs(repository.id)
+    ).filter((job) => (
+      ["paused", "queued", "running"].includes(job.status)
+        && job.details?.conflictResolution?.sessionId === id
+    ));
+    return matchingJobs.map((job) => presentJob(this.#reconcileConflictResolution(job)));
   }
 
   async cancel(jobId, input = {}) {
@@ -424,9 +452,16 @@ export class WorktreeIntegrationJobService {
   }
 
   retry(jobId) {
-    const job = this.#requireJob(jobId);
+    const job = this.#reconcileConflictResolution(this.#requireJob(jobId));
     if (job.status !== "paused") {
       throw new WorktreeIntegrationJobError("JOB_NOT_PAUSED", "Only a paused task can be retried.", 409);
+    }
+    if (job.details.conflictResolution?.status === "running") {
+      throw new WorktreeIntegrationJobError(
+        "CONFLICT_AGENT_RUNNING",
+        "Wait for the conflict-resolution Agent to finish before retrying.",
+        409
+      );
     }
     const updated = this.#update(job, {
       status: "queued", phase: "retry_queued", error: null, auditEvent: "retry_requested"
@@ -610,9 +645,10 @@ export class WorktreeIntegrationJobService {
         || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus));
       if (!completedAny) {
         const current = await this.inspectRepository(job.repositoryId);
-        if (!planMatchesInspection(job.details.plan, current)) {
+        const mismatch = planInspectionMismatch(job.details.plan, current);
+        if (mismatch) {
           throw new WorktreeIntegrationJobError(
-            "PLAN_STALE", "Worktree state changed after preflight. Create and review a new plan.", 409
+            mismatch.code, mismatch.message, 409
           );
         }
       }
@@ -649,7 +685,31 @@ export class WorktreeIntegrationJobService {
           continue;
         }
         if (await this.#stopIfRequested(jobId)) return;
-        const sourceHead = item.commitHead ?? item.sourceHeadBefore;
+        let sourceHead = item.resolutionHead ?? item.commitHead ?? item.sourceHeadBefore;
+        const resolution = job.details.conflictResolution;
+        const originalSourceHead = item.commitHead ?? item.sourceHeadBefore;
+        const expectedResolutionMainHead = expectedMainHeadBefore(job.details.plan, item.worktreeId);
+        const expectedConflictKey = conflictResolutionKey(
+          job, item, originalSourceHead, expectedResolutionMainHead
+        );
+        if (!item.resolutionHead
+          && resolution?.status === "ready"
+          && resolution.worktreeId === item.worktreeId
+          && resolution.conflictKey === expectedConflictKey) {
+          const verified = await this.inspectConflictResolution({
+            repositoryId: job.repositoryId,
+            mainPath: job.details.plan.mainPath,
+            workspace: resolution.workspace,
+            sourceHead: originalSourceHead,
+            expectedMainHead: expectedResolutionMainHead
+          });
+          sourceHead = verified.resolvedHead;
+          job = this.#item(job, item.worktreeId, {
+            resolutionHead: verified.resolvedHead,
+            conflictFiles: [],
+            error: null
+          }, "validating_resolution", "conflict_resolution_verified");
+        }
         await this.#assertWorktreeIdle(job.repositoryId, item.worktreeId);
         job = this.#item(
           job,
@@ -797,17 +857,22 @@ export class WorktreeIntegrationJobService {
       ? "ready"
       : (["failed", "cancelled"].includes(session.status) ? "failed" : "running");
     if (nextStatus === resolution.status) return job;
-    return this.#update(job, {
-      status: "paused",
-      phase: nextStatus === "ready" ? "conflict_resolution_ready" : "conflict",
+    const updated = this.#update(job, {
+      status: nextStatus === "ready" ? "queued" : "paused",
+      phase: nextStatus === "ready" ? "conflict_resolution_resume_queued" : "conflict",
       error: nextStatus === "failed" ? "The conflict-resolution Agent stopped before completing." : null,
       details: {
         ...job.details,
         conflictResolution: { ...resolution, status: nextStatus, sessionStatus: session.status }
       },
       auditEvent: nextStatus === "ready" ? "conflict_agent_completed" : "conflict_agent_stopped",
-      auditData: { worktreeId: job.details.currentWorktreeId }
+      auditData: {
+        worktreeId: job.details.currentWorktreeId,
+        ...(nextStatus === "ready" ? { automaticResume: true } : {})
+      }
     });
+    if (nextStatus === "ready") this.#schedule(updated.id);
+    return updated;
   }
 
   #associate(inspection) {
@@ -895,6 +960,12 @@ function isDeletionBlockerCode(code) {
 
 function risksFor(worktree) {
   const risks = [];
+  if (worktree.isMain && worktree.dirty === true) {
+    risks.push({
+      code: "MAIN_UNCOMMITTED_CHANGES",
+      message: "main has uncommitted changes. Corptie will not switch, commit, clean, or overwrite them."
+    });
+  }
   if (worktree.availability !== "available") risks.push({ code: "WORKTREE_UNAVAILABLE", message: "Worktree is unavailable." });
   if (worktree.isLocked) risks.push({ code: "WORKTREE_LOCKED", message: worktree.lockReason || "Worktree is locked." });
   if (worktree.isPrunable) risks.push({ code: "WORKTREE_PRUNABLE", message: worktree.pruneReason || "Worktree metadata is prunable." });
@@ -925,8 +996,8 @@ function normalizeCommitProtectionDecisions(value) {
 }
 
 function requiresIntegration(worktree) {
-  if (worktree.dirty === true) return true;
   if (worktree.isMain) return false;
+  if (worktree.dirty === true) return true;
   return worktree.mergedIntoMain !== true;
 }
 
@@ -965,6 +1036,31 @@ function planMatchesInspection(plan, inspection) {
   return JSON.stringify(currentShape) === JSON.stringify(expectedShape);
 }
 
+function planInspectionMismatch(plan, inspection) {
+  if (planMatchesInspection(plan, inspection)) return null;
+  const expectedMain = (plan.validationSnapshot ?? []).find((entry) => entry.worktreeId === plan.mainWorktreeId);
+  const currentMain = inspection.worktrees.find((entry) => entry.worktreeId === plan.mainWorktreeId);
+  if (currentMain?.dirty === true && expectedMain?.dirty !== true) {
+    return {
+      code: "MAIN_DIRTY",
+      message: "main gained uncommitted changes after preflight. Nothing was changed; return to Worktree Management, preserve those changes manually, then generate a new plan."
+    };
+  }
+  const currentConflict = inspection.worktrees.find((entry) => (
+    !entry.isMain && (entry.conflictFiles ?? []).length > 0
+  ));
+  if (currentConflict) {
+    return {
+      code: "WORKTREE_CHANGES_CHANGED",
+      message: `Task Worktree ${currentConflict.branchName ?? currentConflict.path} has unresolved changes after preflight. Nothing was changed; resolve them in that Worktree, then generate a new plan.`
+    };
+  }
+  return {
+    code: "PLAN_STALE",
+    message: "Worktree state changed after preflight. Nothing was changed; return to Worktree Management and generate a new plan."
+  };
+}
+
 function expectedMainHeadBefore(plan, worktreeId) {
   let head = plan.items.find((item) => item.isMain)?.commitHead ?? plan.mainHeadBefore;
   for (const item of plan.items) {
@@ -985,7 +1081,7 @@ function conflictResolutionKey(job, item, sourceHead, expectedMainHead) {
 }
 
 function conflictResolutionMatches(job, resolution, item, conflictKey) {
-  return job.status === "paused"
+  return ["paused", "queued", "running"].includes(job.status)
     && item?.mergeStatus === "conflict"
     && resolution?.worktreeId === item.worktreeId
     && resolution?.conflictKey === conflictKey;
