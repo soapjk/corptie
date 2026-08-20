@@ -235,8 +235,8 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     @discardableResult
-    func resolveConflictWithAgent() async -> Bool {
-        guard let job, job.hasMergeConflict else { return false }
+    func resolveConflictWithAgent() async -> String? {
+        guard let job, job.hasMergeConflict else { return nil }
         isMutating = true
         defer { isMutating = false }
         do {
@@ -246,10 +246,11 @@ final class WorktreeManagementClient: ObservableObject {
             )
             self.job = envelope.job
             errorMessage = nil
-            return envelope.job.conflictResolution?.sessionId != nil
+            await AppStateSyncController.shared.refreshSnapshot()
+            return envelope.job.currentConflictResolution?.sessionId
         } catch {
             errorMessage = error.localizedDescription
-            return false
+            return nil
         }
     }
 

@@ -343,7 +343,11 @@ struct WorktreeManagementView: View {
                         .accessibilityIdentifier("worktree.integrate.retry")
                 } else if job.hasMergeConflict {
                     Button(L10n("Ask Agent to Resolve")) {
-                        Task { _ = await client.resolveConflictWithAgent() }
+                        Task {
+                            if let sessionId = await client.resolveConflictWithAgent() {
+                                router.openSession(sessionId)
+                            }
+                        }
                     }
                     .controlSize(.small)
                     .disabled(client.isMutating)
