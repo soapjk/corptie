@@ -154,6 +154,22 @@ struct WorkItemSessionSummary: Identifiable, Codable, Hashable {
     let updatedAt: String
 }
 
+enum WorkItemExecutionPresentation {
+    @MainActor
+    static func label(executionStatus: String?, sessionStatus: String?) -> String {
+        switch sessionStatus ?? executionStatus {
+        case "running": L10n("Running")
+        case "blocked": L10n("Waiting for Input")
+        case "completed", "complete", "done": L10n("Complete")
+        case "failed": L10n("Failed")
+        case "paused": L10n("Paused")
+        case "cancelled", "canceled": L10n("Interrupted")
+        case "idle", nil: L10n("Not Started")
+        default: L10n("Unknown")
+        }
+    }
+}
+
 // 后端响应 envelope：GET /work-items/:id/sessions → { sessions: [...] }
 struct WorkItemSessionListEnvelope: Codable {
     let sessions: [WorkItemSessionSummary]

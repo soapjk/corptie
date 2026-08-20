@@ -1465,6 +1465,140 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
   }
 });
 
+test("WorkItem creation persists the selected Agent and only the explicit run action launches it", async () => {
+  const services = await createServices();
+  try {
+    const agent = services.store.createAgent({
+      name: "Selected contributor",
+      role: "independentContributor",
+      status: "available"
+    });
+    const objective = services.objectiveService.createObjective({
+      name: "Explicit execution mode",
+      contributorAgentIds: [agent.agentId]
+    });
+    let launchCount = 0;
+    const launchSession = async ({ agent: launchedAgent, workItem }) => {
+      launchCount += 1;
+      assert.equal(launchedAgent.agentId, agent.agentId);
+      assert.equal(workItem.main_agent_id, agent.agentId);
+      services.store.upsertSession({
+        id: `session:explicit:${launchCount}`,
+        title: workItem.title,
+        agent: launchedAgent.name,
+        agentId: launchedAgent.agentId,
+        provider: "test-provider",
+        status: "running",
+        sessionKind: "worker"
+      });
+      return services.store.getSession(`session:explicit:${launchCount}`);
+    };
+
+    const created = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: {
+        objectiveId: objective.id,
+        title: "Create once",
+        mainAgentId: agent.agentId
+      },
+      launchSession,
+      ...services
+    });
+
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.body.main_agent_id, agent.agentId);
+    assert.equal(created.body.execution_status, "idle");
+    assert.equal(created.body.current_session_id, null);
+    assert.equal(launchCount, 0, "create-only must not launch a Session");
+
+    const started = await callApi({
+      method: "POST",
+      pathname: "/sessions",
+      body: {
+        workItemId: created.body.id,
+        agentId: agent.agentId,
+        providerId: "test-provider"
+      },
+      launchSession,
+      ...services
+    });
+
+    assert.equal(started.statusCode, 201);
+    assert.equal(launchCount, 1);
+    const running = services.store.getWorkItem(created.body.id);
+    assert.equal(running.main_agent_id, agent.agentId);
+    assert.equal(running.execution_status, "running");
+    assert.equal(running.current_session_id, started.body.session.id);
+    assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("execution failure is explicit and retrying the existing WorkItem does not create another item", async () => {
+  const services = await createServices();
+  try {
+    const agent = services.store.createAgent({ name: "Retry contributor" });
+    const objective = services.objectiveService.createObjective({
+      name: "Retry without duplicate",
+      contributorAgentIds: [agent.agentId]
+    });
+    const created = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: { objectiveId: objective.id, title: "Stable identity", mainAgentId: agent.agentId },
+      ...services
+    });
+
+    const failed = await callApi({
+      method: "POST",
+      pathname: "/sessions",
+      body: { workItemId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
+      launchSession: async () => {
+        const error = new Error("Provider launch failed clearly");
+        error.code = "PROVIDER_LAUNCH_FAILED";
+        error.statusCode = 502;
+        throw error;
+      },
+      ...services
+    });
+
+    assert.equal(failed.statusCode, 502);
+    assert.equal(failed.body.code, "PROVIDER_LAUNCH_FAILED");
+    assert.match(failed.body.error, /Provider launch failed clearly/);
+    assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
+    assert.equal(services.store.getWorkItem(created.body.id).execution_status, "idle");
+
+    const retried = await callApi({
+      method: "POST",
+      pathname: "/sessions",
+      body: { workItemId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
+      launchSession: async ({ workItem }) => {
+        services.store.upsertSession({
+          id: "session:retry",
+          title: workItem.title,
+          agent: agent.name,
+          agentId: agent.agentId,
+          provider: "test-provider",
+          status: "running",
+          sessionKind: "worker"
+        });
+        return services.store.getSession("session:retry");
+      },
+      ...services
+    });
+
+    assert.equal(retried.statusCode, 201);
+    assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
+    assert.equal(services.store.getWorkItem(created.body.id).current_session_id, "session:retry");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("Session 创建响应返回可直接增量写入客户端的完整分类与归属", async () => {
   const services = await createServices();
   try {
