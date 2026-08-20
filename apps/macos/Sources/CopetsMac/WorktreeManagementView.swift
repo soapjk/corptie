@@ -109,7 +109,7 @@ struct WorktreeManagementView: View {
     private var repositoryColumn: some View {
         VStack(spacing: 0) {
             columnHeader(L10n("Repository Workspaces"), systemImage: "externaldrive.connected.to.line.below") {
-                Task { await client.loadRepositories() }
+                Task { await client.loadRepositories(forceSelectedReload: true) }
             }
             if client.repositories.isEmpty && !client.isLoading {
                 ContentUnavailableView(L10n("No Repository Workspaces"), systemImage: "folder.badge.questionmark")
@@ -138,19 +138,31 @@ struct WorktreeManagementView: View {
             if let project = client.detail?.project {
                 integrationAction(project)
                 if let job = client.job { jobProgress(job) }
-                List(selection: Binding(
-                    get: { client.selection.worktreeId },
-                    set: { client.selection.worktreeId = $0 }
-                )) {
-                    ForEach(project.worktrees) { worktree in
-                        worktreeRow(worktree)
-                            .tag(worktree.worktreeId)
-                            .accessibilityIdentifier("worktree.item.\(worktree.worktreeId)")
+                if project.worktrees.isEmpty {
+                    ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
+                } else {
+                    List(selection: Binding(
+                        get: { client.selection.worktreeId },
+                        set: { client.selection.worktreeId = $0 }
+                    )) {
+                        ForEach(project.worktrees) { worktree in
+                            worktreeRow(worktree)
+                                .tag(worktree.worktreeId)
+                                .accessibilityIdentifier("worktree.item.\(worktree.worktreeId)")
+                        }
                     }
+                    .listStyle(.inset)
                 }
-                .listStyle(.inset)
             } else if client.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if case .failed(let message) = client.listLoadState {
+                ContentUnavailableView {
+                    Label(L10n("Could Not Load Worktrees"), systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message)
+                } actions: {
+                    Button(L10n("Retry")) { Task { await client.refreshSelected() } }
+                }
             } else {
                 ContentUnavailableView(L10n("Select a Repository Workspace"), systemImage: "sidebar.left")
             }
@@ -500,7 +512,7 @@ struct WorktreeManagementView: View {
     }
 
     @ViewBuilder
-    private func developmentServiceSection(_ status: ProjectWorktreeStatusResponse) -> some View {
+    private func developmentServiceSection(_ status: ProjectDevelopmentServiceStatus) -> some View {
         detailSection(L10n("Development Service")) {
             HStack {
                 Label(serviceLabel(status.service), systemImage: "server.rack")

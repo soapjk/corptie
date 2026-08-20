@@ -107,35 +107,37 @@ export async function createGitWorkspaceSnapshot(workingDirectory, options = {})
   const inspectedAt = options.inspectedAt ?? new Date().toISOString();
   const anchor = await inspectGitWorkspace(workingDirectory, options);
   const inventory = await listGitWorktrees(workingDirectory, options);
-  const worktrees = [];
-
-  for (const record of inventory) {
-    try {
-      const identity = await inspectGitWorkspace(record.path, options);
-      if (identity.repositoryId !== anchor.repositoryId) {
-        throw new Error(`Worktree ${record.path} resolved to another repository`);
+  const worktrees = await mapConcurrentOrdered(
+    inventory,
+    options.inspectionConcurrency ?? 8,
+    async (record) => {
+      try {
+        const identity = await inspectGitWorkspace(record.path, options);
+        if (identity.repositoryId !== anchor.repositoryId) {
+          throw new Error(`Worktree ${record.path} resolved to another repository`);
+        }
+        return {
+          ...record,
+          ...identity,
+          availability: "available",
+          observedAt: inspectedAt
+        };
+      } catch (error) {
+        return {
+          ...record,
+          repositoryId: anchor.repositoryId,
+          worktreeId: stableId("missing-worktree", `${anchor.repositoryId}\0${record.path}`),
+          canonicalPath: null,
+          gitDirCanonicalPath: null,
+          commonGitDirCanonicalPath: anchor.commonGitDirCanonicalPath,
+          isMain: false,
+          availability: record.isPrunable ? "missing" : "invalid",
+          inspectionError: error.message,
+          observedAt: inspectedAt
+        };
       }
-      worktrees.push({
-        ...record,
-        ...identity,
-        availability: "available",
-        observedAt: inspectedAt
-      });
-    } catch (error) {
-      worktrees.push({
-        ...record,
-        repositoryId: anchor.repositoryId,
-        worktreeId: stableId("missing-worktree", `${anchor.repositoryId}\0${record.path}`),
-        canonicalPath: null,
-        gitDirCanonicalPath: null,
-        commonGitDirCanonicalPath: anchor.commonGitDirCanonicalPath,
-        isMain: false,
-        availability: record.isPrunable ? "missing" : "invalid",
-        inspectionError: error.message,
-        observedAt: inspectedAt
-      });
     }
-  }
+  );
 
   const inventoryVersion = createHash("sha256")
     .update(JSON.stringify(worktrees.map(worktreeSnapshotFingerprint)))
@@ -151,6 +153,24 @@ export async function createGitWorkspaceSnapshot(workingDirectory, options = {})
     inventoryVersion,
     observedAt: inspectedAt
   };
+}
+
+async function mapConcurrentOrdered(values, concurrency, transform) {
+  const items = Array.from(values);
+  if (items.length === 0) return [];
+  const results = new Array(items.length);
+  const workerCount = Math.min(
+    items.length,
+    Math.max(1, Number.isFinite(concurrency) ? Math.floor(concurrency) : 1)
+  );
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await transform(items[index], index);
+    }
+  }));
+  return results;
 }
 
 function emptyWorktreeRecord(path) {

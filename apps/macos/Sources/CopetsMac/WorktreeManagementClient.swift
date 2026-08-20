@@ -1,50 +1,71 @@
 import Foundation
+import OSLog
 
 @MainActor
 final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var repositories: [ManagedRepository] = []
     @Published private(set) var detail: ManagedRepositoryDetail?
-    @Published private(set) var projectStatus: ProjectWorktreeStatusResponse?
+    @Published private(set) var projectStatus: ProjectDevelopmentServiceStatus?
     @Published private(set) var job: WorktreeIntegrationJob?
     @Published var selection = WorktreeManagementSelection()
     @Published private(set) var isLoading = false
     @Published private(set) var isMutating = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var listLoadState: WorktreeListLoadState = .idle
+    @Published private(set) var lastLoadMetrics: WorktreeLoadMetrics?
 
     private let baseURL: URL
+    private let session: URLSession
+    private let cacheLifetime: TimeInterval
+    private let now: () -> Date
     private var detailGeneration = 0
+    private var detailCache: [String: CachedRepositoryDetail] = [:]
+    private var repositoryListMilliseconds = 0
+    private let logger = Logger(subsystem: "com.corptie.mac", category: "WorktreeLoad")
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return decoder
     }()
 
-    init(baseURL: URL = CorptieAppEnvironment.backendBaseURL) {
+    init(
+        baseURL: URL = CorptieAppEnvironment.backendBaseURL,
+        session: URLSession = .shared,
+        cacheLifetime: TimeInterval = 15,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.baseURL = baseURL
+        self.session = session
+        self.cacheLifetime = cacheLifetime
+        self.now = now
     }
 
     var selectedWorktree: ManagedWorktree? {
         detail?.project.worktrees.first { $0.worktreeId == selection.worktreeId }
     }
 
-    func loadRepositories() async {
+    func loadRepositories(forceSelectedReload: Bool = false) async {
+        let startedAt = now()
         isLoading = true
         defer { isLoading = false }
         do {
             let envelope: ManagedRepositoryListEnvelope = try await get("worktree-management/repositories")
+            repositoryListMilliseconds = milliseconds(since: startedAt)
             repositories = envelope.repositories
             selection.reconcile(repositories: repositories)
             errorMessage = nil
             if let repositoryId = selection.repositoryId {
-                await loadRepository(repositoryId)
+                await loadRepository(repositoryId, force: forceSelectedReload)
             } else {
                 detail = nil
                 projectStatus = nil
                 job = nil
+                listLoadState = .idle
             }
         } catch {
             guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
+            if detail == nil { listLoadState = .failed(error.localizedDescription) }
         }
     }
 
@@ -55,6 +76,7 @@ final class WorktreeManagementClient: ObservableObject {
         detail = nil
         projectStatus = nil
         job = nil
+        listLoadState = id == nil ? .idle : .loading
         guard let id else { return }
         await loadRepository(id)
     }
@@ -64,7 +86,7 @@ final class WorktreeManagementClient: ObservableObject {
             await loadRepositories()
             return
         }
-        await loadRepository(repositoryId)
+        await loadRepository(repositoryId, force: true)
     }
 
     @discardableResult
@@ -90,7 +112,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "projects/\(repositoryId)/workspaces/\(worktreeId)/actions/synchronize",
                 body: [:]
             )
-            await self.loadRepository(repositoryId)
+            await self.loadRepository(repositoryId, force: true)
         }
     }
 
@@ -157,7 +179,7 @@ final class WorktreeManagementClient: ObservableObject {
                     body: [:]
                 )
             }
-            await loadRepository(repositoryId)
+            await loadRepository(repositoryId, force: true)
             errorMessage = nil
             return true
         } catch {
@@ -175,7 +197,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "projects/\(repositoryId)/development-service/actions/\(action)",
                 body: body
             )
-            await self.loadRepository(repositoryId)
+            await self.loadRepository(repositoryId, force: true)
         }
     }
 
@@ -278,30 +300,95 @@ final class WorktreeManagementClient: ObservableObject {
 
     func dismissError() { errorMessage = nil }
 
-    private func loadRepository(_ id: String) async {
+    private func loadRepository(_ id: String, force: Bool = false) async {
+        if !force, let cached = detailCache[id], now().timeIntervalSince(cached.loadedAt) < cacheLifetime {
+            apply(cached, repositoryId: id)
+            let metrics = WorktreeLoadMetrics(
+                repositoryId: id,
+                repositoryListMilliseconds: repositoryListMilliseconds,
+                detailMilliseconds: 0,
+                serviceMilliseconds: 0,
+                listAvailableMilliseconds: repositoryListMilliseconds,
+                cacheHit: true
+            )
+            lastLoadMetrics = metrics
+            log(metrics)
+            return
+        }
         detailGeneration &+= 1
         let generation = detailGeneration
+        let startedAt = now()
+        listLoadState = .loading
         isLoading = true
         defer { if generation == detailGeneration { isLoading = false } }
         do {
-            let response: ManagedRepositoryDetail = try await get("worktree-management/repositories/\(id)")
+            async let detailRequest: ManagedRepositoryDetail = get("worktree-management/repositories/\(id)")
+            async let serviceRequest: ProjectDevelopmentServiceStatus? = try? get("projects/\(id)/development-service")
+            let response = try await detailRequest
+            let detailMilliseconds = milliseconds(since: startedAt)
             guard generation == detailGeneration, selection.repositoryId == id else { return }
             detail = response
             job = response.latestJob
-            let refreshedProjectStatus: ProjectWorktreeStatusResponse? = try? await get("projects/\(id)/workspaces")
+            selection.reconcile(repositories: repositories, worktrees: response.project.worktrees)
+            listLoadState = .loaded
+            errorMessage = nil
+            detailCache[id] = CachedRepositoryDetail(
+                detail: response,
+                projectStatus: projectStatus,
+                loadedAt: now()
+            )
+            let refreshedProjectStatus = await serviceRequest
+            let serviceMilliseconds = milliseconds(since: startedAt)
             guard generation == detailGeneration, selection.repositoryId == id else { return }
             projectStatus = refreshedProjectStatus
-            selection.reconcile(repositories: repositories, worktrees: response.project.worktrees)
-            errorMessage = nil
+            let cached = CachedRepositoryDetail(
+                detail: response,
+                projectStatus: refreshedProjectStatus,
+                loadedAt: now()
+            )
+            detailCache[id] = cached
+            let metrics = WorktreeLoadMetrics(
+                repositoryId: id,
+                repositoryListMilliseconds: repositoryListMilliseconds,
+                detailMilliseconds: detailMilliseconds,
+                serviceMilliseconds: serviceMilliseconds,
+                listAvailableMilliseconds: repositoryListMilliseconds + detailMilliseconds,
+                cacheHit: false
+            )
+            lastLoadMetrics = metrics
+            log(metrics)
         } catch {
             guard !Self.isCancellation(error) else { return }
             guard generation == detailGeneration else { return }
-            detail = nil
-            projectStatus = nil
-            job = nil
-            selection.worktreeId = nil
+            if detail?.repository.id != id {
+                detail = nil
+                projectStatus = nil
+                job = nil
+                selection.worktreeId = nil
+            }
             errorMessage = error.localizedDescription
+            listLoadState = .failed(error.localizedDescription)
         }
+    }
+
+    private func apply(_ cached: CachedRepositoryDetail, repositoryId: String) {
+        guard selection.repositoryId == repositoryId else { return }
+        detail = cached.detail
+        projectStatus = cached.projectStatus
+        job = cached.detail.latestJob
+        selection.reconcile(repositories: repositories, worktrees: cached.detail.project.worktrees)
+        listLoadState = .loaded
+        errorMessage = nil
+    }
+
+    private func milliseconds(since start: Date) -> Int {
+        max(0, Int(now().timeIntervalSince(start) * 1_000))
+    }
+
+    private func log(_ metrics: WorktreeLoadMetrics) {
+        logger.info(
+            "repository=\(metrics.repositoryId, privacy: .public) cacheHit=\(metrics.cacheHit) repositoriesMs=\(metrics.repositoryListMilliseconds) detailMs=\(metrics.detailMilliseconds) serviceMs=\(metrics.serviceMilliseconds) listAvailableMs=\(metrics.listAvailableMilliseconds)"
+        )
     }
 
     private func mutate(_ operation: () async throws -> Void) async {
@@ -332,7 +419,7 @@ final class WorktreeManagementClient: ObservableObject {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
             let envelope = try? decoder.decode(WorktreeManagementErrorEnvelope.self, from: data)
             throw WorktreeManagementClientError(
@@ -347,6 +434,12 @@ final class WorktreeManagementClient: ObservableObject {
         if error is CancellationError { return true }
         return (error as? URLError)?.code == .cancelled
     }
+}
+
+private struct CachedRepositoryDetail {
+    let detail: ManagedRepositoryDetail
+    let projectStatus: ProjectDevelopmentServiceStatus?
+    let loadedAt: Date
 }
 
 private struct WorktreeActionAcknowledgement: Decodable {}

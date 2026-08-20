@@ -505,7 +505,10 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
 });
 const gitWorkspaces = new GitWorkspaceManager({
   store,
-  transitions: workspaceTransitionManager
+  transitions: workspaceTransitionManager,
+  observePerformance: (measurement) => {
+    console.info(`[worktree-performance] ${JSON.stringify(measurement)}`);
+  }
 });
 const projectToolsets = new ProjectToolsetManager();
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
