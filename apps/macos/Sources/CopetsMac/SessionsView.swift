@@ -488,14 +488,12 @@ struct SessionsView: View {
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
         let isSelected = (visuallySelectedSessionID ?? selectedSession?.id) == row.session.id
-        return CompactSessionRow(
-            session: row.session,
-            selectionRequested: selectSessionAfterHighlight
+        return SessionsSidebarRow(
+            row: row,
+            readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID,
+            selectionRequested: selectSessionAfterHighlight,
+            preheatRequested: backendClient.prefetchDetail
         )
-            .onHover { isHovering in
-                guard isHovering else { return }
-                backendClient.prefetchDetail(for: row.session)
-            }
             .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 8))
             .listRowSeparator(.hidden)
             .listRowBackground(
@@ -662,6 +660,28 @@ struct SessionsView: View {
 
 }
 
+/// Observes the stable list-row model directly so content-only Session patches
+/// (status, activity, title, summary, capabilities) repaint without requiring
+/// a parent-list invalidation or selecting the Session first.
+private struct SessionsSidebarRow: View {
+    @ObservedObject var row: SessionRowModel
+    let readCompletionRevisionsBySessionID: [String: String]
+    let selectionRequested: (TaskSession) -> Void
+    let preheatRequested: (TaskSession) -> Void
+
+    var body: some View {
+        CompactSessionRow(
+            session: row.session,
+            isUnread: isSessionUnread(
+                row.session,
+                readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID
+            ),
+            preheatRequested: preheatRequested,
+            selectionRequested: selectionRequested
+        )
+    }
+}
+
 func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [TaskSession]) -> TaskSession? {
     guard let pendingSessionId else { return nil }
     return sessions.first { $0.id == pendingSessionId }
@@ -806,6 +826,12 @@ func makeSessionGroups(
     workerScope: WorkerSessionScope = .active,
     workerGroupingMode: WorkerSessionGroupingMode = .objective
 ) -> [SessionGroup] {
+    let rows = rows.sorted { left, right in
+        let leftTimestamp = left.session.lastMessageAt ?? left.session.updatedAt
+        let rightTimestamp = right.session.lastMessageAt ?? right.session.updatedAt
+        if leftTimestamp != rightTimestamp { return leftTimestamp > rightTimestamp }
+        return left.id < right.id
+    }
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
     let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
     let objectivesByID = Dictionary(uniqueKeysWithValues: objectives.map { ($0.id, $0) })

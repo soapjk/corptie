@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UserNotifications
 
 @main
 struct CorptieMacApp: App {
@@ -43,7 +44,7 @@ enum ApplicationTerminationUI {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     static weak var shared: AppDelegate?
 
     private let backendClient = BackendClient.shared
@@ -51,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: FloatingPanelController?
     private var agentOrbManager: AgentOrbManager?
     private var completionSoundManager: SessionCompletionSoundManager?
+    private var resetNotificationManager: CodexResetSystemNotificationManager?
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var settingsWindow: NSWindow?
@@ -85,6 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
         backendClient.start()
+        if CodexResetSystemNotificationManager.canUseUserNotificationCenter {
+            UNUserNotificationCenter.current().delegate = self
+        }
 
         let controller = FloatingPanelController(client: backendClient)
         let soundManager = SessionCompletionSoundManager(client: backendClient)
@@ -119,6 +124,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         completionSoundManager = soundManager
         soundManager.start()
+        let resetNotificationManager = CodexResetSystemNotificationManager(client: backendClient)
+        self.resetNotificationManager = resetNotificationManager
+        resetNotificationManager.start()
         installStatusItem()
 
         // 控制台 WorkItem 详情「打开对话」→ 在主悬浮窗打开该 session 对话
@@ -142,7 +150,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         agentOrbManager?.closeAll()
         completionSoundManager?.stop()
+        resetNotificationManager?.stop()
         backendClient.stop()
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .list, .sound])
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -361,10 +378,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         warRoomWindow = window
     }
 
-    func openWorktreeManagement(repositoryId: String?, worktreePath: String?) {
+    func openWorktreeManagement(repositoryId: String?, worktreeId: String?, worktreePath: String?) {
         openWarRoom()
         AppTabRouter.shared.openWorktrees(
             repositoryId: repositoryId,
+            worktreeId: worktreeId,
             worktreePath: worktreePath
         )
     }

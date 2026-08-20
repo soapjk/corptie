@@ -67,7 +67,9 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func navigate(to target: WorktreeNavigationTarget) async {
-        if repositories.isEmpty { await loadRepositories() }
+        // Refresh first so a newly-created Session Worktree is selectable even
+        // when this persistent tab was preloaded before the Worktree existed.
+        await loadRepositories()
         if let repositoryId = target.repositoryId,
            repositories.contains(where: { $0.id == repositoryId }) {
             if selection.repositoryId != repositoryId {
@@ -76,11 +78,7 @@ final class WorktreeManagementClient: ObservableObject {
                 await loadRepository(repositoryId)
             }
         }
-        guard let worktreePath = target.worktreePath else { return }
-        let normalized = URL(fileURLWithPath: worktreePath).standardizedFileURL.path
-        if let worktree = detail?.project.worktrees.first(where: {
-            URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
-        }) {
+        if let worktree = target.matchingWorktree(in: detail?.project.worktrees ?? []) {
             selection.worktreeId = worktree.worktreeId
         }
     }

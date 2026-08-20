@@ -274,9 +274,10 @@ final class AppTabRouter: ObservableObject {
         selectTab(.sessions)
     }
 
-    func openWorktrees(repositoryId: String?, worktreePath: String?) {
+    func openWorktrees(repositoryId: String?, worktreeId: String?, worktreePath: String?) {
         pendingWorktreeTarget = WorktreeNavigationTarget(
             repositoryId: repositoryId,
+            worktreeId: worktreeId,
             worktreePath: worktreePath
         )
         sidebarVisibility = .all
@@ -295,5 +296,18 @@ final class AppTabRouter: ObservableObject {
 
 struct WorktreeNavigationTarget: Equatable {
     let repositoryId: String?
+    let worktreeId: String?
     let worktreePath: String?
+
+    func matchingWorktree(in worktrees: [ManagedWorktree]) -> ManagedWorktree? {
+        if let worktreeId,
+           let exact = worktrees.first(where: { $0.worktreeId == worktreeId }) {
+            return exact
+        }
+        guard let worktreePath else { return nil }
+        let normalized = URL(fileURLWithPath: worktreePath).standardizedFileURL.path
+        return worktrees.first {
+            URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
+        }
+    }
 }

@@ -125,7 +125,10 @@ enum SessionCollectionDiffer {
             || previous.pendingCollaborationConfirmation != next.pendingCollaborationConfirmation {
             fields.insert(.suggestedOptions)
         }
-        if previous.pinned != next.pinned || previous.sortOrder != next.sortOrder || previous.archived != next.archived {
+        if previous.pinned != next.pinned
+            || previous.sortOrder != next.sortOrder
+            || previous.archived != next.archived
+            || previous.lastMessageAt != next.lastMessageAt {
             fields.insert(.ordering)
         }
         if previous.external != next.external

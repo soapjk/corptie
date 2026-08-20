@@ -262,6 +262,38 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func sessionGroupsSortByLastMessageInsteadOfMetadataUpdateTime() {
+        let newestMessage = SessionRowModel(session: makeSession(
+            id: "newest-message",
+            sessionKind: .worker,
+            workItemId: "work-item:newest",
+            updatedAt: "2026-08-20T01:00:00Z",
+            lastMessageAt: "2026-08-20T03:00:00Z"
+        ))
+        let newestMetadata = SessionRowModel(session: makeSession(
+            id: "newest-metadata",
+            sessionKind: .worker,
+            workItemId: "work-item:metadata",
+            updatedAt: "2026-08-20T04:00:00Z",
+            lastMessageAt: "2026-08-20T02:00:00Z"
+        ))
+
+        let groups = makeSessionGroups(
+            rows: [newestMetadata, newestMessage],
+            agents: [],
+            workItems: [
+                makeWorkItem(id: "work-item:newest", status: "in_progress"),
+                makeWorkItem(id: "work-item:metadata", status: "in_progress")
+            ],
+            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            category: .worker,
+            workerGroupingMode: .none
+        )
+
+        #expect(groups[0].rows.map(\.id) == ["newest-message", "newest-metadata"])
+    }
+
+    @Test
     func archivedWorkerSessionsContainOnlyCompletedWorkItemsGroupedByObjective() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
@@ -487,7 +519,8 @@ private func makeSession(
     workItemId: String? = nil,
     objectiveId: String? = nil,
     status: TaskStatus = .complete,
-    updatedAt: String = "2026-08-12T00:00:00Z"
+    updatedAt: String = "2026-08-12T00:00:00Z",
+    lastMessageAt: String? = nil
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -504,6 +537,7 @@ private func makeSession(
         suggestedPrompt: nil,
         activityStatus: nil,
         updatedAt: updatedAt,
+        lastMessageAt: lastMessageAt,
         accent: .cyan,
         archived: false,
         pinned: false,

@@ -1,4 +1,6 @@
 import Foundation
+import Combine
+import UserNotifications
 
 enum CodexResetNoticeIdentity {
     private static let resetDriftToleranceMinutes = 5
@@ -134,20 +136,8 @@ enum CodexResetNoticeAcknowledgements {
     }
 }
 
-enum CodexResetNoticePresentation {
-    enum ManualAction: Equatable {
-        case present
-        case rearm
-    }
-
-    static let automaticPresentationDelay: Duration = .milliseconds(350)
-    static let rearmDelay: Duration = .milliseconds(60)
-
-    static func manualAction(isPresented: Bool) -> ManualAction {
-        isPresented ? .rearm : .present
-    }
-
-    static func shouldPresent(
+enum CodexResetNotificationPolicy {
+    static func shouldNotify(
         fingerprint: String,
         acknowledgedFingerprints: [String]
     ) -> Bool {
@@ -156,26 +146,129 @@ enum CodexResetNoticePresentation {
         }
     }
 
-    static func shouldAutomaticallyPresent(
-        fingerprint: String,
-        lastAutomaticallyPresentedFingerprint: String?,
-        acknowledgedFingerprints: [String]
-    ) -> Bool {
-        fingerprint != lastAutomaticallyPresentedFingerprint
-            && shouldPresent(
-                fingerprint: fingerprint,
-                acknowledgedFingerprints: acknowledgedFingerprints
-            )
-    }
-
-    static func shouldPresent(
+    static func shouldNotify(
         fingerprint: String,
         acknowledgedFingerprint: String
     ) -> Bool {
-        shouldPresent(
+        shouldNotify(
             fingerprint: fingerprint,
             acknowledgedFingerprints: acknowledgedFingerprint.isEmpty ? [] : [acknowledgedFingerprint]
         )
+    }
+
+    @MainActor
+    static func notification(for usage: SessionUsageResponse) -> CodexResetSystemNotification? {
+        let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account)
+        guard let fingerprint = CodexResetNoticeIdentity.fingerprint(
+            provider: usage.account.provider,
+            window: window,
+            forecast: usage.resetForecast?.forecast
+        ) else { return nil }
+        let resetText = window?.resetsAt.map {
+            L10nFormat("Plan reset: %@", Date(timeIntervalSince1970: $0).formatted(date: .abbreviated, time: .shortened))
+        }
+        let forecastText = usage.resetForecast?.forecast.map {
+            L10nFormat("Tibo forecast: %@", $0.text)
+        }
+        return CodexResetSystemNotification(
+            fingerprint: fingerprint,
+            title: L10n("Codex plan update"),
+            body: [resetText, forecastText].compactMap { $0 }.joined(separator: "\n")
+        )
+    }
+}
+
+struct CodexResetSystemNotification: Equatable {
+    let fingerprint: String
+    let title: String
+    let body: String
+}
+
+@MainActor
+final class CodexResetSystemNotificationManager {
+    typealias Delivery = (CodexResetSystemNotification) -> Void
+
+    private let client: BackendClient
+    private let defaults: UserDefaults
+    private let delivery: Delivery
+    private var cancellable: AnyCancellable?
+
+    static var canUseUserNotificationCenter: Bool {
+        Bundle.main.bundleIdentifier != nil
+            && Bundle.main.bundleURL.pathExtension.lowercased() == "app"
+    }
+
+    init(
+        client: BackendClient,
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults,
+        delivery: Delivery? = nil
+    ) {
+        self.client = client
+        self.defaults = defaults
+        self.delivery = delivery ?? Self.deliverSystemNotification
+    }
+
+    func start() {
+        cancellable = client.$selectedSessionUsage
+            .compactMap { $0 }
+            .sink { [weak self] usage in self?.handle(usage) }
+    }
+
+    func stop() {
+        cancellable?.cancel()
+        cancellable = nil
+    }
+
+    func handle(_ usage: SessionUsageResponse) {
+        guard let notification = CodexResetNotificationPolicy.notification(for: usage),
+              CodexResetNotificationPolicy.shouldNotify(
+                  fingerprint: notification.fingerprint,
+                  acknowledgedFingerprints: CodexResetNoticeAcknowledgements.load(from: defaults)
+              ) else { return }
+        // Persist before asynchronous delivery so concurrent polling and
+        // Session switches cannot enqueue the same system notification twice.
+        CodexResetNoticeAcknowledgements.record(notification.fingerprint, in: defaults)
+        delivery(notification)
+    }
+
+    private static func deliverSystemNotification(_ notification: CodexResetSystemNotification) {
+        guard canUseUserNotificationCenter else {
+            deliverDevelopmentNotification(notification)
+            return
+        }
+        Task {
+            let center = UNUserNotificationCenter.current()
+            let allowed = (try? await center.requestAuthorization(options: [.alert, .sound])) == true
+            guard allowed else { return }
+            let content = UNMutableNotificationContent()
+            content.title = notification.title
+            content.body = notification.body
+            content.sound = .default
+            let request = UNNotificationRequest(
+                identifier: "codex-plan-\(notification.fingerprint)",
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
+        }
+    }
+
+    private static func deliverDevelopmentNotification(_ notification: CodexResetSystemNotification) {
+        // SwiftPM's direct Development executable is not an application bundle;
+        // UNUserNotificationCenter raises an Objective-C exception before Swift
+        // can catch it. AppleScript still delivers a normal local macOS banner
+        // and keeps the repository-prescribed direct Development launch usable.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = [
+            "-e", "on run argv",
+            "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+            "-e", "end run",
+            "--",
+            notification.title,
+            notification.body
+        ]
+        try? process.run()
     }
 }
 

@@ -14,13 +14,45 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         let router = AppTabRouter()
         router.openWorktrees(
             repositoryId: "repository:one",
+            worktreeId: "worktree:feature",
             worktreePath: "/repo-feature"
         )
 
         XCTAssertEqual(router.selectedTab, .worktrees)
         XCTAssertEqual(
             router.pendingWorktreeTarget,
-            WorktreeNavigationTarget(repositoryId: "repository:one", worktreePath: "/repo-feature")
+            WorktreeNavigationTarget(
+                repositoryId: "repository:one",
+                worktreeId: "worktree:feature",
+                worktreePath: "/repo-feature"
+            )
+        )
+    }
+
+    func testNavigationSelectsTheAuthoritativeWorktreeIdBeforeAStalePath() {
+        let target = WorktreeNavigationTarget(
+            repositoryId: "repository:one",
+            worktreeId: "wt:feature",
+            worktreePath: "/stale/path"
+        )
+        XCTAssertEqual(
+            target.matchingWorktree(in: [
+                worktree("wt:main", isMain: true),
+                worktree("wt:feature", isMain: false)
+            ])?.worktreeId,
+            "wt:feature"
+        )
+    }
+
+    func testNavigationFallsBackToAStandardizedWorktreePath() {
+        let target = WorktreeNavigationTarget(
+            repositoryId: "repository:one",
+            worktreeId: nil,
+            worktreePath: "/feature/../feature"
+        )
+        XCTAssertEqual(
+            target.matchingWorktree(in: [worktree("wt:feature", isMain: false)])?.worktreeId,
+            "wt:feature"
         )
     }
 

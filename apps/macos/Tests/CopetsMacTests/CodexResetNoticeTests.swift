@@ -4,18 +4,8 @@ import Testing
 
 struct CodexResetNoticeTests {
     @Test
-    func firstManualTapPresentsANoticeThatIsNotAlreadyRequested() {
-        #expect(CodexResetNoticePresentation.manualAction(isPresented: false) == .present)
-    }
-
-    @Test
-    func manualTapRearmsAStalePresentedBinding() {
-        #expect(CodexResetNoticePresentation.manualAction(isPresented: true) == .rearm)
-    }
-
-    @Test
-    func acknowledgedFingerprintCannotBePresentedByADelayedTask() {
-        #expect(!CodexResetNoticePresentation.shouldPresent(
+    func acknowledgedFingerprintCannotSendASystemNotification() {
+        #expect(!CodexResetNotificationPolicy.shouldNotify(
             fingerprint: "same-notice",
             acknowledgedFingerprint: "same-notice"
         ))
@@ -23,28 +13,23 @@ struct CodexResetNoticeTests {
 
     @Test
     func changedFingerprintCanPresentANewNotice() {
-        #expect(CodexResetNoticePresentation.shouldPresent(
+        #expect(CodexResetNotificationPolicy.shouldNotify(
             fingerprint: "new-notice",
             acknowledgedFingerprint: "old-notice"
         ))
     }
 
     @Test
-    func closingAnAutomaticNoticeDoesNotImmediatelyPresentItAgain() {
-        #expect(!CodexResetNoticePresentation.shouldAutomaticallyPresent(
-            fingerprint: "same-notice",
-            lastAutomaticallyPresentedFingerprint: "same-notice",
-            acknowledgedFingerprints: []
-        ))
-    }
-
-    @Test
-    func aNewNoticeMayAutomaticallyPresentOnce() {
-        #expect(CodexResetNoticePresentation.shouldAutomaticallyPresent(
-            fingerprint: "new-notice",
-            lastAutomaticallyPresentedFingerprint: "old-notice",
-            acknowledgedFingerprints: []
-        ))
+    func chatUsageBarNoLongerContainsAResetPopover() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/FloatingRootView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        #expect(!contents.contains("resetNoticePopover"))
+        #expect(!contents.contains("isResetNoticePresented"))
+        #expect(!contents.contains("presentResetNoticeManually"))
     }
 
     @Test
@@ -153,7 +138,7 @@ struct CodexResetNoticeTests {
             window: CodexRateLimitWindow(usedPercent: 25, windowDurationMins: 10_080, resetsAt: 100_299),
             forecast: nil
         )!
-        #expect(!CodexResetNoticePresentation.shouldPresent(
+        #expect(!CodexResetNotificationPolicy.shouldNotify(
             fingerprint: current,
             acknowledgedFingerprints: [acknowledged]
         ))
@@ -171,7 +156,7 @@ struct CodexResetNoticeTests {
             window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 100_600),
             forecast: nil
         )!
-        #expect(CodexResetNoticePresentation.shouldPresent(
+        #expect(CodexResetNotificationPolicy.shouldNotify(
             fingerprint: current,
             acknowledgedFingerprints: [acknowledged]
         ))
@@ -186,7 +171,7 @@ struct CodexResetNoticeTests {
             forecast: forecast(postId: "one", text: "Codex limits will reset tomorrow")
         )!
         let current = CodexResetNoticeIdentity.fingerprint(provider: "codex", window: window, forecast: nil)!
-        #expect(!CodexResetNoticePresentation.shouldPresent(
+        #expect(!CodexResetNotificationPolicy.shouldNotify(
             fingerprint: current,
             acknowledgedFingerprints: [acknowledged]
         ))
@@ -205,7 +190,7 @@ struct CodexResetNoticeTests {
             window: window,
             forecast: forecast(postId: "two", text: "Codex limits will reset tonight")
         )!
-        #expect(CodexResetNoticePresentation.shouldPresent(
+        #expect(CodexResetNotificationPolicy.shouldNotify(
             fingerprint: current,
             acknowledgedFingerprints: [acknowledged]
         ))
@@ -221,7 +206,7 @@ struct CodexResetNoticeTests {
         )
         let acknowledgements = CodexResetNoticeAcknowledgements.decoded(encoded)
         #expect(acknowledgements.count == 2)
-        #expect(!CodexResetNoticePresentation.shouldPresent(
+        #expect(!CodexResetNotificationPolicy.shouldNotify(
             fingerprint: a,
             acknowledgedFingerprints: acknowledgements
         ))
@@ -235,7 +220,7 @@ struct CodexResetNoticeTests {
             window: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 100_000),
             forecast: forecast(postId: "one", text: "Codex limits will reset tomorrow")
         )!
-        #expect(!CodexResetNoticePresentation.shouldPresent(
+        #expect(!CodexResetNotificationPolicy.shouldNotify(
             fingerprint: current,
             acknowledgedFingerprints: CodexResetNoticeAcknowledgements.decoded("", legacy: legacy)
         ))
@@ -249,10 +234,53 @@ struct CodexResetNoticeTests {
         let fingerprint = "v=2|resetMinute=100|duration=10080|post=one|content=a"
         CodexResetNoticeAcknowledgements.record(fingerprint, in: defaults)
         #expect(CodexResetNoticeAcknowledgements.load(from: defaults) == [fingerprint])
-        #expect(!CodexResetNoticePresentation.shouldPresent(
+        #expect(!CodexResetNotificationPolicy.shouldNotify(
             fingerprint: fingerprint,
             acknowledgedFingerprints: CodexResetNoticeAcknowledgements.load(from: defaults)
         ))
+    }
+
+    @Test @MainActor
+    func identicalUsageSnapshotSendsExactlyOneSystemNotification() {
+        let suite = "CodexResetSystemNotificationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = BackendClient()
+        var delivered: [CodexResetSystemNotification] = []
+        let manager = CodexResetSystemNotificationManager(
+            client: client,
+            defaults: defaults,
+            delivery: { delivered.append($0) }
+        )
+        let usage = usageSnapshot(forecast: forecast(postId: "one", text: "Codex limits will reset tomorrow"))
+
+        manager.handle(usage)
+        manager.handle(usage)
+
+        #expect(delivered.count == 1)
+        #expect(delivered[0].body.contains("Tibo"))
+        #expect(delivered[0].body.contains("Codex limits will reset tomorrow"))
+        #expect(CodexResetNoticeAcknowledgements.load(from: defaults) == [delivered[0].fingerprint])
+    }
+
+    @Test @MainActor
+    func changedTiboPostSendsOneNewSystemNotification() {
+        let suite = "CodexResetSystemNotificationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = BackendClient()
+        var delivered: [CodexResetSystemNotification] = []
+        let manager = CodexResetSystemNotificationManager(
+            client: client,
+            defaults: defaults,
+            delivery: { delivered.append($0) }
+        )
+
+        manager.handle(usageSnapshot(forecast: forecast(postId: "one", text: "reset tomorrow")))
+        manager.handle(usageSnapshot(forecast: forecast(postId: "two", text: "reset tonight")))
+        manager.handle(usageSnapshot(forecast: forecast(postId: "two", text: "reset tonight")))
+
+        #expect(delivered.count == 2)
     }
 
     @Test
@@ -272,6 +300,35 @@ struct CodexResetNoticeTests {
             publishedAt: "2026-08-11T00:00:00Z",
             estimateLabel: "预计明天",
             expiresAt: "2026-08-13T00:00:00Z"
+        )
+    }
+
+    private func usageSnapshot(forecast: CodexResetForecast?) -> SessionUsageResponse {
+        SessionUsageResponse(
+            account: CodexAccountUsage(
+                available: true,
+                provider: "codex",
+                model: nil,
+                rateLimits: CodexRateLimitSnapshot(
+                    limitId: "codex",
+                    limitName: nil,
+                    primary: nil,
+                    secondary: CodexRateLimitWindow(
+                        usedPercent: 20,
+                        windowDurationMins: 10_080,
+                        resetsAt: 200_000
+                    )
+                ),
+                rateLimitsByLimitId: nil
+            ),
+            context: nil,
+            resetForecast: CodexResetForecastSnapshot(
+                forecast: forecast,
+                checkedAt: nil,
+                sourceHealthy: true,
+                sourceError: nil,
+                sourceUrl: nil
+            )
         )
     }
 }

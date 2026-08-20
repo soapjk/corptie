@@ -18,11 +18,14 @@ struct WorktreeManagementView: View {
             detailColumn
         }
         .toolbar(removing: .sidebarToggle)
-        .task { await client.loadRepositories() }
         .task(id: router.pendingWorktreeTarget) {
-            guard let target = router.pendingWorktreeTarget else { return }
-            await client.navigate(to: target)
-            router.consumeWorktreeTarget(target)
+            if let target = router.pendingWorktreeTarget {
+                await client.navigate(to: target)
+                guard !Task.isCancelled else { return }
+                router.consumeWorktreeTarget(target)
+            } else if client.repositories.isEmpty {
+                await client.loadRepositories()
+            }
         }
         .task(id: client.job.map { "\($0.id):\($0.isActive)" }) {
             guard let jobId = client.job?.id else { return }

@@ -969,6 +969,7 @@ struct CompactSessionRow: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
     let session: TaskSession
+    var isUnread = false
     var showsProjectName = true
     var preheatRequested: (TaskSession) -> Void = { _ in }
     var selectionRequested: ((TaskSession) -> Void)? = nil
@@ -982,6 +983,13 @@ struct CompactSessionRow: View {
                 .layoutPriority(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
+            if isUnread {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                    .accessibilityLabel(L10n("Unread Session"))
+                    .help(L10n("Unread Session"))
+            }
         }
         .padding(.horizontal, 10)
         .frame(height: 46)
@@ -4297,9 +4305,6 @@ private struct OrphanedWorkspaceRecoveryView: View {
 
 private struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
-    @State private var isResetNoticePresented = false
-    @State private var resetNoticePresentationTask: Task<Void, Never>?
-    @State private var lastAutomaticallyPresentedFingerprint: String?
 
     var body: some View {
         if let usage {
@@ -4320,196 +4325,18 @@ private struct ChatUsageBar: View {
                 }
                 if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account) {
                     let remainingPercent = max(0, 100 - (window.usedPercent ?? 0))
-                    if usage.account.provider == "codex" {
-                        Button {
-                            presentResetNoticeManually()
-                        } label: {
-                            usageItem(
-                                icon: "bolt.fill",
-                                value: "\(formatPercent(remainingPercent))%",
-                                progress: remainingPercent / 100,
-                                color: quotaColor(remainingPercent: remainingPercent),
-                                help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
-                            resetNoticePopover(usage: usage, window: window)
-                        }
-                    } else {
-                        usageItem(
-                            icon: "bolt.fill",
-                            value: "\(formatPercent(remainingPercent))%",
-                            progress: remainingPercent / 100,
-                            color: quotaColor(remainingPercent: remainingPercent),
-                            help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
-                        )
-                    }
+                    usageItem(
+                        icon: "bolt.fill",
+                        value: "\(formatPercent(remainingPercent))%",
+                        progress: remainingPercent / 100,
+                        color: quotaColor(remainingPercent: remainingPercent),
+                        help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
+                    )
                 }
             }
             .font(.system(size: 9, weight: .semibold))
             .fixedSize(horizontal: true, vertical: false)
-            .onAppear {
-                scheduleResetNoticeIfNeeded(usage)
-            }
-            .onChange(of: resetNoticeFingerprint(usage)) { _, _ in
-                scheduleResetNoticeIfNeeded(usage)
-            }
-            .onDisappear {
-                resetNoticePresentationTask?.cancel()
-                resetNoticePresentationTask = nil
-            }
         }
-    }
-
-    @ViewBuilder
-    private func resetNoticePopover(
-        usage: SessionUsageResponse,
-        window: CodexRateLimitWindow
-    ) -> some View {
-        let requiresAcknowledgement = resetNoticeRequiresAcknowledgement(usage)
-        VStack(alignment: .leading, spacing: 7) {
-            Label(
-                L10nFormat("Plan reset: %@", formattedResetDate(window.resetsAt)),
-                systemImage: "clock"
-            )
-            .lineLimit(1)
-
-            if let forecast = usage.resetForecast?.forecast {
-                Button {
-                    openResetForecast(forecast)
-                } label: {
-                    Label(
-                        L10nFormat("Tibo forecast: %@", forecast.estimateLabel),
-                        systemImage: "bubble.left"
-                    )
-                    .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .help(forecast.text)
-            } else {
-                Label(
-                    L10n("Tibo forecast: No upcoming reset announcement"),
-                    systemImage: "bubble.left"
-                )
-                .lineLimit(1)
-            }
-
-            if requiresAcknowledgement {
-                HStack {
-                    Spacer()
-                    Button(L10n("Confirm")) {
-                        acknowledgeResetNotice(usage)
-                    }
-                    .controlSize(.mini)
-                    .keyboardShortcut(.defaultAction)
-                }
-            }
-        }
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(CorptiePalette.primaryText)
-        .padding(10)
-        .frame(width: 280)
-    }
-
-    private func scheduleResetNoticeIfNeeded(_ usage: SessionUsageResponse?) {
-        guard let fingerprint = resetNoticeFingerprint(usage),
-              CodexResetNoticePresentation.shouldAutomaticallyPresent(
-                  fingerprint: fingerprint,
-                  lastAutomaticallyPresentedFingerprint: lastAutomaticallyPresentedFingerprint,
-                  acknowledgedFingerprints: resetNoticeAcknowledgements
-              ) else { return }
-        scheduleResetNoticePresentation(
-            after: CodexResetNoticePresentation.automaticPresentationDelay,
-            requiredFingerprint: fingerprint
-        )
-    }
-
-    private func presentResetNoticeManually() {
-        resetNoticePresentationTask?.cancel()
-        resetNoticePresentationTask = nil
-        switch CodexResetNoticePresentation.manualAction(isPresented: isResetNoticePresented) {
-        case .present:
-            isResetNoticePresented = true
-        case .rearm:
-            // SwiftUI can leave the binding true when a popover was requested
-            // during the detail view's opening transition but AppKit could not
-            // attach it. Toggle the binding before presenting it again.
-            isResetNoticePresented = false
-            scheduleResetNoticePresentation(
-                after: CodexResetNoticePresentation.rearmDelay
-            )
-        }
-    }
-
-    private func scheduleResetNoticePresentation(
-        after delay: Duration,
-        requiredFingerprint: String? = nil
-    ) {
-        resetNoticePresentationTask?.cancel()
-        resetNoticePresentationTask = Task { @MainActor in
-            do {
-                try await Task.sleep(for: delay)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            if let requiredFingerprint {
-                guard CodexResetNoticePresentation.shouldAutomaticallyPresent(
-                    fingerprint: requiredFingerprint,
-                    lastAutomaticallyPresentedFingerprint: lastAutomaticallyPresentedFingerprint,
-                    acknowledgedFingerprints: resetNoticeAcknowledgements
-                ) else {
-                    resetNoticePresentationTask = nil
-                    return
-                }
-                lastAutomaticallyPresentedFingerprint = requiredFingerprint
-            }
-            isResetNoticePresented = true
-            resetNoticePresentationTask = nil
-        }
-    }
-
-    private func resetNoticeRequiresAcknowledgement(_ usage: SessionUsageResponse?) -> Bool {
-        guard let fingerprint = resetNoticeFingerprint(usage) else { return false }
-        return CodexResetNoticePresentation.shouldPresent(
-            fingerprint: fingerprint,
-            acknowledgedFingerprints: resetNoticeAcknowledgements
-        )
-    }
-
-    private func resetNoticeFingerprint(_ usage: SessionUsageResponse?) -> String? {
-        guard let usage else { return nil }
-        return CodexResetNoticeIdentity.fingerprint(
-            provider: usage.account.provider,
-            window: SessionUsagePresentation.preferredRateLimitWindow(usage.account),
-            forecast: usage.resetForecast?.forecast
-        )
-    }
-
-    private func acknowledgeResetNotice(_ usage: SessionUsageResponse) {
-        guard let fingerprint = resetNoticeFingerprint(usage) else { return }
-        resetNoticePresentationTask?.cancel()
-        resetNoticePresentationTask = nil
-        CodexResetNoticeAcknowledgements.record(fingerprint)
-        isResetNoticePresented = false
-    }
-
-    private var resetNoticeAcknowledgements: [String] {
-        CodexResetNoticeAcknowledgements.load()
-    }
-
-    private func formattedResetDate(_ epochSeconds: Double?) -> String {
-        guard let epochSeconds else { return L10n("Unknown") }
-        return Date(timeIntervalSince1970: epochSeconds).formatted(
-            date: .abbreviated,
-            time: .shortened
-        )
-    }
-
-    private func openResetForecast(_ forecast: CodexResetForecast) {
-        guard let value = forecast.url, let url = URL(string: value) else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String, numericValue: Double? = nil) -> some View {
@@ -5500,6 +5327,8 @@ struct DetailHeaderView: View {
     private func openWorktreeManagement() {
         AppDelegate.shared?.openWorktreeManagement(
             repositoryId: backendClient.selectedProjectWorktreeStatus?.project.repositoryId,
+            worktreeId: selectedSessionWorktree?.worktreeId
+                ?? backendClient.selectedSession?.external?.workspace?.id,
             worktreePath: workspacePath
         )
     }
