@@ -159,6 +159,19 @@ async function waitForJobWhere(service, id, predicate) {
   assert.fail(`job ${id} did not reach the expected state`);
 }
 
+test("repository summary counts only currently available Worktrees", () => {
+  const { service, worktrees } = memoryFixture();
+  worktrees.push({
+    worktreeId: "wt:historical", path: "/repo-removed", isMain: false, availability: "missing"
+  });
+
+  const [repository] = service.repositories();
+
+  assert.equal(repository.worktreeCount, 2);
+  assert.equal(repository.mainPath, "/repo");
+  assert.equal(repository.availability, "available");
+});
+
 test("reviewed plan commits main and every dirty Worktree separately before deterministic merge", async () => {
   const { service, calls } = memoryFixture();
   const plan = await service.preflight("repository:1");

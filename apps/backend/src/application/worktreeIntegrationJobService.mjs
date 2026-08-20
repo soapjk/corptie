@@ -39,12 +39,14 @@ export class WorktreeIntegrationJobService {
 
   repositories() {
     return this.store.listGitRepositories().map((repository) => {
-      const main = this.store.listGitWorktrees(repository.id).find((worktree) => worktree.isMain);
+      const worktrees = this.store.listGitWorktrees(repository.id);
+      const main = worktrees.find((worktree) => worktree.isMain && worktree.availability === "available")
+        ?? worktrees.find((worktree) => worktree.isMain);
       return {
         ...repository,
         mainPath: main?.path ?? this.store.resolveWorkspacePath(repository.id),
         availability: main?.availability ?? "missing",
-        worktreeCount: this.store.listGitWorktrees(repository.id).length
+        worktreeCount: worktrees.filter((worktree) => worktree.availability === "available").length
       };
     });
   }
