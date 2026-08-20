@@ -272,6 +272,9 @@ export class CorptieStore {
   migrate() {
     this.db.run("PRAGMA foreign_keys = ON");
     this.migrateSessionLogsForeignKey();
+    const hadSessionReadReceipts = Boolean(this.selectOne(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_read_receipts'"
+    ));
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -352,6 +355,13 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_session_events_cursor
       ON session_events(session_id, sequence);
+
+      CREATE TABLE IF NOT EXISTS session_read_receipts (
+        session_id TEXT PRIMARY KEY,
+        last_read_agent_message_sequence INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
 
       CREATE TABLE IF NOT EXISTS session_logs (
         id TEXT PRIMARY KEY,
@@ -1165,6 +1175,22 @@ export class CorptieStore {
       SET log_id = 'log:' || session_id
       WHERE log_id IS NULL
     `);
+    // Introducing server-side receipts must not make every historical Session
+    // unread at once. Bootstrap only when the table is first created; future
+    // Sessions deliberately have no receipt until the user opens their detail.
+    if (!hadSessionReadReceipts) {
+      this.db.run(`
+        INSERT OR IGNORE INTO session_read_receipts (
+          session_id, last_read_agent_message_sequence, updated_at
+        )
+        SELECT sessions.id, COALESCE(MAX(session_events.sequence), 0),
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM sessions
+        LEFT JOIN session_events ON session_events.session_id = sessions.id
+          AND ${agentMessageEventSQL("session_events")}
+        GROUP BY sessions.id
+      `);
+    }
     // --- 三层记忆（13）：乐观应用/撤销语义字段 ---
     this.ensureColumn("memories", "auto_applied", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("memories", "applied_at", "TEXT");
@@ -1296,6 +1322,22 @@ export class CorptieStore {
           END;
         `);
       }
+    }
+    // Read-receipt mutations change the client-visible Session projection but
+    // must never rewrite sessions.updated_at (which drives conversation order).
+    for (const operation of ["INSERT", "UPDATE"]) {
+      const suffix = operation.toLowerCase();
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS state_sync_session_read_receipts_${suffix}
+        AFTER ${operation} ON session_read_receipts
+        BEGIN
+          UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
+          INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+          SELECT revision, 'session', NEW.session_id, 'upsert',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM state_sync_clock WHERE singleton = 1;
+        END;
+      `);
     }
     // A bounded durable replay window is sufficient because clients fall back
     // to /state/snapshot when their cursor predates it.
@@ -3703,6 +3745,75 @@ export class CorptieStore {
        GROUP BY session_id`
     );
     return new Map(rows.map((row) => [row.session_id, row.last_message_at]));
+  }
+
+  listSessionMessageCursors() {
+    const rows = this.selectAll(`
+      SELECT sessions.id AS session_id,
+             COALESCE(MAX(CASE WHEN ${agentMessageEventSQL("session_events")}
+               THEN session_events.sequence END), 0) AS last_agent_message_sequence,
+             COALESCE(session_read_receipts.last_read_agent_message_sequence, 0)
+               AS last_read_message_sequence
+      FROM sessions
+      LEFT JOIN session_events ON session_events.session_id = sessions.id
+      LEFT JOIN session_read_receipts ON session_read_receipts.session_id = sessions.id
+      GROUP BY sessions.id, session_read_receipts.last_read_agent_message_sequence
+    `);
+    return new Map(rows.map((row) => [row.session_id, {
+      lastAgentMessageSequence: Number(row.last_agent_message_sequence ?? 0),
+      lastReadMessageSequence: Number(row.last_read_message_sequence ?? 0)
+    }]));
+  }
+
+  lastAgentMessageSequence(sessionId) {
+    const row = this.selectOne(`
+      SELECT COALESCE(MAX(sequence), 0) AS sequence
+      FROM session_events
+      WHERE session_id = ? AND ${agentMessageEventSQL("session_events")}
+    `, [sessionId]);
+    return Number(row?.sequence ?? 0);
+  }
+
+  markSessionMessagesRead(sessionId, throughSequence) {
+    if (!this.getSession(sessionId)) {
+      const error = new Error("Session not found.");
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    const latest = this.lastAgentMessageSequence(sessionId);
+    const through = Number(throughSequence);
+    if (!Number.isSafeInteger(through) || through < 0 || through > latest) {
+      const error = new Error(`Invalid read sequence: expected an integer from 0 through ${latest}.`);
+      error.code = "INVALID_READ_SEQUENCE";
+      throw error;
+    }
+    const existing = this.selectOne(
+      "SELECT last_read_agent_message_sequence FROM session_read_receipts WHERE session_id = ?",
+      [sessionId]
+    );
+    const alreadyRead = Number(existing?.last_read_agent_message_sequence ?? 0);
+    if (alreadyRead >= through) {
+      return {
+        lastAgentMessageSequence: latest,
+        lastReadMessageSequence: alreadyRead
+      };
+    }
+    const timestamp = new Date().toISOString();
+    this.db.run(`
+      INSERT INTO session_read_receipts (
+        session_id, last_read_agent_message_sequence, updated_at
+      ) VALUES (?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        last_read_agent_message_sequence = MAX(
+          session_read_receipts.last_read_agent_message_sequence,
+          excluded.last_read_agent_message_sequence
+        ),
+        updated_at = CASE
+          WHEN excluded.last_read_agent_message_sequence > session_read_receipts.last_read_agent_message_sequence
+          THEN excluded.updated_at ELSE session_read_receipts.updated_at END
+    `, [sessionId, through, timestamp]);
+    this.scheduleSave();
+    return this.listSessionMessageCursors().get(sessionId);
   }
 
   lastSessionEventSequence(sessionId) {
@@ -6284,6 +6395,18 @@ const SURFACE_EVENT_TYPES = new Set([
 
 function surfaceForEventType(type) {
   return SURFACE_EVENT_TYPES.has(type) ? 1 : 0;
+}
+
+function agentMessageEventSQL(tableAlias) {
+  return `(
+    (${tableAlias}.type = 'CodexThreadCompleted'
+      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 1) = 1)
+    OR (
+      ${tableAlias}.type = 'assistant/message'
+      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.itemType'), 'agentMessage')
+        IN ('agentMessage', 'text', 'taskComplete')
+    )
+  )`;
 }
 
 // 从 source 元数据提取 producer 标签（source 可能是对象或字符串）。

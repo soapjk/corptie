@@ -946,3 +946,5 @@
 "目标 Session" = "目标 Session";
 "消息" = "消息";
 "Unread Session" = "未读会话";
+"Session update" = "会话更新";
+"%d completed · %d pending · %d failed" = "%d 个已完成 · %d 个待处理 · %d 个失败";

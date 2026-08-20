@@ -359,26 +359,66 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func completedSessionIsUnreadUntilItsCurrentCompletionRevisionIsOpened() {
-        let completed = makeSession(
-            id: "completed",
-            status: .complete,
-            updatedAt: "2026-08-20T01:00:00Z"
-        )
+    func sessionIsUnreadOnlyWhenAgentMessageCursorAdvancesPastReceipt() {
+        #expect(isSessionUnread(makeSession(
+            id: "unread",
+            lastAgentMessageSequence: 8,
+            lastReadMessageSequence: 5
+        )))
+        #expect(!isSessionUnread(makeSession(
+            id: "read",
+            lastAgentMessageSequence: 8,
+            lastReadMessageSequence: 8
+        )))
+        #expect(!isSessionUnread(makeSession(id: "user-or-tool-only")))
+        #expect(isSessionUnread(makeSession(
+            id: "running-with-agent-message",
+            status: .running,
+            lastAgentMessageSequence: 2,
+            lastReadMessageSequence: 1
+        )))
+    }
 
-        #expect(isSessionUnread(completed, readCompletionRevisionsBySessionID: [:]))
-        #expect(!isSessionUnread(
-            completed,
-            readCompletionRevisionsBySessionID: [completed.id: completed.updatedAt]
-        ))
-        #expect(isSessionUnread(
-            completed,
-            readCompletionRevisionsBySessionID: [completed.id: "2026-08-20T00:59:00Z"]
-        ))
-        #expect(!isSessionUnread(
-            makeSession(id: "running", status: .running),
-            readCompletionRevisionsBySessionID: [:]
-        ))
+    @Test
+    func readReceiptCursorChangeInvalidatesUnreadGroupingWithoutReordering() {
+        let unread = makeSession(
+            id: "receipt",
+            lastAgentMessageSequence: 3,
+            lastReadMessageSequence: 1
+        )
+        let read = makeSession(
+            id: "receipt",
+            lastAgentMessageSequence: 3,
+            lastReadMessageSequence: 3
+        )
+        let patch = SessionCollectionDiffer.patch(from: [unread], to: [read], revision: 9)
+
+        #expect(patch.updated.first?.changedFields.contains(.metadata) == true)
+        #expect(patch.updated.first?.changedFields.contains(.ordering) == false)
+    }
+
+    @Test
+    func completionNotificationPendingCountMeansUnreadAgentMessages() {
+        let summary = SessionCompletionNotificationSummary.make(from: [
+            makeSession(
+                id: "completed-read",
+                status: .complete,
+                lastAgentMessageSequence: 4,
+                lastReadMessageSequence: 4
+            ),
+            makeSession(
+                id: "completed-unread",
+                status: .complete,
+                lastAgentMessageSequence: 7,
+                lastReadMessageSequence: 5
+            ),
+            makeSession(id: "blocked-but-read", status: .blocked),
+            makeSession(id: "failed", status: .failed)
+        ])
+
+        #expect(summary.completed == 2)
+        #expect(summary.pending == 1)
+        #expect(summary.failed == 1)
     }
 
     @Test
@@ -386,17 +426,20 @@ struct SessionCollectionPatchTests {
         let activeWorker = makeSession(
             id: "active-worker",
             sessionKind: .worker,
-            workItemId: "work-item:active"
+            workItemId: "work-item:active",
+            lastAgentMessageSequence: 1
         )
         let archivedWorker = makeSession(
             id: "archived-worker",
             sessionKind: .worker,
-            workItemId: "work-item:done"
+            workItemId: "work-item:done",
+            lastAgentMessageSequence: 1
         )
         let objective = makeSession(
             id: "objective",
             sessionKind: .objectiveChat,
-            objectiveId: "objective:1"
+            objectiveId: "objective:1",
+            lastAgentMessageSequence: 1
         )
         let assistant = makeSession(
             id: "assistant",
@@ -412,20 +455,17 @@ struct SessionCollectionPatchTests {
         #expect(countUnreadSessions(
             in: sessions,
             category: .worker,
-            workItems: workItems,
-            readCompletionRevisionsBySessionID: [:]
+            workItems: workItems
         ) == 1)
         #expect(countUnreadSessions(
             in: sessions,
             category: .objective,
-            workItems: workItems,
-            readCompletionRevisionsBySessionID: [:]
+            workItems: workItems
         ) == 1)
         #expect(countUnreadSessions(
             in: sessions,
             category: .assistant,
-            workItems: workItems,
-            readCompletionRevisionsBySessionID: [:]
+            workItems: workItems
         ) == 0)
     }
 
@@ -520,7 +560,9 @@ private func makeSession(
     objectiveId: String? = nil,
     status: TaskStatus = .complete,
     updatedAt: String = "2026-08-12T00:00:00Z",
-    lastMessageAt: String? = nil
+    lastMessageAt: String? = nil,
+    lastAgentMessageSequence: Int? = nil,
+    lastReadMessageSequence: Int? = nil
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -538,6 +580,8 @@ private func makeSession(
         activityStatus: nil,
         updatedAt: updatedAt,
         lastMessageAt: lastMessageAt,
+        lastAgentMessageSequence: lastAgentMessageSequence,
+        lastReadMessageSequence: lastReadMessageSequence,
         accent: .cyan,
         archived: false,
         pinned: false,

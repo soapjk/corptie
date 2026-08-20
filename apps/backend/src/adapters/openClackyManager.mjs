@@ -184,7 +184,7 @@ export class OpenClackyManager {
     const changed = signature !== this.lastSnapshotSignature;
     this.lastSnapshotSignature = signature;
     this.connectionErrorMessage = null;
-    if (changed) this.onSessionChanged?.({ type: "refreshed" });
+    if (changed) this.onSessionChanged?.({ type: "refreshed", sessions: this.list() });
     return this.list();
   }
 
@@ -496,7 +496,29 @@ export class OpenClackyManager {
       this.sessions.set(sessionId, summary);
     }
     const current = this.details.get(sessionId);
-    if (current) this.details.set(sessionId, appendOpenClackyEvent(current, event));
+    const nextDetail = current ? appendOpenClackyEvent(current, event) : null;
+    if (nextDetail) this.details.set(sessionId, nextDetail);
+    const currentSummary = this.sessions.get(sessionId);
+    if (currentSummary) {
+      const status = nextDetail?.status ?? openClackyEventStatus(event, currentSummary.status);
+      const latestAgentText = nextDetail?.items?.findLast?.((item) => item.type === "agentMessage")?.text
+        ?? (event.type === "assistant_message" ? optionalText(event.content) : null);
+      const updatedAt = isoTimestamp(event?.created_at, new Date().toISOString());
+      this.sessions.set(sessionId, {
+        ...currentSummary,
+        status,
+        progress: status === "running" || status === "blocked" ? 0.5 : 1,
+        summary: latestAgentText || currentSummary.summary,
+        activityStatus: status === "running" ? "working" : status,
+        updatedAt,
+        lastMessageAt: updatedAt,
+        capabilities: {
+          ...currentSummary.capabilities,
+          canSend: status === "complete" || status === "failed",
+          canInterrupt: status === "running"
+        }
+      });
+    }
     const id = stableEventId(event);
     if (id) this.eventCursors.set(sessionId, id);
     this.onSessionChanged?.({ type: "event", sessionId, event, session: this.sessions.get(sessionId) });
@@ -778,6 +800,27 @@ function openClackyEventItems(sessionId, event, index, fallbackTurnId) {
 
 function isOpenClackyUserEvent(event) {
   return event?.type === "history_user_message" || event?.type === "user_message";
+}
+
+function openClackyEventStatus(event, fallback) {
+  switch (String(event?.type ?? "")) {
+    case "task_finished":
+    case "interrupted":
+      return "complete";
+    case "request_confirmation":
+    case "request_feedback":
+      return "blocked";
+    case "error":
+      return "failed";
+    case "assistant_message":
+    case "tool_call":
+    case "tool_result":
+    case "tool_error":
+    case "subagent_start":
+      return fallback === "blocked" ? "blocked" : "running";
+    default:
+      return fallback;
+  }
 }
 
 function fallbackOpenClackyTurnId(sessionId, index) {

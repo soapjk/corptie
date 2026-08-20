@@ -417,6 +417,19 @@ final class BackendClient: ObservableObject {
             }
             return
         }
+        if eventName == "ProviderSessionChanged" {
+            guard let payload = data.data(using: .utf8),
+                  let event = try? JSONDecoder().decode(ProviderSessionChangedEventEnvelope.self, from: payload) else {
+                return
+            }
+            let terminalEvents = Set(["task_finished", "interrupted", "error"])
+            if event.payload.type == "updated"
+                || event.payload.type == "refreshed"
+                || terminalEvents.contains(event.payload.eventType ?? "") {
+                await AppStateSyncController.shared.refreshSnapshot()
+            }
+            return
+        }
         if eventName == "SessionUsageUpdated" {
             applyLiveUsageEvent(data)
             return
@@ -2653,6 +2666,9 @@ final class BackendClient: ObservableObject {
                 suggestedPrompt: nil,
                 activityStatus: existing.activityStatus,
                 updatedAt: existing.updatedAt,
+                lastMessageAt: existing.lastMessageAt,
+                lastAgentMessageSequence: existing.lastAgentMessageSequence,
+                lastReadMessageSequence: existing.lastReadMessageSequence,
                 accent: existing.accent,
                 archived: existing.archived,
                 pinned: existing.pinned,
@@ -2705,7 +2721,11 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: detail.sendUnavailableReason,
             capabilities: detail.capabilities,
             turnCount: detail.turnCount,
-            items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesByThread[threadId] ?? [])
+            items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesByThread[threadId] ?? []),
+            lastAgentMessageSequence: detail.lastAgentMessageSequence,
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: detail.actions
         )
     }
 
@@ -2726,7 +2746,8 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: nil,
             capabilities: session.capabilities,
             turnCount: 0,
-            items: pendingUserMessagesByThread[threadId] ?? []
+            items: pendingUserMessagesByThread[threadId] ?? [],
+            lastAgentMessageSequence: session.lastAgentMessageSequence
         )
     }
 
@@ -3366,6 +3387,31 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    /// Persist a read receipt only through the exact agent-message cursor that
+    /// accompanied the detail snapshot rendered by the client. A newer message
+    /// arriving concurrently therefore remains unread instead of being cleared
+    /// by opening a stale cache entry.
+    func markSessionMessagesRead(sessionID: String, throughSequence: Int) async -> Bool {
+        guard throughSequence >= 0 else { return false }
+        do {
+            let url = baseURL.appending(path: "sessions/\(sessionID)/read-receipt")
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "throughSequence": throughSequence
+            ])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Could not update the Session read receipt.")
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// 补拉更早的历史消息，prepend 到当前选中会话的 detail.items 头部。
     /// 只在用户滚动到顶时触发（低频），因此直接请求后端切片端点即可。
     func loadEarlierMessages(for session: TaskSession) async {
@@ -3426,6 +3472,7 @@ final class BackendClient: ObservableObject {
                 capabilities: current.capabilities,
                 turnCount: current.turnCount,
                 items: mergedItems,
+                lastAgentMessageSequence: current.lastAgentMessageSequence,
                 hasMoreHistory: page.hasMoreHistory,
                 historyItemsCount: page.historyItemsCount,
                 actions: current.actions
@@ -3790,6 +3837,9 @@ final class BackendClient: ObservableObject {
                     fallbackActivityStatus: session.activityStatus
                 ),
                 updatedAt: detail.updatedAt,
+                lastMessageAt: session.lastMessageAt,
+                lastAgentMessageSequence: session.lastAgentMessageSequence,
+                lastReadMessageSequence: session.lastReadMessageSequence,
                 accent: session.accent,
                 archived: session.archived,
                 pinned: session.pinned,
@@ -3916,7 +3966,11 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: detail.sendUnavailableReason,
             capabilities: detail.capabilities,
             turnCount: detail.turnCount,
-            items: detail.items.map(transform)
+            items: detail.items.map(transform),
+            lastAgentMessageSequence: detail.lastAgentMessageSequence,
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: detail.actions
         )
     }
 
@@ -3942,7 +3996,11 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: detail.sendUnavailableReason,
             capabilities: session.capabilities ?? detail.capabilities,
             turnCount: detail.turnCount,
-            items: detail.items
+            items: detail.items,
+            lastAgentMessageSequence: detail.lastAgentMessageSequence,
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: detail.actions
         )
         publishSelectedDetailIfSafe(nextDetail)
     }
@@ -4068,7 +4126,11 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: detail.sendUnavailableReason,
             capabilities: detail.capabilities,
             turnCount: detail.turnCount,
-            items: merged
+            items: merged,
+            lastAgentMessageSequence: detail.lastAgentMessageSequence,
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: detail.actions
         )
     }
 
@@ -4096,7 +4158,14 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: detail.sendUnavailableReason,
             capabilities: detail.capabilities,
             turnCount: max(detail.turnCount, previous.turnCount),
-            items: previous.items
+            items: previous.items,
+            lastAgentMessageSequence: max(
+                detail.lastAgentMessageSequence ?? 0,
+                previous.lastAgentMessageSequence ?? 0
+            ),
+            hasMoreHistory: detail.hasMoreHistory ?? previous.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount ?? previous.historyItemsCount,
+            actions: detail.actions ?? previous.actions
         )
     }
 

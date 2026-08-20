@@ -120,6 +120,35 @@ test("OpenClacky history infers distinct turns when upstream turn ids are missin
   ]);
 });
 
+test("OpenClacky live completion updates the canonical Session summary before notifying the host", () => {
+  const changes = [];
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({}),
+    WebSocket: FakeWebSocket,
+    onSessionChanged: (change) => changes.push(change)
+  });
+  const summary = openClackySessionSummary({
+    id: "clacky-live",
+    name: "Live task",
+    status: "running",
+    created_at: "2026-08-20T00:00:00Z",
+    updated_at: "2026-08-20T00:01:00Z"
+  });
+  manager.sessions.set("clacky-live", summary);
+  manager.details.set("clacky-live", openClackySessionDetail(summary, []));
+
+  manager.handleSocketEvent("clacky-live", JSON.stringify({
+    id: "answer", type: "assistant_message", content: "Finished the work."
+  }));
+  manager.handleSocketEvent("clacky-live", JSON.stringify({
+    id: "finished", type: "task_finished", message: "done"
+  }));
+
+  assert.equal(manager.list()[0].status, "complete");
+  assert.equal(manager.list()[0].summary, "Finished the work.");
+  assert.equal(changes.at(-1).session.status, "complete");
+});
+
 test("OpenClacky history preserves explicit turn ids across following events", () => {
   const summary = openClackySessionSummary({
     id: "clacky-1",

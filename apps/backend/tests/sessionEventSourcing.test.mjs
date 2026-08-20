@@ -117,6 +117,62 @@ test("listLatestSessionMessageTimes：只按消息事件返回每个 Session 的
   }
 });
 
+test("Session 未读游标：只计算 Agent 正文并持久化单调已读回执", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "running" });
+    store.appendSessionEvent({ eventId: "user", sessionId: "s1", type: "user/message", payload: { text: "hi" } });
+    store.appendSessionEvent({ eventId: "tool", sessionId: "s1", type: "tool/call", payload: { name: "exec" } });
+    store.appendSessionEvent({
+      eventId: "reasoning", sessionId: "s1", type: "assistant/message",
+      payload: { text: "thinking", itemType: "reasoning" }
+    });
+    assert.deepEqual(store.listSessionMessageCursors().get("s1"), {
+      lastAgentMessageSequence: 0,
+      lastReadMessageSequence: 0
+    });
+
+    const message = store.appendSessionEvent({
+      eventId: "answer", sessionId: "s1", type: "assistant/message",
+      payload: { text: "done", itemType: "agentMessage" }
+    });
+    assert.equal(store.lastAgentMessageSequence("s1"), message.sequence);
+    const beforeRevision = store.stateRevision();
+    assert.deepEqual(store.markSessionMessagesRead("s1", message.sequence), {
+      lastAgentMessageSequence: message.sequence,
+      lastReadMessageSequence: message.sequence
+    });
+    assert.ok(store.stateRevision() > beforeRevision, "receipt change must invalidate the Session projection");
+
+    const readRevision = store.stateRevision();
+    store.markSessionMessagesRead("s1", 0);
+    assert.equal(store.listSessionMessageCursors().get("s1").lastReadMessageSequence, message.sequence);
+    assert.equal(store.stateRevision(), readRevision, "an older receipt must be a no-op");
+    assert.throws(() => store.markSessionMessagesRead("s1", message.sequence + 1), /Invalid read sequence/);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Session 未读游标：迁移完成后新消息没有隐式已读回执", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    const completion = store.appendSessionEvent({
+      eventId: "completion", sessionId: "s1", type: "CodexThreadCompleted", payload: { session: { summary: "done" } }
+    });
+    // A newly created Session after migration has no implicit receipt.
+    assert.deepEqual(store.listSessionMessageCursors().get("s1"), {
+      lastAgentMessageSequence: completion.sequence,
+      lastReadMessageSequence: 0
+    });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session_logs：创建 session 即建立 1:1 log，事件指向该 log", async () => {
   const { store, directory } = await createStore();
   try {

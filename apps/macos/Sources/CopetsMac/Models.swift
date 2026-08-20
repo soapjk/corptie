@@ -63,6 +63,8 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let activityStatus: String?
     let updatedAt: String
     var lastMessageAt: String? = nil
+    var lastAgentMessageSequence: Int? = nil
+    var lastReadMessageSequence: Int? = nil
     let accent: Accent
     let archived: Bool?
     let pinned: Bool?
@@ -904,6 +906,16 @@ struct SessionProviderSwitchedEventPayload: Decodable {
     let sessionId: String?
 }
 
+struct ProviderSessionChangedEventEnvelope: Decodable {
+    let payload: ProviderSessionChangedEventPayload
+}
+
+struct ProviderSessionChangedEventPayload: Decodable {
+    let sessionId: String?
+    let type: String?
+    let eventType: String?
+}
+
 struct CodexAccountUsage: Decodable, Equatable {
     let available: Bool?
     let provider: String?
@@ -949,6 +961,7 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
+    var lastAgentMessageSequence: Int? = nil
     var hasMoreHistory: Bool? = nil
     var historyItemsCount: Int? = nil
     var actions: SessionActions? = nil
@@ -1006,6 +1019,7 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
               lhs.sendUnavailableReason == rhs.sendUnavailableReason,
               lhs.capabilities == rhs.capabilities,
               lhs.turnCount == rhs.turnCount,
+              lhs.lastAgentMessageSequence == rhs.lastAgentMessageSequence,
               lhs.hasMoreHistory == rhs.hasMoreHistory,
               lhs.historyItemsCount == rhs.historyItemsCount,
               lhs.actions == rhs.actions else {

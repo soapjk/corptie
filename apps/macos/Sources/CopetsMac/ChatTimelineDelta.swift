@@ -31,6 +31,7 @@ struct ChatTimelineMetadata: Decodable, Sendable {
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let actions: SessionActions?
+    var lastAgentMessageSequence: Int? = nil
 }
 
 enum ChatTimelineDeltaKind: String, Sendable {
@@ -115,6 +116,7 @@ enum ChatTimelineDeltaMerger {
             capabilities: metadata.capabilities,
             turnCount: metadata.turnCount,
             items: items,
+            lastAgentMessageSequence: metadata.lastAgentMessageSequence,
             actions: metadata.actions
         )
     }

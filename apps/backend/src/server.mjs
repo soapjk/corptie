@@ -444,12 +444,61 @@ const openClackyManager = new OpenClackyManager({
     };
   },
   onSessionChanged: (change) => {
+    const providerEvent = change.event ?? null;
+    const providerEventType = String(providerEvent?.type ?? "");
+    const sessionId = change.session?.id
+      ?? (change.sessionId ? `openclacky:${String(change.sessionId).replace(/^openclacky:/, "")}` : null);
+    const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
+    const activeProviderId = logical?.activeBinding?.providerId ?? "openclacky";
+    // A stale socket from a historical Provider binding must never overwrite
+    // the projection owned by the currently active Provider after a switch.
+    if (activeProviderId !== "openclacky") return;
+    const changedSessions = change.session ? [change.session] : (change.sessions ?? []);
+    for (const changedSession of changedSessions) {
+      const changedSessionId = changedSession?.id;
+      if (!changedSessionId) continue;
+      const changedLogical = store.getLogicalSessionByLegacySessionId(changedSessionId);
+      if (changedLogical?.activeBinding?.providerId && changedLogical.activeBinding.providerId !== "openclacky") {
+        continue;
+      }
+      const previous = store.getSession(changedSessionId);
+      store.upsertSession({
+        ...(previous ?? {}),
+        ...changedSession,
+        id: changedSessionId,
+        provider: "openclacky",
+        cwd: changedSession.external?.cwd ?? previous?.external?.cwd,
+        command: "openclacky",
+        agentId: previous?.agentId ?? changedSession.agentId,
+        objectiveId: previous?.objectiveId ?? changedSession.objectiveId,
+        workItemId: previous?.workItemId ?? changedSession.workItemId,
+        sessionKind: previous?.sessionKind ?? changedSession.sessionKind
+      });
+    }
+    if (sessionId && (providerEventType === "assistant_message" || providerEventType === "request_feedback")) {
+      const text = providerEventType === "request_feedback"
+        ? String(providerEvent?.question ?? "")
+        : String(providerEvent?.content ?? "");
+      if (text.trim()) {
+        const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
+        emitEvent("assistant/message", {
+          text,
+          itemType: "agentMessage",
+          providerEventId
+        }, {
+          sessionId,
+          source: { type: "openclacky" },
+          eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:assistant-message` : null
+        });
+      }
+    }
     emitEvent("ProviderSessionChanged", {
       provider: "openclacky",
       type: change.type,
-      sessionId: change.sessionId ?? change.session?.id ?? null,
+      eventType: providerEventType || null,
+      sessionId,
       error: change.error?.message ?? null
-    }, { sessionId: change.session?.id ?? null, source: { type: "openclacky" } });
+    }, { sessionId, source: { type: "openclacky" } });
   }
 });
 const openClackyWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
@@ -1557,7 +1606,7 @@ function emitEvent(type, payload, options = {}) {
   if (sessionId && store.db) {
     try {
       const sessionEvent = store.appendSessionEvent({
-        eventId: randomUUID(),
+        eventId: options.eventId || randomUUID(),
         sessionId,
         type,
         source: options.source || payload?.source || null,
@@ -1714,9 +1763,13 @@ function controlPlaneSnapshot() {
     }
   }
   const latestMessageTimes = store.listLatestSessionMessageTimes();
+  const messageCursors = store.listSessionMessageCursors();
   const sessionsById = new Map(Array.from(liveById, ([id, session]) => [
     id,
-    withLastMessageTimestamp(session, latestMessageTimes.get(id))
+    withSessionMessageCursors(
+      withLastMessageTimestamp(session, latestMessageTimes.get(id)),
+      messageCursors.get(id)
+    )
   ]));
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
     const openclacky = [...sessionsById.values()].filter((s) => s.id.startsWith("openclacky:"));
@@ -2398,6 +2451,14 @@ function withLastMessageTimestamp(session, persistedMessageAt = null) {
   return { ...session, lastMessageAt };
 }
 
+function withSessionMessageCursors(session, cursors = null) {
+  return {
+    ...session,
+    lastAgentMessageSequence: Number(cursors?.lastAgentMessageSequence ?? 0),
+    lastReadMessageSequence: Number(cursors?.lastReadMessageSequence ?? 0)
+  };
+}
+
 function withPendingCollaborationConfirmations(sessions = []) {
   return sessions.map((session) => {
     const confirmation = collaborationCore.pendingTaskConfirmationForSession(session.id);
@@ -2575,7 +2636,12 @@ function handleCodexAppServerNotification(message) {
       if (!failed && !cancelled && latestAgentMessage?.text) {
         scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
       }
-      emitEvent(failed ? "CodexThreadFailed" : (cancelled ? "CodexThreadCancelled" : "CodexThreadCompleted"), { session: nextSession, threadId, turn });
+      emitEvent(failed ? "CodexThreadFailed" : (cancelled ? "CodexThreadCancelled" : "CodexThreadCompleted"), {
+        session: nextSession,
+        threadId,
+        turn,
+        hasAgentMessage: Boolean(latestAgentMessage?.text)
+      });
       const completedWork = store.getAgentWorkItemForTurn(nextSession.id, turn.id)
         ?? store.getRunningAgentWorkItemForSession(nextSession.id);
       if (completedWork?.status === "running") {
@@ -3691,7 +3757,8 @@ async function getUnifiedSessionSnapshot(sessionId) {
     items,
     hasMoreHistory,
     historyItemsCount,
-    lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
+    lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
+    lastAgentMessageSequence: store.lastAgentMessageSequence(reference.sessionId)
   };
 }
 
@@ -4656,7 +4723,7 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
 
 function unifiedErrorStatus(error) {
   if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND", "AGENT_PROVIDER_NOT_FOUND"].includes(error.code)) return 404;
-  if (error.code === "INVALID_PROJECT_ACTION") return 400;
+  if (["INVALID_PROJECT_ACTION", "INVALID_READ_SEQUENCE"].includes(error.code)) return 400;
   if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
@@ -6233,6 +6300,30 @@ function route(request, response) {
     return;
   }
 
+  const sessionReadReceiptMatch = url.pathname.match(/^\/sessions\/([^/]+)\/read-receipt$/);
+  if (request.method === "POST" && sessionReadReceiptMatch) {
+    const publicSessionId = decodeURIComponent(sessionReadReceiptMatch[1]);
+    readJson(request)
+      .then(async (input) => {
+        const reference = await sessionApplicationService.referenceFor(publicSessionId);
+        const receipt = store.markSessionMessagesRead(
+          reference.sessionId,
+          input?.throughSequence
+        );
+        setImmediate(publishStateChangesIfNeeded);
+        sendJson(response, 200, {
+          sessionId: reference.logicalSessionId ?? reference.sessionId,
+          legacySessionId: reference.sessionId,
+          ...receipt
+        });
+      })
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionHistoryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/history$/);
   if (request.method === "GET" && sessionHistoryMatch) {
     const sessionId = decodeURIComponent(sessionHistoryMatch[1]);
@@ -6611,8 +6702,12 @@ function route(request, response) {
     const archived = url.searchParams.get("archived") === "true";
     const mockSessions = includeMock ? Array.from(sessions.values()) : [];
     const latestMessageTimes = store.listLatestSessionMessageTimes();
+    const messageCursors = store.listSessionMessageCursors();
     const providerSessions = listGatewaySessions({ archived }).map((session) =>
-      withLastMessageTimestamp(session, latestMessageTimes.get(session.id))
+      withSessionMessageCursors(
+        withLastMessageTimestamp(session, latestMessageTimes.get(session.id)),
+        messageCursors.get(session.id)
+      )
     );
     const providerCounts = providerSessions.reduce((counts, session) => {
       const providerId = session.external?.provider ?? "unknown";

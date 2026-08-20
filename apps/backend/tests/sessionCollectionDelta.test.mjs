@@ -37,6 +37,17 @@ test("last message timestamp changes invalidate Session list ordering", () => {
   assert.ok(patch.updated[0].changedFields.includes("ordering"));
 });
 
+test("read receipt cursor changes invalidate unread grouping metadata", () => {
+  const patch = createSessionCollectionPatch(
+    [session("a", { lastAgentMessageSequence: 4, lastReadMessageSequence: 1 })],
+    [session("a", { lastAgentMessageSequence: 4, lastReadMessageSequence: 4 })],
+    { baseRevision: 6, revision: 7 }
+  );
+
+  assert.ok(patch.updated[0].changedFields.includes("metadata"));
+  assert.ok(!patch.updated[0].changedFields.includes("ordering"));
+});
+
 test("structural patch carries canonical order, insertions and removals", () => {
   const patch = createSessionCollectionPatch(
     [session("a"), session("b")],

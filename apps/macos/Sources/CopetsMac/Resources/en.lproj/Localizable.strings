@@ -567,3 +567,5 @@
 "目标 Session" = "Target Session";
 "消息" = "Message";
 "Unread Session" = "Unread Session";
+"Session update" = "Session update";
+"%d completed · %d pending · %d failed" = "%d completed · %d pending · %d failed";
