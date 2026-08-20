@@ -454,11 +454,29 @@ export class GitWorkspaceManager {
     const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
     if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree is unavailable.");
     const operationState = await this.integrationOperationState(main.path);
-    if (operationState !== "merge") {
+    if (operationState && operationState !== "merge") {
       throw integrationGitError(
-        "INTEGRATION_CONFLICT_STATE_CHANGED",
-        "main no longer contains the merge conflict owned by this integration task. Refresh before continuing."
+        "GIT_OPERATION_IN_PROGRESS",
+        `main has an unrelated ${operationState} operation in progress.`
       );
+    }
+    const mainHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (!operationState) {
+      const status = (await this.gitOutput(main.path, ["status", "--porcelain=v1"])).trim();
+      if (status) {
+        throw integrationGitError(
+          "MAIN_DIRTY",
+          "main no longer contains the task-owned merge and now has uncommitted changes."
+        );
+      }
+      if (await this.gitSucceeds(main.path, ["merge-base", "--is-ancestor", input.sourceHead, "HEAD"])) {
+        return { alreadyResolved: true, mainHead };
+      }
+      return this.createIntegrationWorktreeForProject({
+        repositoryId: input.repositoryId,
+        workingDirectory: main.path,
+        runId: input.jobId
+      });
     }
     const mergeHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "MERGE_HEAD"])).trim();
     if (mergeHead !== input.sourceHead) {
@@ -467,17 +485,13 @@ export class GitWorkspaceManager {
         "main contains a merge for a different source. Resolve it manually before continuing."
       );
     }
-    const mainHead = (await this.gitOutput(main.path, ["rev-parse", "--verify", "HEAD"])).trim();
     if (mainHead !== input.expectedMainHead) {
       throw integrationGitError("MAIN_HEAD_CHANGED", "main HEAD changed after the integration conflict was recorded.");
     }
     const conflicts = (await this.gitOutput(main.path, ["diff", "--name-only", "--diff-filter=U"]))
       .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
     if (conflicts.length === 0) {
-      throw integrationGitError(
-        "INTEGRATION_CONFLICT_STATE_CHANGED",
-        "The recorded merge no longer has unresolved files. Retry the integration task instead."
-      );
+      return { readyForRetry: true, mainHead };
     }
     await this.runGit(main.path, ["merge", "--abort"]);
     const status = (await this.gitOutput(main.path, ["status", "--porcelain=v1"])).trim();

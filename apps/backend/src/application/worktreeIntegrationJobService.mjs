@@ -232,7 +232,7 @@ export class WorktreeIntegrationJobService {
       const expectedMainHead = expectedMainHeadBefore(job.details.plan, item.worktreeId);
       let workspace = job.details.conflictResolution?.workspace ?? null;
       if (!workspace) {
-        workspace = await this.prepareConflictResolution({
+        const preparation = await this.prepareConflictResolution({
           repositoryId: job.repositoryId,
           mainPath: job.details.plan.mainPath,
           jobId: job.id,
@@ -240,6 +240,33 @@ export class WorktreeIntegrationJobService {
           expectedMainHead,
           conflictFiles: item.conflictFiles
         });
+        if (preparation.alreadyResolved) {
+          job = this.#item(job, item.worktreeId, {
+            mergeStatus: "recovered",
+            mergeMainHead: preparation.mainHead,
+            conflictFiles: [],
+            error: null
+          }, "conflict_resolution_ready", "merge_recovered_externally");
+          const resumed = this.#update(job, {
+            status: "queued",
+            phase: "retry_queued",
+            error: null,
+            auditEvent: "external_conflict_resolution_detected"
+          });
+          this.#schedule(resumed.id);
+          return presentJob(resumed);
+        }
+        if (preparation.readyForRetry) {
+          const resumed = this.#update(job, {
+            status: "queued",
+            phase: "retry_queued",
+            error: null,
+            auditEvent: "resolved_merge_ready_for_retry"
+          });
+          this.#schedule(resumed.id);
+          return presentJob(resumed);
+        }
+        workspace = preparation;
         job = this.#update(job, {
           phase: "conflict_resolution_preparing",
           details: {
@@ -256,7 +283,7 @@ export class WorktreeIntegrationJobService {
         item,
         workspace,
         sourceHead,
-        expectedMainHead
+        expectedMainHead: workspace.headOid ?? expectedMainHead
       });
       return presentJob(this.#update(job, {
         status: "paused",

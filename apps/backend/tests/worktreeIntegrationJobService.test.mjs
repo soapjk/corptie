@@ -11,7 +11,8 @@ function memoryFixture({
   blockingRisk = false,
   featureAlreadyMerged = false,
   featureDirty = true,
-  mainDirty = true
+  mainDirty = true,
+  externalConflictResolved = false
 } = {}) {
   const jobs = new Map();
   let sequence = 0;
@@ -92,6 +93,11 @@ function memoryFixture({
     },
     prepareConflictResolution: async (input) => {
       calls.push(`prepare-conflict:${input.sourceHead}`);
+      if (externalConflictResolved) {
+        worktrees[0].headOid = `${input.expectedMainHead}:external-merge`;
+        worktrees[1].mergedIntoMain = true;
+        return { alreadyResolved: true, mainHead: worktrees[0].headOid };
+      }
       return {
         worktreeId: "wt:integration", path: "/repo-integration", branchName: "integration/job-1",
         headOid: input.expectedMainHead
@@ -198,6 +204,22 @@ test("a paused merge conflict can launch an Agent in a dedicated Integration Wor
   assert.equal(ready.phase, "conflict_resolution_ready");
   assert.equal(ready.conflictResolution.status, "ready");
   assert.ok(ready.audit.some((entry) => entry.event === "conflict_agent_completed"));
+});
+
+test("an externally resolved conflict is detected and the paused job resumes idempotently", async () => {
+  const { service, calls } = memoryFixture({ conflictOnce: true, externalConflictResolved: true });
+  const plan = await service.preflight("repository:1");
+  service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  const resumed = await service.resolveConflictWithAgent(paused.id);
+  assert.equal(resumed.status, "queued");
+  assert.equal(resumed.plan.items[1].mergeStatus, "recovered");
+  assert.equal(calls.includes("launch-agent:wt:feature"), false);
+
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.plan.items[1].mergeStatus, "recovered");
+  assert.ok(completed.audit.some((entry) => entry.event === "external_conflict_resolution_detected"));
 });
 
 test("blocking preflight risks cannot be confirmed", async () => {

@@ -361,10 +361,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         warRoomWindow = window
     }
 
-    func openWorktreeManagement(repositoryId: String?, worktreePath: String?) {
+    func openWorktreeManagement(repositoryId: String?, worktreeId: String?, worktreePath: String?) {
         openWarRoom()
         AppTabRouter.shared.openWorktrees(
             repositoryId: repositoryId,
+            worktreeId: worktreeId,
             worktreePath: worktreePath
         )
     }

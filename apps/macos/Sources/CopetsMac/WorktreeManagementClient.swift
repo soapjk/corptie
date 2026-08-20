@@ -67,23 +67,19 @@ final class WorktreeManagementClient: ObservableObject {
         await loadRepository(repositoryId)
     }
 
-    func navigate(to target: WorktreeNavigationTarget) async {
+    @discardableResult
+    func navigate(to target: WorktreeNavigationTarget) async -> Bool {
         if repositories.isEmpty { await loadRepositories() }
-        if let repositoryId = target.repositoryId,
-           repositories.contains(where: { $0.id == repositoryId }) {
+        if let repositoryId = target.repositoryId {
+            guard repositories.contains(where: { $0.id == repositoryId }) else { return false }
             if selection.repositoryId != repositoryId {
                 await selectRepository(repositoryId)
             } else if detail == nil {
                 await loadRepository(repositoryId)
             }
         }
-        guard let worktreePath = target.worktreePath else { return }
-        let normalized = URL(fileURLWithPath: worktreePath).standardizedFileURL.path
-        if let worktree = detail?.project.worktrees.first(where: {
-            URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
-        }) {
-            selection.worktreeId = worktree.worktreeId
-        }
+        guard let worktrees = detail?.project.worktrees else { return false }
+        return selection.select(target: target, worktrees: worktrees)
     }
 
     func synchronizeSelectedWorktree() async {

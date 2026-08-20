@@ -186,6 +186,28 @@ struct WorktreeManagementSelection: Equatable {
             worktreeId = worktrees.first(where: \.isMain)?.worktreeId ?? worktrees.first?.worktreeId
         }
     }
+
+    mutating func select(
+        target: WorktreeNavigationTarget,
+        worktrees: [ManagedWorktree]
+    ) -> Bool {
+        if let worktreeId = target.worktreeId,
+           let worktree = worktrees.first(where: { $0.worktreeId == worktreeId }) {
+            self.worktreeId = worktree.worktreeId
+            return true
+        }
+        if let worktreePath = target.worktreePath {
+            let normalized = URL(fileURLWithPath: worktreePath).standardizedFileURL.path
+            if let worktree = worktrees.first(where: {
+                URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
+            }) {
+                self.worktreeId = worktree.worktreeId
+                return true
+            }
+            return false
+        }
+        return target.worktreeId == nil
+    }
 }
 
 struct IndividualWorktreeOperationPreparation: Equatable, Sendable {

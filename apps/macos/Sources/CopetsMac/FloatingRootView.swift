@@ -5389,6 +5389,7 @@ struct DetailHeaderView: View {
     private func openWorktreeManagement() {
         AppDelegate.shared?.openWorktreeManagement(
             repositoryId: backendClient.selectedProjectWorktreeStatus?.project.repositoryId,
+            worktreeId: selectedSessionWorktree?.worktreeId,
             worktreePath: workspacePath
         )
     }

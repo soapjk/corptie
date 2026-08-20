@@ -37,15 +37,17 @@ struct WorktreeManagementView: View {
             ) else { return }
             await client.loadRepositories()
             if let target = router.pendingWorktreeTarget {
-                await client.navigate(to: target)
-                router.consumeWorktreeTarget(target)
+                if await client.navigate(to: target) {
+                    router.consumeWorktreeTarget(target)
+                }
             }
         }
         .task(id: router.pendingWorktreeTarget) {
             guard backendClient.isOnline, router.selectedTab == .worktrees else { return }
             guard let target = router.pendingWorktreeTarget else { return }
-            await client.navigate(to: target)
-            router.consumeWorktreeTarget(target)
+            if await client.navigate(to: target) {
+                router.consumeWorktreeTarget(target)
+            }
         }
         .task(id: client.job.map { "\($0.id):\($0.shouldPoll)" }) {
             guard let jobId = client.job?.id else { return }

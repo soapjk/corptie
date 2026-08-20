@@ -20,14 +20,51 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         let router = AppTabRouter()
         router.openWorktrees(
             repositoryId: "repository:one",
+            worktreeId: "wt:feature",
             worktreePath: "/repo-feature"
         )
 
         XCTAssertEqual(router.selectedTab, .worktrees)
         XCTAssertEqual(
             router.pendingWorktreeTarget,
-            WorktreeNavigationTarget(repositoryId: "repository:one", worktreePath: "/repo-feature")
+            WorktreeNavigationTarget(
+                repositoryId: "repository:one",
+                worktreeId: "wt:feature",
+                worktreePath: "/repo-feature"
+            )
         )
+    }
+
+    func testSessionNavigationSelectsExactWorktreeByIdBeforePathFallback() {
+        var selection = WorktreeManagementSelection(repositoryId: "repository:one", worktreeId: "wt:main")
+        let worktrees = [worktree("wt:main", isMain: true), worktree("wt:feature", isMain: false)]
+
+        let selected = selection.select(
+            target: WorktreeNavigationTarget(
+                repositoryId: "repository:one",
+                worktreeId: "wt:feature",
+                worktreePath: "/stale-session-path"
+            ),
+            worktrees: worktrees
+        )
+
+        XCTAssertTrue(selected)
+        XCTAssertEqual(selection.worktreeId, "wt:feature")
+    }
+
+    func testSessionNavigationKeepsTargetPendingWhenWorktreeIsNotLoaded() {
+        var selection = WorktreeManagementSelection(repositoryId: "repository:one", worktreeId: "wt:main")
+        let selected = selection.select(
+            target: WorktreeNavigationTarget(
+                repositoryId: "repository:one",
+                worktreeId: "wt:missing",
+                worktreePath: "/missing"
+            ),
+            worktrees: [worktree("wt:main", isMain: true)]
+        )
+
+        XCTAssertFalse(selected)
+        XCTAssertEqual(selection.worktreeId, "wt:main")
     }
 
     func testChatBranchButtonsNoLongerOpenTheLegacyWorktreeWindow() throws {
