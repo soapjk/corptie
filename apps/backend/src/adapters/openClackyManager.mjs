@@ -621,6 +621,9 @@ export function openClackySessionSummary(row = {}, options = {}) {
       canReconnect: false
     },
     updatedAt,
+    // OpenClacky exposes one provider activity timestamp rather than separate
+    // input/output timestamps; project it through the shared Session contract.
+    lastMessageAt: updatedAt,
     accent: "mint",
     archived: false,
     pinned: row.pinned === true,

@@ -4093,6 +4093,17 @@ export class CorptieStore {
     }));
   }
 
+  listLatestSessionMessageTimes() {
+    const rows = this.selectAll(
+      `SELECT session_id, MAX(created_at) AS last_message_at
+       FROM session_events
+       WHERE surface = 1
+          OR type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
+       GROUP BY session_id`
+    );
+    return new Map(rows.map((row) => [row.session_id, row.last_message_at]));
+  }
+
   lastSessionEventSequence(sessionId) {
     const row = this.selectOne(
       "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM session_events WHERE session_id = ?",

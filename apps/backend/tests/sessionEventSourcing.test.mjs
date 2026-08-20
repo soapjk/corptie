@@ -93,6 +93,30 @@ test("appendSessionEvent：surface 按类型推导（user/message → true）", 
   }
 });
 
+test("listLatestSessionMessageTimes：只按消息事件返回每个 Session 的最新时间", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    store.appendSessionEvent({
+      eventId: "message-1", sessionId: "s1", type: "user/message", surface: true,
+      payload: { text: "hello" }, createdAt: "2026-08-20T01:00:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "tool", sessionId: "s1", type: "tool/call", surface: false,
+      payload: { name: "exec" }, createdAt: "2026-08-20T03:00:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "message-2", sessionId: "s1", type: "CodexThreadCompleted", surface: false,
+      payload: {}, createdAt: "2026-08-20T02:00:00Z"
+    });
+
+    assert.equal(store.listLatestSessionMessageTimes().get("s1"), "2026-08-20T02:00:00Z");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session_logs：创建 session 即建立 1:1 log，事件指向该 log", async () => {
   const { store, directory } = await createStore();
   try {

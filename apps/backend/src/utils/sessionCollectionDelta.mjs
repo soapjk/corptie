@@ -23,7 +23,8 @@ function stableSessionFields(previous, next) {
   }
   if (previous.pinned !== next.pinned
     || previous.sortOrder !== next.sortOrder
-    || previous.archived !== next.archived) fields.push("ordering");
+    || previous.archived !== next.archived
+    || previous.lastMessageAt !== next.lastMessageAt) fields.push("ordering");
   if (JSON.stringify(previous.external) !== JSON.stringify(next.external)) fields.push("metadata");
   return fields;
 }

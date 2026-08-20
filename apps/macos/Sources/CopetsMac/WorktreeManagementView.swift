@@ -40,11 +40,6 @@ struct WorktreeManagementView: View {
                 selectedTab: router.selectedTab
             ) else { return }
             await client.loadRepositories()
-            if let target = router.pendingWorktreeTarget {
-                if await client.navigate(to: target) {
-                    router.consumeWorktreeTarget(target)
-                }
-            }
         }
         .task(id: router.pendingWorktreeTarget) {
             guard backendClient.isOnline, router.selectedTab == .worktrees else { return }

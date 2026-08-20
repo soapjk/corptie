@@ -62,6 +62,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let suggestedPrompt: String?
     let activityStatus: String?
     let updatedAt: String
+    var lastMessageAt: String? = nil
     let accent: Accent
     let archived: Bool?
     let pinned: Bool?

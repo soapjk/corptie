@@ -1835,7 +1835,11 @@ function controlPlaneSnapshot() {
       liveById.set(stored.id, stored);
     }
   }
-  const sessionsById = liveById;
+  const latestMessageTimes = store.listLatestSessionMessageTimes();
+  const sessionsById = new Map(Array.from(liveById, ([id, session]) => [
+    id,
+    withLastMessageTimestamp(session, latestMessageTimes.get(id))
+  ]));
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
     const openclacky = [...sessionsById.values()].filter((s) => s.id.startsWith("openclacky:"));
     const detail = openclacky.map((s) => `${s.id.slice(10, 18)}:${s.status}`).join(",");
@@ -2501,6 +2505,20 @@ function sortSessionsForList(sessions = []) {
     }
     return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
   });
+}
+
+function withLastMessageTimestamp(session, persistedMessageAt = null) {
+  const candidates = [
+    session.lastMessageAt,
+    session.lastInputAt,
+    session.lastOutputAt,
+    session.rawStatus?.lastMessageAt,
+    session.rawStatus?.lastInputAt,
+    session.rawStatus?.lastOutputAt,
+    persistedMessageAt
+  ].filter((value) => typeof value === "string" && value.trim());
+  const lastMessageAt = candidates.sort((a, b) => b.localeCompare(a))[0] ?? null;
+  return { ...session, lastMessageAt };
 }
 
 function withPendingCollaborationConfirmations(sessions = []) {
@@ -6818,7 +6836,10 @@ function route(request, response) {
     const includeMock = url.searchParams.get("includeMock") === "true";
     const archived = url.searchParams.get("archived") === "true";
     const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-    const providerSessions = listGatewaySessions({ archived });
+    const latestMessageTimes = store.listLatestSessionMessageTimes();
+    const providerSessions = listGatewaySessions({ archived }).map((session) =>
+      withLastMessageTimestamp(session, latestMessageTimes.get(session.id))
+    );
     const providerCounts = providerSessions.reduce((counts, session) => {
       const providerId = session.external?.provider ?? "unknown";
       counts[providerId] = (counts[providerId] ?? 0) + 1;

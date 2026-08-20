@@ -27,6 +27,16 @@ test("content-only patch does not publish an ordered id replacement", () => {
   assert.ok(patch.updated[0].changedFields.includes("summary"));
 });
 
+test("last message timestamp changes invalidate Session list ordering", () => {
+  const patch = createSessionCollectionPatch(
+    [session("a", { lastMessageAt: "2026-08-20T01:00:00Z" })],
+    [session("a", { lastMessageAt: "2026-08-20T02:00:00Z" })],
+    { baseRevision: 5, revision: 6 }
+  );
+
+  assert.ok(patch.updated[0].changedFields.includes("ordering"));
+});
+
 test("structural patch carries canonical order, insertions and removals", () => {
   const patch = createSessionCollectionPatch(
     [session("a"), session("b")],

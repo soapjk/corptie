@@ -93,7 +93,9 @@ final class WorktreeManagementClient: ObservableObject {
 
     @discardableResult
     func navigate(to target: WorktreeNavigationTarget) async -> Bool {
-        if repositories.isEmpty { await loadRepositories() }
+        // Refresh the selected detail so a Session Worktree created after this
+        // persistent tab was preloaded is available for ID/path matching.
+        await loadRepositories(forceSelectedReload: true)
         if let repositoryId = target.repositoryId {
             guard repositories.contains(where: { $0.id == repositoryId }) else { return false }
             if selection.repositoryId != repositoryId {

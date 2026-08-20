@@ -35,6 +35,33 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         )
     }
 
+    func testNavigationSelectsTheAuthoritativeWorktreeIdBeforeAStalePath() {
+        let target = WorktreeNavigationTarget(
+            repositoryId: "repository:one",
+            worktreeId: "wt:feature",
+            worktreePath: "/stale/path"
+        )
+        XCTAssertEqual(
+            target.matchingWorktree(in: [
+                worktree("wt:main", isMain: true),
+                worktree("wt:feature", isMain: false)
+            ])?.worktreeId,
+            "wt:feature"
+        )
+    }
+
+    func testNavigationFallsBackToAStandardizedWorktreePath() {
+        let target = WorktreeNavigationTarget(
+            repositoryId: "repository:one",
+            worktreeId: nil,
+            worktreePath: "/feature/../feature"
+        )
+        XCTAssertEqual(
+            target.matchingWorktree(in: [worktree("wt:feature", isMain: false)])?.worktreeId,
+            "wt:feature"
+        )
+    }
+
     func testSessionNavigationSelectsExactWorktreeByIdBeforePathFallback() {
         var selection = WorktreeManagementSelection(repositoryId: "repository:one", worktreeId: "wt:main")
         let worktrees = [worktree("wt:main", isMain: true), worktree("wt:feature", isMain: false)]
