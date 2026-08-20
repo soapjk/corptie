@@ -3406,9 +3406,45 @@ final class BackendClient: ObservableObject {
                   httpResponse.statusCode == 200 else {
                 throw BackendError.message(Self.errorMessage(from: data) ?? "Could not update the Session read receipt.")
             }
+            let receipt = try JSONDecoder().decode(SessionReadReceiptResponse.self, from: data)
+            let nextSessions = Self.applyingReadReceipt(
+                receipt,
+                requestedSessionID: sessionID,
+                to: sessions
+            )
+            applySessionSnapshot(nextSessions, allowDuringReorder: true)
+            // The response is enough to clear the indicator immediately. The
+            // revisioned snapshot remains authoritative and reconciles any
+            // concurrent agent message that arrived after this exact cursor.
+            await AppStateSyncController.shared.refreshSnapshot()
             return true
         } catch {
             return false
+        }
+    }
+
+    nonisolated static func applyingReadReceipt(
+        _ receipt: SessionReadReceiptResponse,
+        requestedSessionID: String,
+        to sessions: [TaskSession]
+    ) -> [TaskSession] {
+        let matchingIDs = Set([
+            requestedSessionID,
+            receipt.sessionId,
+            receipt.legacySessionId
+        ].compactMap { $0 })
+        return sessions.map { session in
+            guard matchingIDs.contains(session.id) else { return session }
+            var updated = session
+            updated.lastAgentMessageSequence = max(
+                session.lastAgentMessageSequence ?? 0,
+                receipt.lastAgentMessageSequence
+            )
+            updated.lastReadMessageSequence = max(
+                session.lastReadMessageSequence ?? 0,
+                receipt.lastReadMessageSequence
+            )
+            return updated
         }
     }
 

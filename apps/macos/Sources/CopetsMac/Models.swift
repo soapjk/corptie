@@ -134,6 +134,13 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+struct SessionReadReceiptResponse: Decodable, Sendable {
+    let sessionId: String
+    let legacySessionId: String?
+    let lastAgentMessageSequence: Int
+    let lastReadMessageSequence: Int
+}
+
 struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let confirmationId: String
     let recipientAgentId: String?
