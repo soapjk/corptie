@@ -101,6 +101,16 @@ struct AgentManagementView: View {
                                 Button(L10n("打开详情")) {
                                     selectedAgentForDetail = agent
                                 }
+                                Divider()
+                                Button {
+                                    NotificationCenter.default.post(
+                                        name: .showAgentOrb,
+                                        object: nil,
+                                        userInfo: ["agentId": agent.agentId]
+                                    )
+                                } label: {
+                                    Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
+                                }
                             }
                             .onTapGesture {
                                 selectedAgentForDetail = agent

@@ -8,21 +8,33 @@ final class AgentOrbManager: ObservableObject {
 
     private let client: BackendClient
     private let showMain: () -> Void
+    private let openSession: (String) -> Void
+    private let visibilityPreferences: AgentOrbVisibilityPreferences
     private var controllers: [String: DetachedSessionWindowController] = [:]
-    private var cancellables = Set<AnyCancellable>()
 
     init(
         client: BackendClient,
-        showMain: @escaping () -> Void
+        showMain: @escaping () -> Void,
+        openSession: @escaping (String) -> Void,
+        visibilityPreferences: AgentOrbVisibilityPreferences = AgentOrbVisibilityPreferences()
     ) {
         self.client = client
         self.showMain = showMain
+        self.openSession = openSession
+        self.visibilityPreferences = visibilityPreferences
     }
 
-    func float(agent: Agent) {
+    func show(agent: Agent) {
+        visibilityPreferences.setEnabled(true, for: agent.agentId)
+        float(agent: agent, bringToFront: true)
+    }
+
+    private func float(agent: Agent, bringToFront: Bool) {
         let id = agent.agentId
         if let controller = controllers[id] {
-            controller.show()
+            if bringToFront {
+                controller.show()
+            }
             return
         }
 
@@ -40,6 +52,12 @@ final class AgentOrbManager: ObservableObject {
             showMain: { [weak self] in
                 self?.showMain()
             },
+            openSession: { [weak self] sessionID in
+                self?.openSession(sessionID)
+            },
+            userClose: { [weak self] agentID in
+                self?.hide(agentID: agentID)
+            },
             close: { [weak self] agentId in
                 self?.controllers[agentId] = nil
             }
@@ -48,36 +66,41 @@ final class AgentOrbManager: ObservableObject {
         controller.show()
     }
 
-    func close(agentId: String) {
-        controllers[agentId]?.close()
-        controllers[agentId] = nil
+    func hide(agentID: String) {
+        visibilityPreferences.setEnabled(false, for: agentID)
+        close(agentID: agentID)
+    }
+
+    private func close(agentID: String) {
+        controllers[agentID]?.close()
+        controllers[agentID] = nil
     }
 
     func closeAll() {
-        for controller in controllers.values {
+        for controller in Array(controllers.values) {
             controller.close()
         }
         controllers.removeAll()
     }
 
-    // 通知聚合 + 生命周期：按 agents + sessions 计算各 Agent 待处理角标，float/回收球
-    func sync(agents: [Agent], sessions: [TaskSession]) {
+    // State publications may update an explicitly enabled orb, but never change
+    // the user's persisted visibility choice or bring an existing orb forward.
+    func sync(agents: [Agent], sessions _: [TaskSession]) {
+        let availableAgentIDs = Set(agents.map(\.agentId))
+        for agentID in Array(controllers.keys) where !availableAgentIDs.contains(agentID) {
+            close(agentID: agentID)
+        }
+        let enabledAgentIDs = visibilityPreferences.enabledAgentIDs
         for agent in agents {
-            let agentSessions = sessions.filter { $0.agentId == agent.agentId }
-            let hasActive = agentSessions.contains { Self.isActive($0.status) }
-
-            // 浮球仅在 Agent 有活跃会话时自动浮出，否则回收；助手不再强制常驻。
-            // 用户可随时手动打开/关闭任意 Agent 的浮球。
-            if hasActive {
-                float(agent: agent)
-            } else {
-                close(agentId: agent.agentId)
+            if AgentOrbVisibilityPolicy.shouldShow(
+                agentID: agent.agentId,
+                explicitlyEnabledAgentIDs: enabledAgentIDs
+            ) {
+                float(agent: agent, bringToFront: false)
+            } else if controllers[agent.agentId] != nil {
+                close(agentID: agent.agentId)
             }
         }
-    }
-
-    private static func isActive(_ status: TaskStatus) -> Bool {
-        status == .running
     }
 
 
@@ -372,6 +395,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     let agent: Agent
     private let client: BackendClient
     private let showMain: () -> Void
+    private let openSession: (String) -> Void
+    private let userClose: (String) -> Void
     private let closeHandler: (String) -> Void
     private let panel: NSPanel
     private let previewState = DetachedReplyPreviewState()
@@ -396,11 +421,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     private var outsideClickMonitor: Any?
     private var localOutsideClickMonitor: Any?
     private var ignoreOutsideClickUntil = Date.distantPast
-    private var lastSummary: String?
-    private var lastStatus: TaskStatus?
     private var lastPreviewText: String?
     private var dismissedPreviewText: String?
-    private var isClosing = false
 
     private let orbSize: CGFloat = 72
     private let orbHaloPadding: CGFloat = 8
@@ -414,11 +436,15 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         initialOrigin: NSPoint,
         client: BackendClient,
         showMain: @escaping () -> Void,
+        openSession: @escaping (String) -> Void,
+        userClose: @escaping (String) -> Void,
         close: @escaping (String) -> Void
     ) {
         self.agent = agent
         self.client = client
         self.showMain = showMain
+        self.openSession = openSession
+        self.userClose = userClose
         self.closeHandler = close
         let size = NSSize(width: orbSize + orbHaloPadding * 2, height: orbSize + orbHaloPadding * 2)
         self.panel = DetachedSessionPanel(
@@ -454,6 +480,10 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                 showMain: { [weak self] in
                     self?.showMain()
                 },
+                openSession: { [weak self] in
+                    guard let sessionID = self?.currentSession?.id else { return }
+                    self?.openSession(sessionID)
+                },
                 dismissPreview: { [weak self] in
                     self?.hideReplyPreview(markDismissed: true)
                     self?.updateAccessory(for: self?.currentSession)
@@ -463,7 +493,8 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
                     self?.updateAccessory(for: self?.currentSession)
                 },
                 close: { [weak self] in
-                    self?.close()
+                    guard let self else { return }
+                    self.userClose(self.agent.agentId)
                 },
                 interactionBegan: {},
                 interactionEnded: { _ in },
@@ -475,7 +506,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.updateReplyPreview(for: self.currentSession)
                 self.updateAccessory(for: self.currentSession)
             }
             .store(in: &cancellables)
@@ -490,13 +520,11 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     func close() {
-        isClosing = true
         accessoryController.close()
         panel.close()
     }
 
     func windowWillClose(_ notification: Notification) {
-        isClosing = true
         removeOutsideClickMonitor()
         closeHandler(agent.agentId)
     }
@@ -584,49 +612,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
 
 
-    private func updateReplyPreview(for session: TaskSession?) {
-        guard let session else {
-            hideReplyPreview()
-            lastSummary = nil
-            lastStatus = nil
-            lastPreviewText = nil
-            dismissedPreviewText = nil
-            return
-        }
-        guard !isSessionOpenInMainView(session) else {
-            hideReplyPreview()
-            lastSummary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-            lastStatus = session.status
-            return
-        }
-
-        let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        let previousStatus = lastStatus
-        defer {
-            if !summary.isEmpty {
-                lastSummary = summary
-            }
-            lastStatus = session.status
-        }
-
-        guard session.status != .running else {
-            return
-        }
-
-        guard let previousSummary = lastSummary else {
-            if session.status == .blocked || session.status == .complete || session.status == .failed || session.status == .cancelled {
-                fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary, allowFallback: true)
-            }
-            return
-        }
-
-        if summary != previousSummary, !summary.isEmpty {
-            fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary, allowFallback: true)
-        } else if previousStatus == .running {
-            fetchDetailPreviewIfNeeded(for: session, fallbackSummary: summary, allowFallback: true)
-        }
-    }
-
     private func hideReplyPreview(markDismissed: Bool = false) {
         if markDismissed {
             let text = previewState.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -637,23 +622,6 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
         previewState.isVisible = false
         previewState.isQuickReplyVisible = false
         removeOutsideClickMonitor()
-    }
-
-    private func fetchDetailPreviewIfNeeded(for session: TaskSession, fallbackSummary: String, allowFallback: Bool) {
-        Task { [weak self] in
-            guard let self else { return }
-            let detail = await client.fetchDetail(for: session)
-            let text = Self.latestFinalAgentPreviewText(from: detail, includeActiveTurn: false) ?? (allowFallback ? fallbackSummary : "")
-            await MainActor.run {
-                guard let current = self.currentSession,
-                      current.id == session.id,
-                      current.status != .running,
-                      !self.isSessionOpenInMainView(current) else {
-                    return
-                }
-                self.showReplyPreview(text, for: current)
-            }
-        }
     }
 
     private func showLatestReplyPreviewIfNeeded() {
@@ -761,7 +729,10 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
     }
 
     private var currentSession: TaskSession? {
-        guard let sessionId = agent.currentSessionId else { return nil }
+        let currentAgent = AppStateStore.shared.agents.first { $0.agentId == agent.agentId }
+            ?? EntityAPIClient.shared.agents.first { $0.agentId == agent.agentId }
+            ?? agent
+        guard let sessionId = currentAgent.currentSessionId else { return nil }
         return client.sessions.first { $0.id == sessionId }
     }
 
@@ -820,6 +791,7 @@ private struct DetachedSessionOrbView: View {
     @ObservedObject var animationState: DetachedOrbAnimationState
     let primaryAction: () -> Void
     let showMain: () -> Void
+    let openSession: () -> Void
     let dismissPreview: () -> Void
     let dismissQuickReply: () -> Void
     let close: () -> Void
@@ -849,7 +821,7 @@ private struct DetachedSessionOrbView: View {
                         primaryAction()
                     },
                     openSession: {
-                        showMain()
+                        openSession()
                     },
                     showMain: showMain,
                     close: close,

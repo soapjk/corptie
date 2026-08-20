@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+@preconcurrency import UserNotifications
 
 struct SessionCompletionSoundOption: Identifiable, Equatable {
     let id: String
@@ -8,8 +9,10 @@ struct SessionCompletionSoundOption: Identifiable, Equatable {
     let systemSoundName: String?
 }
 
+/// Coordinates task-state notifications and the legacy per-session completion sound setting.
+/// The historical type name is retained so existing session settings remain source-compatible.
 @MainActor
-final class SessionCompletionSoundManager {
+final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotificationCenterDelegate {
     static let defaultSoundId = "glass"
     static let noneSoundId = "none"
 
@@ -27,15 +30,35 @@ final class SessionCompletionSoundManager {
     private static var activeSound: NSSound?
 
     private let client: BackendClient
+    private let preferences: SessionNotificationPreferences
+    private let notificationCenter: UNUserNotificationCenter?
+    private let isSessionVisible: (String) -> Bool
+    private let isOverviewVisible: () -> Bool
+    private var reducer = SessionNotificationReducer()
+    private var soundTransitionTracker = SessionCompletionSoundTransitionTracker()
     private var cancellables = Set<AnyCancellable>()
-    private var previousStatusesBySessionId: [String: TaskStatus] = [:]
-    private var hasObservedInitialSnapshot = false
+    private var deliveryHistory: SessionNotificationDeliveryHistory
 
-    init(client: BackendClient) {
+    init(
+        client: BackendClient,
+        preferences: SessionNotificationPreferences = .shared,
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults,
+        notificationCenter: UNUserNotificationCenter? = SystemNotificationCenter.currentIfAvailable(),
+        isSessionVisible: @escaping (String) -> Bool = { _ in false },
+        isOverviewVisible: @escaping () -> Bool = { false }
+    ) {
         self.client = client
+        self.preferences = preferences
+        self.notificationCenter = notificationCenter
+        self.isSessionVisible = isSessionVisible
+        self.isOverviewVisible = isOverviewVisible
+        deliveryHistory = SessionNotificationDeliveryHistory(defaults: defaults)
+        super.init()
     }
 
     func start() {
+        notificationCenter?.delegate = self
+        requestAuthorizationIfNeeded()
         client.sessionsDidChange
             .receive(on: RunLoop.main)
             .sink { [weak self] sessions in
@@ -46,8 +69,9 @@ final class SessionCompletionSoundManager {
 
     func stop() {
         cancellables.removeAll()
-        previousStatusesBySessionId.removeAll()
-        hasObservedInitialSnapshot = false
+        notificationCenter?.delegate = nil
+        reducer = SessionNotificationReducer()
+        soundTransitionTracker = SessionCompletionSoundTransitionTracker()
     }
 
     static func selectedSoundId(for sessionId: String) -> String {
@@ -76,12 +100,29 @@ final class SessionCompletionSoundManager {
         playSound(named: "Hero")
     }
 
+    static func sendTestNotification() {
+        guard let center = SystemNotificationCenter.currentIfAvailable() else {
+            playSound(named: option(for: defaultSoundId).systemSoundName)
+            return
+        }
+        Task {
+            _ = try? await center.requestAuthorization(options: [.alert])
+            let content = UNMutableNotificationContent()
+            content.title = L10n("Notification Test")
+            content.body = L10n("Corptie task notifications are enabled.")
+            try? await center.add(UNNotificationRequest(
+                identifier: "corptie-notification-test-\(UUID().uuidString)",
+                content: content,
+                trigger: nil
+            ))
+        }
+        playSound(named: option(for: defaultSoundId).systemSoundName)
+    }
+
     private static func playSound(named soundName: String?) {
         activeSound?.stop()
         activeSound = nil
-        guard let soundName else {
-            return
-        }
+        guard let soundName else { return }
         if let sound = NSSound(named: NSSound.Name(soundName)) {
             activeSound = sound
             sound.play()
@@ -90,34 +131,118 @@ final class SessionCompletionSoundManager {
         }
     }
 
-    private func handleSessionsUpdate(_ sessions: [TaskSession]) {
-        let currentIds = Set(sessions.map(\.id))
-        previousStatusesBySessionId = previousStatusesBySessionId.filter { currentIds.contains($0.key) }
+    private func requestAuthorizationIfNeeded() {
+        guard let notificationCenter else { return }
+        Task {
+            let settings = await notificationCenter.notificationSettings()
+            guard settings.authorizationStatus == .notDetermined else { return }
+            _ = try? await notificationCenter.requestAuthorization(options: [.alert])
+        }
+    }
 
-        guard hasObservedInitialSnapshot else {
-            previousStatusesBySessionId = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.status) })
-            hasObservedInitialSnapshot = true
+    private func handleSessionsUpdate(_ sessions: [TaskSession]) {
+        let activeSnapshots = sessions
+            .filter { $0.archived != true }
+            .map(SessionNotificationSnapshot.init(session:))
+        for sessionID in soundTransitionTracker.completedSessionIDs(for: activeSnapshots) {
+            Self.previewSound(Self.selectedSoundId(for: sessionID))
+        }
+        let events = reducer.events(
+            for: activeSnapshots,
+            configuration: preferences.configuration
+        )
+        for event in events where deliveryHistory.claim(event.id) {
+            deliver(event)
+        }
+    }
+
+    private func deliver(_ event: SessionNotificationEvent) {
+        if let sessionID = event.session?.id, isSessionVisible(sessionID) {
+            return
+        }
+        if event.kind == .allSessionsWaiting, isOverviewVisible() {
             return
         }
 
-        for session in sessions {
-            let previousStatus = previousStatusesBySessionId[session.id]
-            if previousStatus == .running && shouldNotifyCompletion(for: session.status) {
-                playCompletionSound(for: session)
+        let content = UNMutableNotificationContent()
+        content.title = title(for: event)
+        content.body = body(for: event)
+        if let sessionID = event.session?.id {
+            content.userInfo = ["sessionId": sessionID, "destination": "session"]
+        } else {
+            content.userInfo = ["destination": "overview"]
+        }
+
+        if let notificationCenter {
+            Task {
+                try? await notificationCenter.add(UNNotificationRequest(
+                    identifier: event.id,
+                    content: content,
+                    trigger: nil
+                ))
             }
-            previousStatusesBySessionId[session.id] = session.status
         }
     }
 
-    private func shouldNotifyCompletion(for status: TaskStatus) -> Bool {
-        status == .complete || status == .blocked
+    private func title(for event: SessionNotificationEvent) -> String {
+        switch event.kind {
+        case .completed: L10n("Task Completed")
+        case .blocked: L10n("Task Waiting for Interaction")
+        case .failed: L10n("Task Failed")
+        case .allSessionsWaiting: L10n("All Sessions Are Waiting")
+        }
     }
 
-    private func playCompletionSound(for session: TaskSession) {
-        Self.previewSound(Self.selectedSoundId(for: session.id))
+    private func body(for event: SessionNotificationEvent) -> String {
+        if let session = event.session {
+            let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = summary.isEmpty ? session.title : String(summary.prefix(180))
+            return "\(session.agent) · \(session.title)\n\(detail)"
+        }
+        guard let counts = event.counts else { return "" }
+        return L10nFormat(
+            "%lld completed · %lld waiting · %lld failed",
+            counts.completed,
+            counts.blocked,
+            counts.failed
+        )
     }
 
     private static func storedSoundIdsBySessionId() -> [String: String] {
         CorptieAppEnvironment.userDefaults.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        let userInfo = notification.request.content.userInfo
+        if let sessionID = userInfo["sessionId"] as? String, isSessionVisible(sessionID) {
+            completionHandler([])
+        } else if userInfo["destination"] as? String == "overview", isOverviewVisible() {
+            completionHandler([])
+        } else {
+            completionHandler([.banner])
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        switch SessionNotificationNavigation.destination(for: userInfo) {
+        case let .session(sessionID):
+            NotificationCenter.default.post(
+                name: .openSessionConversation,
+                object: nil,
+                userInfo: ["sessionId": sessionID]
+            )
+        case .overview:
+            NotificationCenter.default.post(name: .openSessionOverview, object: nil)
+        }
+        completionHandler()
     }
 }

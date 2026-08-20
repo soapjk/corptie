@@ -1112,6 +1112,18 @@ private struct SessionContextMenuContent: View {
             Label(L10n("Settings…"), systemImage: "gearshape")
         }
 
+        if let agentID = session.agentId {
+            Button {
+                NotificationCenter.default.post(
+                    name: .showAgentOrb,
+                    object: nil,
+                    userInfo: ["agentId": agentID]
+                )
+            } label: {
+                Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
+            }
+        }
+
         if session.actions?.restart?.available == true {
             Button {
                 backendClient.restart(session: session)

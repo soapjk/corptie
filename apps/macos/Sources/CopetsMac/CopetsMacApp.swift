@@ -87,15 +87,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backendClient.start()
 
         let controller = FloatingPanelController(client: backendClient)
-        let soundManager = SessionCompletionSoundManager(client: backendClient)
         panelController = controller
         // 控制台是主界面：启动默认打开控制台；液态玻璃悬浮窗是辅助界面，默认不打开
         openWarRoom()
 
         // Agent 浮球：订阅 sessions + agents 变化驱动 sync（通知聚合 + 生命周期）
-        let agentOrbManager = AgentOrbManager(client: backendClient, showMain: { [weak self] in
-            self?.openWarRoom()
-        })
+        let agentOrbManager = AgentOrbManager(
+            client: backendClient,
+            showMain: { [weak self] in self?.openWarRoom() },
+            openSession: { [weak self] sessionID in self?.openSessionInPanel(sessionId: sessionID) }
+        )
         self.agentOrbManager = agentOrbManager
         backendClient.sessionsDidChange
             .receive(on: DispatchQueue.main)
@@ -117,6 +118,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             .store(in: &cancellables)
 
+        NotificationCenter.default.publisher(for: .showAgentOrb)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] notification in
+                guard let agentID = notification.userInfo?["agentId"] as? String,
+                      let agent = AppStateStore.shared.agents.first(where: { $0.agentId == agentID })
+                        ?? EntityAPIClient.shared.agents.first(where: { $0.agentId == agentID }) else {
+                    return
+                }
+                self?.agentOrbManager?.show(agent: agent)
+            }
+            .store(in: &cancellables)
+
+        let soundManager = SessionCompletionSoundManager(
+            client: backendClient,
+            isSessionVisible: { [weak self] sessionID in
+                guard let self else { return false }
+                let isSelected = self.backendClient.selectedSession?.id == sessionID
+                let isVisibleInPanel = self.panelController?.isVisible == true && isSelected
+                let isVisibleInSessionOverview = NSApp.isActive
+                    && self.warRoomWindow?.isVisible == true
+                    && AppTabRouter.shared.selectedTab == .sessions
+                    && isSelected
+                return isVisibleInPanel || isVisibleInSessionOverview
+            },
+            isOverviewVisible: { [weak self] in
+                NSApp.isActive
+                    && self?.warRoomWindow?.isVisible == true
+                    && AppTabRouter.shared.selectedTab == .sessions
+            }
+        )
         completionSoundManager = soundManager
         soundManager.start()
         installStatusItem()
@@ -127,6 +158,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] notification in
                 guard let sessionId = notification.userInfo?["sessionId"] as? String else { return }
                 self?.openSessionInPanel(sessionId: sessionId)
+            }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .openSessionOverview)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.openSessionOverview()
             }
             .store(in: &cancellables)
         appLanguage.$selection
@@ -361,6 +398,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         warRoomWindow = window
     }
 
+    private func openSessionOverview() {
+        openWarRoom()
+        AppTabRouter.shared.selectTab(.sessions)
+    }
+
     func openWorktreeManagement(repositoryId: String?, worktreePath: String?) {
         openWarRoom()
         AppTabRouter.shared.openWorktrees(
@@ -553,6 +595,7 @@ enum CorptiePermissionManager {
 
 private enum SettingsTab: Hashable {
     case general
+    case notifications
     case proxy
     case gateway
     case archivedSessions
@@ -592,6 +635,12 @@ struct SettingsView: View {
                     }
                     .tag(SettingsTab.general)
 
+                NotificationSettingsView()
+                    .tabItem {
+                        Label(L10n("Notifications"), systemImage: "bell")
+                    }
+                    .tag(SettingsTab.notifications)
+
                 proxySettingsTab
                     .tabItem {
                         Label(L10n("Proxy"), systemImage: "network")
@@ -615,7 +664,7 @@ struct SettingsView: View {
 
             HStack {
                 Spacer()
-                if selectedTab == .archivedSessions {
+                if selectedTab == .archivedSessions || selectedTab == .notifications {
                     Button(L10n("Close")) {
                         onClose()
                     }
