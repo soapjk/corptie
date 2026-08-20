@@ -459,6 +459,106 @@ test("legacy point-to-point tasks migrate to compatibility Objectives and a targ
   });
 });
 
+test("deferred collaboration migration runs after the Store becomes ready", async () => {
+  const directory = await mkdtemp(join(os.tmpdir(), "corptie-collaboration-deferred-test-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  const core = new CollaborationCore(store);
+  try {
+    await store.initialize();
+    core.registerAgent({ agentId: "research-agent", name: "Research Agent" });
+    core.registerAgent({ agentId: "journal-agent", name: "Journal Agent" });
+    store.db.run(
+      "INSERT INTO collaboration_contexts (context_id, title, metadata_json, created_at, updated_at) VALUES ('deferred-context', 'Deferred', '{}', '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')"
+    );
+    store.db.run(
+      `INSERT INTO collaboration_tasks (
+         task_id, context_id, protocol_version, initiator_agent_id, recipient_agent_id,
+         type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
+         created_at, updated_at
+       ) VALUES ('deferred-task', 'deferred-context', '1.0', 'research-agent', 'journal-agent',
+         'change_request', 'working', 1, 3, 'Deferred task', 'Migrate after initialize', '[]',
+         '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')`
+    );
+    store.db.run(
+      `INSERT INTO collaboration_messages (
+         message_id, task_id, protocol_version, sender_agent_id, recipient_agent_id,
+         message_type, body, evidence_json, created_at
+       ) VALUES ('deferred-message', 'deferred-task', '1.0', 'research-agent', 'journal-agent',
+         'change_request', 'Migrate after initialize', '[]', '2026-08-19T00:00:00.000Z')`
+    );
+
+    const result = core.initialize();
+    assert.deepEqual(result, {
+      status: "applied",
+      migrationId: "collaboration-objective-work-item-v2",
+      migratedTaskCount: 1
+    });
+    const task = core.getTask("deferred-task");
+    assert.equal(task.protocolVersion, "2.0");
+    assert.match(task.sourceObjectiveId, /^objective:collaboration:/);
+    assert.match(task.targetObjectiveId, /^objective:collaboration:/);
+    assert.equal(task.messages[0].envelope.sender.objectiveId, task.sourceObjectiveId);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy collaboration migration preserves platform Assistant boundaries without assigning it", async () => {
+  const directory = await mkdtemp(join(os.tmpdir(), "corptie-collaboration-assistant-migration-test-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  const core = new CollaborationCore(store);
+  try {
+    await store.initialize();
+    core.registerAgent({ agentId: "research-agent", name: "Research Agent" });
+    store.db.run(
+      `INSERT INTO agents (
+         agent_id, agent_kind, name, description, role, status, capabilities_json,
+         system_prompt, current_session_id, created_at, updated_at
+       ) VALUES ('platform-assistant', 'platformAssistant', 'Corptie Assistant', '', 'assistant',
+         'available', '[]', '', NULL, '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')`
+    );
+    store.db.run(
+      "INSERT INTO collaboration_contexts (context_id, title, metadata_json, created_at, updated_at) VALUES ('assistant-context', 'Assistant', '{}', '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')"
+    );
+    store.db.run(
+      `INSERT INTO collaboration_tasks (
+         task_id, context_id, protocol_version, initiator_agent_id, recipient_agent_id,
+         type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
+         created_at, updated_at
+       ) VALUES ('assistant-task', 'assistant-context', '1.0', 'research-agent', 'platform-assistant',
+         'question', 'working', 1, 3, 'Legacy assistant task', 'Migrate safely', '[]',
+         '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')`
+    );
+    store.db.run(
+      `INSERT INTO collaboration_messages (
+         message_id, task_id, protocol_version, sender_agent_id, recipient_agent_id,
+         message_type, body, evidence_json, created_at
+       ) VALUES ('assistant-message', 'assistant-task', '1.0', 'research-agent', 'platform-assistant',
+         'question', 'Migrate safely', '[]', '2026-08-19T00:00:00.000Z')`
+    );
+
+    const result = core.initialize();
+    assert.equal(result.status, "applied");
+    const task = core.getTask("assistant-task");
+    const compatibilityObjective = store.getObjective(task.targetObjectiveId);
+    const workItem = store.getWorkItem(task.workItemId);
+    assert.equal(task.protocolVersion, "2.0");
+    assert.deepEqual(compatibilityObjective.contributorAgentIds, []);
+    assert.equal(workItem.main_agent_id, null);
+    assert.equal(task.messages[0].envelope.recipient.objectiveId, task.targetObjectiveId);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("clarification and delivery follow role-based state transitions", async () => {
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
