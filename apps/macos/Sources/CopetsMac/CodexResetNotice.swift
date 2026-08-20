@@ -66,13 +66,13 @@ enum CodexResetNoticeIdentity {
 
     private static func resetMatches(_ left: Int?, _ right: Int?) -> Bool {
         switch (left, right) {
-        case (nil, nil): true
+        case (nil, nil): return true
         case let (left?, right?):
             let calendar = Calendar.autoupdatingCurrent
             let leftDate = Date(timeIntervalSince1970: TimeInterval(left * 60))
             let rightDate = Date(timeIntervalSince1970: TimeInterval(right * 60))
             return calendar.isDate(leftDate, inSameDayAs: rightDate)
-        default: false
+        default: return false
         }
     }
 
