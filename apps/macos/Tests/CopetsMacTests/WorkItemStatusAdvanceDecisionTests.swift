@@ -1,18 +1,16 @@
 import Testing
 @testable import CorptieMac
 
-struct WorkItemStatusAdvanceDecisionTests {
-    @Test func advancesNotStartedWorkItemToInProgress() {
-        #expect(WorkItemStatusAdvanceDecision.resolve(status: "todo") == .advance(to: "in_progress"))
+struct WorkItemStatusInteractionDecisionTests {
+    @Test func inProgressStatusOpensCompletionConfirmation() {
+        #expect(WorkItemAcceptancePresentationDecision.canOpenCompletionConfirmation(status: "in_progress"))
+        #expect(WorkItemAcceptancePresentationDecision.canOpenCompletionConfirmation(status: "doing"))
+        #expect(WorkItemAcceptancePresentationDecision.canOpenCompletionConfirmation(status: "running"))
     }
 
-    @Test func advancesInProgressWorkItemToDone() {
-        #expect(WorkItemStatusAdvanceDecision.resolve(status: "in_progress") == .advance(to: "done"))
-    }
-
-    @Test func completedWorkItemsCanBeRestoredWhileFailedItemsRemainUnavailable() {
-        #expect(WorkItemStatusAdvanceDecision.resolve(status: "done") == .restore)
-        #expect(WorkItemStatusAdvanceDecision.resolve(status: "completed") == .restore)
-        #expect(WorkItemStatusAdvanceDecision.resolve(status: "failed") == .unavailable)
+    @Test func everyOtherStatusIsReadOnly() {
+        for status in ["todo", "pending", "ready", "review", "done", "complete", "completed", "failed"] {
+            #expect(!WorkItemAcceptancePresentationDecision.canOpenCompletionConfirmation(status: status))
+        }
     }
 }
