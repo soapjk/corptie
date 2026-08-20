@@ -25,7 +25,9 @@ function stableSessionFields(previous, next) {
     || previous.sortOrder !== next.sortOrder
     || previous.archived !== next.archived
     || previous.lastMessageAt !== next.lastMessageAt) fields.push("ordering");
-  if (JSON.stringify(previous.external) !== JSON.stringify(next.external)) fields.push("metadata");
+  if (JSON.stringify(previous.external) !== JSON.stringify(next.external)
+    || previous.lastAgentMessageSequence !== next.lastAgentMessageSequence
+    || previous.lastReadMessageSequence !== next.lastReadMessageSequence) fields.push("metadata");
   return fields;
 }
 

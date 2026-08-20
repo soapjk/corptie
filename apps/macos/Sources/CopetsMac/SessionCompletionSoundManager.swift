@@ -3,6 +3,22 @@ import Combine
 import Foundation
 @preconcurrency import UserNotifications
 
+struct SessionCompletionNotificationSummary: Equatable {
+    let completed: Int
+    let pending: Int
+    let failed: Int
+
+    static func make(from sessions: [TaskSession]) -> Self {
+        Self(
+            completed: sessions.lazy.filter { $0.status == .complete }.count,
+            pending: sessions.lazy.filter {
+                ($0.lastAgentMessageSequence ?? 0) > ($0.lastReadMessageSequence ?? 0)
+            }.count,
+            failed: sessions.lazy.filter { $0.status == .failed }.count
+        )
+    }
+}
+
 struct SessionCompletionSoundOption: Identifiable, Equatable {
     let id: String
     let label: String

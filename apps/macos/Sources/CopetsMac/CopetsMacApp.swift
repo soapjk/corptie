@@ -199,6 +199,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         completionHandler([.banner, .list, .sound])
     }
 
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let sessionID = response.notification.request.content.userInfo["sessionId"] as? String
+        completionHandler()
+        Task { @MainActor in
+            if let sessionID {
+                NotificationCenter.default.post(
+                    name: .openSessionConversation,
+                    object: nil,
+                    userInfo: ["sessionId": sessionID]
+                )
+            }
+        }
+    }
+
     func applicationDidBecomeActive(_ notification: Notification) {
         Task {
             await backendClient.refreshSelectedUsage()

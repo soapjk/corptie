@@ -25,8 +25,7 @@ struct SessionsView: View {
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
     @State private var isShowingWorkerArchive = false
-    @State private var readCompletionRevisionsBySessionID = SessionReadReceiptStore.load()
-    @State private var hasInitializedSessionReadReceipts = SessionReadReceiptStore.isInitialized
+    @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
         "sessions.workerGroupingMode",
         store: CorptieAppEnvironment.userDefaults
@@ -83,7 +82,6 @@ struct SessionsView: View {
             }
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
-            reconcileSessionReadReceipts(sessions)
             let activeSessionIDs = Set(sessions.map(\.id))
             presentationStore.prune(to: activeSessionIDs)
             SessionTimelineRepository.shared.prune(to: activeSessionIDs)
@@ -97,9 +95,6 @@ struct SessionsView: View {
         .onReceive(backendClient.$selectedSession) { session in
             selectedSession = session
             if let session {
-                if router.selectedTab == .sessions {
-                    markSessionRead(session)
-                }
                 presentationStore.activateHost(for: session.id)
                 Self.recordSessionId(session.id, category: selectedCategory)
                 visuallySelectedSessionID = session.id
@@ -112,6 +107,12 @@ struct SessionsView: View {
                 }
             }
             preloadSessionMessages(backendClient.sessions)
+        }
+        .onReceive(backendClient.$selectedDetail) { detail in
+            confirmDisplayedAgentMessagesRead(detail)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            confirmDisplayedAgentMessagesRead(backendClient.selectedDetail)
         }
         .onChange(of: selectedCategory) { _, newValue in
             if newValue != .worker {
@@ -131,7 +132,6 @@ struct SessionsView: View {
         guard router.selectedTab == .sessions else { return }
         selectedSession = backendClient.selectedSession
         if let selectedSession {
-            markSessionRead(selectedSession)
             presentationStore.activateHost(for: selectedSession.id)
         }
         scheduleDetailRendering()
@@ -164,6 +164,7 @@ struct SessionsView: View {
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled, router.selectedTab == .sessions else { return }
             layoutState.canRenderDetailMessages = true
+            confirmDisplayedAgentMessagesRead(backendClient.selectedDetail)
             PerfStopwatch.event("会话切换.scheduleDetailRendering=true", value: 1)
         }
     }
@@ -266,7 +267,6 @@ struct SessionsView: View {
 
     private func selectSessionAfterHighlight(_ session: TaskSession) {
         pendingSelectionTask?.cancel()
-        markSessionRead(session)
         visuallySelectedSessionID = session.id
         pendingSelectionTask = Task { @MainActor in
             // Give AppKit one display frame to paint the row selection before
@@ -490,7 +490,6 @@ struct SessionsView: View {
         let isSelected = (visuallySelectedSessionID ?? selectedSession?.id) == row.session.id
         return SessionsSidebarRow(
             row: row,
-            readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID,
             selectionRequested: selectSessionAfterHighlight,
             preheatRequested: backendClient.prefetchDetail
         )
@@ -535,6 +534,10 @@ struct SessionsView: View {
                     fill: Color.secondary.opacity(0.82),
                     diameter: 16
                 )
+                let unreadCount = group.rows.lazy.filter { isSessionUnread($0.session) }.count
+                if unreadCount > 0 {
+                    SessionCountBadge(count: unreadCount, fill: .red, diameter: 15)
+                }
                 Spacer()
             }
             .padding(.top, 4)
@@ -579,36 +582,31 @@ struct SessionsView: View {
         countUnreadSessions(
             in: sessionListStore.rows.map(\.session),
             category: category,
-            workItems: entityClient.workItems,
-            readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID
+            workItems: entityClient.workItems
         )
     }
 
-    private func reconcileSessionReadReceipts(_ sessions: [TaskSession]) {
-        if !hasInitializedSessionReadReceipts {
-            for session in sessions where session.status == .complete {
-                readCompletionRevisionsBySessionID[session.id] = session.updatedAt
-            }
-            hasInitializedSessionReadReceipts = true
-            SessionReadReceiptStore.save(
-                readCompletionRevisionsBySessionID,
-                initialized: true
-            )
-        }
+    private func confirmDisplayedAgentMessagesRead(_ detail: CodexThreadDetail?) {
         guard router.selectedTab == .sessions,
-              let selectedID = selectedSession?.id,
-              let selected = sessions.first(where: { $0.id == selectedID }) else { return }
-        markSessionRead(selected)
-    }
-
-    private func markSessionRead(_ session: TaskSession) {
-        guard session.status == .complete,
-              readCompletionRevisionsBySessionID[session.id] != session.updatedAt else { return }
-        readCompletionRevisionsBySessionID[session.id] = session.updatedAt
-        SessionReadReceiptStore.save(
-            readCompletionRevisionsBySessionID,
-            initialized: hasInitializedSessionReadReceipts
-        )
+              NSApp.isActive,
+              layoutState.canRenderDetailMessages,
+              let detail,
+              let session = selectedSession,
+              detail.id == (session.external?.threadId ?? session.id),
+              let sequence = detail.lastAgentMessageSequence,
+              sequence > (session.lastReadMessageSequence ?? 0),
+              sequence > (submittedReadSequencesBySessionID[session.id] ?? 0) else { return }
+        submittedReadSequencesBySessionID[session.id] = sequence
+        Task { @MainActor in
+            await Task.yield()
+            let succeeded = await backendClient.markSessionMessagesRead(
+                sessionID: session.id,
+                throughSequence: sequence
+            )
+            if !succeeded, submittedReadSequencesBySessionID[session.id] == sequence {
+                submittedReadSequencesBySessionID.removeValue(forKey: session.id)
+            }
+        }
     }
 
     // 按搜索词筛选当前 Tab 下的会话（匹配标题/摘要/Agent/工作目录）。
@@ -665,17 +663,13 @@ struct SessionsView: View {
 /// a parent-list invalidation or selecting the Session first.
 private struct SessionsSidebarRow: View {
     @ObservedObject var row: SessionRowModel
-    let readCompletionRevisionsBySessionID: [String: String]
     let selectionRequested: (TaskSession) -> Void
     let preheatRequested: (TaskSession) -> Void
 
     var body: some View {
         CompactSessionRow(
             session: row.session,
-            isUnread: isSessionUnread(
-                row.session,
-                readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID
-            ),
+            isUnread: isSessionUnread(row.session),
             preheatRequested: preheatRequested,
             selectionRequested: selectionRequested
         )
@@ -720,48 +714,21 @@ struct SessionCountBadge: View {
     }
 }
 
-@MainActor
-enum SessionReadReceiptStore {
-    private static let revisionsKey = "sessions.readCompletionRevisions"
-    private static let initializedKey = "sessions.readCompletionRevisions.initialized"
-
-    static var isInitialized: Bool {
-        CorptieAppEnvironment.userDefaults.bool(forKey: initializedKey)
-    }
-
-    static func load() -> [String: String] {
-        CorptieAppEnvironment.userDefaults.dictionary(forKey: revisionsKey) as? [String: String] ?? [:]
-    }
-
-    static func save(_ revisions: [String: String], initialized: Bool) {
-        CorptieAppEnvironment.userDefaults.set(revisions, forKey: revisionsKey)
-        CorptieAppEnvironment.userDefaults.set(initialized, forKey: initializedKey)
-    }
-}
-
-func isSessionUnread(
-    _ session: TaskSession,
-    readCompletionRevisionsBySessionID: [String: String]
-) -> Bool {
-    session.status == .complete
-        && readCompletionRevisionsBySessionID[session.id] != session.updatedAt
+func isSessionUnread(_ session: TaskSession) -> Bool {
+    (session.lastAgentMessageSequence ?? 0) > (session.lastReadMessageSequence ?? 0)
 }
 
 func countUnreadSessions(
     in sessions: [TaskSession],
     category: SessionCategory,
-    workItems: [WorkItem],
-    readCompletionRevisionsBySessionID: [String: String]
+    workItems: [WorkItem]
 ) -> Int {
     sessions.lazy.filter { session in
         guard SessionCategory(session: session) == category else { return false }
         if category == .worker, isArchivedWorkerSession(session, workItems: workItems) {
             return false
         }
-        return isSessionUnread(
-            session,
-            readCompletionRevisionsBySessionID: readCompletionRevisionsBySessionID
-        )
+        return isSessionUnread(session)
     }.count
 }
 
