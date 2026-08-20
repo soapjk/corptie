@@ -332,6 +332,7 @@
 "The changes will be committed before completing the Worktree operation. No remote push is performed." = "The changes will be committed before completing the Worktree operation. No remote push is performed.";
 "The changes will be committed before running the selected Worktree operations. No remote push is performed." = "The changes will be committed before running the selected Worktree operations. No remote push is performed.";
 "Commit Changes" = "Commit Changes";
+"This creates a local commit for the uncommitted changes in main. Nothing is pushed." = "This creates a local commit for the uncommitted changes in main. Nothing is pushed.";
 "Commit and Merge" = "Commit and Merge";
 "Commit and Continue" = "Commit and Continue";
 "Continuing after Worktree switch" = "Continuing after Worktree switch";
@@ -611,6 +612,7 @@
 "New Objective" = "New Objective";
 "Raw status" = "Raw status";
 "Regenerate Plan" = "Regenerate Plan";
+"Re-preflight" = "Re-preflight";
 "Generate a reviewable local-only integration plan before anything is changed." = "Generate a reviewable local-only integration plan before anything is changed.";
 "Generate Integration Plan" = "Generate Integration Plan";
 "Stop this task and generate a new integration plan?" = "Stop this task and generate a new integration plan?";
@@ -625,6 +627,11 @@
 "The integration plan is stale. Regenerate and review it before continuing." = "The integration plan is stale. Regenerate and review it before continuing.";
 "执行状态" = "Execution Status";
 "Ask Agent to Resolve" = "Ask Agent to Resolve";
+"Retry after Manual Resolution" = "Retry after Manual Resolution";
+"Resolve the conflicts in main (%@), stage the resolved files, then choose Retry after Manual Resolution. Conflicts: %@" = "Resolve the conflicts in main (%@), stage the resolved files, then choose Retry after Manual Resolution. Conflicts: %@";
+"Active Session: %@" = "Active Session: %@";
+"An active Session is still modifying this Worktree. Stop it before integrating." = "An active Session is still modifying this Worktree. Stop it before integrating.";
+"Local Agent configuration links cannot be committed. Replace them with real project files first." = "Local Agent configuration links cannot be committed. Replace them with real project files first.";
 "Open Conflict Agent" = "Open Conflict Agent";
 "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes." = "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes.";
 "The conflict Agent finished. Retry to verify and resume the integration task." = "The conflict Agent finished. Retry to verify and resume the integration task.";

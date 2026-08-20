@@ -658,6 +658,7 @@
 "The changes will be committed before completing the Worktree operation. No remote push is performed." = "完成 Worktree 操作前会先提交修改；不会执行远程推送。";
 "The changes will be committed before running the selected Worktree operations. No remote push is performed." = "执行所选 Worktree 操作前会先提交修改；不会执行远程推送。";
 "Commit Changes" = "提交修改";
+"This creates a local commit for the uncommitted changes in main. Nothing is pushed." = "这会为 main 中的未提交修改创建本地提交，不会推送到远程。";
 "Commit and Merge" = "提交并合并";
 "Commit and Continue" = "提交并继续";
 "Continuing after Worktree switch" = "正在切换后的 Worktree 中继续任务";
@@ -1000,9 +1001,15 @@
 "New Objective" = "新建 Objective";
 "Raw status" = "原始状态";
 "Regenerate Plan" = "重新生成计划";
+"Re-preflight" = "重新预检";
 "The integration plan is stale. Regenerate and review it before continuing." = "代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。";
 "执行状态" = "执行状态";
 "Ask Agent to Resolve" = "让 Agent 处理冲突";
+"Retry after Manual Resolution" = "手动解决后重试";
+"Resolve the conflicts in main (%@), stage the resolved files, then choose Retry after Manual Resolution. Conflicts: %@" = "请在 main（%@）中解决冲突并暂存已解决的文件，然后选择“手动解决后重试”。冲突文件：%@";
+"Active Session: %@" = "活跃 Session：%@";
+"An active Session is still modifying this Worktree. Stop it before integrating." = "仍有活跃 Session 正在修改此 Worktree，请先停止该 Session 再执行集成。";
+"Local Agent configuration links cannot be committed. Replace them with real project files first." = "本地 Agent 配置链接不能提交，请先将其替换为真实的项目文件。";
 "Open Conflict Agent" = "打开冲突处理 Agent";
 "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes." = "Agent %@ 正在 %@ 中处理冲突。完成后请返回此处重试。";
 "The conflict Agent finished. Retry to verify and resume the integration task." = "冲突处理 Agent 已完成。请点击重试以验证结果并继续集成任务。";

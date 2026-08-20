@@ -879,14 +879,24 @@ test("integration commit is traceable and a retry recognizes its persisted job m
     await writeFile(join(fixture.activeWorktree, "traceable.txt"), "traceable\n");
     const expectedHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
     const expectedStatusSummary = (await gitOutput(["status", "--porcelain=v1"], fixture.activeWorktree)).trim();
+    let protectionPrepared = false;
     const first = await manager.commitIntegrationChanges({
       path: fixture.activeWorktree,
       expectedHead,
       expectedStatusSummary,
       commitMessage: "Corptie: preserve changes in feature/session-worktree",
+      prepare: async () => {
+        protectionPrepared = true;
+        await writeFile(join(fixture.activeWorktree, ".gitignore"), "/.corptie\n");
+      },
       jobId: "job:traceable"
     });
     assert.equal(first.committed, true);
+    assert.equal(protectionPrepared, true);
+    assert.equal(
+      (await gitOutput(["show", "--format=", "--name-only", "HEAD"], fixture.activeWorktree)).includes(".gitignore"),
+      true
+    );
     assert.match(
       await gitOutput(["show", "-s", "--format=%B", "HEAD"], fixture.activeWorktree),
       /Corptie-Integration-Job: job:traceable/

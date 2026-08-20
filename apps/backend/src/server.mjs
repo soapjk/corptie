@@ -932,7 +932,14 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     }
     return gitWorkspaces.integrationInspectionForProject(path, repositoryId);
   },
-  commitChanges: (input) => gitWorkspaces.commitIntegrationChanges(input),
+  inspectCommitProtection: (path) => gitCommitProtection.inspect(path),
+  commitChanges: (input) => gitWorkspaces.commitIntegrationChanges({
+    ...input,
+    prepare: () => gitCommitProtection.resolve(input.path, {
+      decision: input.protectionDecision,
+      neverRemind: input.neverRemindPrivateFiles === true
+    })
+  }),
   mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
   abortMerge: (input) => gitWorkspaces.abortIntegrationMerge(input),
   prepareConflictResolution: (input) => gitWorkspaces.prepareIntegrationConflictResolutionForProject({
@@ -1022,6 +1029,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     deleteBranch: true,
     safeOnly: true
   }),
+  isSessionActive: sessionHasActiveRun,
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const feishuGateway = new FeishuGatewayManager({

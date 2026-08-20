@@ -17,16 +17,19 @@ export class WorktreeIntegrationJobService {
     this.inspectRepository = options.inspectRepository;
     this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
     this.commitChanges = options.commitChanges;
+    this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
     this.prepareConflictResolution = options.prepareConflictResolution;
     this.launchConflictResolution = options.launchConflictResolution;
     this.removeWorktree = options.removeWorktree;
+    this.isSessionActive = options.isSessionActive ?? (() => false);
     this.onEvent = options.onEvent ?? (() => {});
     this.activeJobs = new Set();
     this.activeConflictResolutions = new Set();
     for (const name of [
       "inspectRepository",
+      "inspectCommitProtection",
       "commitChanges",
       "mergeSource",
       "abortMerge",
@@ -157,12 +160,22 @@ export class WorktreeIntegrationJobService {
     });
     const blockingRisks = [];
     let mergeOrdinal = 0;
-    const items = ordered.filter(requiresIntegration).map((worktree) => {
+    const items = [];
+    for (const worktree of ordered.filter(requiresIntegration)) {
       const ordinal = worktree.isMain ? 0 : ++mergeOrdinal;
       const risks = risksFor(worktree);
+      const commitProtection = worktree.dirty === true
+        ? await this.inspectCommitProtection(worktree.path)
+        : null;
+      if ((commitProtection?.localSymlinkPaths ?? []).length > 0) {
+        risks.push({
+          code: "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE",
+          message: `Local Agent configuration links cannot be committed: ${commitProtection.localSymlinkPaths.join(", ")}.`
+        });
+      }
       blockingRisks.push(...risks.map((risk) => ({ worktreeId: worktree.worktreeId, ...risk })));
       const label = worktree.branchName ?? worktree.path.split("/").filter(Boolean).at(-1) ?? "Worktree";
-      return {
+      items.push({
         ordinal,
         worktreeId: worktree.worktreeId,
         path: worktree.path,
@@ -178,6 +191,7 @@ export class WorktreeIntegrationJobService {
         mergedIntoMain: worktree.mergedIntoMain,
         associations: worktree.associations,
         risks,
+        commitProtection,
         commitMessage: worktree.dirty === true ? `Corptie: preserve changes in ${label}`.slice(0, 120) : null,
         commitStatus: worktree.dirty === true ? "pending" : "not_needed",
         commitHead: null,
@@ -189,8 +203,8 @@ export class WorktreeIntegrationJobService {
         mergeMainHead: null,
         conflictFiles: [],
         error: null
-      };
-    });
+      });
+    }
     const plan = {
       repositoryId: repository.id,
       mainWorktreeId: inspection.mainWorktreeId,
@@ -244,7 +258,19 @@ export class WorktreeIntegrationJobService {
         409
       );
     }
-    const current = await this.inspectRepository(job.repositoryId);
+    const commitProtectionDecisions = normalizeCommitProtectionDecisions(input.commitProtectionDecisions);
+    for (const item of job.details.plan.items) {
+      if (item.commitProtection?.requiresDecision !== true) continue;
+      const decision = commitProtectionDecisions[item.worktreeId]?.decision;
+      if (decision !== "ignore" && decision !== "include") {
+        throw new WorktreeIntegrationJobError(
+          "GIT_COMMIT_PROTECTION_REQUIRED",
+          `Choose how to handle protected files in ${item.branchName ?? item.path} before confirming.`,
+          409
+        );
+      }
+    }
+    const current = this.#associate(await this.inspectRepository(job.repositoryId));
     if (!planMatchesInspection(job.details.plan, current)) {
       return presentJob(this.#update(job, {
         phase: "plan_stale",
@@ -257,6 +283,7 @@ export class WorktreeIntegrationJobService {
       status: "queued",
       phase: "queued",
       confirmedAt: new Date().toISOString(),
+      details: { ...job.details, commitProtectionDecisions },
       auditEvent: "plan_confirmed"
     });
     this.#schedule(updated.id);
@@ -593,12 +620,15 @@ export class WorktreeIntegrationJobService {
       for (const item of items) {
         if (item.commitStatus === "not_needed" || ["completed", "recovered"].includes(item.commitStatus)) continue;
         if (await this.#stopIfRequested(jobId)) return;
+        await this.#assertWorktreeIdle(job.repositoryId, item.worktreeId);
         job = this.#item(job, item.worktreeId, { commitStatus: "running", error: null }, "committing", "commit_started");
         const result = await this.commitChanges({
           path: item.path,
           expectedHead: item.sourceHeadBefore,
           expectedStatusSummary: item.statusSummary,
           commitMessage: item.commitMessage,
+          protectionDecision: job.details.commitProtectionDecisions?.[item.worktreeId]?.decision ?? null,
+          neverRemindPrivateFiles: job.details.commitProtectionDecisions?.[item.worktreeId]?.neverRemind === true,
           jobId
         });
         job = this.#item(job, item.worktreeId, {
@@ -620,6 +650,7 @@ export class WorktreeIntegrationJobService {
         }
         if (await this.#stopIfRequested(jobId)) return;
         const sourceHead = item.commitHead ?? item.sourceHeadBefore;
+        await this.#assertWorktreeIdle(job.repositoryId, item.worktreeId);
         job = this.#item(
           job,
           item.worktreeId,
@@ -687,6 +718,18 @@ export class WorktreeIntegrationJobService {
     if (latest.status !== "cancellation_requested") return false;
     await this.#finishCancellation(latest, { replan: latest.details.replanAfterCancel === true });
     return true;
+  }
+
+  async #assertWorktreeIdle(repositoryId, worktreeId) {
+    const inspection = this.#associate(await this.inspectRepository(repositoryId));
+    const worktree = inspection.worktrees.find((candidate) => candidate.worktreeId === worktreeId);
+    const activeSessions = (worktree?.associations ?? []).filter((association) => association.active === true);
+    if (activeSessions.length === 0) return;
+    throw new WorktreeIntegrationJobError(
+      "ACTIVE_SESSION_IN_PROGRESS",
+      `Stop the active Session before integrating ${worktree.branchName ?? worktree.path}.`,
+      409
+    );
   }
 
   #pause(job, error) {
@@ -781,6 +824,7 @@ export class WorktreeIntegrationJobService {
           const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
           return {
             ...association,
+            active: session ? this.isSessionActive(session) : association.active === true,
             workItemId: workItem?.id ?? workItemId,
             workItemTitle: workItem?.title ?? null
           };
@@ -859,7 +903,25 @@ function risksFor(worktree) {
     risks.push({ code: "WORKTREE_BRANCH_AMBIGUOUS", message: "A non-main Worktree must have an attributable branch." });
   }
   if ((worktree.conflictFiles ?? []).length > 0) risks.push({ code: "UNRESOLVED_CONFLICTS", message: "Worktree has unresolved conflict files." });
+  const activeSessions = (worktree.associations ?? []).filter((association) => association.active === true);
+  if (activeSessions.length > 0) {
+    const labels = activeSessions.map((association) => association.title ?? association.sessionId ?? association.logicalSessionId);
+    risks.push({
+      code: "ACTIVE_SESSION_IN_PROGRESS",
+      message: `Active Sessions are still modifying this Worktree: ${labels.join(", ")}.`
+    });
+  }
   return risks;
+}
+
+function normalizeCommitProtectionDecisions(value) {
+  if (!Array.isArray(value)) return {};
+  return Object.fromEntries(value.flatMap((entry) => {
+    const worktreeId = String(entry?.worktreeId ?? "").trim();
+    const decision = String(entry?.decision ?? "").trim();
+    if (!worktreeId || !["ignore", "include"].includes(decision)) return [];
+    return [[worktreeId, { decision, neverRemind: entry?.neverRemind === true }]];
+  }));
 }
 
 function requiresIntegration(worktree) {
@@ -881,7 +943,11 @@ function planValidationSnapshot(inspection) {
       statusSummary: worktree.statusSummary ?? "",
       isLocked: worktree.isLocked === true,
       operationState: worktree.operationState ?? null,
-      conflictFiles: [...(worktree.conflictFiles ?? [])].sort()
+      conflictFiles: [...(worktree.conflictFiles ?? [])].sort(),
+      activeSessionIds: (worktree.associations ?? [])
+        .filter((association) => association.active === true)
+        .map((association) => association.logicalSessionId)
+        .sort()
     }));
 }
 

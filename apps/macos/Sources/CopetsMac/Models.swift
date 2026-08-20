@@ -438,6 +438,7 @@ struct ProjectIntegrationConflictWorkItemResponse: Decodable, Sendable {
 struct GitCommitProtectionStatus: Decodable, Equatable, Sendable {
     let repositoryRoot: String
     let protectedPaths: [String]
+    let localSymlinkPaths: [String]?
     let suggestedIgnorePatterns: [String]
     let warningEnabled: Bool
     let requiresDecision: Bool

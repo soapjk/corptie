@@ -146,12 +146,25 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("L10n(\"Merge into main\")"))
         XCTAssertTrue(view.contains("L10n(\"Synchronize with main\")"))
         XCTAssertTrue(view.contains("private func executeAndDismiss()"))
+        XCTAssertTrue(view.contains("worktree.commit-main.\\(worktree.worktreeId)"))
+        XCTAssertTrue(view.contains("worktree.isMain, worktree.dirty == true"))
+        XCTAssertTrue(view.contains("client.commitMainWorktreeChanges("))
         XCTAssertTrue(view.contains("private func confirmAndDismiss()"))
         XCTAssertTrue(view.contains("onClose()\n        Task"))
-        XCTAssertTrue(view.contains("isPresented = false\n        Task { await client.confirmPlan() }"))
+        XCTAssertTrue(view.contains("Task { await client.confirmPlan(commitProtectionDecisions: decisions) }"))
+        XCTAssertTrue(view.contains("protectionDecisionBinding(for: item.worktreeId)"))
+        XCTAssertTrue(view.contains("item.associations.filter(\\.active)"))
+        XCTAssertTrue(view.contains("Retry after Manual Resolution"))
+        XCTAssertTrue(view.contains("worktree.integrate.retry-manual-conflict"))
+        XCTAssertTrue(view.contains("worktree.integrate.blocked-repreflight"))
+        XCTAssertTrue(view.contains("private func repreflightAndReview()"))
         XCTAssertTrue(view.contains("$0.commitStatus != \"not_needed\" || $0.mergeStatus != \"not_needed\""))
         XCTAssertFalse(view.contains("Toggle(L10n(\"Delete this Worktree\")"))
         XCTAssertTrue(client.contains("projects/\\(repositoryId)/workspaces/\\(worktree.worktreeId)/actions/merge"))
+        XCTAssertTrue(client.contains("projects/\\(repositoryId)/workspaces/\\(worktree.worktreeId)/actions/commit"))
+        XCTAssertTrue(client.contains("func commitMainWorktreeChanges("))
+        XCTAssertTrue(client.contains("commitProtectionDecisions.map"))
+        XCTAssertTrue(client.contains("await loadRepository(repositoryId)\n            errorMessage = operationError"))
         XCTAssertTrue(client.contains("body: body"))
     }
 
@@ -205,6 +218,20 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("showingPlan = true"))
         XCTAssertTrue(client.contains("worktree-management/jobs/\\(staleJob.id)/cancel"))
         XCTAssertTrue(client.contains("body: [\"replan\": true]"))
+    }
+
+    func testStateDriftFailuresRequireRepreflightInsteadOfBlindRetry() {
+        for code in [
+            "PLAN_STALE", "MAIN_HEAD_CHANGED", "MAIN_DIRTY",
+            "WORKTREE_HEAD_CHANGED", "WORKTREE_CHANGES_CHANGED", "UNRELATED_MERGE_IN_PROGRESS"
+        ] {
+            XCTAssertTrue(WorktreeIntegrationRecoveryPolicy.requiresRepreflight(
+                status: "paused", phase: "failed", auditCode: code
+            ))
+        }
+        XCTAssertFalse(WorktreeIntegrationRecoveryPolicy.requiresRepreflight(
+            status: "paused", phase: "conflict", auditCode: "MERGE_CONFLICT"
+        ))
     }
 
     func testRunningIntegrationCanStopSafelyAndAutomaticallyRepreflight() throws {

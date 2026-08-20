@@ -281,6 +281,39 @@ final class WorktreeManagementClient: ObservableObject {
             errorMessage = nil
             return true
         } catch {
+            let operationError = error.localizedDescription
+            await loadRepository(repositoryId)
+            errorMessage = operationError
+            return false
+        }
+    }
+
+    func commitMainWorktreeChanges(
+        worktree: ManagedWorktree,
+        commitMessage: String,
+        privateFilesDecision: String?,
+        neverRemindPrivateFiles: Bool
+    ) async -> Bool {
+        guard let repositoryId = selection.repositoryId,
+              worktree.isMain,
+              worktree.dirty == true else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            var body: [String: Any] = [
+                "commitMessage": commitMessage,
+                "neverRemindPrivateFiles": neverRemindPrivateFiles
+            ]
+            if let privateFilesDecision { body["privateFilesDecision"] = privateFilesDecision }
+            let _: WorktreeActionAcknowledgement = try await post(
+                "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit",
+                body: body
+            )
+            operationNotice = "Committed changes in \(worktree.branchName ?? "main")."
+            errorMessage = nil
+            await loadRepository(repositoryId)
+            return true
+        } catch {
             errorMessage = error.localizedDescription
             return false
         }
@@ -310,12 +343,23 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
-    func confirmPlan() async {
+    func confirmPlan(commitProtectionDecisions: [WorktreeCommitProtectionDecision] = []) async {
         guard let job, job.status == "awaiting_confirmation" else { return }
         await mutate {
+            let decisions = commitProtectionDecisions.map { decision in
+                [
+                    "worktreeId": decision.worktreeId,
+                    "decision": decision.decision,
+                    "neverRemind": decision.neverRemind
+                ] as [String: Any]
+            }
             let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
                 "worktree-management/jobs/\(job.id)/confirm",
-                body: ["confirmed": true, "planFingerprint": job.planFingerprint]
+                body: [
+                    "confirmed": true,
+                    "planFingerprint": job.planFingerprint,
+                    "commitProtectionDecisions": decisions
+                ]
             )
             self.job = envelope.job
         }

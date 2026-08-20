@@ -15,7 +15,9 @@ function memoryFixture({
   externalConflictResolved = false,
   commitGate = null,
   conflictAttempts = null,
-  inspectRepositorySummary = null
+  inspectRepositorySummary = null,
+  protectedPaths = [],
+  activeFeatureSession = false
 } = {}) {
   const jobs = new Map();
   let sequence = 0;
@@ -36,7 +38,9 @@ function memoryFixture({
       changedFiles: featureDirty ? ["feature.txt"] : [],
       aheadOfMain: 1, behindMain: 0, mergedIntoMain: featureAlreadyMerged,
       isLocked: blockingRisk, lockReason: blockingRisk ? "owned by another process" : null,
-      isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: []
+      isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: activeFeatureSession ? [{
+        logicalSessionId: "logical:active", sessionId: "session:active", title: "Active Agent", active: true
+      }] : []
     }
   ];
   if ((conflictAttempts?.length ?? 0) > 1) {
@@ -71,7 +75,9 @@ function memoryFixture({
       Object.assign(jobs.get(id), patch, { updatedAt: new Date(Date.now() + sequence++).toISOString() });
       return structuredClone(jobs.get(id));
     },
-    getSession: (id) => id?.startsWith("session:conflict") ? { id, status: "complete" } : null,
+    getSession: (id) => id?.startsWith("session:conflict")
+      ? { id, status: "complete" }
+      : (id === "session:active" ? { id, status: "running" } : null),
     getWorkItem: () => null
   };
   const calls = [];
@@ -87,8 +93,20 @@ function memoryFixture({
       repositoryId: repository.id, inventoryVersion: "inventory:1", mainWorktreeId: "wt:main",
       mainPath: "/repo", mainHeadOid: worktrees[0].headOid, worktrees: structuredClone(worktrees)
     }),
+    inspectCommitProtection: async (path) => ({
+      repositoryRoot: path,
+      protectedPaths: path === "/repo-feature" ? protectedPaths : [],
+      localSymlinkPaths: [],
+      suggestedIgnorePatterns: protectedPaths.map((entry) => `/${entry}`),
+      warningEnabled: true,
+      requiresDecision: path === "/repo-feature" && protectedPaths.length > 0
+    }),
+    isSessionActive: (session) => session.status === "running",
     commitChanges: async (input) => {
       calls.push(`commit:${input.path}`);
+      if (input.protectionDecision) {
+        calls.push(`protect:${input.path}:${input.protectionDecision}:${input.neverRemindPrivateFiles === true}`);
+      }
       if (commitGate) await commitGate;
       const worktree = worktrees.find((entry) => entry.path === input.path);
       worktree.headOid = `${worktree.headOid}:commit`;
@@ -437,6 +455,39 @@ test("blocking preflight risks cannot be confirmed", async () => {
     () => service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint }),
     { code: "PREFLIGHT_RISKS_UNRESOLVED" }
   );
+});
+
+test("active Sessions block integration until their run stops", async () => {
+  const { service } = memoryFixture({ activeFeatureSession: true });
+  const plan = await service.preflight("repository:1");
+  assert.equal(plan.plan.blockingRisks.some((risk) => risk.code === "ACTIVE_SESSION_IN_PROGRESS"), true);
+  assert.equal(plan.plan.items[1].associations[0].active, true);
+  await assert.rejects(
+    () => service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint }),
+    { code: "PREFLIGHT_RISKS_UNRESOLVED" }
+  );
+});
+
+test("protected files require an explicit reviewed decision before any integration commit", async () => {
+  const { service, calls } = memoryFixture({ protectedPaths: [".corptie/private.json"] });
+  const plan = await service.preflight("repository:1");
+  const feature = plan.plan.items.find((item) => item.worktreeId === "wt:feature");
+  assert.deepEqual(feature.commitProtection.protectedPaths, [".corptie/private.json"]);
+  assert.equal(feature.commitProtection.requiresDecision, true);
+  await assert.rejects(
+    () => service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint }),
+    { code: "GIT_COMMIT_PROTECTION_REQUIRED" }
+  );
+
+  await service.confirm(plan.id, {
+    confirmed: true,
+    planFingerprint: plan.planFingerprint,
+    commitProtectionDecisions: [{
+      worktreeId: "wt:feature", decision: "ignore", neverRemind: true
+    }]
+  });
+  await waitForJob(service, plan.id, "completed");
+  assert.equal(calls.includes("protect:/repo-feature:ignore:true"), true);
 });
 
 test("a dirty branch still has a merge step when its pre-commit HEAD is already in main", async () => {
