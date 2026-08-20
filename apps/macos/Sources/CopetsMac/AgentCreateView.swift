@@ -19,6 +19,7 @@ struct AgentCreateView: View {
     @State private var showAdvanced = false
     @State private var selectedSkillIds: Set<String> = []
     @State private var showSkillRegister = false
+    @State private var submission = AgentCreationSubmission()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -130,7 +131,7 @@ struct AgentCreateView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(
-                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || submission.isSubmitting
                 )
             }
             .padding(16)
@@ -243,6 +244,7 @@ struct AgentCreateView: View {
     private func create() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard let idempotencyKey = submission.begin() else { return }
         let capabilities = capabilitiesText
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -256,10 +258,13 @@ struct AgentCreateView: View {
                 systemPrompt: systemPrompt,
                 capabilities: capabilities,
                 skillIds: Array(selectedSkillIds),
-                workDir: workDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : workDir.trimmingCharacters(in: .whitespacesAndNewlines)
+                workDir: workDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : workDir.trimmingCharacters(in: .whitespacesAndNewlines),
+                idempotencyKey: idempotencyKey
             ) {
                 onCreated?(agent)
                 dismiss()
+            } else {
+                submission.finishAfterFailure()
             }
         }
     }

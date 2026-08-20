@@ -454,6 +454,18 @@ export class CorptieStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS agent_creation_requests (
+        idempotency_key TEXT PRIMARY KEY,
+        request_hash TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        device_id TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_agent_creation_requests_agent
+      ON agent_creation_requests(agent_id, created_at);
+
       CREATE TABLE IF NOT EXISTS data_migrations (
         migration_id TEXT PRIMARY KEY,
         applied_at TEXT NOT NULL
@@ -1882,6 +1894,67 @@ export class CorptieStore {
       this.db.run("COMMIT");
       this.scheduleSave();
       return agent;
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  createAgentWithRegistrySkillsIdempotently(agentInput, skillIds = [], request = {}) {
+    const normalized = this.#validateRegistrySkillIds(skillIds);
+    const idempotencyKey = String(request.idempotencyKey ?? "").trim();
+    const requestHash = String(request.requestHash ?? "").trim();
+    const requestId = String(request.requestId ?? "").trim();
+    if (!idempotencyKey || !requestHash || !requestId) {
+      const error = new Error("Agent creation idempotency metadata is required.");
+      error.code = "INVALID_INPUT";
+      throw error;
+    }
+
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const existing = this.selectOne(
+        `SELECT idempotency_key, request_hash, agent_id, request_id, device_id, created_at
+         FROM agent_creation_requests WHERE idempotency_key = ?`,
+        [idempotencyKey]
+      );
+      if (existing) {
+        if (existing.request_hash !== requestHash) {
+          const error = new Error("Idempotency key was already used for different Agent creation parameters.");
+          error.code = "IDEMPOTENCY_CONFLICT";
+          error.existingRequestId = existing.request_id;
+          throw error;
+        }
+        const agent = this.getAgent(existing.agent_id);
+        if (!agent) {
+          const error = new Error("The Agent created by this idempotency key no longer exists.");
+          error.code = "IDEMPOTENCY_RESOURCE_GONE";
+          error.existingRequestId = existing.request_id;
+          throw error;
+        }
+        this.db.run("COMMIT");
+        return { agent, replayed: true, originalRequestId: existing.request_id };
+      }
+
+      const agent = this.createAgent(agentInput);
+      this.#replaceAgentRegistrySkills(agent.agentId, normalized);
+      this.#recordSkillAssignmentDelta(agent.agentId, [], normalized);
+      this.db.run(
+        `INSERT INTO agent_creation_requests (
+           idempotency_key, request_hash, agent_id, request_id, device_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          idempotencyKey,
+          requestHash,
+          agent.agentId,
+          requestId,
+          typeof request.deviceId === "string" && request.deviceId.trim() ? request.deviceId.trim() : null,
+          createdAtFromOrNow()
+        ]
+      );
+      this.db.run("COMMIT");
+      this.scheduleSave();
+      return { agent, replayed: false, originalRequestId: requestId };
     } catch (error) {
       this.db.run("ROLLBACK");
       throw error;

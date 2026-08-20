@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,7 +66,12 @@ async function createServices() {
 }
 
 async function callApi({ method, pathname, search = "", body, headers, ...services }) {
-  const request = mockRequest(method, pathname, search, body, headers);
+  const requestHeaders = { ...(headers ?? {}) };
+  if (method === "POST" && pathname === "/agents"
+    && !Object.hasOwn(requestHeaders, "idempotency-key")) {
+    requestHeaders["idempotency-key"] = randomUUID();
+  }
+  const request = mockRequest(method, pathname, search, body, requestHeaders);
   const response = mockResponse();
   const url = new URL(request.url);
   const handled = handleEntityHttpRequest({
@@ -88,6 +94,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     restoreWorkItemExecution: services.restoreWorkItemExecution,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
+    auditLog: services.auditLog,
     onEntityChanged: services.onEntityChanged
   });
   await new Promise((resolve) => setImmediate(resolve));
@@ -1378,6 +1385,89 @@ test("POST /agents 创建独立贡献者 Agent", async () => {
     // 缺 name → 400
     const bad = await callApi({ method: "POST", pathname: "/agents", body: {}, ...services });
     assert.equal(bad.statusCode, 400);
+
+    const missingIdempotencyKey = await callApi({
+      method: "POST",
+      pathname: "/agents",
+      body: { name: "无业务请求标识" },
+      headers: { "idempotency-key": "" },
+      ...services
+    });
+    assert.equal(missingIdempotencyKey.statusCode, 400);
+    assert.equal(missingIdempotencyKey.body.code, "IDEMPOTENCY_KEY_REQUIRED");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /agents deduplicates a repeated or concurrent business request", async () => {
+  const services = await createServices();
+  const auditEntries = [];
+  try {
+    const request = {
+      method: "POST",
+      pathname: "/agents",
+      body: {
+        name: "影音资源寻找专家",
+        role: "assistant",
+        description: "查找合法资源",
+        capabilities: ["资源检索"]
+      },
+      headers: {
+        "idempotency-key": "agent-form-42",
+        "x-request-id": "request-42",
+        "x-corptie-device-id": "device-local-1"
+      },
+      auditLog: (entry) => auditEntries.push(entry),
+      ...services
+    };
+
+    const [first, concurrentReplay] = await Promise.all([
+      callApi(request),
+      callApi({
+        ...request,
+        headers: { ...request.headers, "x-request-id": "request-43" }
+      })
+    ]);
+    const networkRetry = await callApi({
+      ...request,
+      headers: { ...request.headers, "x-request-id": "request-44" }
+    });
+
+    assert.deepEqual([first.statusCode, concurrentReplay.statusCode].sort(), [200, 201]);
+    assert.equal(networkRetry.statusCode, 200);
+    assert.equal(first.body.agent.agentId, concurrentReplay.body.agent.agentId);
+    assert.equal(networkRetry.body.agent.agentId, first.body.agent.agentId);
+    assert.equal(services.store.listAgents().filter((agent) => agent.name === "影音资源寻找专家").length, 1);
+    assert.equal(auditEntries.filter((entry) => entry.outcome === "created").length, 1);
+    assert.equal(auditEntries.filter((entry) => entry.outcome === "replayed").length, 2);
+    assert.ok(auditEntries.every((entry) => entry.deviceId === "device-local-1"));
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /agents rejects reuse of an idempotency key with different parameters", async () => {
+  const services = await createServices();
+  try {
+    const headers = { "idempotency-key": "agent-form-conflict", "x-request-id": "request-a" };
+    const first = await callApi({
+      method: "POST", pathname: "/agents", body: { name: "First" }, headers, ...services
+    });
+    const conflict = await callApi({
+      method: "POST",
+      pathname: "/agents",
+      body: { name: "Second" },
+      headers: { ...headers, "x-request-id": "request-b" },
+      ...services
+    });
+
+    assert.equal(first.statusCode, 201);
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.body.code, "IDEMPOTENCY_CONFLICT");
+    assert.equal(services.store.listAgents().filter((agent) => ["First", "Second"].includes(agent.name)).length, 1);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
