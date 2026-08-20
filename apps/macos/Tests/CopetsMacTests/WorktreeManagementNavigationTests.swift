@@ -221,7 +221,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("worktree.integrate.resolve-with-agent"))
         XCTAssertTrue(view.contains("worktree.integrate.open-conflict-agent"))
         XCTAssertTrue(view.contains("router.openSession(sessionId)"))
-        XCTAssertTrue(view.contains("job.conflictResolution?.status != \"ready\""))
+        XCTAssertTrue(view.contains("job.currentConflictResolution"))
+        XCTAssertTrue(view.contains("resolution.status != \"ready\""))
         XCTAssertTrue(view.contains("client.job?.shouldPoll == true"))
         XCTAssertTrue(client.contains("worktree-management/jobs/\\(job.id)/resolve-conflict"))
         XCTAssertFalse(client.contains("codex"))
@@ -296,7 +297,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
           "planFingerprint":"abc","error":"Resolve conflicts","createdAt":"2026-08-19T00:00:00Z",
           "updatedAt":"2026-08-19T00:01:00Z","confirmedAt":"2026-08-19T00:00:30Z","completedAt":null,
           "currentWorktreeId":"wt:feature","progress":{"completed":2,"total":3,"fraction":0.666},
-          "conflictResolution":{"status":"running","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"workItemId":"work_item:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
+          "conflictResolution":{"status":"running","worktreeId":"wt:feature","conflictKey":"conflict:1","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"workItemId":"work_item:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
           "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"MERGE_CONFLICT"}],
           "plan":{"repositoryId":"repository:1","mainWorktreeId":"wt:main","mainPath":"/repo",
             "mainHeadBefore":"main:1","inventoryVersion":"inventory:1","mergeOrder":["wt:feature"],
@@ -307,8 +308,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
               "commitStatus":"not_needed","commitHead":null,"mergeStatus":"conflict","mergeMainHead":null,
               "conflictFiles":["shared.swift"],"error":"Resolve conflicts"}]}
         }
-        """#.data(using: .utf8)!
-        let job = try JSONDecoder().decode(WorktreeIntegrationJob.self, from: json)
+        """#
+        let job = try JSONDecoder().decode(WorktreeIntegrationJob.self, from: Data(json.utf8))
         XCTAssertEqual(job.status, "paused")
         XCTAssertEqual(job.currentWorktreeId, "wt:feature")
         XCTAssertEqual(job.plan.items[0].conflictFiles, ["shared.swift"])
@@ -318,6 +319,16 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(job.hasMergeConflict)
         XCTAssertEqual(job.conflictResolution?.sessionId, "session:conflict")
         XCTAssertEqual(job.conflictResolution?.workspace.path, "/integration")
+        XCTAssertEqual(job.currentConflictResolution?.sessionId, "session:conflict")
+        XCTAssertTrue(job.shouldPoll)
+
+        let staleJSON = json.replacingOccurrences(
+            of: "\"worktreeId\":\"wt:feature\",\"conflictKey\"",
+            with: "\"worktreeId\":\"wt:previous\",\"conflictKey\""
+        )
+        let staleJob = try JSONDecoder().decode(WorktreeIntegrationJob.self, from: Data(staleJSON.utf8))
+        XCTAssertNil(staleJob.currentConflictResolution)
+        XCTAssertFalse(staleJob.shouldPoll)
     }
 
     private func repository(_ id: String) -> ManagedRepository {

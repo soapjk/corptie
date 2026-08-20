@@ -439,13 +439,15 @@ struct WorktreeManagementView: View {
                     .controlSize(.small)
                     .disabled(client.isMutating)
                     .accessibilityIdentifier("worktree.integrate.regenerate")
-                } else if job.hasMergeConflict, let sessionId = job.conflictResolution?.sessionId {
+                } else if job.hasMergeConflict,
+                          let resolution = job.currentConflictResolution,
+                          let sessionId = resolution.sessionId {
                     Button(L10n("Open Conflict Agent")) { router.openSession(sessionId) }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.open-conflict-agent")
                     Button(L10n("Retry")) { Task { await client.retryJob() } }
                         .controlSize(.small)
-                        .disabled(client.isMutating || job.conflictResolution?.status != "ready")
+                        .disabled(client.isMutating || resolution.status != "ready")
                         .accessibilityIdentifier("worktree.integrate.retry")
                 } else if job.hasMergeConflict {
                     Button(L10n("Ask Agent to Resolve")) {
@@ -477,7 +479,7 @@ struct WorktreeManagementView: View {
                 Text(L10n("The integration plan is stale. Regenerate and review it before continuing."))
                     .font(.caption)
                     .foregroundStyle(.orange)
-            } else if let resolution = job.conflictResolution {
+            } else if let resolution = job.currentConflictResolution {
                 Text(resolution.status == "ready"
                     ? L10n("The conflict Agent finished. Retry to verify and resume the integration task.")
                     : (resolution.status == "failed"
