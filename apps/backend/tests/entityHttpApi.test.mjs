@@ -457,6 +457,42 @@ test("POST /objectives → 创建，GET /objectives → 列表", async () => {
   }
 });
 
+test("POST 创建接口按客户端 ID 幂等，冲突重放返回 409 而非数据库异常", async () => {
+  const services = await createServices();
+  try {
+    const objectiveBody = { id: "objective:http-idempotent", name: "幂等目标" };
+    const firstObjective = await callApi({ method: "POST", pathname: "/objectives", body: objectiveBody, ...services });
+    const retriedObjective = await callApi({ method: "POST", pathname: "/objectives", body: objectiveBody, ...services });
+    assert.equal(firstObjective.statusCode, 201);
+    assert.equal(retriedObjective.statusCode, 201);
+    assert.equal(services.store.listObjectives().length, 1);
+
+    const conflict = await callApi({
+      method: "POST",
+      pathname: "/objectives",
+      body: { ...objectiveBody, name: "冲突目标" },
+      ...services
+    });
+    assert.equal(conflict.statusCode, 409);
+    assert.equal(conflict.body.code, "ENTITY_CREATION_CONFLICT");
+    assert.doesNotMatch(conflict.body.error, /SQLite|constraint/i);
+
+    const workItemBody = {
+      id: "work_item:http-idempotent",
+      objectiveId: objectiveBody.id,
+      title: "幂等工作项"
+    };
+    const firstWorkItem = await callApi({ method: "POST", pathname: "/work-items", body: workItemBody, ...services });
+    const retriedWorkItem = await callApi({ method: "POST", pathname: "/work-items", body: workItemBody, ...services });
+    assert.equal(firstWorkItem.statusCode, 201);
+    assert.equal(retriedWorkItem.statusCode, 201);
+    assert.equal(services.store.listWorkItems().length, 1);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("Objective/WorkItem HTTP validation returns structured errors without SQLite details", async () => {
   const services = await createServices();
   try {

@@ -54,9 +54,6 @@ struct WorkItemCreateView: View {
     @State private var workspaceId: String?
     @State private var selectedAgentId: String?
     @State private var creationId = "work_item:\(UUID().uuidString.lowercased())"
-    @State private var creationWasAttempted = false
-    @State private var createdWorkItem: WorkItem?
-    @State private var isSubmitting = false
     @State private var submissionError: String?
 
     var body: some View {
@@ -77,14 +74,12 @@ struct WorkItemCreateView: View {
                 },
                 onApply: applyGeneratedFields
             )
-            .disabled(createdWorkItem != nil)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("标题 *"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField(L10n("工作项标题"), text: $title)
-                    .disabled(createdWorkItem != nil)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("描述 *"))
@@ -95,7 +90,6 @@ struct WorkItemCreateView: View {
                     .frame(height: 70)
                     .padding(6)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-                    .disabled(createdWorkItem != nil)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("验收标准"))
@@ -106,11 +100,9 @@ struct WorkItemCreateView: View {
                     .frame(height: 70)
                     .padding(6)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-                    .disabled(createdWorkItem != nil)
             }
 
             WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
-                .disabled(createdWorkItem != nil)
 
             agentSection
 
@@ -125,16 +117,6 @@ struct WorkItemCreateView: View {
                 }
                 .labelsHidden()
                 .frame(maxWidth: 160, alignment: .leading)
-                .disabled(createdWorkItem != nil)
-            }
-
-            if let createdWorkItem {
-                Label(
-                    L10nFormat("WorkItem 已创建（%@）；重试只会再次尝试执行，不会重复创建。", createdWorkItem.title),
-                    systemImage: "checkmark.circle.fill"
-                )
-                .font(.caption)
-                .foregroundStyle(.green)
             }
 
             if let submissionError {
@@ -146,28 +128,16 @@ struct WorkItemCreateView: View {
 
             HStack {
                 Spacer()
-                Button(createdWorkItem == nil ? L10n("取消") : L10n("关闭")) { dismiss() }
-                    .disabled(isSubmitting)
-                if createdWorkItem == nil {
-                    Button(L10n("仅创建不执行")) {
-                        submit(.createOnly)
-                    }
-                    .disabled(!canSubmit || isSubmitting)
-                    Button(L10n("创建后立即执行")) {
-                        submit(.startImmediately)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSubmit || isSubmitting)
-                } else {
-                    Button(L10n("重试执行")) {
-                        submit(.startImmediately)
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(isSubmitting)
+                Button(L10n("取消")) { dismiss() }
+                Button(L10n("仅创建不执行")) {
+                    submit(.createOnly)
                 }
-                if isSubmitting {
-                    ProgressView().controlSize(.small)
+                .disabled(!canSubmit)
+                Button(L10n("创建后立即执行")) {
+                    submit(.startImmediately)
                 }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSubmit)
             }
         }
         .padding(20)
@@ -211,7 +181,6 @@ struct WorkItemCreateView: View {
             }
             .labelsHidden()
             .frame(maxWidth: .infinity, alignment: .leading)
-            .disabled(createdWorkItem != nil)
 
             if availableAgents.isEmpty {
                 Text(L10n("当前 Objective 没有可用的 Independent Contributor Agent。"))
@@ -235,7 +204,6 @@ struct WorkItemCreateView: View {
     }
 
     private func submit(_ mode: WorkItemCreateExecutionMode) {
-        guard !isSubmitting else { return }
         guard validationMessage == nil, let selectedAgentId else {
             submissionError = validationMessage ?? L10n("请选择负责该 WorkItem 的 Agent。")
             return
@@ -245,51 +213,46 @@ struct WorkItemCreateView: View {
             return
         }
 
-        isSubmitting = true
         submissionError = nil
-        Task {
-            defer { isSubmitting = false }
-
-            let workItem: WorkItem
-            if let createdWorkItem {
-                workItem = createdWorkItem
-            } else {
-                var created = creationWasAttempted ? await client.workItem(id: creationId) : nil
-                creationWasAttempted = true
-                if created == nil {
-                    created = await client.createWorkItem(
-                        id: creationId,
-                        objectiveId: objectiveId,
-                        title: trimmedTitle,
-                        description: trimmedDetail,
-                        acceptanceCriteria: acceptanceCriteria.isEmpty ? nil : acceptanceCriteria,
-                        mainWorkspaceId: workspaceId,
-                        mainAgentId: selectedAgentId,
-                        priority: priority
-                    )
-                }
-                guard let created else {
-                    submissionError = client.errorMessage ?? L10n("WorkItem 创建失败。")
-                    return
-                }
-                createdWorkItem = created
-                workItem = created
-                onCreated(created)
+        let requestId = creationId
+        let requestObjectiveId = objectiveId
+        let requestTitle = trimmedTitle
+        let requestDetail = trimmedDetail
+        let requestAcceptanceCriteria = acceptanceCriteria
+        let requestWorkspaceId = workspaceId
+        let requestPriority = priority
+        let providerId = defaultProviderId
+        let started = BackgroundTaskCenter.shared.start(
+            id: requestId,
+            title: L10nFormat("创建 WorkItem：%@", requestTitle)
+        ) {
+            var created = await client.workItem(id: requestId)
+            if created == nil {
+                created = await client.createWorkItem(
+                    id: requestId,
+                    objectiveId: requestObjectiveId,
+                    title: requestTitle,
+                    description: requestDetail,
+                    acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
+                    mainWorkspaceId: requestWorkspaceId,
+                    mainAgentId: selectedAgentId,
+                    priority: requestPriority
+                )
             }
+            guard let workItem = created else {
+                return .failure(client.errorMessage ?? L10n("WorkItem 创建失败，可重试。"))
+            }
+            onCreated(workItem)
 
             guard mode == .startImmediately else {
-                dismiss()
-                return
+                return .success(L10nFormat("WorkItem“%@”已创建。", requestTitle))
             }
-            guard let providerId = defaultProviderId else {
-                submissionError = L10n("WorkItem 已创建，但没有可创建 Session 的 Provider，未能立即执行。")
-                return
+            guard let providerId else {
+                return .failure(L10n("WorkItem 已创建，但没有可创建 Session 的 Provider；配置 Provider 后可重试执行。"))
             }
-            if createdWorkItem != nil,
-               let latest = await client.workItem(id: workItem.id),
+            if let latest = await client.workItem(id: workItem.id),
                latest.currentSessionId != nil {
-                dismiss()
-                return
+                return .success(L10nFormat("WorkItem“%@”已创建并开始执行。", requestTitle))
             }
             let result = await client.createSession(
                 workItemId: workItem.id,
@@ -299,14 +262,14 @@ struct WorkItemCreateView: View {
             )
             if let session = result.session {
                 backendClient.acceptCreatedSession(session, selectImmediately: false)
-                dismiss()
-            } else {
-                submissionError = L10nFormat(
-                    "WorkItem 已创建，但执行失败：%@",
-                    result.error?.message ?? L10n("未知错误")
-                )
+                return .success(L10nFormat("WorkItem“%@”已创建并开始执行。", requestTitle))
             }
+            return .failure(L10nFormat(
+                "WorkItem 已创建，但执行失败：%@。可重试执行，不会重复创建 WorkItem。",
+                result.error?.message ?? L10n("未知错误")
+            ))
         }
+        if started { dismiss() }
     }
 
     private var trimmedTitle: String {

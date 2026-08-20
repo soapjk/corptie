@@ -37,6 +37,15 @@ export class SessionNotFoundError extends Error {
   }
 }
 
+export class EntityCreationConflictError extends Error {
+  constructor(entityType, id) {
+    super(`${entityType} creation ID is already bound to different input: ${id}`);
+    this.name = "EntityCreationConflictError";
+    this.code = "ENTITY_CREATION_CONFLICT";
+    this.statusCode = 409;
+  }
+}
+
 export class DependencyCycleError extends Error {
   constructor(workItemId, targetWorkItemId) {
     super(
@@ -62,6 +71,15 @@ export class ObjectiveApplicationService {
 
   createObjective(input = {}) {
     const normalized = validateObjectiveInput(input, "create");
+    if (normalized.id) {
+      const existing = this.store.getObjective(normalized.id);
+      if (existing) {
+        if (!objectiveCreationMatches(existing, normalized)) {
+          throw new EntityCreationConflictError("Objective", normalized.id);
+        }
+        return existing;
+      }
+    }
     const objective = this.store.runInTransaction(() => {
       const created = this.store.createObjective(normalized);
       for (const targetId of normalized.relatedObjectiveIds ?? []) {
@@ -131,6 +149,15 @@ export class ObjectiveApplicationService {
 
   createWorkItem(input = {}) {
     const normalized = validateWorkItemInput(input, "create");
+    if (normalized.id) {
+      const existing = this.store.getWorkItem(normalized.id);
+      if (existing) {
+        if (!workItemCreationMatches(existing, normalized)) {
+          throw new EntityCreationConflictError("WorkItem", normalized.id);
+        }
+        return existing;
+      }
+    }
     return this.emit("WorkItemChanged", this.store.createWorkItem(normalized), "created");
   }
 
@@ -323,4 +350,62 @@ export class ObjectiveApplicationService {
     }
     return false;
   }
+}
+
+function objectiveCreationMatches(existing, input) {
+  const expected = {
+    name: input.name,
+    description: input.description ?? "",
+    idealState: input.idealState ?? "",
+    status: input.status ?? "active",
+    budgetConfig: input.budgetConfig ?? {},
+    priority: input.priority ?? null,
+    targetDate: input.targetDate ?? null,
+    tags: sortedStrings(input.tags ?? []),
+    workspaceIds: sortedStrings(input.workspaceIds ?? []),
+    relatedObjectiveIds: sortedStrings(input.relatedObjectiveIds ?? []),
+    contributorAgentIds: sortedStrings(input.contributorAgentIds ?? [])
+  };
+  const actual = {
+    name: existing.name,
+    description: existing.description ?? "",
+    idealState: existing.idealState ?? "",
+    status: existing.status ?? "active",
+    budgetConfig: existing.budgetConfig ?? {},
+    priority: existing.priority ?? null,
+    targetDate: existing.targetDate ?? null,
+    tags: sortedStrings(existing.tags ?? []),
+    workspaceIds: sortedStrings(existing.workspaceIds ?? []),
+    relatedObjectiveIds: sortedStrings(existing.relatedObjectiveIds ?? []),
+    contributorAgentIds: sortedStrings(existing.contributorAgentIds ?? [])
+  };
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function workItemCreationMatches(existing, input) {
+  const expected = {
+    objectiveId: input.objectiveId,
+    title: input.title,
+    description: input.description ?? "",
+    acceptanceCriteria: input.acceptanceCriteria ?? "",
+    priority: input.priority ?? "medium",
+    status: input.status ?? "todo",
+    mainWorkspaceId: input.mainWorkspaceId ?? null,
+    mainAgentId: input.mainAgentId ?? null
+  };
+  const actual = {
+    objectiveId: existing.objective_id,
+    title: existing.title,
+    description: existing.description ?? "",
+    acceptanceCriteria: existing.acceptance_criteria ?? "",
+    priority: existing.priority ?? "medium",
+    status: existing.status ?? "todo",
+    mainWorkspaceId: existing.main_workspace_id ?? null,
+    mainAgentId: existing.main_agent_id ?? null
+  };
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+function sortedStrings(values) {
+  return [...values].sort((left, right) => left.localeCompare(right));
 }

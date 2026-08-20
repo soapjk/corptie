@@ -17,6 +17,7 @@ struct ObjectiveCreateView: View {
     @State private var workspaceIds = Set<String>()
     @State private var relatedObjectiveIds = Set<String>()
     @State private var contributorAgentIds = Set<String>()
+    @State private var creationId = "objective:\(UUID().uuidString.lowercased())"
 
     var body: some View {
         VStack(spacing: 0) {
@@ -115,8 +116,7 @@ struct ObjectiveCreateView: View {
                 Spacer()
                 Button(L10n("取消")) { dismiss() }
                 Button(L10n("创建")) {
-                    create()
-                    dismiss()
+                    if create() { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -126,27 +126,43 @@ struct ObjectiveCreateView: View {
         .frame(width: 500, height: 580)
     }
 
-    private func create() {
+    private func create() -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
 
         let tags = tagsText
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
-        Task {
-            await client.createObjective(
+        let requestId = creationId
+        let requestDetail = detail
+        let requestIdealState = idealState
+        let requestPriority = priority
+        let requestTargetDate = hasTargetDate ? Self.dateString(targetDate) : nil
+        let requestWorkspaceIds = Array(workspaceIds)
+        let requestRelatedObjectiveIds = Array(relatedObjectiveIds)
+        let requestContributorAgentIds = Array(contributorAgentIds)
+        return BackgroundTaskCenter.shared.start(
+            id: requestId,
+            title: L10nFormat("创建 Objective：%@", trimmed)
+        ) {
+            let objective = await client.createObjective(
+                id: requestId,
                 name: trimmed,
-                description: detail.isEmpty ? nil : detail,
-                idealState: idealState.isEmpty ? nil : idealState,
-                priority: priority,
-                targetDate: hasTargetDate ? Self.dateString(targetDate) : nil,
+                description: requestDetail.isEmpty ? nil : requestDetail,
+                idealState: requestIdealState.isEmpty ? nil : requestIdealState,
+                priority: requestPriority,
+                targetDate: requestTargetDate,
                 tags: tags,
-                workspaceIds: Array(workspaceIds),
-                relatedObjectiveIds: Array(relatedObjectiveIds),
-                contributorAgentIds: Array(contributorAgentIds)
+                workspaceIds: requestWorkspaceIds,
+                relatedObjectiveIds: requestRelatedObjectiveIds,
+                contributorAgentIds: requestContributorAgentIds
             )
+            if objective != nil {
+                return .success(L10nFormat("Objective“%@”已创建。", trimmed))
+            }
+            return .failure(client.errorMessage ?? L10n("Objective 创建失败，可重试。"))
         }
     }
 

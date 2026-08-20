@@ -87,6 +87,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             .store(in: &cancellables)
         backendClient.start()
+        let connectionStatus = BackendConnectionStatusOperation(
+            isConnected: { [weak backendClient] in backendClient?.isOnline == true },
+            errorMessage: { [weak backendClient] in
+                backendClient?.lastError ?? AppStateStore.shared.syncError
+            },
+            retryConnection: {
+                await AppStateSyncController.shared.refreshSnapshot()
+            }
+        )
+        BackgroundTaskCenter.shared.start(
+            id: BackgroundTaskCenter.backendConnectionTaskID,
+            title: L10n("Connect to the server")
+        ) {
+            await connectionStatus.run()
+        }
         if CodexResetSystemNotificationManager.canUseUserNotificationCenter {
             UNUserNotificationCenter.current().delegate = self
         }

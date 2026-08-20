@@ -9,7 +9,8 @@ import {
   ObjectiveNotFoundError,
   WorkItemNotFoundError,
   DependencyCycleError,
-  SessionNotFoundError
+  SessionNotFoundError,
+  EntityCreationConflictError
 } from "../src/application/objectiveApplicationService.mjs";
 
 async function createStore() {
@@ -72,6 +73,50 @@ test("WorkItem 挂 Objective，缺 objective 或 title 报错", async () => {
 
     const items = service.listWorkItemsByObjective(objective.id);
     assert.equal(items.length, 1);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("稳定创建 ID 使 Objective 和 WorkItem 重试幂等，冲突输入明确失败", async () => {
+  const { store, directory } = await createStore();
+  try {
+    const events = [];
+    const service = new ObjectiveApplicationService({
+      store,
+      onEntityChanged: (type, payload) => events.push({ type, payload })
+    });
+    const objectiveInput = {
+      id: "objective:background-create",
+      name: "后台创建",
+      tags: ["popup", "async"]
+    };
+    const firstObjective = service.createObjective(objectiveInput);
+    const retriedObjective = service.createObjective({ ...objectiveInput, tags: ["async", "popup"] });
+    assert.equal(retriedObjective.id, firstObjective.id);
+    assert.equal(store.listObjectives().length, 1);
+    assert.equal(events.filter((event) => event.type === "ObjectiveChanged").length, 1);
+    assert.throws(
+      () => service.createObjective({ ...objectiveInput, name: "不同输入" }),
+      EntityCreationConflictError
+    );
+
+    const workItemInput = {
+      id: "work_item:background-create",
+      objectiveId: firstObjective.id,
+      title: "后台工作项",
+      description: "保持弹窗可用"
+    };
+    const firstWorkItem = service.createWorkItem(workItemInput);
+    const retriedWorkItem = service.createWorkItem(workItemInput);
+    assert.equal(retriedWorkItem.id, firstWorkItem.id);
+    assert.equal(store.listWorkItems().length, 1);
+    assert.equal(events.filter((event) => event.type === "WorkItemChanged").length, 1);
+    assert.throws(
+      () => service.createWorkItem({ ...workItemInput, title: "不同输入" }),
+      EntityCreationConflictError
+    );
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
