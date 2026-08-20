@@ -681,3 +681,9 @@
 "This Worktree has commits that are not merged into main." = "This Worktree has commits that are not merged into main.";
 "This Worktree is associated with a WorkItem and cannot be deleted." = "This Worktree is associated with a WorkItem and cannot be deleted.";
 "This Worktree is being used by a Session. Switch or remove the Session before deleting it." = "This Worktree is being used by a Session. Switch or remove the Session before deleting it.";
+"项目目录（将扫描所有子目录中的 SKILL.md）" = "Project directory (all subdirectories are scanned for SKILL.md)";
+"选择项目目录" = "Choose a project directory";
+"扫描可安装 Skill" = "Scan for Installable Skills";
+"正在扫描项目…" = "Scanning project…";
+"发现 %d 个可安装 Skill" = "Found %d installable Skills";
+"选择项目目录，Corptie 将扫描其中所有可安装 Skill" = "Choose a project directory; Corptie will scan it for all installable Skills";

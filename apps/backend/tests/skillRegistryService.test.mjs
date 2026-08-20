@@ -72,6 +72,38 @@ test("multi-Skill source requires an explicit candidate and materializes the sel
   }
 });
 
+test("project discovery scans every source subdirectory without pruning nested Skills", async () => {
+  const value = await fixture();
+  try {
+    const project = join(value.directory, "deep-project");
+    const deepSkill = join(project, "packages", "one", "src", "features", "workflows", "skills", "deep");
+    const nestedSkill = join(project, "nested", "child");
+    const ignoredSkill = join(project, "node_modules", "third-party");
+    await mkdir(deepSkill, { recursive: true });
+    await mkdir(nestedSkill, { recursive: true });
+    await mkdir(ignoredSkill, { recursive: true });
+    await writeFile(join(project, "SKILL.md"), "---\nname: project-root\n---\nRoot.\n");
+    await writeFile(join(deepSkill, "SKILL.md"), "---\nname: deep-project-skill\n---\nDeep.\n");
+    await writeFile(join(nestedSkill, "SKILL.md"), "---\nname: nested-child\n---\nNested.\n");
+    await writeFile(join(ignoredSkill, "SKILL.md"), "---\nname: dependency-skill\n---\nIgnore.\n");
+
+    const discovery = await value.service.discover({ sourceType: "local", source: project });
+    assert.deepEqual(discovery.candidates.map((candidate) => candidate.manifestName), [
+      "project-root",
+      "nested-child",
+      "deep-project-skill"
+    ]);
+    assert.equal(discovery.candidates.some((candidate) => candidate.manifestName === "dependency-skill"), false);
+    assert.equal(
+      discovery.candidates.find((candidate) => candidate.manifestName === "deep-project-skill")?.relativePath,
+      "packages/one/src/features/workflows/skills/deep"
+    );
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("plain Skill with only SKILL.md remains installable and loadable", async () => {
   const value = await fixture();
   try {

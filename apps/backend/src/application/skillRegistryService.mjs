@@ -31,8 +31,16 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const execFileAsync = promisify(execFile);
 
-// 递归定位 SKILL.md 时的最大搜索深度（防止误匹配太深层的无关 SKILL.md）。
-const MAX_SKILL_SEARCH_DEPTH = 5;
+// 项目级 Skill 发现必须覆盖任意深度的源码子目录。明确排除依赖、版本库和构建缓存，
+// 避免把第三方包里的 SKILL.md 当成用户项目的可安装 Skill，也避免无意义的大目录遍历。
+const SKILL_DISCOVERY_IGNORED_DIRECTORIES = new Set([
+  ".git", ".hg", ".svn", ".build", ".cache", ".dart_tool", ".gradle",
+  ".next", ".nuxt", ".pytest_cache", ".swiftpm", ".turbo", ".venv",
+  "DerivedData", "__pycache__", "build", "coverage", "dist", "node_modules",
+  "target", "vendor"
+]);
+// MCP 描述符只在一个已识别 Package 的有限范围内搜索，避免把相邻 Package 的配置误绑定。
+const MAX_MCP_DESCRIPTOR_SEARCH_DEPTH = 5;
 const MAX_PACKAGE_PARENT_DEPTH = 6;
 const MCP_DESCRIPTOR_NAMES = Object.freeze([".mcp.json", "mcp.json", "mcp.config.json"]);
 const PLUGIN_MANIFEST_PATHS = Object.freeze([join(".codex-plugin", "plugin.json")]);
@@ -1030,33 +1038,31 @@ export class SkillRegistryService {
     return null;
   }
 
-  // 定位 SKILL.md（大小写不敏感，递归搜索子目录，优先最浅命中）。
-  // 返回 SKILL.md 绝对路径，找不到返回 null。
-  async #locateSkillMarker(dir, depth = 0) {
-    return (await this.#locateSkillMarkers(dir, depth))[0] ?? null;
+  // 定位第一个 SKILL.md（大小写不敏感，递归搜索全部源码子目录）。
+  async #locateSkillMarker(dir) {
+    return (await this.#locateSkillMarkers(dir))[0] ?? null;
   }
 
-  async #locateSkillMarkers(dir, depth = 0) {
+  async #locateSkillMarkers(dir) {
     if (!(await isDirectory(dir))) return [];
     const marker = await this.#markerAtRoot(dir);
-    if (marker) return [marker];
-    if (depth >= MAX_SKILL_SEARCH_DEPTH) return [];
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch {
       return [];
     }
-    const found = [];
+    // 目录本身是一个 Skill，不代表它的子目录不含其他独立 Skill。项目级扫描必须继续。
+    const found = marker ? [marker] : [];
     for (const sub of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!sub.isDirectory()) continue;
-      found.push(...await this.#locateSkillMarkers(join(dir, sub.name), depth + 1));
+      if (!sub.isDirectory() || SKILL_DISCOVERY_IGNORED_DIRECTORIES.has(sub.name)) continue;
+      found.push(...await this.#locateSkillMarkers(join(dir, sub.name)));
     }
     return found;
   }
 
   async #locateMcpDescriptors(dir, depth = 0) {
-    if (!(await isDirectory(dir)) || depth > MAX_SKILL_SEARCH_DEPTH) return [];
+    if (!(await isDirectory(dir)) || depth > MAX_MCP_DESCRIPTOR_SEARCH_DEPTH) return [];
     let entries;
     try {
       entries = await readdir(dir, { withFileTypes: true });
