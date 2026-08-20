@@ -22,6 +22,20 @@ struct ManagedWorktreeDeletionPolicyTests {
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.code == "WORK_ITEM_ASSOCIATED")
     }
 
+    @Test func cleanupProgressShowsExactOrdinalAndQuotedGitCommands() {
+        let progress = WorktreeCleanupProgress.deleting(
+            worktree(id: "feature's worktree"),
+            mainPath: "/repo path",
+            currentIndex: 2,
+            total: 3
+        )
+
+        #expect(progress.currentIndex == 2)
+        #expect(progress.completed == 1)
+        #expect(progress.fraction == 1.0 / 3.0)
+        #expect(progress.command == "git -C '/repo path' worktree remove '/repo/feature'\\''s worktree' && git -C '/repo path' branch -d 'feature'\\''s worktree'")
+    }
+
     private func association(workItemId: String?) -> ManagedWorktreeAssociation {
         .init(
             logicalSessionId: "logical:one", sessionId: "session:one", title: "Session",

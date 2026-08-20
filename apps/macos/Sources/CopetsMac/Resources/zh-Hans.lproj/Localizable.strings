@@ -1098,3 +1098,4 @@
 "发现 %d 个可安装 Skill" = "发现 %d 个可安装 Skill";
 "选择项目目录，Corptie 将扫描其中所有可安装 Skill" = "选择项目目录，Corptie 将扫描其中所有可安装 Skill";
 "Unread Session" = "未读会话";
+"Deleting %d of %d: %@" = "正在删除第 %d 个，共 %d 个：%@";

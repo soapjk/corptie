@@ -390,20 +390,49 @@ struct WorktreeManagementView: View {
 
     private func cleanupAction(_ project: ManagedGitProject) -> some View {
         let eligible = ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: project.worktrees)
-        return HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L10n("Clean Up Merged Worktrees")).fontWeight(.semibold)
-                Text(L10n("Remove merged Worktrees that have no WorkItem or Session association."))
-                    .font(.caption).foregroundStyle(.secondary)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n("Clean Up Merged Worktrees")).fontWeight(.semibold)
+                    Text(L10n("Remove merged Worktrees that have no WorkItem or Session association."))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    pendingCleanup = eligible
+                } label: {
+                    Label(L10nFormat("Clean Up (%d)", eligible.count), systemImage: "trash")
+                }
+                .disabled(eligible.isEmpty || client.isMutating)
+                .accessibilityIdentifier("worktree.cleanup")
             }
-            Spacer()
-            Button {
-                pendingCleanup = eligible
-            } label: {
-                Label(L10nFormat("Clean Up (%d)", eligible.count), systemImage: "trash")
+            if let progress = client.cleanupProgress {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(L10nFormat(
+                            "Deleting %d of %d: %@",
+                            progress.currentIndex,
+                            progress.total,
+                            progress.branchName
+                        ))
+                        .font(.caption.weight(.semibold))
+                        Spacer()
+                        Text("\(progress.completed)/\(progress.total)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: progress.fraction)
+                        .accessibilityIdentifier("worktree.cleanup.progress")
+                    Text(progress.command)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(progress.command)
+                        .accessibilityIdentifier("worktree.cleanup.command")
+                }
             }
-            .disabled(eligible.isEmpty || client.isMutating)
-            .accessibilityIdentifier("worktree.cleanup")
         }
         .padding(12)
         .background(Color.primary.opacity(0.035))

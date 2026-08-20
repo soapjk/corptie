@@ -147,6 +147,44 @@ struct WorktreeCleanupResult: Decodable, Equatable, Sendable, Identifiable {
     let counts: WorktreeCleanupCounts
 }
 
+struct WorktreeCleanupProgress: Equatable, Sendable {
+    let total: Int
+    let currentIndex: Int
+    let completed: Int
+    let branchName: String
+    let path: String
+    let command: String
+
+    var fraction: Double {
+        guard total > 0 else { return 0 }
+        return Double(completed) / Double(total)
+    }
+
+    static func deleting(
+        _ worktree: ManagedWorktree,
+        mainPath: String,
+        currentIndex: Int,
+        total: Int
+    ) -> WorktreeCleanupProgress {
+        let remove = "git -C \(shellQuote(mainPath)) worktree remove \(shellQuote(worktree.path))"
+        let deleteBranch = worktree.branchName.map {
+            "git -C \(shellQuote(mainPath)) branch -d \(shellQuote($0))"
+        }
+        return WorktreeCleanupProgress(
+            total: total,
+            currentIndex: currentIndex,
+            completed: max(0, currentIndex - 1),
+            branchName: worktree.branchName ?? worktree.path,
+            path: worktree.path,
+            command: [remove, deleteBranch].compactMap { $0 }.joined(separator: " && ")
+        )
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+}
+
 struct ManagedWorktreeAssociation: Decodable, Equatable, Sendable {
     let logicalSessionId: String
     let sessionId: String?

@@ -719,3 +719,4 @@
 "发现 %d 个可安装 Skill" = "Found %d installable Skills";
 "选择项目目录，Corptie 将扫描其中所有可安装 Skill" = "Choose a project directory; Corptie will scan it for all installable Skills";
 "Unread Session" = "Unread Session";
+"Deleting %d of %d: %@" = "Deleting %d of %d: %@";

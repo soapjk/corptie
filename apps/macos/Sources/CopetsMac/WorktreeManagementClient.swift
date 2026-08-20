@@ -14,6 +14,7 @@ final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var listLoadState: WorktreeListLoadState = .idle
     @Published private(set) var lastLoadMetrics: WorktreeLoadMetrics?
     @Published var cleanupResult: WorktreeCleanupResult?
+    @Published private(set) var cleanupProgress: WorktreeCleanupProgress?
     @Published private(set) var operationNotice: String?
 
     private let baseURL: URL
@@ -141,20 +142,76 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func cleanupMergedWorktrees(_ worktrees: [ManagedWorktree]) async {
-        guard let repositoryId = selection.repositoryId else { return }
+        guard let repositoryId = selection.repositoryId,
+              let project = detail?.project,
+              !worktrees.isEmpty else { return }
         isMutating = true
-        defer { isMutating = false }
-        do {
-            let envelope: WorktreeCleanupResultEnvelope = try await post(
-                "worktree-management/repositories/\(repositoryId)/cleanup",
-                body: ["worktreeIds": worktrees.map(\.worktreeId)]
-            )
-            cleanupResult = envelope.result
-            errorMessage = nil
-            await loadRepository(repositoryId)
-        } catch {
-            errorMessage = error.localizedDescription
+        defer {
+            cleanupProgress = nil
+            isMutating = false
         }
+
+        let confirmedIds = Set(worktrees.map(\.worktreeId))
+        var removed: [WorktreeDeletionResult] = []
+        var skipped = project.worktrees.compactMap { worktree -> WorktreeDeletionResult? in
+            guard !worktree.isMain,
+                  !confirmedIds.contains(worktree.worktreeId),
+                  let blocker = ManagedWorktreeDeletionPolicy.blocker(for: worktree) else { return nil }
+            return WorktreeDeletionResult(
+                worktreeId: worktree.worktreeId,
+                branchName: worktree.branchName,
+                path: worktree.path,
+                status: "skipped",
+                code: blocker.code,
+                reason: blocker.reason
+            )
+        }
+        var failed: [WorktreeDeletionResult] = []
+
+        for (offset, worktree) in worktrees.enumerated() {
+            cleanupProgress = .deleting(
+                worktree,
+                mainPath: project.mainPath,
+                currentIndex: offset + 1,
+                total: worktrees.count
+            )
+            do {
+                let envelope: WorktreeDeletionResultEnvelope = try await post(
+                    "worktree-management/repositories/\(repositoryId)/worktrees/\(worktree.worktreeId)/delete",
+                    body: [:]
+                )
+                removed.append(envelope.result)
+            } catch {
+                let clientError = error as? WorktreeManagementClientError
+                let code = clientError?.code ?? "WORKTREE_DELETE_FAILED"
+                let result = WorktreeDeletionResult(
+                    worktreeId: worktree.worktreeId,
+                    branchName: worktree.branchName,
+                    path: worktree.path,
+                    status: Self.deletionBlockerCodes.contains(code) ? "skipped" : "failed",
+                    code: code,
+                    reason: clientError?.message ?? error.localizedDescription
+                )
+                if Self.deletionBlockerCodes.contains(code) {
+                    skipped.append(result)
+                } else {
+                    failed.append(result)
+                }
+            }
+        }
+
+        cleanupResult = WorktreeCleanupResult(
+            removed: removed,
+            skipped: skipped,
+            failed: failed,
+            counts: WorktreeCleanupCounts(
+                removed: removed.count,
+                skipped: skipped.count,
+                failed: failed.count
+            )
+        )
+        errorMessage = nil
+        await loadRepository(repositoryId)
     }
 
     func prepareIndividualOperation(
@@ -476,6 +533,13 @@ final class WorktreeManagementClient: ObservableObject {
         if error is CancellationError { return true }
         return (error as? URLError)?.code == .cancelled
     }
+
+    private static let deletionBlockerCodes: Set<String> = [
+        "MAIN_WORKTREE", "WORKTREE_UNAVAILABLE", "WORKTREE_LOCKED", "WORKTREE_PRUNABLE",
+        "GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "UNCOMMITTED_CHANGES",
+        "NOT_MERGED_INTO_MAIN", "WORKTREE_BRANCH_AMBIGUOUS", "WORK_ITEM_ASSOCIATED",
+        "WORKTREE_IN_USE"
+    ]
 }
 
 private struct CachedRepositoryDetail {
