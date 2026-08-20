@@ -1060,3 +1060,9 @@
 "This Worktree has commits that are not merged into main." = "此 Worktree 存在尚未合并到主分支的提交。";
 "This Worktree is associated with a WorkItem and cannot be deleted." = "此 Worktree 仍关联 WorkItem，不能删除。";
 "This Worktree is being used by a Session. Switch or remove the Session before deleting it." = "此 Worktree 正被 Session 占用，请先切换或移除该 Session。";
+"项目目录（将扫描所有子目录中的 SKILL.md）" = "项目目录（将扫描所有子目录中的 SKILL.md）";
+"选择项目目录" = "选择项目目录";
+"扫描可安装 Skill" = "扫描可安装 Skill";
+"正在扫描项目…" = "正在扫描项目…";
+"发现 %d 个可安装 Skill" = "发现 %d 个可安装 Skill";
+"选择项目目录，Corptie 将扫描其中所有可安装 Skill" = "选择项目目录，Corptie 将扫描其中所有可安装 Skill";
