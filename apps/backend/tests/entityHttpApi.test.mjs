@@ -964,6 +964,69 @@ test("explicit user confirmation completes an in-progress WorkItem without autom
   }
 });
 
+test("explicit user confirmation completes an in-progress WorkItem after automated acceptance fails", async () => {
+  const services = await createServices();
+  try {
+    const objective = await callApi({
+      method: "POST", pathname: "/objectives", body: { name: "未通过后人工裁决目标" }, ...services
+    });
+    const created = await callApi({
+      method: "POST",
+      pathname: "/work-items",
+      body: {
+        objectiveId: objective.body.id,
+        title: "未通过后人工确认任务",
+        acceptanceCriteria: "Tests pass"
+      },
+      ...services
+    });
+    services.store.upsertSession({
+      id: "failed-acceptance-session",
+      title: "未通过验收会话",
+      agent: "worker",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    services.objectiveService.bindSession("failed-acceptance-session", created.body.id);
+    await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${created.body.id}`,
+      body: { status: "in_progress" },
+      ...services
+    });
+
+    const assessed = await callApi({
+      method: "PUT",
+      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      body: {
+        sourceSessionId: "failed-acceptance-session",
+        results: [{
+          criterion: "Tests pass",
+          verdict: "failed",
+          evidence: [{ summary: "A test failed", reference: "npm test" }]
+        }]
+      },
+      ...services
+    });
+    assert.equal(assessed.statusCode, 200);
+    assert.equal(assessed.body.acceptanceAssessment.status, "not_proven");
+    assert.equal(assessed.body.completionSuggestion, null);
+
+    const completed = await callApi({
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/confirm-completion`,
+      body: { confirmed: true },
+      ...services
+    });
+    assert.equal(completed.statusCode, 200);
+    assert.equal(completed.body.status, "done");
+    assert.equal(completed.body.acceptanceAssessment.status, "not_proven");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("multiple Sessions can contribute evidence without any Session lifecycle proving acceptance", async () => {
   const services = await createServices();
   try {

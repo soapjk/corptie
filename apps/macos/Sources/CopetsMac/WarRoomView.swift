@@ -348,14 +348,36 @@ enum ObjectiveDiscussionRouteDecision: Equatable {
     }
 }
 
-enum WorkItemAcceptancePresentationTrigger: Equatable {
-    case automaticRefresh
-    case automaticAcceptanceButton
+enum WorkItemAcceptancePresentationDecision {
+    static func canOpenCompletionConfirmation(status: String) -> Bool {
+        ["in_progress", "doing", "running"].contains(status)
+    }
 }
 
-enum WorkItemAcceptancePresentationDecision {
-    static func shouldPresent(trigger: WorkItemAcceptancePresentationTrigger, hasPassingAcceptance: Bool) -> Bool {
-        hasPassingAcceptance && trigger == .automaticAcceptanceButton
+struct WorkItemAutomaticAcceptancePresentation: Equatable {
+    enum State: Equatable {
+        case passed
+        case notPassed
+        case notAssessed
+    }
+
+    let state: State
+    let results: [WorkItemAcceptanceResult]
+
+    static func resolve(
+        assessment: WorkItemAcceptanceAssessment?,
+        suggestion: WorkItemCompletionSuggestion?
+    ) -> Self {
+        if let assessment {
+            return Self(
+                state: assessment.status == "passed" ? .passed : .notPassed,
+                results: assessment.results
+            )
+        }
+        if let suggestion, suggestion.recommended {
+            return Self(state: .passed, results: suggestion.results)
+        }
+        return Self(state: .notAssessed, results: [])
     }
 }
 
@@ -709,25 +731,6 @@ enum WorkItemExecutionStartDecision: Equatable {
     }
 }
 
-enum WorkItemStatusAdvanceDecision: Equatable {
-    case advance(to: String)
-    case restore
-    case unavailable
-
-    static func resolve(status: String) -> Self {
-        switch status {
-        case "todo", "pending", "ready":
-            .advance(to: "in_progress")
-        case "in_progress", "doing", "running":
-            .advance(to: "done")
-        case "done", "complete", "completed":
-            .restore
-        default:
-            .unavailable
-        }
-    }
-}
-
 struct WorkItemDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -748,12 +751,7 @@ struct WorkItemDetailView: View {
     @State private var showEdit = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
-    @State private var pendingStatusAdvance: String?
-    @State private var showStatusAdvanceConfirmation = false
-    @State private var isRestoreConfirmation = false
-    @State private var isAdvancingStatus = false
     @State private var isConfirmingCompletion = false
-    @State private var isRejectingAcceptance = false
     @State private var sessionCreationAgent: Agent?
     @State private var worktreeStatus: WorkItemWorktreeStatus?
     @State private var isLoadingWorktree = false
@@ -866,41 +864,14 @@ struct WorkItemDetailView: View {
         .sheet(isPresented: $showCompleteConfirmation) {
             WorkItemCompletionConfirmationView(
                 workItem: workItem,
+                assessment: workItem.acceptanceAssessment,
                 suggestion: workItem.completionSuggestion,
-                isWorking: isConfirmingCompletion || isRejectingAcceptance,
+                isWorking: isConfirmingCompletion,
                 onConfirm: { Task { await confirmComplete() } },
-                onReject: { Task { await rejectAcceptance() } },
                 onCancel: {
                     showCompleteConfirmation = false
-                    pendingStatusAdvance = nil
                 }
             )
-        }
-        .alert(
-            L10n(isRestoreConfirmation ? "Restore WorkItem" : "Advance WorkItem Status"),
-            isPresented: $showStatusAdvanceConfirmation
-        ) {
-            Button(L10n("Confirm")) {
-                if isRestoreConfirmation {
-                    Task { await restoreCompletedWorkItem() }
-                } else if let pendingStatusAdvance {
-                    Task { await advanceStatus(to: pendingStatusAdvance) }
-                }
-            }
-            Button(L10n("取消"), role: .cancel) {
-                pendingStatusAdvance = nil
-                isRestoreConfirmation = false
-            }
-        } message: {
-            if isRestoreConfirmation {
-                Text(L10n("Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session."))
-            } else if let pendingStatusAdvance {
-                Text(L10nFormat(
-                    "Change WorkItem status from “%@” to “%@”? This manually overrides the execution-managed status.",
-                    workItemStatusLabel(workItem.status),
-                    workItemStatusLabel(pendingStatusAdvance)
-                ))
-            }
         }
         .sheet(isPresented: $showWorkspaceBind) {
             WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
@@ -962,23 +933,13 @@ struct WorkItemDetailView: View {
 
 
             if isPendingReview {
-                Button {
-                    if WorkItemAcceptancePresentationDecision.shouldPresent(
-                        trigger: .automaticAcceptanceButton,
-                        hasPassingAcceptance: isPendingReview
-                    ) {
-                        showCompleteConfirmation = true
-                    }
-                } label: {
-                    Label(L10n("自动验收已通过"), systemImage: "checkmark.seal.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.green.opacity(0.12), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .help(L10n("查看自动验收情况"))
+                Label(L10n("自动验收已通过"), systemImage: "checkmark.seal.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.green.opacity(0.12), in: Capsule())
+                    .accessibilityLabel(L10n("自动验收已通过"))
             }
 
             HStack(alignment: .top, spacing: 8) {
@@ -1322,36 +1283,18 @@ struct WorkItemDetailView: View {
         }
     }
 
-    // 用户确认「待确认完成」→ 真正标记为已完成。
+    // 用户从「进行中」状态按钮作出最终裁决，将 WorkItem 标记为完成。
     private func confirmComplete() async {
         guard !isConfirmingCompletion else { return }
         isConfirmingCompletion = true
         defer { isConfirmingCompletion = false }
         if await client.confirmWorkItemCompletion(workItemId: workItem.id) != nil {
             showCompleteConfirmation = false
-            pendingStatusAdvance = nil
             onRequestReload()
         } else {
             showCompleteConfirmation = false
             executionError = EntityLaunchError(
                 message: client.errorMessage ?? L10n("Unable to confirm WorkItem completion"),
-                code: nil
-            )
-        }
-    }
-
-    private func rejectAcceptance() async {
-        guard !isRejectingAcceptance else { return }
-        isRejectingAcceptance = true
-        defer { isRejectingAcceptance = false }
-        if await client.rejectWorkItemAcceptance(workItemId: workItem.id) != nil {
-            showCompleteConfirmation = false
-            pendingStatusAdvance = nil
-            onRequestReload()
-        } else {
-            showCompleteConfirmation = false
-            executionError = EntityLaunchError(
-                message: client.errorMessage ?? L10n("Unable to reject automated acceptance"),
                 code: nil
             )
         }
@@ -1413,33 +1356,15 @@ struct WorkItemDetailView: View {
 
     @ViewBuilder
     private func compactStatusBadge(_ status: String) -> some View {
-        switch WorkItemStatusAdvanceDecision.resolve(status: status) {
-        case .advance(let targetStatus):
-            if targetStatus == "done" {
-                statusBadgeLabel(status)
-            } else {
-                Button {
-                    pendingStatusAdvance = targetStatus
-                    showStatusAdvanceConfirmation = true
-                } label: {
-                    statusBadgeLabel(status)
-                }
-                .buttonStyle(.plain)
-                .disabled(isAdvancingStatus)
-                .help(L10nFormat("Advance status to %@", workItemStatusLabel(targetStatus)))
-            }
-        case .restore:
+        if WorkItemAcceptancePresentationDecision.canOpenCompletionConfirmation(status: status) {
             Button {
-                pendingStatusAdvance = nil
-                isRestoreConfirmation = true
-                showStatusAdvanceConfirmation = true
+                showCompleteConfirmation = true
             } label: {
                 statusBadgeLabel(status)
             }
             .buttonStyle(.plain)
-            .disabled(isLaunchingExecution)
-            .help(L10n("Restore WorkItem execution"))
-        case .unavailable:
+            .help(L10n("打开完成确认"))
+        } else {
             statusBadgeLabel(status)
         }
     }
@@ -1447,7 +1372,7 @@ struct WorkItemDetailView: View {
     private func statusBadgeLabel(_ status: String) -> some View {
         let (label, color): (String, Color) = {
             switch status {
-            case "in_progress": (L10n("In Progress"), .orange)
+            case "in_progress", "doing", "running": (L10n("In Progress"), .orange)
             case "review", "reviewing": (L10n("Awaiting Completion Approval"), .blue)
             case "done", "complete", "completed": (L10n("Completed"), .green)
             case "failed": (L10n("Failed"), .red)
@@ -1462,57 +1387,6 @@ struct WorkItemDetailView: View {
             .background(color.opacity(0.11), in: Capsule())
     }
 
-    private func workItemStatusLabel(_ status: String) -> String {
-        switch status {
-        case "todo", "pending", "ready": L10n("Not Started")
-        case "in_progress", "doing", "running": L10n("In Progress")
-        case "review", "reviewing": L10n("Awaiting Completion Approval")
-        case "done", "complete", "completed": L10n("Completed")
-        case "failed": L10n("Failed")
-        default: status
-        }
-    }
-
-    private func advanceStatus(to status: String) async {
-        guard !isAdvancingStatus else { return }
-        isAdvancingStatus = true
-        defer {
-            isAdvancingStatus = false
-            pendingStatusAdvance = nil
-        }
-
-        if await client.updateWorkItem(workItemId: workItem.id, status: status) != nil {
-            onRequestReload()
-        } else {
-            executionError = EntityLaunchError(message: client.errorMessage ?? L10n("Unable to update WorkItem status"), code: nil)
-        }
-    }
-
-    private func restoreCompletedWorkItem() async {
-        guard !isLaunchingExecution else { return }
-        isLaunchingExecution = true
-        defer {
-            isLaunchingExecution = false
-            isRestoreConfirmation = false
-        }
-        let result = await client.restoreWorkItemExecution(workItemId: workItem.id)
-        if result.workItem != nil {
-            await refreshExecution()
-            onRequestReload()
-            return
-        }
-        if result.error?.code == "WORK_ITEM_SESSION_REQUIRED" {
-            currentSession = nil
-            isLaunchingExecution = false
-            await startOrResumeExecution()
-            return
-        }
-        executionError = result.error ?? EntityLaunchError(
-            message: L10n("Unable to restore WorkItem execution"),
-            code: nil
-        )
-    }
-
     private func metadataPill(_ text: String, systemImage: String) -> some View {
         Label(text, systemImage: systemImage)
             .font(.system(size: 10, weight: .medium))
@@ -1525,11 +1399,15 @@ struct WorkItemDetailView: View {
 
 private struct WorkItemCompletionConfirmationView: View {
     let workItem: WorkItem
+    let assessment: WorkItemAcceptanceAssessment?
     let suggestion: WorkItemCompletionSuggestion?
     let isWorking: Bool
     let onConfirm: () -> Void
-    let onReject: () -> Void
     let onCancel: () -> Void
+
+    private var acceptance: WorkItemAutomaticAcceptancePresentation {
+        .resolve(assessment: assessment, suggestion: suggestion)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1548,47 +1426,73 @@ private struct WorkItemCompletionConfirmationView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let suggestion, suggestion.recommended {
+                    switch acceptance.state {
+                    case .passed:
                         Label(
-                            L10n("自动化验收已通过，该 WorkItem 可以完成。请查看当前验收情况并作出最终确认。"),
+                            L10n("自动验收：已通过"),
                             systemImage: "checkmark.seal.fill"
                         )
                         .foregroundStyle(.green)
-
-                        ForEach(Array(suggestion.results.enumerated()), id: \.offset) { index, result in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("\(index + 1). \(result.criterion)")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .textSelection(.enabled)
-                                ForEach(Array(result.evidence.enumerated()), id: \.offset) { _, evidence in
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text("• \(evidence.summary)")
-                                            .font(.system(size: 11))
-                                        Text(evidence.reference)
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .textSelection(.enabled)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
-                        }
-                    } else {
+                    case .notPassed:
                         Label(
-                            L10n("自动验收尚未给出通过结论。你仍可作为用户作出最终裁决并确认完成。"),
-                            systemImage: "person.crop.circle.badge.checkmark"
+                            L10n("自动验收：未通过"),
+                            systemImage: "xmark.seal.fill"
                         )
                         .foregroundStyle(.orange)
+                    case .notAssessed:
+                        Label(
+                            L10n("自动验收：尚未验收"),
+                            systemImage: "questionmark.circle.fill"
+                        )
+                        .foregroundStyle(.secondary)
+                    }
 
-                        if !workItem.acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(L10n("Acceptance Criteria"))
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(workItem.acceptanceCriteria)
-                                    .font(.system(size: 11))
+                    Text(L10n("无论自动验收结果如何，你都可以将此 WorkItem 标记为完成。"))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(L10n("自动验收结论详情"))
+                            .font(.system(size: 11, weight: .semibold))
+
+                        if acceptance.results.isEmpty {
+                            ContentUnavailableView(
+                                L10n("暂无自动验收结论详情"),
+                                systemImage: "doc.text.magnifyingglass"
+                            )
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                        } else {
+                            ForEach(Array(acceptance.results.enumerated()), id: \.offset) { index, result in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text("\(index + 1). \(result.criterion)")
+                                            .font(.system(size: 12, weight: .semibold))
+                                        Spacer()
+                                        Text(acceptanceVerdictLabel(result.verdict))
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(acceptanceVerdictColor(result.verdict))
+                                    }
                                     .textSelection(.enabled)
+                                    if result.evidence.isEmpty {
+                                        Text(L10n("该结论暂无证据详情"))
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.tertiary)
+                                    } else {
+                                        ForEach(Array(result.evidence.enumerated()), id: \.offset) { _, evidence in
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text("• \(evidence.summary)")
+                                                    .font(.system(size: 11))
+                                                Text(evidence.reference)
+                                                    .font(.system(size: 10, design: .monospaced))
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .textSelection(.enabled)
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(12)
+                                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
                             }
                         }
                     }
@@ -1604,14 +1508,12 @@ private struct WorkItemCompletionConfirmationView: View {
                 Button(L10n("取消"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
                     .disabled(isWorking)
-                Button(L10n("不通过，还要继续改"), action: onReject)
-                    .disabled(isWorking)
                 Button(action: onConfirm) {
                     if isWorking {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text(L10n("确认通过"))
+                        Text(L10n("标记为完成"))
                     }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -1621,6 +1523,22 @@ private struct WorkItemCompletionConfirmationView: View {
         }
         .frame(width: 520, height: 480)
         .interactiveDismissDisabled(isWorking)
+    }
+
+    private func acceptanceVerdictLabel(_ verdict: String) -> String {
+        switch verdict {
+        case "passed": L10n("已通过")
+        case "failed": L10n("未通过")
+        default: L10n("未知")
+        }
+    }
+
+    private func acceptanceVerdictColor(_ verdict: String) -> Color {
+        switch verdict {
+        case "passed": .green
+        case "failed": .red
+        default: .secondary
+        }
     }
 }
 
