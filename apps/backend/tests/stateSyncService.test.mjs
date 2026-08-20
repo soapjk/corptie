@@ -17,7 +17,23 @@ test("state snapshot normalizes every control-plane collection", () => {
   assert.equal(snapshot.revision, 4);
   assert.deepEqual(snapshot.state.sessions, [{ id: "s1" }]);
   assert.deepEqual(snapshot.state.workItems, []);
+  assert.deepEqual(snapshot.state.skills, []);
   assert.deepEqual(snapshot.state.integrationRuns, []);
+});
+
+test("Skill deletes and assignment-driven Agent upserts share the revision stream", () => {
+  const service = fixture({
+    revision: 4,
+    oldest: 2,
+    changes: [
+      { revision: 3, entityType: "skill", entityId: "skill:one", operation: "delete" },
+      { revision: 4, entityType: "agent", entityId: "agent:one", operation: "upsert" }
+    ],
+    state: { agents: [{ agentId: "agent:one", skillIds: [] }], skills: [] }
+  });
+  const changes = service.changesAfter(2);
+  assert.deepEqual(changes.deletes.skills, ["skill:one"]);
+  assert.deepEqual(changes.upserts.agents, [{ agentId: "agent:one", skillIds: [] }]);
 });
 
 test("change set coalesces row history and hydrates authoritative entities", () => {

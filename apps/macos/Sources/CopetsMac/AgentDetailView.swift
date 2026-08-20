@@ -66,6 +66,9 @@ struct AgentDetailView: View {
                 selectedSkillIds = Set(latest.skillIds ?? [])
             }
         }
+        .onChange(of: client.skills.map(\.skillId)) { _, availableSkillIds in
+            selectedSkillIds.formIntersection(availableSkillIds)
+        }
     }
 
     // MARK: - 头部

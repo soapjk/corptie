@@ -3,6 +3,7 @@ const ENTITY_COLLECTION = Object.freeze({
   workItem: "workItems",
   objective: "objectives",
   agent: "agents",
+  skill: "skills",
   repository: "repositories",
   integrationRun: "integrationRuns"
 });
@@ -12,6 +13,7 @@ const ENTITY_ID = Object.freeze({
   workItems: (entity) => entity.id,
   objectives: (entity) => entity.id,
   agents: (entity) => entity.agentId,
+  skills: (entity) => entity.skillId,
   repositories: (entity) => entity.id,
   integrationRuns: (entity) => entity.id
 });

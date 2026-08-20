@@ -10,6 +10,7 @@ import { CollaborationRouter } from "../src/application/collaborationRouter.mjs"
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
 import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
+import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
 
 function mockResponse() {
   return {
@@ -28,9 +29,10 @@ function mockResponse() {
   };
 }
 
-function mockRequest(method, pathname, search = "", body = {}) {
+function mockRequest(method, pathname, search = "", body = {}, headers = {}) {
   return {
     method,
+    headers,
     url: `http://localhost${pathname}${search}`,
     async *[Symbol.asyncIterator]() {
       yield Buffer.from(JSON.stringify(body));
@@ -57,12 +59,13 @@ async function createServices() {
     hubService: new HubService({ store }),
     router: new CollaborationRouter({ store }),
     memoryExtractor: new MemoryExtractor({ store }),
-    assistantService: new AssistantService({ store, objectiveService, onEntityChanged })
+    assistantService: new AssistantService({ store, objectiveService, onEntityChanged }),
+    skillRegistryService: new SkillRegistryService({ store, skillsDirs: {}, cacheRoot: join(directory, "skill-cache") })
   };
 }
 
-async function callApi({ method, pathname, search = "", body, ...services }) {
-  const request = mockRequest(method, pathname, search, body);
+async function callApi({ method, pathname, search = "", body, headers, ...services }) {
+  const request = mockRequest(method, pathname, search, body, headers);
   const response = mockResponse();
   const url = new URL(request.url);
   const handled = handleEntityHttpRequest({
@@ -74,6 +77,7 @@ async function callApi({ method, pathname, search = "", body, ...services }) {
     router: services.router,
     memoryExtractor: services.memoryExtractor,
     assistantService: services.assistantService,
+    skillRegistryService: services.skillRegistryService,
     backgroundAgentService: services.backgroundAgentService,
     createSession: services.createSession,
     launchSession: services.launchSession,
@@ -573,6 +577,90 @@ test("entity mutations publish provider-neutral refresh events", async () => {
       services.entityEvents.map((event) => event.type),
       ["ObjectiveChanged", "WorkItemChanged", "AgentChanged"]
     );
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Skill deletion impact, confirmation permission, cascade response, and refresh events are explicit", async () => {
+  const services = await createServices();
+  try {
+    const skill = services.store.createRegistrySkill({
+      name: "Shared",
+      sourceType: "local",
+      source: services.directory
+    });
+    const first = services.store.createAgent({ name: "First" });
+    const second = services.store.createAgent({ name: "Second" });
+    services.store.setAgentRegistrySkills(first.agentId, [skill.skillId]);
+    services.store.setAgentRegistrySkills(second.agentId, [skill.skillId]);
+
+    const impact = await callApi({
+      method: "GET",
+      pathname: `/skills/${encodeURIComponent(skill.skillId)}/deletion-impact`,
+      ...services
+    });
+    assert.equal(impact.statusCode, 200);
+    assert.equal(impact.body.impact.affectedAgentCount, 2);
+    assert.equal(impact.body.impact.canDelete, true);
+
+    const unconfirmed = await callApi({
+      method: "DELETE",
+      pathname: `/skills/${encodeURIComponent(skill.skillId)}`,
+      ...services
+    });
+    assert.equal(unconfirmed.statusCode, 403);
+    assert.equal(unconfirmed.body.code, "SKILL_DELETE_CONFIRMATION_REQUIRED");
+    assert.ok(services.store.getRegistrySkill(skill.skillId));
+
+    const removed = await callApi({
+      method: "DELETE",
+      pathname: `/skills/${encodeURIComponent(skill.skillId)}`,
+      headers: { "x-corptie-confirm-destructive-action": "delete-skill" },
+      ...services
+    });
+    assert.equal(removed.statusCode, 200);
+    assert.equal(removed.body.ok, true);
+    assert.equal(removed.body.operation.status, "completed");
+    assert.deepEqual(services.store.listRegistrySkillIdsForAgent(first.agentId), []);
+    assert.deepEqual(services.store.listRegistrySkillIdsForAgent(second.agentId), []);
+    assert.deepEqual(
+      services.entityEvents.slice(-3).map((event) => event.type),
+      ["SkillChanged", "AgentChanged", "AgentChanged"]
+    );
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Skill deletion HTTP failure returns audit operation and never reports success", async () => {
+  const services = await createServices();
+  try {
+    const operation = {
+      operationId: "skill-deletion:test",
+      skillId: "skill:test",
+      skillName: "Test",
+      status: "cleanup_failed",
+      cleanup: [{ kind: "runtime", path: "/runtime/skill:test", status: "failed" }]
+    };
+    const error = new Error("simulated cleanup failure");
+    error.code = "SKILL_CLEANUP_FAILED";
+    error.operation = operation;
+    const failed = await callApi({
+      method: "DELETE",
+      pathname: "/skills/skill%3Atest",
+      headers: { "x-corptie-confirm-destructive-action": "delete-skill" },
+      ...services,
+      skillRegistryService: {
+        remove: async () => { throw error; }
+      }
+    });
+    assert.equal(failed.statusCode, 500);
+    assert.equal(failed.body.code, "SKILL_CLEANUP_FAILED");
+    assert.equal(failed.body.operation.status, "cleanup_failed");
+    assert.notEqual(failed.body.ok, true);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

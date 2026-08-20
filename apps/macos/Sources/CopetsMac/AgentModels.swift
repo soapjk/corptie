@@ -82,3 +82,63 @@ struct SkillListEnvelope: Codable {
 struct SkillEnvelope: Codable {
     let skill: Skill
 }
+
+struct SkillDeletionAffectedAgent: Codable, Hashable, Identifiable {
+    let agentId: String
+    let name: String
+    var id: String { agentId }
+}
+
+struct SkillDeletionActiveSession: Codable, Hashable, Identifiable {
+    let sessionId: String
+    let title: String
+    let status: String
+    let agentId: String
+    let agentName: String
+    var id: String { sessionId }
+}
+
+struct SkillDeletionImpact: Codable, Hashable {
+    let skillId: String
+    let skillName: String
+    let affectedAgents: [SkillDeletionAffectedAgent]
+    let affectedAgentCount: Int
+    let activeSessions: [SkillDeletionActiveSession]
+    let activeSessionCount: Int
+    let canDelete: Bool
+    let policy: String
+}
+
+struct SkillDeletionImpactEnvelope: Codable {
+    let impact: SkillDeletionImpact
+}
+
+struct SkillDeletionCleanupResult: Codable, Hashable {
+    let kind: String
+    let providerId: String?
+    let path: String
+    let status: String
+    let error: String?
+}
+
+struct SkillDeletionOperation: Codable, Hashable {
+    let operationId: String
+    let skillId: String
+    let skillName: String
+    let status: String
+    let cleanup: [SkillDeletionCleanupResult]
+    let errorCode: String?
+    let errorMessage: String?
+}
+
+struct SkillDeletionResultEnvelope: Codable {
+    let ok: Bool
+    let operation: SkillDeletionOperation
+    let impact: SkillDeletionImpact
+}
+
+enum SkillDeletionConfirmationPolicy {
+    static func canOfferDestructiveAction(for impact: SkillDeletionImpact) -> Bool {
+        impact.canDelete && impact.activeSessionCount == 0
+    }
+}

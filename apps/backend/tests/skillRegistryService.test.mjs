@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -18,6 +18,8 @@ async function fixture() {
   await store.initialize();
   const source = join(directory, "source");
   const runtime = join(directory, "runtime-skills");
+  const runtimeSecond = join(directory, "runtime-skills-second");
+  const cacheRoot = join(directory, "skill-cache");
   await mkdir(join(source, "skills", "alpha"), { recursive: true });
   await mkdir(join(source, "skills", "investrace"), { recursive: true });
   await writeFile(join(source, "skills", "alpha", "SKILL.md"), [
@@ -26,8 +28,21 @@ async function fixture() {
   await writeFile(join(source, "skills", "investrace", "SKILL.md"), [
     "---", "name: investrace", "description: Record investment decisions", "---", "Investrace instructions"
   ].join("\n"));
-  const service = new SkillRegistryService({ store, skillsDirs: { test: runtime } });
-  return { directory, source, runtime, store, service };
+  const service = new SkillRegistryService({
+    store,
+    skillsDirs: { test: runtime, second: runtimeSecond },
+    cacheRoot
+  });
+  return { directory, source, runtime, runtimeSecond, cacheRoot, store, service };
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test("multi-Skill source requires an explicit candidate and materializes the selected Skill", async () => {
@@ -242,6 +257,125 @@ test("Agent Skill replacement validates before deleting the existing assignment"
       (error) => error.code === "SKILL_NOT_FOUND"
     );
     assert.deepEqual(value.store.listRegistrySkillIdsForAgent(agent.agentId), [skill.skillId]);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("global deletion cascades independent assignments, every runtime copy, and the Git cache", async () => {
+  const value = await fixture();
+  try {
+    const gitCache = join(value.cacheRoot, "skill-fixture");
+    await mkdir(gitCache, { recursive: true });
+    await writeFile(join(gitCache, "SKILL.md"), "---\nname: global\ndescription: shared\n---\nGlobal skill\n");
+    const skill = value.store.createRegistrySkill({
+      name: "global",
+      description: "shared",
+      sourceType: "git",
+      source: "https://example.invalid/global.git",
+      cachePath: gitCache,
+      manifestName: "global",
+      manifestDescription: "shared"
+    });
+    await value.service.materialize(skill);
+    const first = value.store.createAgent({ name: "First" });
+    const second = value.store.createAgent({ name: "Second" });
+    value.store.setAgentRegistrySkills(first.agentId, [skill.skillId]);
+    value.store.setAgentRegistrySkills(second.agentId, [skill.skillId]);
+
+    const impact = value.service.deletionImpact(skill.skillId);
+    assert.equal(impact.affectedAgentCount, 2);
+    assert.deepEqual(impact.affectedAgents.map((agent) => agent.name), ["First", "Second"]);
+
+    const revisionBeforeDelete = value.store.stateRevision();
+    const result = await value.service.remove(skill.skillId);
+    assert.equal(result.ok, true);
+    assert.equal(result.operation.status, "completed");
+    assert.equal(value.store.getRegistrySkill(skill.skillId), null);
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(first.agentId), []);
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(second.agentId), []);
+    assert.equal(await pathExists(join(value.runtime, skill.skillId)), false);
+    assert.equal(await pathExists(join(value.runtimeSecond, skill.skillId)), false);
+    assert.equal(await pathExists(gitCache), false);
+    const deletionChanges = value.store.stateChangesAfter(revisionBeforeDelete);
+    assert.ok(deletionChanges.some((change) => (
+      change.entityType === "skill" && change.entityId === skill.skillId && change.operation === "delete"
+    )));
+    assert.deepEqual(
+      deletionChanges.filter((change) => change.entityType === "agent").map((change) => change.entityId).sort(),
+      [first.agentId, second.agentId].sort()
+    );
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("partial runtime cleanup failure is audited, returns failure, and restores removed copies for retry", async () => {
+  const value = await fixture();
+  try {
+    const skill = await value.service.register({
+      sourceType: "local",
+      source: join(value.source, "skills", "alpha")
+    });
+    const agent = value.store.createAgent({ name: "Assigned" });
+    value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+    const failing = new SkillRegistryService({
+      store: value.store,
+      skillsDirs: { test: value.runtime, second: value.runtimeSecond },
+      cacheRoot: value.cacheRoot,
+      removePath: async (path, options) => {
+        if (path.startsWith(value.runtimeSecond)) {
+          const error = new Error("simulated permission denial");
+          error.code = "EACCES";
+          throw error;
+        }
+        await rm(path, options);
+      }
+    });
+
+    await assert.rejects(
+      failing.remove(skill.skillId),
+      (error) => error.code === "SKILL_CLEANUP_FAILED"
+        && error.operation.status === "cleanup_failed"
+        && error.operation.cleanup.some((entry) => entry.status === "failed")
+    );
+    assert.ok(value.store.getRegistrySkill(skill.skillId));
+    assert.deepEqual(value.store.listRegistrySkillIdsForAgent(agent.agentId), [skill.skillId]);
+    assert.equal(await pathExists(join(value.runtime, skill.skillId, "SKILL.md")), true);
+    assert.equal(await pathExists(join(value.runtimeSecond, skill.skillId, "SKILL.md")), true);
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("active assigned Sessions block deletion before any runtime cleanup", async () => {
+  const value = await fixture();
+  try {
+    const skill = await value.service.register({
+      sourceType: "local",
+      source: join(value.source, "skills", "alpha")
+    });
+    const agent = value.store.createAgent({ name: "Active" });
+    value.store.setAgentRegistrySkills(agent.agentId, [skill.skillId]);
+    const session = value.store.createSession({
+      title: "Still running",
+      agentId: agent.agentId,
+      agentName: agent.name,
+      status: "running"
+    });
+
+    const impact = value.service.deletionImpact(skill.skillId);
+    assert.equal(impact.canDelete, false);
+    assert.equal(impact.activeSessions[0].sessionId, session.id);
+    await assert.rejects(
+      value.service.remove(skill.skillId),
+      (error) => error.code === "SKILL_HAS_ACTIVE_SESSIONS" && error.impact.activeSessionCount === 1
+    );
+    assert.ok(value.store.getRegistrySkill(skill.skillId));
+    assert.equal(await pathExists(join(value.runtime, skill.skillId, "SKILL.md")), true);
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });

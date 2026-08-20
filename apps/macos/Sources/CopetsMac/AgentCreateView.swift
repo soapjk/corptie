@@ -150,6 +150,9 @@ struct AgentCreateView: View {
                 if let skill { selectedSkillIds.insert(skill.skillId) }
             }
         }
+        .onChange(of: client.skills.map(\.skillId)) { _, availableSkillIds in
+            selectedSkillIds.formIntersection(availableSkillIds)
+        }
     }
 
     // MARK: - 从已有 Agent 继承

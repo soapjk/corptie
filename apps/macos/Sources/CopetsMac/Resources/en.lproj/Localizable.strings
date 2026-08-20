@@ -579,3 +579,12 @@
 "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes." = "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes.";
 "The conflict Agent finished. Retry to verify and resume the integration task." = "The conflict Agent finished. Retry to verify and resume the integration task.";
 "The conflict Agent stopped before completing. Open its Session to inspect or resume it." = "The conflict Agent stopped before completing. Open its Session to inspect or resume it.";
+"Delete Skill?" = "Delete Skill?";
+"Delete Skill" = "Delete Skill";
+"Unable to delete Skill" = "Unable to delete Skill";
+"Unable to delete Skill." = "Unable to delete Skill.";
+"Unable to inspect Skill deletion impact." = "Unable to inspect Skill deletion impact.";
+"No Agent currently uses this Skill." = "No Agent currently uses this Skill.";
+"This permanently removes the Skill from %d Agent(s): %@." = "This permanently removes the Skill from %d Agent(s): %@.";
+"All Provider runtime copies and the Git cache will be removed. This cannot be undone." = "All Provider runtime copies and the Git cache will be removed. This cannot be undone.";
+"Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first." = "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first.";

@@ -957,3 +957,12 @@
 "Agent %@ is resolving conflicts in %@. Return here and retry after it finishes." = "Agent %@ 正在 %@ 中处理冲突。完成后请返回此处重试。";
 "The conflict Agent finished. Retry to verify and resume the integration task." = "冲突处理 Agent 已完成。请点击重试以验证结果并继续集成任务。";
 "The conflict Agent stopped before completing. Open its Session to inspect or resume it." = "冲突处理 Agent 尚未完成便已停止。请打开其会话检查或恢复执行。";
+"Delete Skill?" = "删除 Skill？";
+"Delete Skill" = "删除 Skill";
+"Unable to delete Skill" = "无法删除 Skill";
+"Unable to delete Skill." = "无法删除 Skill。";
+"Unable to inspect Skill deletion impact." = "无法检查 Skill 删除影响。";
+"No Agent currently uses this Skill." = "当前没有 Agent 使用此 Skill。";
+"This permanently removes the Skill from %d Agent(s): %@." = "此操作会从 %d 个 Agent 中永久移除此 Skill：%@。";
+"All Provider runtime copies and the Git cache will be removed. This cannot be undone." = "所有 Provider 运行时副本和 Git 缓存都会被删除。此操作不可撤销。";
+"Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first." = "有 %d 个活跃 Session 仍可使用此 Skill，因此当前禁止删除：%@。请先结束或中断这些 Session。";

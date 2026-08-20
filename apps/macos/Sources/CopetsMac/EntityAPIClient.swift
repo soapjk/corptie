@@ -33,9 +33,10 @@ final class EntityAPIClient: ObservableObject {
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
     var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
     var repositories: [GitRepository] { appState.repositories }
-    @Published var skills: [Skill] = []
+    var skills: [Skill] { appState.skills }
     @Published var isLoading = false
     @Published var errorMessage: String?
+    private let skillDeletionHTTPClient = SkillDeletionHTTPClient()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var objectivesRefreshGeneration = EntityRefreshGeneration()
@@ -97,13 +98,8 @@ final class EntityAPIClient: ObservableObject {
 
     // 拉取全局 Skill 维护中心列表：GET /skills → { skills }
     func refreshSkills() async {
-        do {
-            let (data, _) = try await URLSession.shared.data(from: baseURL.appending(path: "skills"))
-            skills = try decoder.decode(SkillListEnvelope.self, from: data).skills
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+        await AppStateSyncController.shared.refreshSnapshot()
+        errorMessage = appState.syncError
     }
 
     func workItems(for objective: Objective) async -> [WorkItem]? {
@@ -866,13 +862,26 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 删除登记：DELETE /skills/:id → { ok }
-    func deleteSkill(skillId: String) async -> Bool {
-        var request = URLRequest(url: baseURL.appending(path: "skills/\(skillId)"))
-        request.httpMethod = "DELETE"
+    func skillDeletionImpact(skillId: String) async -> SkillDeletionImpact? {
         do {
-            _ = try await URLSession.shared.data(for: request)
-            await refreshSkills()
+            let impact = try await skillDeletionHTTPClient.impact(skillId: skillId)
+            errorMessage = nil
+            return impact
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    // 删除登记：只有 HTTP 成功且响应明确为 completed 才视为成功。
+    func deleteSkill(skillId: String) async -> Bool {
+        do {
+            _ = try await skillDeletionHTTPClient.delete(skillId: skillId)
+            await AppStateSyncController.shared.refreshSnapshot()
+            if let syncError = appState.syncError {
+                throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED")
+            }
+            errorMessage = nil
             return true
         } catch {
             errorMessage = error.localizedDescription

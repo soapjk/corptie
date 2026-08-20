@@ -1811,6 +1811,7 @@ function controlPlaneSnapshot() {
       ...agent,
       skillIds: store.listRegistrySkillIdsForAgent(agent.agentId)
     })),
+    skills: store.listRegistrySkills(),
     repositories: store.listGitRepositories(),
     integrationRuns: store.listProjectIntegrationRuns().map((run) => (
       presentProjectIntegrationRun(run, {
