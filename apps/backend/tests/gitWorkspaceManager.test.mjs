@@ -767,6 +767,34 @@ test("confirmed permanent deletion also discards uncommitted worktree changes", 
   }
 });
 
+test("safe-only deletion blocks uncommitted changes even when force flags are supplied", async () => {
+  const fixture = await createFixture("safe-delete-dirty", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.activeWorktree, "uncommitted.txt"), "keep me\n");
+    const sourceWorktreeId = (await inspectGitWorkspace(fixture.activeWorktree)).worktreeId;
+    await assert.rejects(
+      () => manager.removeMergedWorktree({
+        logicalSessionId: "logical:one",
+        sourceWorktreeId,
+        ignoreLogicalSessionIds: ["logical:one"],
+        deleteBranch: true,
+        safeOnly: true,
+        forceDeleteUnmerged: true,
+        acknowledgeIrrecoverable: true,
+        confirmedBranchName: "feature/session-worktree"
+      }),
+      (error) => error.code === "UNCOMMITTED_CHANGES" && /uncommitted changes/.test(error.message)
+    );
+    assert.match(await gitOutput(["status", "--porcelain"], fixture.activeWorktree), /uncommitted\.txt/);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a manually deleted worktree can be rebuilt from its surviving branch", async () => {
   const fixture = await createFixture("restore-missing", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({

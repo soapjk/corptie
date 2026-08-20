@@ -128,6 +128,32 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(client.contains("body: body"))
     }
 
+    func testWorktreeTabExposesConfirmedSafeDeletionAndCleanupResults() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains(".contextMenu"))
+        XCTAssertTrue(view.contains("worktree.delete.\\(worktree.worktreeId)"))
+        XCTAssertTrue(view.contains("worktree.cleanup"))
+        XCTAssertTrue(view.contains("Delete this Worktree?"))
+        XCTAssertTrue(view.contains("Only these Worktrees"))
+        XCTAssertTrue(view.contains("WorktreeCleanupResultView"))
+        XCTAssertTrue(view.contains("Removed: %d   Skipped: %d   Failed: %d"))
+        XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/worktrees/\\(worktree.worktreeId)/delete"))
+        XCTAssertTrue(client.contains("worktree-management/repositories/\\(repositoryId)/cleanup"))
+        XCTAssertTrue(client.contains("await loadRepository(repositoryId)"))
+    }
+
     func testStaleIntegrationPlanCanBeRegeneratedAndMustBeReviewedAgain() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -305,7 +331,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         ManagedWorktree(
             worktreeId: id, path: isMain ? "/repo" : "/feature", isMain: isMain,
             availability: "available", headOid: "head", branchName: isMain ? "main" : "feature/one",
-            isDetached: false, isLocked: false, lockReason: nil, state: "clean", dirty: false,
+            isDetached: false, isLocked: false, lockReason: nil, isPrunable: false, pruneReason: nil,
+            state: "clean", dirty: false,
             statusSummary: "", diffStat: "", changedFiles: [], operationState: nil, conflictFiles: [],
             mergedIntoMain: isMain, synchronizedWithMain: true, aheadOfMain: 0, behindMain: 0,
             pendingIntegration: false, associations: []

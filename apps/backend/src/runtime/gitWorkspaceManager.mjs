@@ -754,7 +754,9 @@ export class GitWorkspaceManager {
       return !ignoredLogicalSessionIds.has(session.logicalSessionId);
     });
     if (boundSessions.length > 0) {
-      throw new Error("The worktree still has active Sessions. Switch or delete them before removing it.");
+      const error = new Error("The Worktree is being used by a Session. Switch or remove the Session before deleting it.");
+      error.code = "WORKTREE_IN_USE";
+      throw error;
     }
     const snapshot = await createGitWorkspaceSnapshot(input.workingDirectory);
     const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
@@ -767,6 +769,9 @@ export class GitWorkspaceManager {
     }
     const status = await this.gitOutput(currentSource.path, ["status", "--porcelain=v1"]);
     const dirty = Boolean(status.trim());
+    const operationState = await this.integrationOperationState(currentSource.path);
+    const conflicts = (await this.gitOutput(currentSource.path, ["diff", "--name-only", "--diff-filter=U"]))
+      .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
     const merged = await this.gitSucceeds(main.path, [
       "merge-base",
       "--is-ancestor",
@@ -781,6 +786,17 @@ export class GitWorkspaceManager {
       discardedCommitCount = Number(counts.trim().split(/\s+/)[1]) || 0;
     }
     const requiresForceConfirmation = !merged || dirty;
+    if (input.safeOnly === true) {
+      let error = null;
+      if (currentSource.isLocked) error = deletionSafetyError("WORKTREE_LOCKED", currentSource.lockReason || "This Worktree is locked by another operation.");
+      else if (currentSource.isPrunable) error = deletionSafetyError("WORKTREE_PRUNABLE", currentSource.pruneReason || "This Worktree has invalid or prunable Git metadata.");
+      else if (operationState) error = deletionSafetyError("GIT_OPERATION_IN_PROGRESS", `A ${operationState} operation is in progress in this Worktree.`);
+      else if (conflicts.length > 0) error = deletionSafetyError("UNRESOLVED_CONFLICTS", "This Worktree contains unresolved conflicts.");
+      else if (dirty) error = deletionSafetyError("UNCOMMITTED_CHANGES", "This Worktree has uncommitted changes. Commit or discard them before deleting it.");
+      else if (!merged) error = deletionSafetyError("NOT_MERGED_INTO_MAIN", "This Worktree has commits that are not merged into main.");
+      else if (currentSource.isDetached || !currentSource.branchName) error = deletionSafetyError("WORKTREE_BRANCH_AMBIGUOUS", "The branch for this Worktree cannot be determined safely.");
+      if (error) throw error;
+    }
     if (requiresForceConfirmation) {
       const confirmedBranchName = String(input.confirmedBranchName ?? "");
       const forceConfirmed = input.forceDeleteUnmerged === true
@@ -1050,6 +1066,12 @@ export class GitWorkspaceManager {
       return false;
     }
   }
+}
+
+function deletionSafetyError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function workItemWorkspaceSuffix(workItemId) {

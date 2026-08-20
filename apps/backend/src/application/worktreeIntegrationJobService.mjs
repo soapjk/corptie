@@ -19,6 +19,7 @@ export class WorktreeIntegrationJobService {
     this.mergeSource = options.mergeSource;
     this.prepareConflictResolution = options.prepareConflictResolution;
     this.launchConflictResolution = options.launchConflictResolution;
+    this.removeWorktree = options.removeWorktree;
     this.onEvent = options.onEvent ?? (() => {});
     this.activeJobs = new Set();
     this.activeConflictResolutions = new Set();
@@ -52,6 +53,85 @@ export class WorktreeIntegrationJobService {
       repository: this.repositories().find((entry) => entry.id === repository.id),
       project: this.#associate(inspection),
       latestJob: presentJob(this.store.getLatestWorktreeIntegrationJob(repository.id))
+    };
+  }
+
+  async deleteWorktree(repositoryId, worktreeId) {
+    const repository = this.#requireRepository(repositoryId);
+    if (typeof this.removeWorktree !== "function") {
+      throw new TypeError("removeWorktree() is required for Worktree deletion.");
+    }
+    const inspection = this.#associate(await this.inspectRepository(repository.id));
+    const worktree = inspection.worktrees.find((entry) => entry.worktreeId === worktreeId);
+    if (!worktree) {
+      throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
+    }
+    const blocker = worktreeDeletionBlocker(worktree);
+    if (blocker) {
+      throw new WorktreeIntegrationJobError(blocker.code, blocker.reason, 409);
+    }
+    try {
+      const removal = await this.removeWorktree({
+        repositoryId: repository.id,
+        mainPath: inspection.mainPath,
+        worktreeId: worktree.worktreeId
+      });
+      return deletionResult(worktree, "removed", null, null, removal);
+    } catch (error) {
+      if (isDeletionBlockerCode(error?.code)) {
+        throw new WorktreeIntegrationJobError(error.code, error.message, 409);
+      }
+      throw error;
+    }
+  }
+
+  async cleanupMergedWorktrees(repositoryId, input = {}) {
+    const repository = this.#requireRepository(repositoryId);
+    if (typeof this.removeWorktree !== "function") {
+      throw new TypeError("removeWorktree() is required for Worktree cleanup.");
+    }
+    const inspection = this.#associate(await this.inspectRepository(repository.id));
+    const removed = [];
+    const skipped = [];
+    const failed = [];
+    const confirmedWorktreeIds = new Set(Array.isArray(input.worktreeIds)
+      ? input.worktreeIds.map((value) => String(value).trim()).filter(Boolean)
+      : []);
+    const candidates = inspection.worktrees
+      .filter((worktree) => !worktree.isMain)
+      .sort((left, right) => `${left.branchName ?? ""}\0${left.path}`.localeCompare(`${right.branchName ?? ""}\0${right.path}`));
+    for (const worktree of candidates) {
+      const blocker = worktreeDeletionBlocker(worktree);
+      if (blocker) {
+        skipped.push(deletionResult(worktree, "skipped", blocker.code, blocker.reason));
+        continue;
+      }
+      if (!confirmedWorktreeIds.has(worktree.worktreeId)) {
+        skipped.push(deletionResult(worktree, "skipped", "NOT_IN_CONFIRMED_SCOPE", "This Worktree was not included in the confirmed cleanup scope."));
+        continue;
+      }
+      try {
+        const removal = await this.removeWorktree({
+          repositoryId: repository.id,
+          mainPath: inspection.mainPath,
+          worktreeId: worktree.worktreeId
+        });
+        removed.push(deletionResult(worktree, "removed", null, null, removal));
+      } catch (error) {
+        const target = isDeletionBlockerCode(error?.code) ? skipped : failed;
+        target.push(deletionResult(
+          worktree,
+          target === skipped ? "skipped" : "failed",
+          error?.code ?? "WORKTREE_DELETE_FAILED",
+          error?.message ?? "The Worktree could not be removed."
+        ));
+      }
+    }
+    return {
+      removed,
+      skipped,
+      failed,
+      counts: { removed: removed.length, skipped: skipped.length, failed: failed.length }
     };
   }
 
@@ -645,6 +725,53 @@ export class WorktreeIntegrationJobService {
     if (!job) throw new WorktreeIntegrationJobError("INTEGRATION_JOB_NOT_FOUND", "Integration task not found.", 404);
     return job;
   }
+}
+
+export function worktreeDeletionBlocker(worktree) {
+  if (worktree.isMain) return blocker("MAIN_WORKTREE", "The main Worktree cannot be deleted.");
+  if (worktree.availability !== "available") return blocker("WORKTREE_UNAVAILABLE", "This Worktree is unavailable and cannot be removed safely.");
+  if (worktree.isLocked) return blocker("WORKTREE_LOCKED", worktree.lockReason || "This Worktree is locked by another operation.");
+  if (worktree.isPrunable) return blocker("WORKTREE_PRUNABLE", worktree.pruneReason || "This Worktree has invalid or prunable Git metadata.");
+  if (worktree.operationState) return blocker("GIT_OPERATION_IN_PROGRESS", `A ${worktree.operationState} operation is in progress in this Worktree.`);
+  if ((worktree.conflictFiles ?? []).length > 0) return blocker("UNRESOLVED_CONFLICTS", "This Worktree contains unresolved conflicts.");
+  if (worktree.dirty !== false) return blocker("UNCOMMITTED_CHANGES", worktree.dirty === true
+    ? "This Worktree has uncommitted changes. Commit or discard them before deleting it."
+    : "Corptie could not verify that this Worktree has no uncommitted changes.");
+  if (worktree.mergedIntoMain !== true) return blocker("NOT_MERGED_INTO_MAIN", "This Worktree has commits that are not merged into main.");
+  if (worktree.isDetached || !worktree.branchName) return blocker("WORKTREE_BRANCH_AMBIGUOUS", "The branch for this Worktree cannot be determined safely.");
+  const associations = worktree.associations ?? [];
+  if (associations.some((association) => association.workItemId)) {
+    return blocker("WORK_ITEM_ASSOCIATED", "This Worktree is associated with a WorkItem and cannot be deleted.");
+  }
+  if (associations.length > 0) {
+    return blocker("WORKTREE_IN_USE", "This Worktree is being used by a Session. Switch or remove the Session before deleting it.");
+  }
+  return null;
+}
+
+function blocker(code, reason) {
+  return { code, reason };
+}
+
+function deletionResult(worktree, status, code, reason, removal = null) {
+  return {
+    worktreeId: worktree.worktreeId,
+    branchName: worktree.branchName ?? null,
+    path: worktree.path,
+    status,
+    code,
+    reason,
+    removal
+  };
+}
+
+function isDeletionBlockerCode(code) {
+  return new Set([
+    "MAIN_WORKTREE", "WORKTREE_UNAVAILABLE", "WORKTREE_LOCKED", "WORKTREE_PRUNABLE",
+    "GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "UNCOMMITTED_CHANGES",
+    "NOT_MERGED_INTO_MAIN", "WORKTREE_BRANCH_AMBIGUOUS", "WORK_ITEM_ASSOCIATED",
+    "WORKTREE_IN_USE"
+  ]).has(code);
 }
 
 function risksFor(worktree) {
