@@ -19,6 +19,10 @@
 "English" = "English";
 "Simplified Chinese" = "Simplified Chinese";
 "Archived sessions are hidden from the main screen until you restore them." = "Archived sessions are hidden from the main screen until you restore them.";
+"Back to Active Work Sessions" = "Back to Active Work Sessions";
+"No Archived Work Sessions" = "No Archived Work Sessions";
+"View Archived Work Sessions" = "View Archived Work Sessions";
+"Work Session Archive" = "Work Session Archive";
 "Delete this archived session permanently?" = "Delete this archived session permanently?";
 "This action cannot be undone." = "This action cannot be undone.";
 "Agent 协作" = "Agent Collaboration";
