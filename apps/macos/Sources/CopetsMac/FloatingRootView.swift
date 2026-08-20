@@ -4299,6 +4299,7 @@ private struct ChatUsageBar: View {
     let usage: SessionUsageResponse?
     @State private var isResetNoticePresented = false
     @State private var resetNoticePresentationTask: Task<Void, Never>?
+    @State private var lastAutomaticallyPresentedFingerprint: String?
 
     var body: some View {
         if let usage {
@@ -4317,7 +4318,7 @@ private struct ChatUsageBar: View {
                         numericValue: used
                     )
                 }
-                if let window = preferredRateLimitWindow(usage.account) {
+                if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account) {
                     let remainingPercent = max(0, 100 - (window.usedPercent ?? 0))
                     if usage.account.provider == "codex" {
                         Button {
@@ -4353,18 +4354,6 @@ private struct ChatUsageBar: View {
             }
             .onChange(of: resetNoticeFingerprint(usage)) { _, _ in
                 scheduleResetNoticeIfNeeded(usage)
-            }
-            .onChange(of: isResetNoticePresented) { _, presented in
-                guard !presented,
-                      let fingerprint = resetNoticeFingerprint(usage),
-                      CodexResetNoticePresentation.shouldPresent(
-                          fingerprint: fingerprint,
-                          acknowledgedFingerprints: resetNoticeAcknowledgements
-                      ) else { return }
-                scheduleResetNoticePresentation(
-                    after: CodexResetNoticePresentation.rearmDelay,
-                    requiredFingerprint: fingerprint
-                )
             }
             .onDisappear {
                 resetNoticePresentationTask?.cancel()
@@ -4425,8 +4414,9 @@ private struct ChatUsageBar: View {
 
     private func scheduleResetNoticeIfNeeded(_ usage: SessionUsageResponse?) {
         guard let fingerprint = resetNoticeFingerprint(usage),
-              CodexResetNoticePresentation.shouldPresent(
+              CodexResetNoticePresentation.shouldAutomaticallyPresent(
                   fingerprint: fingerprint,
+                  lastAutomaticallyPresentedFingerprint: lastAutomaticallyPresentedFingerprint,
                   acknowledgedFingerprints: resetNoticeAcknowledgements
               ) else { return }
         scheduleResetNoticePresentation(
@@ -4465,13 +4455,15 @@ private struct ChatUsageBar: View {
             }
             guard !Task.isCancelled else { return }
             if let requiredFingerprint {
-                guard CodexResetNoticePresentation.shouldPresent(
+                guard CodexResetNoticePresentation.shouldAutomaticallyPresent(
                     fingerprint: requiredFingerprint,
+                    lastAutomaticallyPresentedFingerprint: lastAutomaticallyPresentedFingerprint,
                     acknowledgedFingerprints: resetNoticeAcknowledgements
                 ) else {
                     resetNoticePresentationTask = nil
                     return
                 }
+                lastAutomaticallyPresentedFingerprint = requiredFingerprint
             }
             isResetNoticePresented = true
             resetNoticePresentationTask = nil
@@ -4490,7 +4482,7 @@ private struct ChatUsageBar: View {
         guard let usage else { return nil }
         return CodexResetNoticeIdentity.fingerprint(
             provider: usage.account.provider,
-            window: preferredRateLimitWindow(usage.account),
+            window: SessionUsagePresentation.preferredRateLimitWindow(usage.account),
             forecast: usage.resetForecast?.forecast
         )
     }
@@ -4542,12 +4534,6 @@ private struct ChatUsageBar: View {
         if usedPercent > 70 { return .red }
         if usedPercent > 50 { return .yellow }
         return CorptiePalette.secondaryText
-    }
-
-    private func preferredRateLimitWindow(_ account: CodexAccountUsage) -> CodexRateLimitWindow? {
-        let snapshots = account.rateLimitsByLimitId?.sorted { $0.key < $1.key }.map(\.value)
-            ?? [account.rateLimits].compactMap { $0 }
-        return snapshots.compactMap(\.primary).first
     }
 
     private func providerQuotaLabel(_ provider: String?) -> String {

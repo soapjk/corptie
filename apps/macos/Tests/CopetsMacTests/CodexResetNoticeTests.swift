@@ -30,6 +30,58 @@ struct CodexResetNoticeTests {
     }
 
     @Test
+    func closingAnAutomaticNoticeDoesNotImmediatelyPresentItAgain() {
+        #expect(!CodexResetNoticePresentation.shouldAutomaticallyPresent(
+            fingerprint: "same-notice",
+            lastAutomaticallyPresentedFingerprint: "same-notice",
+            acknowledgedFingerprints: []
+        ))
+    }
+
+    @Test
+    func aNewNoticeMayAutomaticallyPresentOnce() {
+        #expect(CodexResetNoticePresentation.shouldAutomaticallyPresent(
+            fingerprint: "new-notice",
+            lastAutomaticallyPresentedFingerprint: "old-notice",
+            acknowledgedFingerprints: []
+        ))
+    }
+
+    @Test
+    func planQuotaUsesTheLongestAvailableRateLimitWindow() {
+        let account = CodexAccountUsage(
+            available: true,
+            provider: "codex",
+            model: nil,
+            rateLimits: CodexRateLimitSnapshot(
+                limitId: "codex",
+                limitName: nil,
+                primary: CodexRateLimitWindow(usedPercent: 50, windowDurationMins: 300, resetsAt: 100),
+                secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 200)
+            ),
+            rateLimitsByLimitId: nil
+        )
+        #expect(SessionUsagePresentation.preferredRateLimitWindow(account)?.windowDurationMins == 10_080)
+    }
+
+    @Test
+    func planQuotaCanUseASecondaryOnlyWindow() {
+        let account = CodexAccountUsage(
+            available: true,
+            provider: "codex",
+            model: nil,
+            rateLimits: CodexRateLimitSnapshot(
+                limitId: "codex",
+                limitName: nil,
+                primary: nil,
+                secondary: CodexRateLimitWindow(usedPercent: 20, windowDurationMins: 10_080, resetsAt: 200)
+            ),
+            rateLimitsByLimitId: nil
+        )
+        #expect(SessionUsagePresentation.preferredRateLimitWindow(account)?.resetsAt == 200)
+    }
+
+    @Test
     func fingerprintChangesWhenTheOfficialResetChanges() {
         let first = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",

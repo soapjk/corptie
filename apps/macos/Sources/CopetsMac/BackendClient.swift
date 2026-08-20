@@ -161,6 +161,7 @@ final class BackendClient: ObservableObject {
     private static let historyPageSize = 200
     private var historyLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
+    private var usageBySessionId: [String: SessionUsageResponse] = [:]
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
     private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
@@ -522,7 +523,13 @@ final class BackendClient: ObservableObject {
             rateLimits: nil,
             rateLimitsByLimitId: nil
         )
-        selectedSessionUsage = SessionUsageResponse(account: currentAccount, context: event.payload.context)
+        let usage = SessionUsageResponse(
+            account: currentAccount,
+            context: event.payload.context,
+            resetForecast: selectedSessionUsage?.resetForecast
+        )
+        usageBySessionId[event.payload.sessionId] = usage
+        selectedSessionUsage = usage
     }
 
     func loadSettings() async {
@@ -1435,11 +1442,12 @@ final class BackendClient: ObservableObject {
         selectedDetail = cachedDetail
         isLoadingDetail = cachedDetail == nil
         resetDetailTimelineState()
-        selectedSessionUsage = nil
+        selectedSessionUsage = usageBySessionId[session.id]
         selectedContextReferences = []
         usageRefreshTask?.cancel()
-        // 轻量场景（如 Sessions Tab）置了 suppressBackgroundPolling，跳过轮询以减少刷新。
-        usageRefreshTask = suppressBackgroundPolling ? nil : Task { [weak self] in
+        // Usage is part of the visible chat header, not optional background
+        // project polling. Keep it current even in the lightweight Sessions tab.
+        usageRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.loadUsage(for: session)
                 try? await Task.sleep(for: .seconds(30))
@@ -2373,6 +2381,7 @@ final class BackendClient: ObservableObject {
                   httpResponse.statusCode == 200 else { return }
             let usage = try JSONDecoder().decode(SessionUsageResponse.self, from: data)
             guard selectedSession?.id == session.id else { return }
+            usageBySessionId[session.id] = usage
             selectedSessionUsage = usage
         } catch {
             // Usage is supplementary; chat remains usable if Codex cannot report it.
