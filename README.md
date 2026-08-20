@@ -122,9 +122,11 @@ App Secret 会交给 `lark-cli` 的加密存储，不保存在 Corptie 数据库
 
 ## 🤝 Agent 协作
 
-Corptie 为每个受管 Codex 会话分配稳定 Agent 身份，并提供本地 MCP 协作工具。Agent 可发现其他 Agent 与服务，用明确的任务、验收条件和交付物进行点对点协作。
+Corptie 以 Objective 为协作责任边界、以 WorkItem 为执行和验收载体，并为受管会话提供稳定 Agent 身份和本地 MCP 协作工具。Agent 可发现其他 Agent 与服务，用明确的任务、验收条件和交付物发起跨 Objective 协作。
 
 新协作请求会先向用户展示确认卡片；确认后才会投递。协作窗口可查看收件箱、待验证、已升级任务、Agent/服务注册信息与完整时间线，并支持取消任务和重试失败投递。
+
+协议、状态流转、兼容迁移和开发使用说明见 [Agent 协作机制](docs/agent-collaboration.md)。
 
 ## 🚦 环境隔离
 

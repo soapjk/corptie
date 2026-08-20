@@ -498,6 +498,11 @@ export class CorptieStore {
         task_id TEXT PRIMARY KEY,
         context_id TEXT NOT NULL,
         parent_task_id TEXT,
+        protocol_version TEXT NOT NULL DEFAULT '2.0',
+        source_objective_id TEXT,
+        target_objective_id TEXT,
+        source_work_item_id TEXT,
+        work_item_id TEXT,
         initiator_agent_id TEXT NOT NULL,
         recipient_agent_id TEXT NOT NULL,
         service_id TEXT,
@@ -515,6 +520,10 @@ export class CorptieStore {
         completed_at TEXT,
         FOREIGN KEY (context_id) REFERENCES collaboration_contexts(context_id) ON DELETE RESTRICT,
         FOREIGN KEY (parent_task_id) REFERENCES collaboration_tasks(task_id) ON DELETE SET NULL,
+        FOREIGN KEY (source_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (target_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (source_work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
         FOREIGN KEY (initiator_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
         FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
         FOREIGN KEY (service_id) REFERENCES services(service_id) ON DELETE RESTRICT,
@@ -560,16 +569,27 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS collaboration_messages (
         message_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
+        protocol_version TEXT NOT NULL DEFAULT '2.0',
+        source_objective_id TEXT,
+        target_objective_id TEXT,
+        source_work_item_id TEXT,
+        work_item_id TEXT,
         sender_agent_id TEXT NOT NULL,
         recipient_agent_id TEXT NOT NULL,
         message_type TEXT NOT NULL
           CHECK (message_type IN ('question', 'change_request', 'needs_information', 'update_ready', 'verification_result')),
         body TEXT NOT NULL,
         evidence_json TEXT NOT NULL DEFAULT '[]',
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        error_json TEXT,
         resource_version TEXT,
         idempotency_key TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (source_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (target_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (source_work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
         FOREIGN KEY (sender_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
         FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
         UNIQUE (sender_agent_id, idempotency_key)
@@ -1096,6 +1116,20 @@ export class CorptieStore {
     this.ensureColumn("collaboration_tasks", "recipient_session_id", "TEXT");
     this.ensureColumn("collaboration_tasks", "initiator_name_at_send", "TEXT");
     this.ensureColumn("collaboration_tasks", "recipient_name_at_send", "TEXT");
+    this.ensureColumn("collaboration_tasks", "protocol_version", "TEXT NOT NULL DEFAULT '1.0'");
+    this.ensureColumn("collaboration_tasks", "source_objective_id", "TEXT");
+    this.ensureColumn("collaboration_tasks", "target_objective_id", "TEXT");
+    this.ensureColumn("collaboration_tasks", "source_work_item_id", "TEXT");
+    this.ensureColumn("collaboration_tasks", "work_item_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "protocol_version", "TEXT NOT NULL DEFAULT '1.0'");
+    this.ensureColumn("collaboration_messages", "source_objective_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "target_objective_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "source_work_item_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "work_item_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "payload_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("collaboration_messages", "error_json", "TEXT");
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_objective_work_item
+      ON collaboration_tasks(source_objective_id, target_objective_id, work_item_id, updated_at DESC)`);
     this.ensureColumn("collaboration_request_confirmations", "initiator_session_id", "TEXT");
     this.ensureColumn("collaboration_request_confirmations", "recipient_session_id", "TEXT");
     this.ensureColumn("collaboration_request_confirmations", "initiator_name_at_send", "TEXT");

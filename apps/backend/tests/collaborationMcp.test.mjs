@@ -405,7 +405,9 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     assert.equal(Object.hasOwn(compact.task, "initiatorAgentId"), false);
     assert.equal(Object.hasOwn(compact.task, "recipientAgentId"), false);
     assert.equal(Object.hasOwn(compact.task, "iteration"), false);
-    assert.deepEqual(Object.keys(compact.task.currentMessage), ["messageId", "messageType", "body", "createdAt"]);
+    assert.deepEqual(Object.keys(compact.task.currentMessage), ["messageId", "messageType", "body", "createdAt", "envelope"]);
+    assert.equal(compact.task.currentMessage.envelope.version, "2.0");
+    assert.equal(compact.task.currentMessage.envelope.workItem.id, compact.task.workItemId);
 
     const full = await journal.get(`/internal/collaboration/tasks/${task.taskId}`, { includeHistory: "true" });
     assert.equal(full.task.messages.length, 1);

@@ -98,11 +98,13 @@ export function createCollaborationMcpServer(options) {
   });
 
   register(server, "corptie.collaboration.request", {
-    description: "Stage a point-to-point question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn. The authenticated Agent is always the initiator.",
+    description: "Stage an Objective-to-Objective WorkItem question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn. The authenticated Agent represents the source Objective.",
     inputSchema: {
       recipient_session_name: z.string().min(1).optional(),
       recipient_agent_id: z.string().min(1).optional(),
       service_id: z.string().min(1).optional(),
+      target_objective_id: z.string().min(1).optional(),
+      work_item_id: z.string().min(1).optional(),
       type: z.enum(["question", "change_request"]),
       title: z.string().min(1),
       summary: z.string().min(1),
@@ -401,6 +403,8 @@ function mapRequest(input) {
     recipientAgentId: input.recipient_agent_id,
     recipientSessionName: input.recipient_session_name,
     serviceId: input.service_id,
+    targetObjectiveId: input.target_objective_id,
+    workItemId: input.work_item_id,
     type: input.type,
     title: input.title,
     summary: input.summary,

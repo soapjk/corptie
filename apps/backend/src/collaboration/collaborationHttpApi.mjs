@@ -173,6 +173,8 @@ export function handleCollaborationHttpRequest({
           : null;
         const confirmation = core.proposeTask({
           ...input,
+          sourceObjectiveId: headerText(request, "x-corptie-objective-id") ?? undefined,
+          sourceWorkItemId: headerText(request, "x-corptie-work-item-id") ?? undefined,
           recipientAgentId: recipient.agentId,
           initiatorAgentId: actorAgentId,
           sourceSessionId: actor?.currentSessionId,
@@ -374,6 +376,11 @@ function compactTaskForActor(task, actorAgentId) {
   const latestArtifact = task.artifacts?.at(-1) ?? null;
   const compact = {
     taskId: task.taskId,
+    protocolVersion: task.protocolVersion,
+    sourceObjectiveId: task.sourceObjectiveId,
+    targetObjectiveId: task.targetObjectiveId,
+    sourceWorkItemId: task.sourceWorkItemId,
+    workItemId: task.workItemId,
     role,
     peerAgentId,
     serviceId: task.serviceId,
@@ -400,7 +407,8 @@ function compactMessage(message) {
     body: message.body,
     evidence: message.evidence?.length ? message.evidence : undefined,
     resourceVersion: message.resourceVersion ?? undefined,
-    createdAt: message.createdAt
+    createdAt: message.createdAt,
+    envelope: message.envelope
   });
 }
 
@@ -438,9 +446,9 @@ function availableActions(task, role) {
 }
 
 function statusForCode(code) {
-  if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND"].includes(code)) return 404;
-  if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER"].includes(code)) return 403;
-  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK"].includes(code)) return 409;
+  if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND", "OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND"].includes(code)) return 404;
+  if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER", "OBJECTIVE_AGENT_NOT_AUTHORIZED"].includes(code)) return 403;
+  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "OBJECTIVE_BOUNDARY_REQUIRED", "WORK_ITEM_OBJECTIVE_MISMATCH", "WORK_ITEM_AGENT_MISMATCH", "WORK_ITEM_TERMINAL"].includes(code)) return 409;
   return 400;
 }
 

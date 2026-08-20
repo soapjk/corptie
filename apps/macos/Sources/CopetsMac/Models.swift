@@ -664,6 +664,9 @@ struct CollaborationAgent: Identifiable, Decodable, Equatable {
     let status: String
     let capabilities: [String]
     let currentSessionId: String?
+    let currentObjectiveId: String?
+    let currentWorkItemId: String?
+    let objectiveIds: [String]?
     let createdAt: String
     let updatedAt: String
 }
@@ -687,6 +690,11 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let taskId: String
     let contextId: String
     let parentTaskId: String?
+    let protocolVersion: String?
+    let sourceObjectiveId: String?
+    let targetObjectiveId: String?
+    let sourceWorkItemId: String?
+    let workItemId: String?
     let initiatorAgentId: String
     let recipientAgentId: String
     let serviceId: String?
@@ -715,6 +723,67 @@ struct CollaborationMessage: Identifiable, Decodable, Equatable {
     let body: String
     let resourceVersion: String?
     let createdAt: String
+    let envelope: CollaborationMessageEnvelope?
+}
+
+struct CollaborationMessageEnvelope: Decodable, Equatable {
+    let version: String
+    let messageId: String
+    let messageType: String
+    let sender: CollaborationMessageParty
+    let recipient: CollaborationMessageParty
+    let objective: CollaborationMessageObjectiveRoute
+    let workItem: CollaborationMessageWorkItemRoute
+    let taskId: String
+    let payload: CollaborationMessagePayload
+    let timestamp: String
+    let error: CollaborationMessageError?
+}
+
+struct CollaborationMessageParty: Decodable, Equatable {
+    let agentId: String
+    let objectiveId: String
+}
+
+struct CollaborationMessageObjectiveRoute: Decodable, Equatable {
+    let sourceId: String
+    let targetId: String
+}
+
+struct CollaborationMessageWorkItemRoute: Decodable, Equatable {
+    let id: String
+    let sourceId: String?
+}
+
+struct CollaborationMessagePayload: Decodable, Equatable {
+    let body: String
+    let evidence: [JSONValue]?
+    let resourceVersion: String?
+}
+
+struct CollaborationMessageError: Decodable, Equatable {
+    let code: String
+    let message: String
+    let retryable: Bool?
+}
+
+indirect enum JSONValue: Decodable, Equatable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() { self = .null }
+        else if let value = try? container.decode(Bool.self) { self = .bool(value) }
+        else if let value = try? container.decode(Double.self) { self = .number(value) }
+        else if let value = try? container.decode(String.self) { self = .string(value) }
+        else if let value = try? container.decode([JSONValue].self) { self = .array(value) }
+        else { self = .object(try container.decode([String: JSONValue].self)) }
+    }
 }
 
 struct CollaborationArtifact: Identifiable, Decodable, Equatable {

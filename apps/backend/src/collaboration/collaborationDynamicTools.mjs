@@ -52,10 +52,12 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_services_describe", "Describe a service, its owner, endpoint, version, metadata, and consumers.", {
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
-  tool("corptie_collaboration_request", "Stage a point-to-point question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn.", {
+  tool("corptie_collaboration_request", "Stage an Objective-to-Objective WorkItem question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn.", {
     recipient_session_name: { type: "string", minLength: 1 },
     recipient_agent_id: { type: "string", minLength: 1 },
     service_id: { type: "string", minLength: 1 },
+    target_objective_id: { type: "string", minLength: 1, description: "Target Objective. Defaults to the recipient's current Objective or compatibility Objective." },
+    work_item_id: { type: "string", minLength: 1, description: "Existing target-Objective WorkItem to use instead of creating one." },
     type: { type: "string", enum: ["question", "change_request"] },
     title: { type: "string", minLength: 1 },
     summary: { type: "string", minLength: 1 },
@@ -120,6 +122,8 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       recipientAgentId: input.recipient_agent_id,
       recipientSessionName: input.recipient_session_name,
       serviceId: input.service_id,
+      targetObjectiveId: input.target_objective_id,
+      workItemId: input.work_item_id,
       type: input.type,
       title: input.title,
       summary: input.summary,

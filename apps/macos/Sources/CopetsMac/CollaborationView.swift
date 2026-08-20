@@ -400,6 +400,18 @@ private struct CollaborationTaskDetailView: View {
                 GroupBox(L10n("Participants")) {
                     LabeledContent(L10n("Initiator"), value: task.initiatorAgentId)
                     LabeledContent(L10n("Recipient"), value: task.recipientAgentId)
+                    if let sourceObjectiveId = task.sourceObjectiveId {
+                        LabeledContent(L10n("Source Objective"), value: sourceObjectiveId)
+                    }
+                    if let targetObjectiveId = task.targetObjectiveId {
+                        LabeledContent(L10n("Target Objective"), value: targetObjectiveId)
+                    }
+                    if let workItemId = task.workItemId {
+                        LabeledContent(L10n("Execution WorkItem"), value: workItemId)
+                    }
+                    if let sourceWorkItemId = task.sourceWorkItemId {
+                        LabeledContent(L10n("Source WorkItem"), value: sourceWorkItemId)
+                    }
                     if let serviceId = task.serviceId { LabeledContent(L10n("Service"), value: serviceId) }
                     LabeledContent(L10n("Iteration"), value: L10nFormat("%lld of %lld", task.iteration, task.maxIterations))
                 }

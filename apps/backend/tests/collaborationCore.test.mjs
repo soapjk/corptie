@@ -341,6 +341,124 @@ test("task creation is idempotent and atomically creates message, delivery, part
   });
 });
 
+test("Objective-to-Objective collaboration creates and drives the target WorkItem", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    store.createObjective({
+      id: "objective:research",
+      name: "Research",
+      contributorAgentIds: ["research-agent"]
+    });
+    store.createObjective({
+      id: "objective:journal",
+      name: "Journal",
+      contributorAgentIds: ["journal-agent"]
+    });
+    store.createWorkItem({
+      id: "work_item:research-origin",
+      objectiveId: "objective:research",
+      title: "Find stale notification cause",
+      mainAgentId: "research-agent"
+    });
+
+    let task = core.createTask({
+      initiatorAgentId: "research-agent",
+      recipientAgentId: "journal-agent",
+      sourceObjectiveId: "objective:research",
+      targetObjectiveId: "objective:journal",
+      sourceWorkItemId: "work_item:research-origin",
+      type: "change_request",
+      title: "Fix stale completion state",
+      summary: "Update the journal completion projection.",
+      acceptanceCriteria: ["Completed runs render completed"]
+    });
+
+    assert.equal(task.protocolVersion, "2.0");
+    assert.equal(task.sourceObjectiveId, "objective:research");
+    assert.equal(task.targetObjectiveId, "objective:journal");
+    assert.equal(task.sourceWorkItemId, "work_item:research-origin");
+    assert.equal(task.workItemId, `work_item:collaboration:${task.taskId}`);
+    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
+    assert.equal(store.getWorkItem(task.workItemId).main_agent_id, "journal-agent");
+    assert.equal(task.messages[0].envelope.objective.sourceId, "objective:research");
+    assert.equal(task.messages[0].envelope.error, null);
+
+    task = core.accept(task.taskId, "journal-agent");
+    task = core.startWorking(task.taskId, "journal-agent");
+    assert.equal(store.getWorkItem(task.workItemId).execution_status, "running");
+    task = core.submitResult(task.taskId, "journal-agent", {
+      body: "Projection fixed.",
+      artifact: { type: "patch", name: "projection patch", uri: "local-artifact://projection.patch" }
+    });
+    assert.equal(store.getWorkItem(task.workItemId).execution_status, "awaiting_acceptance");
+    assert.equal(task.messages.at(-1).envelope.objective.sourceId, "objective:journal");
+    assert.equal(task.messages.at(-1).envelope.objective.targetId, "objective:research");
+    task = core.beginVerification(task.taskId, "research-agent");
+    task = core.complete(task.taskId, "research-agent", "Verified.");
+    assert.equal(store.getWorkItem(task.workItemId).status, "done");
+    assert.equal(JSON.parse(store.getWorkItem(task.workItemId).acceptance_assessment_json).collaborationTaskId, task.taskId);
+  });
+});
+
+test("task input rejects unknown fields and mismatched Objective or WorkItem references", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    store.createObjective({ id: "objective:a", name: "A", contributorAgentIds: ["research-agent"] });
+    store.createObjective({ id: "objective:b", name: "B", contributorAgentIds: ["journal-agent"] });
+    store.createWorkItem({ id: "work_item:a", objectiveId: "objective:a", title: "A", mainAgentId: "research-agent" });
+    assert.throws(
+      () => core.createTask({
+        initiatorAgentId: "research-agent", recipientAgentId: "journal-agent",
+        title: "Unknown", summary: "Unknown", unexpected: true
+      }),
+      (error) => error.code === "UNKNOWN_FIELD"
+    );
+    assert.throws(
+      () => core.createTask({
+        initiatorAgentId: "research-agent", recipientAgentId: "journal-agent",
+        sourceObjectiveId: "objective:a", targetObjectiveId: "objective:b",
+        workItemId: "work_item:a", title: "Mismatch", summary: "Mismatch"
+      }),
+      (error) => error.code === "WORK_ITEM_OBJECTIVE_MISMATCH"
+    );
+  });
+});
+
+test("legacy point-to-point tasks migrate to compatibility Objectives and a target WorkItem", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    store.db.run("DELETE FROM data_migrations WHERE migration_id = 'collaboration-objective-work-item-v2'");
+    store.db.run(
+      "INSERT INTO collaboration_contexts (context_id, title, metadata_json, created_at, updated_at) VALUES ('legacy-context', 'Legacy', '{}', '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')"
+    );
+    store.db.run(
+      `INSERT INTO collaboration_tasks (
+         task_id, context_id, protocol_version, initiator_agent_id, recipient_agent_id,
+         type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
+         created_at, updated_at
+       ) VALUES ('legacy-task', 'legacy-context', '1.0', 'research-agent', 'journal-agent',
+         'change_request', 'working', 1, 3, 'Legacy task', 'Migrate me', '["Migrated"]',
+         '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')`
+    );
+    store.db.run(
+      `INSERT INTO collaboration_messages (
+         message_id, task_id, protocol_version, sender_agent_id, recipient_agent_id,
+         message_type, body, evidence_json, created_at
+       ) VALUES ('legacy-message', 'legacy-task', '1.0', 'research-agent', 'journal-agent',
+         'change_request', 'Migrate me', '[]', '2026-08-19T00:00:00.000Z')`
+    );
+
+    const migratedCore = new CollaborationCore(store);
+    const task = migratedCore.getTask("legacy-task");
+    assert.equal(task.protocolVersion, "2.0");
+    assert.match(task.sourceObjectiveId, /^objective:collaboration:/);
+    assert.match(task.targetObjectiveId, /^objective:collaboration:/);
+    assert.equal(task.workItemId, "work_item:collaboration:legacy-task");
+    assert.equal(store.getWorkItem(task.workItemId).status, "in_progress");
+    assert.equal(task.messages[0].envelope.version, "2.0");
+  });
+});
+
 test("clarification and delivery follow role-based state transitions", async () => {
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
