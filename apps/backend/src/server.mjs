@@ -7508,13 +7508,6 @@ if (recoveredWorktreeIntegrationJobs > 0) {
 }
 stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
 stateSyncPublishedRevision = store.stateRevision();
-const legacySkillRepair = await skillRegistryService.repairLegacyRegistrations();
-if (legacySkillRepair.repaired.length > 0) {
-  console.log(`[skills] repaired ${legacySkillRepair.repaired.length} legacy Skill registration(s)`);
-}
-for (const skipped of legacySkillRepair.skipped) {
-  console.warn(`[skills] legacy Skill repair skipped skill=${skipped.skillId} reason=${skipped.reason}`);
-}
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
@@ -7683,6 +7676,24 @@ setInterval(updateMockProgress, 2500).unref();
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
+  // Legacy Skill repair is maintenance, not a readiness dependency. Run it
+  // only after the API is healthy so an invalid external package cannot block
+  // every App launch. Persistent failure fingerprints suppress unchanged,
+  // deterministic failures on later starts.
+  setImmediate(() => {
+    skillRegistryService.repairLegacyRegistrations()
+      .then((result) => {
+        if (result.repaired.length > 0) {
+          console.log(`[skills] repaired ${result.repaired.length} legacy Skill registration(s)`);
+        }
+        for (const skipped of result.skipped) {
+          console.warn(`[skills] legacy Skill repair skipped skill=${skipped.skillId} reason=${skipped.reason}`);
+        }
+      })
+      .catch((error) => {
+        console.warn(`[skills] legacy Skill repair failed error=${error?.message ?? error}`);
+      });
+  });
 });
 
 let shutdownPromise = null;

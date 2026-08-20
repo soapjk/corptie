@@ -725,3 +725,42 @@ test("legacy registration repair selects the unique manifest matching the regist
     await rm(value.directory, { recursive: true, force: true });
   }
 });
+
+test("legacy registration repair suppresses unchanged deterministic failures and retries changed Skills", async () => {
+  const value = await fixture();
+  try {
+    const legacy = value.store.createRegistrySkill({
+      name: "missing-from-package",
+      description: "",
+      sourceType: "local",
+      source: value.source
+    });
+
+    const first = await value.service.repairLegacyRegistrations();
+    assert.equal(first.repaired.length, 0);
+    assert.equal(first.skipped[0].skillId, legacy.skillId);
+    assert.equal(first.skipped[0].reason, "ambiguous");
+    assert.equal(first.skipped[0].errorCode, "AMBIGUOUS_SKILL_SOURCE");
+
+    const storedFailure = value.store.getRuntimeState("skill_registry.legacy_repair.v1");
+    assert.equal(storedFailure.repairVersion, 1);
+    assert.equal(storedFailure.failures[legacy.skillId].errorCode, "AMBIGUOUS_SKILL_SOURCE");
+
+    const unchanged = await value.service.repairLegacyRegistrations();
+    assert.equal(unchanged.repaired.length, 0);
+    assert.deepEqual(unchanged.skipped, [{
+      skillId: legacy.skillId,
+      reason: "unchanged_failure",
+      errorCode: "AMBIGUOUS_SKILL_SOURCE"
+    }]);
+
+    value.store.updateRegistrySkill(legacy.skillId, { contentHash: "changed-content" });
+    const changed = await value.service.repairLegacyRegistrations();
+    assert.equal(changed.repaired.length, 0);
+    assert.equal(changed.skipped[0].reason, "ambiguous");
+    assert.equal(changed.skipped[0].errorCode, "AMBIGUOUS_SKILL_SOURCE");
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});

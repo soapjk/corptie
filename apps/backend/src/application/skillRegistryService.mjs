@@ -43,6 +43,24 @@ const SKILL_ROOT_TOKENS = Object.freeze([
   "${CLAUDE_PLUGIN_ROOT}"
 ]);
 const CANDIDATE_INTERNAL = Symbol("skill-package-candidate");
+const LEGACY_REPAIR_STATE_KEY = "skill_registry.legacy_repair.v1";
+const LEGACY_REPAIR_VERSION = 1;
+const DETERMINISTIC_LEGACY_REPAIR_ERRORS = new Set([
+  "AMBIGUOUS_SKILL_SOURCE",
+  "INVALID_SKILL",
+  "INVALID_SKILL_SUBPATH",
+  "MCP_CONFIG_INCOMPLETE",
+  "MCP_CONFIG_INVALID",
+  "MCP_RESOURCE_MISSING",
+  "MCP_RESOURCE_OUTSIDE_SKILL",
+  "MCP_TOOL_SCHEMA_INVALID",
+  "MCP_TOOLS_EMPTY",
+  "PACKAGE_MANIFEST_INVALID",
+  "PACKAGE_RESOURCE_OUTSIDE_ROOT",
+  "PACKAGE_ROOT_OUTSIDE_SOURCE",
+  "SKILL_DISCOVERY_INVALID",
+  "SKILL_ENTRY_MISSING"
+]);
 
 export class SkillRegistryService {
   constructor({
@@ -246,8 +264,41 @@ export class SkillRegistryService {
   async repairLegacyRegistrations() {
     const repaired = [];
     const skipped = [];
-    for (const skill of this.store.listRegistrySkills()) {
-      if (skill.sourceSubpath && skill.manifestName && skill.contentHash && skill.packageDiscoveryMethod) continue;
+    const skills = this.store.listRegistrySkills();
+    const repairState = legacyRepairState(this.store);
+    const currentSkillIds = new Set(skills.map((skill) => skill.skillId));
+    let repairStateChanged = false;
+    for (const skillId of Object.keys(repairState.failures)) {
+      if (!currentSkillIds.has(skillId)) {
+        delete repairState.failures[skillId];
+        repairStateChanged = true;
+      }
+    }
+
+    const persistRepairState = () => {
+      if (!repairStateChanged || typeof this.store.setRuntimeState !== "function") return;
+      this.store.setRuntimeState(LEGACY_REPAIR_STATE_KEY, repairState);
+      repairStateChanged = false;
+    };
+
+    for (const skill of skills) {
+      const fingerprint = legacyRepairFingerprint(skill);
+      const previousFailure = repairState.failures[skill.skillId];
+      if (skill.sourceSubpath && skill.manifestName && skill.contentHash && skill.packageDiscoveryMethod) {
+        if (previousFailure) {
+          delete repairState.failures[skill.skillId];
+          repairStateChanged = true;
+        }
+        continue;
+      }
+      if (previousFailure?.fingerprint === fingerprint) {
+        skipped.push({
+          skillId: skill.skillId,
+          reason: "unchanged_failure",
+          errorCode: previousFailure.errorCode
+        });
+        continue;
+      }
       try {
         const sourceRoot = await this.#sourceDir(skill);
         const candidates = await this.#discoverCandidates(sourceRoot);
@@ -255,15 +306,40 @@ export class SkillRegistryService {
         const matches = candidates.filter((candidate) => candidate.manifestName.toLowerCase() === expected);
         const selected = matches.length === 1 ? matches[0] : (candidates.length === 1 ? candidates[0] : null);
         if (!selected) {
-          skipped.push({ skillId: skill.skillId, reason: "ambiguous", candidates });
+          repairState.failures[skill.skillId] = legacyRepairFailure(
+            fingerprint,
+            "AMBIGUOUS_SKILL_SOURCE"
+          );
+          repairStateChanged = true;
+          persistRepairState();
+          skipped.push({
+            skillId: skill.skillId,
+            reason: "ambiguous",
+            errorCode: "AMBIGUOUS_SKILL_SOURCE",
+            candidates
+          });
           continue;
         }
         const updated = await this.update(skill.skillId, { sourceSubpath: selected.relativePath });
+        if (previousFailure) {
+          delete repairState.failures[skill.skillId];
+          repairStateChanged = true;
+        }
         repaired.push(updated);
       } catch (error) {
-        skipped.push({ skillId: skill.skillId, reason: error.code ?? "repair_failed" });
+        const errorCode = error.code ?? "repair_failed";
+        if (DETERMINISTIC_LEGACY_REPAIR_ERRORS.has(errorCode)) {
+          repairState.failures[skill.skillId] = legacyRepairFailure(fingerprint, errorCode);
+          repairStateChanged = true;
+          persistRepairState();
+        } else if (previousFailure) {
+          delete repairState.failures[skill.skillId];
+          repairStateChanged = true;
+        }
+        skipped.push({ skillId: skill.skillId, reason: errorCode, errorCode });
       }
     }
+    persistRepairState();
     return { repaired, skipped };
   }
 
@@ -1113,6 +1189,42 @@ export class SkillRegistryService {
     }
     return { serverNames: Object.keys(servers), toolCount };
   }
+}
+
+function legacyRepairState(store) {
+  const stored = typeof store.getRuntimeState === "function"
+    ? store.getRuntimeState(LEGACY_REPAIR_STATE_KEY)
+    : null;
+  if (stored?.repairVersion !== LEGACY_REPAIR_VERSION || !stored.failures || typeof stored.failures !== "object") {
+    return { repairVersion: LEGACY_REPAIR_VERSION, failures: {} };
+  }
+  return {
+    repairVersion: LEGACY_REPAIR_VERSION,
+    failures: { ...stored.failures }
+  };
+}
+
+function legacyRepairFingerprint(skill) {
+  return createHash("sha256").update(JSON.stringify({
+    repairVersion: LEGACY_REPAIR_VERSION,
+    sourceType: skill.sourceType ?? "local",
+    source: skill.source ?? "",
+    sourceSubpath: skill.sourceSubpath ?? "",
+    packageSubpath: skill.packageSubpath ?? "",
+    mcpDescriptorSubpath: skill.mcpDescriptorSubpath ?? "",
+    packageDiscoveryMethod: skill.packageDiscoveryMethod ?? "",
+    manifestName: skill.manifestName ?? "",
+    contentHash: skill.contentHash ?? "",
+    updatedAt: skill.updatedAt ?? ""
+  })).digest("hex");
+}
+
+function legacyRepairFailure(fingerprint, errorCode) {
+  return {
+    fingerprint,
+    errorCode,
+    attemptedAt: new Date().toISOString()
+  };
 }
 
 async function readJsonDescriptor(descriptorPath) {
