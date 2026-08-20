@@ -20,6 +20,7 @@ struct SkillRegisterView: View {
     @State private var isBusy = false
     @State private var errorMessage: String?
     @State private var candidates: [SkillCandidate] = []
+    @State private var discoveryDiagnostics: [SkillDiscoveryDiagnostic] = []
     @State private var selectedCandidateID = ""
     @State private var discoveredSource = ""
 
@@ -74,6 +75,20 @@ struct SkillRegisterView: View {
 
             if !candidates.isEmpty {
                 candidatePicker
+            }
+
+            if !discoveryDiagnostics.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n("部分目录不是可安装 Skill，已跳过"))
+                        .font(.caption.bold())
+                        .foregroundStyle(.orange)
+                    ForEach(discoveryDiagnostics) { diagnostic in
+                        Text("\(diagnostic.relativePath.isEmpty ? "." : diagnostic.relativePath): \(diagnostic.message)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
             }
 
             field(L10n("名称（可选）")) {
@@ -141,6 +156,7 @@ struct SkillRegisterView: View {
 
     private func resetDiscovery() {
         candidates = []
+        discoveryDiagnostics = []
         selectedCandidateID = ""
         discoveredSource = ""
         errorMessage = nil
@@ -242,11 +258,13 @@ struct SkillRegisterView: View {
     @MainActor
     private func discover(source: String) async -> Bool {
         errorMessage = nil
-        guard let found = await client.discoverSkills(sourceType: sourceType, source: source) else {
+        guard let result = await client.discoverSkills(sourceType: sourceType, source: source) else {
             errorMessage = client.errorMessage ?? "发现 Skill 失败。"
             return false
         }
+        let found = result.candidates
         candidates = found
+        discoveryDiagnostics = result.diagnostics ?? []
         discoveredSource = source
         if found.count == 1 {
             selectedCandidateID = found[0].id

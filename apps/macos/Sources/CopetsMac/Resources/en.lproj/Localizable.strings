@@ -729,3 +729,4 @@
 "Deleting %d of %d: %@" = "Deleting %d of %d: %@";
 "Session update" = "Session update";
 "%d completed · %d pending · %d failed" = "%d completed · %d pending · %d failed";
+"部分目录不是可安装 Skill，已跳过" = "Some directories are not installable Skills and were skipped";

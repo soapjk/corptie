@@ -79,13 +79,16 @@ test("project discovery scans every source subdirectory without pruning nested S
     const deepSkill = join(project, "packages", "one", "src", "features", "workflows", "skills", "deep");
     const nestedSkill = join(project, "nested", "child");
     const ignoredSkill = join(project, "node_modules", "third-party");
+    const runtimeArtifactSkill = join(project, ".corptie", "runtime", "artifacts", "old-skill");
     await mkdir(deepSkill, { recursive: true });
     await mkdir(nestedSkill, { recursive: true });
     await mkdir(ignoredSkill, { recursive: true });
+    await mkdir(runtimeArtifactSkill, { recursive: true });
     await writeFile(join(project, "SKILL.md"), "---\nname: project-root\n---\nRoot.\n");
     await writeFile(join(deepSkill, "SKILL.md"), "---\nname: deep-project-skill\n---\nDeep.\n");
     await writeFile(join(nestedSkill, "SKILL.md"), "---\nname: nested-child\n---\nNested.\n");
     await writeFile(join(ignoredSkill, "SKILL.md"), "---\nname: dependency-skill\n---\nIgnore.\n");
+    await writeFile(join(runtimeArtifactSkill, "SKILL.md"), "---\nname: runtime-artifact\n---\nIgnore.\n");
 
     const discovery = await value.service.discover({ sourceType: "local", source: project });
     assert.deepEqual(discovery.candidates.map((candidate) => candidate.manifestName), [
@@ -94,6 +97,7 @@ test("project discovery scans every source subdirectory without pruning nested S
       "deep-project-skill"
     ]);
     assert.equal(discovery.candidates.some((candidate) => candidate.manifestName === "dependency-skill"), false);
+    assert.equal(discovery.candidates.some((candidate) => candidate.manifestName === "runtime-artifact"), false);
     assert.equal(
       discovery.candidates.find((candidate) => candidate.manifestName === "deep-project-skill")?.relativePath,
       "packages/one/src/features/workflows/skills/deep"
@@ -466,10 +470,11 @@ test("Agent-assisted discovery proposes paths but deterministic validation remai
       };
     });
     const discovery = await value.service.discover({ sourceType: "local", source: unusual });
-    assert.equal(calls.length, 1);
-    assert.equal(discovery.candidates[0].composition.package.discoveryMethod, "agent-assisted");
-    assert.equal(discovery.candidates[0].composition.package.assistance.confidence, 0.86);
+    assert.equal(calls.length, 0);
+    assert.equal(discovery.assistanceDeferred, true);
+    assert.equal(discovery.candidates[0].composition.package.discoveryMethod, "plain");
     const skill = await value.service.register({ sourceType: "local", source: unusual });
+    assert.equal(calls.length, 1);
     assert.equal(skill.mcpDescriptorSubpath, "runtime/.mcp.json");
     assert.equal(skill.packageDiscoveryMethod, "agent-assisted");
     const agent = value.store.createAgent({ name: "Assisted", provider: "codex-app-server" });
@@ -483,9 +488,62 @@ test("Agent-assisted discovery proposes paths but deterministic validation remai
       mcpDescriptor: "../outside.json"
     }));
     await assert.rejects(
-      value.service.discover({ sourceType: "local", source: unusual }),
+      value.service.register({ sourceType: "local", source: unusual }),
       (error) => error.code === "PACKAGE_RESOURCE_OUTSIDE_ROOT"
     );
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("project discovery defers Agent assistance and prioritizes a deterministic plugin over its mirror", async () => {
+  const value = await fixture();
+  try {
+    const project = join(value.directory, "mirrored-plugin-project");
+    const plugin = join(project, "plugins", "investrace");
+    const pluginSkill = join(plugin, "skills", "investrace");
+    const mirrorSkill = join(project, ".agents", "skills", "investrace");
+    await mkdir(join(plugin, ".codex-plugin"), { recursive: true });
+    await mkdir(join(plugin, "scripts"), { recursive: true });
+    await mkdir(pluginSkill, { recursive: true });
+    await mkdir(mirrorSkill, { recursive: true });
+    await writeFile(join(pluginSkill, "SKILL.md"), "---\nname: investrace\n---\nPlugin Skill.\n");
+    await writeFile(join(mirrorSkill, "SKILL.md"), "---\nname: investrace-workspace\n---\nWorkspace mirror.\n");
+    await writeFile(join(plugin, ".codex-plugin", "plugin.json"), JSON.stringify({
+      name: "investrace",
+      skills: "./skills/",
+      mcpServers: "./.mcp.json"
+    }));
+    await writeFile(join(plugin, ".mcp.json"), JSON.stringify({
+      mcpServers: {
+        investrace: { command: "node", args: ["${PLUGIN_ROOT}/scripts/investrace-mcp.mjs"] }
+      }
+    }));
+    await writeFile(join(plugin, "scripts", "investrace-mcp.mjs"), "// fixture\n");
+
+    let assistanceCalls = 0;
+    value.service.setDiscoveryAssistant(async () => {
+      assistanceCalls += 1;
+      return {
+      packageRoot: ".",
+      mcpDescriptor: "plugins/investrace/.mcp.json",
+      confidence: 0.7,
+      evidence: ["Matched the duplicate Skill name, but chose the wrong package root."]
+      };
+    });
+
+    const discovery = await value.service.discover({ sourceType: "local", source: project });
+    assert.deepEqual(discovery.candidates.map((candidate) => candidate.relativePath), [
+      "plugins/investrace/skills/investrace",
+      ".agents/skills/investrace"
+    ]);
+    assert.equal(discovery.candidates[0].composition.package.discoveryMethod, "plugin-manifest");
+    assert.deepEqual(discovery.candidates[0].composition.mcp.serverNames, ["investrace"]);
+    assert.equal(discovery.candidates[1].composition.kind, "plain");
+    assert.equal(discovery.assistanceDeferred, true);
+    assert.equal(discovery.diagnostics.length, 0);
+    assert.equal(assistanceCalls, 0);
   } finally {
     await value.store.close();
     await rm(value.directory, { recursive: true, force: true });

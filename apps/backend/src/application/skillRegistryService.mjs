@@ -34,7 +34,7 @@ const execFileAsync = promisify(execFile);
 // 项目级 Skill 发现必须覆盖任意深度的源码子目录。明确排除依赖、版本库和构建缓存，
 // 避免把第三方包里的 SKILL.md 当成用户项目的可安装 Skill，也避免无意义的大目录遍历。
 const SKILL_DISCOVERY_IGNORED_DIRECTORIES = new Set([
-  ".git", ".hg", ".svn", ".build", ".cache", ".dart_tool", ".gradle",
+  ".git", ".hg", ".svn", ".build", ".cache", ".corptie", ".dart_tool", ".gradle",
   ".next", ".nuxt", ".pytest_cache", ".swiftpm", ".turbo", ".venv",
   "DerivedData", "__pycache__", "build", "coverage", "dist", "node_modules",
   "target", "vendor"
@@ -126,11 +126,21 @@ export class SkillRegistryService {
       const rootDir = type === "git"
         ? (cachePath = await this.#cloneGitSource(rawSource))
         : resolve(rawSource);
-      const candidates = await this.#discoverCandidates(rootDir, { assist });
+      // 项目扫描阶段只做确定性发现：一棵项目树可能包含大量普通 Skill，不能为每个
+      // 候选串行启动后台 Agent。用户选定具体候选并登记时，register() 才按 assist
+      // 设置对该一个候选执行 Agent 辅助识别与权威校验。
+      const { candidates, diagnostics } = await this.#discoverCandidateResults(rootDir, { assist: false });
       if (candidates.length === 0) {
+        if (diagnostics.length > 0) throw diagnostics[0].error;
         throw skillError("INVALID_SKILL", `所选来源不含 SKILL.md（或 skill.md）：${rawSource}`);
       }
-      return { sourceType: type, source: rawSource, candidates };
+      return {
+        sourceType: type,
+        source: rawSource,
+        candidates,
+        assistanceDeferred: assist !== false && candidates.some((candidate) => candidate.composition?.kind === "plain"),
+        diagnostics: diagnostics.map(({ error: _error, ...diagnostic }) => diagnostic)
+      };
     } finally {
       if (cachePath) await rm(cachePath, { recursive: true, force: true });
     }
@@ -801,13 +811,32 @@ export class SkillRegistryService {
   }
 
   async #discoverCandidates(sourceRoot, options = {}) {
+    const { candidates, diagnostics } = await this.#discoverCandidateResults(sourceRoot, options);
+    if (candidates.length === 0 && diagnostics.length > 0) throw diagnostics[0].error;
+    return candidates;
+  }
+
+  async #discoverCandidateResults(sourceRoot, options = {}) {
     if (!(await isDirectory(sourceRoot))) throw skillError("SOURCE_MISSING", `Skill 来源目录不存在：${sourceRoot}`);
     const markers = await this.#locateSkillMarkers(sourceRoot);
     const candidates = [];
+    const diagnostics = [];
     for (const markerPath of markers) {
-      candidates.push(await this.#candidateFromMarker(sourceRoot, markerPath, options));
+      try {
+        candidates.push(await this.#candidateFromMarker(sourceRoot, markerPath, options));
+      } catch (error) {
+        diagnostics.push({
+          relativePath: normalizeSubpath(relative(sourceRoot, dirname(markerPath))),
+          code: error?.code ?? "SKILL_DISCOVERY_FAILED",
+          stage: error?.stage ?? "composition",
+          message: error?.message ?? String(error),
+          error
+        });
+      }
     }
-    return candidates;
+    candidates.sort((a, b) => candidateDiscoveryRank(a) - candidateDiscoveryRank(b)
+      || a.relativePath.localeCompare(b.relativePath));
+    return { candidates, diagnostics };
   }
 
   async #candidateFromMarker(sourceRoot, markerPath, options = {}) {
@@ -1615,6 +1644,11 @@ function hashContent(content) {
 
 function tokenize(text) {
   return String(text ?? "").toLowerCase().split(/[^\p{L}\p{N}_-]+/u).filter(Boolean);
+}
+
+function candidateDiscoveryRank(candidate) {
+  if (candidate?.composition?.kind === "mcp") return 0;
+  return 1;
 }
 
 function skillSearchScore(skill, terms) {

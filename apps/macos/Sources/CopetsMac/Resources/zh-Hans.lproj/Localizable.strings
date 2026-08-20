@@ -1108,3 +1108,4 @@
 "Deleting %d of %d: %@" = "正在删除第 %d 个，共 %d 个：%@";
 "Session update" = "会话更新";
 "%d completed · %d pending · %d failed" = "%d 个已完成 · %d 个待处理 · %d 个失败";
+"部分目录不是可安装 Skill，已跳过" = "部分目录不是可安装 Skill，已跳过";

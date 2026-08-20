@@ -808,7 +808,7 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    func discoverSkills(sourceType: String, source: String) async -> [SkillCandidate]? {
+    func discoverSkills(sourceType: String, source: String) async -> SkillDiscoveryEnvelope? {
         var request = URLRequest(url: baseURL.appending(path: "skills/discover"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -826,7 +826,7 @@ final class EntityAPIClient: ObservableObject {
             }
             let result = try decoder.decode(SkillDiscoveryEnvelope.self, from: data)
             errorMessage = nil
-            return result.candidates
+            return result
         } catch {
             errorMessage = error.localizedDescription
             return nil

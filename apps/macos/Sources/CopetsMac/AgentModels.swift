@@ -100,6 +100,16 @@ struct SkillDiscoveryEnvelope: Codable {
     let sourceType: String
     let source: String
     let candidates: [SkillCandidate]
+    let diagnostics: [SkillDiscoveryDiagnostic]?
+}
+
+struct SkillDiscoveryDiagnostic: Codable, Hashable, Identifiable {
+    let relativePath: String
+    let code: String
+    let stage: String
+    let message: String
+
+    var id: String { "\(relativePath):\(code):\(message)" }
 }
 
 // 后端响应 envelope：GET /skills → { skills: [...] }
