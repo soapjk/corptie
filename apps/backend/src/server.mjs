@@ -38,6 +38,7 @@ import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
+  repairStableSessionFromActiveProviderCache,
   repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection,
   visibleStoredSessionProjections
@@ -733,6 +734,15 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
       // runtime configuration. The active target projection is authoritative
       // after the route commit.
       sessionPresentationCache.delete(payload.sessionId);
+      const repaired = repairStableSessionFromActiveProviderCache(
+        store,
+        payload.logicalSessionId,
+        [...sessionPresentationCache.values()]
+      );
+      if (repaired) {
+        sessionPresentationCache.set(repaired.id, repaired);
+      }
+      scheduleSessionProviderProjectionReconciliation(payload.sessionId, "provider-switch");
     }
     emitEvent(type, payload, { sessionId: payload.sessionId });
   }
@@ -1570,6 +1580,19 @@ function emitEvent(type, payload, options = {}) {
       console.error(`[session-events] append failed for type=${type} session=${sessionId}: ${error.message}`);
     }
   }
+}
+
+function scheduleSessionProviderProjectionReconciliation(sessionId, reason) {
+  setImmediate(async () => {
+    try {
+      await sessionApplicationService.readSession(sessionId);
+      const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+      if (!session) return;
+      emitEvent("SessionProviderProjectionReconciled", { session, reason }, { sessionId });
+    } catch (error) {
+      console.warn(`[session-projection] authoritative reconciliation deferred session=${sessionId} reason=${reason} error=${error.message}`);
+    }
+  });
 }
 
 function dshLiveEvents(sessionEvent) {
@@ -2411,7 +2434,11 @@ function handleCodexAppServerNotification(message) {
     emitEvent("SessionRenamed", { session: nextSession, source: { type: "codex-app-server" } });
     return;
   }
-  const session = managedSession;
+  // Provider-switch route commits deliberately invalidate the old Provider's
+  // cached projection. The durable stable projection remains a valid base for
+  // the first notification from the new active thread and must not cause that
+  // notification (especially turn/completed) to be dropped.
+  const session = managedSession ?? store.getSession(sessionId);
   if (!session) {
     return;
   }
@@ -7363,6 +7390,15 @@ for (const storedSession of storedSessionsAtStartup) {
     }
   } else {
     ensureCollaborationAgentForSession(session);
+  }
+}
+// Older builds could persist the target Provider's bootstrap projection after
+// a route switch and then miss the completion notification. Re-read switched
+// Sessions through the shared Provider contract so that existing stale rows
+// self-heal without requiring the user to open each conversation.
+for (const storedSession of storedSessionsAtStartup) {
+  if ((storedSession.external?.routingVersion ?? 1) > 1) {
+    scheduleSessionProviderProjectionReconciliation(storedSession.id, "startup-route-recovery");
   }
 }
 for (const transition of store.listPendingWorkspaceTransitions()) {

@@ -8,6 +8,7 @@ import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
+  repairStableSessionFromActiveProviderCache,
   repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection,
   visibleStoredSessionProjections
@@ -207,6 +208,80 @@ test("a Provider switch projects only the active target thread under the origina
     });
     assert.equal(source.disposition, "historical");
     assert.equal(source.session, null);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a Provider switch immediately adopts a target bootstrap turn that completed before route commit", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-bootstrap-projection-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "openclacky:stable",
+      title: "PolyMarket 实时套利",
+      status: "running",
+      summary: "Initializing Codex session…",
+      activityStatus: "Starting Codex",
+      external: { provider: "openclacky", threadId: "source", sessionId: "source" }
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:poly",
+      legacySessionId: "openclacky:stable",
+      providerThreadId: "source",
+      providerSessionId: "source",
+      providerId: "openclacky",
+      boundCwd: directory,
+      title: "PolyMarket 实时套利"
+    });
+    store.beginWorkspaceTransition({
+      transitionId: "transition:poly",
+      logicalSessionId: "logical:poly",
+      transitionKind: "provider",
+      targetProviderId: "codex-app-server",
+      targetCwd: directory,
+      sourceRoutingVersion: 1,
+      phase: "preflighting"
+    });
+    store.commitWorkspaceTransition("transition:poly", {
+      providerThreadId: "codex-target",
+      providerSessionId: "codex-target",
+      providerId: "codex-app-server",
+      boundCwd: directory,
+      sessionProjection: {
+        status: "running",
+        summary: "Initializing Codex session…",
+        activityStatus: "Starting Codex",
+        external: { provider: "codex-app-server", threadId: "codex-target", sessionId: "codex-target" }
+      }
+    });
+
+    const repaired = repairStableSessionFromActiveProviderCache(store, "logical:poly", [{
+      id: "codex:codex-target",
+      title: "Provider-local title",
+      status: "complete",
+      summary: "Ready",
+      activityStatus: null,
+      updatedAt: "2026-08-20T10:15:00.000Z",
+      external: {
+        provider: "codex-app-server",
+        threadId: "codex-target",
+        sessionId: "codex-target",
+        activeTurnId: null
+      }
+    }]);
+
+    assert.equal(repaired.id, "openclacky:stable");
+    assert.equal(repaired.status, "complete");
+    assert.equal(repaired.summary, "Ready");
+    assert.equal(repaired.activityStatus ?? null, null);
+    assert.equal(repaired.updatedAt, "2026-08-20T10:15:00.000Z");
+    assert.equal(repaired.external.threadId, "codex-target");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
