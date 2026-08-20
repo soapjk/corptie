@@ -48,6 +48,7 @@ struct AppStateStoreTests {
             "workItems": [],
             "objectives": [],
             "agents": [],
+            "skills": [],
             "repositories": [],
             "integrationRuns": [{
               "id": "integration:1",
@@ -102,7 +103,7 @@ struct AppStateStoreTests {
     @Test func snapshotDecodeErrorNamesTheMissingContractPath() {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let payload = Data(#"{"revision":1,"state":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"repositories":[],"integrationRuns":[{}]}}"#.utf8)
+        let payload = Data(#"{"revision":1,"state":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[{}]}}"#.utf8)
 
         do {
             _ = try decoder.decode(StateSnapshotEnvelope.self, from: payload)
@@ -117,13 +118,13 @@ struct AppStateStoreTests {
 
 private extension ControlPlaneStatePayload {
     static func fixture(sessions: [TaskSession] = []) -> Self {
-        .init(sessions: sessions, workItems: [], objectives: [], agents: [], repositories: [], integrationRuns: [])
+        .init(sessions: sessions, workItems: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: [])
     }
 }
 
 private extension StateEntityDeletes {
     static func fixture() -> Self {
-        .init(sessions: [], workItems: [], objectives: [], agents: [], repositories: [], integrationRuns: [])
+        .init(sessions: [], workItems: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: [])
     }
 }
 

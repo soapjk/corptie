@@ -6,6 +6,7 @@ struct ControlPlaneStatePayload: Decodable, Sendable {
     var workItems: [WorkItem]
     var objectives: [Objective]
     var agents: [Agent]
+    var skills: [Skill]
     var repositories: [GitRepository]
     var integrationRuns: [ProjectIntegrationRun]
 }
@@ -20,6 +21,7 @@ struct StateEntityDeletes: Decodable, Sendable {
     var workItems: [String]
     var objectives: [String]
     var agents: [String]
+    var skills: [String]
     var repositories: [String]
     var integrationRuns: [String]
 }
@@ -43,6 +45,7 @@ struct NormalizedAppState: Equatable {
     var workItems: [String: WorkItem] = [:]
     var objectives: [String: Objective] = [:]
     var agents: [String: Agent] = [:]
+    var skills: [String: Skill] = [:]
     var repositories: [String: GitRepository] = [:]
     var integrationRuns: [String: ProjectIntegrationRun] = [:]
 }
@@ -81,6 +84,7 @@ final class AppStateStore: ObservableObject {
     var workItems: [WorkItem] { state.workItems.values.sorted { $0.createdAt < $1.createdAt } }
     var objectives: [Objective] { state.objectives.values.sorted { $0.createdAt > $1.createdAt } }
     var agents: [Agent] { state.agents.values.sorted { $0.createdAt < $1.createdAt } }
+    var skills: [Skill] { state.skills.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
     var repositories: [GitRepository] { state.repositories.values.sorted { $0.name < $1.name } }
     var integrationRuns: [ProjectIntegrationRun] {
         state.integrationRuns.values.sorted { $0.createdAt > $1.createdAt }
@@ -114,12 +118,14 @@ final class AppStateStore: ObservableObject {
         Self.upsert(changeSet.upserts.workItems, into: &next.workItems, id: \WorkItem.id)
         Self.upsert(changeSet.upserts.objectives, into: &next.objectives, id: \Objective.id)
         Self.upsert(changeSet.upserts.agents, into: &next.agents, id: \Agent.agentId)
+        Self.upsert(changeSet.upserts.skills, into: &next.skills, id: \Skill.skillId)
         Self.upsert(changeSet.upserts.repositories, into: &next.repositories, id: \GitRepository.id)
         Self.upsert(changeSet.upserts.integrationRuns, into: &next.integrationRuns, id: \ProjectIntegrationRun.id)
         changeSet.deletes.sessions.forEach { next.sessions[$0] = nil }
         changeSet.deletes.workItems.forEach { next.workItems[$0] = nil }
         changeSet.deletes.objectives.forEach { next.objectives[$0] = nil }
         changeSet.deletes.agents.forEach { next.agents[$0] = nil }
+        changeSet.deletes.skills.forEach { next.skills[$0] = nil }
         changeSet.deletes.repositories.forEach { next.repositories[$0] = nil }
         changeSet.deletes.integrationRuns.forEach { next.integrationRuns[$0] = nil }
         state = next
@@ -174,6 +180,7 @@ final class AppStateStore: ObservableObject {
             workItems: Dictionary(uniqueKeysWithValues: payload.workItems.map { ($0.id, $0) }),
             objectives: Dictionary(uniqueKeysWithValues: payload.objectives.map { ($0.id, $0) }),
             agents: Dictionary(uniqueKeysWithValues: payload.agents.map { ($0.agentId, $0) }),
+            skills: Dictionary(uniqueKeysWithValues: payload.skills.map { ($0.skillId, $0) }),
             repositories: Dictionary(uniqueKeysWithValues: payload.repositories.map { ($0.id, $0) }),
             integrationRuns: Dictionary(uniqueKeysWithValues: payload.integrationRuns.map { ($0.id, $0) })
         )

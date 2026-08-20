@@ -1294,6 +1294,7 @@ export class CorptieStore {
       ["work_items", "workItem", "id"],
       ["objectives", "objective", "id"],
       ["agents", "agent", "agent_id"],
+      ["skill_registry", "skill", "skill_id"],
       ["git_repositories", "repository", "repository_id"],
       ["project_integration_runs", "integrationRun", "id"]
     ];
@@ -1323,6 +1324,25 @@ export class CorptieStore {
       DELETE FROM state_change_log
       WHERE revision < MAX(0, (SELECT revision FROM state_sync_clock WHERE singleton = 1) - 10000)
     `);
+
+    // Agent↔Skill assignments are part of the Agent wire model. Link changes
+    // therefore publish Agent upserts even though the agents row itself is not
+    // rewritten. Cascade deletes from skill_registry use the same triggers.
+    for (const operation of ["INSERT", "DELETE"]) {
+      const suffix = operation.toLowerCase();
+      const row = operation === "DELETE" ? "OLD" : "NEW";
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS state_sync_agent_skill_links_${suffix}
+        AFTER ${operation} ON agent_skill_links
+        BEGIN
+          UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
+          INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+          SELECT revision, 'agent', ${row}.agent_id, 'upsert',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM state_sync_clock WHERE singleton = 1;
+        END;
+      `);
+    }
   }
 
   stateRevision() {
@@ -1427,6 +1447,25 @@ export class CorptieStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_agent_skill_links_skill ON agent_skill_links(skill_id);
+
+      CREATE TABLE IF NOT EXISTS skill_deletion_operations (
+        operation_id TEXT PRIMARY KEY,
+        skill_id TEXT NOT NULL,
+        skill_name TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'cleanup_failed', 'database_failed', 'completed')),
+        affected_agents_json TEXT NOT NULL DEFAULT '[]',
+        active_sessions_json TEXT NOT NULL DEFAULT '[]',
+        cleanup_json TEXT NOT NULL DEFAULT '[]',
+        recovery_json TEXT NOT NULL DEFAULT '[]',
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_skill_deletion_operations_skill
+      ON skill_deletion_operations(skill_id, created_at DESC);
     `);
 
     this.ensureColumn("skill_registry", "source_subpath", "TEXT NOT NULL DEFAULT ''");
@@ -1507,9 +1546,135 @@ export class CorptieStore {
   }
 
   deleteRegistrySkill(skillId) {
-    this.db.run(`DELETE FROM skill_registry WHERE skill_id = ?`, [skillId]);
+    const existing = this.getRegistrySkill(skillId);
+    if (!existing) return false;
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const impact = this.registrySkillDeletionImpact(skillId);
+      if (impact?.activeSessionCount > 0) {
+        const error = new Error(`Skill has active Sessions: ${skillId}`);
+        error.code = "SKILL_HAS_ACTIVE_SESSIONS";
+        error.impact = impact;
+        throw error;
+      }
+      this.db.run(`DELETE FROM skill_registry WHERE skill_id = ?`, [skillId]);
+      const remainingLinks = this.selectOne(
+        `SELECT COUNT(*) AS count FROM agent_skill_links WHERE skill_id = ?`,
+        [skillId]
+      );
+      if (this.getRegistrySkill(skillId) || Number(remainingLinks?.count ?? 0) !== 0) {
+        const error = new Error(`Skill deletion did not remove all references: ${skillId}`);
+        error.code = "SKILL_DELETE_INTEGRITY_FAILED";
+        throw error;
+      }
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
     this.scheduleSave();
     return true;
+  }
+
+  registrySkillDeletionImpact(skillId) {
+    const skill = this.getRegistrySkill(skillId);
+    if (!skill) return null;
+    const affectedAgents = this.selectAll(
+      `SELECT a.agent_id, a.name
+       FROM agent_skill_links links
+       JOIN agents a ON a.agent_id = links.agent_id
+       WHERE links.skill_id = ?
+       ORDER BY a.name COLLATE NOCASE, a.agent_id`,
+      [skillId]
+    ).map((row) => ({ agentId: row.agent_id, name: row.name }));
+    const activeSessions = this.selectAll(
+      `SELECT DISTINCT s.id, s.title, s.status, a.agent_id, a.name AS agent_name
+       FROM agent_skill_links links
+       JOIN agents a ON a.agent_id = links.agent_id
+       JOIN sessions s ON (
+         s.agent_id = a.agent_id OR EXISTS (
+           SELECT 1 FROM agent_sessions bindings
+           WHERE bindings.session_id = s.id
+             AND bindings.agent_id = a.agent_id
+             AND bindings.unbound_at IS NULL
+         )
+       )
+       WHERE links.skill_id = ? AND s.status IN ('running', 'blocked')
+       ORDER BY s.created_at, s.id`,
+      [skillId]
+    ).map((row) => ({
+      sessionId: row.id,
+      title: row.title,
+      status: row.status,
+      agentId: row.agent_id,
+      agentName: row.agent_name
+    }));
+    return {
+      skillId,
+      skillName: skill.name,
+      affectedAgents,
+      affectedAgentCount: affectedAgents.length,
+      activeSessions,
+      activeSessionCount: activeSessions.length,
+      canDelete: activeSessions.length === 0,
+      policy: "blockWhileAssignedAgentSessionActive"
+    };
+  }
+
+  createSkillDeletionOperation({ skill, impact, cleanup = [] }) {
+    const operationId = `skill-deletion:${randomUUID()}`;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO skill_deletion_operations (
+         operation_id, skill_id, skill_name, status, affected_agents_json,
+         active_sessions_json, cleanup_json, recovery_json, created_at, updated_at
+       ) VALUES (?, ?, ?, 'pending', ?, ?, ?, '[]', ?, ?)`,
+      [
+        operationId,
+        skill.skillId,
+        skill.name,
+        JSON.stringify(impact.affectedAgents ?? []),
+        JSON.stringify(impact.activeSessions ?? []),
+        JSON.stringify(cleanup),
+        now,
+        now
+      ]
+    );
+    this.scheduleSave();
+    return this.getSkillDeletionOperation(operationId);
+  }
+
+  updateSkillDeletionOperation(operationId, input = {}) {
+    const existing = this.getSkillDeletionOperation(operationId);
+    if (!existing) return null;
+    const status = input.status ?? existing.status;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE skill_deletion_operations
+       SET status = ?, cleanup_json = ?, recovery_json = ?, error_code = ?,
+           error_message = ?, updated_at = ?, completed_at = ?
+       WHERE operation_id = ?`,
+      [
+        status,
+        JSON.stringify(input.cleanup ?? existing.cleanup),
+        JSON.stringify(input.recovery ?? existing.recovery),
+        input.errorCode ?? existing.errorCode,
+        input.errorMessage ?? existing.errorMessage,
+        now,
+        status === "completed" ? now : existing.completedAt,
+        operationId
+      ]
+    );
+    this.scheduleSave();
+    return this.getSkillDeletionOperation(operationId);
+  }
+
+  getSkillDeletionOperation(operationId) {
+    const row = this.selectOne(
+      `SELECT * FROM skill_deletion_operations WHERE operation_id = ?`,
+      [operationId]
+    );
+    return row ? skillDeletionOperationFromRow(row) : null;
   }
 
   // ===== Agent ↔ Skill 关联 =====
@@ -5927,6 +6092,24 @@ function skillFromRow(row) {
     contentHash: row.content_hash ?? "",
     installedAt: row.installed_at,
     updatedAt: row.updated_at
+  };
+}
+
+function skillDeletionOperationFromRow(row) {
+  return {
+    operationId: row.operation_id,
+    skillId: row.skill_id,
+    skillName: row.skill_name,
+    status: row.status,
+    affectedAgents: parseJson(row.affected_agents_json, []),
+    activeSessions: parseJson(row.active_sessions_json, []),
+    cleanup: parseJson(row.cleanup_json, []),
+    recovery: parseJson(row.recovery_json, []),
+    errorCode: row.error_code ?? null,
+    errorMessage: row.error_message ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? null
   };
 }
 

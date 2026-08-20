@@ -26,6 +26,9 @@ struct AgentManagementView: View {
     @State private var isShowingSkillsSheet = false
     @State private var selectedAgentForDetail: Agent?
     @State private var agentForSessionCreation: Agent?
+    @State private var pendingSkillDeletion: SkillDeletionImpact?
+    @State private var skillDeletionError: String?
+    @State private var isDeletingSkill = false
 
     // 自适应网格：卡片最小 260pt，随窗口宽度自动增减列数。
     private let columns = [GridItem(.adaptive(minimum: 260, maximum: 420), spacing: 16)]
@@ -60,6 +63,32 @@ struct AgentManagementView: View {
             NewSessionCreationSheet(fixedAgent: agent) { session in
                 router.openSession(session.id)
             }
+        }
+        .alert(
+            L10n("Delete Skill?"),
+            isPresented: Binding(
+                get: { pendingSkillDeletion != nil },
+                set: { if !$0 { pendingSkillDeletion = nil } }
+            ),
+            presenting: pendingSkillDeletion
+        ) { impact in
+            if SkillDeletionConfirmationPolicy.canOfferDestructiveAction(for: impact) {
+                Button(L10n("Delete"), role: .destructive) {
+                    Task { await confirmSkillDeletion(impact) }
+                }
+                .disabled(isDeletingSkill)
+            }
+            Button(impact.canDelete ? L10n("Cancel") : L10n("OK"), role: .cancel) {}
+        } message: { impact in
+            Text(skillDeletionConfirmationMessage(impact))
+        }
+        .alert(L10n("Unable to delete Skill"), isPresented: Binding(
+            get: { skillDeletionError != nil },
+            set: { if !$0 { skillDeletionError = nil } }
+        )) {
+            Button(L10n("OK"), role: .cancel) { skillDeletionError = nil }
+        } message: {
+            Text(skillDeletionError ?? "")
         }
         .task {
             async let agents: Void = client.refreshAgents()
@@ -149,7 +178,9 @@ struct AgentManagementView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(client.skills.enumerated()), id: \.element.id) { index, skill in
-                            SkillRegistryRow(skill: skill)
+                            SkillRegistryRow(skill: skill) {
+                                Task { await prepareSkillDeletion(skill) }
+                            }
                             if index < client.skills.count - 1 {
                                 Divider()
                                     .padding(.leading, AgentsSkillsLayoutMetrics.columnPadding)
@@ -162,6 +193,42 @@ struct AgentManagementView: View {
         .sheet(isPresented: $isRegisteringSkill) {
             SkillRegisterView { _ in }
         }
+    }
+
+    private func prepareSkillDeletion(_ skill: Skill) async {
+        guard let impact = await client.skillDeletionImpact(skillId: skill.skillId) else {
+            skillDeletionError = client.errorMessage ?? L10n("Unable to inspect Skill deletion impact.")
+            return
+        }
+        pendingSkillDeletion = impact
+    }
+
+    private func confirmSkillDeletion(_ impact: SkillDeletionImpact) async {
+        guard SkillDeletionConfirmationPolicy.canOfferDestructiveAction(for: impact) else { return }
+        isDeletingSkill = true
+        defer { isDeletingSkill = false }
+        if await client.deleteSkill(skillId: impact.skillId) {
+            pendingSkillDeletion = nil
+        } else {
+            pendingSkillDeletion = nil
+            skillDeletionError = client.errorMessage ?? L10n("Unable to delete Skill.")
+        }
+    }
+
+    private func skillDeletionConfirmationMessage(_ impact: SkillDeletionImpact) -> String {
+        let agentNames = impact.affectedAgents.map(\.name).joined(separator: "、")
+        let affected = impact.affectedAgentCount == 0
+            ? L10n("No Agent currently uses this Skill.")
+            : L10nFormat("This permanently removes the Skill from %d Agent(s): %@.", impact.affectedAgentCount, agentNames)
+        if impact.canDelete {
+            return affected + "\n\n" + L10n("All Provider runtime copies and the Git cache will be removed. This cannot be undone.")
+        }
+        let sessions = impact.activeSessions.map { "\($0.title)（\($0.agentName)）" }.joined(separator: "、")
+        return affected + "\n\n" + L10nFormat(
+            "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first.",
+            impact.activeSessionCount,
+            sessions
+        )
     }
 
     @ViewBuilder
@@ -209,6 +276,7 @@ struct AgentManagementView: View {
 
 struct SkillRegistryRow: View {
     let skill: Skill
+    let onDelete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -221,6 +289,12 @@ struct SkillRegistryRow: View {
                     .font(.caption2)
                     .foregroundStyle(.green)
                     .labelStyle(.titleAndIcon)
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help(L10n("Delete Skill"))
+                .accessibilityLabel(L10n("Delete Skill"))
             }
 
             Text(skill.description.isEmpty ? L10n("No description") : skill.description)

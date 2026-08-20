@@ -289,9 +289,24 @@ export function handleEntityHttpRequest({
               source,
               sourceSubpath: input.sourceSubpath ?? ""
             });
+            onEntityChanged?.("SkillChanged", { action: "created", entity: skill });
             return sendJson(response, 201, { skill });
           } catch (error) {
             throw apiError(error?.code ?? "SKILL_REGISTER_FAILED", error?.message ?? "Skill 登记失败。", 400);
+          }
+        }
+
+        const skillImpactMatch = path.match(/^\/skills\/([^/]+)\/deletion-impact$/);
+        if (skillImpactMatch && request.method === "GET") {
+          const id = decodeURIComponent(skillImpactMatch[1]);
+          try {
+            return sendJson(response, 200, { impact: skillRegistryService.deletionImpact(id) });
+          } catch (error) {
+            throw apiError(
+              error?.code === "NOT_FOUND" ? "SKILL_NOT_FOUND" : (error?.code ?? "SKILL_IMPACT_FAILED"),
+              error?.message ?? "Skill 删除影响检查失败。",
+              error?.code === "NOT_FOUND" ? 404 : 400
+            );
           }
         }
 
@@ -313,8 +328,37 @@ export function handleEntityHttpRequest({
             }
           }
           if (request.method === "DELETE") {
-            await skillRegistryService.remove(id);
-            return sendJson(response, 200, { ok: true });
+            if (request.headers?.["x-corptie-confirm-destructive-action"] !== "delete-skill") {
+              throw apiError(
+                "SKILL_DELETE_CONFIRMATION_REQUIRED",
+                "Skill 删除需要显式不可逆操作确认。",
+                403
+              );
+            }
+            try {
+              const result = await skillRegistryService.remove(id);
+              onEntityChanged?.("SkillChanged", {
+                action: "deleted",
+                entity: { skillId: id },
+                operation: result.operation
+              });
+              for (const agent of result.impact.affectedAgents) {
+                onEntityChanged?.("AgentChanged", {
+                  action: "skill-unassigned",
+                  entity: { agentId: agent.agentId, skillId: id }
+                });
+              }
+              return sendJson(response, 200, result);
+            } catch (error) {
+              if (error?.code === "NOT_FOUND") {
+                throw apiError("SKILL_NOT_FOUND", error.message, 404);
+              }
+              if (error?.code === "SKILL_HAS_ACTIVE_SESSIONS") error.statusCode = 409;
+              if (["SKILL_CLEANUP_FAILED", "SKILL_DATABASE_DELETE_FAILED"].includes(error?.code)) {
+                error.statusCode = 500;
+              }
+              throw error;
+            }
           }
         }
       }
@@ -660,7 +704,9 @@ export function handleEntityHttpRequest({
         ...(typeof error.field === "string" ? { field: error.field } : {}),
         ...(typeof error.expected === "string" ? { expected: error.expected } : {}),
         ...(error.received && typeof error.received === "object" ? { received: error.received } : {}),
-        ...(Array.isArray(error.candidates) ? { candidates: error.candidates } : {})
+        ...(Array.isArray(error.candidates) ? { candidates: error.candidates } : {}),
+        ...(error.impact && typeof error.impact === "object" ? { impact: error.impact } : {}),
+        ...(error.operation && typeof error.operation === "object" ? { operation: error.operation } : {})
       });
     });
 
@@ -683,13 +729,13 @@ function rejectSessionAvatarInput(input) {
 }
 
 function statusForCode(code) {
-  if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND"].includes(code)) return 404;
-  if (code === "INTERNAL") return 500;
+  if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND"].includes(code)) return 404;
+  if (["INTERNAL", "SKILL_CLEANUP_FAILED", "SKILL_DATABASE_DELETE_FAILED"].includes(code)) return 500;
   if ([
-    "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
+    "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "SKILL_HAS_ACTIVE_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
     "ASSOCIATION_OUT_OF_SCOPE", "OBJECTIVE_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR"
   ].includes(code)) return 409;
-  if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN"].includes(code)) return 403;
+  if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN", "SKILL_DELETE_CONFIRMATION_REQUIRED"].includes(code)) return 403;
   return 400;
 }
 

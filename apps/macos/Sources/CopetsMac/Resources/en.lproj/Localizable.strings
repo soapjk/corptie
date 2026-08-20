@@ -615,3 +615,12 @@
 "发送至 Agent" = "To Agent";
 "目标 Session" = "Target Session";
 "消息" = "Message";
+"Delete Skill?" = "Delete Skill?";
+"Delete Skill" = "Delete Skill";
+"Unable to delete Skill" = "Unable to delete Skill";
+"Unable to delete Skill." = "Unable to delete Skill.";
+"Unable to inspect Skill deletion impact." = "Unable to inspect Skill deletion impact.";
+"No Agent currently uses this Skill." = "No Agent currently uses this Skill.";
+"This permanently removes the Skill from %d Agent(s): %@." = "This permanently removes the Skill from %d Agent(s): %@.";
+"All Provider runtime copies and the Git cache will be removed. This cannot be undone." = "All Provider runtime copies and the Git cache will be removed. This cannot be undone.";
+"Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first." = "Deletion is blocked because %d active Session(s) can still use this Skill: %@. End or interrupt them first.";

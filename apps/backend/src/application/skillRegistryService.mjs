@@ -35,7 +35,7 @@ const MCP_DESCRIPTOR_NAMES = Object.freeze([".mcp.json", "mcp.json", "mcp.config
 const SKILL_ROOT_TOKENS = Object.freeze(["${SKILL_ROOT}", "${SKILL_DIR}", "${CLAUDE_PLUGIN_ROOT}"]);
 
 export class SkillRegistryService {
-  constructor({ store, skillsDirs = {}, cacheRoot, exec = execFileAsync } = {}) {
+  constructor({ store, skillsDirs = {}, cacheRoot, exec = execFileAsync, removePath = rm } = {}) {
     if (!store) throw new TypeError("SkillRegistryService requires a store.");
     // skillsDirs: { [providerId]: 绝对 skills 根目录 }，例如
     //   { codex: "~/.corptie/.../runtimes/codex/skills",
@@ -45,6 +45,7 @@ export class SkillRegistryService {
     // git 源克隆缓存的根目录（全局共享，跨 Provider）。
     this.cacheRoot = resolve(cacheRoot ?? join(process.env.CORPTIE_HOME ?? join(homedirFallback(), ".corptie"), "skill-cache"));
     this.exec = exec;
+    this.removePath = removePath;
   }
 
   // 列出所有已登记 Skill。
@@ -235,20 +236,140 @@ export class SkillRegistryService {
   async unmaterialize(skill) {
     for (const skillsRoot of Object.values(this.skillsDirs)) {
       const targetDir = join(skillsRoot, skill.skillId);
-      await rm(targetDir, { recursive: true, force: true });
+      await this.#removeManagedPath(targetDir, skillsRoot, "runtime materialization");
     }
   }
 
-  // 删除登记：卸载物化 + 移除缓存（仅 git 源自己的缓存）+ 删除记录。
+  deletionImpact(skillId) {
+    const id = validateSkillId(skillId);
+    const impact = this.store.registrySkillDeletionImpact(id);
+    if (!impact) throw skillError("NOT_FOUND", `Skill not found: ${id}`);
+    return impact;
+  }
+
+  // 删除登记采用可审计的本地 saga：活跃 Session 会阻止删除；先清理所有
+  // provider-neutral 物化和 Git 缓存，全部成功后才事务性删除登记与 Agent 关联。
+  // 文件部分失败时登记仍存在，并尝试重新物化，operation 可用于审计和重试。
   async remove(skillId) {
-    const skill = this.store.getRegistrySkill(skillId);
-    if (!skill) throw skillError("NOT_FOUND", `Skill not found: ${skillId}`);
-    await this.unmaterialize(skill);
-    if (skill.sourceType === "git" && skill.cachePath) {
-      await rm(skill.cachePath, { recursive: true, force: true });
+    const id = validateSkillId(skillId);
+    const skill = this.store.getRegistrySkill(id);
+    if (!skill) throw skillError("NOT_FOUND", `Skill not found: ${id}`);
+    const impact = this.deletionImpact(id);
+    if (!impact.canDelete) {
+      const error = skillError(
+        "SKILL_HAS_ACTIVE_SESSIONS",
+        `Skill ${skill.name} 正被 ${impact.activeSessionCount} 个活跃 Session 使用；请先结束或中断这些 Session。`
+      );
+      error.impact = impact;
+      throw error;
     }
-    this.store.deleteRegistrySkill(skillId);
-    return true;
+
+    const cleanup = [
+      ...Object.entries(this.skillsDirs).map(([providerId, skillsRoot]) => ({
+        kind: "runtime",
+        providerId,
+        path: join(skillsRoot, id),
+        root: resolve(skillsRoot),
+        status: "pending"
+      })),
+      ...(skill.sourceType === "git" && skill.cachePath ? [{
+        kind: "gitCache",
+        providerId: null,
+        path: resolve(skill.cachePath),
+        root: this.cacheRoot,
+        status: "pending"
+      }] : [])
+    ];
+    let operation = this.store.createSkillDeletionOperation({ skill, impact, cleanup });
+    const results = cleanup.map((target) => ({ ...target }));
+
+    try {
+      for (const target of results) {
+        await this.#removeManagedPath(target.path, target.root, target.kind);
+        target.status = "succeeded";
+      }
+    } catch (error) {
+      const target = results.find((item) => item.status === "pending");
+      if (target) {
+        target.status = "failed";
+        target.error = error?.message ?? String(error);
+      }
+      const recovery = await this.#recoverMaterialization(skill, results);
+      operation = this.store.updateSkillDeletionOperation(operation.operationId, {
+        status: "cleanup_failed",
+        cleanup: results,
+        recovery,
+        errorCode: error?.code ?? "SKILL_CLEANUP_FAILED",
+        errorMessage: error?.message ?? "Skill runtime cleanup failed."
+      });
+      const wrapped = skillError("SKILL_CLEANUP_FAILED", `Skill 清理失败；登记与 Agent 分配已保留，可重试删除。${error?.message ? ` ${error.message}` : ""}`);
+      wrapped.operation = operation;
+      wrapped.impact = impact;
+      throw wrapped;
+    }
+
+    try {
+      if (!this.store.deleteRegistrySkill(id)) {
+        throw skillError("NOT_FOUND", `Skill not found: ${id}`);
+      }
+    } catch (error) {
+      const recovery = await this.#recoverMaterialization(skill, results);
+      operation = this.store.updateSkillDeletionOperation(operation.operationId, {
+        status: "database_failed",
+        cleanup: results,
+        recovery,
+        errorCode: error?.code ?? "SKILL_DATABASE_DELETE_FAILED",
+        errorMessage: error?.message ?? "Skill database deletion failed."
+      });
+      if (error?.code === "SKILL_HAS_ACTIVE_SESSIONS") {
+        const wrapped = skillError(
+          "SKILL_HAS_ACTIVE_SESSIONS",
+          "删除提交前检测到新的活跃 Session；已取消数据库删除并尝试恢复运行时物化。请先结束或中断该 Session 后重试。"
+        );
+        wrapped.operation = operation;
+        wrapped.impact = error.impact ?? this.deletionImpact(id);
+        throw wrapped;
+      }
+      const wrapped = skillError("SKILL_DATABASE_DELETE_FAILED", "Skill 文件已清理，但数据库级联删除失败；已尝试恢复运行时物化，可按操作记录重试。");
+      wrapped.operation = operation;
+      wrapped.impact = impact;
+      throw wrapped;
+    }
+
+    operation = this.store.updateSkillDeletionOperation(operation.operationId, {
+      status: "completed",
+      cleanup: results,
+      recovery: []
+    });
+    return { ok: true, operation, impact };
+  }
+
+  async #removeManagedPath(path, root, label) {
+    const managedRoot = resolve(root);
+    const target = resolve(path);
+    if (target === managedRoot || !isPathWithin(target, managedRoot)) {
+      throw skillError("UNSAFE_SKILL_CLEANUP_PATH", `拒绝清理不在托管根目录内的 ${label} 路径：${target}`);
+    }
+    await this.removePath(target, { recursive: true, force: true });
+  }
+
+  async #recoverMaterialization(skill, cleanup) {
+    if (!cleanup.some((target) => target.kind === "runtime" && target.status === "succeeded")) return [];
+    try {
+      const restored = await this.materialize(skill);
+      return restored.map((item) => ({
+        kind: "runtime",
+        providerId: item.providerId,
+        path: item.installedAt,
+        status: "restored"
+      }));
+    } catch (error) {
+      return [{
+        kind: "runtime",
+        status: "recovery_failed",
+        error: error?.message ?? String(error)
+      }];
+    }
   }
 
   // 重新物化某个 Skill（例如缓存被清空后）。
@@ -655,6 +776,19 @@ function skillError(code, message) {
   error.code = code;
   error.name = "SkillRegistryError";
   return error;
+}
+
+function validateSkillId(value) {
+  const id = String(value ?? "").trim();
+  if (!id || id.length > 200 || /[\0\r\n]/.test(id)) {
+    throw skillError("INVALID_INPUT", "skillId must be a non-empty identifier of at most 200 characters.");
+  }
+  return id;
+}
+
+function isPathWithin(path, root) {
+  const rel = relative(root, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 
 function normalizeSubpath(value) {
