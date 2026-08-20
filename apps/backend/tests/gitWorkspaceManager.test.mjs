@@ -947,6 +947,41 @@ test("integration merge keeps conflicts in main and safely finishes them on retr
   }
 });
 
+test("replanning aborts only the recorded task-owned integration merge and restores clean main", async () => {
+  const fixture = await createFixture("integration-conflict-abort", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+    await git(["add", "shared.txt"], fixture.repository);
+    await git(["commit", "-m", "main version"], fixture.repository);
+    await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+    await git(["add", "shared.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "feature version"], fixture.activeWorktree);
+    const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+
+    await assert.rejects(
+      () => manager.mergeIntegrationSource({
+        mainPath: fixture.repository, sourceHead, expectedMainHead, jobId: "job:conflict-abort"
+      }),
+      { code: "MERGE_CONFLICT" }
+    );
+    const aborted = await manager.abortIntegrationMerge({
+      mainPath: fixture.repository, sourceHead, expectedMainHead, jobId: "job:conflict-abort"
+    });
+
+    assert.equal(aborted.aborted, true);
+    assert.equal(aborted.mainHead, expectedMainHead);
+    await assert.rejects(() => gitOutput(["rev-parse", "--verify", "MERGE_HEAD"], fixture.repository));
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], fixture.repository)).trim(), "");
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, "main repo");

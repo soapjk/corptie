@@ -116,6 +116,10 @@ function memoryFixture({
         mainHead: worktrees[0].headOid
       };
     },
+    abortMerge: async (input) => {
+      calls.push(`abort-merge:${input.sourceHead}`);
+      return { aborted: true, alreadyClean: false, mainHead: input.expectedMainHead };
+    },
     prepareConflictResolution: async (input) => {
       calls.push(`prepare-conflict:${input.sourceHead}`);
       if (externalConflictResolved) {
@@ -317,6 +321,24 @@ test("merge conflict preserves a paused item and retry resumes the same idempote
   const completed = await waitForJob(service, plan.id, "completed");
   assert.equal(completed.plan.items[1].mergeStatus, "recovered");
   assert.equal(completed.plan.items[0].commitStatus, "completed");
+});
+
+test("stop and re-preflight aborts the task-owned main merge before creating a replacement plan", async () => {
+  const { service, store, calls } = memoryFixture({ conflictOnce: true });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  const replacement = await service.cancel(paused.id, { replan: true });
+
+  assert.equal(replacement.status, "awaiting_confirmation");
+  assert.deepEqual(calls.slice(-1), ["abort-merge:feature:1:commit"]);
+  const canceled = store.getWorktreeIntegrationJob(paused.id);
+  assert.equal(canceled.status, "canceled");
+  assert.equal(canceled.phase, "canceled");
+  assert.equal(canceled.details.replacementJobId, replacement.id);
+  assert.ok(canceled.details.audit.some((entry) => entry.event === "conflict_merge_aborted"));
+  assert.ok(canceled.details.audit.some((entry) => entry.event === "replacement_preflight_ready"));
 });
 
 test("a paused merge conflict can launch an Agent in a dedicated Integration Worktree", async () => {
