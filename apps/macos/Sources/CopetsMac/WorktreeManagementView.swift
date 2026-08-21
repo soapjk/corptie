@@ -127,7 +127,7 @@ struct WorktreeManagementView: View {
             Button(L10n("Cancel"), role: .cancel) { pendingCleanup = nil }
         } message: {
             Text(L10nFormat(
-                "Only these Worktrees, whose branches are merged into main and have no WorkItem or Session association, will be removed with their local branches:\n%@",
+                "Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:\n%@",
                 (pendingCleanup ?? []).map { "\($0.branchName ?? L10n("Detached HEAD")) — \($0.path)" }.joined(separator: "\n")
             ))
         }
@@ -408,7 +408,7 @@ struct WorktreeManagementView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L10n("Clean Up Merged Worktrees")).fontWeight(.semibold)
-                    Text(L10n("Remove merged Worktrees that have no WorkItem or Session association."))
+                    Text(L10n("Remove merged Worktrees that have no unfinished WorkItem or active Session association."))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -419,6 +419,29 @@ struct WorktreeManagementView: View {
                 }
                 .disabled(eligible.isEmpty || client.isMutating)
                 .accessibilityIdentifier("worktree.cleanup")
+            }
+            let blocked = project.worktrees.filter {
+                !$0.isMain && ManagedWorktreeDeletionPolicy.blocker(for: $0) != nil
+            }
+            if !blocked.isEmpty {
+                DisclosureGroup(L10nFormat("Blocked from cleanup (%d)", blocked.count)) {
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(blocked) { worktree in
+                            if let blocker = ManagedWorktreeDeletionPolicy.blocker(for: worktree) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(worktree.branchName ?? worktree.path).font(.caption.weight(.semibold))
+                                    Text(localizedDeletionBlocker(blocker))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .textSelection(.enabled)
+                                }
+                                .accessibilityIdentifier("worktree.cleanup.blocker.\(worktree.worktreeId)")
+                            }
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+                .font(.caption)
             }
             if let progress = client.cleanupProgress {
                 VStack(alignment: .leading, spacing: 5) {

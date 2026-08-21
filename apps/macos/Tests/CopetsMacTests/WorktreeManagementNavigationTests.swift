@@ -187,6 +187,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("worktree.cleanup"))
         XCTAssertTrue(view.contains("Delete this Worktree?"))
         XCTAssertTrue(view.contains("Only these Worktrees"))
+        XCTAssertTrue(view.contains("Blocked from cleanup (%d)"))
+        XCTAssertTrue(view.contains("worktree.cleanup.blocker.\\(worktree.worktreeId)"))
+        XCTAssertTrue(view.contains("localizedDeletionBlocker(blocker)"))
         XCTAssertTrue(view.contains("WorktreeCleanupResultView"))
         XCTAssertTrue(view.contains("Removed: %d   Skipped: %d   Failed: %d"))
         XCTAssertTrue(view.contains("worktree.cleanup.progress"))
@@ -420,7 +423,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             state: "clean", dirty: false,
             statusSummary: "", diffStat: "", changedFiles: [], operationState: nil, conflictFiles: [],
             mergedIntoMain: isMain, synchronizedWithMain: true, aheadOfMain: 0, behindMain: 0,
-            pendingIntegration: false, associations: []
+            pendingIntegration: false, associations: [], deletionBlocker: nil
         )
     }
 }
