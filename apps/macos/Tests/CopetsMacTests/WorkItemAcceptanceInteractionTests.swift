@@ -2,6 +2,22 @@ import Testing
 @testable import CorptieMac
 
 struct WorkItemAcceptanceInteractionTests {
+    @Test func completionRetrySkipsAnAlreadyCompletedWorkItem() {
+        for status in ["done", "complete", "completed"] {
+            #expect(WorkItemCompletionBackgroundDecision.resolve(status: status) == .alreadyCompleted)
+        }
+        #expect(WorkItemCompletionBackgroundDecision.resolve(status: "in_progress") == .submit)
+        for status in ["in_progress", "doing", "running"] {
+            #expect(WorkItemCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: status))
+        }
+        #expect(!WorkItemCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: "review"))
+    }
+
+    @Test func statusOverrideUsesBackgroundSubmissionOnlyAfterTheRequiredConfirmation() {
+        #expect(WorkItemEditSubmissionPolicy.submitsInBackground(statusChanged: true))
+        #expect(!WorkItemEditSubmissionPolicy.submitsInBackground(statusChanged: false))
+    }
+
     @Test func passedAssessmentPresentsItsConclusionDetails() {
         let result = acceptanceResult(verdict: "passed")
         let presentation = WorkItemAutomaticAcceptancePresentation.resolve(
