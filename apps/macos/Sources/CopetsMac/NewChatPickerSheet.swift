@@ -31,6 +31,24 @@ enum SessionCreationTitlePolicy {
     }
 }
 
+enum WorkerSessionBackgroundRetryDecision: Equatable {
+    case create
+    case alreadyCreated
+
+    static func resolve(baselineSessionId: String?, currentSessionId: String?) -> Self {
+        let baseline = normalized(baselineSessionId)
+        let current = normalized(currentSessionId)
+        guard let current, current != baseline else { return .create }
+        return .alreadyCreated
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+}
+
 /// 统一 Session 创建入口。
 /// Assistant Chat 只绑定 Assistant；Objective Chat 绑定 Objective 与其 Contributor；
 /// Worker Session 强制同时绑定 WorkItem 与 IC Agent。
@@ -42,6 +60,7 @@ struct NewSessionCreationSheet: View {
     let fixedAgent: Agent?
     let fixedObjective: Objective?
     let fixedWorkItem: WorkItem?
+    let submitsInBackground: Bool
     var onCreated: (TaskSession) -> Void
 
     @State private var kind: NewSessionKind
@@ -60,11 +79,13 @@ struct NewSessionCreationSheet: View {
         fixedAgent: Agent? = nil,
         fixedObjective: Objective? = nil,
         fixedWorkItem: WorkItem? = nil,
+        submitsInBackground: Bool = false,
         onCreated: @escaping (TaskSession) -> Void = { _ in }
     ) {
         self.fixedAgent = fixedAgent
         self.fixedObjective = fixedObjective
         self.fixedWorkItem = fixedWorkItem
+        self.submitsInBackground = submitsInBackground
         self.onCreated = onCreated
         _kind = State(initialValue: fixedWorkItem != nil ? .worker : (fixedObjective != nil ? .objectiveChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
@@ -471,6 +492,15 @@ struct NewSessionCreationSheet: View {
         guard let agentId = selectedAgentId, !isCreating else { return }
         let trimmedTitle = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedTitle = titleWasEdited && !trimmedTitle.isEmpty ? trimmedTitle : nil
+        if submitsInBackground, kind == .worker, let workItem = selectedWorkItem {
+            enqueueWorkerSession(
+                workItem: workItem,
+                agentId: agentId,
+                providerId: selectedProviderId,
+                title: requestedTitle
+            )
+            return
+        }
         isCreating = true
         creationError = nil
         Task {
@@ -513,6 +543,48 @@ struct NewSessionCreationSheet: View {
             } else {
                 creationError = result.error?.message ?? L10n("创建会话失败")
             }
+        }
+    }
+
+    private func enqueueWorkerSession(
+        workItem: WorkItem,
+        agentId: String,
+        providerId: String,
+        title: String?
+    ) {
+        let baselineSessionId = workItem.currentSessionId
+        let taskId = "work-item-session:\(workItem.id):\(baselineSessionId ?? "none")"
+        let started = BackgroundTaskCenter.shared.start(
+            id: taskId,
+            title: L10nFormat("启动 WorkItem：%@", workItem.title)
+        ) {
+            if let latest = await client.workItem(id: workItem.id),
+               WorkerSessionBackgroundRetryDecision.resolve(
+                   baselineSessionId: baselineSessionId,
+                   currentSessionId: latest.currentSessionId
+               ) == .alreadyCreated {
+                await AppStateSyncController.shared.refreshSnapshot()
+                return .success(L10nFormat("WorkItem“%@”已开始执行。", workItem.title))
+            }
+
+            let result = await client.createSession(
+                workItemId: workItem.id,
+                agentId: agentId,
+                providerId: providerId,
+                title: title
+            )
+            guard let session = result.session else {
+                return .failure(L10nFormat(
+                    "WorkItem 会话启动失败：%@",
+                    result.error?.message ?? L10n("未知错误")
+                ))
+            }
+            backendClient.acceptCreatedSession(session, selectImmediately: false)
+            onCreated(session)
+            return .success(L10nFormat("WorkItem“%@”已开始执行。", workItem.title))
+        }
+        if started || BackgroundTaskCenter.shared.records.contains(where: { $0.id == taskId }) {
+            dismiss()
         }
     }
 

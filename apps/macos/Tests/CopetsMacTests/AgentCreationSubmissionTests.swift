@@ -4,6 +4,12 @@ import Testing
 
 struct AgentCreationSubmissionTests {
     @Test
+    func standaloneCreationRunsInBackgroundButPickerCreationWaitsForTheAgent() {
+        #expect(AgentCreateSubmissionPolicy.submitsInBackground(requiresCreatedAgent: false))
+        #expect(!AgentCreateSubmissionPolicy.submitsInBackground(requiresCreatedAgent: true))
+    }
+
+    @Test
     func repeatedClickWhileRequestIsInFlightIsRejected() {
         var submission = AgentCreationSubmission(idempotencyKey: "create-agent-1")
 

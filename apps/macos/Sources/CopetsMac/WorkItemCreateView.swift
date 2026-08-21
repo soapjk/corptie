@@ -37,6 +37,19 @@ enum WorkItemCreateFormPolicy {
     }
 }
 
+enum WorkItemCreateProviderPolicy {
+    static func selection(
+        current: String,
+        preferred: String?,
+        providers: [AgentProviderDescriptor]
+    ) -> String {
+        let creatable = providers.filter { $0.supports("session.create") }
+        if creatable.contains(where: { $0.id == current }) { return current }
+        if let preferred, creatable.contains(where: { $0.id == preferred }) { return preferred }
+        return creatable.first?.id ?? ""
+    }
+}
+
 // 新建工作项表单（sheet）。Workspace 与 Agent 均为必填；创建和执行使用独立操作。
 struct WorkItemCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -53,6 +66,7 @@ struct WorkItemCreateView: View {
     @State private var priority = "medium"
     @State private var workspaceId: String?
     @State private var selectedAgentId: String?
+    @State private var selectedProviderId = ""
     @State private var creationId = "work_item:\(UUID().uuidString.lowercased())"
     @State private var submissionError: String?
 
@@ -106,6 +120,8 @@ struct WorkItemCreateView: View {
 
             agentSection
 
+            providerSection
+
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("优先级"))
                     .font(.caption)
@@ -137,7 +153,7 @@ struct WorkItemCreateView: View {
                     submit(.startImmediately)
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit)
+                .disabled(!canSubmit || selectedProviderId.isEmpty)
             }
         }
         .padding(20)
@@ -146,7 +162,9 @@ struct WorkItemCreateView: View {
             async let agents: Void = client.refreshAgents()
             if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
             _ = await agents
+            reconcileProviderSelection()
         }
+        .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
     }
 
     private var availableAgents: [Agent] {
@@ -194,13 +212,41 @@ struct WorkItemCreateView: View {
         }
     }
 
-    private var defaultProviderId: String? {
-        let providers = backendClient.agentProviders.filter { $0.supports("session.create") }
-        if let preferred = backendClient.defaultSessionProviderId,
-           providers.contains(where: { $0.id == preferred }) {
-            return preferred
+    private var creatableProviders: [AgentProviderDescriptor] {
+        backendClient.agentProviders.filter { $0.supports("session.create") }
+    }
+
+    private var providerSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(L10n("执行 Provider"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(L10n("Provider"), selection: $selectedProviderId) {
+                ForEach(creatableProviders) { provider in
+                    Text(provider.displayName).tag(provider.id)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if creatableProviders.isEmpty {
+                Text(L10n("没有可创建 Session 的 Provider，仍可仅创建 WorkItem。"))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            } else {
+                Text(L10n("仅在“创建后立即执行”时使用。"))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
         }
-        return providers.first?.id
+    }
+
+    private func reconcileProviderSelection() {
+        selectedProviderId = WorkItemCreateProviderPolicy.selection(
+            current: selectedProviderId,
+            preferred: backendClient.defaultSessionProviderId,
+            providers: backendClient.agentProviders
+        )
     }
 
     private func submit(_ mode: WorkItemCreateExecutionMode) {
@@ -208,7 +254,7 @@ struct WorkItemCreateView: View {
             submissionError = validationMessage ?? L10n("请选择负责该 WorkItem 的 Agent。")
             return
         }
-        if mode == .startImmediately, defaultProviderId == nil {
+        if mode == .startImmediately, selectedProviderId.isEmpty {
             submissionError = L10n("没有可创建 Session 的 Provider，无法立即执行。")
             return
         }
@@ -221,7 +267,7 @@ struct WorkItemCreateView: View {
         let requestAcceptanceCriteria = acceptanceCriteria
         let requestWorkspaceId = workspaceId
         let requestPriority = priority
-        let providerId = defaultProviderId
+        let providerId = mode == .startImmediately ? selectedProviderId : nil
         let started = BackgroundTaskCenter.shared.start(
             id: requestId,
             title: L10nFormat("创建 WorkItem：%@", requestTitle)
