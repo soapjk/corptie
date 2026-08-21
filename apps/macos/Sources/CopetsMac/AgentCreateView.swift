@@ -1,5 +1,11 @@
 import SwiftUI
 
+enum AgentCreateSubmissionPolicy {
+    static func submitsInBackground(requiresCreatedAgent: Bool) -> Bool {
+        !requiresCreatedAgent
+    }
+}
+
 // Agent 创建表单（模块 B 升级）：从已有 Agent 继承 + 基本信息 + 底层模型 + 人设与能力。
 // 侧栏 Agent 加号、AgentPickerView 的新建入口共用。
 
@@ -249,16 +255,46 @@ struct AgentCreateView: View {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        let requestDescription = detail
+        let requestRole = role
+        let requestSystemPrompt = systemPrompt
+        let requestSkillIds = Array(selectedSkillIds)
+        let trimmedWorkDir = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestWorkDir = trimmedWorkDir.isEmpty ? nil : trimmedWorkDir
+
+        if AgentCreateSubmissionPolicy.submitsInBackground(requiresCreatedAgent: onCreated != nil) {
+            let taskId = "agent.create:\(idempotencyKey)"
+            let started = BackgroundTaskCenter.shared.start(
+                id: taskId,
+                title: L10nFormat("创建 Agent：%@", trimmed)
+            ) {
+                guard await client.createAgent(
+                    name: trimmed,
+                    description: requestDescription,
+                    role: requestRole,
+                    systemPrompt: requestSystemPrompt,
+                    capabilities: capabilities,
+                    skillIds: requestSkillIds,
+                    workDir: requestWorkDir,
+                    idempotencyKey: idempotencyKey
+                ) != nil else {
+                    return .failure(client.errorMessage ?? L10n("Agent 创建失败，可重试。"))
+                }
+                return .success(L10nFormat("Agent“%@”已创建。", trimmed))
+            }
+            if started { dismiss() }
+            return
+        }
 
         Task {
             if let agent = await client.createAgent(
                 name: trimmed,
-                description: detail,
-                role: role,
-                systemPrompt: systemPrompt,
+                description: requestDescription,
+                role: requestRole,
+                systemPrompt: requestSystemPrompt,
                 capabilities: capabilities,
-                skillIds: Array(selectedSkillIds),
-                workDir: workDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : workDir.trimmingCharacters(in: .whitespacesAndNewlines),
+                skillIds: requestSkillIds,
+                workDir: requestWorkDir,
                 idempotencyKey: idempotencyKey
             ) {
                 onCreated?(agent)

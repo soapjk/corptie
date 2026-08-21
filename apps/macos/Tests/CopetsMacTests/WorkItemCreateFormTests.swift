@@ -48,6 +48,38 @@ final class WorkItemCreateFormTests: XCTestCase {
         )
     }
 
+    func testProviderSelectionUsesPreferredCreatableProviderAndKeepsUserChoice() throws {
+        let providers = try providerCatalog()
+        XCTAssertEqual(
+            WorkItemCreateProviderPolicy.selection(
+                current: "",
+                preferred: "claude-sdk",
+                providers: providers
+            ),
+            "claude-sdk"
+        )
+        XCTAssertEqual(
+            WorkItemCreateProviderPolicy.selection(
+                current: "codex-app-server",
+                preferred: "claude-sdk",
+                providers: providers
+            ),
+            "codex-app-server"
+        )
+    }
+
+    func testProviderSelectionExcludesProvidersThatCannotCreateSessions() throws {
+        let providers = try providerCatalog()
+        XCTAssertEqual(
+            WorkItemCreateProviderPolicy.selection(
+                current: "read-only",
+                preferred: "read-only",
+                providers: providers
+            ),
+            "codex-app-server"
+        )
+    }
+
     private func agent(id: String, role: String, status: String) -> Agent {
         Agent(
             agentId: id,
@@ -60,5 +92,19 @@ final class WorkItemCreateFormTests: XCTestCase {
             createdAt: "2026-08-20T00:00:00Z",
             updatedAt: "2026-08-20T00:00:00Z"
         )
+    }
+
+    private func providerCatalog() throws -> [AgentProviderDescriptor] {
+        let data = Data(#"""
+        {
+          "defaultProviderId": "claude-sdk",
+          "providers": [
+            {"id":"codex-app-server","displayName":"Codex","transport":"app-server","aliases":[],"capabilities":["session.create"],"runtime":{"lifecycle":"managed"},"configuration":{"fields":[]}},
+            {"id":"claude-sdk","displayName":"Claude","transport":"sdk","aliases":[],"capabilities":["session.create"],"runtime":{"lifecycle":"managed"},"configuration":{"fields":[]}},
+            {"id":"read-only","displayName":"Read Only","transport":"test","aliases":[],"capabilities":[],"runtime":{"lifecycle":"managed"},"configuration":{"fields":[]}}
+          ]
+        }
+        """#.utf8)
+        return try JSONDecoder().decode(AgentProvidersResponse.self, from: data).providers
     }
 }

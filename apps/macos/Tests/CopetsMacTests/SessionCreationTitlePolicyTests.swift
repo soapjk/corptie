@@ -31,4 +31,38 @@ final class SessionCreationTitlePolicyTests: XCTestCase {
             "Builder_Session"
         )
     }
+
+    func testWorkerSessionRetryRecognizesAChangedAuthoritativeBinding() {
+        XCTAssertEqual(
+            WorkerSessionBackgroundRetryDecision.resolve(
+                baselineSessionId: nil,
+                currentSessionId: "session:new"
+            ),
+            .alreadyCreated
+        )
+        XCTAssertEqual(
+            WorkerSessionBackgroundRetryDecision.resolve(
+                baselineSessionId: "session:old",
+                currentSessionId: "session:new"
+            ),
+            .alreadyCreated
+        )
+    }
+
+    func testWorkerSessionRetryCreatesWhenBindingDidNotChange() {
+        XCTAssertEqual(
+            WorkerSessionBackgroundRetryDecision.resolve(
+                baselineSessionId: nil,
+                currentSessionId: nil
+            ),
+            .create
+        )
+        XCTAssertEqual(
+            WorkerSessionBackgroundRetryDecision.resolve(
+                baselineSessionId: "session:old",
+                currentSessionId: " session:old "
+            ),
+            .create
+        )
+    }
 }

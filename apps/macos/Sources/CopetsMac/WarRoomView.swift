@@ -845,8 +845,11 @@ struct WorkItemDetailView: View {
             })
         }
         .sheet(item: $sessionCreationAgent) { agent in
-            NewSessionCreationSheet(fixedAgent: agent, fixedWorkItem: workItem) { session in
-                backendClient.acceptCreatedSession(session, selectImmediately: false)
+            NewSessionCreationSheet(
+                fixedAgent: agent,
+                fixedWorkItem: workItem,
+                submitsInBackground: true
+            ) { _ in
                 Task {
                     await refreshExecution()
                     onRequestReload()
