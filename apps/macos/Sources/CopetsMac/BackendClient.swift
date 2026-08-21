@@ -3933,7 +3933,8 @@ final class BackendClient: ObservableObject {
 
     private func syncSelectedSessionFromSessions() {
         guard let current = selectedSession,
-              let refreshed = sessions.first(where: { $0.id == current.id }) else {
+              let refreshed = sessions.first(where: { $0.id == current.id }),
+              refreshed != current else {
             return
         }
         let routeChanged = current.external?.threadId != refreshed.external?.threadId

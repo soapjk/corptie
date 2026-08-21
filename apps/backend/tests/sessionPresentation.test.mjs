@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  activeSessionsDueForProjectionReconciliation,
   applyWorkspaceContinuationPresentation,
   composeStoredSessionList,
   mergeStoredSessionPresentation,
@@ -384,4 +385,25 @@ test("an authoritative running status preserves the active turn", () => {
   };
 
   assert.equal(reconcileAuthoritativeRunState(session, "running"), session);
+});
+
+test("active projection recovery runs promptly but throttles repeated Provider reads", () => {
+  const sessions = [
+    { id: "running:new", status: "running" },
+    { id: "running:recent", status: "running" },
+    { id: "blocked:stale", status: "blocked" },
+    { id: "complete", status: "complete" }
+  ];
+  const reconciledAt = new Map([
+    ["running:recent", 99_000],
+    ["blocked:stale", 80_000]
+  ]);
+
+  assert.deepEqual(
+    activeSessionsDueForProjectionReconciliation(sessions, reconciledAt, {
+      now: 100_000,
+      minimumIntervalMs: 15_000
+    }).map((session) => session.id),
+    ["running:new", "blocked:stale"]
+  );
 });

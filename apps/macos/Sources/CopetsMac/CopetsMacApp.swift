@@ -87,6 +87,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             .store(in: &cancellables)
         backendClient.start()
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { _ in
+                // A suspended TCP connection can look healthy after wake while
+                // no longer delivering SSE frames. Recreate the canonical state
+                // stream instead of waiting for the user to open a Session.
+                AppStateSyncController.shared.start()
+            }
+            .store(in: &cancellables)
         let connectionStatus = BackendConnectionStatusOperation(
             isConnected: { [weak backendClient] in backendClient?.isOnline == true },
             errorMessage: { [weak backendClient] in
@@ -233,6 +242,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // Reconcile list state on foregrounding and replace any stream that was
+        // silently stalled while the app was inactive.
+        AppStateSyncController.shared.start()
         Task {
             await backendClient.refreshSelectedUsage()
         }
