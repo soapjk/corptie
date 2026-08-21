@@ -886,9 +886,15 @@ export class SkillRegistryService {
     const sameRoot = await this.#packageDefinition(skillRoot, skillRoot);
     if (sameRoot.descriptorPath) return { packageRoot: skillRoot, ...sameRoot };
 
+    // 项目发现阶段明确禁用 Agent 辅助，因此也不需要搜索项目内的外部 MCP 描述符。
+    // 否则每个普通 Skill 候选都会把整个项目再遍历一次，扫描耗时会随候选数量成倍增长。
+    if (!options.assist || !this.discoveryAssistant) {
+      return { packageRoot: skillRoot, ...sameRoot };
+    }
+
     const hints = await this.#locateMcpDescriptors(sourceRoot);
     const externalHints = hints.filter((item) => dirname(item) !== skillRoot);
-    if (options.assist && this.discoveryAssistant && externalHints.length > 0) {
+    if (externalHints.length > 0) {
       const proposed = await this.discoveryAssistant({
         sourceRoot,
         skillRoot,
@@ -1102,7 +1108,9 @@ export class SkillRegistryService {
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
       const item = join(dir, entry.name);
       if (entry.isFile() && MCP_DESCRIPTOR_NAMES.includes(entry.name)) found.push(item);
-      if (entry.isDirectory()) found.push(...await this.#locateMcpDescriptors(item, depth + 1));
+      if (entry.isDirectory() && !SKILL_DISCOVERY_IGNORED_DIRECTORIES.has(entry.name)) {
+        found.push(...await this.#locateMcpDescriptors(item, depth + 1));
+      }
     }
     return found;
   }
