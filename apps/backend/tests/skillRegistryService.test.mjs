@@ -554,6 +554,39 @@ test("Agent-assisted discovery proposes paths but deterministic validation remai
   }
 });
 
+test("Agent-assisted registration ignores MCP hints inside generated and runtime directories", async () => {
+  const value = await fixture();
+  try {
+    const project = join(value.directory, "ignored-mcp-hints");
+    const skillRoot = join(project, "workflows", "plain");
+    await mkdir(skillRoot, { recursive: true });
+    await mkdir(join(project, "node_modules", "dependency"), { recursive: true });
+    await mkdir(join(project, ".corptie", "runtime", "artifacts"), { recursive: true });
+    await writeFile(join(skillRoot, "SKILL.md"), "---\nname: ignored-hints\n---\nPlain.\n");
+    await writeFile(join(project, "node_modules", "dependency", ".mcp.json"), JSON.stringify({
+      mcpServers: { dependency: { url: "http://127.0.0.1:9998/mcp" } }
+    }));
+    await writeFile(join(project, ".corptie", "runtime", "artifacts", ".mcp.json"), JSON.stringify({
+      mcpServers: { stale: { url: "http://127.0.0.1:9997/mcp" } }
+    }));
+
+    let assistanceCalls = 0;
+    value.service.setDiscoveryAssistant(async () => {
+      assistanceCalls += 1;
+      return { packageRoot: ".", mcpDescriptor: "node_modules/dependency/.mcp.json" };
+    });
+
+    const skill = await value.service.register({ sourceType: "local", source: project });
+    assert.equal(assistanceCalls, 0);
+    assert.equal(skill.manifestName, "ignored-hints");
+    assert.equal(skill.packageDiscoveryMethod, "plain");
+    assert.equal(skill.mcpDescriptorSubpath, "");
+  } finally {
+    await value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("project discovery defers Agent assistance and prioritizes a deterministic plugin over its mirror", async () => {
   const value = await fixture();
   try {
