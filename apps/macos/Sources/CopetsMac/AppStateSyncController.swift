@@ -7,6 +7,7 @@ final class AppStateSyncController {
     private let store = AppStateStore.shared
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var streamTask: Task<Void, Never>?
+    private var snapshotRequestGeneration: UInt64 = 0
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -16,6 +17,7 @@ final class AppStateSyncController {
     private init() {}
 
     func start() {
+        snapshotRequestGeneration &+= 1
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -31,17 +33,22 @@ final class AppStateSyncController {
     func stop() {
         streamTask?.cancel()
         streamTask = nil
+        snapshotRequestGeneration &+= 1
     }
 
     func refreshSnapshot() async {
+        snapshotRequestGeneration &+= 1
+        let requestGeneration = snapshotRequestGeneration
         do {
             let (data, response) = try await URLSession.shared.data(
                 from: baseURL.appending(path: "state/snapshot")
             )
             try Self.requireSuccess(response)
             let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: data)
+            guard requestGeneration == snapshotRequestGeneration else { return }
             store.apply(snapshot: snapshot)
         } catch {
+            guard requestGeneration == snapshotRequestGeneration else { return }
             store.reportSyncError(Self.syncErrorMessage(error))
         }
     }

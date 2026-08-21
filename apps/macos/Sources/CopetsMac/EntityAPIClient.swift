@@ -14,6 +14,12 @@ struct EntityRefreshGeneration: Equatable {
     }
 }
 
+private struct SessionGroupingEntityState: Equatable {
+    let workItems: [String: WorkItem]
+    let objectives: [String: Objective]
+    let agents: [String: Agent]
+}
+
 // 实体层轻量 API 客户端（15 Phase 5 净新增）。
 // 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/objectives、/work-items）。
 // 与 BackendClient 使用相同后端地址（CorptieAppEnvironment.backendBaseURL）与 URLSession 模式。
@@ -22,11 +28,12 @@ struct EntityRefreshGeneration: Equatable {
 final class EntityAPIClient: ObservableObject {
     static let shared = EntityAPIClient()
 
-    private let appState = AppStateStore.shared
+    private let appState: AppStateStore
     var objectives: [Objective] { appState.objectives }
     var agents: [Agent] { appState.agents }
     var workItems: [WorkItem] { appState.workItems }
     @Published private(set) var workItemsRevision: UInt64 = 0
+    let sessionGroupingDidChange = PassthroughSubject<Void, Never>()
     @Published private(set) var workItemsLoadError: String?
     @Published private(set) var objectivesLoadError: String?
 
@@ -40,7 +47,7 @@ final class EntityAPIClient: ObservableObject {
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var objectivesRefreshGeneration = EntityRefreshGeneration()
-    private var appStateCancellable: AnyCancellable?
+    private var appStateCancellables = Set<AnyCancellable>()
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -48,12 +55,34 @@ final class EntityAPIClient: ObservableObject {
         return decoder
     }()
 
-    private init() {
-        appStateCancellable = appState.$state
+    init(appState: AppStateStore = .shared) {
+        self.appState = appState
+
+        appState.$state
+            .map(\.workItems)
+            .removeDuplicates()
+            .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.workItemsRevision &+= 1
             }
+            .store(in: &appStateCancellables)
+
+        appState.$state
+            .map { state in
+                SessionGroupingEntityState(
+                    workItems: state.workItems,
+                    objectives: state.objectives,
+                    agents: state.agents
+                )
+            }
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.sessionGroupingDidChange.send()
+            }
+            .store(in: &appStateCancellables)
     }
 
     func refreshObjectives() async {

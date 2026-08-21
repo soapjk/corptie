@@ -16,6 +16,35 @@ struct AppStateStoreTests {
         #expect(store.session("session:1")?.title == "One")
     }
 
+    @Test func equalRevisionSnapshotCannotOverwriteAlreadyAppliedState() {
+        let store = AppStateStore()
+        let current = TaskSession.fixture(id: "session:1", title: "Current")
+        let stale = TaskSession.fixture(id: "session:1", title: "Stale")
+
+        #expect(store.apply(snapshot: .init(revision: 7, state: .fixture(sessions: [current]))) == .applied)
+        #expect(store.apply(snapshot: .init(revision: 7, state: .fixture(sessions: [stale]))) == .duplicate)
+        #expect(store.session("session:1")?.title == "Current")
+    }
+
+    @Test func duplicateSnapshotStillRestoresReachabilityAfterReconnect() {
+        let store = AppStateStore()
+        let snapshot = StateSnapshotEnvelope(revision: 7, state: .fixture())
+        _ = store.apply(snapshot: snapshot)
+        store.reportSyncError("connection lost")
+
+        #expect(store.apply(snapshot: snapshot) == .duplicate)
+        #expect(store.isReachable)
+        #expect(store.syncError == nil)
+    }
+
+    @Test func firstRevisionZeroSnapshotStillInitializesEmptyStore() {
+        let store = AppStateStore()
+        let session = TaskSession.fixture(id: "session:zero", title: "Initial")
+
+        #expect(store.apply(snapshot: .init(revision: 0, state: .fixture(sessions: [session]))) == .applied)
+        #expect(store.session("session:zero")?.title == "Initial")
+    }
+
     @Test func changeSetsAreIdempotentAndRejectRevisionGaps() {
         let store = AppStateStore()
         _ = store.apply(snapshot: StateSnapshotEnvelope(revision: 3, state: .fixture()))

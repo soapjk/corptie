@@ -15,9 +15,9 @@ import SwiftUI
 struct SessionsView: View {
     private let backendClient = BackendClient.shared
     @ObservedObject private var sessionListStore = BackendClient.shared.sessionListStore
-    @ObservedObject private var entityClient = EntityAPIClient.shared
+    private let entityClient = EntityAPIClient.shared
     @StateObject private var layoutState = PanelLayoutState()
-    @StateObject private var presentationStore = SessionPresentationStore()
+    @StateObject private var presentationStore = SessionPresentationStore(hostCapacity: 1)
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var detailRenderTask: Task<Void, Never>?
     @State private var visuallySelectedSessionID: String?
@@ -35,6 +35,7 @@ struct SessionsView: View {
     @State private var showNewSessionCreation = false
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State private var collapsedGroupKeys: Set<String> = []
+    @State private var entityGroupingRevision: UInt64 = 0
     /// 搜索交互状态。
     @State private var isSearching = false
     @State private var searchText = ""
@@ -120,9 +121,11 @@ struct SessionsView: View {
             }
             restoreSelection(for: newValue)
         }
-        .onChange(of: entityClient.workItemsRevision) { _, _ in
-            guard selectedCategory == .worker else { return }
-            restoreSelection(for: .worker)
+        .onReceive(entityClient.sessionGroupingDidChange) { _ in
+            entityGroupingRevision &+= 1
+            if selectedCategory == .worker {
+                restoreSelection(for: .worker)
+            }
         }
     }
 
@@ -281,7 +284,8 @@ struct SessionsView: View {
     // MARK: - 左：会话列表（原生 sidebar）
 
     private var sessionListSidebar: some View {
-        VStack(spacing: 0) {
+        let groups = groupedSessions
+        return VStack(spacing: 0) {
             HStack(spacing: 8) {
                 if isShowingWorkerArchive {
                     Button {
@@ -310,12 +314,6 @@ struct SessionsView: View {
             .padding(.horizontal, 8)
             .padding(.top, 8)
 
-            if selectedCategory == .worker && !isShowingWorkerArchive {
-                workerGroupingPicker
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-            }
-
             if isSearching {
                 sessionSearchBar
                     .padding(.horizontal, 8)
@@ -323,12 +321,12 @@ struct SessionsView: View {
             }
 
             List {
-                if isSearching && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && groupedSessions.isEmpty {
+                if isSearching && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && groups.isEmpty {
                     ContentUnavailableView.search(text: searchText)
                         .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
-                } else if groupedSessions.isEmpty {
+                } else if groups.isEmpty {
                     Text(isShowingWorkerArchive
                         ? L10n("No Archived Work Sessions")
                         : L10n("No Sessions in This Category"))
@@ -338,7 +336,7 @@ struct SessionsView: View {
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                 } else {
-                    ForEach(groupedSessions) { group in
+                    ForEach(groups) { group in
                         if group.showsHeader {
                             Section {
                                 if !collapsedGroupKeys.contains(group.key) {
@@ -356,18 +354,24 @@ struct SessionsView: View {
                 }
             }
             .listStyle(.sidebar)
-            .overlay(alignment: .bottomTrailing) {
+            .overlay(alignment: .bottom) {
                 if selectedCategory == .worker && !isShowingWorkerArchive {
-                    Button {
-                        setWorkerArchiveVisible(true)
-                    } label: {
-                        Image(systemName: "archivebox")
-                            .font(.system(size: 12, weight: .semibold))
-                            .frame(width: 28, height: 28)
-                            .background(.regularMaterial, in: Circle())
+                    HStack(alignment: .bottom) {
+                        workerGroupingPicker
+
+                        Spacer(minLength: 8)
+
+                        Button {
+                            setWorkerArchiveVisible(true)
+                        } label: {
+                            Image(systemName: "archivebox")
+                                .font(.system(size: 12, weight: .semibold))
+                                .frame(width: 28, height: 28)
+                                .background(.regularMaterial, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(L10n("View Archived Work Sessions"))
                     }
-                    .buttonStyle(.plain)
-                    .help(L10n("View Archived Work Sessions"))
                     .padding(10)
                 }
             }
@@ -423,7 +427,11 @@ struct SessionsView: View {
     }
 
     private var sessionCategoryPicker: some View {
-        HStack(spacing: 2) {
+        let unreadCounts = unreadSessionCounts(
+            in: sessionListStore.rows.map(\.session),
+            workItems: entityClient.workItems
+        )
+        return HStack(spacing: 2) {
             ForEach(SessionCategory.allCases) { category in
                 Button {
                     selectedCategory = category
@@ -435,7 +443,7 @@ struct SessionsView: View {
                         .frame(maxWidth: .infinity, minHeight: 24)
                         .contentShape(Rectangle())
                         .overlay(alignment: .topTrailing) {
-                            let count = unreadSessionCount(for: category)
+                            let count = unreadCounts[category, default: 0]
                             if count > 0 {
                                 SessionCountBadge(count: count, fill: .red, diameter: 15)
                                     .padding(.top, 1)
@@ -484,8 +492,9 @@ struct SessionsView: View {
         }
         .pickerStyle(.menu)
         .controlSize(.small)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: true, vertical: false)
         .labelsHidden()
+        .help(L10n("Work Session Grouping"))
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
@@ -560,7 +569,8 @@ struct SessionsView: View {
 
     /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Objective 分组。
     private var groupedSessions: [SessionGroup] {
-        makeSessionGroups(
+        _ = entityGroupingRevision
+        return makeSessionGroups(
             rows: searchFilteredRows,
             agents: entityClient.agents,
             workItems: entityClient.workItems,
@@ -578,14 +588,6 @@ struct SessionsView: View {
         isSearching = false
         isSearchFieldFocused = false
         restoreSelection(for: .worker)
-    }
-
-    private func unreadSessionCount(for category: SessionCategory) -> Int {
-        countUnreadSessions(
-            in: sessionListStore.rows.map(\.session),
-            category: category,
-            workItems: entityClient.workItems
-        )
     }
 
     private func confirmDisplayedAgentMessagesRead(_ detail: CodexThreadDetail?) {
@@ -623,9 +625,10 @@ struct SessionsView: View {
         if let session = selectedSession,
            SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
-                // Keep the three most recently visited timeline hosts mounted.
-                // Hidden hosts retain their AppKit view tree and exact layout;
-                // the selected host is revealed only as a complete frame.
+                // Keep only the selected timeline mounted. Display projections
+                // and viewport positions remain cached by presentationStore,
+                // without retaining hidden AppKit/SwiftUI chat trees that react
+                // to every live BackendClient publication.
                 ZStack {
                     ForEach(presentationStore.hostedSessionIDs, id: \.self) { hostedSessionID in
                         DetailView(
@@ -725,13 +728,26 @@ func countUnreadSessions(
     category: SessionCategory,
     workItems: [WorkItem]
 ) -> Int {
-    sessions.lazy.filter { session in
-        guard SessionCategory(session: session) == category else { return false }
-        if category == .worker, isArchivedWorkerSession(session, workItems: workItems) {
-            return false
+    unreadSessionCounts(in: sessions, workItems: workItems)[category, default: 0]
+}
+
+func unreadSessionCounts(
+    in sessions: [TaskSession],
+    workItems: [WorkItem]
+) -> [SessionCategory: Int] {
+    var counts: [SessionCategory: Int] = [:]
+    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    for session in sessions where isSessionUnread(session) {
+        let category = SessionCategory(session: session)
+        if category == .worker,
+           let workItemID = session.workItemId,
+           let workItem = workItemsByID[workItemID],
+           WorkItemColumn.column(for: workItem.status) == .done {
+            continue
         }
-        return isSessionUnread(session)
-    }.count
+        counts[category, default: 0] += 1
+    }
+    return counts
 }
 
 enum WorkerSessionScope: Equatable {

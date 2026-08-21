@@ -69,6 +69,7 @@ final class AppStateStore: ObservableObject {
     }
     @Published private(set) var syncError: String?
     private var cachedSessions: [TaskSession]?
+    private var hasAppliedAuthoritativeState = false
     /// Authoritative server reachability, flipped by the sync engine on every
     /// snapshot/change-set success or transport failure. Unlike `syncError` it
     /// also emits on the very first success, so `isOnline` cannot be left stale
@@ -97,9 +98,24 @@ final class AppStateStore: ObservableObject {
 
     @discardableResult
     func apply(snapshot: StateSnapshotEnvelope) -> AppStateApplyResult {
-        guard snapshot.revision >= revision else { return .duplicate }
+        // A revision identifies one immutable control-plane state. Concurrent
+        // snapshot requests can finish out of order; accepting an equal-revision
+        // response would let a slower, older provider projection overwrite a
+        // change-set that was already applied while the request was in flight.
+        // Keep the first revision-0 snapshot valid for fresh/empty stores.
+        if hasAppliedAuthoritativeState, snapshot.revision < revision {
+            return .duplicate
+        }
+        if hasAppliedAuthoritativeState, snapshot.revision == revision {
+            // The payload is redundant, but the successful HTTP response is
+            // still authoritative reachability evidence after a reconnect.
+            syncError = nil
+            isReachable = true
+            return .duplicate
+        }
         state = Self.normalized(snapshot.state)
         revision = snapshot.revision
+        hasAppliedAuthoritativeState = true
         syncError = nil
         isReachable = true
         return .applied
@@ -130,6 +146,7 @@ final class AppStateStore: ObservableObject {
         changeSet.deletes.integrationRuns.forEach { next.integrationRuns[$0] = nil }
         state = next
         revision = changeSet.revision
+        hasAppliedAuthoritativeState = true
         syncError = nil
         isReachable = true
         return .applied

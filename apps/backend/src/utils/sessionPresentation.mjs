@@ -88,6 +88,15 @@ export function sessionNeedsAuthoritativeProjectionRecovery(session) {
     || sessionHasActiveRun(session);
 }
 
+export function activeSessionsDueForProjectionReconciliation(
+  sessions = [],
+  reconciledAt = new Map(),
+  { now = Date.now(), minimumIntervalMs = 15_000 } = {}
+) {
+  return sessions.filter((session) => sessionHasActiveRun(session)
+    && now - (reconciledAt.get(session.id) ?? 0) >= minimumIntervalMs);
+}
+
 export function applyWorkspaceContinuationPresentation(session, transition) {
   if (!session || !transition) return session;
   const state = transition.continuationState;

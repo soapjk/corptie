@@ -117,6 +117,7 @@ import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
+  activeSessionsDueForProjectionReconciliation,
   applyWorkspaceContinuationPresentation,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
@@ -222,6 +223,9 @@ const sseClients = new Set();
 // receive it, leaving their Session list stale until another mutation occurs.
 const stateSyncClients = new Map();
 let stateSyncConsistencyTimer = null;
+let activeSessionReconciliationTimer = null;
+let activeSessionReconciliationInFlight = false;
+const activeSessionReconciledAt = new Map();
 let stateSyncService = null;
 let workItemExecutionOrchestrator = null;
 const sessionEventListeners = new Set();
@@ -1793,15 +1797,22 @@ function scheduleSessionProviderProjectionReconciliation(sessionId, reason) {
   setImmediate(() => void reconcileSessionProviderProjection(sessionId, reason));
 }
 
-async function reconcileSessionProviderProjection(sessionId, reason) {
+async function reconcileSessionProviderProjection(sessionId, reason, {
+  emitReconciledEvent = true,
+  logFailure = true
+} = {}) {
   try {
     await sessionApplicationService.readSession(sessionId);
     const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
     if (!session) return null;
-    emitEvent("SessionProviderProjectionReconciled", { session, reason }, { sessionId });
+    if (emitReconciledEvent) {
+      emitEvent("SessionProviderProjectionReconciled", { session, reason }, { sessionId });
+    }
     return session;
   } catch (error) {
-    console.warn(`[session-projection] authoritative reconciliation deferred session=${sessionId} reason=${reason} error=${error.message}`);
+    if (logFailure) {
+      console.warn(`[session-projection] authoritative reconciliation deferred session=${sessionId} reason=${reason} error=${error.message}`);
+    }
     return null;
   }
 }
@@ -1979,13 +1990,54 @@ function publishStateChangesIfNeeded() {
   }
 }
 
+async function reconcileActiveSessionProviderProjections() {
+  if (activeSessionReconciliationInFlight || stateSyncClients.size === 0) return;
+  activeSessionReconciliationInFlight = true;
+  try {
+    const activeSessions = visibleStoredSessionProjections(store, [
+      ...store.listSessions({ archived: false }),
+      ...store.listSessions({ archived: true })
+    ]).filter(sessionHasActiveRun);
+    const activeIds = new Set(activeSessions.map((session) => session.id));
+    for (const sessionId of activeSessionReconciledAt.keys()) {
+      if (!activeIds.has(sessionId)) activeSessionReconciledAt.delete(sessionId);
+    }
+    const checkedAt = Date.now();
+    const candidates = activeSessionsDueForProjectionReconciliation(
+      activeSessions,
+      activeSessionReconciledAt,
+      { now: checkedAt }
+    );
+    candidates.forEach((session) => activeSessionReconciledAt.set(session.id, checkedAt));
+    await Promise.all(candidates.map((session) => reconcileSessionProviderProjection(
+      session.id,
+      "active-state-stream-recovery",
+      { emitReconciledEvent: false, logFailure: false }
+    )));
+    // readSession() persists a corrected Provider projection when a terminal
+    // notification was missed. Publish that revision without waiting for an
+    // unrelated mutation or for the user to open the conversation.
+    publishStateChangesIfNeeded();
+  } finally {
+    activeSessionReconciliationInFlight = false;
+  }
+}
+
 function updateStateSyncConsistencyTimer() {
   if (stateSyncClients.size > 0 && !stateSyncConsistencyTimer) {
     stateSyncConsistencyTimer = setInterval(publishStateChangesIfNeeded, 250);
     stateSyncConsistencyTimer.unref?.();
+    void reconcileActiveSessionProviderProjections();
+    activeSessionReconciliationTimer = setInterval(
+      () => void reconcileActiveSessionProviderProjections(),
+      5_000
+    );
+    activeSessionReconciliationTimer.unref?.();
   } else if (stateSyncClients.size === 0 && stateSyncConsistencyTimer) {
     clearInterval(stateSyncConsistencyTimer);
     stateSyncConsistencyTimer = null;
+    clearInterval(activeSessionReconciliationTimer);
+    activeSessionReconciliationTimer = null;
   }
 }
 
