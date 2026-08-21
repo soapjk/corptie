@@ -80,15 +80,17 @@ struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
     let behindMain: Int?
     let pendingIntegration: Bool
     let associations: [ManagedWorktreeAssociation]
+    let deletionBlocker: ManagedWorktreeDeletionBlocker?
 }
 
-struct ManagedWorktreeDeletionBlocker: Equatable, Sendable {
+struct ManagedWorktreeDeletionBlocker: Decodable, Equatable, Sendable {
     let code: String
     let reason: String
 }
 
 enum ManagedWorktreeDeletionPolicy {
     static func blocker(for worktree: ManagedWorktree) -> ManagedWorktreeDeletionBlocker? {
+        if let deletionBlocker = worktree.deletionBlocker { return deletionBlocker }
         if worktree.isMain { return .init(code: "MAIN_WORKTREE", reason: "The main Worktree cannot be deleted.") }
         if worktree.availability != "available" { return .init(code: "WORKTREE_UNAVAILABLE", reason: "This Worktree is unavailable and cannot be removed safely.") }
         if worktree.isLocked { return .init(code: "WORKTREE_LOCKED", reason: worktree.lockReason ?? "This Worktree is locked by another operation.") }

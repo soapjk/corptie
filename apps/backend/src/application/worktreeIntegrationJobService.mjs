@@ -80,9 +80,8 @@ export class WorktreeIntegrationJobService {
       if (!inspectedWorktree) {
         throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
       }
-      const associationState = this.#associationState(inspectedWorktree);
-      const worktree = { ...inspectedWorktree, associations: associationState.associations };
-      const blocker = worktreeDeletionBlocker(worktree);
+      const deletionState = this.#deletionState(inspectedWorktree);
+      const { worktree, blocker } = deletionState;
       if (blocker) {
         throw new WorktreeIntegrationJobError(blocker.code, blocker.reason, 409);
       }
@@ -90,7 +89,7 @@ export class WorktreeIntegrationJobService {
         repositoryId: repository.id,
         mainPath: inspection.mainPath,
         worktreeId: worktree.worktreeId,
-        ignoreLogicalSessionIds: associationState.releasableLogicalSessionIds
+        ignoreLogicalSessionIds: deletionState.releasableLogicalSessionIds
       });
       return deletionResult(worktree, "removed", null, null, removal);
     } catch (error) {
@@ -107,7 +106,7 @@ export class WorktreeIntegrationJobService {
     if (typeof this.removeWorktree !== "function") {
       throw new TypeError("removeWorktree() is required for Worktree cleanup.");
     }
-    const inspection = this.#associate(await this.inspectRepository(repository.id));
+    const inspection = await this.inspectRepository(repository.id);
     const removed = [];
     const skipped = [];
     const failed = [];
@@ -116,9 +115,11 @@ export class WorktreeIntegrationJobService {
       : []);
     const candidates = inspection.worktrees
       .filter((worktree) => !worktree.isMain)
-      .sort((left, right) => `${left.branchName ?? ""}\0${left.path}`.localeCompare(`${right.branchName ?? ""}\0${right.path}`));
-    for (const worktree of candidates) {
-      const blocker = worktreeDeletionBlocker(worktree);
+      .map((worktree) => this.#deletionState(worktree))
+      .sort((left, right) => `${left.worktree.branchName ?? ""}\0${left.worktree.path}`
+        .localeCompare(`${right.worktree.branchName ?? ""}\0${right.worktree.path}`));
+    for (const deletionState of candidates) {
+      const { worktree, blocker } = deletionState;
       if (blocker) {
         skipped.push(deletionResult(worktree, "skipped", blocker.code, blocker.reason));
         continue;
@@ -132,7 +133,7 @@ export class WorktreeIntegrationJobService {
           repositoryId: repository.id,
           mainPath: inspection.mainPath,
           worktreeId: worktree.worktreeId,
-          ignoreLogicalSessionIds: this.#associationState(worktree).releasableLogicalSessionIds
+          ignoreLogicalSessionIds: deletionState.releasableLogicalSessionIds
         });
         removed.push(deletionResult(worktree, "removed", null, null, removal));
       } catch (error) {
@@ -889,10 +890,18 @@ export class WorktreeIntegrationJobService {
   #associate(inspection) {
     return {
       ...inspection,
-      worktrees: inspection.worktrees.map((worktree) => ({
-        ...worktree,
-        associations: this.#associationState(worktree).associations
-      }))
+      worktrees: inspection.worktrees.map((worktree) => this.#deletionState(worktree).worktree)
+    };
+  }
+
+  #deletionState(inspectedWorktree) {
+    const associationState = this.#associationState(inspectedWorktree);
+    const worktree = { ...inspectedWorktree, associations: associationState.associations };
+    const blocker = worktreeDeletionBlocker(worktree);
+    return {
+      worktree: { ...worktree, deletionBlocker: blocker },
+      blocker,
+      releasableLogicalSessionIds: associationState.releasableLogicalSessionIds
     };
   }
 

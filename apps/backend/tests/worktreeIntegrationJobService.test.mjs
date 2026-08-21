@@ -265,6 +265,7 @@ test("completed WorkItem bindings stop occupying a Worktree after their Session 
 
   const detail = await service.repository("repository:1");
   assert.deepEqual(detail.project.worktrees[1].associations, []);
+  assert.equal(detail.project.worktrees[1].deletionBlocker, null);
 
   const result = await service.deleteWorktree("repository:1", "wt:feature");
   assert.equal(result.status, "removed");
@@ -308,6 +309,10 @@ test("detail and deletion share effective WorkItem associations and report an ac
   const detail = await service.repository("repository:1");
   const associations = detail.project.worktrees[1].associations;
   assert.deepEqual(associations.map((entry) => entry.workItemId), ["work_item:active"]);
+  assert.deepEqual(detail.project.worktrees[1].deletionBlocker, {
+    code: "WORK_ITEM_ASSOCIATED",
+    reason: "This Worktree is still associated with WorkItem “Repair workspace routing” (work_item:active). Complete or move it before deleting the Worktree."
+  });
 
   await assert.rejects(
     () => service.deleteWorktree("repository:1", "wt:feature"),
@@ -757,6 +762,85 @@ test("cleanup removes only confirmed merged clean unassociated Worktrees and rep
     "NOT_MERGED_INTO_MAIN", "UNCOMMITTED_CHANGES", "WORK_ITEM_ASSOCIATED"
   ]));
   assert.deepEqual(calls, ["remove:wt:feature"]);
+});
+
+test("cleanup scan and execution share association rules for none, completed, and unfinished WorkItems", async () => {
+  const { service, calls, worktrees, workItems, removalInputs } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  const template = structuredClone(worktrees[1]);
+  workItems.set("work_item:done", { id: "work_item:done", title: "Finished migration", status: "completed" });
+  workItems.set("work_item:active", { id: "work_item:active", title: "Repair routing", status: "in_progress" });
+  worktrees.push(
+    {
+      ...structuredClone(template), worktreeId: "wt:completed", path: "/repo-completed",
+      branchName: "feature/completed", sessions: [{
+        logicalSessionId: "logical:completed", sessionId: null, active: false, workItemId: "work_item:done"
+      }]
+    },
+    {
+      ...structuredClone(template), worktreeId: "wt:active", path: "/repo-active",
+      branchName: "feature/active", sessions: [{
+        logicalSessionId: "logical:active-work-item", sessionId: null, active: false,
+        workItemId: "work_item:active"
+      }]
+    }
+  );
+
+  const scan = await service.repository("repository:1");
+  const scanCandidates = scan.project.worktrees.filter((worktree) => !worktree.deletionBlocker);
+  assert.deepEqual(scanCandidates.map((worktree) => worktree.worktreeId), ["wt:feature", "wt:completed"]);
+  assert.equal(scan.project.worktrees.find((worktree) => worktree.worktreeId === "wt:completed").associations.length, 0);
+  assert.deepEqual(scan.project.worktrees.find((worktree) => worktree.worktreeId === "wt:active").deletionBlocker, {
+    code: "WORK_ITEM_ASSOCIATED",
+    reason: "This Worktree is still associated with WorkItem “Repair routing” (work_item:active). Complete or move it before deleting the Worktree."
+  });
+
+  const result = await service.cleanupMergedWorktrees("repository:1", {
+    worktreeIds: scanCandidates.map((worktree) => worktree.worktreeId)
+  });
+
+  assert.deepEqual(result.counts, { removed: scanCandidates.length, skipped: 1, failed: 0 });
+  assert.deepEqual(result.removed.map((entry) => entry.worktreeId), ["wt:completed", "wt:feature"]);
+  assert.deepEqual(result.skipped.map((entry) => ({ worktreeId: entry.worktreeId, code: entry.code })), [
+    { worktreeId: "wt:active", code: "WORK_ITEM_ASSOCIATED" }
+  ]);
+  assert.deepEqual(calls, ["remove:wt:completed", "remove:wt:feature"]);
+  assert.deepEqual(removalInputs.find((input) => input.worktreeId === "wt:feature").ignoreLogicalSessionIds, []);
+  assert.deepEqual(removalInputs.find((input) => input.worktreeId === "wt:completed").ignoreLogicalSessionIds, [
+    "logical:completed"
+  ]);
+});
+
+test("cleanup reports the latest WorkItem blocker when association state changes after scan", async () => {
+  const { service, calls, worktrees, workItems } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  const scan = await service.repository("repository:1");
+  assert.equal(scan.project.worktrees[1].deletionBlocker, null);
+
+  workItems.set("work_item:new", { id: "work_item:new", title: "New follow-up", status: "todo" });
+  worktrees[1].sessions = [{
+    logicalSessionId: "logical:new", sessionId: null, active: false, workItemId: "work_item:new"
+  }];
+
+  const result = await service.cleanupMergedWorktrees("repository:1", { worktreeIds: ["wt:feature"] });
+
+  assert.deepEqual(result.counts, { removed: 0, skipped: 1, failed: 0 });
+  assert.deepEqual(result.skipped, [{
+    worktreeId: "wt:feature",
+    branchName: "feature/one",
+    path: "/repo-feature",
+    status: "skipped",
+    code: "WORK_ITEM_ASSOCIATED",
+    reason: "This Worktree is still associated with WorkItem “New follow-up” (work_item:new). Complete or move it before deleting the Worktree.",
+    removal: null
+  }]);
+  assert.deepEqual(calls, []);
 });
 
 test("individual safe deletion returns a concrete blocker and never calls Git", async () => {

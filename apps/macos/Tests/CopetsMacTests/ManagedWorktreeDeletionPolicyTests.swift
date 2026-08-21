@@ -39,6 +39,17 @@ struct ManagedWorktreeDeletionPolicyTests {
         #expect(progress.command == "git -C '/repo path' worktree remove '/repo/feature'\\''s worktree' && git -C '/repo path' branch -d 'feature'\\''s worktree'")
     }
 
+    @Test func backendScanBlockerIsAuthoritativeForCleanupEligibility() {
+        let blocker = ManagedWorktreeDeletionBlocker(
+            code: "WORK_ITEM_ASSOCIATED",
+            reason: "Blocked by WorkItem “Follow-up” (work_item:new)."
+        )
+        let blocked = worktree(id: "blocked", deletionBlocker: blocker)
+
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: blocked) == blocker)
+        #expect(ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: [blocked]).isEmpty)
+    }
+
     private func association(workItemId: String?) -> ManagedWorktreeAssociation {
         .init(
             logicalSessionId: "logical:one", sessionId: "session:one", title: "Session",
@@ -53,7 +64,8 @@ struct ManagedWorktreeDeletionPolicyTests {
         dirty: Bool? = false,
         associations: [ManagedWorktreeAssociation] = [],
         isLocked: Bool = false,
-        operationState: String? = nil
+        operationState: String? = nil,
+        deletionBlocker: ManagedWorktreeDeletionBlocker? = nil
     ) -> ManagedWorktree {
         .init(
             worktreeId: id, path: "/repo/\(id)", isMain: isMain, availability: "available",
@@ -61,7 +73,7 @@ struct ManagedWorktreeDeletionPolicyTests {
             isPrunable: false, pruneReason: nil, state: "ready", dirty: dirty, statusSummary: "",
             diffStat: "", changedFiles: [], operationState: operationState, conflictFiles: [],
             mergedIntoMain: merged, synchronizedWithMain: true, aheadOfMain: 0, behindMain: 0,
-            pendingIntegration: false, associations: associations
+            pendingIntegration: false, associations: associations, deletionBlocker: deletionBlocker
         )
     }
 }
