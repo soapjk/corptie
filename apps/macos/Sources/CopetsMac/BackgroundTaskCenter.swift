@@ -154,11 +154,6 @@ struct BackgroundTaskStatusBar: View {
                     .lineLimit(1)
                     .layoutPriority(1)
 
-                Text(record.detail)
-                    .font(.caption2)
-                    .foregroundStyle(record.state == .failed ? Color.red : Color.secondary)
-                    .lineLimit(1)
-
                 if center.records.count > 1 {
                     Text("+\(center.records.count - 1)")
                         .font(.caption2.monospacedDigit())
@@ -190,6 +185,8 @@ struct BackgroundTaskStatusBar: View {
             .frame(maxWidth: 220, alignment: .trailing)
             .help("\(record.title)\n\(record.detail)")
             .accessibilityElement(children: .combine)
+            .accessibilityLabel(record.title)
+            .accessibilityValue(record.detail)
             .accessibilityIdentifier("background-task.\(record.id)")
         }
     }

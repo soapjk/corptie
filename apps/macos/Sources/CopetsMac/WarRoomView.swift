@@ -737,6 +737,25 @@ enum WorkItemExecutionStartDecision: Equatable {
     }
 }
 
+enum WorkItemCompletionBackgroundDecision: Equatable {
+    case submit
+    case alreadyCompleted
+
+    static func resolve(status: String) -> Self {
+        ["done", "complete", "completed"].contains(status) ? .alreadyCompleted : .submit
+    }
+
+    static func requiresExplicitUserConfirmation(status: String) -> Bool {
+        ["in_progress", "doing", "running"].contains(status)
+    }
+}
+
+enum WorkItemEditSubmissionPolicy {
+    static func submitsInBackground(statusChanged: Bool) -> Bool {
+        statusChanged
+    }
+}
+
 struct WorkItemDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -757,7 +776,6 @@ struct WorkItemDetailView: View {
     @State private var showEdit = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
-    @State private var isConfirmingCompletion = false
     @State private var sessionCreationAgent: Agent?
     @State private var worktreeStatus: WorkItemWorktreeStatus?
     @State private var isLoadingWorktree = false
@@ -875,8 +893,7 @@ struct WorkItemDetailView: View {
                 workItem: workItem,
                 assessment: workItem.acceptanceAssessment,
                 suggestion: workItem.completionSuggestion,
-                isWorking: isConfirmingCompletion,
-                onConfirm: { Task { await confirmComplete() } },
+                onConfirm: { enqueueCompletion() },
                 onCancel: {
                     showCompleteConfirmation = false
                 }
@@ -1291,20 +1308,29 @@ struct WorkItemDetailView: View {
         }
     }
 
-    // 用户从「进行中」状态按钮作出最终裁决，将 WorkItem 标记为完成。
-    private func confirmComplete() async {
-        guard !isConfirmingCompletion else { return }
-        isConfirmingCompletion = true
-        defer { isConfirmingCompletion = false }
-        if await client.confirmWorkItemCompletion(workItemId: workItem.id) != nil {
-            showCompleteConfirmation = false
+    // 用户在前台完成证据审阅与最终裁决；确认后立即关闭审阅窗，
+    // 专用完成接口由全局后台任务执行。重试前先查询权威状态，防止
+    // 首次请求已落库但客户端丢失响应时重复提交。
+    private func enqueueCompletion() {
+        let taskId = "work-item.complete:\(workItem.id)"
+        let title = workItem.title
+        let started = BackgroundTaskCenter.shared.start(
+            id: taskId,
+            title: L10nFormat("完成 WorkItem：%@", title)
+        ) {
+            if let latest = await client.workItem(id: workItem.id),
+               WorkItemCompletionBackgroundDecision.resolve(status: latest.status) == .alreadyCompleted {
+                onRequestReload()
+                return .success(L10nFormat("WorkItem“%@”已完成。", title))
+            }
+            guard await client.confirmWorkItemCompletion(workItemId: workItem.id) != nil else {
+                return .failure(client.errorMessage ?? L10n("Unable to confirm WorkItem completion"))
+            }
             onRequestReload()
-        } else {
+            return .success(L10nFormat("WorkItem“%@”已完成。", title))
+        }
+        if started || BackgroundTaskCenter.shared.records.contains(where: { $0.id == taskId }) {
             showCompleteConfirmation = false
-            executionError = EntityLaunchError(
-                message: client.errorMessage ?? L10n("Unable to confirm WorkItem completion"),
-                code: nil
-            )
         }
     }
 
@@ -1409,7 +1435,6 @@ private struct WorkItemCompletionConfirmationView: View {
     let workItem: WorkItem
     let assessment: WorkItemAcceptanceAssessment?
     let suggestion: WorkItemCompletionSuggestion?
-    let isWorking: Bool
     let onConfirm: () -> Void
     let onCancel: () -> Void
 
@@ -1515,22 +1540,12 @@ private struct WorkItemCompletionConfirmationView: View {
                 Spacer()
                 Button(L10n("取消"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                    .disabled(isWorking)
-                Button(action: onConfirm) {
-                    if isWorking {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text(L10n("标记为完成"))
-                    }
-                }
+                Button(L10n("标记为完成"), action: onConfirm)
                 .keyboardShortcut(.defaultAction)
-                .disabled(isWorking)
             }
             .padding(16)
         }
         .frame(width: 520, height: 480)
-        .interactiveDismissDisabled(isWorking)
     }
 
     private func acceptanceVerdictLabel(_ verdict: String) -> String {
@@ -1567,6 +1582,8 @@ struct WorkItemEditView: View {
     @State private var status: String
     @State private var showStatusConfirm = false
     @State private var assistAgentId: String?
+    @State private var saveError: String?
+    @State private var updateTaskId = "work-item.update:\(UUID().uuidString.lowercased())"
 
     init(workItem: WorkItem, workspaceIds: [String], onSaved: @escaping () -> Void) {
         self.workItem = workItem
@@ -1654,6 +1671,12 @@ struct WorkItemEditView: View {
             }
 
             HStack {
+                if let saveError {
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
                 Spacer()
                 Button(L10n("取消")) { dismiss() }
                 Button(L10n("保存")) {
@@ -1667,7 +1690,7 @@ struct WorkItemEditView: View {
         .frame(width: 440)
         .alert(L10n("确认修改状态"), isPresented: $showStatusConfirm) {
             Button(L10n("确认修改"), role: .destructive) {
-                persist()
+                enqueuePersist()
             }
             Button(L10n("取消"), role: .cancel) { }
         } message: {
@@ -1702,12 +1725,13 @@ struct WorkItemEditView: View {
             showStatusConfirm = true
             return
         }
-        persist()
+        persistForeground()
     }
 
-    private func persist() {
+    private func persistForeground() {
+        saveError = nil
         Task {
-            await client.updateWorkItem(
+            guard await client.updateWorkItem(
                 workItemId: workItem.id,
                 title: trimmedTitle,
                 description: detail.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1715,8 +1739,80 @@ struct WorkItemEditView: View {
                 priority: priority,
                 status: status,
                 mainWorkspaceId: workspaceId
-            )
+            ) != nil else {
+                saveError = client.errorMessage ?? L10n("WorkItem 保存失败。")
+                return
+            }
             onSaved()
+            dismiss()
+        }
+    }
+
+    private func enqueuePersist() {
+        guard WorkItemEditSubmissionPolicy.submitsInBackground(statusChanged: statusChanged) else {
+            persistForeground()
+            return
+        }
+        let requestTitle = trimmedTitle
+        let requestDescription = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestAcceptanceCriteria = acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
+        let requestPriority = priority
+        let requestStatus = status
+        let requestWorkspaceId = workspaceId
+        let taskId = updateTaskId
+        let started = BackgroundTaskCenter.shared.start(
+            id: taskId,
+            title: L10nFormat("更新 WorkItem：%@", requestTitle)
+        ) {
+            if let latest = await client.workItem(id: workItem.id),
+               latest.title == requestTitle,
+               latest.description == requestDescription,
+               latest.acceptanceCriteria == requestAcceptanceCriteria,
+               latest.priority == requestPriority,
+               latest.status == requestStatus,
+               latest.mainWorkspaceId == requestWorkspaceId {
+                onSaved()
+                return .success(L10nFormat("WorkItem“%@”已更新。", requestTitle))
+            }
+
+            let targetsCompleted = WorkItemCompletionBackgroundDecision.resolve(
+                status: requestStatus
+            ) == .alreadyCompleted
+            guard await client.updateWorkItem(
+                workItemId: workItem.id,
+                title: requestTitle,
+                description: requestDescription,
+                acceptanceCriteria: requestAcceptanceCriteria,
+                priority: requestPriority,
+                status: targetsCompleted ? nil : requestStatus,
+                mainWorkspaceId: requestWorkspaceId
+            ) != nil else {
+                return .failure(client.errorMessage ?? L10n("WorkItem 保存失败，可重试。"))
+            }
+
+            if targetsCompleted {
+                guard let latest = await client.workItem(id: workItem.id) else {
+                    return .failure(client.errorMessage ?? L10n("无法确认 WorkItem 的最新状态，可重试。"))
+                }
+                if WorkItemCompletionBackgroundDecision.resolve(status: latest.status) != .alreadyCompleted {
+                    let completed: WorkItem?
+                    if WorkItemCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: latest.status) {
+                        completed = await client.confirmWorkItemCompletion(workItemId: workItem.id)
+                    } else {
+                        completed = await client.updateWorkItem(
+                            workItemId: workItem.id,
+                            status: requestStatus
+                        )
+                    }
+                    guard completed != nil else {
+                        return .failure(client.errorMessage ?? L10n("WorkItem 完成失败，可重试。"))
+                    }
+                }
+            }
+            onSaved()
+            return .success(L10nFormat("WorkItem“%@”已更新。", requestTitle))
+        }
+        if started || BackgroundTaskCenter.shared.records.contains(where: { $0.id == taskId }) {
             dismiss()
         }
     }
