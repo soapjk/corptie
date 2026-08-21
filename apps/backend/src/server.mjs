@@ -1026,14 +1026,18 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       agentName: agent.name
     };
   },
-  removeWorktree: ({ repositoryId, mainPath, worktreeId }) => gitWorkspaces.removeWorktreeForProject({
+  removeWorktree: ({ repositoryId, mainPath, worktreeId, ignoreLogicalSessionIds }) => gitWorkspaces.removeWorktreeForProject({
     repositoryId,
     workingDirectory: mainPath,
     sourceWorktreeId: worktreeId,
+    ignoreLogicalSessionIds,
     deleteBranch: true,
     safeOnly: true
   }),
   isSessionActive: sessionHasActiveRun,
+  onDeletionFailure: (failure) => {
+    console.error(`[worktree-delete] failed ${JSON.stringify(failure)}`);
+  },
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const feishuGateway = new FeishuGatewayManager({

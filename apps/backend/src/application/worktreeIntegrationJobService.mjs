@@ -25,6 +25,7 @@ export class WorktreeIntegrationJobService {
     this.launchConflictResolution = options.launchConflictResolution;
     this.removeWorktree = options.removeWorktree;
     this.isSessionActive = options.isSessionActive ?? (() => false);
+    this.onDeletionFailure = options.onDeletionFailure ?? (() => {});
     this.onEvent = options.onEvent ?? (() => {});
     this.activeJobs = new Set();
     this.activeConflictResolutions = new Set();
@@ -67,31 +68,37 @@ export class WorktreeIntegrationJobService {
   }
 
   async deleteWorktree(repositoryId, worktreeId) {
-    const repository = this.#requireRepository(repositoryId);
-    if (typeof this.removeWorktree !== "function") {
-      throw new TypeError("removeWorktree() is required for Worktree deletion.");
-    }
-    const inspection = this.#associate(await this.inspectRepository(repository.id));
-    const worktree = inspection.worktrees.find((entry) => entry.worktreeId === worktreeId);
-    if (!worktree) {
-      throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
-    }
-    const blocker = worktreeDeletionBlocker(worktree);
-    if (blocker) {
-      throw new WorktreeIntegrationJobError(blocker.code, blocker.reason, 409);
-    }
+    const requestedRepositoryId = String(repositoryId ?? "").trim();
+    const requestedWorktreeId = String(worktreeId ?? "").trim();
     try {
+      const repository = this.#requireRepository(requestedRepositoryId);
+      if (typeof this.removeWorktree !== "function") {
+        throw new TypeError("removeWorktree() is required for Worktree deletion.");
+      }
+      const inspection = await this.inspectRepository(repository.id);
+      const inspectedWorktree = inspection.worktrees.find((entry) => entry.worktreeId === requestedWorktreeId);
+      if (!inspectedWorktree) {
+        throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", "The selected Worktree no longer exists.", 404);
+      }
+      const associationState = this.#associationState(inspectedWorktree);
+      const worktree = { ...inspectedWorktree, associations: associationState.associations };
+      const blocker = worktreeDeletionBlocker(worktree);
+      if (blocker) {
+        throw new WorktreeIntegrationJobError(blocker.code, blocker.reason, 409);
+      }
       const removal = await this.removeWorktree({
         repositoryId: repository.id,
         mainPath: inspection.mainPath,
-        worktreeId: worktree.worktreeId
+        worktreeId: worktree.worktreeId,
+        ignoreLogicalSessionIds: associationState.releasableLogicalSessionIds
       });
       return deletionResult(worktree, "removed", null, null, removal);
     } catch (error) {
-      if (isDeletionBlockerCode(error?.code)) {
-        throw new WorktreeIntegrationJobError(error.code, error.message, 409);
-      }
-      throw error;
+      const reportedError = !(error instanceof WorktreeIntegrationJobError) && isDeletionBlockerCode(error?.code)
+        ? new WorktreeIntegrationJobError(error.code, error.message, 409)
+        : error;
+      this.#reportDeletionFailure(requestedRepositoryId, requestedWorktreeId, reportedError);
+      throw reportedError;
     }
   }
 
@@ -124,10 +131,12 @@ export class WorktreeIntegrationJobService {
         const removal = await this.removeWorktree({
           repositoryId: repository.id,
           mainPath: inspection.mainPath,
-          worktreeId: worktree.worktreeId
+          worktreeId: worktree.worktreeId,
+          ignoreLogicalSessionIds: this.#associationState(worktree).releasableLogicalSessionIds
         });
         removed.push(deletionResult(worktree, "removed", null, null, removal));
       } catch (error) {
+        this.#reportDeletionFailure(repository.id, worktree.worktreeId, error);
         const target = isDeletionBlockerCode(error?.code) ? skipped : failed;
         target.push(deletionResult(
           worktree,
@@ -882,33 +891,52 @@ export class WorktreeIntegrationJobService {
       ...inspection,
       worktrees: inspection.worktrees.map((worktree) => ({
         ...worktree,
-        associations: (worktree.sessions ?? []).map((association) => {
-          const session = association.sessionId ? this.store.getSession(association.sessionId) : null;
-          const logical = association.logicalSessionId && this.store.getLogicalSession
-            ? this.store.getLogicalSession(association.logicalSessionId)
-            : null;
-          const workItemId = association.workItemId ?? session?.workItemId ?? logical?.workItemId ?? null;
-          const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
-          const active = session ? this.isSessionActive(session) : association.active === true;
-          if (isCompletedWorkItem(workItem)) {
-            // A completed WorkItem no longer owns its historical Worktree. Keep only
-            // a still-running Session as an unbound occupancy safety signal.
-            return active ? {
-              ...association,
-              active,
-              workItemId: null,
-              workItemTitle: null
-            } : null;
-          }
-          return {
-            ...association,
-            active,
-            workItemId: workItem?.id ?? workItemId,
-            workItemTitle: workItem?.title ?? null
-          };
-        }).filter(Boolean)
+        associations: this.#associationState(worktree).associations
       }))
     };
+  }
+
+  #associationState(worktree) {
+    const releasableLogicalSessionIds = [];
+    const associations = (worktree.sessions ?? []).map((association) => {
+      const session = association.sessionId ? this.store.getSession(association.sessionId) : null;
+      const logical = association.logicalSessionId && this.store.getLogicalSession
+        ? this.store.getLogicalSession(association.logicalSessionId)
+        : null;
+      const workItemId = association.workItemId ?? session?.workItemId ?? logical?.workItemId ?? null;
+      const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
+      const active = session ? this.isSessionActive(session) : association.active === true;
+      if (isCompletedWorkItem(workItem)) {
+        // One resolution path drives both detail presentation and deletion. A
+        // completed WorkItem releases only a settled, identifiable Session route.
+        if (!active && association.logicalSessionId) {
+          releasableLogicalSessionIds.push(association.logicalSessionId);
+          return null;
+        }
+        return {
+          ...association,
+          active,
+          workItemId: null,
+          workItemTitle: null
+        };
+      }
+      return {
+        ...association,
+        active,
+        workItemId: workItem?.id ?? workItemId,
+        workItemTitle: workItem?.title ?? null
+      };
+    }).filter(Boolean);
+    return { associations, releasableLogicalSessionIds };
+  }
+
+  #reportDeletionFailure(repositoryId, worktreeId, error) {
+    this.onDeletionFailure({
+      repositoryId,
+      worktreeId,
+      code: error?.code ?? "WORKTREE_DELETE_FAILED",
+      reason: error?.message ?? "The Worktree could not be removed."
+    });
   }
 
   #requireRepository(repositoryId) {
@@ -942,17 +970,38 @@ export function worktreeDeletionBlocker(worktree) {
   if (worktree.mergedIntoMain !== true) return blocker("NOT_MERGED_INTO_MAIN", "This Worktree has commits that are not merged into main.");
   if (worktree.isDetached || !worktree.branchName) return blocker("WORKTREE_BRANCH_AMBIGUOUS", "The branch for this Worktree cannot be determined safely.");
   const associations = worktree.associations ?? [];
-  if (associations.some((association) => association.workItemId)) {
-    return blocker("WORK_ITEM_ASSOCIATED", "This Worktree is associated with a WorkItem and cannot be deleted.");
+  const workItemAssociations = associations.filter((association) => association.workItemId);
+  if (workItemAssociations.length > 0) {
+    const labels = associationLabels(workItemAssociations, "workItemTitle", "workItemId");
+    return blocker(
+      "WORK_ITEM_ASSOCIATED",
+      `This Worktree is still associated with ${pluralizedAssociation("WorkItem", labels)}. Complete or move ${labels.length === 1 ? "it" : "them"} before deleting the Worktree.`
+    );
   }
   if (associations.length > 0) {
-    return blocker("WORKTREE_IN_USE", "This Worktree is being used by a Session. Switch or remove the Session before deleting it.");
+    const labels = associationLabels(associations, "title", "sessionId", "logicalSessionId");
+    return blocker(
+      "WORKTREE_IN_USE",
+      `This Worktree is still used by ${pluralizedAssociation("Session", labels)}. Switch or remove ${labels.length === 1 ? "it" : "them"} before deleting the Worktree.`
+    );
   }
   return null;
 }
 
 function blocker(code, reason) {
   return { code, reason };
+}
+
+function associationLabels(associations, titleKey, idKey, fallbackIdKey = null) {
+  return [...new Set(associations.map((association) => {
+    const id = association[idKey] ?? (fallbackIdKey ? association[fallbackIdKey] : null);
+    const title = association[titleKey];
+    return title && id ? `“${title}” (${id})` : (title ?? id ?? "an unknown association");
+  }))];
+}
+
+function pluralizedAssociation(kind, labels) {
+  return `${kind}${labels.length === 1 ? "" : "s"} ${labels.join(", ")}`;
 }
 
 function deletionResult(worktree, status, code, reason, removal = null) {

@@ -1053,8 +1053,7 @@ private func localizedDeletionBlocker(_ blocker: ManagedWorktreeDeletionBlocker)
     case "UNCOMMITTED_CHANGES": L10n("This Worktree has uncommitted changes. Commit or discard them before deleting it.")
     case "NOT_MERGED_INTO_MAIN": L10n("This Worktree has commits that are not merged into main.")
     case "WORKTREE_BRANCH_AMBIGUOUS": L10n("The branch for this Worktree cannot be determined safely.")
-    case "WORK_ITEM_ASSOCIATED": L10n("This Worktree is associated with a WorkItem and cannot be deleted.")
-    case "WORKTREE_IN_USE": L10n("This Worktree is being used by a Session. Switch or remove the Session before deleting it.")
+    case "WORK_ITEM_ASSOCIATED", "WORKTREE_IN_USE": blocker.reason
     default: blocker.reason
     }
 }

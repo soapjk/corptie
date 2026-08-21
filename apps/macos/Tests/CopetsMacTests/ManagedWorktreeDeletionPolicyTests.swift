@@ -20,6 +20,9 @@ struct ManagedWorktreeDeletionPolicyTests {
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[3])?.code == "UNCOMMITTED_CHANGES")
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[4])?.code == "WORKTREE_IN_USE")
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.code == "WORK_ITEM_ASSOCIATED")
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("WorkItem") == true)
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("work_item:one") == true)
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("Complete or move it") == true)
     }
 
     @Test func cleanupProgressShowsExactOrdinalAndQuotedGitCommands() {
