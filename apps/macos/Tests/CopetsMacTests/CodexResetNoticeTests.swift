@@ -69,6 +69,56 @@ struct CodexResetNoticeTests {
     }
 
     @Test
+    func planQuotaDoesNotUseAnotherModelsZeroUsageBucket() {
+        let canonical = CodexRateLimitSnapshot(
+            limitId: "codex",
+            limitName: nil,
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMins: 10_080, resetsAt: 100),
+            secondary: nil
+        )
+        let spark = CodexRateLimitSnapshot(
+            limitId: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            primary: CodexRateLimitWindow(usedPercent: 0, windowDurationMins: 300, resetsAt: 200),
+            secondary: CodexRateLimitWindow(usedPercent: 0, windowDurationMins: 10_080, resetsAt: 300)
+        )
+        let account = CodexAccountUsage(
+            available: true,
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            rateLimits: canonical,
+            rateLimitsByLimitId: ["codex": canonical, "codex_bengalfox": spark]
+        )
+
+        #expect(SessionUsagePresentation.preferredRateLimitWindow(account)?.usedPercent == 16)
+    }
+
+    @Test
+    func planQuotaUsesTheMatchingModelScopedBucket() {
+        let canonical = CodexRateLimitSnapshot(
+            limitId: "codex",
+            limitName: nil,
+            primary: CodexRateLimitWindow(usedPercent: 16, windowDurationMins: 10_080, resetsAt: 100),
+            secondary: nil
+        )
+        let spark = CodexRateLimitSnapshot(
+            limitId: "codex_bengalfox",
+            limitName: "GPT-5.3-Codex-Spark",
+            primary: CodexRateLimitWindow(usedPercent: 7, windowDurationMins: 300, resetsAt: 200),
+            secondary: CodexRateLimitWindow(usedPercent: 9, windowDurationMins: 10_080, resetsAt: 300)
+        )
+        let account = CodexAccountUsage(
+            available: true,
+            provider: "codex",
+            model: "gpt-5.3-codex-spark",
+            rateLimits: canonical,
+            rateLimitsByLimitId: ["codex": canonical, "codex_bengalfox": spark]
+        )
+
+        #expect(SessionUsagePresentation.preferredRateLimitWindow(account)?.usedPercent == 9)
+    }
+
+    @Test
     func fingerprintChangesWhenTheOfficialResetChanges() {
         let first = CodexResetNoticeIdentity.fingerprint(
             provider: "codex",
