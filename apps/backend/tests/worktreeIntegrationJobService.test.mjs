@@ -87,6 +87,8 @@ function memoryFixture({
     getWorkItem: (id) => workItems.get(id) ?? null
   };
   const calls = [];
+  const removalInputs = [];
+  const deletionFailures = [];
   const remainingConflicts = conflictAttempts
     ? [...conflictAttempts]
     : [conflictOnce ? 1 : 0];
@@ -178,13 +180,15 @@ function memoryFixture({
       };
     },
     removeWorktree: async (input) => {
+      removalInputs.push(structuredClone(input));
       calls.push(`remove:${input.worktreeId}`);
       const index = worktrees.findIndex((entry) => entry.worktreeId === input.worktreeId);
       if (index >= 0) worktrees.splice(index, 1);
       return { removed: true, branchDeleted: true };
-    }
+    },
+    onDeletionFailure: (failure) => deletionFailures.push(structuredClone(failure))
   });
-  return { service, store, calls, worktrees, workItems };
+  return { service, store, calls, worktrees, workItems, removalInputs, deletionFailures };
 }
 
 test("repository listing uses the lightweight summary while preflight keeps the deep inspection", async () => {
@@ -249,7 +253,7 @@ test("repository summary counts only currently available Worktrees", () => {
 });
 
 test("completed WorkItem bindings stop occupying a Worktree after their Session settles", async () => {
-  const { service, calls, worktrees, workItems } = memoryFixture({
+  const { service, calls, worktrees, workItems, removalInputs } = memoryFixture({
     mainDirty: false,
     featureAlreadyMerged: true,
     featureDirty: false
@@ -265,6 +269,7 @@ test("completed WorkItem bindings stop occupying a Worktree after their Session 
   const result = await service.deleteWorktree("repository:1", "wt:feature");
   assert.equal(result.status, "removed");
   assert.deepEqual(calls, ["remove:wt:feature"]);
+  assert.deepEqual(removalInputs[0].ignoreLogicalSessionIds, ["logical:done"]);
 });
 
 test("a running Session still blocks deletion after its WorkItem completes", async () => {
@@ -284,6 +289,40 @@ test("a running Session still blocks deletion after its WorkItem completes", asy
     code: "WORKTREE_IN_USE"
   });
   assert.deepEqual(calls, []);
+});
+
+test("detail and deletion share effective WorkItem associations and report an actionable failure", async () => {
+  const { service, calls, worktrees, workItems, deletionFailures } = memoryFixture({
+    mainDirty: false,
+    featureAlreadyMerged: true,
+    featureDirty: false
+  });
+  workItems.set("work_item:active", {
+    id: "work_item:active", title: "Repair workspace routing", status: "in_progress"
+  });
+  worktrees[1].sessions = [{
+    logicalSessionId: "logical:active-work-item", sessionId: null, active: false,
+    workItemId: "work_item:active"
+  }];
+
+  const detail = await service.repository("repository:1");
+  const associations = detail.project.worktrees[1].associations;
+  assert.deepEqual(associations.map((entry) => entry.workItemId), ["work_item:active"]);
+
+  await assert.rejects(
+    () => service.deleteWorktree("repository:1", "wt:feature"),
+    (error) => error.code === "WORK_ITEM_ASSOCIATED"
+      && error.message.includes("Repair workspace routing")
+      && error.message.includes("work_item:active")
+      && error.message.includes("Complete or move it")
+  );
+  assert.deepEqual(calls, []);
+  assert.deepEqual(deletionFailures, [{
+    repositoryId: "repository:1",
+    worktreeId: "wt:feature",
+    code: "WORK_ITEM_ASSOCIATED",
+    reason: "This Worktree is still associated with WorkItem “Repair workspace routing” (work_item:active). Complete or move it before deleting the Worktree."
+  }]);
 });
 
 test("reviewed plan preserves main and commits each dirty task Worktree before deterministic merge", async () => {

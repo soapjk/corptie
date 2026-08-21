@@ -105,13 +105,40 @@ enum ManagedWorktreeDeletionPolicy {
         }
         if worktree.mergedIntoMain != true { return .init(code: "NOT_MERGED_INTO_MAIN", reason: "This Worktree has commits that are not merged into main.") }
         if worktree.isDetached || worktree.branchName == nil { return .init(code: "WORKTREE_BRANCH_AMBIGUOUS", reason: "The branch for this Worktree cannot be determined safely.") }
-        if worktree.associations.contains(where: { $0.workItemId != nil }) { return .init(code: "WORK_ITEM_ASSOCIATED", reason: "This Worktree is associated with a WorkItem and cannot be deleted.") }
-        if !worktree.associations.isEmpty { return .init(code: "WORKTREE_IN_USE", reason: "This Worktree is being used by a Session. Switch or remove the Session before deleting it.") }
+        let workItemAssociations = worktree.associations.filter { $0.workItemId != nil }
+        if !workItemAssociations.isEmpty {
+            let labels = associationLabels(workItemAssociations, title: \ManagedWorktreeAssociation.workItemTitle, id: \ManagedWorktreeAssociation.workItemId)
+            return .init(
+                code: "WORK_ITEM_ASSOCIATED",
+                reason: "This Worktree is still associated with WorkItem\(labels.count == 1 ? "" : "s") \(labels.joined(separator: ", ")). Complete or move \(labels.count == 1 ? "it" : "them") before deleting the Worktree."
+            )
+        }
+        if !worktree.associations.isEmpty {
+            let labels = associationLabels(worktree.associations, title: \ManagedWorktreeAssociation.title, id: \ManagedWorktreeAssociation.sessionId)
+            return .init(
+                code: "WORKTREE_IN_USE",
+                reason: "This Worktree is still used by Session\(labels.count == 1 ? "" : "s") \(labels.joined(separator: ", ")). Switch or remove \(labels.count == 1 ? "it" : "them") before deleting the Worktree."
+            )
+        }
         return nil
     }
 
     static func eligibleWorktrees(from worktrees: [ManagedWorktree]) -> [ManagedWorktree] {
         worktrees.filter { blocker(for: $0) == nil }
+    }
+
+    private static func associationLabels(
+        _ associations: [ManagedWorktreeAssociation],
+        title: KeyPath<ManagedWorktreeAssociation, String?>,
+        id: KeyPath<ManagedWorktreeAssociation, String?>
+    ) -> [String] {
+        Array(Set(associations.map { association in
+            let associationId = association[keyPath: id] ?? association.logicalSessionId
+            if let title = association[keyPath: title] {
+                return "“\(title)” (\(associationId))"
+            }
+            return associationId
+        })).sorted()
     }
 }
 
