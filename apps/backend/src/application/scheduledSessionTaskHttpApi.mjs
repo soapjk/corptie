@@ -1,10 +1,15 @@
 export function handleScheduledSessionTaskHttpRequest({ request, response, url, service, resolveActor }) {
   const path = url.pathname;
-  if (path !== "/scheduled-session-tasks" && !path.startsWith("/scheduled-session-tasks/")) return false;
+  const basePath = path === "/scheduled-tasks" || path.startsWith("/scheduled-tasks/")
+    ? "/scheduled-tasks"
+    : path === "/scheduled-session-tasks" || path.startsWith("/scheduled-session-tasks/")
+      ? "/scheduled-session-tasks"
+      : null;
+  if (!basePath) return false;
 
   Promise.resolve().then(async () => {
     const actor = resolveActor(request);
-    if (request.method === "GET" && path === "/scheduled-session-tasks") {
+    if (request.method === "GET" && path === basePath) {
       return sendJson(response, 200, {
         tasks: service.list({
           logicalSessionId: url.searchParams.get("logicalSessionId") ?? undefined,
@@ -12,12 +17,13 @@ export function handleScheduledSessionTaskHttpRequest({ request, response, url, 
         }, actor)
       });
     }
-    if (request.method === "POST" && path === "/scheduled-session-tasks") {
+    if (request.method === "POST" && path === basePath) {
       const task = service.create(await readJson(request), actor);
       return sendJson(response, 201, { task });
     }
 
-    const actionMatch = path.match(/^\/scheduled-session-tasks\/([^/]+)\/(pause|resume|cancel|run)$/);
+    const relativePath = path.slice(basePath.length);
+    const actionMatch = relativePath.match(/^\/([^/]+)\/(pause|resume|cancel|run)$/);
     if (request.method === "POST" && actionMatch) {
       const taskId = decodeURIComponent(actionMatch[1]);
       const action = actionMatch[2];
@@ -31,7 +37,7 @@ export function handleScheduledSessionTaskHttpRequest({ request, response, url, 
       return sendJson(response, 200, action === "run" ? { run: result } : { task: result });
     }
 
-    const itemMatch = path.match(/^\/scheduled-session-tasks\/([^/]+)$/);
+    const itemMatch = relativePath.match(/^\/([^/]+)$/);
     if (itemMatch) {
       const taskId = decodeURIComponent(itemMatch[1]);
       if (request.method === "GET") return sendJson(response, 200, service.get(taskId, actor));

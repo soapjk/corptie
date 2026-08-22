@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { statSync } from "node:fs";
 import { promisify } from "node:util";
 import {
   nextIntervalRun,
@@ -19,6 +20,7 @@ export class ScheduledSessionTaskService {
     this.enqueue = options.enqueue;
     this.onEvent = options.onEvent ?? null;
     this.inspectProcess = options.inspectProcess ?? inspectProcess;
+    this.evaluateCondition = options.evaluateCondition ?? executeConditionScript;
     this.now = options.now ?? (() => new Date());
     this.leaseOwner = options.leaseOwner ?? `scheduler:${process.pid}:${randomUUID()}`;
     this.leaseMs = options.leaseMs ?? 30_000;
@@ -47,6 +49,7 @@ export class ScheduledSessionTaskService {
   create(input, actor) {
     const normalized = validateScheduledSessionTaskInput(input, { now: this.now() });
     const scope = this.#authorize(actor, normalized.logicalSessionId, "create");
+    validateConditionResources(normalized.conditionSpec);
     const task = this.store.createScheduledSessionTask({
       ...normalized,
       taskId: input.taskId ?? `scheduled_task:${randomUUID()}`,
@@ -86,6 +89,7 @@ export class ScheduledSessionTaskService {
     this.#authorize(actor, task.logicalSessionId, "update", task);
     if (TERMINAL_TASK_STATUSES.has(task.status)) operationError("TASK_NOT_MUTABLE", `Task ${taskId} is ${task.status}.`);
     const normalized = validateScheduledSessionTaskPatch(input, task, { now: this.now() });
+    validateConditionResources(normalized.conditionSpec);
     const updated = this.store.updateScheduledSessionTask(taskId, {
       message: normalized.message,
       runAt: normalized.runAt,
@@ -93,6 +97,8 @@ export class ScheduledSessionTaskService {
       intervalSeconds: normalized.intervalSeconds,
       timezone: normalized.timezone,
       missedPolicy: normalized.missedPolicy,
+      conditionSpec: normalized.conditionSpec,
+      conditionState: normalized.conditionState,
       processSpec: normalized.processSpec,
       processState: normalized.processState,
       maxRetries: normalized.maxRetries,
@@ -183,7 +189,8 @@ export class ScheduledSessionTaskService {
       });
       for (const task of tasks) {
         try {
-          if (task.scheduleType === "process") await this.#tickProcess(task, now);
+          if (task.scheduleType === "condition") await this.#tickCondition(task, now);
+          else if (task.scheduleType === "process") await this.#tickProcess(task, now);
           else await this.#tickTime(task, now);
         } catch (error) {
           await this.#handleTriggerFailure(task, null, error, now);
@@ -318,6 +325,59 @@ export class ScheduledSessionTaskService {
     await this.#dispatch(task, run);
   }
 
+  async #tickCondition(task, now) {
+    // A condition script is itself a side effect. Recheck the persisted,
+    // host-derived creator before every execution, not only before delivery.
+    this.#authorize(
+      { type: task.creatorType, id: task.creatorId },
+      task.logicalSessionId,
+      "trigger",
+      task
+    );
+    const observation = await this.evaluateCondition(task.conditionSpec);
+    const state = {
+      ...(task.conditionState ?? {}),
+      firstObservedAt: task.conditionState?.firstObservedAt ?? now.toISOString(),
+      lastObservedAt: now.toISOString(),
+      lastObservation: observation
+    };
+    if (observation.state === "not_matched") {
+      this.store.updateScheduledSessionTask(task.taskId, {
+        conditionState: state,
+        nextRunAt: new Date(now.getTime() + task.conditionSpec.checkIntervalSeconds * 1000).toISOString(),
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        retryCount: 0,
+        lastErrorCode: null,
+        lastErrorMessage: null
+      });
+      return;
+    }
+    if (observation.state === "indeterminate") {
+      this.store.updateScheduledSessionTask(task.taskId, { conditionState: state });
+      operationError(observation.errorCode ?? "CONDITION_STATE_INDETERMINATE", observation.errorMessage);
+    }
+    state.terminalObservedAt = now.toISOString();
+    const runKey = `${task.taskId}:condition:${task.createdAt}`;
+    const run = this.store.getScheduledSessionRunByKey(runKey) ?? this.store.createScheduledSessionRun({
+      runId: stableId("scheduled_run", task.taskId, runKey),
+      taskId: task.taskId,
+      runKey,
+      scheduledFor: now.toISOString(),
+      triggerKind: "condition",
+      triggerReason: "condition_script_satisfied",
+      status: "claimed",
+      conditionResult: observation,
+      createdAt: now.toISOString()
+    });
+    this.store.updateScheduledSessionTask(task.taskId, { conditionState: state });
+    this.#record("ScheduledSessionTaskDue", task, run, { type: "system", id: this.leaseOwner }, {
+      triggerReason: "condition_script_satisfied",
+      conditionResult: observation
+    });
+    await this.#dispatch(task, run);
+  }
+
   async #dispatch(task, run, options = {}) {
     const now = this.now();
     try {
@@ -364,7 +424,8 @@ export class ScheduledSessionTaskService {
           triggerKind: run.triggerKind,
           triggerReason: run.triggerReason,
           scheduledFor: run.scheduledFor,
-          exitStatus: run.exitStatus
+          exitStatus: run.exitStatus,
+          conditionResult: run.conditionResult
         },
         localVisibility: "normal",
         createdAt: now.toISOString()
@@ -458,7 +519,7 @@ export class ScheduledSessionTaskService {
     const delayMs = Math.min(60_000, 1_000 * (2 ** Math.min(retryCount - 1, 6)));
     const scheduledFor = task.pendingScheduledFor ?? task.nextRunAt ?? now.toISOString();
     let failedRun = run;
-    if (!failedRun && task.scheduleType !== "process") {
+    if (!failedRun && !["condition", "process"].includes(task.scheduleType)) {
       const runKey = `${task.taskId}:scheduled:${scheduledFor}`;
       failedRun = this.store.getScheduledSessionRunByKey(runKey) ?? this.store.createScheduledSessionRun({
         runId: stableId("scheduled_run", task.taskId, scheduledFor),
@@ -507,7 +568,7 @@ export class ScheduledSessionTaskService {
 
   #task(taskId) {
     const task = this.store.getScheduledSessionTask(taskId);
-    if (!task || task.environment !== this.environment) operationError("SCHEDULED_TASK_NOT_FOUND", "Scheduled Session task not found.");
+    if (!task || task.environment !== this.environment) operationError("SCHEDULED_TASK_NOT_FOUND", "计划任务 not found.");
     return task;
   }
 
@@ -557,6 +618,75 @@ export async function inspectProcess(spec) {
     return processObservationFromPs(stdout, spec);
   } catch (error) {
     return { state: "indeterminate", errorCode: "PROCESS_INSPECTION_FAILED", errorMessage: error.message };
+  }
+}
+
+export async function executeConditionScript(spec) {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      "/bin/zsh",
+      ["-f", "-c", spec.script],
+      {
+        cwd: spec.workingDirectory ?? undefined,
+        timeout: spec.timeoutSeconds * 1_000,
+        maxBuffer: 65_536,
+        env: {
+          PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+          LANG: "en_US.UTF-8",
+          CORPTIE_SCHEDULED_TASK: "1"
+        }
+      }
+    );
+    return conditionObservation("matched", 0, stdout, stderr);
+  } catch (error) {
+    if (error.killed || error.signal === "SIGTERM" && error.code == null) {
+      return {
+        state: "indeterminate",
+        errorCode: "CONDITION_SCRIPT_TIMEOUT",
+        errorMessage: `Condition script exceeded ${spec.timeoutSeconds} seconds.`,
+        stdout: boundedOutput(error.stdout),
+        stderr: boundedOutput(error.stderr)
+      };
+    }
+    if (Number.isInteger(error.code)) {
+      return conditionObservation("not_matched", error.code, error.stdout, error.stderr);
+    }
+    return {
+      state: "indeterminate",
+      errorCode: error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+        ? "CONDITION_OUTPUT_LIMIT_EXCEEDED"
+        : "CONDITION_SCRIPT_EXECUTION_FAILED",
+      errorMessage: error.message,
+      stdout: boundedOutput(error.stdout),
+      stderr: boundedOutput(error.stderr)
+    };
+  }
+}
+
+function conditionObservation(state, exitCode, stdout, stderr) {
+  return {
+    state,
+    exitCode,
+    stdout: boundedOutput(stdout),
+    stderr: boundedOutput(stderr)
+  };
+}
+
+function boundedOutput(value) {
+  const text = String(value ?? "");
+  return text.length <= 16_384 ? text : `${text.slice(0, 16_384)}\n[truncated]`;
+}
+
+function validateConditionResources(spec) {
+  if (!spec?.workingDirectory) return;
+  let stats;
+  try {
+    stats = statSync(spec.workingDirectory);
+  } catch (error) {
+    operationError("CONDITION_WORKING_DIRECTORY_INVALID", `Condition working directory is unavailable: ${error.message}`);
+  }
+  if (!stats.isDirectory()) {
+    operationError("CONDITION_WORKING_DIRECTORY_INVALID", "Condition workingDirectory must identify a directory.");
   }
 }
 

@@ -23,7 +23,9 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
     actorId: "agent:runtime",
     metadata: { sessionId: "session:runtime" }
   })[0];
-  assert.equal(definition.name, "corptie_scheduled_session_tasks_manage");
+  assert.equal(definition.name, "corptie_scheduled_tasks_manage");
+  assert.match(definition.description, /计划任务/);
+  assert.deepEqual(definition.inputSchema.properties.schedule_type.enum, ["once", "interval", "condition"]);
   assert.equal(definition.inputSchema.additionalProperties, false);
   assert.equal(Object.hasOwn(definition.inputSchema.properties, "actor_id"), false);
 
@@ -41,6 +43,29 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
   });
   assert.deepEqual(calls[0].actor, { type: "agent", id: "agent:runtime" });
   assert.equal(calls[0].input.logicalSessionId, "logical:target");
+  await catalog.execute({
+    actorId: "agent:runtime",
+    metadata: { sessionId: "session:runtime" },
+    tool: definition.name,
+    arguments: {
+      action: "create",
+      logical_session_id: "logical:target",
+      message: "wake when ready",
+      schedule_type: "condition",
+      condition: {
+        script: "test -f ready.flag",
+        check_interval_seconds: 7,
+        timeout_seconds: 9,
+        working_directory: "/tmp"
+      }
+    }
+  });
+  assert.deepEqual(calls[1].input.condition, {
+    script: "test -f ready.flag",
+    checkIntervalSeconds: 7,
+    timeoutSeconds: 9,
+    workingDirectory: "/tmp"
+  });
   await assert.rejects(() => catalog.execute({
     actorId: "agent:forged",
     metadata: { sessionId: "session:runtime" },
@@ -76,21 +101,22 @@ test("HTTP contract exposes create, list, detail, update, lifecycle actions, and
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    const create = await fetch(`${base}/scheduled-session-tasks`, {
+    const create = await fetch(`${base}/scheduled-tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ logicalSessionId: "logical:one", scheduleType: "once", message: "wake" })
     });
     assert.equal(create.status, 201);
     assert.equal((await create.json()).task.taskId, "task:one");
-    assert.equal((await fetch(`${base}/scheduled-session-tasks?logicalSessionId=logical%3Aone`)).status, 200);
-    assert.equal((await fetch(`${base}/scheduled-session-tasks/task%3Aone`)).status, 200);
-    assert.equal((await fetch(`${base}/scheduled-session-tasks/task%3Aone`, {
+    assert.equal((await fetch(`${base}/scheduled-tasks?logicalSessionId=logical%3Aone`)).status, 200);
+    assert.equal((await fetch(`${base}/scheduled-tasks/task%3Aone`)).status, 200);
+    assert.equal((await fetch(`${base}/scheduled-tasks/task%3Aone`, {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ timezone: "UTC" })
     })).status, 200);
     for (const action of ["pause", "resume", "cancel", "run"]) {
-      assert.equal((await fetch(`${base}/scheduled-session-tasks/task%3Aone/${action}`, { method: "POST" })).status, 200);
+      assert.equal((await fetch(`${base}/scheduled-tasks/task%3Aone/${action}`, { method: "POST" })).status, 200);
     }
+    assert.equal((await fetch(`${base}/scheduled-session-tasks`)).status, 200);
     assert.equal(calls.every((call) => call.at(-1).id === "user:trusted-runtime"), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));

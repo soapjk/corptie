@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  executeConditionScript,
   ScheduledSessionTaskService,
   processObservationFromPs
 } from "../src/application/scheduledSessionTaskService.mjs";
@@ -69,6 +70,7 @@ async function fixture(options = {}) {
       queued.push(work);
       return store.enqueueAgentWorkItem(work);
     }),
+    evaluateCondition: options.evaluateCondition,
     inspectProcess: options.inspectProcess
   });
   return {
@@ -385,6 +387,123 @@ test("process monitor restores polling, wakes once on termination, and records d
     const normalRun = f.store.listScheduledSessionRuns(normal.taskId)[0];
     assert.equal(normalRun.triggerReason, "process_normal_exit");
     assert.equal(normalRun.exitStatus.code, 0);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("condition tasks poll scripts until exit zero, then wake exactly once with the result", async () => {
+  const observations = [
+    { state: "not_matched", exitCode: 1, stdout: "waiting\n", stderr: "" },
+    { state: "matched", exitCode: 0, stdout: "ready\n", stderr: "" }
+  ];
+  const f = await fixture({ evaluateCondition: async () => observations.shift() });
+  try {
+    const task = f.service.create({
+      logicalSessionId: "logical:stable",
+      message: "condition met",
+      scheduleType: "condition",
+      condition: {
+        script: "test -f ready.flag",
+        checkIntervalSeconds: 3,
+        timeoutSeconds: 10,
+        workingDirectory: f.directory
+      },
+      timezone: "UTC"
+    }, f.actor);
+    await f.service.tick();
+    let stored = f.store.getScheduledSessionTask(task.taskId);
+    assert.equal(stored.status, "active");
+    assert.equal(stored.conditionState.lastObservation.exitCode, 1);
+    assert.equal(stored.nextRunAt, "2026-08-22T12:00:03.000Z");
+    assert.equal(f.queued.length, 0);
+
+    const now = f.service.now;
+    await f.store.close();
+    const reopened = new CorptieStore({ dbPath: f.dbPath, configPath: join(f.directory, "reopened.json") });
+    await reopened.initialize();
+    f.store = reopened;
+    f.service = new ScheduledSessionTaskService({
+      store: reopened,
+      environment: "development",
+      now,
+      leaseOwner: "scheduler:condition-restart",
+      authorize: () => ({}),
+      resolveRoute: async (logicalSessionId) => {
+        const logical = reopened.getLogicalSession(logicalSessionId);
+        return { sessionId: logical.legacySessionId, agentId: "agent:owner", binding: logical.activeBinding };
+      },
+      enqueue: (work) => {
+        f.queued.push(work);
+        return reopened.enqueueAgentWorkItem(work);
+      },
+      evaluateCondition: async () => observations.shift()
+    });
+    assert.equal(reopened.getScheduledSessionTask(task.taskId).conditionState.lastObservation.exitCode, 1);
+    f.advance(3_000);
+    await f.service.tick();
+    stored = f.store.getScheduledSessionTask(task.taskId);
+    assert.equal(stored.status, "completed");
+    assert.equal(f.queued.length, 1);
+    assert.equal(f.queued[0].source.triggerKind, "condition");
+    assert.equal(f.queued[0].source.conditionResult.stdout, "ready\n");
+    const run = f.store.listScheduledSessionRuns(task.taskId)[0];
+    assert.equal(run.triggerReason, "condition_script_satisfied");
+    assert.equal(run.conditionResult.exitCode, 0);
+
+    f.advance(3_000);
+    await f.service.tick();
+    assert.equal(f.queued.length, 1);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("condition script execution treats nonzero as false and does not inherit backend credentials", async () => {
+  process.env.CORPTIE_TEST_SECRET = "must-not-leak";
+  try {
+    const falseResult = await executeConditionScript({
+      script: "test \"${CORPTIE_TEST_SECRET-unset}\" = must-not-leak",
+      checkIntervalSeconds: 1,
+      timeoutSeconds: 2,
+      workingDirectory: null
+    });
+    assert.equal(falseResult.state, "not_matched");
+    assert.equal(falseResult.exitCode, 1);
+    const trueResult = await executeConditionScript({
+      script: "printf ready",
+      checkIntervalSeconds: 1,
+      timeoutSeconds: 2,
+      workingDirectory: null
+    });
+    assert.deepEqual(trueResult, { state: "matched", exitCode: 0, stdout: "ready", stderr: "" });
+  } finally {
+    delete process.env.CORPTIE_TEST_SECRET;
+  }
+});
+
+test("condition scripts never execute after creator authorization is revoked", async () => {
+  let executions = 0;
+  const f = await fixture({
+    evaluateCondition: async () => {
+      executions += 1;
+      return { state: "matched", exitCode: 0, stdout: "", stderr: "" };
+    }
+  });
+  try {
+    const task = f.service.create({
+      logicalSessionId: "logical:stable",
+      message: "must not run",
+      scheduleType: "condition",
+      condition: { script: "true", checkIntervalSeconds: 1 },
+      timezone: "UTC"
+    }, f.actor);
+    f.revokeAuthorization();
+    await f.service.tick();
+    assert.equal(executions, 0);
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "failed");
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).lastErrorCode, "AUTHORIZATION_REVOKED");
+    assert.equal(f.queued.length, 0);
   } finally {
     await cleanup(f);
   }

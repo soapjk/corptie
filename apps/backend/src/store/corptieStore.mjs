@@ -269,6 +269,97 @@ export class CorptieStore {
     }
   }
 
+  migrateScheduledSessionConditionTasks() {
+    this.ensureColumn("scheduled_session_runs", "condition_result_json", "TEXT");
+    const table = this.selectOne(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_session_tasks'"
+    );
+    if (!table?.sql || /schedule_type\s+IN\s*\([^)]*'condition'/i.test(table.sql)) {
+      this.ensureColumn("scheduled_session_tasks", "condition_spec_json", "TEXT");
+      this.ensureColumn("scheduled_session_tasks", "condition_state_json", "TEXT");
+      return;
+    }
+
+    // SQLite cannot widen a CHECK constraint in place. Rebuild only this
+    // independent schedule table while preserving child-table foreign keys.
+    this.db.run("PRAGMA foreign_keys = OFF");
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(`
+        CREATE TABLE scheduled_session_tasks_condition_v1 (
+          task_id TEXT PRIMARY KEY,
+          logical_session_id TEXT NOT NULL,
+          message_json TEXT NOT NULL,
+          schedule_type TEXT NOT NULL
+            CHECK (schedule_type IN ('once', 'interval', 'condition', 'process')),
+          run_at TEXT,
+          next_run_at TEXT,
+          interval_seconds INTEGER,
+          timezone TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active'
+            CHECK (status IN ('active', 'paused', 'completed', 'failed', 'cancelled')),
+          missed_policy TEXT NOT NULL DEFAULT 'coalesce_once'
+            CHECK (missed_policy IN ('coalesce_once', 'skip')),
+          condition_spec_json TEXT,
+          condition_state_json TEXT,
+          process_spec_json TEXT,
+          process_state_json TEXT,
+          creator_type TEXT NOT NULL,
+          creator_id TEXT NOT NULL,
+          objective_id TEXT,
+          environment TEXT NOT NULL,
+          pending_scheduled_for TEXT,
+          lease_owner TEXT,
+          lease_expires_at TEXT,
+          retry_count INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 5,
+          last_run_id TEXT,
+          last_run_status TEXT,
+          last_error_code TEXT,
+          last_error_message TEXT,
+          last_run_at TEXT,
+          resource_version INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          paused_at TEXT,
+          cancelled_at TEXT,
+          completed_at TEXT,
+          FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+        )
+      `);
+      this.db.run(`
+        INSERT INTO scheduled_session_tasks_condition_v1 (
+          task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
+          interval_seconds, timezone, status, missed_policy, process_spec_json,
+          process_state_json, creator_type, creator_id, objective_id, environment,
+          pending_scheduled_for, lease_owner, lease_expires_at, retry_count, max_retries,
+          last_run_id, last_run_status, last_error_code, last_error_message, last_run_at,
+          resource_version, created_at, updated_at, paused_at, cancelled_at, completed_at
+        )
+        SELECT
+          task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
+          interval_seconds, timezone, status, missed_policy, process_spec_json,
+          process_state_json, creator_type, creator_id, objective_id, environment,
+          pending_scheduled_for, lease_owner, lease_expires_at, retry_count, max_retries,
+          last_run_id, last_run_status, last_error_code, last_error_message, last_run_at,
+          resource_version, created_at, updated_at, paused_at, cancelled_at, completed_at
+        FROM scheduled_session_tasks
+      `);
+      this.db.run("DROP TABLE scheduled_session_tasks");
+      this.db.run("ALTER TABLE scheduled_session_tasks_condition_v1 RENAME TO scheduled_session_tasks");
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_due
+        ON scheduled_session_tasks(environment, status, next_run_at, lease_expires_at)`);
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_session
+        ON scheduled_session_tasks(logical_session_id, created_at DESC)`);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    } finally {
+      this.db.run("PRAGMA foreign_keys = ON");
+    }
+  }
+
   migrateWorkItemMemoryAssociations() {
     const migrationId = "work-item-memory-association-v1";
     if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
@@ -792,7 +883,7 @@ export class CorptieStore {
         logical_session_id TEXT NOT NULL,
         message_json TEXT NOT NULL,
         schedule_type TEXT NOT NULL
-          CHECK (schedule_type IN ('once', 'interval', 'process')),
+          CHECK (schedule_type IN ('once', 'interval', 'condition', 'process')),
         run_at TEXT,
         next_run_at TEXT,
         interval_seconds INTEGER,
@@ -801,6 +892,8 @@ export class CorptieStore {
           CHECK (status IN ('active', 'paused', 'completed', 'failed', 'cancelled')),
         missed_policy TEXT NOT NULL DEFAULT 'coalesce_once'
           CHECK (missed_policy IN ('coalesce_once', 'skip')),
+        condition_spec_json TEXT,
+        condition_state_json TEXT,
         process_spec_json TEXT,
         process_state_json TEXT,
         creator_type TEXT NOT NULL,
@@ -848,6 +941,7 @@ export class CorptieStore {
         provider_session_id TEXT,
         routing_version INTEGER,
         exit_status_json TEXT,
+        condition_result_json TEXT,
         error_code TEXT,
         error_message TEXT,
         claimed_at TEXT,
@@ -1259,6 +1353,8 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_collaborator_availability
         ON collaborator_registry(entry_type, availability);
     `);
+
+    this.migrateScheduledSessionConditionTasks();
 
     // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---
     this.db.run(`
@@ -3980,10 +4076,11 @@ export class CorptieStore {
     this.db.run(
       `INSERT INTO scheduled_session_tasks (
         task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
-        interval_seconds, timezone, status, missed_policy, process_spec_json,
-        process_state_json, creator_type, creator_id, objective_id, environment,
+        interval_seconds, timezone, status, missed_policy, condition_spec_json,
+        condition_state_json, process_spec_json, process_state_json,
+        creator_type, creator_id, objective_id, environment,
         max_retries, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.taskId,
         input.logicalSessionId,
@@ -3994,6 +4091,8 @@ export class CorptieStore {
         input.intervalSeconds ?? null,
         input.timezone,
         input.missedPolicy,
+        input.conditionSpec ? JSON.stringify(input.conditionSpec) : null,
+        input.conditionState ? JSON.stringify(input.conditionState) : null,
         input.processSpec ? JSON.stringify(input.processSpec) : null,
         input.processState ? JSON.stringify(input.processState) : null,
         input.creatorType,
@@ -4036,7 +4135,7 @@ export class CorptieStore {
     const task = this.getScheduledSessionTask(taskId);
     if (!task) return null;
     if (expectedVersion != null && Number(expectedVersion) !== task.resourceVersion) {
-      const error = new Error(`Scheduled Session task ${taskId} was modified by another request.`);
+      const error = new Error(`计划任务 ${taskId} was modified by another request.`);
       error.code = "RESOURCE_VERSION_CONFLICT";
       throw error;
     }
@@ -4045,7 +4144,8 @@ export class CorptieStore {
     this.db.run(
       `UPDATE scheduled_session_tasks SET
          message_json = ?, run_at = ?, next_run_at = ?, interval_seconds = ?, timezone = ?,
-         status = ?, missed_policy = ?, process_spec_json = ?, process_state_json = ?,
+         status = ?, missed_policy = ?, condition_spec_json = ?, condition_state_json = ?,
+         process_spec_json = ?, process_state_json = ?,
          pending_scheduled_for = ?, lease_owner = ?, lease_expires_at = ?, retry_count = ?,
          max_retries = ?, last_run_id = ?, last_run_status = ?, last_error_code = ?,
          last_error_message = ?, last_run_at = ?, resource_version = resource_version + 1,
@@ -4059,6 +4159,8 @@ export class CorptieStore {
         value("timezone", task.timezone),
         value("status", task.status),
         value("missedPolicy", task.missedPolicy),
+        value("conditionSpec", task.conditionSpec) ? JSON.stringify(value("conditionSpec", task.conditionSpec)) : null,
+        value("conditionState", task.conditionState) ? JSON.stringify(value("conditionState", task.conditionState)) : null,
         value("processSpec", task.processSpec) ? JSON.stringify(value("processSpec", task.processSpec)) : null,
         value("processState", task.processState) ? JSON.stringify(value("processState", task.processState)) : null,
         value("pendingScheduledFor", task.pendingScheduledFor),
@@ -4115,8 +4217,9 @@ export class CorptieStore {
     this.db.run(
       `INSERT OR IGNORE INTO scheduled_session_runs (
          run_id, task_id, run_key, scheduled_for, trigger_kind, trigger_reason,
-         status, attempt_count, exit_status_json, claimed_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         status, attempt_count, exit_status_json, condition_result_json,
+         claimed_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.runId,
         input.taskId,
@@ -4127,6 +4230,7 @@ export class CorptieStore {
         input.status ?? "claimed",
         input.attemptCount ?? 1,
         input.exitStatus ? JSON.stringify(input.exitStatus) : null,
+        input.conditionResult ? JSON.stringify(input.conditionResult) : null,
         input.claimedAt ?? timestamp,
         timestamp,
         timestamp
@@ -4169,7 +4273,7 @@ export class CorptieStore {
     this.db.run(
       `UPDATE scheduled_session_runs SET status = ?, attempt_count = ?, agent_work_item_id = ?,
          target_turn_id = ?, binding_id = ?, provider_session_id = ?, routing_version = ?,
-         exit_status_json = ?, error_code = ?, error_message = ?, claimed_at = ?, queued_at = ?,
+         exit_status_json = ?, condition_result_json = ?, error_code = ?, error_message = ?, claimed_at = ?, queued_at = ?,
          started_at = ?, completed_at = ?, updated_at = ? WHERE run_id = ?`,
       [
         value("status", run.status),
@@ -4180,6 +4284,7 @@ export class CorptieStore {
         value("providerSessionId", run.providerSessionId),
         value("routingVersion", run.routingVersion),
         value("exitStatus", run.exitStatus) ? JSON.stringify(value("exitStatus", run.exitStatus)) : null,
+        value("conditionResult", run.conditionResult) ? JSON.stringify(value("conditionResult", run.conditionResult)) : null,
         value("errorCode", run.errorCode),
         value("errorMessage", run.errorMessage),
         value("claimedAt", run.claimedAt),
@@ -6919,6 +7024,8 @@ function scheduledSessionTaskFromRow(row) {
     timezone: row.timezone,
     status: row.status,
     missedPolicy: row.missed_policy,
+    conditionSpec: parseJson(row.condition_spec_json, null),
+    conditionState: parseJson(row.condition_state_json, null),
     processSpec: parseJson(row.process_spec_json, null),
     processState: parseJson(row.process_state_json, null),
     creatorType: row.creator_type,
@@ -6960,6 +7067,7 @@ function scheduledSessionRunFromRow(row) {
     providerSessionId: row.provider_session_id,
     routingVersion: row.routing_version == null ? null : Number(row.routing_version),
     exitStatus: parseJson(row.exit_status_json, null),
+    conditionResult: parseJson(row.condition_result_json, null),
     errorCode: row.error_code,
     errorMessage: row.error_message,
     claimedAt: row.claimed_at,
