@@ -949,26 +949,20 @@ final class BackendClient: ObservableObject {
         // This keeps a single authoritative source of truth for `isOnline`.
     }
 
-    /// Commands are reconciled through the authoritative revisioned snapshot;
-    /// creation responses never form a second client-side cache.
+    /// A successful command response is merged into the canonical AppStateStore
+    /// synchronously so the list has read-your-write behavior. The revisioned
+    /// snapshot/SSE stream then reconciles the returned projection.
     func acceptCreatedSession(_ session: TaskSession, selectImmediately: Bool = true) {
+        let accepted = appState.acceptCreatedSession(session)
+        if selectImmediately { select(session: accepted) }
         Task { [weak self] in
             await AppStateSyncController.shared.refreshSnapshot()
             guard let self else { return }
-            guard let authoritative = self.appState.session(session.id) else {
+            guard self.appState.session(session.id) != nil else {
                 self.reportNavigationError(sessionId: session.id)
                 return
             }
-            if selectImmediately { self.select(session: authoritative) }
         }
-    }
-
-    nonisolated static func insertingCreatedSession(
-        _ created: TaskSession,
-        into current: [TaskSession]
-    ) -> [TaskSession] {
-        if current.contains(where: { $0.id == created.id }) { return current }
-        return [created] + current
     }
 
     private func applySessionSnapshot(
@@ -1075,10 +1069,13 @@ final class BackendClient: ObservableObject {
                         : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
+                guard let session = decoded?.session else {
+                    throw URLError(.cannotParseResponse)
+                }
 
+                acceptCreatedSession(session, selectImmediately: false)
                 onSuccess()
                 sendStatusMessage = L10n("Started PTY agent")
-                await refresh()
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
@@ -1149,10 +1146,13 @@ final class BackendClient: ObservableObject {
                         : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
+                guard let session = decoded?.session else {
+                    throw URLError(.cannotParseResponse)
+                }
 
+                acceptCreatedSession(session, selectImmediately: false)
                 onSuccess()
                 sendStatusMessage = usesAppServer ? L10n("Started Codex App Server session") : L10n("Started Codex CLI")
-                await refresh()
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
@@ -1210,10 +1210,13 @@ final class BackendClient: ObservableObject {
                         : decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(message)
                 }
+                guard let session = decoded?.session else {
+                    throw URLError(.cannotParseResponse)
+                }
 
+                acceptCreatedSession(session, selectImmediately: false)
                 onSuccess()
                 sendStatusMessage = L10n("Started Claude Code")
-                await refresh()
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)
@@ -1268,10 +1271,13 @@ final class BackendClient: ObservableObject {
                     }
                     throw BackendError.message(decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response")
                 }
+                guard let session = decoded?.session else {
+                    throw URLError(.cannotParseResponse)
+                }
+                acceptCreatedSession(session, selectImmediately: false)
                 onSuccess()
                 let providerName = agentProviders.first(where: { $0.id == trimmedProviderId })?.displayName ?? trimmedProviderId
                 sendStatusMessage = L10nFormat("Started %@", providerName)
-                await refresh()
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Create failed: %@", error.localizedDescription)

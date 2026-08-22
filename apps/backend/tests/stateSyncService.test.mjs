@@ -21,6 +21,30 @@ test("state snapshot normalizes every control-plane collection", () => {
   assert.deepEqual(snapshot.state.integrationRuns, []);
 });
 
+test("state snapshot retries when projection repair advances the revision", () => {
+  let revision = 4;
+  let projections = 0;
+  const store = {
+    stateRevision: () => revision,
+    oldestStateChangeRevision: () => revision,
+    stateChangesAfter: () => []
+  };
+  const service = new StateSyncService({
+    store,
+    snapshot: () => {
+      projections += 1;
+      if (projections === 1) revision = 5;
+      return { sessions: [{ id: "created" }] };
+    }
+  });
+
+  const snapshot = service.snapshot();
+
+  assert.equal(snapshot.revision, 5);
+  assert.equal(projections, 2);
+  assert.deepEqual(snapshot.state.sessions, [{ id: "created" }]);
+});
+
 test("Skill deletes and assignment-driven Agent upserts share the revision stream", () => {
   const service = fixture({
     revision: 4,

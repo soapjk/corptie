@@ -45,6 +45,50 @@ struct AppStateStoreTests {
         #expect(store.session("session:zero")?.title == "Initial")
     }
 
+    @Test func creationResponseIsImmediateIdempotentAndKeepsServerRevision() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 7, state: .fixture()))
+        let created = TaskSession.fixture(id: "session:created", title: "Created")
+
+        let first = store.acceptCreatedSession(created)
+        let repeated = store.acceptCreatedSession(created)
+
+        #expect(first == created)
+        #expect(repeated == created)
+        #expect(store.sessions.map(\.id) == [created.id])
+        #expect(store.revision == 7)
+        #expect(store.pendingCreatedSessionIDs == [created.id])
+    }
+
+    @Test func equalRevisionSnapshotCannotRemovePendingCreationResponse() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 7, state: .fixture()))
+        let created = TaskSession.fixture(id: "session:created", title: "Created")
+        store.acceptCreatedSession(created)
+
+        #expect(store.apply(snapshot: .init(revision: 7, state: .fixture())) == .duplicate)
+        #expect(store.session(created.id) == created)
+        #expect(store.pendingCreatedSessionIDs == [created.id])
+    }
+
+    @Test func authoritativeSessionUpsertReconcilesPendingCreationResponse() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(revision: 7, state: .fixture()))
+        store.acceptCreatedSession(TaskSession.fixture(id: "session:created", title: "Provisional"))
+        let authoritative = TaskSession.fixture(id: "session:created", title: "Authoritative")
+        let changes = StateChangeSetEnvelope(
+            snapshotRequired: false,
+            baseRevision: 7,
+            revision: 8,
+            upserts: .fixture(sessions: [authoritative]),
+            deletes: .fixture()
+        )
+
+        #expect(store.apply(changeSet: changes) == .applied)
+        #expect(store.session(authoritative.id) == authoritative)
+        #expect(store.pendingCreatedSessionIDs.isEmpty)
+    }
+
     @Test func changeSetsAreIdempotentAndRejectRevisionGaps() {
         let store = AppStateStore()
         _ = store.apply(snapshot: StateSnapshotEnvelope(revision: 3, state: .fixture()))
