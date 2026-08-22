@@ -86,6 +86,9 @@ struct SessionsView: View {
             attemptPendingSelection(sessions)
             restoreSelection(for: selectedCategory)
             preloadSessionMessages(sessions)
+            if let selectedSessionID = selectedSession?.id {
+                markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
+            }
         }
         .onChange(of: router.pendingSessionId) { _, _ in
             attemptPendingSelection(backendClient.sessions)
@@ -103,14 +106,12 @@ struct SessionsView: View {
                         workItems: entityClient.workItems
                     )
                 }
+                markOpenedSessionRead(session)
             }
             preloadSessionMessages(backendClient.sessions)
         }
-        .onReceive(backendClient.$selectedDetail) { detail in
-            confirmDisplayedAgentMessagesRead(detail)
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            confirmDisplayedAgentMessagesRead(backendClient.selectedDetail)
+            markOpenedSessionRead(selectedSession)
         }
         .onChange(of: selectedCategory) { _, newValue in
             if newValue != .worker {
@@ -133,6 +134,7 @@ struct SessionsView: View {
         selectedSession = backendClient.selectedSession
         if let selectedSession {
             presentationStore.activateHost(for: selectedSession.id)
+            markOpenedSessionRead(selectedSession)
         }
         scheduleDetailRendering()
         backendClient.suppressBackgroundPolling = true
@@ -164,7 +166,6 @@ struct SessionsView: View {
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled, router.selectedTab == .sessions else { return }
             layoutState.canRenderDetailMessages = true
-            confirmDisplayedAgentMessagesRead(backendClient.selectedDetail)
             PerfStopwatch.event("会话切换.scheduleDetailRendering=true", value: 1)
         }
     }
@@ -353,23 +354,8 @@ struct SessionsView: View {
             .listStyle(.sidebar)
             .overlay(alignment: .bottom) {
                 if selectedCategory == .worker && !isShowingWorkerArchive {
-                    HStack(alignment: .bottom) {
-                        workerGroupingPicker
-
-                        Spacer(minLength: 8)
-
-                        Button {
-                            setWorkerArchiveVisible(true)
-                        } label: {
-                            Image(systemName: "archivebox")
-                                .font(.system(size: 12, weight: .semibold))
-                                .frame(width: 28, height: 28)
-                                .background(.regularMaterial, in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(L10n("View Archived Work Sessions"))
-                    }
-                    .padding(10)
+                    workerSessionFunctionBar
+                        .padding(10)
                 }
             }
         }
@@ -431,7 +417,7 @@ struct SessionsView: View {
         return HStack(spacing: 2) {
             ForEach(SessionCategory.allCases) { category in
                 Button {
-                    selectedCategory = category
+                    switchSessionCategory(to: category)
                 } label: {
                     Label(category.title, systemImage: category.systemImage)
                         .font(.system(size: 10, weight: .semibold))
@@ -465,6 +451,37 @@ struct SessionsView: View {
         .help(selectedCategory.title)
     }
 
+    private func switchSessionCategory(to category: SessionCategory) {
+        guard category != selectedCategory else { return }
+        if category != .worker {
+            isShowingWorkerArchive = false
+        }
+        let targetId = resolvedSessionSelection(
+            category: category,
+            rows: sessionListStore.rows,
+            selectedSessionId: selectedSession?.id,
+            lastSelectedId: Self.restoredSessionId(for: category),
+            workItems: entityClient.workItems,
+            workerScope: workerSessionScope
+        )
+
+        // Commit the category and its restored Session in one button action.
+        // This prevents sessionConversation from observing the temporary state
+        // where the new category is active but the old category's Session is
+        // still selected.
+        selectedCategory = category
+        guard let targetId,
+              let session = backendClient.sessions.first(where: { $0.id == targetId }) else {
+            return
+        }
+        pendingSelectionTask?.cancel()
+        pendingSelectionTask = nil
+        visuallySelectedSessionID = session.id
+        selectedSession = session
+        presentationStore.activateHost(for: session.id)
+        backendClient.select(session: session)
+    }
+
     private var newChatToolbarButton: some View {
         Button {
             showNewSessionCreation = true
@@ -478,20 +495,59 @@ struct SessionsView: View {
         .help(L10n("Create an Assistant, Objective, or Worker Session"))
     }
 
-    private var workerGroupingPicker: some View {
-        Picker(L10n("Work Session Grouping"), selection: Binding(
-            get: { workerGroupingMode },
-            set: { workerGroupingModeRawValue = $0.rawValue }
-        )) {
-            ForEach(WorkerSessionGroupingMode.allCases) { mode in
-                Text(mode.title).tag(mode)
+    private var workerSessionFunctionBar: some View {
+        HStack(spacing: 7) {
+            Menu {
+                ForEach(WorkerSessionGroupingMode.allCases) { mode in
+                    Button {
+                        workerGroupingModeRawValue = mode.rawValue
+                    } label: {
+                        if mode == workerGroupingMode {
+                            Label(mode.title, systemImage: "checkmark")
+                        } else {
+                            Text(mode.title)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "rectangle.3.group")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(workerGroupingMode.title)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 11)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .contentShape(Capsule())
+                .background {
+                    SessionSidebarLiquidGlassBackground(cornerRadius: 16)
+                }
             }
+            .menuStyle(.borderlessButton)
+            .frame(maxWidth: .infinity)
+            .help(L10n("Work Session Grouping"))
+
+            Button {
+                setWorkerArchiveVisible(true)
+            } label: {
+                Image(systemName: "archivebox")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Circle())
+                    .background {
+                        SessionSidebarCircularLiquidGlassBackground()
+                    }
+            }
+            .buttonStyle(.plain)
+            .help(L10n("View Archived Work Sessions"))
         }
-        .pickerStyle(.menu)
-        .controlSize(.small)
-        .fixedSize(horizontal: true, vertical: false)
-        .labelsHidden()
-        .help(L10n("Work Session Grouping"))
+        .font(.system(size: 11, weight: .semibold))
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
@@ -587,16 +643,14 @@ struct SessionsView: View {
         restoreSelection(for: .worker)
     }
 
-    private func confirmDisplayedAgentMessagesRead(_ detail: CodexThreadDetail?) {
+    private func markOpenedSessionRead(_ session: TaskSession?) {
         guard router.selectedTab == .sessions,
               NSApp.isActive,
-              layoutState.canRenderDetailMessages,
-              let detail,
-              let session = selectedSession,
-              detail.id == (session.external?.threadId ?? session.id),
-              let sequence = detail.lastAgentMessageSequence,
-              sequence > (session.lastReadMessageSequence ?? 0),
-              sequence > (submittedReadSequencesBySessionID[session.id] ?? 0) else { return }
+              let session,
+              let sequence = SessionReadAcknowledgementPolicy.sequenceForOpenedSession(
+                  session,
+                  alreadySubmittedSequence: submittedReadSequencesBySessionID[session.id]
+              ) else { return }
         submittedReadSequencesBySessionID[session.id] = sequence
         Task { @MainActor in
             await Task.yield()
@@ -658,6 +712,65 @@ struct SessionsView: View {
         }
     }
 
+}
+
+enum SessionReadAcknowledgementPolicy {
+    static func sequenceForOpenedSession(
+        _ session: TaskSession,
+        alreadySubmittedSequence: Int?
+    ) -> Int? {
+        guard let sequence = session.lastAgentMessageSequence,
+              sequence > (session.lastReadMessageSequence ?? 0),
+              sequence > (alreadySubmittedSequence ?? 0) else { return nil }
+        return sequence
+    }
+}
+
+private struct SessionSidebarLiquidGlassBackground: View {
+    let cornerRadius: CGFloat
+
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.clear)
+                .glassEffect(
+                    .clear,
+                    in: .rect(cornerRadius: cornerRadius)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.8)
+                }
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+                }
+        }
+    }
+}
+
+private struct SessionSidebarCircularLiquidGlassBackground: View {
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            Circle()
+                .fill(.clear)
+                .glassEffect(.clear, in: .circle)
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.8)
+                }
+        } else {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Circle()
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+                }
+        }
+    }
 }
 
 /// Observes the stable list-row model directly so content-only Session patches
