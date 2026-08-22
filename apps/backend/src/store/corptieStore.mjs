@@ -1326,6 +1326,17 @@ export class CorptieStore {
     this.ensureColumn("session_events", "call_id", "TEXT");
     this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_producer ON session_events(session_id, producer)");
     this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_call_id ON session_events(session_id, call_id)");
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_session_events_latest_message
+      ON session_events(session_id, created_at DESC)
+      WHERE surface = 1
+         OR type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
+    `);
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_session_events_agent_message
+      ON session_events(session_id, sequence DESC)
+      WHERE type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
+    `);
     // 回填：为每个已有 session 建立 1:1 的 session_log；并让既有事件指向该 log。
     this.db.run(`
       INSERT INTO session_logs (id, session_id, created_at)
@@ -4388,14 +4399,19 @@ export class CorptieStore {
   listSessionMessageCursors() {
     const rows = this.selectAll(`
       SELECT sessions.id AS session_id,
-             COALESCE(MAX(CASE WHEN ${agentMessageEventSQL("session_events")}
-               THEN session_events.sequence END), 0) AS last_agent_message_sequence,
+             COALESCE(agent_messages.last_agent_message_sequence, 0)
+               AS last_agent_message_sequence,
              COALESCE(session_read_receipts.last_read_agent_message_sequence, 0)
                AS last_read_message_sequence
       FROM sessions
-      LEFT JOIN session_events ON session_events.session_id = sessions.id
+      LEFT JOIN (
+        SELECT session_id, MAX(sequence) AS last_agent_message_sequence
+        FROM session_events
+        WHERE type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
+          AND COALESCE(json_extract(payload_json, '$.hasAgentMessage'), 0) = 1
+        GROUP BY session_id
+      ) AS agent_messages ON agent_messages.session_id = sessions.id
       LEFT JOIN session_read_receipts ON session_read_receipts.session_id = sessions.id
-      GROUP BY sessions.id, session_read_receipts.last_read_agent_message_sequence
     `);
     return new Map(rows.map((row) => [row.session_id, {
       lastAgentMessageSequence: Number(row.last_agent_message_sequence ?? 0),
