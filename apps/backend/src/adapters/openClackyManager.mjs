@@ -17,6 +17,7 @@ export class OpenClackyManager {
     this.fetch = options.fetch ?? globalThis.fetch;
     this.WebSocket = options.WebSocket ?? globalThis.WebSocket;
     this.onSessionChanged = options.onSessionChanged ?? null;
+    this.onDetailChanged = options.onDetailChanged ?? null;
     this.resolveOwnedSessionIds = options.resolveOwnedSessionIds ?? (() => []);
     this.listStoredSessions = options.listStoredSessions ?? (() => []);
     this.refreshIntervalMs = options.refreshIntervalMs ?? 10_000;
@@ -44,6 +45,7 @@ export class OpenClackyManager {
     this.sockets = new Map();
     this.eventCursors = new Map();
     this.deliveryAcks = new Map();
+    this.historySyncs = new Map();
     this.refreshTimer = null;
     this.lastSnapshotSignature = null;
     this.connectionErrorMessage = null;
@@ -258,9 +260,31 @@ export class OpenClackyManager {
     const detail = openClackySessionDetail(summary, events);
     this.sessions.set(sessionId, summary);
     this.details.set(sessionId, detail);
+    this.onDetailChanged?.(detail);
     if (page.cursor) this.eventCursors.set(sessionId, page.cursor);
     this.ensureSocket(sessionId);
+    this.scheduleCompleteHistorySync(sessionId, summary);
     return detail;
+  }
+
+  scheduleCompleteHistorySync(sessionId, summary) {
+    if (this.historySyncs.has(sessionId)) return this.historySyncs.get(sessionId);
+    const sync = this.readHistory(sessionId)
+      .then(({ events }) => {
+        const complete = openClackySessionDetail(summary, events);
+        const current = this.details.get(sessionId);
+        const reconciled = mergeOpenClackyDetails(complete, current);
+        this.details.set(sessionId, reconciled);
+        this.onDetailChanged?.(reconciled);
+        return reconciled;
+      })
+      .catch((error) => {
+        this.reportConnectionError(error);
+        return null;
+      })
+      .finally(() => this.historySyncs.delete(sessionId));
+    this.historySyncs.set(sessionId, sync);
+    return sync;
   }
 
   // Fetch the complete (paginated) history for a session, following `before` /
@@ -461,6 +485,7 @@ export class OpenClackyManager {
           next = appendOpenClackyEvent(next, event);
         }
         this.details.set(sessionId, next);
+        this.onDetailChanged?.(next);
       }
     } catch {
       // Best-effort replay; the next full read will reconcile.
@@ -497,7 +522,10 @@ export class OpenClackyManager {
     }
     const current = this.details.get(sessionId);
     const nextDetail = current ? appendOpenClackyEvent(current, event) : null;
-    if (nextDetail) this.details.set(sessionId, nextDetail);
+    if (nextDetail) {
+      this.details.set(sessionId, nextDetail);
+      this.onDetailChanged?.(nextDetail);
+    }
     const currentSummary = this.sessions.get(sessionId);
     if (currentSummary) {
       const status = nextDetail?.status ?? openClackyEventStatus(event, currentSummary.status);
@@ -521,7 +549,19 @@ export class OpenClackyManager {
     }
     const id = stableEventId(event);
     if (id) this.eventCursors.set(sessionId, id);
-    this.onSessionChanged?.({ type: "event", sessionId, event, session: this.sessions.get(sessionId) });
+    const hasAgentMessage = event.type === "task_finished"
+      && Boolean(nextDetail?.items?.findLast?.((item) =>
+        item.type === "agentMessage"
+        && typeof item.text === "string"
+        && item.text.trim().length > 0
+      ));
+    this.onSessionChanged?.({
+      type: "event",
+      sessionId,
+      event,
+      session: this.sessions.get(sessionId),
+      hasAgentMessage
+    });
   }
 
   confirmDelivery(sessionId, event) {
@@ -722,6 +762,23 @@ function appendOpenClackyEvent(detail, event) {
     canSend: status === "complete" || status === "failed",
     usage,
     items: [...detail.items, ...items]
+  };
+}
+
+function mergeOpenClackyDetails(complete, current) {
+  if (!current) return complete;
+  const ids = new Set(complete.items.map((item) => item.id));
+  const items = [...complete.items];
+  for (const item of current.items) {
+    if (ids.has(item.id)) continue;
+    ids.add(item.id);
+    items.push(item);
+  }
+  return {
+    ...complete,
+    ...current,
+    items,
+    turnCount: Math.max(1, items.filter((item) => item.type === "userMessage").length)
   };
 }
 

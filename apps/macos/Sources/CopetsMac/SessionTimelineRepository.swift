@@ -32,7 +32,7 @@ final class SessionTimelineRepository {
     private var pinnedSessionIDs: Set<String> = []
     private let capacity: Int
 
-    init(capacity: Int = 12) {
+    init(capacity: Int = 48) {
         self.capacity = max(1, capacity)
     }
 

@@ -3325,6 +3325,28 @@ struct AnimatedAvatarImage: NSViewRepresentable {
     }
 }
 
+enum SessionDetailContentPhase: Equatable {
+    case live
+    case cached
+    case loading
+    case failed
+    case empty
+}
+
+func sessionDetailContentPhase(
+    hasLiveDetail: Bool,
+    cachedSessionID: String?,
+    selectedSessionID: String,
+    isLoading: Bool,
+    hasError: Bool
+) -> SessionDetailContentPhase {
+    if hasLiveDetail { return .live }
+    if cachedSessionID == selectedSessionID { return .cached }
+    if isLoading { return .loading }
+    if hasError { return .failed }
+    return .empty
+}
+
 struct DetailView: View {
     private let backendClient: BackendClient
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
@@ -3410,6 +3432,16 @@ struct DetailView: View {
         timelineState.detail
     }
 
+    private var contentPhase: SessionDetailContentPhase {
+        sessionDetailContentPhase(
+            hasLiveDetail: displayedDetail != nil,
+            cachedSessionID: hasPreparedDisplayCacheForCurrentSession ? cachedSessionId : nil,
+            selectedSessionID: sessionId,
+            isLoading: displaysLoadingDetail,
+            hasError: backendClient.lastError != nil
+        )
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DetailHeaderView()
@@ -3419,7 +3451,42 @@ struct DetailView: View {
                 OrphanedWorkspaceRecoveryView(status: recovery)
             }
 
-            if displaysLoadingDetail && displayedDetail == nil {
+            switch contentPhase {
+            case .live:
+                if let detail = displayedDetail {
+                    ThreadMetaView(
+                        status: detail.status,
+                        isConnecting: detail.isConnecting,
+                        connectionColor: detail.connectionColor,
+                        activityStatus: detail.activityStatus
+                    )
+
+                    Group {
+                        if shouldRenderDetailMessages {
+                            appKitCachedDetailMessages()
+                        } else {
+                            DetailMessagesPlaceholder()
+                        }
+                    }
+                    .onAppear {
+                        updateCachedDisplayEntries(for: detail)
+                    }
+                }
+            case .cached:
+                // The presentation cache is a valid stale-while-revalidate
+                // first frame. Do not hide already rendered messages behind
+                // the transport loading state while SSE reconnects.
+                if let session = backendClient.selectedSession,
+                   session.id == sessionId {
+                    ThreadMetaView(
+                        status: session.status,
+                        isConnecting: session.isConnecting,
+                        connectionColor: session.connectionColor,
+                        activityStatus: session.activityStatus
+                    )
+                }
+                appKitCachedDetailMessages()
+            case .loading:
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -3428,31 +3495,9 @@ struct DetailView: View {
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let detail = displayedDetail {
-                ThreadMetaView(
-                    status: detail.status,
-                    isConnecting: detail.isConnecting,
-                    connectionColor: detail.connectionColor,
-                    activityStatus: detail.activityStatus
-                )
-
-                Group {
-                    if shouldRenderDetailMessages {
-                        appKitCachedDetailMessages()
-                    } else {
-                        DetailMessagesPlaceholder()
-                    }
-                }
-                .onAppear {
-                    if let currentDetail = displayedDetail {
-                        updateCachedDisplayEntries(for: currentDetail)
-                    }
-                }
-            } else if displayedDetail == nil,
-                      backendClient.isLoadingDetail == false,
-                      backendClient.lastError != nil {
+            case .failed:
                 OfflineView(error: backendClient.lastError ?? L10n("No detail is available for this task."))
-            } else {
+            case .empty:
                 VStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -4138,8 +4183,19 @@ struct DetailView: View {
 
     private func restorePreheatedDisplayCacheIfNeeded() {
         guard let preheatedDisplayCache,
-              preheatedDisplayCache.sessionId == sessionId,
-              !hasPreparedDisplayCacheForCurrentSession else {
+              preheatedDisplayCache.sessionId == sessionId else {
+            return
+        }
+        if hasPreparedDisplayCacheForCurrentSession {
+            // DetailView is intentionally recreated when switching Sessions.
+            // Its immutable display entries survive in presentationStore, but
+            // native rows are renderer state. Materialize them once on mount
+            // instead of rebuilding them from body on every publication.
+            if cachedAppKitRows.count != cachedDisplayEntries.count {
+                cachedAppKitRows = PerfStopwatch.measure("会话切换.appKitRow恢复") {
+                    cachedDisplayEntries.map { appKitRow($0) }
+                }
+            }
             return
         }
         PerfStopwatch.event("会话切换.restorePreheated", value: preheatedDisplayCache.displayEntries.count)

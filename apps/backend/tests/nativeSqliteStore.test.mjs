@@ -140,6 +140,102 @@ test("Session items persist Provider raw metadata for diagnostics", async () => 
   }
 });
 
+test("stored timeline event reads exclude noisy Provider status events", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-timeline-events-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "timeline-session",
+      title: "Timeline",
+      provider: "openclacky",
+      status: "complete"
+    });
+    store.appendSessionEvent({
+      eventId: "status-1",
+      sessionId: "timeline-session",
+      type: "ProviderSessionChanged",
+      payload: { status: "running" }
+    });
+    store.appendSessionEvent({
+      eventId: "message-1",
+      sessionId: "timeline-session",
+      type: "assistant/message",
+      payload: { text: "Saved response" }
+    });
+
+    assert.deepEqual(
+      store.listStoredTimelineEvents("timeline-session").map((event) => event.eventId),
+      ["message-1"]
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stored Session detail reads its complete local timeline without Provider access", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-stored-detail-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "offline-session",
+      title: "Offline",
+      provider: "openclacky",
+      status: "complete"
+    });
+    store.appendItem("offline-session", {
+      id: "stored-message",
+      type: "agentMessage",
+      text: "Available offline"
+    });
+
+    const detail = store.getDetail("offline-session");
+    assert.equal(detail.connectionStatus, "disconnected");
+    assert.deepEqual(detail.items.map((item) => item.id), ["stored-message"]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Provider history snapshots never create unread message events", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-history-snapshot-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "snapshot-session",
+      title: "Snapshot",
+      provider: "openclacky",
+      status: "complete"
+    });
+    store.upsertItemSnapshot("snapshot-session", {
+      id: "old-agent-message",
+      type: "agentMessage",
+      text: "Already existed at the Provider",
+      createdAt: "2026-08-01T00:00:00Z"
+    });
+
+    assert.deepEqual(store.getItems("snapshot-session").map((item) => item.id), ["old-agent-message"]);
+    assert.equal(store.lastAgentMessageSequence("snapshot-session"), 0);
+    assert.deepEqual(store.listSessionEvents("snapshot-session"), []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("state revision log commits and rolls back atomically with entity writes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-state-revision-"));
   const store = new CorptieStore({

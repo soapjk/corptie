@@ -34,7 +34,7 @@ final class SessionPresentationStore: ObservableObject {
     private var preheatTasksBySessionID: [String: Task<Void, Never>] = [:]
     private var preheatTokensBySessionID: [String: UUID] = [:]
 
-    init(cacheCapacity: Int = 12, hostCapacity: Int = 3) {
+    init(cacheCapacity: Int = 48, hostCapacity: Int = 3) {
         self.cacheCapacity = max(1, cacheCapacity)
         self.hostCapacity = max(1, hostCapacity)
     }

@@ -16,9 +16,11 @@ struct SessionRestartActivity: Equatable {
 }
 
 enum SessionDetailPreloadPolicy {
-    // 只预热当前选中项附近的一个会话。批量预热 8 个会话会在切 Tab 时把
-    // 8 份整段消息历史的 Markdown 解析全挤上主线程，其中绝大多数永远不会打开。
-    static let batchLimit = 1
+    // Warm a small navigation neighborhood. Projection now runs off-main and
+    // Provider reads are single-flight on the backend, so four nearby rows no
+    // longer create the old main-thread Markdown burst or duplicate snapshots.
+    // Keep this bounded: the Session list itself can contain hundreds of rows.
+    static let batchLimit = 4
 
     /// Prefer the rows nearest to the current selection so normal up/down
     /// browsing hits memory. With no selection, warm the first visible page.
@@ -52,6 +54,23 @@ enum SessionDetailPreloadPolicy {
             offset += 1
         }
         return prioritized
+    }
+
+    /// A Session list update carries the durable agent-message cursor even for
+    /// rows whose detail stream is not mounted. Refresh only rows whose cursor
+    /// advanced, so completed background Sessions are warm without polling all
+    /// cached transcripts again.
+    static func sessionsWithAdvancedAgentMessages(
+        previous: [TaskSession],
+        current: [TaskSession],
+        excluding selectedSessionID: String?
+    ) -> [TaskSession] {
+        let previousByID = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
+        return current.filter { session in
+            guard session.id != selectedSessionID else { return false }
+            let previousCursor = previousByID[session.id]?.lastAgentMessageSequence ?? 0
+            return (session.lastAgentMessageSequence ?? 0) > previousCursor
+        }
     }
 }
 
@@ -995,6 +1014,7 @@ final class BackendClient: ObservableObject {
         // 但这里只关心活动会话集合是否真的变了。相等时短路，避免无关实体的
         // 高频更新反复触发 sessionsDidChange → 下游预加载/列表重算。
         guard nextSessions != lastProjectedSessions else { return }
+        let previousSessions = lastProjectedSessions
         lastProjectedSessions = nextSessions
 
         let previous = sessionListStore.sessions
@@ -1002,6 +1022,15 @@ final class BackendClient: ObservableObject {
         sessionListStore.apply(patch, authoritativeSessions: nextSessions)
         archivedSessions = appState.sessions.filter { $0.archived == true }
         sessionsDidChange.send(nextSessions)
+        if let previousSessions {
+            for session in SessionDetailPreloadPolicy.sessionsWithAdvancedAgentMessages(
+                previous: previousSessions,
+                current: nextSessions,
+                excluding: selectedSession?.id
+            ) {
+                prefetchDetail(for: session, forceRefresh: true)
+            }
+        }
         syncSelectedSessionFromSessions()
         syncSelectedDetailMetadataFromSessions()
     }
@@ -2445,7 +2474,11 @@ final class BackendClient: ObservableObject {
     }
 
     func prefetchDetail(for session: TaskSession) {
-        guard SessionTimelineRepository.shared.detail(for: session.id) == nil,
+        prefetchDetail(for: session, forceRefresh: false)
+    }
+
+    private func prefetchDetail(for session: TaskSession, forceRefresh: Bool) {
+        guard (forceRefresh || SessionTimelineRepository.shared.detail(for: session.id) == nil),
               detailPrefetchTasks[session.id] == nil else {
             return
         }

@@ -1140,9 +1140,17 @@ export class ClaudeAgentManager {
 
   notifyTurnSettled(session, event) {
     if (typeof this.onTurnSettled !== "function") return;
+    const hasAgentMessage = session.items.some((item) =>
+      item.turnId === event.turnId
+      && item.type === "agentMessage"
+      && item.presentationRole === "final_answer"
+      && typeof item.text === "string"
+      && item.text.trim().length > 0
+    );
     queueMicrotask(() => Promise.resolve(this.onTurnSettled({
       providerSessionId: session.id,
       session: this.toSessionSummary(session),
+      hasAgentMessage,
       ...event
     })).catch((error) => {
       console.error(`[claude-sdk] turn-settled callback failed id=${session.id}: ${error.message}`);

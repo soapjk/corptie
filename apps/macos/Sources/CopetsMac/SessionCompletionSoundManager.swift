@@ -12,7 +12,8 @@ struct SessionCompletionNotificationSummary: Equatable {
         Self(
             completed: sessions.lazy.filter { $0.status == .complete }.count,
             pending: sessions.lazy.filter {
-                ($0.lastAgentMessageSequence ?? 0) > ($0.lastReadMessageSequence ?? 0)
+                $0.status == .complete
+                    && ($0.lastAgentMessageSequence ?? 0) > ($0.lastReadMessageSequence ?? 0)
             }.count,
             failed: sessions.lazy.filter { $0.status == .failed }.count
         )
