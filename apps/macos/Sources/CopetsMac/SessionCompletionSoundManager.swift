@@ -3,23 +3,6 @@ import Combine
 import Foundation
 @preconcurrency import UserNotifications
 
-struct SessionCompletionNotificationSummary: Equatable {
-    let completed: Int
-    let pending: Int
-    let failed: Int
-
-    static func make(from sessions: [TaskSession]) -> Self {
-        Self(
-            completed: sessions.lazy.filter { $0.status == .complete }.count,
-            pending: sessions.lazy.filter {
-                $0.status == .complete
-                    && ($0.lastAgentMessageSequence ?? 0) > ($0.lastReadMessageSequence ?? 0)
-            }.count,
-            failed: sessions.lazy.filter { $0.status == .failed }.count
-        )
-    }
-}
-
 struct SessionCompletionSoundOption: Identifiable, Equatable {
     let id: String
     let label: String
@@ -177,9 +160,10 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     }
 
     private func handleSessionsUpdate(_ sessions: [TaskSession]) {
-        let activeSnapshots = sessions
-            .filter { $0.archived != true }
-            .map(SessionNotificationSnapshot.init(session:))
+        let activeSnapshots = SessionNotificationScope.activeSnapshots(
+            from: sessions,
+            workItems: EntityAPIClient.shared.workItems
+        )
         for sessionID in soundTransitionTracker.completedSessionIDs(for: activeSnapshots) {
             guard let soundId = Self.enabledSoundId(for: sessionID, defaults: defaults) else {
                 continue
@@ -204,8 +188,8 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         }
 
         let content = UNMutableNotificationContent()
-        content.title = title(for: event)
-        content.body = body(for: event)
+        content.title = SessionNotificationContent.title(for: event)
+        content.body = SessionNotificationContent.body(for: event)
         if let sessionID = event.session?.id {
             content.userInfo = ["sessionId": sessionID, "destination": "session"]
         } else {
@@ -223,16 +207,20 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         }
     }
 
-    private func title(for event: SessionNotificationEvent) -> String {
+}
+
+@MainActor
+enum SessionNotificationContent {
+    static func title(for event: SessionNotificationEvent) -> String {
         switch event.kind {
         case .completed: L10n("Task Completed")
         case .blocked: L10n("Task Waiting for Interaction")
         case .failed: L10n("Task Failed")
-        case .allSessionsWaiting: L10n("All Sessions Are Waiting")
+        case .allSessionsWaiting: L10n("All Sessions Have Finished Processing")
         }
     }
 
-    private func body(for event: SessionNotificationEvent) -> String {
+    static func body(for event: SessionNotificationEvent) -> String {
         if let session = event.session {
             let summary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = summary.isEmpty ? session.title : String(summary.prefix(180))
@@ -240,12 +228,13 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         }
         guard let counts = event.counts else { return "" }
         return L10nFormat(
-            "%lld completed · %lld waiting · %lld failed",
-            counts.completed,
-            counts.blocked,
-            counts.failed
+            "All sessions have finished processing. Sessions needing your attention: %lld.",
+            counts.pendingUserAttention
         )
     }
+}
+
+extension SessionCompletionSoundManager {
 
     private static func storedSoundIdsBySessionId(defaults: UserDefaults) -> [String: String] {
         defaults.dictionary(forKey: storageKey) as? [String: String] ?? [:]

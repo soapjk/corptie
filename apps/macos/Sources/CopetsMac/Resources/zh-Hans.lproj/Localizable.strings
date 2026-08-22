@@ -1087,6 +1087,8 @@
 "Task Waiting for Interaction" = "任务等待处理";
 "Task Failed" = "任务执行失败";
 "All Sessions Are Waiting" = "所有会话均等待处理";
+"All sessions have finished processing. Sessions needing your attention: %lld." = "当前所有会话已完成处理，待用户处理的会话：%lld 个。";
+"All Sessions Have Finished Processing" = "当前所有会话已完成处理";
 "%lld completed · %lld waiting · %lld failed" = "已完成 %lld 个 · 等待处理 %lld 个 · 失败 %lld 个";
 "Show Floating Orb" = "显示分离浮球";
 "System notifications require the packaged app" = "系统通知可在打包后的 App 中使用。";

@@ -830,8 +830,11 @@ struct SessionCountBadge: View {
 }
 
 func isSessionUnread(_ session: TaskSession) -> Bool {
-    session.status == .complete
-        && (session.lastAgentMessageSequence ?? 0) > (session.lastReadMessageSequence ?? 0)
+    sessionNeedsUserAttention(
+        status: session.status,
+        lastAgentMessageSequence: session.lastAgentMessageSequence ?? 0,
+        lastReadMessageSequence: session.lastReadMessageSequence ?? 0
+    )
 }
 
 func countUnreadSessions(
@@ -847,15 +850,9 @@ func unreadSessionCounts(
     workItems: [WorkItem]
 ) -> [SessionCategory: Int] {
     var counts: [SessionCategory: Int] = [:]
-    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
-    for session in sessions where isSessionUnread(session) {
+    for session in sessions where isSessionUnread(session)
+        && isSessionInActiveBusinessScope(session, workItems: workItems) {
         let category = SessionCategory(session: session)
-        if category == .worker,
-           let workItemID = session.workItemId,
-           let workItem = workItemsByID[workItemID],
-           WorkItemColumn.column(for: workItem.status) == .done {
-            continue
-        }
         counts[category, default: 0] += 1
     }
     return counts
@@ -1064,12 +1061,8 @@ func resolvedSessionSelection(
 }
 
 func isArchivedWorkerSession(_ session: TaskSession, workItems: [WorkItem]) -> Bool {
-    guard session.resolvedSessionKind == .worker,
-          let workItemID = session.workItemId,
-          let workItem = workItems.first(where: { $0.id == workItemID }) else {
-        return false
-    }
-    return WorkItemColumn.column(for: workItem.status) == .done
+    session.resolvedSessionKind == .worker
+        && !isSessionInActiveBusinessScope(session, workItems: workItems)
 }
 
 // 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。

@@ -495,27 +495,21 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func completionNotificationPendingCountMeansUnreadAgentMessages() {
-        let summary = SessionCompletionNotificationSummary.make(from: [
+    func notificationScopeExcludesArchivedSessions() {
+        let workItems = [makeWorkItem(id: "work-item:done", status: "done")]
+        let snapshots = SessionNotificationScope.activeSnapshots(from: [
+            makeSession(id: "active", lastAgentMessageSequence: 2),
+            makeSession(id: "archived", lastAgentMessageSequence: 3, archived: true),
             makeSession(
-                id: "completed-read",
-                status: .complete,
-                lastAgentMessageSequence: 4,
-                lastReadMessageSequence: 4
-            ),
-            makeSession(
-                id: "completed-unread",
-                status: .complete,
-                lastAgentMessageSequence: 7,
-                lastReadMessageSequence: 5
-            ),
-            makeSession(id: "blocked-but-read", status: .blocked),
-            makeSession(id: "failed", status: .failed)
-        ])
+                id: "completed-work-item",
+                sessionKind: .worker,
+                workItemId: "work-item:done",
+                lastAgentMessageSequence: 4
+            )
+        ], workItems: workItems)
 
-        #expect(summary.completed == 2)
-        #expect(summary.pending == 1)
-        #expect(summary.failed == 1)
+        #expect(snapshots.map(\.id) == ["active"])
+        #expect(snapshots.first?.needsUserAttention == true)
     }
 
     @Test
@@ -642,7 +636,8 @@ private func makeSession(
     updatedAt: String = "2026-08-12T00:00:00Z",
     lastMessageAt: String? = nil,
     lastAgentMessageSequence: Int? = nil,
-    lastReadMessageSequence: Int? = nil
+    lastReadMessageSequence: Int? = nil,
+    archived: Bool = false
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -663,7 +658,7 @@ private func makeSession(
         lastAgentMessageSequence: lastAgentMessageSequence,
         lastReadMessageSequence: lastReadMessageSequence,
         accent: .cyan,
-        archived: false,
+        archived: archived,
         pinned: false,
         sortOrder: nil,
         capabilities: nil,
