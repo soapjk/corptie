@@ -242,13 +242,10 @@ private struct UnderlineTabButton: View {
 // 主窗口顶层容器：顶部中间 Tab 切换器（控制台 / Sessions / Agents / 设置）+ 对应内容。
 struct MainTabView: View {
     @StateObject private var router = AppTabRouter.shared
-    @StateObject private var backendClient = BackendClient.shared
-    @StateObject private var entityClient = EntityAPIClient.shared
-    @StateObject private var backgroundTasks = BackgroundTaskCenter.shared
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            ZStack {
                 HStack(spacing: 8) {
                     // Sidebar 开关与设置入口共同位于 macOS 窗口按钮右侧。
                     Button {
@@ -277,35 +274,13 @@ struct MainTabView: View {
                 }
                 .frame(width: 220, alignment: .leading)
                 .offset(x: 64, y: -32)
-
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 UnderlineTabBar(selection: Binding(
                     get: { router.selectedTab },
                     set: { router.selectTab($0) }
                 ))
                 .offset(y: -12)
-
-                Spacer()
-
-                Group {
-                    if !backendClient.isOnline,
-                       entityClient.objectivesLoadError != nil,
-                       !backgroundTasks.records.contains(where: {
-                           $0.id == BackgroundTaskCenter.backendConnectionTaskID
-                               && $0.state != .succeeded
-                       }) {
-                        Label(L10n("Connecting to the server…"), systemImage: "network")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .allowsHitTesting(false)
-                    } else {
-                        BackgroundTaskStatusBar(center: backgroundTasks)
-                    }
-                }
-                .frame(width: 220, alignment: .trailing)
-                .offset(y: -32)
             }
             .padding(.horizontal, 12)
 
@@ -325,6 +300,17 @@ struct MainTabView: View {
             )
         }
         .environmentObject(router)
+        // The notification owns its subscriptions in a separate overlay subtree.
+        // Overlay sizing never participates in the tab header's ZStack layout, so
+        // task insertion, mutation, removal, and intrinsic-width changes cannot
+        // move or resize the tab controls.
+        .overlay(alignment: .topTrailing) {
+            MainWindowBackgroundTaskOverlay()
+                .frame(width: 220, alignment: .trailing)
+                .padding(.top, 8)
+                .padding(.trailing, 12)
+                .offset(y: -32)
+        }
     }
 
     @ViewBuilder
@@ -345,6 +331,37 @@ struct MainTabView: View {
 
     private func openSettings() {
         AppDelegate.shared?.openSettings()
+    }
+}
+
+/// The main-window notification renderer is intentionally a leaf view.
+///
+/// Keeping these observable dependencies out of `MainTabView` prevents task and
+/// connection publications from invalidating the tab container. Its parent uses
+/// an overlay, so this view's changing intrinsic content size is also excluded
+/// from the tab header's layout calculation.
+private struct MainWindowBackgroundTaskOverlay: View {
+    @StateObject private var backendClient = BackendClient.shared
+    @StateObject private var entityClient = EntityAPIClient.shared
+    @StateObject private var backgroundTasks = BackgroundTaskCenter.shared
+
+    var body: some View {
+        Group {
+            if !backendClient.isOnline,
+               entityClient.objectivesLoadError != nil,
+               !backgroundTasks.records.contains(where: {
+                   $0.id == BackgroundTaskCenter.backendConnectionTaskID
+                       && $0.state != .succeeded
+               }) {
+                Label(L10n("Connecting to the server…"), systemImage: "network")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .allowsHitTesting(false)
+            } else {
+                BackgroundTaskStatusBar(center: backgroundTasks)
+            }
+        }
     }
 }
 
