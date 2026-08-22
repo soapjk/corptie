@@ -42,6 +42,8 @@ struct SessionsView: View {
     @FocusState private var isSearchFieldFocused: Bool
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
+    private static let recentSessionIdsKey = "sessions.recentSessionIds"
+
     private static func lastSelectedSessionKey(for category: SessionCategory) -> String {
         "sessions.lastSelectedSessionId.\(category.rawValue)"
     }
@@ -84,7 +86,9 @@ struct SessionsView: View {
             presentationStore.prune(to: activeSessionIDs)
             SessionTimelineRepository.shared.prune(to: activeSessionIDs)
             attemptPendingSelection(sessions)
-            restoreSelection(for: selectedCategory)
+            if !recoverSelectionIfNeeded(from: sessions) {
+                restoreSelection(for: selectedCategory)
+            }
             preloadSessionMessages(sessions)
         }
         .onChange(of: router.pendingSessionId) { _, _ in
@@ -93,10 +97,11 @@ struct SessionsView: View {
         .onReceive(backendClient.$selectedSession) { session in
             selectedSession = session
             if let session {
+                let category = SessionCategory(session: session)
                 presentationStore.activateHost(for: session.id)
-                Self.recordSessionId(session.id, category: selectedCategory)
+                Self.recordSessionId(session.id, category: category)
                 visuallySelectedSessionID = session.id
-                selectedCategory = SessionCategory(session: session)
+                selectedCategory = category
                 if selectedCategory == .worker {
                     isShowingWorkerArchive = isArchivedWorkerSession(
                         session,
@@ -120,7 +125,8 @@ struct SessionsView: View {
         }
         .onReceive(entityClient.sessionGroupingDidChange) { _ in
             entityGroupingRevision &+= 1
-            if selectedCategory == .worker {
+            if !recoverSelectionIfNeeded(from: backendClient.sessions),
+               selectedCategory == .worker {
                 restoreSelection(for: .worker)
             }
         }
@@ -212,10 +218,54 @@ struct SessionsView: View {
 
     private static func recordSessionId(_ id: String, category: SessionCategory) {
         CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedSessionKey(for: category))
+        let recentIds = SessionSelectionRecoveryPolicy.recording(
+            id,
+            in: restoredRecentSessionIds()
+        )
+        CorptieAppEnvironment.userDefaults.set(recentIds, forKey: recentSessionIdsKey)
     }
 
     private static func restoredSessionId(for category: SessionCategory) -> String? {
         CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedSessionKey(for: category))
+    }
+
+    private static func restoredRecentSessionIds() -> [String] {
+        CorptieAppEnvironment.userDefaults.stringArray(forKey: recentSessionIdsKey) ?? []
+    }
+
+    /// WorkItem 完成会让其 Worker Session 离开活动列表。此时不再按列表顺序随意挑选，
+    /// 而是跳到用户最近打开且仍可访问的 Session，并同步切换对应分类。
+    @discardableResult
+    private func recoverSelectionIfNeeded(from sessions: [TaskSession]) -> Bool {
+        guard let current = selectedSession else { return false }
+        guard !SessionSelectionRecoveryPolicy.isAccessible(
+            current,
+            sessions: sessions,
+            workItems: entityClient.workItems
+        ) else {
+            return false
+        }
+
+        guard let targetId = SessionSelectionRecoveryPolicy.recoverySessionID(
+            recentSessionIDs: Self.restoredRecentSessionIds(),
+            sessions: sessions,
+            workItems: entityClient.workItems,
+            excluding: current.id
+        ), let target = sessions.first(where: { $0.id == targetId }) else {
+            selectedSession = nil
+            visuallySelectedSessionID = nil
+            return true
+        }
+
+        pendingSelectionTask?.cancel()
+        let category = SessionCategory(session: target)
+        selectedSession = target
+        visuallySelectedSessionID = target.id
+        selectedCategory = category
+        isShowingWorkerArchive = false
+        Self.recordSessionId(target.id, category: category)
+        backendClient.select(session: target)
+        return true
     }
 
     // 恢复某个 Tab（SessionCategory）下的选择：优先保留仍有效的当前选择，
@@ -959,6 +1009,45 @@ func isArchivedWorkerSession(_ session: TaskSession, workItems: [WorkItem]) -> B
     return WorkItemColumn.column(for: workItem.status) == .done
 }
 
+enum SessionSelectionRecoveryPolicy {
+    private static let historyLimit = 50
+
+    static func recording(_ sessionID: String, in recentSessionIDs: [String]) -> [String] {
+        var result = recentSessionIDs.filter { $0 != sessionID }
+        result.insert(sessionID, at: 0)
+        return Array(result.prefix(historyLimit))
+    }
+
+    static func isAccessible(
+        _ session: TaskSession,
+        sessions: [TaskSession],
+        workItems: [WorkItem]
+    ) -> Bool {
+        guard sessions.contains(where: { $0.id == session.id }) else { return false }
+        guard session.resolvedSessionKind == .worker,
+              let workItemID = session.workItemId,
+              let workItem = workItems.first(where: { $0.id == workItemID }) else {
+            return true
+        }
+        return WorkItemColumn.column(for: workItem.status) != .done
+    }
+
+    static func recoverySessionID(
+        recentSessionIDs: [String],
+        sessions: [TaskSession],
+        workItems: [WorkItem],
+        excluding excludedSessionID: String
+    ) -> String? {
+        let accessibleIDs = Set(sessions.lazy.filter {
+            $0.id != excludedSessionID && isAccessible($0, sessions: sessions, workItems: workItems)
+        }.map(\.id))
+        if let recentID = recentSessionIDs.first(where: accessibleIDs.contains) {
+            return recentID
+        }
+        return sessions.first(where: { accessibleIDs.contains($0.id) })?.id
+    }
+}
+
 // 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。
 //   固定在右侧，常驻展示，无收起/展开按钮；竖向排列详情字段。
 //   Rudder 契约：rail 固定 280px，sticky 顶部，仅 <48rem 移动端才隐藏。
@@ -1004,7 +1093,7 @@ struct SessionDetailPanel: View {
             if let workItemId = session.workItemId, !workItemId.isEmpty {
                 sessionCard
                     .frame(height: 330)
-                WorkItemDetailCard(workItemId: workItemId, agentName: agentDisplayName)
+                SessionWorkItemDetailCard(workItemId: workItemId)
             } else {
                 sessionCard
             }
@@ -1648,45 +1737,31 @@ func sessionAgentDisplayName(session: TaskSession, agents: [Agent]) -> String {
     return agents.first(where: { $0.agentId == agentId })?.name ?? agentId
 }
 
-private struct WorkItemDetailCard: View {
+private struct SessionWorkItemDetailCard: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     let workItemId: String
-    let agentName: String
     @State private var workItem: WorkItem?
     @State private var isLoading = true
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(L10n("WorkItem 详情"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
-            Divider()
-                .opacity(0.5)
-
-            Group {
-                if let workItem {
-                    ScrollView {
-                        workItemContent(workItem)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                    }
-                } else if isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ContentUnavailableView(
-                        L10n("Unable to Load WorkItem"),
-                        systemImage: "exclamationmark.triangle",
-                        description: Text(L10n("绑定记录可能已不存在"))
-                    )
-                }
+        Group {
+            if let workItem {
+                let objective = entityClient.objectives.first { $0.id == workItem.objectiveId }
+                WorkItemDetailView(
+                    workItem: workItem,
+                    workspaceIds: objective?.workspaceIds ?? [],
+                    contributorAgentIds: objective?.contributorAgentIds ?? []
+                )
+            } else if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView(
+                    L10n("Unable to Load WorkItem"),
+                    systemImage: "exclamationmark.triangle",
+                    description: Text(L10n("绑定记录可能已不存在"))
+                )
             }
         }
         .frame(maxHeight: .infinity)
@@ -1698,109 +1773,23 @@ private struct WorkItemDetailCard: View {
         .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
         .task(id: workItemId) {
             isLoading = true
-            workItem = await entityClient.workItem(id: workItemId)
             if entityClient.objectives.isEmpty {
                 await entityClient.refreshObjectives()
             }
+            if entityClient.repositories.isEmpty {
+                await entityClient.refreshRepositories()
+            }
+            if let cached = entityClient.workItems.first(where: { $0.id == workItemId }) {
+                workItem = cached
+            } else {
+                workItem = await entityClient.workItem(id: workItemId)
+            }
             isLoading = false
         }
-    }
-
-    private func workItemContent(_ item: WorkItem) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(item.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-
-                HStack(spacing: 6) {
-                    metadataPill(
-                        WorkItemColumn.column(for: item.status).title,
-                        systemImage: WorkItemColumn.column(for: item.status).systemImage,
-                        color: workItemStatusColor(item.status)
-                    )
-                    metadataPill(item.priority.capitalized, systemImage: "flag", color: .secondary)
-                    Spacer(minLength: 0)
-                    Text(relativeDate(item.updatedAt))
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                }
+        .onChange(of: entityClient.workItemsRevision) { _, _ in
+            if let refreshed = entityClient.workItems.first(where: { $0.id == workItemId }) {
+                workItem = refreshed
             }
-
-            HStack(alignment: .top, spacing: 10) {
-                workItemSection(title: "Objective", systemImage: "target") {
-                    Text(objectiveName(for: item) ?? "—")
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                workItemSection(title: "执行 Agent", systemImage: "cpu") {
-                    Text(agentName)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if !item.description.isEmpty {
-                workItemSection(title: "描述", systemImage: "text.alignleft") {
-                    CollapsibleDetailText(text: item.description, lineSpacing: 1)
-                }
-            }
-
-            if !item.acceptanceCriteria.isEmpty {
-                workItemSection(title: "验收标准", systemImage: "checkmark.circle") {
-                    CollapsibleDetailText(text: item.acceptanceCriteria, lineSpacing: 1)
-                }
-            }
-        }
-    }
-
-    private func workItemSection<Content: View>(
-        title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.tertiary)
-            content()
-        }
-    }
-
-    private func objectiveName(for item: WorkItem) -> String? {
-        entityClient.objectives.first(where: { $0.id == item.objectiveId })?.name
-    }
-
-    private func metadataPill(_ title: String, systemImage: String, color: Color) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.08), in: Capsule())
-    }
-
-    private func relativeDate(_ rawValue: String) -> String {
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        guard let date = fractional.date(from: rawValue) ?? ISO8601DateFormatter().date(from: rawValue) else {
-            return rawValue
-        }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: date, relativeTo: Date())
-    }
-
-    private func workItemStatusColor(_ status: String) -> Color {
-        switch WorkItemColumn.column(for: status) {
-        case .todo: .secondary
-        case .inProgress: .blue
-        case .done: .green
         }
     }
 }
