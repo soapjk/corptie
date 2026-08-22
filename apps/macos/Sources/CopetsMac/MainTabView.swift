@@ -3,9 +3,112 @@ import SwiftUI
 // Sessions 与控制台共用的栏位几何，确保 sidebar 与详情卡片宽度稳定。
 enum TwoPaneLayoutMetrics {
     static let sidebarWidth: CGFloat = 300
+    static let sidebarMaximumWidth: CGFloat = 520
     static let detailCardWidth: CGFloat = 300
     static let contentPadding: CGFloat = 16
     static let cardCornerRadius: CGFloat = 12
+}
+
+/// Keeps inactive main-tab pages at their last proposed size.
+///
+/// The main window used to propose every intermediate full-screen animation
+/// size to all five resident pages. Four invisible NavigationSplitView/grid/
+/// WKWebView hierarchies therefore repeated layout work on the main thread for
+/// every animation frame. Only the selected page needs the live window size;
+/// inactive pages retain their state and receive a fresh proposal when selected.
+struct MainTabPageLayout: Layout {
+    struct Cache {
+        fileprivate var proposals: MainTabPageProposalCache
+    }
+
+    let selectedIndex: Int
+
+    func makeCache(subviews: Subviews) -> Cache {
+        Cache(proposals: MainTabPageProposalCache(pageCount: subviews.count))
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache.proposals.resetIfPageCountChanged(subviews.count)
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Cache
+    ) -> CGSize {
+        CGSize(
+            width: max(0, proposal.width ?? 0),
+            height: max(0, proposal.height ?? 0)
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Cache
+    ) {
+        let containerSize = bounds.size
+        for (index, subview) in subviews.enumerated() {
+            let pageSize = proposalSize(
+                for: index,
+                selectedIndex: selectedIndex,
+                containerSize: containerSize,
+                cache: &cache
+            )
+            let horizontalDirection: CGFloat
+            if index == selectedIndex {
+                horizontalDirection = 0
+            } else {
+                horizontalDirection = index < selectedIndex ? -1 : 1
+            }
+            subview.place(
+                at: CGPoint(
+                    x: bounds.midX + horizontalDirection * bounds.width,
+                    y: bounds.midY
+                ),
+                anchor: .center,
+                proposal: ProposedViewSize(pageSize)
+            )
+        }
+    }
+
+    private func proposalSize(
+        for index: Int,
+        selectedIndex: Int,
+        containerSize: CGSize,
+        cache: inout Cache
+    ) -> CGSize {
+        cache.proposals.proposal(
+            for: index,
+            selectedIndex: selectedIndex,
+            containerSize: containerSize
+        )
+    }
+}
+
+struct MainTabPageProposalCache {
+    private(set) var pageSizes: [CGSize?]
+
+    init(pageCount: Int) {
+        pageSizes = Array(repeating: nil, count: pageCount)
+    }
+
+    mutating func resetIfPageCountChanged(_ pageCount: Int) {
+        guard pageSizes.count != pageCount else { return }
+        pageSizes = Array(repeating: nil, count: pageCount)
+    }
+
+    mutating func proposal(
+        for pageIndex: Int,
+        selectedIndex: Int,
+        containerSize: CGSize
+    ) -> CGSize {
+        if pageIndex == selectedIndex || pageSizes[pageIndex] == nil {
+            pageSizes[pageIndex] = containerSize
+        }
+        return pageSizes[pageIndex] ?? containerSize
+    }
 }
 
 // 顶层 Tab 枚举：控制台 / Sessions / Agents（设置已移至右上角齿轮入口的独立页面）。
@@ -206,23 +309,20 @@ struct MainTabView: View {
             }
             .padding(.horizontal, 12)
 
-            GeometryReader { geo in
-                ZStack {
-                    ForEach(AppTab.allCases) { tab in
-                        content(for: tab)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .offset(x: slideOffset(for: tab, width: geo.size.width))
-                            .opacity(tab == router.selectedTab ? 1 : 0)
-                            .allowsHitTesting(tab == router.selectedTab)
-                            .zIndex(tab == router.selectedTab ? 1 : 0)
-                    }
+            MainTabPageLayout(selectedIndex: router.selectedTab.index) {
+                ForEach(AppTab.allCases) { tab in
+                    content(for: tab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(tab == router.selectedTab ? 1 : 0)
+                        .allowsHitTesting(tab == router.selectedTab)
+                        .zIndex(tab == router.selectedTab ? 1 : 0)
                 }
-                .clipped()
-                .animation(
-                    .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
-                    value: router.selectedTab
-                )
             }
+            .clipped()
+            .animation(
+                .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
+                value: router.selectedTab
+            )
         }
         .environmentObject(router)
     }
@@ -241,14 +341,6 @@ struct MainTabView: View {
         case .agents:
             AgentManagementView()
         }
-    }
-
-    // 常驻滑动：选中 Tab 居中（offset 0），其余 Tab 按相对位置停靠在
-    // 左/右屏幕外。切 Tab 时 withAnimation 让新 Tab 从对应侧滑入、旧 Tab 滑出，
-    // 方向天然由 index 相对关系决定，无需显式 slideForward。
-    private func slideOffset(for tab: AppTab, width: CGFloat) -> CGFloat {
-        if tab == router.selectedTab { return 0 }
-        return tab.index < router.selectedTab.index ? -width : width
     }
 
     private func openSettings() {

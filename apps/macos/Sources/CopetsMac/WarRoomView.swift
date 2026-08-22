@@ -31,21 +31,18 @@ struct WarRoomView: View {
     private static let lastSelectedWorkItemKey = "warRoom.lastSelectedWorkItemId"
 
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
-                objectiveSidebar
-                    .toolbar(removing: .sidebarToggle)
-                    .navigationSplitViewColumnWidth(
-                        min: TwoPaneLayoutMetrics.sidebarWidth,
-                        ideal: TwoPaneLayoutMetrics.sidebarWidth,
-                        max: max(TwoPaneLayoutMetrics.sidebarWidth, w * 0.34)
-                    )
-            } detail: {
-                consoleWorkspace
-            }
-            .toolbar(removing: .sidebarToggle)
+        NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
+            objectiveSidebar
+                .toolbar(removing: .sidebarToggle)
+                .navigationSplitViewColumnWidth(
+                    min: TwoPaneLayoutMetrics.sidebarWidth,
+                    ideal: TwoPaneLayoutMetrics.sidebarWidth,
+                    max: TwoPaneLayoutMetrics.sidebarMaximumWidth
+                )
+        } detail: {
+            consoleWorkspace
         }
+        .toolbar(removing: .sidebarToggle)
         .task {
             await client.refreshObjectives()
             // WorkItem 只持久化绑定的 repository id；详情页需要仓库目录将其解析为名称。
