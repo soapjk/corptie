@@ -543,6 +543,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.coordinator.restore(position: AppKitChatTimelinePosition(
             rowID: "session-row-12",
             offset: 6,
+            absoluteScrollY: 0,
             followsLatest: false
         ))
         await settleMainQueue()
@@ -551,6 +552,100 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(anchor.id, "session-row-12")
         XCTAssertEqual(anchor.offset, 6, accuracy: 4)
         XCTAssertFalse(harness.followState.value)
+    }
+
+    func testSavedSessionPositionFallsBackToAbsoluteScrollWhenAnchorIsMissing() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "fallback-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.tableView.layoutSubtreeIfNeeded()
+
+        harness.coordinator.restore(position: AppKitChatTimelinePosition(
+            rowID: "message-no-longer-loaded",
+            offset: 6,
+            absoluteScrollY: 240,
+            followsLatest: false
+        ))
+        await settleMainQueue()
+
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 240, accuracy: 2)
+        XCTAssertFalse(harness.followState.value)
+    }
+
+    func testPendingSessionRestoreSurvivesAProjectionChangeBeforeLayoutCompletes() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "pending-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.tableView.layoutSubtreeIfNeeded()
+
+        harness.coordinator.restore(position: AppKitChatTimelinePosition(
+            rowID: "pending-row-12",
+            offset: 5,
+            absoluteScrollY: 0,
+            followsLatest: false
+        ))
+        let prepended = [row(id: "pending-history", text: "Earlier history")] + rows
+        harness.coordinator.apply(rows: prepended)
+        await settleMainQueue()
+
+        let anchor = visibleAnchor(in: harness.tableView, rows: prepended)
+        XCTAssertEqual(anchor.id, "pending-row-12")
+        XCTAssertEqual(anchor.offset, 5, accuracy: 4)
+        XCTAssertFalse(harness.followState.value)
+    }
+
+    func testInitialSessionPositionIsRestoredInsideTheFirstLayoutPass() {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "first-frame-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.prepareInitialPosition(AppKitChatTimelinePosition(
+            rowID: "first-frame-row-12",
+            offset: 4,
+            absoluteScrollY: 0,
+            followsLatest: false
+        ))
+        harness.coordinator.apply(rows: rows)
+
+        harness.window.layoutIfNeeded()
+        harness.scrollView.layoutSubtreeIfNeeded()
+
+        let anchor = visibleAnchor(in: harness.tableView, rows: rows)
+        XCTAssertEqual(anchor.id, "first-frame-row-12")
+        XCTAssertEqual(anchor.offset, 4, accuracy: 4)
+        XCTAssertFalse(harness.followState.value)
+    }
+
+    func testInitialLatestPositionIsAtBottomInsideTheFirstLayoutPass() {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<30).map { row(id: "first-bottom-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.prepareInitialScrollToBottom()
+        harness.coordinator.apply(rows: rows)
+
+        harness.window.layoutIfNeeded()
+        harness.scrollView.layoutSubtreeIfNeeded()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+    }
+
+    func testImmediatePositionPublishFlushesTheLastViewportBeforeSessionUnmount() async throws {
+        var savedPosition: AppKitChatTimelinePosition?
+        let harness = makeHarness(
+            followsLatest: false,
+            height: 180,
+            onPositionChange: { savedPosition = $0 }
+        )
+        let rows = (0..<30).map { row(id: "flush-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.tableView.layoutSubtreeIfNeeded()
+        let targetY: CGFloat = 260
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+
+        harness.coordinator.publishPositionImmediately()
+
+        let position = try XCTUnwrap(savedPosition)
+        XCTAssertEqual(position.absoluteScrollY, Double(targetY), accuracy: 2)
+        XCTAssertFalse(position.followsLatest)
     }
 
     func testTailRevisionFollowsLatestButHistoryReadingDoesNot() async {
@@ -660,7 +755,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         followsLatest: Bool,
         height: CGFloat = 320,
         onToggle: @escaping (String) -> Void = { _ in },
-        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
+        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
+        onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
     ) -> (
         window: NSWindow,
         scrollView: NSScrollView,
@@ -675,7 +771,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let coordinator = AppKitChatTimelineView.Coordinator(
             followsLatest: binding,
             onToggleExpansion: onToggle,
-            onAction: onAction
+            onAction: onAction,
+            onPositionChange: onPositionChange
         )
         coordinator.followsLatest = followsLatest
         coordinator.attach(tableView: tableView, scrollView: scrollView)

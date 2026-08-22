@@ -29,7 +29,12 @@ final class SessionPresentationStoreTests: XCTestCase {
 
     func testViewportAndProjectionShareSessionScopedLifetime() {
         let store = SessionPresentationStore()
-        let position = AppKitChatTimelinePosition(rowID: "message-42", offset: 8, followsLatest: false)
+        let position = AppKitChatTimelinePosition(
+            rowID: "message-42",
+            offset: 8,
+            absoluteScrollY: 420,
+            followsLatest: false
+        )
         store.store(position, for: "session-a")
 
         XCTAssertEqual(store.position(for: "session-a"), position)
