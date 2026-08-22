@@ -1,6 +1,7 @@
 import XCTest
 @testable import CorptieMac
 
+@MainActor
 final class SessionNotificationPolicyTests: XCTestCase {
     private let aggregateOnly = SessionNotificationConfiguration(
         notifyOnComplete: false,
@@ -36,7 +37,119 @@ final class SessionNotificationPolicyTests: XCTestCase {
         )
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(events.first?.kind, .allSessionsWaiting)
-        XCTAssertEqual(events.first?.counts, SessionNotificationCounts(completed: 1, blocked: 1, failed: 0))
+        XCTAssertEqual(events.first?.counts, SessionNotificationCounts(
+            completed: 1,
+            blocked: 1,
+            failed: 0,
+            pendingUserAttention: 0
+        ))
+    }
+
+    func testAggregatePendingCountCoversZeroOneAndMultipleUnreadSessions() {
+        let cases: [([SessionNotificationSnapshot], Int)] = [
+            ([
+                snapshot("read", .complete, lastAgentMessageSequence: 4, lastReadMessageSequence: 4)
+            ], 0),
+            ([
+                snapshot("read", .complete, lastAgentMessageSequence: 4, lastReadMessageSequence: 4),
+                snapshot("unread", .complete, lastAgentMessageSequence: 5, lastReadMessageSequence: 4)
+            ], 1),
+            ([
+                snapshot("unread-one", .complete, lastAgentMessageSequence: 5, lastReadMessageSequence: 4),
+                snapshot("unread-two", .complete, lastAgentMessageSequence: 9, lastReadMessageSequence: 3),
+                snapshot("failed-unread", .failed, lastAgentMessageSequence: 8, lastReadMessageSequence: 1)
+            ], 2)
+        ]
+
+        for (terminalSessions, expectedCount) in cases {
+            var reducer = SessionNotificationReducer()
+            let runningSessions = terminalSessions.map {
+                snapshot(
+                    $0.id,
+                    .running,
+                    lastAgentMessageSequence: $0.lastAgentMessageSequence,
+                    lastReadMessageSequence: $0.lastReadMessageSequence
+                )
+            }
+            _ = reducer.events(for: runningSessions, configuration: aggregateOnly)
+
+            let events = reducer.events(for: terminalSessions, configuration: aggregateOnly)
+
+            XCTAssertEqual(events.count, 1)
+            XCTAssertEqual(events.first?.counts?.pendingUserAttention, expectedCount)
+        }
+    }
+
+    func testMultipleUnreadMessagesInOneSessionCountOnce() {
+        var reducer = SessionNotificationReducer()
+        _ = reducer.events(
+            for: [snapshot("one", .running, lastAgentMessageSequence: 3, lastReadMessageSequence: 3)],
+            configuration: aggregateOnly
+        )
+
+        let events = reducer.events(
+            for: [snapshot("one", .complete, lastAgentMessageSequence: 12, lastReadMessageSequence: 3)],
+            configuration: aggregateOnly
+        )
+
+        XCTAssertEqual(events.first?.counts?.pendingUserAttention, 1)
+    }
+
+    func testPendingCountUsesSameUnreadPredicateAndExcludesIneligibleStatuses() {
+        var reducer = SessionNotificationReducer()
+        let terminalSessions = [
+            snapshot("completed-unread", .complete, lastAgentMessageSequence: 2, lastReadMessageSequence: 1),
+            snapshot("completed-read", .complete, lastAgentMessageSequence: 2, lastReadMessageSequence: 2),
+            snapshot("completed-without-message", .complete),
+            snapshot("blocked-unread", .blocked, lastAgentMessageSequence: 4, lastReadMessageSequence: 1),
+            snapshot("failed-unread", .failed, lastAgentMessageSequence: 4, lastReadMessageSequence: 1)
+        ]
+        _ = reducer.events(
+            for: terminalSessions.map {
+                snapshot(
+                    $0.id,
+                    .running,
+                    lastAgentMessageSequence: $0.lastAgentMessageSequence,
+                    lastReadMessageSequence: $0.lastReadMessageSequence
+                )
+            },
+            configuration: aggregateOnly
+        )
+
+        let event = reducer.events(for: terminalSessions, configuration: aggregateOnly).first
+
+        XCTAssertEqual(event?.counts?.pendingUserAttention, 1)
+        XCTAssertTrue(terminalSessions[0].needsUserAttention)
+        XCTAssertFalse(terminalSessions[1].needsUserAttention)
+        XCTAssertFalse(terminalSessions[2].needsUserAttention)
+        XCTAssertFalse(terminalSessions[3].needsUserAttention)
+        XCTAssertFalse(terminalSessions[4].needsUserAttention)
+    }
+
+    func testAggregateNotificationBodyStatesCompletionAndPendingSessionCount() {
+        let previousLanguage = AppLanguageController.shared.selection
+        AppLanguageController.shared.selection = .english
+        defer { AppLanguageController.shared.selection = previousLanguage }
+        let event = SessionNotificationEvent(
+            id: "aggregate",
+            kind: .allSessionsWaiting,
+            session: nil,
+            counts: SessionNotificationCounts(
+                completed: 2,
+                blocked: 0,
+                failed: 0,
+                pendingUserAttention: 1
+            )
+        )
+
+        XCTAssertEqual(
+            SessionNotificationContent.title(for: event),
+            "All Sessions Have Finished Processing"
+        )
+        XCTAssertEqual(
+            SessionNotificationContent.body(for: event),
+            "All sessions have finished processing. Sessions needing your attention: 1."
+        )
     }
 
     func testAggregateNotificationReplacesFinalIndividualNotification() {
@@ -167,7 +280,9 @@ final class SessionNotificationPolicyTests: XCTestCase {
     private func snapshot(
         _ id: String,
         _ status: TaskStatus,
-        updatedAt: String = "2026-08-20T00:00:00Z"
+        updatedAt: String = "2026-08-20T00:00:00Z",
+        lastAgentMessageSequence: Int = 0,
+        lastReadMessageSequence: Int = 0
     ) -> SessionNotificationSnapshot {
         SessionNotificationSnapshot(
             id: id,
@@ -175,7 +290,9 @@ final class SessionNotificationPolicyTests: XCTestCase {
             agent: "Agent",
             status: status,
             summary: "Summary",
-            updatedAt: updatedAt
+            updatedAt: updatedAt,
+            lastAgentMessageSequence: lastAgentMessageSequence,
+            lastReadMessageSequence: lastReadMessageSequence
         )
     }
 }

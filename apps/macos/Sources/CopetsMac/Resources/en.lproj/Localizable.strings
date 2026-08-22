@@ -708,6 +708,8 @@
 "Task Waiting for Interaction" = "Task Waiting for Interaction";
 "Task Failed" = "Task Failed";
 "All Sessions Are Waiting" = "All Sessions Are Waiting";
+"All sessions have finished processing. Sessions needing your attention: %lld." = "All sessions have finished processing. Sessions needing your attention: %lld.";
+"All Sessions Have Finished Processing" = "All Sessions Have Finished Processing";
 "%lld completed · %lld waiting · %lld failed" = "%lld completed · %lld waiting · %lld failed";
 "Show Floating Orb" = "Show Floating Orb";
 "System notifications require the packaged app" = "System notifications are available in the packaged app.";

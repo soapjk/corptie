@@ -1,5 +1,13 @@
 import Foundation
 
+func sessionNeedsUserAttention(
+    status: TaskStatus,
+    lastAgentMessageSequence: Int,
+    lastReadMessageSequence: Int
+) -> Bool {
+    status == .complete && lastAgentMessageSequence > lastReadMessageSequence
+}
+
 enum SessionNotificationKind: String, Equatable {
     case completed
     case blocked
@@ -22,6 +30,7 @@ struct SessionNotificationSnapshot: Equatable {
     let summary: String
     let updatedAt: String
     let lastAgentMessageSequence: Int
+    let lastReadMessageSequence: Int
 
     init(
         id: String,
@@ -30,7 +39,8 @@ struct SessionNotificationSnapshot: Equatable {
         status: TaskStatus,
         summary: String,
         updatedAt: String,
-        lastAgentMessageSequence: Int = 0
+        lastAgentMessageSequence: Int = 0,
+        lastReadMessageSequence: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -39,6 +49,7 @@ struct SessionNotificationSnapshot: Equatable {
         self.summary = summary
         self.updatedAt = updatedAt
         self.lastAgentMessageSequence = lastAgentMessageSequence
+        self.lastReadMessageSequence = lastReadMessageSequence
     }
 
     init(session: TaskSession) {
@@ -49,13 +60,44 @@ struct SessionNotificationSnapshot: Equatable {
         summary = session.summary
         updatedAt = session.updatedAt
         lastAgentMessageSequence = session.lastAgentMessageSequence ?? 0
+        lastReadMessageSequence = session.lastReadMessageSequence ?? 0
     }
+
+    var needsUserAttention: Bool {
+        sessionNeedsUserAttention(
+            status: status,
+            lastAgentMessageSequence: lastAgentMessageSequence,
+            lastReadMessageSequence: lastReadMessageSequence
+        )
+    }
+}
+
+enum SessionNotificationScope {
+    static func activeSnapshots(
+        from sessions: [TaskSession],
+        workItems: [WorkItem] = []
+    ) -> [SessionNotificationSnapshot] {
+        sessions
+            .filter { isSessionInActiveBusinessScope($0, workItems: workItems) }
+            .map(SessionNotificationSnapshot.init(session:))
+    }
+}
+
+func isSessionInActiveBusinessScope(_ session: TaskSession, workItems: [WorkItem]) -> Bool {
+    guard session.archived != true else { return false }
+    guard session.resolvedSessionKind == .worker,
+          let workItemID = session.workItemId,
+          let workItem = workItems.first(where: { $0.id == workItemID }) else {
+        return true
+    }
+    return WorkItemColumn.column(for: workItem.status) != .done
 }
 
 struct SessionNotificationCounts: Equatable {
     let completed: Int
     let blocked: Int
     let failed: Int
+    let pendingUserAttention: Int
 
     var total: Int { completed + blocked + failed }
 }
@@ -171,7 +213,8 @@ struct SessionNotificationReducer {
             let counts = SessionNotificationCounts(
                 completed: sessions.filter { $0.status == .complete }.count,
                 blocked: sessions.filter { $0.status == .blocked }.count,
-                failed: sessions.filter { $0.status == .failed }.count
+                failed: sessions.filter { $0.status == .failed }.count,
+                pendingUserAttention: sessions.filter(\.needsUserAttention).count
             )
             if counts.total > 0 {
                 let fingerprint = sessions
