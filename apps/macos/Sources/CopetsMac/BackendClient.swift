@@ -8,6 +8,7 @@ extension Notification.Name {
     static let openSessionConversation = Notification.Name("openSessionConversation")
     static let openSessionOverview = Notification.Name("openSessionOverview")
     static let showAgentOrb = Notification.Name("showAgentOrb")
+    static let scrollSessionTimelineToTurn = Notification.Name("scrollSessionTimelineToTurn")
 }
 
 struct SessionRestartActivity: Equatable {
@@ -171,6 +172,10 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isRecoveringWorkspace = false
     @Published private(set) var worktreeCommitReviewPrompt: WorktreeCommitReviewPrompt?
     @Published private(set) var isGeneratingWorktreeCommitMessage = false
+    @Published private(set) var selectedScheduledTasks: [ScheduledSessionTask] = []
+    @Published private(set) var isLoadingScheduledTasks = false
+    @Published private(set) var scheduledTaskMutationIds = Set<String>()
+    @Published private(set) var scheduledTaskError: String?
     let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
@@ -336,6 +341,9 @@ final class BackendClient: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     self.markBackendConnectedFromSessionStream()
+                    if let selectedSession = self.selectedSession {
+                        await self.loadScheduledTasks(for: selectedSession)
+                    }
                     var eventName = ""
                     var dataLines: [String] = []
                     for try await line in bytes.lines {
@@ -428,6 +436,22 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if ScheduledSessionEventMapping.authoritativeEventNames.contains(eventName) {
+            guard let selectedSession,
+                  let payload = data.data(using: .utf8) else { return }
+            let eventSessionId = ScheduledSessionEventMapping.sessionId(from: payload)
+            let selectedLogicalSessionId = selectedSession.external?.logicalSessionId ?? selectedSession.id
+            if eventSessionId == nil || eventSessionId == selectedLogicalSessionId || eventSessionId == selectedSession.id {
+                await loadScheduledTasks(for: selectedSession)
+            }
+            if eventName == "ScheduledSessionRunQueued"
+                || eventName == "ScheduledSessionRunStarted"
+                || eventName == "ScheduledSessionRunCompleted"
+                || eventName == "ScheduledSessionRunFailed" {
+                await refreshSelectedDetailFromPolling()
+            }
+            return
+        }
         if eventName == "SessionWorkspaceSwitched" {
             if let payload = data.data(using: .utf8),
                let event = try? JSONDecoder().decode(SessionWorkspaceSwitchedEventEnvelope.self, from: payload),
@@ -435,6 +459,7 @@ final class BackendClient: ObservableObject {
                 completeRestartActivity(for: event.payload.session.id)
                 await refresh()
             }
+            if let selectedSession { await loadScheduledTasks(for: selectedSession) }
             return
         }
         if eventName == "SessionWorkspaceSwitchFailed" {
@@ -458,6 +483,7 @@ final class BackendClient: ObservableObject {
                (try? JSONDecoder().decode(SessionProviderSwitchedEventEnvelope.self, from: payload)) != nil {
                 await refresh()
             }
+            if let selectedSession { await loadScheduledTasks(for: selectedSession) }
             return
         }
         if eventName == "ProviderSessionChanged" {
@@ -1524,6 +1550,11 @@ final class BackendClient: ObservableObject {
         deferredDetailPublishTask = nil
         viewingHistoricalThreadId = nil
         selectedSession = session
+        selectedScheduledTasks = []
+        scheduledTaskError = nil
+        Task { [weak self] in
+            await self?.loadScheduledTasks(for: session, expectedSelectionGeneration: generation)
+        }
         scheduleExecutionPreparation(for: session, generation: generation)
         let cachedDetail = cachedDetail(for: session.id)
         // Publish a cache hit in the same event turn as the row selection. If
@@ -3626,6 +3657,177 @@ final class BackendClient: ObservableObject {
             return true
         } catch {
             return false
+        }
+    }
+
+    func loadScheduledTasks(
+        for session: TaskSession,
+        expectedSelectionGeneration: Int? = nil
+    ) async {
+        if selectedSession?.id == session.id { isLoadingScheduledTasks = true }
+        defer {
+            if selectedSession?.id == session.id { isLoadingScheduledTasks = false }
+        }
+        do {
+            let logicalSessionId = session.external?.logicalSessionId ?? session.id
+            var components = URLComponents(
+                url: baseURL.appending(path: ScheduledSessionAPIContract.collectionPath),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [URLQueryItem(name: "logicalSessionId", value: logicalSessionId)]
+            guard let listURL = components?.url else { throw URLError(.badURL) }
+            let (data, response) = try await URLSession.shared.data(from: listURL)
+            try Self.requireScheduledTaskSuccess(response, data: data)
+            let summaries: [ScheduledSessionTask]
+            if let envelope = try? JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data) {
+                summaries = envelope.tasks
+            } else {
+                summaries = try JSONDecoder().decode([ScheduledSessionTask].self, from: data)
+            }
+            var tasks: [ScheduledSessionTask] = []
+            var detailFailures: [String] = []
+            tasks.reserveCapacity(summaries.count)
+            let endpointBaseURL = baseURL
+            await withTaskGroup(of: (ScheduledSessionTask, String?).self) { group in
+                for summary in summaries {
+                    group.addTask {
+                        let detailURL = endpointBaseURL.appending(
+                            path: ScheduledSessionAPIContract.itemPath(taskId: summary.id)
+                        )
+                        do {
+                            let (detailData, detailResponse) = try await URLSession.shared.data(from: detailURL)
+                            try Self.requireScheduledTaskSuccess(detailResponse, data: detailData)
+                            return (try JSONDecoder().decode(ScheduledSessionTask.self, from: detailData), nil)
+                        } catch {
+                            // Keep the authoritative list row visible if one history read races a mutation.
+                            return (summary, "\(summary.id): \(error.localizedDescription)")
+                        }
+                    }
+                }
+                for await (task, error) in group {
+                    tasks.append(task)
+                    if let error { detailFailures.append(error) }
+                }
+            }
+            guard selectedSession?.id == session.id,
+                  expectedSelectionGeneration == nil || expectedSelectionGeneration == selectionGeneration else { return }
+            selectedScheduledTasks = Self.reconciledScheduledTasks(tasks, for: session)
+            scheduledTaskError = detailFailures.first
+        } catch {
+            guard selectedSession?.id == session.id else { return }
+            scheduledTaskError = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func createScheduledTask(_ draft: ScheduledSessionTaskDraft, for session: TaskSession) async -> Bool {
+        if let validationError = draft.validationError() {
+            scheduledTaskError = validationError.localizedDescription
+            return false
+        }
+        return await performScheduledTaskMutation(
+            session: session,
+            mutationId: "create",
+            method: "POST",
+            path: ScheduledSessionAPIContract.collectionPath,
+            body: draft.requestBody().merging([
+                "logicalSessionId": session.external?.logicalSessionId ?? session.id
+            ]) { current, _ in current }
+        )
+    }
+
+    @discardableResult
+    func updateScheduledTask(
+        _ task: ScheduledSessionTask,
+        draft: ScheduledSessionTaskDraft,
+        for session: TaskSession
+    ) async -> Bool {
+        if let validationError = draft.validationError() {
+            scheduledTaskError = validationError.localizedDescription
+            return false
+        }
+        var body = draft.requestBody()
+        body["resourceVersion"] = task.resourceVersion
+        return await performScheduledTaskMutation(
+            session: session,
+            mutationId: task.id,
+            method: "PATCH",
+            path: ScheduledSessionAPIContract.itemPath(taskId: task.id),
+            body: body
+        )
+    }
+
+    @discardableResult
+    func performScheduledTaskAction(
+        _ action: ScheduledSessionTaskAction,
+        task: ScheduledSessionTask,
+        for session: TaskSession
+    ) async -> Bool {
+        await performScheduledTaskMutation(
+            session: session,
+            mutationId: task.id,
+            method: "POST",
+            path: ScheduledSessionAPIContract.actionPath(taskId: task.id, action: action),
+            body: nil
+        )
+    }
+
+    private func performScheduledTaskMutation(
+        session: TaskSession,
+        mutationId: String,
+        method: String,
+        path: String,
+        body: [String: Any]?
+    ) async -> Bool {
+        guard scheduledTaskMutationIds.insert(mutationId).inserted else { return false }
+        scheduledTaskError = nil
+        defer { scheduledTaskMutationIds.remove(mutationId) }
+        do {
+            var request = URLRequest(url: baseURL.appending(path: path))
+            request.httpMethod = method
+            if let body {
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            }
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireScheduledTaskSuccess(response, data: data)
+            await loadScheduledTasks(for: session)
+            return true
+        } catch {
+            scheduledTaskError = error.localizedDescription
+            return false
+        }
+    }
+
+    nonisolated static func reconciledScheduledTasks(
+        _ tasks: [ScheduledSessionTask],
+        for session: TaskSession
+    ) -> [ScheduledSessionTask] {
+        let logicalSessionId = session.external?.logicalSessionId ?? session.id
+        var byID: [String: ScheduledSessionTask] = [:]
+        for task in tasks where task.logicalSessionId == logicalSessionId || task.logicalSessionId == session.id {
+            if let existing = byID[task.id], existing.resourceVersion > task.resourceVersion { continue }
+            byID[task.id] = task
+        }
+        return byID.values.sorted { left, right in
+            let leftDate = ScheduledSessionDateFormatting.date(from: left.nextRunAt) ?? .distantFuture
+            let rightDate = ScheduledSessionDateFormatting.date(from: right.nextRunAt) ?? .distantFuture
+            if leftDate != rightDate { return leftDate < rightDate }
+            return left.id < right.id
+        }
+    }
+
+    private nonisolated static func requireScheduledTaskSuccess(_ response: URLResponse, data: Data) throws {
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let code = object["code"] as? String
+                let message = object["error"] as? String
+                if code != nil || message != nil {
+                    throw BackendError.message([code, message].compactMap { $0 }.joined(separator: " · "))
+                }
+            }
+            throw BackendError.message("Scheduled Session task request failed.")
         }
     }
 

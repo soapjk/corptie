@@ -656,6 +656,14 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var onNearTop: () -> Void = {}
     var initialPosition: AppKitChatTimelinePosition? = nil
     var onPositionChange: (AppKitChatTimelinePosition) -> Void = { _ in }
+    var scrollToTurnID: String? = nil
+    var scrollToTurnRevision: Int = 0
+
+    nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
+        rows.firstIndex(where: {
+            $0.id == turnID || $0.expandableTurnId == turnID || $0.id.contains(turnID)
+        })
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
@@ -679,6 +687,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
         context.coordinator.apply(rows: rows, animated: false)
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
+        context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
         return scrollView
     }
 
@@ -740,6 +749,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
             context.coordinator.scrollToBottom()
         }
+        if context.coordinator.lastScrollToTurnRevision != scrollToTurnRevision {
+            context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
+            if let scrollToTurnID { context.coordinator.scrollToTurn(scrollToTurnID) }
+        }
     }
 
     @MainActor
@@ -762,6 +775,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var nearTopSuppressionGeneration = 0
         private var suppressesNearTopTrigger = false
         var lastScrollToBottomRevision = Int.min
+        var lastScrollToTurnRevision = Int.min
         var followsLatest = true
         private var nearTopTriggered = false
         private var positionPublishWorkItem: DispatchWorkItem?
@@ -1126,6 +1140,20 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         func restore(position: AppKitChatTimelinePosition) {
             prepareInitialPosition(position)
             schedulePendingInitialViewportRestoreIfNeeded()
+        }
+
+        func scrollToTurn(_ turnID: String) {
+            guard let tableView,
+                  let clipView = scrollView?.contentView,
+                  let row = AppKitChatTimelineView.rowIndex(forTurnID: turnID, in: rows) else { return }
+            suppressNearTopDuringLayout()
+            followsLatest = false
+            if followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = false }
+            tableView.layoutSubtreeIfNeeded()
+            synchronizeDocumentHeight(in: tableView)
+            clipView.scroll(to: NSPoint(x: 0, y: max(0, tableView.rect(ofRow: row).minY - 10)))
+            scrollView?.reflectScrolledClipView(clipView)
+            schedulePositionPublish()
         }
 
         func prepareInitialPosition(_ position: AppKitChatTimelinePosition) {
