@@ -181,26 +181,160 @@ final class SessionNotificationPolicyTests: XCTestCase {
 }
 
 final class SessionCompletionSoundTransitionTrackerTests: XCTestCase {
-    func testLegacySoundTransitionsRemainIndependentOfSystemNotificationPreferences() {
+    func testAgentReplyCompletionTriggersSoundTransition() {
         var tracker = SessionCompletionSoundTransitionTracker()
-        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .running)]), [])
-        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .complete)]), ["one"])
+        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .running, sequence: 4)]), [])
+        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .complete, sequence: 5)]), ["one"])
 
-        _ = tracker.completedSessionIDs(for: [snapshot("one", .running)])
-        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .blocked)]), ["one"])
+        _ = tracker.completedSessionIDs(for: [snapshot("one", .running, sequence: 5)])
+        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .blocked, sequence: 6)]), ["one"])
 
-        _ = tracker.completedSessionIDs(for: [snapshot("one", .running)])
-        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .failed)]), [])
+        _ = tracker.completedSessionIDs(for: [snapshot("one", .running, sequence: 6)])
+        XCTAssertEqual(tracker.completedSessionIDs(for: [snapshot("one", .failed, sequence: 7)]), [])
     }
 
-    private func snapshot(_ id: String, _ status: TaskStatus) -> SessionNotificationSnapshot {
+    func testSendingMessageDoesNotTriggerSoundWithoutAnAgentReply() {
+        var tracker = SessionCompletionSoundTransitionTracker()
+        _ = tracker.completedSessionIDs(for: [snapshot("one", .complete, sequence: 8)])
+
+        XCTAssertEqual(
+            tracker.completedSessionIDs(for: [snapshot("one", .running, sequence: 8)]),
+            []
+        )
+        XCTAssertEqual(
+            tracker.completedSessionIDs(for: [snapshot("one", .blocked, sequence: 8)]),
+            []
+        )
+    }
+
+    func testReplySequenceMayAdvanceBeforeTheTerminalStatusUpdate() {
+        var tracker = SessionCompletionSoundTransitionTracker()
+        _ = tracker.completedSessionIDs(for: [snapshot("one", .complete, sequence: 8)])
+        _ = tracker.completedSessionIDs(for: [snapshot("one", .running, sequence: 8)])
+        _ = tracker.completedSessionIDs(for: [snapshot("one", .running, sequence: 9)])
+
+        XCTAssertEqual(
+            tracker.completedSessionIDs(for: [snapshot("one", .complete, sequence: 9)]),
+            ["one"]
+        )
+    }
+
+    private func snapshot(
+        _ id: String,
+        _ status: TaskStatus,
+        sequence: Int
+    ) -> SessionNotificationSnapshot {
         SessionNotificationSnapshot(
             id: id,
             title: "Session \(id)",
             agent: "Agent",
             status: status,
             summary: "Summary",
-            updatedAt: "2026-08-20T00:00:00Z"
+            updatedAt: "2026-08-20T00:00:00Z",
+            lastAgentMessageSequence: sequence
+        )
+    }
+}
+
+@MainActor
+final class SessionCompletionSoundPreferencesTests: XCTestCase {
+    func testMissingPreferenceDefaultsToOff() {
+        let defaults = makeDefaults()
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.selectedSoundId(for: "new-session", defaults: defaults),
+            SessionCompletionSoundManager.noneSoundId
+        )
+        XCTAssertNil(
+            SessionCompletionSoundManager.enabledSoundId(for: "new-session", defaults: defaults)
+        )
+    }
+
+    func testExplicitEnabledPreferencePersistsAcrossReloads() {
+        let defaults = makeDefaults()
+        SessionCompletionSoundManager.setSelectedSoundId(
+            "ping",
+            for: "existing-session",
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.selectedSoundId(for: "existing-session", defaults: defaults),
+            "ping"
+        )
+        XCTAssertEqual(
+            SessionCompletionSoundManager.enabledSoundId(for: "existing-session", defaults: defaults),
+            "ping"
+        )
+    }
+
+    func testExplicitEnabledPreferenceAllowsAnAgentReplyCompletionToPlay() {
+        let defaults = makeDefaults()
+        SessionCompletionSoundManager.setSelectedSoundId(
+            "ping",
+            for: "existing-session",
+            defaults: defaults
+        )
+        var tracker = SessionCompletionSoundTransitionTracker()
+        _ = tracker.completedSessionIDs(for: [snapshot(status: .running, sequence: 20)])
+
+        let completedSessionIDs = tracker.completedSessionIDs(
+            for: [snapshot(status: .complete, sequence: 21)]
+        )
+        let enabledSounds = completedSessionIDs.compactMap {
+            SessionCompletionSoundManager.enabledSoundId(for: $0, defaults: defaults)
+        }
+
+        XCTAssertEqual(enabledSounds, ["ping"])
+    }
+
+    func testExplicitDefaultSoundIsPersistedInsteadOfBecomingAnUnsetPreference() {
+        let defaults = makeDefaults()
+        SessionCompletionSoundManager.setSelectedSoundId(
+            SessionCompletionSoundManager.defaultSoundId,
+            for: "existing-session",
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.selectedSoundId(for: "existing-session", defaults: defaults),
+            SessionCompletionSoundManager.defaultSoundId
+        )
+    }
+
+    func testExplicitOffPreferencePersistsAcrossReloads() {
+        let defaults = makeDefaults()
+        SessionCompletionSoundManager.setSelectedSoundId(
+            SessionCompletionSoundManager.noneSoundId,
+            for: "existing-session",
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.selectedSoundId(for: "existing-session", defaults: defaults),
+            SessionCompletionSoundManager.noneSoundId
+        )
+        XCTAssertNil(
+            SessionCompletionSoundManager.enabledSoundId(for: "existing-session", defaults: defaults)
+        )
+    }
+
+    private func makeDefaults() -> UserDefaults {
+        let suite = "SessionCompletionSoundPreferencesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        return defaults
+    }
+
+    private func snapshot(status: TaskStatus, sequence: Int) -> SessionNotificationSnapshot {
+        SessionNotificationSnapshot(
+            id: "existing-session",
+            title: "Session",
+            agent: "Agent",
+            status: status,
+            summary: "Summary",
+            updatedAt: "2026-08-22T00:00:00Z",
+            lastAgentMessageSequence: sequence
         )
     }
 }
