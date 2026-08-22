@@ -159,6 +159,88 @@ test("prepare refuses to open a confirmation when there is nothing to push", asy
   }
 });
 
+test("branch push sends only existing commits and establishes the upstream without force", async () => {
+  const fixture = await createFixture();
+  const gitCalls = [];
+  const manager = localPushManager({
+    execFile: async (file, arguments_, options) => {
+      gitCalls.push([file, [...arguments_]]);
+      return execFileAsync(file, arguments_, options);
+    }
+  });
+  try {
+    await git(["switch", "-c", "feature/push-button"], fixture.repository);
+    await writeFile(join(fixture.repository, "feature.txt"), "committed content\n");
+    await git(["add", "feature.txt"], fixture.repository);
+    await git(["commit", "-m", "Add push button fixture"], fixture.repository);
+    await writeFile(join(fixture.repository, "uncommitted.txt"), "must remain local\n");
+
+    const pending = await manager.branchStatus({ workingDirectory: fixture.repository });
+    assert.equal(pending.available, true);
+    assert.equal(pending.pending, true);
+    assert.equal(pending.dirty, true);
+    assert.equal(pending.branch, "feature/push-button");
+
+    const result = await manager.pushBranch({ workingDirectory: fixture.repository });
+    assert.equal(result.pushed, true);
+    assert.equal(result.committed, false);
+    assert.equal(
+      (await gitOutput(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], fixture.repository)).trim(),
+      "origin/feature/push-button"
+    );
+    assert.equal(
+      (await gitOutput(["log", "-1", "--pretty=%s", "feature/push-button"], fixture.remote)).trim(),
+      "Add push button fixture"
+    );
+    assert.equal((await gitOutput(["status", "--porcelain"], fixture.repository)).trim(), "?? uncommitted.txt");
+    const pushCall = gitCalls.find(([, arguments_]) => arguments_[2] === "push");
+    assert.deepEqual(pushCall?.[1].slice(2), [
+      "push", "--set-upstream", "origin", "HEAD:refs/heads/feature/push-button"
+    ]);
+    assert.equal(pushCall?.[1].some((argument) => argument.includes("force")), false);
+
+    const current = await manager.branchStatus({ workingDirectory: fixture.repository });
+    assert.equal(current.pending, false);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("branch push status explains a missing GitHub remote", async () => {
+  const fixture = await createFixture();
+  const manager = localPushManager();
+  try {
+    await git(["remote", "remove", "origin"], fixture.repository);
+    const status = await manager.branchStatus({ workingDirectory: fixture.repository });
+    assert.equal(status.available, false);
+    assert.equal(status.pending, false);
+    assert.match(status.error, /No supported GitHub remote is configured/);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("branch push uses the unique configured GitHub remote when origin is absent", async () => {
+  const fixture = await createFixture();
+  const manager = localPushManager();
+  try {
+    await git(["remote", "rename", "origin", "github"], fixture.repository);
+    await git(["switch", "-c", "feature/custom-remote"], fixture.repository);
+    await writeFile(join(fixture.repository, "custom.txt"), "custom remote\n");
+    await git(["add", "custom.txt"], fixture.repository);
+    await git(["commit", "-m", "Push through custom remote"], fixture.repository);
+
+    await manager.pushBranch({ workingDirectory: fixture.repository });
+
+    assert.equal(
+      (await gitOutput(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], fixture.repository)).trim(),
+      "github/feature/custom-remote"
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("confirmation fails closed when the Worktree changes after review", async () => {
   const fixture = await createFixture();
   const manager = localPushManager();

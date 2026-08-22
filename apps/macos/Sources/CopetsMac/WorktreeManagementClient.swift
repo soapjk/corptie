@@ -16,6 +16,8 @@ final class WorktreeManagementClient: ObservableObject {
     @Published var cleanupResult: WorktreeCleanupResult?
     @Published private(set) var cleanupProgress: WorktreeCleanupProgress?
     @Published private(set) var operationNotice: String?
+    @Published private(set) var operationNoticeTitle = "Worktree operation completed"
+    @Published private(set) var pushingWorktreeIds: Set<String> = []
 
     private let baseURL: URL
     private let session: URLSession
@@ -121,6 +123,35 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
+    func pushWorktreeToGitHub(_ worktree: ManagedWorktree) async {
+        guard let repositoryId = selection.repositoryId,
+              !pushingWorktreeIds.contains(worktree.worktreeId) else { return }
+        pushingWorktreeIds.insert(worktree.worktreeId)
+        defer { pushingWorktreeIds.remove(worktree.worktreeId) }
+        do {
+            let envelope: ProjectWorkspaceActionEnvelope<GitHubPushResult> = try await post(
+                "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/push",
+                body: [:]
+            )
+            guard envelope.result.pushed else {
+                throw WorktreeManagementClientError(
+                    message: L10n("GitHub did not confirm that the branch was pushed."),
+                    code: "GITHUB_PUSH_NOT_CONFIRMED"
+                )
+            }
+            operationNoticeTitle = "Pushed to GitHub"
+            operationNotice = L10nFormat(
+                "Pushed %@ to %@ and configured its upstream branch.",
+                envelope.result.branch,
+                envelope.result.destinationUrl
+            )
+            errorMessage = nil
+            await loadRepository(repositoryId, force: true)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     @discardableResult
     func deleteWorktree(_ worktree: ManagedWorktree) async -> Bool {
         guard let repositoryId = selection.repositoryId else { return false }
@@ -131,6 +162,7 @@ final class WorktreeManagementClient: ObservableObject {
                 "worktree-management/repositories/\(repositoryId)/worktrees/\(worktree.worktreeId)/delete",
                 body: [:]
             )
+            operationNoticeTitle = "Worktree deleted"
             operationNotice = "Removed \(envelope.result.branchName ?? envelope.result.path) and its local branch."
             errorMessage = nil
             await loadRepository(repositoryId)

@@ -1154,3 +1154,12 @@
 "The conflict Agent finished in its dedicated Integration Worktree. Corptie is validating the committed result and will continue automatically; main remains untouched until validation passes." = "冲突 Agent 已在专用 Integration Worktree 中完成。Corptie 正在验证提交结果并将自动继续；验证通过前 main 保持不变。";
 "Agent %@ is resolving conflicts only in %@. main remains unchanged; Corptie will validate the result and continue automatically when it finishes." = "Agent %@ 仅在 %@ 中处理冲突，main 保持不变；Agent 完成后 Corptie 会自动验证并继续执行。";
 "The Agent result was not promoted: %@ Nothing changed in main. Fix the dedicated Integration Worktree, then revalidate and continue, or stop and re-preflight." = "Agent 结果未合入：%@ main 未发生任何变化。请修复专用 Integration Worktree 后重新验证并继续，或停止并重新预检。";
+"Pushed to GitHub" = "已推送到 GitHub";
+"GitHub did not confirm that the branch was pushed." = "GitHub 未确认分支已成功推送。";
+"Pushed %@ to %@ and configured its upstream branch." = "已将 %@ 推送到 %@，并配置其上游分支。";
+"Corptie could not inspect the GitHub push configuration for this Worktree." = "Corptie 无法检查此 Worktree 的 GitHub 推送配置。";
+"This Worktree cannot be pushed to GitHub." = "此 Worktree 当前无法推送到 GitHub。";
+"This Worktree is unavailable and cannot be pushed." = "此 Worktree 当前不可用，无法推送。";
+"This branch is already up to date with GitHub and has the correct upstream branch." = "此分支已与 GitHub 同步，并已关联正确的上游分支。";
+"Push committed branch changes to GitHub. Uncommitted files are not included." = "将已提交的分支修改推送到 GitHub；未提交文件不会包含在内。";
+"Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "将此本地分支推送到已配置的 GitHub 仓库，并在需要时设置上游分支。";

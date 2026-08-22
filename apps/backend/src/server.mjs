@@ -1015,6 +1015,7 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
 });
 const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   store,
+  inspectGitHubPushStatus: (input) => gitHubPushes.branchStatus(input),
   inspectRepositorySummary: async (repositoryId) => {
     const path = store.resolveWorkspacePath(repositoryId);
     if (!path) {
@@ -5399,7 +5400,7 @@ async function performProjectDevelopmentServiceAction(project, action, input = {
 }
 
 async function performProjectWorkspaceAction(project, workspaceId, action, input = {}) {
-  if (!["commit-prepare", "commit-message", "commit", "merge", "synchronize", "delete", "restart"].includes(action)) {
+  if (!["commit-prepare", "commit-message", "commit", "merge", "synchronize", "delete", "restart", "push"].includes(action)) {
     const error = new Error(`Unsupported workspace action: ${action}`);
     error.code = "INVALID_PROJECT_ACTION";
     throw error;
@@ -5444,6 +5445,9 @@ async function performProjectWorkspaceAction(project, workspaceId, action, input
       acknowledgeIrrecoverable: input.acknowledgeIrrecoverable === true,
       confirmedBranchName: input.confirmedBranchName
     });
+  }
+  if (action === "push") {
+    return gitHubPushes.pushBranch({ workingDirectory: workspace.path });
   }
   await resolveProjectCommitProtection(workspace, input);
   if (action === "commit") {

@@ -97,6 +97,15 @@ function memoryFixture({
   const service = new WorktreeIntegrationJobService({
     store,
     inspectRepositorySummary,
+    inspectGitHubPushStatus: async ({ workingDirectory }) => ({
+      available: true,
+      pending: workingDirectory !== "/repo",
+      dirty: false,
+      unpushedCommitCount: workingDirectory === "/repo" ? 0 : 1,
+      branch: workingDirectory === "/repo" ? "main" : "feature/one",
+      destinationUrl: "https://github.com/example/repository",
+      error: null
+    }),
     inspectRepository: async () => ({
       repositoryId: repository.id, inventoryVersion: "inventory:1", mainWorktreeId: "wt:main",
       mainPath: "/repo", mainHeadOid: worktrees[0].headOid, worktrees: structuredClone(worktrees)
@@ -215,6 +224,8 @@ test("repository listing uses the lightweight summary while preflight keeps the 
   const listed = await service.repository("repository:1");
   assert.equal(summaryCalls, 1);
   assert.deepEqual(listed.project.worktrees.map((worktree) => worktree.worktreeId), ["wt:summary"]);
+  assert.equal(listed.project.worktrees[0].gitHubPush.available, true);
+  assert.equal(listed.project.worktrees[0].gitHubPush.pending, true);
 
   const plan = await service.preflight("repository:1");
   assert.equal(summaryCalls, 1);

@@ -129,6 +129,38 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
     }
 
+    func testWorktreeTabPushActionCoversLoadingFeedbackAndDisabledReasons() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+        let models = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementModels.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("L10n(\"Push to GitHub\")"))
+        XCTAssertTrue(view.contains("L10n(\"Pushing to GitHub…\")"))
+        XCTAssertTrue(view.contains("worktree.push-github.\\(worktree.worktreeId)"))
+        XCTAssertTrue(view.contains("ManagedWorktreeGitHubPushPolicy.canPush(worktree)"))
+        XCTAssertTrue(view.contains("client.pushingWorktreeIds.contains(worktree.worktreeId)"))
+        XCTAssertTrue(client.contains("!pushingWorktreeIds.contains(worktree.worktreeId)"))
+        XCTAssertTrue(client.contains("actions/push"))
+        XCTAssertTrue(client.contains("guard envelope.result.pushed else"))
+        XCTAssertTrue(client.contains("operationNoticeTitle = \"Pushed to GitHub\""))
+        XCTAssertTrue(client.contains("errorMessage = error.localizedDescription"))
+        XCTAssertTrue(models.contains("push.error ?? L10n(\"This Worktree cannot be pushed to GitHub.\")"))
+        XCTAssertTrue(models.contains("This branch is already up to date with GitHub"))
+    }
+
     func testWorktreeStatusOpensProviderNeutralIndividualOperationReview() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

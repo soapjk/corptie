@@ -16,6 +16,7 @@ export class WorktreeIntegrationJobService {
     this.store = options.store;
     this.inspectRepository = options.inspectRepository;
     this.inspectRepositorySummary = options.inspectRepositorySummary ?? options.inspectRepository;
+    this.inspectGitHubPushStatus = options.inspectGitHubPushStatus ?? null;
     this.commitChanges = options.commitChanges;
     this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
@@ -60,9 +61,14 @@ export class WorktreeIntegrationJobService {
   async repository(repositoryId) {
     const repository = this.#requireRepository(repositoryId);
     const inspection = await this.inspectRepositorySummary(repository.id);
+    const project = this.#associate(inspection);
+    const worktrees = await Promise.all(project.worktrees.map(async (worktree) => ({
+      ...worktree,
+      gitHubPush: await this.#gitHubPushStatus(worktree)
+    })));
     return {
       repository: this.repositories().find((entry) => entry.id === repository.id),
-      project: this.#associate(inspection),
+      project: { ...project, worktrees },
       latestJob: presentJob(this.store.getLatestWorktreeIntegrationJob(repository.id))
     };
   }
@@ -892,6 +898,22 @@ export class WorktreeIntegrationJobService {
       ...inspection,
       worktrees: inspection.worktrees.map((worktree) => this.#deletionState(worktree).worktree)
     };
+  }
+
+  async #gitHubPushStatus(worktree) {
+    if (worktree.availability !== "available") {
+      return {
+        available: false,
+        pending: false,
+        dirty: false,
+        unpushedCommitCount: 0,
+        branch: worktree.branchName ?? null,
+        destinationUrl: null,
+        error: "This Worktree is unavailable and cannot be pushed."
+      };
+    }
+    if (typeof this.inspectGitHubPushStatus !== "function") return null;
+    return this.inspectGitHubPushStatus({ workingDirectory: worktree.path });
   }
 
   #deletionState(inspectedWorktree) {

@@ -81,6 +81,35 @@ struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {
     let pendingIntegration: Bool
     let associations: [ManagedWorktreeAssociation]
     let deletionBlocker: ManagedWorktreeDeletionBlocker?
+    var gitHubPush: GitHubPushStatus? = nil
+}
+
+enum ManagedWorktreeGitHubPushPolicy {
+    static func canPush(_ worktree: ManagedWorktree) -> Bool {
+        worktree.availability == "available"
+            && worktree.gitHubPush?.available == true
+            && worktree.gitHubPush?.pending == true
+    }
+
+    @MainActor
+    static func explanation(for worktree: ManagedWorktree) -> String {
+        guard worktree.availability == "available" else {
+            return L10n("This Worktree is unavailable and cannot be pushed.")
+        }
+        guard let push = worktree.gitHubPush else {
+            return L10n("Corptie could not inspect the GitHub push configuration for this Worktree.")
+        }
+        if !push.available {
+            return push.error ?? L10n("This Worktree cannot be pushed to GitHub.")
+        }
+        if !push.pending {
+            return L10n("This branch is already up to date with GitHub and has the correct upstream branch.")
+        }
+        if push.dirty {
+            return L10n("Push committed branch changes to GitHub. Uncommitted files are not included.")
+        }
+        return L10n("Push this local branch to the configured GitHub repository and set its upstream branch if needed.")
+    }
 }
 
 struct ManagedWorktreeDeletionBlocker: Decodable, Equatable, Sendable {
