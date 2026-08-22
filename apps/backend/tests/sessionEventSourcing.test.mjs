@@ -117,6 +117,45 @@ test("listLatestSessionMessageTimes：只按消息事件返回每个 Session 的
   }
 });
 
+test("Session 列表消息聚合使用稀疏索引且不创建临时排序 B-tree", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    store.appendSessionEvent({
+      eventId: "status-noise", sessionId: "s1", type: "ProviderSessionChanged",
+      payload: { status: "running" }, createdAt: "2026-08-20T00:00:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "message", sessionId: "s1", type: "SessionUserMessageCreated",
+      payload: { text: "hello" }, createdAt: "2026-08-20T01:00:00Z"
+    });
+    store.appendSessionEvent({
+      eventId: "completion", sessionId: "s1", type: "AgentTurnCompleted",
+      payload: { hasAgentMessage: true }, createdAt: "2026-08-20T02:00:00Z"
+    });
+
+    const originalSelectAll = store.selectAll.bind(store);
+    const capturedSQL = [];
+    store.selectAll = (sql, params = []) => {
+      capturedSQL.push(sql);
+      return originalSelectAll(sql, params);
+    };
+    store.listLatestSessionMessageTimes();
+    store.listSessionMessageCursors();
+    store.selectAll = originalSelectAll;
+
+    const plans = capturedSQL.map((sql) => originalSelectAll(`EXPLAIN QUERY PLAN ${sql}`)
+      .map((row) => row.detail)
+      .join("\n"));
+    assert.match(plans[0], /idx_session_events_latest_message/);
+    assert.match(plans[1], /idx_session_events_agent_message/);
+    assert.doesNotMatch(plans.join("\n"), /USE TEMP B-TREE/);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Session 未读游标：只计算 Agent 正文并持久化单调已读回执", async () => {
   const { store, directory } = await createStore();
   try {
