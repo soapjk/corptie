@@ -564,23 +564,6 @@ struct SessionCollectionPatchTests {
         #expect(store.groupingRevision == previousGroupingRevision + 1)
     }
 
-    @Test
-    func commandResponseInsertionIsImmediateAndIdempotent() {
-        let existing = makeSession(id: "existing", summary: "old")
-        let created = makeSession(
-            id: "created",
-            agentId: "assistant",
-            sessionKind: .assistantChat
-        )
-
-        let inserted = BackendClient.insertingCreatedSession(created, into: [existing])
-        let repeated = BackendClient.insertingCreatedSession(created, into: inserted)
-
-        #expect(inserted.map(\.id) == ["created", "existing"])
-        #expect(repeated.map(\.id) == ["created", "existing"])
-        #expect(repeated.first?.summary == created.summary)
-    }
-
 }
 
 struct SessionCollectionWirePatchTests {

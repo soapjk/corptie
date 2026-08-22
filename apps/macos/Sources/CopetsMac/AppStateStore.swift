@@ -70,6 +70,7 @@ final class AppStateStore: ObservableObject {
     @Published private(set) var syncError: String?
     private var cachedSessions: [TaskSession]?
     private var hasAppliedAuthoritativeState = false
+    private(set) var pendingCreatedSessionIDs = Set<String>()
     /// Authoritative server reachability, flipped by the sync engine on every
     /// snapshot/change-set success or transport failure. Unlike `syncError` it
     /// also emits on the very first success, so `isOnline` cannot be left stale
@@ -114,6 +115,7 @@ final class AppStateStore: ObservableObject {
             return .duplicate
         }
         state = Self.normalized(snapshot.state)
+        pendingCreatedSessionIDs.removeAll()
         revision = snapshot.revision
         hasAppliedAuthoritativeState = true
         syncError = nil
@@ -145,6 +147,8 @@ final class AppStateStore: ObservableObject {
         changeSet.deletes.repositories.forEach { next.repositories[$0] = nil }
         changeSet.deletes.integrationRuns.forEach { next.integrationRuns[$0] = nil }
         state = next
+        pendingCreatedSessionIDs.subtract(changeSet.upserts.sessions.map(\.id))
+        pendingCreatedSessionIDs.subtract(changeSet.deletes.sessions)
         revision = changeSet.revision
         hasAppliedAuthoritativeState = true
         syncError = nil
@@ -157,13 +161,19 @@ final class AppStateStore: ObservableObject {
         isReachable = false
     }
 
-    // Entity hydration is a recovery/read path, not a second cache: fetched
-    // entities are merged into this same normalized store and are subsequently
-    // reconciled by the revision stream.
-    func hydrate(session: TaskSession) {
+    // A successful creation response is committed server state and provides the
+    // command's read-your-write guarantee. Merge it into the one normalized
+    // client store immediately without inventing a server revision; the next
+    // snapshot/change-set remains authoritative for ordering and live fields.
+    @discardableResult
+    func acceptCreatedSession(_ session: TaskSession) -> TaskSession {
+        if state.sessions[session.id] == nil {
+            pendingCreatedSessionIDs.insert(session.id)
+        }
         var next = state
         next.sessions[session.id] = session
         state = next
+        return next.sessions[session.id] ?? session
     }
 
     func replaceActiveSessions(_ sessions: [TaskSession]) {

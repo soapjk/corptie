@@ -30,9 +30,16 @@ export class StateSyncService {
   }
 
   snapshot() {
-    const revision = this.store.stateRevision();
+    // Snapshot projection may repair a missing Provider session projection and
+    // advance the store revision while it is being assembled. Retry a bounded
+    // number of times so payload and revision describe the same stable state.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const revision = this.store.stateRevision();
+      const state = normalizeSnapshot(this.snapshotProvider());
+      if (revision === this.store.stateRevision()) return { revision, state };
+    }
     const state = normalizeSnapshot(this.snapshotProvider());
-    return { revision, state };
+    return { revision: this.store.stateRevision(), state };
   }
 
   changesAfter(requestedRevision) {
