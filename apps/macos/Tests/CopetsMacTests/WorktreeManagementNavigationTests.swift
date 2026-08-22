@@ -123,6 +123,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("guard backendClient.isOnline else"))
         XCTAssertTrue(contents.contains("WorktreeAutomaticLoadPolicy.shouldLoad("))
         XCTAssertTrue(contents.contains("guard backendClient.isOnline, router.selectedTab == .worktrees else"))
+        XCTAssertTrue(contents.contains("ScrollViewReader { proxy in"))
+        XCTAssertTrue(contents.contains(".task(id: worktreeScrollRequest)"))
+        XCTAssertTrue(contents.contains("proxy.scrollTo(request.worktreeId, anchor: .center)"))
         XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
     }
 

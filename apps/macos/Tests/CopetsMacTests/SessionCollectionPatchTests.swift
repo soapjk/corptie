@@ -404,6 +404,34 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func openingSessionAcknowledgesLatestAgentMessageWithoutTimelinePosition() {
+        let unread = makeSession(
+            id: "opened",
+            lastAgentMessageSequence: 8,
+            lastReadMessageSequence: 5
+        )
+
+        #expect(SessionReadAcknowledgementPolicy.sequenceForOpenedSession(
+            unread,
+            alreadySubmittedSequence: nil
+        ) == 8)
+        #expect(SessionReadAcknowledgementPolicy.sequenceForOpenedSession(
+            unread,
+            alreadySubmittedSequence: 8
+        ) == nil)
+
+        let read = makeSession(
+            id: "already-read",
+            lastAgentMessageSequence: 8,
+            lastReadMessageSequence: 8
+        )
+        #expect(SessionReadAcknowledgementPolicy.sequenceForOpenedSession(
+            read,
+            alreadySubmittedSequence: nil
+        ) == nil)
+    }
+
+    @Test
     func readReceiptCursorChangeInvalidatesUnreadGroupingWithoutReordering() {
         let unread = makeSession(
             id: "receipt",

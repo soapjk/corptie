@@ -3482,10 +3482,10 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    /// Persist a read receipt only through the exact agent-message cursor that
-    /// accompanied the detail snapshot rendered by the client. A newer message
-    /// arriving concurrently therefore remains unread instead of being cleared
-    /// by opening a stale cache entry.
+    /// Persist a read receipt only through the exact agent-message cursor from
+    /// the Session snapshot the user opened. A newer message arriving
+    /// concurrently therefore remains unread until the open Session snapshot
+    /// advances and acknowledges that newer cursor too.
     func markSessionMessagesRead(sessionID: String, throughSequence: Int) async -> Bool {
         guard throughSequence >= 0 else { return false }
         do {

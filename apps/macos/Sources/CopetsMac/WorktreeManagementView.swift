@@ -18,6 +18,7 @@ struct WorktreeManagementView: View {
     @State private var pendingDeletion: ManagedWorktree?
     @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
     @State private var pendingCleanup: [ManagedWorktree]?
+    @State private var worktreeScrollRequest: WorktreeListScrollRequest?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
@@ -45,6 +46,9 @@ struct WorktreeManagementView: View {
             guard backendClient.isOnline, router.selectedTab == .worktrees else { return }
             guard let target = router.pendingWorktreeTarget else { return }
             if await client.navigate(to: target) {
+                if let worktreeId = client.selection.worktreeId {
+                    worktreeScrollRequest = WorktreeListScrollRequest(worktreeId: worktreeId)
+                }
                 router.consumeWorktreeTarget(target)
             }
         }
@@ -201,25 +205,41 @@ struct WorktreeManagementView: View {
                 if project.worktrees.isEmpty {
                     ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
                 } else {
-                    List(selection: Binding(
-                        get: { client.selection.worktreeId },
-                        set: { client.selection.worktreeId = $0 }
-                    )) {
-                        ForEach(project.worktrees) { worktree in
-                            worktreeRow(worktree)
-                                .tag(worktree.worktreeId)
-                                .accessibilityIdentifier("worktree.item.\(worktree.worktreeId)")
-                                .contextMenu {
-                                    Button(role: .destructive) {
-                                        requestDeletion(of: worktree)
-                                    } label: {
-                                        Label(L10n("Delete Worktree"), systemImage: "trash")
+                    ScrollViewReader { proxy in
+                        List(selection: Binding(
+                            get: { client.selection.worktreeId },
+                            set: { client.selection.worktreeId = $0 }
+                        )) {
+                            ForEach(project.worktrees) { worktree in
+                                worktreeRow(worktree)
+                                    .id(worktree.worktreeId)
+                                    .tag(worktree.worktreeId)
+                                    .accessibilityIdentifier("worktree.item.\(worktree.worktreeId)")
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            requestDeletion(of: worktree)
+                                        } label: {
+                                            Label(L10n("Delete Worktree"), systemImage: "trash")
+                                        }
+                                        .accessibilityIdentifier("worktree.delete.\(worktree.worktreeId)")
                                     }
-                                    .accessibilityIdentifier("worktree.delete.\(worktree.worktreeId)")
-                                }
+                            }
+                        }
+                        .listStyle(.inset)
+                        .task(id: worktreeScrollRequest) {
+                            guard let request = worktreeScrollRequest,
+                                  project.worktrees.contains(where: {
+                                      $0.worktreeId == request.worktreeId
+                                  }) else { return }
+                            // Selection is applied after an async repository load. Let
+                            // List materialize and measure the target row before asking
+                            // ScrollViewReader to reveal it.
+                            await Task.yield()
+                            try? await Task.sleep(for: .milliseconds(16))
+                            guard !Task.isCancelled else { return }
+                            proxy.scrollTo(request.worktreeId, anchor: .center)
                         }
                     }
-                    .listStyle(.inset)
                 }
             } else if client.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -790,6 +810,11 @@ struct WorktreeManagementView: View {
         default: .secondary
         }
     }
+}
+
+private struct WorktreeListScrollRequest: Equatable {
+    let id = UUID()
+    let worktreeId: String
 }
 
 private struct IndividualWorktreeOperationView: View {
