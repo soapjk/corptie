@@ -4266,6 +4266,20 @@ struct DetailView: View {
     private func itemSignature(_ item: CodexThreadItem) -> String {
         let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let presentationText = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let collaborationSignature = [
+            item.collaborationProcessingStatus ?? "",
+            item.collaborationSenderName ?? "",
+            item.collaborationRecipientName ?? "",
+            item.collaborationInitiatorSessionId ?? "",
+            item.collaborationRecipientSessionId ?? "",
+            item.collaborationRecipientSessionTitle ?? "",
+            item.collaborationTaskTitle ?? "",
+            item.collaborationSourceWorkItemId ?? "",
+            item.collaborationTargetWorkItemId ?? "",
+            item.collaborationRelation ?? "",
+            item.collaborationRouteStatus ?? "",
+            item.collaborationRoutingVersion.map(String.init) ?? ""
+        ].joined(separator: ":")
         return [
             item.id,
             item.type,
@@ -4274,12 +4288,7 @@ struct DetailView: View {
             item.queuePosition.map(String.init) ?? "",
             item.turnStatus,
             item.presentationRole ?? "",
-            item.collaborationProcessingStatus ?? "",
-            item.collaborationSenderName ?? "",
-            item.collaborationRecipientName ?? "",
-            item.collaborationRecipientSessionId ?? "",
-            item.collaborationRecipientSessionTitle ?? "",
-            item.collaborationTaskTitle ?? "",
+            collaborationSignature,
             "\(text.count)",
             String(text.suffix(96)),
             "\(presentationText.count)",
@@ -4643,9 +4652,15 @@ private func makeDetailSourceSignature(
             item.collaborationProcessingStatus ?? "",
             item.collaborationSenderName ?? "",
             item.collaborationRecipientName ?? "",
+            item.collaborationInitiatorSessionId ?? "",
             item.collaborationRecipientSessionId ?? "",
             item.collaborationRecipientSessionTitle ?? "",
             item.collaborationTaskTitle ?? "",
+            item.collaborationSourceWorkItemId ?? "",
+            item.collaborationTargetWorkItemId ?? "",
+            item.collaborationRelation ?? "",
+            item.collaborationRouteStatus ?? "",
+            item.collaborationRoutingVersion.map(String.init) ?? "",
             "\(item.text.count)",
             "\(item.presentationText?.count ?? 0)",
             fileChangesSignature(item)
@@ -5038,6 +5053,11 @@ func nativeCollaborationCardPresentation(
         id: item.collaborationRecipientSessionId,
         fallback: targetSessionFallback
     )
+    let sourceSession = party(
+        name: item.collaborationInitiatorSessionTitle,
+        id: item.collaborationInitiatorSessionId,
+        fallback: nonEmpty(currentSessionTitle) ?? L10n("当前 Session")
+    )
     let task = nonEmpty(item.collaborationTaskTitle) ?? L10n("未命名协作任务")
     let message = nonEmpty(item.presentationText)
         ?? nonEmpty(item.text)
@@ -5045,6 +5065,7 @@ func nativeCollaborationCardPresentation(
     var lines = [
         "**\(L10n("来自 Agent"))**  \(markdownEscaped(sender))",
         "**\(L10n("发送至 Agent"))**  \(markdownEscaped(recipient))",
+        "**\(L10n("来源 Session"))**  \(markdownEscaped(sourceSession))",
         "**\(L10n("目标 Session"))**  \(markdownEscaped(targetSession))",
         "**\(L10n("协作任务"))**  \(markdownEscaped(task))",
         "",
@@ -5055,6 +5076,13 @@ func nativeCollaborationCardPresentation(
         lines.append("")
         lines.append("**\(L10n("验收标准"))**")
         lines.append(contentsOf: criteria.map { "- \(markdownEscaped($0))" })
+    }
+    if let route = nonEmpty(item.collaborationRouteStatus) {
+        lines.append("")
+        lines.append("**\(L10n("路由状态"))**  \(markdownEscaped(route)) · v\(item.collaborationRoutingVersion ?? 0)")
+    }
+    if let relation = nonEmpty(item.collaborationRelation) {
+        lines.append("**\(L10n("WorkItem 关系"))**  \(markdownEscaped(relation))")
     }
     let timestamp = item.createdAt
         .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
@@ -5131,6 +5159,20 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
     let rawMetadata = item.rawMetadataJSON ?? ""
     let rawMetadataCount = String(rawMetadata.count)
     let rawMetadataSuffix = String(rawMetadata.suffix(96))
+    let collaborationSignature = [
+        item.collaborationProcessingStatus ?? "",
+        item.collaborationSenderName ?? "",
+        item.collaborationRecipientName ?? "",
+        item.collaborationInitiatorSessionId ?? "",
+        item.collaborationRecipientSessionId ?? "",
+        item.collaborationRecipientSessionTitle ?? "",
+        item.collaborationTaskTitle ?? "",
+        item.collaborationSourceWorkItemId ?? "",
+        item.collaborationTargetWorkItemId ?? "",
+        item.collaborationRelation ?? "",
+        item.collaborationRouteStatus ?? "",
+        item.collaborationRoutingVersion.map(String.init) ?? ""
+    ].joined(separator: ":")
     return [
         item.id,
         item.type,
@@ -5141,12 +5183,7 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.processStartedAt ?? "",
         item.processEndedAt ?? "",
         item.presentationRole ?? "",
-        item.collaborationProcessingStatus ?? "",
-        item.collaborationSenderName ?? "",
-        item.collaborationRecipientName ?? "",
-        item.collaborationRecipientSessionId ?? "",
-        item.collaborationRecipientSessionTitle ?? "",
-        item.collaborationTaskTitle ?? "",
+        collaborationSignature,
         "\(text.count)",
         String(text.suffix(96)),
         "\(presentationText.count)",
@@ -8081,6 +8118,12 @@ struct ThreadItemView: View {
                         if let recipientId = nonEmpty(item.collaborationRecipientAgentId) {
                             collaborationConfirmationField(icon: "number", label: "Agent ID", value: recipientId, monospaced: true)
                         }
+                        if let sourceSession = nonEmpty(item.collaborationInitiatorSessionId) {
+                            collaborationConfirmationField(icon: "arrow.up.right", label: "来源 Session", value: sourceSession, monospaced: true)
+                        }
+                        if let recipientSession = nonEmpty(item.collaborationRecipientSessionId) {
+                            collaborationConfirmationField(icon: "arrow.down.left", label: "目标 Session", value: recipientSession, monospaced: true)
+                        }
                         if let title = nonEmpty(item.collaborationTaskTitle) {
                             collaborationConfirmationField(icon: "checklist", label: "任务", value: title)
                         }
@@ -8272,6 +8315,12 @@ struct ThreadItemView: View {
                                     collaborationDetailRow(label: "Task ID", value: item.collaborationTaskId)
                                     collaborationDetailRow(label: "Sender ID", value: item.collaborationSenderAgentId)
                                     collaborationDetailRow(label: "Recipient ID", value: item.collaborationRecipientAgentId)
+                                    collaborationDetailRow(label: "Source Session", value: item.collaborationInitiatorSessionId)
+                                    collaborationDetailRow(label: "Target Session", value: item.collaborationRecipientSessionId)
+                                    collaborationDetailRow(label: "Source WorkItem", value: item.collaborationSourceWorkItemId)
+                                    collaborationDetailRow(label: "Target WorkItem", value: item.collaborationTargetWorkItemId)
+                                    collaborationDetailRow(label: "Relationship", value: item.collaborationRelation)
+                                    collaborationDetailRow(label: "Route", value: item.collaborationRouteStatus.map { "\($0) · v\(item.collaborationRoutingVersion ?? 0)" })
                                 }
                                 .padding(.top, 5)
                             } label: {
@@ -8421,7 +8470,10 @@ struct ThreadItemView: View {
     }
 
     private var hasCollaborationTechnicalDetails: Bool {
-        [item.collaborationTaskId, item.collaborationSenderAgentId, item.collaborationRecipientAgentId]
+        [item.collaborationTaskId, item.collaborationSenderAgentId, item.collaborationRecipientAgentId,
+         item.collaborationInitiatorSessionId, item.collaborationRecipientSessionId,
+         item.collaborationSourceWorkItemId, item.collaborationTargetWorkItemId, item.collaborationRelation,
+         item.collaborationRouteStatus]
             .contains { nonEmpty($0) != nil }
     }
 

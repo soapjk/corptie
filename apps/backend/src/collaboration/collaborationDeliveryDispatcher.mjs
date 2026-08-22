@@ -58,9 +58,14 @@ export class CollaborationDeliveryDispatcher {
     const envelope = this.core.getDeliveryEnvelope(deliveryId);
     if (!envelope || envelope.delivery.status === "delivered") return envelope?.delivery ?? null;
     const agent = this.core.getAgent(envelope.delivery.recipientAgentId);
-    const sessionId = agent?.currentSessionId ?? null;
+    const routed = envelope.task.recipientSessionId
+      ? (this.core.store.getLogicalSession(envelope.task.recipientSessionId)
+        ?? this.core.store.getLogicalSessionByLegacySessionId(envelope.task.recipientSessionId))
+      : null;
+    const sessionId = routed?.legacySessionId
+      ?? (!envelope.task.recipientSessionId ? agent?.currentSessionId : null);
     if (!sessionId) {
-      return this.#fail(envelope, "Recipient Agent has no current Session.", "recipient_unavailable");
+      return this.#fail(envelope, "Recipient logical Session has no active resolvable Provider route.", "recipient_unavailable");
     }
 
     let state;

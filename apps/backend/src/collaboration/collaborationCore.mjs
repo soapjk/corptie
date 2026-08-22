@@ -12,7 +12,8 @@ const TASK_INPUT_FIELDS = new Set([
   "maxIterations", "idempotencyKey", "messageIdempotencyKey", "parentTaskId", "contextId",
   "contextTitle", "contextMetadata", "messageId", "deliveryId", "sourceSessionId", "sourceTurnId",
   "initiatorSessionId", "recipientSessionId", "initiatorNameAtSend", "recipientNameAtSend",
-  "sourceObjectiveId", "targetObjectiveId", "sourceWorkItemId", "workItemId"
+  "sourceObjectiveId", "targetObjectiveId", "sourceWorkItemId", "workItemId",
+  "routingVersion", "routeStatus", "initiatorBindingId", "recipientBindingId", "routingIntent"
 ]);
 
 export class CollaborationCore {
@@ -315,9 +316,7 @@ export class CollaborationCore {
     assertKnownFields(input, TASK_INPUT_FIELDS);
     const initiator = this.#requireAgent(input.initiatorAgentId);
     const recipient = this.#requireAgent(input.recipientAgentId);
-    if (initiator.agentId === recipient.agentId) {
-      throw domainError("INVALID_PARTICIPANTS", "A collaboration task requires two distinct agents.");
-    }
+    this.#assertSessionParticipants(input, initiator, recipient);
     const taskType = input.type ?? "change_request";
     if (!["question", "change_request"].includes(taskType)) {
       throw domainError("INVALID_TASK_TYPE", `Unsupported task type: ${taskType}`);
@@ -371,8 +370,10 @@ export class CollaborationCore {
           initiator_agent_id, recipient_agent_id, service_id,
           type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
           idempotency_key, created_at, updated_at, completed_at,
-          initiator_session_id, recipient_session_id, initiator_name_at_send, recipient_name_at_send
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+          initiator_session_id, recipient_session_id, initiator_name_at_send, recipient_name_at_send,
+          routing_version, route_status, artifact_status, acceptance_status,
+          initiator_binding_id, recipient_binding_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)`,
         [
           taskId, contextId, optionalText(input.parentTaskId), COLLABORATION_PROTOCOL_VERSION,
           scope.sourceObjectiveId, scope.targetObjectiveId, scope.sourceWorkItemId, workItem.id,
@@ -381,14 +382,25 @@ export class CollaborationCore {
           input.initiatorSessionId ?? initiator.sessionId,
           input.recipientSessionId ?? recipient.sessionId,
           input.initiatorNameAtSend ?? initiator.sessionName,
-          input.recipientNameAtSend ?? recipient.sessionName
+          input.recipientNameAtSend ?? recipient.sessionName,
+          scope.routingVersion,
+          scope.routeStatus,
+          scope.initiatorBindingId,
+          scope.recipientBindingId
         ]
       );
       this.store.db.run(
         `INSERT INTO collaboration_participants (task_id, agent_id, role, created_at)
-         VALUES (?, ?, 'initiator', ?), (?, ?, 'recipient', ?)`,
-        [taskId, initiator.agentId, timestamp, taskId, recipient.agentId, timestamp]
+         VALUES (?, ?, 'initiator', ?)`,
+        [taskId, initiator.agentId, timestamp]
       );
+      if (recipient.agentId !== initiator.agentId) {
+        this.store.db.run(
+          `INSERT INTO collaboration_participants (task_id, agent_id, role, created_at)
+           VALUES (?, ?, 'recipient', ?)`,
+          [taskId, recipient.agentId, timestamp]
+        );
+      }
       this.#insertMessage({
         messageId,
         taskId,
@@ -404,6 +416,8 @@ export class CollaborationCore {
         resourceVersion: input.resourceVersion,
         idempotencyKey: optionalText(input.messageIdempotencyKey),
         deliveryId,
+        senderSessionId: input.initiatorSessionId ?? initiator.sessionId,
+        recipientSessionId: input.recipientSessionId ?? recipient.sessionId,
         timestamp
       });
       this.#appendEvent(taskId, "task_created", initiator.agentId, {
@@ -422,9 +436,7 @@ export class CollaborationCore {
     assertKnownFields(input, TASK_INPUT_FIELDS);
     const initiator = this.#requireAgent(input.initiatorAgentId);
     const recipient = this.#requireAgent(input.recipientAgentId);
-    if (initiator.agentId === recipient.agentId) {
-      throw domainError("INVALID_PARTICIPANTS", "A collaboration task requires two distinct agents.");
-    }
+    this.#assertSessionParticipants(input, initiator, recipient);
     const taskType = input.type ?? "change_request";
     if (!["question", "change_request"].includes(taskType)) {
       throw domainError("INVALID_TASK_TYPE", `Unsupported task type: ${taskType}`);
@@ -442,13 +454,17 @@ export class CollaborationCore {
       ...input,
       initiatorAgentId: initiator.agentId,
       recipientAgentId: recipient.agentId,
-      initiatorSessionId: initiator.sessionId,
-      recipientSessionId: recipient.sessionId,
-      initiatorNameAtSend: initiator.sessionName,
-      recipientNameAtSend: recipient.sessionName,
+      initiatorSessionId: input.initiatorSessionId ?? initiator.sessionId,
+      recipientSessionId: input.recipientSessionId ?? recipient.sessionId,
+      initiatorNameAtSend: input.initiatorNameAtSend ?? initiator.sessionName,
+      recipientNameAtSend: input.recipientNameAtSend ?? recipient.sessionName,
       sourceObjectiveId: scope.sourceObjectiveId,
       targetObjectiveId: scope.targetObjectiveId,
       sourceWorkItemId: scope.sourceWorkItemId,
+      routingVersion: scope.routingVersion,
+      routeStatus: scope.routeStatus,
+      initiatorBindingId: scope.initiatorBindingId,
+      recipientBindingId: scope.recipientBindingId,
       type: taskType,
       title: requiredText(input.title, "title"),
       summary: requiredText(input.summary, "summary"),
@@ -467,7 +483,7 @@ export class CollaborationCore {
         confirmationId, initiator.agentId, recipient.agentId,
         optionalText(input.sourceSessionId) ?? initiator.currentSessionId,
         optionalText(input.sourceTurnId), JSON.stringify(request), timestamp,
-        initiator.stableSessionId, recipient.stableSessionId, initiator.sessionName, recipient.sessionName
+        request.initiatorSessionId, request.recipientSessionId, request.initiatorNameAtSend, request.recipientNameAtSend
       ]
     );
     this.store.scheduleSave();
@@ -569,21 +585,21 @@ export class CollaborationCore {
     ).map(taskFromRow);
   }
 
-  accept(taskId, actorAgentId) {
-    return this.#transition(taskId, actorAgentId, ["proposed"], "accepted", "task_accepted", "recipient");
+  accept(taskId, actorAgentId, actorSessionId = null) {
+    return this.#transition(taskId, actorAgentId, ["proposed"], "accepted", "task_accepted", "recipient", {}, actorSessionId);
   }
 
-  reject(taskId, actorAgentId, reason) {
-    return this.#transition(taskId, actorAgentId, ["proposed", "needs_information"], "rejected", "task_rejected", "recipient", { reason: requiredText(reason, "reason") });
+  reject(taskId, actorAgentId, reason, actorSessionId = null) {
+    return this.#transition(taskId, actorAgentId, ["proposed", "needs_information"], "rejected", "task_rejected", "recipient", { reason: requiredText(reason, "reason") }, actorSessionId);
   }
 
-  startWorking(taskId, actorAgentId) {
-    return this.#transition(taskId, actorAgentId, ["accepted", "revision_requested"], "working", "work_started", "recipient");
+  startWorking(taskId, actorAgentId, actorSessionId = null) {
+    return this.#transition(taskId, actorAgentId, ["accepted", "revision_requested"], "working", "work_started", "recipient", {}, actorSessionId);
   }
 
   askForInformation(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
-    this.#assertActor(task, actorAgentId, "recipient");
+    this.#assertActor(task, actorAgentId, "recipient", options.actorSessionId);
     this.#assertStatus(task, ["proposed", "accepted"]);
     return this.#messageTransition(task, {
       actorAgentId,
@@ -598,7 +614,7 @@ export class CollaborationCore {
 
   replyWithInformation(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
-    this.#assertActor(task, actorAgentId, "initiator");
+    this.#assertActor(task, actorAgentId, "initiator", options.actorSessionId);
     this.#assertStatus(task, ["needs_information"]);
     return this.#messageTransition(task, {
       actorAgentId,
@@ -613,8 +629,11 @@ export class CollaborationCore {
 
   reply(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
-    const isInitiator = actorAgentId === task.initiatorAgentId;
-    const isRecipient = actorAgentId === task.recipientAgentId;
+    const sameAgent = task.initiatorAgentId === task.recipientAgentId;
+    const isInitiator = actorAgentId === task.initiatorAgentId
+      && (!sameAgent || this.#sessionIdentityMatches(options.actorSessionId, task.initiatorSessionId));
+    const isRecipient = actorAgentId === task.recipientAgentId
+      && (!sameAgent || this.#sessionIdentityMatches(options.actorSessionId, task.recipientSessionId));
     if (!isInitiator && !isRecipient) {
       throw domainError("ACTOR_NOT_AUTHORIZED", "Only task participants may reply.");
     }
@@ -641,6 +660,8 @@ export class CollaborationCore {
         evidence: options.evidence,
         resourceVersion: options.resourceVersion,
         idempotencyKey: optionalText(options.idempotencyKey),
+        senderSessionId: options.actorSessionId,
+        recipientSessionId: isInitiator ? task.recipientSessionId : task.initiatorSessionId,
         timestamp
       });
       const questionAnswered = task.type === "question" && isRecipient;
@@ -658,7 +679,7 @@ export class CollaborationCore {
 
   submitResult(taskId, actorAgentId, input) {
     const task = this.#requireTask(taskId);
-    this.#assertActor(task, actorAgentId, "recipient");
+    this.#assertActor(task, actorAgentId, "recipient", input.actorSessionId);
     this.#assertStatus(task, ["working"]);
     const artifact = input.artifact;
     if (!artifact) throw domainError("ARTIFACT_REQUIRED", "A delivered result requires an artifact.");
@@ -682,13 +703,13 @@ export class CollaborationCore {
     return this.getTask(taskId);
   }
 
-  beginVerification(taskId, actorAgentId) {
-    return this.#transition(taskId, actorAgentId, ["delivered"], "verifying", "verification_started", "initiator");
+  beginVerification(taskId, actorAgentId, actorSessionId = null) {
+    return this.#transition(taskId, actorAgentId, ["delivered"], "verifying", "verification_started", "initiator", {}, actorSessionId);
   }
 
   complete(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
-    this.#assertActor(task, actorAgentId, "initiator");
+    this.#assertActor(task, actorAgentId, "initiator", options.actorSessionId);
     this.#assertStatus(task, ["verifying"]);
     return this.#messageTransition(task, {
       actorAgentId,
@@ -703,7 +724,7 @@ export class CollaborationCore {
 
   requestRevision(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
-    this.#assertActor(task, actorAgentId, "initiator");
+    this.#assertActor(task, actorAgentId, "initiator", options.actorSessionId);
     this.#assertStatus(task, ["verifying"]);
     const nextStatus = task.iteration >= task.maxIterations ? "escalated" : "revision_requested";
     const nextIteration = nextStatus === "revision_requested" ? task.iteration + 1 : task.iteration;
@@ -719,12 +740,12 @@ export class CollaborationCore {
     });
   }
 
-  cancel(taskId, actorAgentId, reason) {
+  cancel(taskId, actorAgentId, reason, actorSessionId = null) {
     const task = this.#requireTask(taskId);
     if (TERMINAL_TASK_STATUSES.has(task.status)) {
       throw domainError("TASK_TERMINAL", `Task ${taskId} is already ${task.status}.`);
     }
-    return this.#transition(taskId, actorAgentId, [task.status], "canceled", "task_canceled", "initiator", { reason: requiredText(reason, "reason") });
+    return this.#transition(taskId, actorAgentId, [task.status], "canceled", "task_canceled", "initiator", { reason: requiredText(reason, "reason") }, actorSessionId);
   }
 
   cancelByUser(taskId, reason) {
@@ -999,6 +1020,9 @@ export class CollaborationCore {
 
   #messageTransition(task, input) {
     const timestamp = this.clock();
+    const sendsForward = task.initiatorAgentId === task.recipientAgentId
+      ? this.#sessionIdentityMatches(input.options.actorSessionId, task.initiatorSessionId)
+      : input.actorAgentId === task.initiatorAgentId;
     this.#transaction(() => {
       const message = this.#insertMessage({
         taskId: task.taskId,
@@ -1009,6 +1033,8 @@ export class CollaborationCore {
         evidence: input.options.evidence,
         resourceVersion: input.options.resourceVersion,
         idempotencyKey: optionalText(input.options.idempotencyKey),
+        senderSessionId: input.options.actorSessionId,
+        recipientSessionId: sendsForward ? task.recipientSessionId : task.initiatorSessionId,
         timestamp
       });
       this.#updateTaskStatus(task.taskId, input.nextStatus, timestamp, input.nextIteration);
@@ -1022,16 +1048,41 @@ export class CollaborationCore {
     return this.getTask(task.taskId);
   }
 
-  #transition(taskId, actorAgentId, fromStatuses, toStatus, eventType, actorRole, payload = {}) {
+  #transition(taskId, actorAgentId, fromStatuses, toStatus, eventType, actorRole, payload = {}, actorSessionId = null) {
     const task = this.#requireTask(taskId);
-    this.#assertActor(task, actorAgentId, actorRole);
+    this.#assertActor(task, actorAgentId, actorRole, actorSessionId);
     this.#assertStatus(task, fromStatuses);
+    if (actorRole === "recipient") this.#refreshRecipientRoute(task);
     const timestamp = this.clock();
     this.#transaction(() => {
       this.#updateTaskStatus(taskId, toStatus, timestamp);
       this.#appendEvent(taskId, eventType, actorAgentId, { from: task.status, to: toStatus, ...payload }, timestamp);
     });
     return this.getTask(taskId);
+  }
+
+  #refreshRecipientRoute(task) {
+    if (task.routeStatus === "unresolved") return;
+    const logical = this.store.getLogicalSession(task.recipientSessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(task.recipientSessionId);
+    if (!logical?.activeBinding) {
+      throw domainError("STALE_RECIPIENT_ROUTE", "The recipient Session no longer has an active Provider binding; recover it or reject the expired route.");
+    }
+    const binding = logical.activeBinding;
+    if (Number(task.routingVersion) === Number(logical.routingVersion)
+      && task.recipientBindingId === binding.bindingId) return;
+    const timestamp = this.clock();
+    this.store.db.run(
+      `UPDATE collaboration_tasks SET routing_version=?, recipient_binding_id=?, route_status='recovered', updated_at=?
+       WHERE task_id=?`,
+      [logical.routingVersion, binding.bindingId, timestamp, task.taskId]
+    );
+    this.#appendEvent(task.taskId, "route_recovered", task.recipientAgentId, {
+      previousRoutingVersion: task.routingVersion,
+      routingVersion: logical.routingVersion,
+      previousBindingId: task.recipientBindingId,
+      recipientBindingId: binding.bindingId
+    }, timestamp);
   }
 
   #insertMessage(input) {
@@ -1049,11 +1100,21 @@ export class CollaborationCore {
     const messageId = input.messageId ?? this.idFactory();
     const timestamp = input.timestamp ?? this.clock();
     const taskScope = this.store.selectOne(
-      `SELECT initiator_agent_id, source_objective_id, target_objective_id, source_work_item_id, work_item_id
+      `SELECT initiator_agent_id, recipient_agent_id, initiator_session_id, recipient_session_id,
+              source_objective_id, target_objective_id, source_work_item_id, work_item_id
        FROM collaboration_tasks WHERE task_id = ?`,
       [input.taskId]
     );
-    const sendsForward = input.senderAgentId === taskScope?.initiator_agent_id;
+    const sameAgent = taskScope?.initiator_agent_id === taskScope?.recipient_agent_id;
+    const sendsForward = sameAgent
+      ? this.#sessionIdentityMatches(input.senderSessionId, taskScope?.initiator_session_id)
+      : input.senderAgentId === taskScope?.initiator_agent_id;
+    const senderSessionId = this.#stableSessionIdentity(input.senderSessionId
+      ?? (sendsForward ? taskScope?.initiator_session_id : taskScope?.recipient_session_id)
+      ?? null);
+    const recipientSessionId = this.#stableSessionIdentity(input.recipientSessionId
+      ?? (sendsForward ? taskScope?.recipient_session_id : taskScope?.initiator_session_id)
+      ?? null);
     const sourceObjectiveId = input.sourceObjectiveId
       ?? (sendsForward ? taskScope?.source_objective_id : taskScope?.target_objective_id);
     const targetObjectiveId = input.targetObjectiveId
@@ -1071,6 +1132,8 @@ export class CollaborationCore {
       messageType: input.messageType,
       senderAgentId: input.senderAgentId,
       recipientAgentId: input.recipientAgentId,
+      senderSessionId,
+      recipientSessionId,
       sourceObjectiveId,
       targetObjectiveId,
       sourceWorkItemId,
@@ -1082,12 +1145,14 @@ export class CollaborationCore {
     this.store.db.run(
       `INSERT INTO collaboration_messages (
         message_id, task_id, protocol_version, source_objective_id, target_objective_id,
-        source_work_item_id, work_item_id, sender_agent_id, recipient_agent_id, message_type, body,
+        source_work_item_id, work_item_id, sender_agent_id, recipient_agent_id,
+        sender_session_id, recipient_session_id, message_type, body,
         evidence_json, payload_json, error_json, resource_version, idempotency_key, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         messageId, input.taskId, envelope.version, sourceObjectiveId, targetObjectiveId,
-        sourceWorkItemId, workItemId, input.senderAgentId, input.recipientAgentId, input.messageType,
+        sourceWorkItemId, workItemId, input.senderAgentId, input.recipientAgentId,
+        senderSessionId, recipientSessionId, input.messageType,
         payload.body, JSON.stringify(payload.evidence), JSON.stringify(payload),
         envelope.error ? JSON.stringify(envelope.error) : null, payload.resourceVersion,
         idempotencyKey, timestamp
@@ -1151,6 +1216,15 @@ export class CollaborationCore {
         [status, iteration, timestamp, completedAt, taskId]
       );
     }
+    const artifactStatus = ["delivered", "verifying", "completed"].includes(status) ? "delivered"
+      : ["rejected", "canceled", "escalated"].includes(status) ? "canceled" : "pending";
+    const acceptanceStatus = status === "completed" ? "accepted"
+      : status === "revision_requested" ? "revision_requested"
+        : ["rejected", "canceled", "escalated"].includes(status) ? "rejected" : "pending";
+    this.store.db.run(
+      "UPDATE collaboration_tasks SET artifact_status = ?, acceptance_status = ? WHERE task_id = ?",
+      [artifactStatus, acceptanceStatus, taskId]
+    );
     const task = this.store.selectOne(
       "SELECT work_item_id FROM collaboration_tasks WHERE task_id = ?",
       [taskId]
@@ -1159,21 +1233,19 @@ export class CollaborationCore {
   }
 
   #resolveTaskScope(input, initiator, recipient) {
-    const sourceObjectiveId = this.#resolveObjectiveForAgent(
-      initiator,
-      optionalText(input.sourceObjectiveId),
-      "sourceObjectiveId"
+    const initiatorRoute = this.#routeForSession(input.initiatorSessionId);
+    const recipientRoute = this.#routeForSession(input.recipientSessionId);
+    const sourceObjectiveId = initiatorRoute?.objectiveId ?? this.#resolveObjectiveForAgent(
+      initiator, optionalText(input.sourceObjectiveId), "sourceObjectiveId"
     );
-    const targetObjectiveId = this.#resolveObjectiveForAgent(
-      recipient,
-      optionalText(input.targetObjectiveId),
-      "targetObjectiveId"
+    const targetObjectiveId = recipientRoute?.objectiveId ?? this.#resolveObjectiveForAgent(
+      recipient, optionalText(input.targetObjectiveId), "targetObjectiveId"
     );
-    if (sourceObjectiveId === targetObjectiveId) {
-      throw domainError(
-        "OBJECTIVE_BOUNDARY_REQUIRED",
-        "Peer collaboration requires distinct source and target Objectives; use the Objective's own WorkItem workflow for work inside one Objective."
-      );
+    if (input.sourceObjectiveId && input.sourceObjectiveId !== sourceObjectiveId) {
+      throw domainError("SOURCE_OBJECTIVE_SPOOFED", "sourceObjectiveId is derived from the authenticated source Session.");
+    }
+    if (input.targetObjectiveId && input.targetObjectiveId !== targetObjectiveId) {
+      throw domainError("TARGET_OBJECTIVE_MISMATCH", "targetObjectiveId does not match the selected recipient Session.");
     }
     const sourceWorkItemId = optionalText(input.sourceWorkItemId);
     if (sourceWorkItemId) {
@@ -1183,7 +1255,48 @@ export class CollaborationCore {
         throw domainError("WORK_ITEM_OBJECTIVE_MISMATCH", "The source WorkItem does not belong to the source Objective.");
       }
     }
-    return { sourceObjectiveId, targetObjectiveId, sourceWorkItemId };
+    return {
+      sourceObjectiveId,
+      targetObjectiveId,
+      sourceWorkItemId,
+      routingVersion: recipientRoute?.routingVersion ?? null,
+      routeStatus: recipientRoute?.routeStatus ?? "unresolved",
+      initiatorBindingId: initiatorRoute?.bindingId ?? null,
+      recipientBindingId: recipientRoute?.bindingId ?? null
+    };
+  }
+
+  #assertSessionParticipants(input, initiator, recipient) {
+    const initiatorSessionId = optionalText(input.initiatorSessionId);
+    const recipientSessionId = optionalText(input.recipientSessionId);
+    if (initiator.agentId !== recipient.agentId) return;
+    if (!initiatorSessionId || !recipientSessionId || initiatorSessionId === recipientSessionId) {
+      throw domainError("DISTINCT_SESSIONS_REQUIRED", "Collaboration within one Agent requires two explicit, distinct Sessions.");
+    }
+    const sourceAgent = this.getAgentForSession(initiatorSessionId);
+    const targetAgent = this.getAgentForSession(recipientSessionId);
+    if (sourceAgent?.agentId !== initiator.agentId || targetAgent?.agentId !== recipient.agentId) {
+      throw domainError("SESSION_AGENT_MISMATCH", "Each selected Session must be bound to the declared Agent identity.");
+    }
+  }
+
+  #routeForSession(sessionId) {
+    const normalized = optionalText(sessionId);
+    if (!normalized) return null;
+    const logical = this.store.getLogicalSession(normalized)
+      ?? this.store.getLogicalSessionByLegacySessionId(normalized);
+    const session = logical?.legacySessionId
+      ? this.store.getSession(logical.legacySessionId)
+      : this.store.getSession(normalized);
+    if (!session) throw domainError("SESSION_NOT_FOUND", `Session ${normalized} was not found.`);
+    const binding = logical?.activeBinding ?? null;
+    return {
+      objectiveId: session.objectiveId ?? null,
+      workItemId: session.workItemId ?? null,
+      routingVersion: logical?.routingVersion ?? null,
+      bindingId: binding?.bindingId ?? null,
+      routeStatus: binding?.state === "active" ? "active" : "unresolved"
+    };
   }
 
   #resolveObjectiveForAgent(agent, requestedObjectiveId, field) {
@@ -1368,6 +1481,8 @@ export class CollaborationCore {
             messageType: message.message_type,
             senderAgentId: message.sender_agent_id,
             recipientAgentId: message.recipient_agent_id,
+            senderSessionId: forward ? row.initiator_session_id : row.recipient_session_id,
+            recipientSessionId: forward ? row.recipient_session_id : row.initiator_session_id,
             sourceObjectiveId: messageSourceObjectiveId,
             targetObjectiveId: messageTargetObjectiveId,
             sourceWorkItemId: row.source_work_item_id || null,
@@ -1418,11 +1533,32 @@ export class CollaborationCore {
     return "todo";
   }
 
-  #assertActor(task, actorAgentId, role) {
+  #assertActor(task, actorAgentId, role, actorSessionId = null) {
     const expected = role === "initiator" ? task.initiatorAgentId : task.recipientAgentId;
     if (actorAgentId !== expected) {
       throw domainError("ACTOR_NOT_AUTHORIZED", `Only the task ${role} (${expected}) may perform this action.`);
     }
+    const expectedSessionId = role === "initiator" ? task.initiatorSessionId : task.recipientSessionId;
+    if (task.initiatorAgentId === task.recipientAgentId
+      && !this.#sessionIdentityMatches(actorSessionId, expectedSessionId)) {
+      throw domainError("SESSION_ACTOR_MISMATCH", `This action belongs to the task ${role} Session ${expectedSessionId}.`);
+    }
+  }
+
+  #sessionIdentityMatches(actualSessionId, expectedSessionId) {
+    if (!actualSessionId || !expectedSessionId) return false;
+    const actual = this.store.getLogicalSession(actualSessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(actualSessionId);
+    const expected = this.store.getLogicalSession(expectedSessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(expectedSessionId);
+    return (actual?.logicalSessionId ?? actualSessionId) === (expected?.logicalSessionId ?? expectedSessionId);
+  }
+
+  #stableSessionIdentity(sessionId) {
+    if (!sessionId) return null;
+    const logical = this.store.getLogicalSession(sessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
+    return logical?.logicalSessionId ?? sessionId;
   }
 
   #assertStatus(task, expected) {
@@ -1524,6 +1660,12 @@ function taskFromRow(row) {
     recipientSessionId: row.recipient_session_id || null,
     initiatorNameAtSend: row.initiator_name_at_send || null,
     recipientNameAtSend: row.recipient_name_at_send || null,
+    routingVersion: row.routing_version == null ? null : Number(row.routing_version),
+    routeStatus: row.route_status || "unresolved",
+    artifactStatus: row.artifact_status || "pending",
+    acceptanceStatus: row.acceptance_status || "pending",
+    initiatorBindingId: row.initiator_binding_id || null,
+    recipientBindingId: row.recipient_binding_id || null,
     serviceId: row.service_id || null,
     type: row.type,
     status: row.status,
@@ -1552,6 +1694,8 @@ function messageFromRow(row) {
     messageType: row.message_type,
     senderAgentId: row.sender_agent_id,
     recipientAgentId: row.recipient_agent_id,
+    senderSessionId: row.sender_session_id,
+    recipientSessionId: row.recipient_session_id,
     sourceObjectiveId: row.source_objective_id,
     targetObjectiveId: row.target_objective_id,
     sourceWorkItemId: row.source_work_item_id,
@@ -1565,6 +1709,8 @@ function messageFromRow(row) {
     taskId: row.task_id,
     senderAgentId: row.sender_agent_id,
     recipientAgentId: row.recipient_agent_id,
+    senderSessionId: row.sender_session_id || null,
+    recipientSessionId: row.recipient_session_id || null,
     messageType: row.message_type,
     body: row.body,
     evidence: parseJson(row.evidence_json, []),

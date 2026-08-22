@@ -1,4 +1,6 @@
-function tool(name, description, properties, required = []) {
+import { COLLABORATION_RELATION_TYPES, workItemPatchSchema } from "../domain/workItemToolSchema.mjs";
+
+function tool(name, description, properties, required = [], schemaExtensions = {}) {
   return Object.freeze({
     type: "function",
     name,
@@ -8,7 +10,8 @@ function tool(name, description, properties, required = []) {
       type: "object",
       properties,
       required,
-      additionalProperties: false
+      additionalProperties: false,
+      ...schemaExtensions
     }
   });
 }
@@ -34,20 +37,6 @@ const objectivePatch = {
   },
   additionalProperties: false
 };
-const workItemPatch = {
-  type: "object",
-  properties: {
-    title: { type: "string", minLength: 1 },
-    description: { type: "string" },
-    acceptanceCriteria: { type: "string" },
-    priority: { type: "string", minLength: 1 },
-    status: { type: "string", minLength: 1 },
-    mainWorkspaceId: nullableString,
-    mainAgentId: nullableString
-  },
-  additionalProperties: false
-};
-
 export const platformDynamicTools = Object.freeze([
   tool(
     "corptie_platform_capabilities",
@@ -94,10 +83,41 @@ export const platformDynamicTools = Object.freeze([
       target_work_item_id: id("Dependency target WorkItem id."),
       objective_id: id("Owning Objective id for create or list filtering."),
       title: { type: "string", minLength: 1 },
-      dependency_type: { type: "string" },
-      patch: workItemPatch
+      dependency_type: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
+      patch: workItemPatchSchema
     },
-    ["action"]
+    ["action"],
+    {
+      allOf: [
+        {
+          if: { properties: { action: { const: "get" } }, required: ["action"] },
+          then: { required: ["work_item_id"] }
+        },
+        {
+          if: { properties: { action: { const: "create" } }, required: ["action"] },
+          then: { required: ["objective_id", "title"] }
+        },
+        {
+          if: { properties: { action: { const: "update" } }, required: ["action"] },
+          then: { required: ["work_item_id", "patch"] }
+        },
+        {
+          if: { properties: { action: { const: "delete" } }, required: ["action"] },
+          then: { required: ["work_item_id"] }
+        },
+        {
+          if: { properties: { action: { const: "dependencies" } }, required: ["action"] },
+          then: { required: ["work_item_id"] }
+        },
+        {
+          if: {
+            properties: { action: { enum: ["add_dependency", "remove_dependency"] } },
+            required: ["action"]
+          },
+          then: { required: ["work_item_id", "target_work_item_id"] }
+        }
+      ]
+    }
   ),
   tool(
     "corptie_platform_sessions_manage",

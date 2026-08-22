@@ -75,6 +75,12 @@ export function validateWorkItemInput(input, operation = "create") {
   if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");
   if (has(input, "priority")) normalized.priority = string(input.priority, "priority", { nonEmpty: true, trim: true });
   if (has(input, "status")) normalized.status = string(input.status, "status", { nonEmpty: true, trim: true });
+  if (has(input, "priority") && !WORK_ITEM_PRIORITIES.includes(normalized.priority)) {
+    throw new EntityValidationError("INVALID_PRIORITY", "priority", WORK_ITEM_PRIORITIES.join(" | "), input.priority);
+  }
+  if (has(input, "status") && !WORK_ITEM_STATUSES.includes(normalized.status)) {
+    throw new EntityValidationError("INVALID_STATUS", "status", WORK_ITEM_STATUSES.join(" | "), input.status);
+  }
   if (has(input, "mainWorkspaceId")) normalized.mainWorkspaceId = optionalString(input.mainWorkspaceId, "mainWorkspaceId", { trim: true });
   if (has(input, "mainAgentId")) normalized.mainAgentId = optionalString(input.mainAgentId, "mainAgentId", { trim: true });
 
@@ -184,3 +190,4 @@ function scalarPreview(value) {
 function has(input, field) {
   return Object.prototype.hasOwnProperty.call(input, field);
 }
+import { WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES } from "./workItemToolSchema.mjs";

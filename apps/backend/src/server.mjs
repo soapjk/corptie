@@ -35,6 +35,7 @@ import { BackgroundAgentService } from "./application/backgroundAgentService.mjs
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
+import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
@@ -252,6 +253,7 @@ const codexChoiceParseRetryAfter = new Map();
 const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
+const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
 const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
@@ -265,6 +267,12 @@ const objectiveChatOperationService = new ObjectiveChatOperationService({
   store,
   objectiveService,
   contextService: objectiveChatContextService,
+  startWorkItem: ({ workItem, agent, title }) => launchAndBindWorkItemSession({ workItem, agent, title })
+});
+const sessionCollaborationService = new SessionCollaborationService({
+  store,
+  objectiveService,
+  collaborationCore,
   startWorkItem: ({ workItem, agent, title }) => launchAndBindWorkItemSession({ workItem, agent, title })
 });
 const hubService = new HubService({
@@ -344,11 +352,30 @@ const hostToolCatalog = new HostToolCatalog([
   },
   {
     id: "collaboration",
-    tools: collaborationDynamicTools,
+    tools: sessionCollaborationV2Enabled
+      ? collaborationDynamicTools
+      : collaborationDynamicTools.filter((tool) => !tool.name.startsWith("corptie_sessions_")
+        && !tool.name.startsWith("corptie_collaboration_work_items_")
+        && tool.name !== "corptie_collaboration_capabilities"),
+    authorize: ({ tool, metadata }) => {
+      if (tool === "corptie_collaboration_request"
+        || tool.startsWith("corptie_collaboration_work_items_")) {
+        return ["objectiveChat", "worker"].includes(metadata?.sessionKind) && Boolean(metadata?.objectiveId);
+      }
+      if (tool === "corptie_collaboration_capabilities" || tool.startsWith("corptie_sessions_")) {
+        return Boolean(metadata?.sessionId);
+      }
+      return true;
+    },
     execute: (input) => {
       const client = new CollaborationHttpClient({
         agentId: input.actorId,
-        baseUrl: `http://127.0.0.1:${port}`
+        baseUrl: `http://127.0.0.1:${port}`,
+        sessionScope: {
+          sessionId: input.metadata?.sessionId,
+          objectiveId: input.metadata?.objectiveId,
+          workItemId: input.metadata?.workItemId
+        }
       });
       return callCollaborationDynamicTool(client, input.tool, input.arguments);
     }
@@ -2502,6 +2529,7 @@ function collaborationMcpProcessOptions(agentId, metadata = null) {
       CORPTIE_BACKEND_URL: `http://127.0.0.1:${port}`,
       CORPTIE_ENV: environmentName,
       CORPTIE_SESSION_ID: metadata?.sessionId ?? "",
+      CORPTIE_SESSION_KIND: metadata?.sessionKind ?? "",
       CORPTIE_OBJECTIVE_ID: metadata?.objectiveId ?? "",
       CORPTIE_WORK_ITEM_ID: metadata?.workItemId ?? "",
       ...(metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
@@ -2720,6 +2748,8 @@ function withPendingCollaborationConfirmations(sessions = []) {
         confirmationId: confirmation.confirmationId,
         recipientAgentId: confirmation.recipientAgentId,
         recipientName: confirmation.recipientAgentName,
+        initiatorSessionId: confirmation.initiatorSessionId,
+        recipientSessionId: confirmation.recipientSessionId,
         taskTitle: confirmation.request.title,
         summary: confirmation.request.summary,
         acceptanceCriteria: confirmation.request.acceptanceCriteria ?? []
@@ -4576,10 +4606,20 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
       };
     });
   const confirmations = collaborationCore.listTaskConfirmationsForSession(sessionId).map((confirmation) => {
-    const recipientAgent = collaborationCore.getAgent(confirmation.recipientAgentId);
-    const recipientSessionId = recipientAgent?.currentSessionId ?? null;
-    const recipientSession = recipientSessionId
-      ? sessionPresentationCache.get(recipientSessionId) ?? store.getSession(recipientSessionId)
+    const recipientLogical = confirmation.recipientSessionId
+      ? (store.getLogicalSession(confirmation.recipientSessionId)
+        ?? store.getLogicalSessionByLegacySessionId(confirmation.recipientSessionId))
+      : null;
+    const recipientProviderSessionId = recipientLogical?.legacySessionId ?? null;
+    const recipientSession = recipientProviderSessionId
+      ? sessionPresentationCache.get(recipientProviderSessionId) ?? store.getSession(recipientProviderSessionId)
+      : null;
+    const initiatorLogical = confirmation.initiatorSessionId
+      ? (store.getLogicalSession(confirmation.initiatorSessionId)
+        ?? store.getLogicalSessionByLegacySessionId(confirmation.initiatorSessionId))
+      : null;
+    const confirmationWorkItem = confirmation.request.workItemId
+      ? store.getWorkItem(confirmation.request.workItemId)
       : null;
     return {
       id: `collaboration-confirmation:${confirmation.confirmationId}`,
@@ -4598,8 +4638,15 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
       collaborationSenderName: confirmation.initiatorAgentName,
       collaborationRecipientAgentId: confirmation.recipientAgentId,
       collaborationRecipientName: confirmation.recipientAgentName,
-      collaborationRecipientSessionId: recipientSessionId,
+      collaborationInitiatorSessionId: confirmation.initiatorSessionId,
+      collaborationInitiatorSessionTitle: initiatorLogical?.sessionName ?? null,
+      collaborationRecipientSessionId: confirmation.recipientSessionId,
       collaborationRecipientSessionTitle: recipientSession?.title ?? null,
+      collaborationSourceWorkItemId: confirmation.request.sourceWorkItemId ?? null,
+      collaborationTargetWorkItemId: confirmation.request.workItemId ?? null,
+      collaborationRelation: confirmationWorkItem?.collaboration_relation ?? null,
+      collaborationRouteStatus: confirmation.request.routeStatus ?? "pending",
+      collaborationRoutingVersion: confirmation.request.routingVersion ?? null,
       collaborationTaskTitle: confirmation.request.title,
       collaborationMessageKind: confirmation.request.type,
       collaborationAcceptanceCriteria: confirmation.request.acceptanceCriteria ?? [],
@@ -4619,6 +4666,8 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
   const recipientSession = sessionId
     ? sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
     : null;
+  const targetWorkItemId = envelope?.task.workItemId ?? workItem.source?.targetWorkItemId ?? null;
+  const targetWorkItem = targetWorkItemId ? store.getWorkItem(targetWorkItemId) : null;
   return {
     presentationRole: "collaboration",
     presentationText: envelope?.message.body ?? workItem.source?.presentationText ?? "",
@@ -4627,9 +4676,16 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
     collaborationSenderName: envelope?.message.senderAgentName ?? workItem.source?.senderAgentName ?? "Peer Agent",
     collaborationRecipientAgentId: recipient?.agentId ?? workItem.agentId,
     collaborationRecipientName: recipient?.name ?? "Current Agent",
-    collaborationRecipientSessionId: sessionId ?? null,
+    collaborationInitiatorSessionId: envelope?.task.initiatorSessionId ?? workItem.source?.initiatorSessionId ?? null,
+    collaborationInitiatorSessionTitle: envelope?.task.initiatorNameAtSend ?? null,
+    collaborationRecipientSessionId: envelope?.task.recipientSessionId ?? workItem.source?.recipientSessionId ?? sessionId ?? null,
     collaborationRecipientSessionTitle: recipientSession?.title ?? null,
     collaborationTaskTitle: envelope?.task.title ?? workItem.source?.taskTitle ?? null,
+    collaborationSourceWorkItemId: envelope?.task.sourceWorkItemId ?? workItem.source?.sourceWorkItemId ?? null,
+    collaborationTargetWorkItemId: targetWorkItemId,
+    collaborationRelation: targetWorkItem?.collaboration_relation ?? workItem.source?.relationship ?? null,
+    collaborationRouteStatus: envelope?.task.routeStatus ?? workItem.source?.routeStatus ?? null,
+    collaborationRoutingVersion: envelope?.task.routingVersion ?? workItem.source?.routingVersion ?? null,
     collaborationMessageKind: envelope?.message.messageType ?? workItem.source?.messageKind ?? "message",
     collaborationProcessingStatus: workItem.status
   };
@@ -4923,7 +4979,12 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
     }
     const envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId);
     const agent = collaborationCore.getAgent(delivery.recipientAgentId);
-    const sessionId = agent?.currentSessionId ?? null;
+    const recipientLogical = envelope?.task?.recipientSessionId
+      ? (store.getLogicalSession(envelope.task.recipientSessionId)
+        ?? store.getLogicalSessionByLegacySessionId(envelope.task.recipientSessionId))
+      : null;
+    const sessionId = recipientLogical?.legacySessionId
+      ?? (!envelope?.task?.recipientSessionId ? agent?.currentSessionId : null);
     if (!envelope || !agent || !sessionId) continue;
     const workItem = store.enqueueAgentWorkItem({
       workItemId: `delivery:${delivery.deliveryId}`,
@@ -4940,6 +5001,12 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
         senderAgentId: envelope.message.senderAgentId,
         senderAgentName: envelope.message.senderAgentName,
         recipientAgentName: agent.name,
+        initiatorSessionId: envelope.task.initiatorSessionId,
+        recipientSessionId: envelope.task.recipientSessionId,
+        sourceWorkItemId: envelope.task.sourceWorkItemId,
+        targetWorkItemId: envelope.task.workItemId,
+        routeStatus: envelope.task.routeStatus,
+        routingVersion: envelope.task.routingVersion,
         taskTitle: envelope.task.title,
         messageKind: envelope.message.messageType,
         presentationText: envelope.message.body
@@ -6348,6 +6415,7 @@ function route(request, response) {
     response,
     url,
     core: collaborationCore,
+    sessionCollaborationService: sessionCollaborationV2Enabled ? sessionCollaborationService : null,
     onConfirmationStaged: async (confirmation) => {
       emitEvent("CollaborationConfirmationRequested", {
         sessionId: confirmation.sourceSessionId,

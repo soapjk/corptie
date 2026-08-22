@@ -90,6 +90,39 @@ test("Phase 1 migration creates every collaboration table", async () => {
   });
 });
 
+test("legacy collaboration with multiple candidate Sessions remains explicitly unresolved", async () => {
+  await withFixture(async ({ core, store, directory }) => {
+    seedAgentsAndService(core);
+    const task = newTask(core);
+    for (const suffix of ["one", "two"]) {
+      store.createSession({
+        id: `provider:journal:${suffix}`,
+        title: suffix,
+        agentId: "journal-agent",
+        sessionKind: "worker"
+      });
+      store.createLogicalSessionRoute({
+        logicalSessionId: `session:journal:${suffix}`,
+        legacySessionId: `provider:journal:${suffix}`,
+        providerThreadId: `thread:journal:${suffix}`,
+        providerSessionId: `provider:journal:${suffix}`,
+        providerId: "codex-app-server",
+        boundCwd: directory,
+        sessionName: `journal ${suffix}`
+      });
+      core.bindSession({ agentId: "journal-agent", sessionId: `provider:journal:${suffix}` });
+    }
+    store.db.run(
+      "UPDATE collaboration_tasks SET recipient_session_id=NULL, route_status='active' WHERE task_id=?",
+      [task.taskId]
+    );
+    store.migrateCollaborationSessionIdentities();
+    const migrated = core.getTask(task.taskId);
+    assert.equal(migrated.recipientSessionId, null);
+    assert.equal(migrated.routeStatus, "unresolved");
+  });
+});
+
 test("a staged request creates no task until deterministic user confirmation", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);

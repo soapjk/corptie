@@ -27,8 +27,8 @@ function envelope(overrides = {}) {
 test("protocol v2 envelope contains every routable and auditable field", () => {
   const value = envelope();
   assert.equal(value.version, COLLABORATION_PROTOCOL_VERSION);
-  assert.deepEqual(value.sender, { agentId: "agent:a", objectiveId: "objective:a" });
-  assert.deepEqual(value.recipient, { agentId: "agent:b", objectiveId: "objective:b" });
+  assert.deepEqual(value.sender, { agentId: "agent:a", sessionId: null, objectiveId: "objective:a" });
+  assert.deepEqual(value.recipient, { agentId: "agent:b", sessionId: null, objectiveId: "objective:b" });
   assert.deepEqual(value.workItem, { id: "work_item:target", sourceId: "work_item:source" });
   assert.equal(value.error, null);
 });

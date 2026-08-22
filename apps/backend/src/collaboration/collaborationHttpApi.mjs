@@ -3,6 +3,7 @@ export function handleCollaborationHttpRequest({
   response,
   url,
   core,
+  sessionCollaborationService,
   onConfirmationStaged,
   onConfirmationResolved,
   onListWorkspaces,
@@ -29,6 +30,67 @@ export function handleCollaborationHttpRequest({
         return handleProductRequest({ request, response, url, core, onConfirmationResolved });
       }
       const actorAgentId = requiredActor(request, core);
+      const sessionMetadata = memoryMetadata(request);
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/session-capabilities") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session collaboration tools are unavailable.", 503);
+        return sendJson(response, 200, sessionCollaborationService.capabilities(sessionMetadata, actorAgentId));
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/sessions") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session discovery is unavailable.", 503);
+        return sendJson(response, 200, { sessions: sessionCollaborationService.discoverSessions(sessionMetadata, actorAgentId, {
+          agentId: url.searchParams.get("agentId") || undefined,
+          workItemId: url.searchParams.get("workItemId") || undefined,
+          sessionKind: url.searchParams.get("sessionKind") || undefined
+        }) });
+      }
+
+      const scopedSessionMatch = url.pathname.match(/^\/internal\/collaboration\/sessions\/([^/]+)$/);
+      if (request.method === "GET" && scopedSessionMatch) {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session discovery is unavailable.", 503);
+        return sendJson(response, 200, { session: sessionCollaborationService.getSession(
+          sessionMetadata, actorAgentId, decodeURIComponent(scopedSessionMatch[1])
+        ) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/work-items") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
+        return sendJson(response, 200, { workItems: sessionCollaborationService.listWorkItems(sessionMetadata, actorAgentId) });
+      }
+
+      const scopedWorkItemMatch = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)$/);
+      if (request.method === "GET" && scopedWorkItemMatch) {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
+        return sendJson(response, 200, { workItem: sessionCollaborationService.getWorkItem(
+          sessionMetadata, actorAgentId, decodeURIComponent(scopedWorkItemMatch[1])
+        ) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-items") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
+        return sendJson(response, 201, sessionCollaborationService.createWorkItem(
+          sessionMetadata, actorAgentId, await readJson(request)
+        ));
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-item-relations") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
+        return sendJson(response, 201, { relationship: sessionCollaborationService.relateWorkItems(
+          sessionMetadata, actorAgentId, await readJson(request)
+        ) });
+      }
+
+      const scopedWorkItemAction = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)\/(start|cancel)$/);
+      if (request.method === "POST" && scopedWorkItemAction) {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
+        const input = await readJson(request);
+        input.workItemId = decodeURIComponent(scopedWorkItemAction[1]);
+        const result = scopedWorkItemAction[2] === "start"
+          ? await sessionCollaborationService.startWorkItem(sessionMetadata, actorAgentId, input)
+          : sessionCollaborationService.cancelWorkItem(sessionMetadata, actorAgentId, input);
+        return sendJson(response, 200, result);
+      }
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/workspaces") {
         if (!onListWorkspaces) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
@@ -155,29 +217,56 @@ export function handleCollaborationHttpRequest({
 
       if (request.method === "POST" && url.pathname === "/internal/collaboration/task-confirmations") {
         const input = await readJson(request);
-        const recipient = input.recipientAgentId
-          ? core.getAgent(input.recipientAgentId)
-          : core.resolveAgentBySessionName(input.recipientSessionName);
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session-scoped collaboration is unavailable.", 503);
+        const sourceCapabilities = sessionCollaborationService.capabilities(sessionMetadata, actorAgentId);
+        let recipientSession = null;
+        if (input.recipientSessionId) {
+          recipientSession = sessionCollaborationService?.getSession(sessionMetadata, actorAgentId, input.recipientSessionId)?.sessionId ?? null;
+        } else if (input.recipientSessionName) {
+          recipientSession = core.store.getLogicalSessionByName(input.recipientSessionName)?.logicalSessionId ?? null;
+          if (recipientSession) sessionCollaborationService.getSession(sessionMetadata, actorAgentId, recipientSession);
+        } else if (input.recipientAgentId) {
+          const intent = String(input.routingIntent ?? "").trim();
+          if (!intent) throw apiError("ROUTING_INTENT_REQUIRED", "routingIntent is required when only recipientAgentId is supplied.", 400);
+          const candidates = sessionCollaborationService?.discoverSessions(sessionMetadata, actorAgentId, { agentId: input.recipientAgentId }) ?? [];
+          const eligible = intent === "objective_chat" ? candidates.filter((item) => item.sessionKind === "objectiveChat")
+            : intent === "existing_work_item_session" ? candidates.filter((item) => item.workItemId)
+              : candidates;
+          if (intent === "create_dedicated_session") {
+            throw apiError("DEDICATED_SESSION_CREATION_REQUIRED", "Create the dedicated Session first, then retry with recipientSessionId.", 409);
+          }
+          if (!eligible.length || (eligible.length > 1 && intent !== "best_available")) {
+            throw apiError("AMBIGUOUS_RECIPIENT_SESSION", `Routing intent resolved ${eligible.length} Sessions; specify recipientSessionId.`, 409);
+          }
+          recipientSession = (eligible.find((candidate) => candidate.active) ?? eligible[0])?.sessionId ?? null;
+        }
+        const recipient = recipientSession
+          ? core.getAgentForSession(recipientSession)
+          : null;
         if (!recipient) {
           throw apiError(
             "AGENT_NOT_FOUND",
             input.recipientSessionName
               ? `No active Session is named ${input.recipientSessionName}.`
-              : "recipientSessionName or recipientAgentId is required.",
+              : "A visible recipientSessionId, recipientSessionName, or explicit Agent routing intent is required.",
             404
           );
         }
         const actor = core.getAgent(actorAgentId);
-        const runningWork = actor?.currentSessionId
-          ? core.store.getRunningAgentWorkItemForSession(actor.currentSessionId)
+        const sourceLogical = core.store.getLogicalSession(sessionMetadata.sessionId);
+        const sourceProviderSessionId = sourceLogical?.legacySessionId ?? sessionMetadata.sessionId;
+        const runningWork = sourceProviderSessionId
+          ? core.store.getRunningAgentWorkItemForSession(sourceProviderSessionId)
           : null;
         const confirmation = core.proposeTask({
           ...input,
-          sourceObjectiveId: headerText(request, "x-corptie-objective-id") ?? undefined,
-          sourceWorkItemId: headerText(request, "x-corptie-work-item-id") ?? undefined,
+          sourceObjectiveId: sourceCapabilities.objectiveId ?? undefined,
+          sourceWorkItemId: sourceCapabilities.workItemId ?? undefined,
           recipientAgentId: recipient.agentId,
+          recipientSessionId: recipientSession,
           initiatorAgentId: actorAgentId,
-          sourceSessionId: actor?.currentSessionId,
+          initiatorSessionId: sourceCapabilities.sourceSessionId,
+          sourceSessionId: sessionMetadata.sessionId,
           sourceTurnId: runningWork?.targetTurnId ?? null
         });
         await onConfirmationStaged?.(confirmation);
@@ -195,10 +284,10 @@ export function handleCollaborationHttpRequest({
 
       const taskMatch = url.pathname.match(/^\/internal\/collaboration\/tasks\/([^/]+)$/);
       if (request.method === "GET" && taskMatch) {
-        const task = requireParticipant(core, decodeURIComponent(taskMatch[1]), actorAgentId);
+        const task = requireParticipant(core, decodeURIComponent(taskMatch[1]), actorAgentId, sessionMetadata.sessionId);
         const includeHistory = url.searchParams.get("includeHistory") === "true";
         return sendJson(response, 200, {
-          task: includeHistory ? task : compactTaskForActor(task, actorAgentId)
+          task: includeHistory ? task : compactTaskForActor(task, actorAgentId, sessionMetadata.sessionId, core)
         });
       }
 
@@ -206,9 +295,9 @@ export function handleCollaborationHttpRequest({
       if (request.method === "POST" && actionMatch) {
         const taskId = decodeURIComponent(actionMatch[1]);
         const action = decodeURIComponent(actionMatch[2]);
-        requireParticipant(core, taskId, actorAgentId);
+        requireParticipant(core, taskId, actorAgentId, sessionMetadata.sessionId);
         const input = await readJson(request);
-        const task = performAction(core, taskId, actorAgentId, action, input);
+        const task = performAction(core, taskId, actorAgentId, action, input, sessionMetadata.sessionId);
         return sendJson(response, 200, { task });
       }
 
@@ -306,36 +395,36 @@ async function handleProductRequest({ request, response, url, core, onConfirmati
   throw apiError("NOT_FOUND", "Collaboration product endpoint was not found.", 404);
 }
 
-function performAction(core, taskId, actorAgentId, action, input) {
+function performAction(core, taskId, actorAgentId, action, input, actorSessionId = null) {
   switch (action) {
     case "accept": {
       const current = core.getTask(taskId);
       if (current?.status === "revision_requested") {
-        return core.startWorking(taskId, actorAgentId);
+        return core.startWorking(taskId, actorAgentId, actorSessionId);
       }
-      const accepted = core.accept(taskId, actorAgentId);
-      return core.startWorking(accepted.taskId, actorAgentId);
+      const accepted = core.accept(taskId, actorAgentId, actorSessionId);
+      return core.startWorking(accepted.taskId, actorAgentId, actorSessionId);
     }
     case "reject":
-      return core.reject(taskId, actorAgentId, input.reason);
+      return core.reject(taskId, actorAgentId, input.reason, actorSessionId);
     case "ask":
-      return core.askForInformation(taskId, actorAgentId, input.body, messageOptions(input));
+      return core.askForInformation(taskId, actorAgentId, input.body, { ...messageOptions(input), actorSessionId });
     case "reply":
-      return core.reply(taskId, actorAgentId, input.body, messageOptions(input));
+      return core.reply(taskId, actorAgentId, input.body, { ...messageOptions(input), actorSessionId });
     case "submit-result":
-      return core.submitResult(taskId, actorAgentId, input);
+      return core.submitResult(taskId, actorAgentId, { ...input, actorSessionId });
     case "request-revision": {
       let task = core.getTask(taskId);
-      if (task.status === "delivered") task = core.beginVerification(taskId, actorAgentId);
-      return core.requestRevision(task.taskId, actorAgentId, input.body, messageOptions(input));
+      if (task.status === "delivered") task = core.beginVerification(taskId, actorAgentId, actorSessionId);
+      return core.requestRevision(task.taskId, actorAgentId, input.body, { ...messageOptions(input), actorSessionId });
     }
     case "complete": {
       let task = core.getTask(taskId);
-      if (task.status === "delivered") task = core.beginVerification(taskId, actorAgentId);
-      return core.complete(task.taskId, actorAgentId, input.body, messageOptions(input));
+      if (task.status === "delivered") task = core.beginVerification(taskId, actorAgentId, actorSessionId);
+      return core.complete(task.taskId, actorAgentId, input.body, { ...messageOptions(input), actorSessionId });
     }
     case "cancel":
-      return core.cancel(taskId, actorAgentId, input.reason);
+      return core.cancel(taskId, actorAgentId, input.reason, actorSessionId);
     default:
       throw apiError("UNKNOWN_ACTION", `Unknown collaboration action: ${action}`, 404);
   }
@@ -348,11 +437,19 @@ function requiredActor(request, core) {
   return actorAgentId;
 }
 
-function requireParticipant(core, taskId, actorAgentId) {
+function requireParticipant(core, taskId, actorAgentId, actorSessionId = null) {
   const task = core.getTask(taskId);
   if (!task) throw apiError("TASK_NOT_FOUND", `Task ${taskId} was not found.`, 404);
   if (![task.initiatorAgentId, task.recipientAgentId].includes(actorAgentId)) {
     throw apiError("ACTOR_NOT_AUTHORIZED", "Only task participants may view or modify this task.", 403);
+  }
+  if (task.initiatorAgentId === task.recipientAgentId) {
+    const logical = core.store.getLogicalSession(actorSessionId)
+      ?? core.store.getLogicalSessionByLegacySessionId(actorSessionId);
+    const stable = logical?.logicalSessionId ?? actorSessionId;
+    if (![task.initiatorSessionId, task.recipientSessionId].includes(stable)) {
+      throw apiError("SESSION_ACTOR_MISMATCH", "Only the two task Sessions may view or modify this same-Agent task.", 403);
+    }
   }
   return task;
 }
@@ -365,8 +462,14 @@ function messageOptions(input) {
   };
 }
 
-function compactTaskForActor(task, actorAgentId) {
-  const role = actorAgentId === task.initiatorAgentId ? "initiator" : "recipient";
+function compactTaskForActor(task, actorAgentId, actorSessionId = null, core = null) {
+  const sameAgent = task.initiatorAgentId === task.recipientAgentId;
+  const actorLogical = core?.store.getLogicalSession(actorSessionId)
+    ?? core?.store.getLogicalSessionByLegacySessionId(actorSessionId);
+  const stableActorSessionId = actorLogical?.logicalSessionId ?? actorSessionId;
+  const role = sameAgent && stableActorSessionId === task.recipientSessionId
+    ? "recipient"
+    : actorAgentId === task.initiatorAgentId ? "initiator" : "recipient";
   const peerAgentId = role === "initiator" ? task.recipientAgentId : task.initiatorAgentId;
   const currentMessage = [...(task.messages ?? [])]
     .reverse()
@@ -381,6 +484,12 @@ function compactTaskForActor(task, actorAgentId) {
     targetObjectiveId: task.targetObjectiveId,
     sourceWorkItemId: task.sourceWorkItemId,
     workItemId: task.workItemId,
+    initiatorSessionId: task.initiatorSessionId,
+    recipientSessionId: task.recipientSessionId,
+    routingVersion: task.routingVersion,
+    routeStatus: task.routeStatus,
+    artifactStatus: task.artifactStatus,
+    acceptanceStatus: task.acceptanceStatus,
     role,
     peerAgentId,
     serviceId: task.serviceId,

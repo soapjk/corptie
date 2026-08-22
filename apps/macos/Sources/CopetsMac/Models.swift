@@ -149,6 +149,8 @@ struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let confirmationId: String
     let recipientAgentId: String?
     let recipientName: String
+    let initiatorSessionId: String?
+    let recipientSessionId: String?
     let taskTitle: String
     let summary: String
     let acceptanceCriteria: [String]
@@ -714,6 +716,16 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let workItemId: String?
     let initiatorAgentId: String
     let recipientAgentId: String
+    let initiatorSessionId: String?
+    let recipientSessionId: String?
+    let initiatorNameAtSend: String?
+    let recipientNameAtSend: String?
+    let routingVersion: Int?
+    let routeStatus: String?
+    let artifactStatus: String?
+    let acceptanceStatus: String?
+    let initiatorBindingId: String?
+    let recipientBindingId: String?
     let serviceId: String?
     let type: String
     let status: String
@@ -759,6 +771,7 @@ struct CollaborationMessageEnvelope: Decodable, Equatable {
 
 struct CollaborationMessageParty: Decodable, Equatable {
     let agentId: String
+    let sessionId: String?
     let objectiveId: String
 }
 
@@ -1253,8 +1266,15 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationSenderName: String? = nil
     var collaborationRecipientAgentId: String? = nil
     var collaborationRecipientName: String? = nil
+    var collaborationInitiatorSessionId: String? = nil
+    var collaborationInitiatorSessionTitle: String? = nil
     var collaborationRecipientSessionId: String? = nil
     var collaborationRecipientSessionTitle: String? = nil
+    var collaborationSourceWorkItemId: String? = nil
+    var collaborationTargetWorkItemId: String? = nil
+    var collaborationRelation: String? = nil
+    var collaborationRouteStatus: String? = nil
+    var collaborationRoutingVersion: Int? = nil
     var collaborationTaskTitle: String? = nil
     var collaborationMessageKind: String? = nil
     var collaborationProcessingStatus: String? = nil

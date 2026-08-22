@@ -7,15 +7,19 @@ import {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 15);
+  assert.equal(names.length, 24);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
   assert.ok(names.includes("corptie_collaboration_request"));
+  assert.ok(names.includes("corptie_sessions_discover"));
+  assert.ok(names.includes("corptie_collaboration_work_items_create"));
+  assert.equal(names.some((name) => name.includes("work_items_delete") || name.includes("work_items_update")), false);
   for (const entry of collaborationDynamicTools) {
     assert.equal(entry.type, "function");
     assert.equal(entry.deferLoading, false);
     assert.ok(entry.name.length < 64);
     assert.equal(entry.inputSchema.type, "object");
+    assert.equal(entry.inputSchema.additionalProperties, false);
   }
 });
 

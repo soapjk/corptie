@@ -1,3 +1,13 @@
+import {
+  agentIdSchema,
+  COLLABORATION_RELATION_TYPES,
+  COLLABORATION_ROUTING_INTENTS,
+  repositoryIdSchema,
+  sessionIdSchema,
+  workItemFieldsSchema,
+  workItemIdSchema
+} from "../domain/workItemToolSchema.mjs";
+
 const evidenceSchema = {
   type: "array",
   items: { type: "object", additionalProperties: true }
@@ -39,6 +49,48 @@ function tool(name, description, properties = {}, required = []) {
 }
 
 export const collaborationDynamicTools = Object.freeze([
+  tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Agent is the identity/authorization principal; Session is the context and routing principal."),
+  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions visible within the authenticated Objective/Agent scope. Returns stable Session, Agent, kind, Objective, WorkItem, lifecycle, route, Workspace/Worktree, and capabilities.", {
+    agent_id: agentIdSchema,
+    work_item_id: workItemIdSchema,
+    session_kind: { type: "string", enum: ["objectiveChat", "worker", "assistantChat", "legacy"] }
+  }),
+  tool("corptie_sessions_get", "Read one visible logical Session without assuming that Sessions owned by the same Agent share context.", {
+    session_id: sessionIdSchema
+  }, ["session_id"]),
+  tool("corptie_collaboration_work_items_list", "List WorkItems visible to this Session. Objective Chat sees its Objective; Worker sees its bound WorkItem and explicitly related collaboration WorkItems."),
+  tool("corptie_collaboration_work_items_get", "Read one WorkItem visible to this Session.", {
+    work_item_id: workItemIdSchema
+  }, ["work_item_id"]),
+  tool("corptie_collaboration_work_items_create", "Create an Objective-scoped collaboration WorkItem. Objective Chat may create top-level or child work; Worker requires an explicit allowed relation to its bound WorkItem. Actor/Objectives/source Session are runtime-derived.", {
+    title: { type: "string", minLength: 1 },
+    description: workItemFieldsSchema.description,
+    acceptance_criteria: workItemFieldsSchema.acceptance_criteria,
+    priority: workItemFieldsSchema.priority,
+    agent_id: agentIdSchema,
+    main_workspace_id: repositoryIdSchema,
+    parent_work_item_id: workItemIdSchema,
+    source_work_item_id: workItemIdSchema,
+    relationship: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
+    idempotency_key: { type: "string", minLength: 1 }
+  }, ["title", "idempotency_key"]),
+  tool("corptie_collaboration_work_items_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Objective; Worker relations must include its bound WorkItem.", {
+    work_item_id: workItemIdSchema,
+    target_work_item_id: workItemIdSchema,
+    relationship: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] }
+  }, ["work_item_id", "target_work_item_id", "relationship"]),
+  tool("corptie_collaboration_work_items_start", "Start an authorized collaboration WorkItem through the Provider-neutral Session/Worktree lifecycle. Returns a staged receipt and never reports start success without an actual Session binding.", {
+    work_item_id: workItemIdSchema,
+    agent_id: agentIdSchema,
+    title: { type: "string", minLength: 1 },
+    resource_version: { type: "string", minLength: 1 },
+    idempotency_key: { type: "string", minLength: 1 }
+  }, ["work_item_id", "resource_version", "idempotency_key"]),
+  tool("corptie_collaboration_work_items_cancel", "Safely cancel an authorized collaboration WorkItem while preserving its audit record; physical deletion is unavailable.", {
+    work_item_id: workItemIdSchema,
+    reason: { type: "string", minLength: 1 },
+    resource_version: { type: "string", minLength: 1 }
+  }, ["work_item_id", "reason", "resource_version"]),
   tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities.", {
     status: { type: "string", enum: ["available", "unavailable"] }
   }),
@@ -54,7 +106,9 @@ export const collaborationDynamicTools = Object.freeze([
   }, ["service_id"]),
   tool("corptie_collaboration_request", "Stage an Objective-to-Objective WorkItem question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn.", {
     recipient_session_name: { type: "string", minLength: 1 },
+    recipient_session_id: sessionIdSchema,
     recipient_agent_id: { type: "string", minLength: 1 },
+    routing_intent: { type: "string", enum: [...COLLABORATION_ROUTING_INTENTS], description: "Required when recipient_session_id is omitted; ambiguity is never guessed silently." },
     service_id: { type: "string", minLength: 1 },
     target_objective_id: { type: "string", minLength: 1, description: "Target Objective. Defaults to the recipient's current Objective or compatibility Objective." },
     work_item_id: { type: "string", minLength: 1, description: "Existing target-Objective WorkItem to use instead of creating one." },
@@ -111,6 +165,36 @@ export const collaborationDynamicTools = Object.freeze([
 
 export async function callCollaborationDynamicTool(client, name, input = {}) {
   const handlers = {
+    corptie_collaboration_capabilities: () => client.get("/internal/collaboration/session-capabilities"),
+    corptie_sessions_discover: () => client.get("/internal/collaboration/sessions", {
+      agentId: input.agent_id, workItemId: input.work_item_id, sessionKind: input.session_kind
+    }),
+    corptie_sessions_get: () => client.get(`/internal/collaboration/sessions/${encodeURIComponent(input.session_id)}`),
+    corptie_collaboration_work_items_list: () => client.get("/internal/collaboration/work-items"),
+    corptie_collaboration_work_items_get: () => client.get(`/internal/collaboration/work-items/${encodeURIComponent(input.work_item_id)}`),
+    corptie_collaboration_work_items_create: () => client.post("/internal/collaboration/work-items", compact({
+      title: input.title,
+      description: input.description,
+      acceptanceCriteria: input.acceptance_criteria,
+      priority: input.priority,
+      agentId: input.agent_id,
+      mainWorkspaceId: input.main_workspace_id,
+      parentWorkItemId: input.parent_work_item_id,
+      sourceWorkItemId: input.source_work_item_id,
+      relationship: input.relationship,
+      idempotencyKey: input.idempotency_key
+    })),
+    corptie_collaboration_work_items_relate: () => client.post("/internal/collaboration/work-item-relations", {
+      workItemId: input.work_item_id,
+      targetWorkItemId: input.target_work_item_id,
+      relationship: input.relationship
+    }),
+    corptie_collaboration_work_items_start: () => client.post(`/internal/collaboration/work-items/${encodeURIComponent(input.work_item_id)}/start`, compact({
+      agentId: input.agent_id, title: input.title, resourceVersion: input.resource_version, idempotencyKey: input.idempotency_key
+    })),
+    corptie_collaboration_work_items_cancel: () => client.post(`/internal/collaboration/work-items/${encodeURIComponent(input.work_item_id)}/cancel`, {
+      reason: input.reason, resourceVersion: input.resource_version
+    }),
     corptie_agents_discover: () => client.get("/internal/collaboration/agents", { status: input.status }),
     corptie_agents_get: () => client.get(`/internal/collaboration/agents/${encodeURIComponent(input.agent_id)}`),
     corptie_services_list: () => client.get("/internal/collaboration/services", {
@@ -121,6 +205,8 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     corptie_collaboration_request: () => client.post("/internal/collaboration/task-confirmations", compact({
       recipientAgentId: input.recipient_agent_id,
       recipientSessionName: input.recipient_session_name,
+      recipientSessionId: input.recipient_session_id,
+      routingIntent: input.routing_intent,
       serviceId: input.service_id,
       targetObjectiveId: input.target_objective_id,
       workItemId: input.work_item_id,

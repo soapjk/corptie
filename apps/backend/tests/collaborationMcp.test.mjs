@@ -17,6 +17,15 @@ const expectedTools = [
   "corptie.agents.get",
   "corptie.services.list",
   "corptie.services.describe",
+  "corptie.collaboration.capabilities",
+  "corptie.sessions.discover",
+  "corptie.sessions.get",
+  "corptie.collaboration.work_items.list",
+  "corptie.collaboration.work_items.get",
+  "corptie.collaboration.work_items.create",
+  "corptie.collaboration.work_items.relate",
+  "corptie.collaboration.work_items.start",
+  "corptie.collaboration.work_items.cancel",
   "corptie_list_workspaces",
   "corptie_create_worktree",
   "corptie_switch_workspace",
@@ -43,14 +52,18 @@ const expectedTools = [
 ];
 
 async function connectMcp(backendClient, options = {}) {
-  const server = createCollaborationMcpServer({ agentId: "research-agent", client: backendClient, ...options });
+  const server = createCollaborationMcpServer({
+    agentId: "research-agent", client: backendClient,
+    sessionId: "session:research", sessionKind: "worker", sessionObjectiveId: "objective:research",
+    ...options
+  });
   const client = new Client({ name: "corptie-test", version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return { client, server };
 }
 
-test("Objective Chat MCP exposes only fixed-scope work management tools", async () => {
+test("Objective Chat MCP exposes context plus Session-scoped strict collaboration tools", async () => {
   const calls = [];
   const { client } = await connectMcp({
     get: async () => ({}),
@@ -60,20 +73,42 @@ test("Objective Chat MCP exposes only fixed-scope work management tools", async 
     const tools = await client.listTools();
     const names = tools.tools.map((tool) => tool.name);
     assert.ok(names.includes("corptie_objective_context"));
-    assert.ok(names.includes("corptie_objective_work_item_start"));
+    assert.equal(names.includes("corptie_objective_work_item_start"), false);
+    assert.equal(names.includes("corptie_objective_work_items_manage"), false);
+    assert.ok(names.includes("corptie.collaboration.work_items.create"));
     await client.callTool({
-      name: "corptie_objective_work_items_manage",
-      arguments: { action: "create", title: "Scoped item" }
+      name: "corptie.collaboration.work_items.create",
+      arguments: { title: "Scoped item", idempotency_key: "create:scoped" }
     });
     assert.deepEqual(calls[0], {
-      path: "/internal/objective-chat/tool",
+      path: "/internal/collaboration/work-items",
       body: {
-        objectiveId: "objective:1",
-        sessionId: "session:1",
-        tool: "corptie_objective_work_items_manage",
-        arguments: { action: "create", title: "Scoped item" }
+        title: "Scoped item",
+        description: undefined,
+        acceptanceCriteria: undefined,
+        priority: undefined,
+        agentId: undefined,
+        mainWorkspaceId: undefined,
+        parentWorkItemId: undefined,
+        sourceWorkItemId: undefined,
+        relationship: undefined,
+        idempotencyKey: "create:scoped"
       }
     });
+  } finally {
+    await client.close();
+  }
+});
+
+test("unbound Assistant Chat does not receive WorkItem creation or collaboration request tools", async () => {
+  const { client } = await connectMcp({ get: async () => ({}), post: async () => ({}) }, {
+    sessionKind: "assistantChat", sessionObjectiveId: "", objectiveId: ""
+  });
+  try {
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    assert.ok(names.includes("corptie.sessions.discover"));
+    assert.equal(names.includes("corptie.collaboration.work_items.create"), false);
+    assert.equal(names.includes("corptie.collaboration.request"), false);
   } finally {
     await client.close();
   }
