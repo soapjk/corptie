@@ -21,6 +21,7 @@ struct SessionNotificationSnapshot: Equatable {
     let status: TaskStatus
     let summary: String
     let updatedAt: String
+    let lastAgentMessageSequence: Int
 
     init(
         id: String,
@@ -28,7 +29,8 @@ struct SessionNotificationSnapshot: Equatable {
         agent: String,
         status: TaskStatus,
         summary: String,
-        updatedAt: String
+        updatedAt: String,
+        lastAgentMessageSequence: Int = 0
     ) {
         self.id = id
         self.title = title
@@ -36,6 +38,7 @@ struct SessionNotificationSnapshot: Equatable {
         self.status = status
         self.summary = summary
         self.updatedAt = updatedAt
+        self.lastAgentMessageSequence = lastAgentMessageSequence
     }
 
     init(session: TaskSession) {
@@ -45,6 +48,7 @@ struct SessionNotificationSnapshot: Equatable {
         status = session.status
         summary = session.summary
         updatedAt = session.updatedAt
+        lastAgentMessageSequence = session.lastAgentMessageSequence ?? 0
     }
 }
 
@@ -79,6 +83,7 @@ enum SessionNotificationNavigation {
 
 struct SessionCompletionSoundTransitionTracker {
     private var previousStatusesBySessionID: [String: TaskStatus] = [:]
+    private var runStartingAgentMessageSequencesBySessionID: [String: Int] = [:]
     private var hasObservedInitialSnapshot = false
 
     mutating func completedSessionIDs(
@@ -88,19 +93,36 @@ struct SessionCompletionSoundTransitionTracker {
         previousStatusesBySessionID = previousStatusesBySessionID.filter {
             currentIDs.contains($0.key)
         }
+        runStartingAgentMessageSequencesBySessionID = runStartingAgentMessageSequencesBySessionID.filter {
+            currentIDs.contains($0.key)
+        }
 
         guard hasObservedInitialSnapshot else {
             previousStatusesBySessionID = Dictionary(
                 uniqueKeysWithValues: sessions.map { ($0.id, $0.status) }
+            )
+            runStartingAgentMessageSequencesBySessionID = Dictionary(
+                uniqueKeysWithValues: sessions.map { ($0.id, $0.lastAgentMessageSequence) }
             )
             hasObservedInitialSnapshot = true
             return []
         }
 
         let completedSessionIDs = sessions.compactMap { session -> String? in
-            defer { previousStatusesBySessionID[session.id] = session.status }
-            guard previousStatusesBySessionID[session.id] == .running,
-                  session.status == .complete || session.status == .blocked else {
+            let previousStatus = previousStatusesBySessionID[session.id]
+            if session.status == .running, previousStatus != .running {
+                runStartingAgentMessageSequencesBySessionID[session.id] = session.lastAgentMessageSequence
+            }
+            defer {
+                previousStatusesBySessionID[session.id] = session.status
+                if session.status != .running {
+                    runStartingAgentMessageSequencesBySessionID[session.id] = session.lastAgentMessageSequence
+                }
+            }
+            guard previousStatus == .running,
+                  session.status == .complete || session.status == .blocked,
+                  session.lastAgentMessageSequence
+                    > (runStartingAgentMessageSequencesBySessionID[session.id] ?? 0) else {
                 return nil
             }
             return session.id

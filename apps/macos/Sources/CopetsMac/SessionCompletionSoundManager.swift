@@ -48,6 +48,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
 
     private let client: BackendClient
     private let preferences: SessionNotificationPreferences
+    private let defaults: UserDefaults
     private let notificationCenter: UNUserNotificationCenter?
     private let isSessionVisible: (String) -> Bool
     private let isOverviewVisible: () -> Bool
@@ -66,6 +67,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     ) {
         self.client = client
         self.preferences = preferences
+        self.defaults = defaults
         self.notificationCenter = notificationCenter
         self.isSessionVisible = isSessionVisible
         self.isOverviewVisible = isOverviewVisible
@@ -91,22 +93,39 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         soundTransitionTracker = SessionCompletionSoundTransitionTracker()
     }
 
-    static func selectedSoundId(for sessionId: String) -> String {
-        storedSoundIdsBySessionId()[sessionId] ?? defaultSoundId
+    static func selectedSoundId(
+        for sessionId: String,
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults
+    ) -> String {
+        guard let storedSoundId = storedSoundIdsBySessionId(defaults: defaults)[sessionId],
+              options.contains(where: { $0.id == storedSoundId }) else {
+            return noneSoundId
+        }
+        return storedSoundId
     }
 
-    static func setSelectedSoundId(_ soundId: String, for sessionId: String) {
-        var stored = storedSoundIdsBySessionId()
-        if soundId == defaultSoundId {
-            stored.removeValue(forKey: sessionId)
-        } else {
-            stored[sessionId] = soundId
-        }
-        CorptieAppEnvironment.userDefaults.set(stored, forKey: storageKey)
+    static func setSelectedSoundId(
+        _ soundId: String,
+        for sessionId: String,
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults
+    ) {
+        guard options.contains(where: { $0.id == soundId }) else { return }
+        var stored = storedSoundIdsBySessionId(defaults: defaults)
+        stored[sessionId] = soundId
+        defaults.set(stored, forKey: storageKey)
+    }
+
+    static func enabledSoundId(
+        for sessionId: String,
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults
+    ) -> String? {
+        let soundId = selectedSoundId(for: sessionId, defaults: defaults)
+        return option(for: soundId).systemSoundName == nil ? nil : soundId
     }
 
     static func option(for soundId: String) -> SessionCompletionSoundOption {
-        options.first { $0.id == soundId } ?? options[0]
+        options.first { $0.id == soundId }
+            ?? options.first { $0.id == noneSoundId }!
     }
 
     static func previewSound(_ soundId: String) {
@@ -162,7 +181,10 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
             .filter { $0.archived != true }
             .map(SessionNotificationSnapshot.init(session:))
         for sessionID in soundTransitionTracker.completedSessionIDs(for: activeSnapshots) {
-            Self.previewSound(Self.selectedSoundId(for: sessionID))
+            guard let soundId = Self.enabledSoundId(for: sessionID, defaults: defaults) else {
+                continue
+            }
+            Self.previewSound(soundId)
         }
         let events = reducer.events(
             for: activeSnapshots,
@@ -225,8 +247,8 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         )
     }
 
-    private static func storedSoundIdsBySessionId() -> [String: String] {
-        CorptieAppEnvironment.userDefaults.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+    private static func storedSoundIdsBySessionId(defaults: UserDefaults) -> [String: String] {
+        defaults.dictionary(forKey: storageKey) as? [String: String] ?? [:]
     }
 
     func userNotificationCenter(
