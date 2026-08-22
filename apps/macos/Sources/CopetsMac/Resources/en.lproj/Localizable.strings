@@ -118,6 +118,17 @@
 "Resolve the current Integration Run conflicts before starting another one" = "Resolve the current Integration Run conflicts before starting another one";
 "Integrate all completed Worktrees?" = "Integrate all completed Worktrees?";
 "Start Serial Integration" = "Start Serial Integration";
+"Worktree integration is already running." = "Worktree integration is already running.";
+"Select a Session before starting Worktree integration." = "Select a Session before starting Worktree integration.";
+"The selected Session is not attached to a repository workspace." = "The selected Session is not attached to a repository workspace.";
+"The selected Session is not attached to an Objective." = "The selected Session is not attached to an Objective.";
+"Integrated %d Worktrees; %d have conflicts; %d failed" = "Integrated %d Worktrees; %d have conflicts; %d failed";
+"Integration finished with %d failed Worktrees. Review the failure details below." = "Integration finished with %d failed Worktrees. Review the failure details below.";
+"No completed Worktrees are eligible for integration. Complete the WorkItem, stop its active Session, and commit its local changes before trying again." = "No completed Worktrees are eligible for integration. Complete the WorkItem, stop its active Session, and commit its local changes before trying again.";
+"Click to see why no Worktrees can be integrated" = "Click to see why no Worktrees can be integrated";
+"Click to review the blocking integration conflict" = "Click to review the blocking integration conflict";
+"Worktree integration failures" = "Worktree integration failures";
+"The Worktree could not be integrated. Refresh and try again." = "The Worktree could not be integrated. Refresh and try again.";
 "Corptie will merge these completed Worktrees into main one at a time. Conflicts will be recorded and the remaining Worktrees will continue. No remote push is performed.\n\n%@" = "Corptie will merge these completed Worktrees into main one at a time. Conflicts will be recorded and the remaining Worktrees will continue. No remote push is performed.\n\n%@";
 "Untitled WorkItem" = "Untitled WorkItem";
 "Completed Worktree Integration" = "Completed Worktree Integration";

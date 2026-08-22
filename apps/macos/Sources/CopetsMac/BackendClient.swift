@@ -15,6 +15,20 @@ struct SessionRestartActivity: Equatable {
     let isActive: Bool
 }
 
+struct ProjectWorktreeIntegrationLaunchGate: Equatable {
+    private(set) var isRunning = false
+
+    mutating func begin() -> Bool {
+        guard !isRunning else { return false }
+        isRunning = true
+        return true
+    }
+
+    mutating func finish() {
+        isRunning = false
+    }
+}
+
 enum SessionDetailPreloadPolicy {
     // Warm a small navigation neighborhood. Projection now runs off-main and
     // Provider reads are single-flight on the backend, so four nearby rows no
@@ -206,6 +220,7 @@ final class BackendClient: ObservableObject {
     private var appStateCancellable: AnyCancellable?
     private var reachabilityCancellable: AnyCancellable?
     private var lastProjectedSessions: [TaskSession]?
+    private var completedWorktreeIntegrationGate = ProjectWorktreeIntegrationLaunchGate()
 
     init() {
         appStateCancellable = appState.$state
@@ -1926,14 +1941,33 @@ final class BackendClient: ObservableObject {
     }
 
     func integrateCompletedWorktrees() {
-        guard let session = selectedSession,
-              let projectId = projectId(for: session),
-              let objectiveId = session.objectiveId,
-              !isIntegratingCompletedWorktrees else { return }
+        guard completedWorktreeIntegrationGate.begin() else {
+            recordProjectWorktreeActionError(L10n("Worktree integration is already running."))
+            return
+        }
+        guard let session = selectedSession else {
+            completedWorktreeIntegrationGate.finish()
+            recordProjectWorktreeActionError(L10n("Select a Session before starting Worktree integration."))
+            return
+        }
+        guard let projectId = projectId(for: session) else {
+            completedWorktreeIntegrationGate.finish()
+            recordProjectWorktreeActionError(L10n("The selected Session is not attached to a repository workspace."))
+            return
+        }
+        guard let objectiveId = session.objectiveId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !objectiveId.isEmpty else {
+            completedWorktreeIntegrationGate.finish()
+            recordProjectWorktreeActionError(L10n("The selected Session is not attached to an Objective."))
+            return
+        }
+        beginProjectWorktreeAction()
+        isIntegratingCompletedWorktrees = true
         Task {
-            beginProjectWorktreeAction()
-            isIntegratingCompletedWorktrees = true
-            defer { isIntegratingCompletedWorktrees = false }
+            defer {
+                completedWorktreeIntegrationGate.finish()
+                isIntegratingCompletedWorktrees = false
+            }
             do {
                 var request = URLRequest(url: baseURL.appending(
                     path: "projects/\(projectId)/objectives/\(objectiveId)/integrations"
@@ -1954,10 +1988,17 @@ final class BackendClient: ObservableObject {
                 )
                 let counts = selectedProjectIntegrationStatus?.latestRun?.counts
                 sendStatusMessage = L10nFormat(
-                    "Integrated %d Worktrees; %d have conflicts",
+                    "Integrated %d Worktrees; %d have conflicts; %d failed",
                     counts?.integrated ?? 0,
-                    counts?.conflicts ?? 0
+                    counts?.conflicts ?? 0,
+                    counts?.failed ?? 0
                 )
+                if let failed = counts?.failed, failed > 0 {
+                    recordProjectWorktreeActionError(L10nFormat(
+                        "Integration finished with %d failed Worktrees. Review the failure details below.",
+                        failed
+                    ))
+                }
                 await loadProjectWorktreeStatus(for: session)
             } catch {
                 recordProjectWorktreeActionError(error.localizedDescription)

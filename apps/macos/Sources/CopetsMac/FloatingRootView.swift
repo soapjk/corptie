@@ -6238,6 +6238,25 @@ enum ProjectWorktreeCleanupPolicy {
     }
 }
 
+enum ProjectWorktreeIntegrationEntryState: Equatable {
+    case ready
+    case noEligibleWorktrees
+    case unresolvedConflicts
+    case running
+
+    init(eligibleCount: Int, conflictCount: Int, isRunning: Bool) {
+        if isRunning {
+            self = .running
+        } else if conflictCount > 0 {
+            self = .unresolvedConflicts
+        } else if eligibleCount == 0 {
+            self = .noEligibleWorktrees
+        } else {
+            self = .ready
+        }
+    }
+}
+
 enum ProjectGitHubPushSelection {
     static func status(
         for worktree: ProjectWorktreeStatus?,
@@ -6274,26 +6293,31 @@ private struct ProjectWorktreeManagerView: View {
                 Spacer()
                 if let status {
                     if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+                        let integrationEntryState = ProjectWorktreeIntegrationEntryState(
+                            eligibleCount: integrationStatus.eligibleWorktrees.count,
+                            conflictCount: integrationStatus.latestRun?.counts.conflicts ?? 0,
+                            isRunning: backendClient.isIntegratingCompletedWorktrees
+                        )
                         Button {
-                            showingIntegrationConfirmation = true
+                            handleIntegrationEntry(integrationEntryState)
                         } label: {
-                            Label(
-                                L10nFormat(
-                                    "Integrate Completed (%d)",
-                                    integrationStatus.eligibleWorktrees.count
-                                ),
-                                systemImage: "arrow.triangle.merge"
-                            )
+                            if integrationEntryState == .running {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text(L10n("Integrating serially"))
+                            } else {
+                                Label(
+                                    L10nFormat(
+                                        "Integrate Completed (%d)",
+                                        integrationStatus.eligibleWorktrees.count
+                                    ),
+                                    systemImage: "arrow.triangle.merge"
+                                )
+                            }
                         }
                         .controlSize(.small)
-                        .disabled(
-                            integrationStatus.eligibleWorktrees.isEmpty
-                                || (integrationStatus.latestRun?.counts.conflicts ?? 0) > 0
-                                || backendClient.isIntegratingCompletedWorktrees
-                        )
-                        .help((integrationStatus.latestRun?.counts.conflicts ?? 0) > 0
-                            ? L10n("Resolve the current Integration Run conflicts before starting another one")
-                            : L10n("Serially merge every completed Worktree in this Objective into main"))
+                        .disabled(integrationEntryState == .running)
+                        .help(integrationEntryHelp(integrationEntryState))
                     }
                     let eligible = ProjectWorktreeCleanupPolicy.eligibleWorktrees(
                         from: status.project.worktrees
@@ -6586,6 +6610,7 @@ private struct ProjectWorktreeManagerView: View {
         status: ProjectIntegrationStatusResponse
     ) -> some View {
         let conflicts = run.items.filter { $0.status == "conflict" }
+        let failures = run.items.filter { $0.status == "failed" }
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Label(L10n("Completed Worktree Integration"), systemImage: "arrow.triangle.merge")
@@ -6663,6 +6688,24 @@ private struct ProjectWorktreeManagerView: View {
                 }
             }
 
+            if !failures.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label(L10n("Worktree integration failures"), systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.red)
+                    ForEach(failures) { item in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.branchName ?? item.workItemTitle)
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            Text(item.error ?? L10n("The Worktree could not be integrated. Refresh and try again."))
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.red)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+
             if let error = run.error, !error.isEmpty {
                 Text(error)
                     .font(.system(size: 10.5, weight: .medium))
@@ -6676,6 +6719,37 @@ private struct ProjectWorktreeManagerView: View {
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(CorptiePalette.amber.opacity(0.22), lineWidth: 0.75)
         )
+    }
+
+    private func handleIntegrationEntry(_ state: ProjectWorktreeIntegrationEntryState) {
+        switch state {
+        case .ready:
+            backendClient.dismissProjectWorktreeActionError()
+            showingIntegrationConfirmation = true
+        case .noEligibleWorktrees:
+            backendClient.recordProjectWorktreeActionError(L10n(
+                "No completed Worktrees are eligible for integration. Complete the WorkItem, stop its active Session, and commit its local changes before trying again."
+            ))
+        case .unresolvedConflicts:
+            backendClient.recordProjectWorktreeActionError(L10n(
+                "Resolve the current Integration Run conflicts before starting another one"
+            ))
+        case .running:
+            backendClient.recordProjectWorktreeActionError(L10n("Worktree integration is already running."))
+        }
+    }
+
+    private func integrationEntryHelp(_ state: ProjectWorktreeIntegrationEntryState) -> String {
+        switch state {
+        case .ready:
+            L10n("Serially merge every completed Worktree in this Objective into main")
+        case .noEligibleWorktrees:
+            L10n("Click to see why no Worktrees can be integrated")
+        case .unresolvedConflicts:
+            L10n("Click to review the blocking integration conflict")
+        case .running:
+            L10n("Worktree integration is already running.")
+        }
     }
 
     private func integrationCountBadge(_ label: String, color: Color) -> some View {
