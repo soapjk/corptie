@@ -101,6 +101,12 @@ import { AssistantService, createAssistantIntentResolver } from "./application/a
 import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
 import { SessionContextReferenceService } from "./application/sessionContextReferenceService.mjs";
 import { handleSessionContextReferenceHttpRequest } from "./application/sessionContextReferenceHttpApi.mjs";
+import { ScheduledSessionTaskService } from "./application/scheduledSessionTaskService.mjs";
+import { handleScheduledSessionTaskHttpRequest } from "./application/scheduledSessionTaskHttpApi.mjs";
+import {
+  scheduledSessionTaskDynamicTools,
+  callScheduledSessionTaskDynamicTool
+} from "./application/scheduledSessionTaskDynamicTools.mjs";
 import { handleDshRpcRequest } from "./dsh-adapter/dshRpcAdapter.mjs";
 import { handleDshWebStatic, isDshWebStaticPath } from "./dsh-adapter/dshWebStatic.mjs";
 import {
@@ -338,6 +344,19 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   },
   onEvent: (type, payload) => emitEvent(type, payload)
 });
+const scheduledSessionTaskService = new ScheduledSessionTaskService({
+  store,
+  environment: environmentName,
+  authorize: authorizeScheduledSessionTask,
+  resolveRoute: resolveScheduledSessionRoute,
+  enqueue: enqueueScheduledSessionWork,
+  onEvent: (type, payload) => emitEvent(type, payload, {
+    sessionId: payload.task?.logicalSessionId
+      ? store.getLogicalSession(payload.task.logicalSessionId)?.legacySessionId ?? null
+      : null,
+    source: { type: "scheduled_session_task", taskId: payload.task?.taskId ?? null }
+  })
+});
 let platformOperationService = null;
 const hostToolCatalog = new HostToolCatalog([
   {
@@ -384,6 +403,12 @@ const hostToolCatalog = new HostToolCatalog([
     id: "skills",
     tools: skillDynamicTools,
     execute: (input) => callSkillDynamicTool(skillRegistryService, input)
+  },
+  {
+    id: "scheduled-session-tasks",
+    tools: scheduledSessionTaskDynamicTools,
+    authorize: ({ actorId, metadata }) => Boolean(actorId && metadata?.sessionId),
+    execute: (input) => callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input)
   },
   {
     id: "work-item-acceptance",
@@ -1847,6 +1872,13 @@ function emitEvent(type, payload, options = {}) {
       console.error(`[session-events] append failed for type=${type} session=${sessionId}: ${error.message}`);
     }
   }
+  if (["AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
+    try {
+      scheduledSessionTaskService.handleAgentWorkEvent(type, payload?.workItem);
+    } catch (error) {
+      console.error(`[scheduled-session] work event reconciliation failed type=${type}: ${error.message}`);
+    }
+  }
   if (type === "AgentWorkCompleted" && sessionId) {
     setImmediate(() => {
       try {
@@ -2642,6 +2674,97 @@ function requireAgentLogicalSession(agentId) {
     throw error;
   }
   return { agent, sessionId, logical };
+}
+
+function authorizeScheduledSessionTask({ actor, logicalSessionId, environment }) {
+  if (environment !== environmentName) {
+    const error = new Error("Scheduled Session task belongs to another Corptie environment.");
+    error.code = "ENVIRONMENT_MISMATCH";
+    throw error;
+  }
+  const logical = store.getLogicalSession(logicalSessionId);
+  if (!logical) {
+    const error = new Error(`Logical Session ${logicalSessionId} does not exist.`);
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+  if (!session) {
+    const error = new Error(`Logical Session ${logicalSessionId} has no current Session projection.`);
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  if (actor.type === "user" && actor.id === "user:local-macos") {
+    return { objectiveId: session.objectiveId ?? null, session };
+  }
+  const actorAgent = actor.type === "agent" ? store.getAgent(actor.id) : null;
+  const boundAgent = collaborationCore.getAgentForSession(session.id);
+  if (!actorAgent || (!isPlatformAssistant(actorAgent) && boundAgent?.agentId !== actorAgent.agentId)) {
+    const error = new Error(`Actor ${actor.id} is not authorized for logical Session ${logicalSessionId}.`);
+    error.code = "AUTHORIZATION_REVOKED";
+    throw error;
+  }
+  return { objectiveId: session.objectiveId ?? null, session };
+}
+
+async function resolveScheduledSessionRoute(logicalSessionId) {
+  const logical = store.getLogicalSession(logicalSessionId);
+  if (!logical) {
+    const error = new Error(`Logical Session ${logicalSessionId} no longer exists.`);
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  if (logical.archived) {
+    const error = new Error(`Logical Session ${logicalSessionId} is archived.`);
+    error.code = "SESSION_ARCHIVED";
+    throw error;
+  }
+  if (!logical.activeBinding || logical.activeBinding.state !== "active") {
+    const error = new Error(`Logical Session ${logicalSessionId} has no active Provider binding.`);
+    error.code = "ROUTE_UNAVAILABLE";
+    throw error;
+  }
+  const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+  const agent = session ? collaborationCore.getAgentForSession(session.id) : null;
+  if (!session || !agent) {
+    const error = new Error(`Logical Session ${logicalSessionId} has no authorized Agent.`);
+    error.code = session ? "AGENT_NOT_FOUND" : "SESSION_NOT_FOUND";
+    throw error;
+  }
+  return {
+    logicalSession: logical,
+    sessionId: session.id,
+    agentId: agent.agentId,
+    binding: logical.activeBinding
+  };
+}
+
+function enqueueScheduledSessionWork(input) {
+  const workItem = store.enqueueAgentWorkItem(input);
+  const queuePosition = store.listQueuedAgentWorkItemsForSession(input.sessionId)
+    .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
+  emitEvent("AgentWorkQueued", {
+    sessionId: input.sessionId,
+    workItem,
+    queuePosition,
+    source: workItem.source
+  }, { sessionId: input.sessionId, source: workItem.source });
+  scheduleAgentWorkDrain(input.sessionId);
+  return workItem;
+}
+
+function scheduledSessionHttpActor(request) {
+  const agentId = typeof request.headers["x-corptie-agent-id"] === "string"
+    ? request.headers["x-corptie-agent-id"].trim()
+    : "";
+  if (agentId) return { type: "agent", id: agentId };
+  const address = request.socket?.remoteAddress ?? "";
+  if (["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)) {
+    return { type: "user", id: "user:local-macos" };
+  }
+  const error = new Error("Scheduled Session task API requires an authenticated local client or Agent identity.");
+  error.code = "ACTOR_REQUIRED";
+  throw error;
 }
 
 async function createAgentWorktree(agentId, input = {}) {
@@ -6454,6 +6577,16 @@ function route(request, response) {
     return;
   }
 
+  if (handleScheduledSessionTaskHttpRequest({
+    request,
+    response,
+    url,
+    service: scheduledSessionTaskService,
+    resolveActor: scheduledSessionHttpActor
+  })) {
+    return;
+  }
+
   if (handleEntityHttpRequest({
     request,
     response,
@@ -8150,6 +8283,7 @@ agentWorkQueueInterval = setInterval(() => {
 }, 2000);
 agentWorkQueueInterval.unref?.();
 tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
+scheduledSessionTaskService.start();
 
 seedSessions();
 setInterval(updateMockProgress, 2500).unref();
@@ -8195,6 +8329,7 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
+    scheduledSessionTaskService.stop();
     codexResetForecastMonitor?.stop();
     openClackyManager.stop();
     await feishuGateway.close();
