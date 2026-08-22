@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 import XCTest
@@ -243,6 +244,12 @@ private func makeSession(id: String) -> TaskSession {
 @MainActor
 final class ScheduledSessionUITests: XCTestCase {
     func testCreateAndEditControlsExposeStableAutomationIdentifiers() {
+        XCTAssertNotNil(
+            NSImage(
+                systemSymbolName: ScheduledSessionAccessibilityID.composerSymbol,
+                accessibilityDescription: nil
+            )
+        )
         XCTAssertEqual(ScheduledSessionAccessibilityID.composerEntry, "scheduled-session.composer.entry")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorMessage, "scheduled-session.editor.message")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorScheduleType, "scheduled-session.editor.schedule-type")

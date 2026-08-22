@@ -9239,7 +9239,7 @@ struct MessageComposer: View {
                     scheduleSubmission = editorController.submission()
                     isShowingScheduleSheet = true
                 } label: {
-                    Image(systemName: "clock.badge.plus")
+                    Image(systemName: ScheduledSessionAccessibilityID.composerSymbol)
                         .font(.system(size: 10, weight: .semibold))
                         .frame(width: 24, height: 24)
                         .background { ComposerGlassActionBackground(tint: .orange) }
