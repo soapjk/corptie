@@ -43,6 +43,57 @@ enum ApplicationTerminationUI {
     }
 }
 
+enum MainWindowTitlebarZoomPolicy {
+    static let topEdgeHeight: CGFloat = 12
+
+    static func shouldToggleZoom(
+        clickCount: Int,
+        locationY: CGFloat,
+        contentHeight: CGFloat
+    ) -> Bool {
+        guard clickCount == 2, contentHeight > 0 else { return false }
+        return locationY >= contentHeight - topEdgeHeight
+            && locationY <= contentHeight
+    }
+}
+
+/// Restores the standard title-bar double-click maximize/restore interaction
+/// for the full-size transparent title bar. SwiftUI owns the content under the
+/// title bar, so NSWindow's default empty-title-bar handler never sees it.
+@MainActor
+final class MainWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown,
+           let contentView,
+           MainWindowTitlebarZoomPolicy.shouldToggleZoom(
+               clickCount: event.clickCount,
+               locationY: contentView.convert(event.locationInWindow, from: nil).y,
+               contentHeight: contentView.bounds.height
+           ),
+           !isOverStandardWindowButton(event) {
+            zoom(nil)
+            return
+        }
+        super.sendEvent(event)
+    }
+
+    private func isOverStandardWindowButton(_ event: NSEvent) -> Bool {
+        let buttonTypes: [NSWindow.ButtonType] = [
+            .closeButton,
+            .miniaturizeButton,
+            .zoomButton
+        ]
+        return buttonTypes.contains { buttonType in
+            guard let button = standardWindowButton(buttonType), !button.isHidden else {
+                return false
+            }
+            return button.bounds.contains(
+                button.convert(event.locationInWindow, from: nil)
+            )
+        }
+    }
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     static weak var shared: AppDelegate?
@@ -432,7 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        let window = NSWindow(
+        let window = MainWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
