@@ -1,0 +1,266 @@
+import Foundation
+import Testing
+import XCTest
+@testable import CorptieMac
+
+@MainActor
+struct ScheduledSessionModelTests {
+    @Test func decodesStructuredMessageAndAuthoritativeRunHistory() throws {
+        let data = Data(
+            """
+            {
+              "taskId":"scheduled_task:1",
+              "logicalSessionId":"session:1",
+              "message":{"text":"检查状态","type":"scheduled_session_message","payload":{}},
+              "scheduleType":"interval",
+              "runAt":"2026-08-23T00:00:00.000Z",
+              "nextRunAt":"2026-08-23T01:00:00.000Z",
+              "intervalSeconds":3600,
+              "timezone":"Asia/Shanghai",
+              "status":"active",
+              "missedPolicy":"coalesce_once",
+              "lastRunId":"scheduled_run:1",
+              "lastRunStatus":"queued",
+              "resourceVersion":3,
+              "createdAt":"2026-08-22T12:00:00.000Z",
+              "updatedAt":"2026-08-22T12:01:00.000Z",
+              "runs":[{
+                "runId":"scheduled_run:1","taskId":"scheduled_task:1",
+                "scheduledFor":"2026-08-22T13:00:00.000Z",
+                "triggerKind":"scheduled","triggerReason":"schedule_due",
+                "status":"queued","attemptCount":1,
+                "agentWorkItemId":"agent_work:1","targetTurnId":null,
+                "errorCode":null,"errorMessage":null,
+                "claimedAt":"2026-08-22T13:00:00.000Z",
+                "queuedAt":"2026-08-22T13:00:01.000Z",
+                "startedAt":null,"completedAt":null,
+                "createdAt":"2026-08-22T13:00:00.000Z",
+                "updatedAt":"2026-08-22T13:00:01.000Z"
+              }]
+            }
+            """.utf8
+        )
+
+        let task = try JSONDecoder().decode(ScheduledSessionTask.self, from: data)
+
+        #expect(task.message == "检查状态")
+        #expect(task.presentationStatus == .queued)
+        #expect(task.runs.first?.agentWorkItemId == "agent_work:1")
+        #expect(task.runs.first?.status.presentation == .queued)
+    }
+
+    @Test func validatesEveryClientSideBoundary() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(ScheduledSessionTaskDraft.fresh(message: "   ", now: now).validationError(now: now) == .emptyMessage)
+
+        var once = ScheduledSessionTaskDraft.fresh(message: "检查", now: now)
+        once.runAt = now
+        #expect(once.validationError(now: now) == .pastRunAt)
+
+        var interval = ScheduledSessionTaskDraft.fresh(message: "检查", now: now)
+        interval.scheduleType = .interval
+        interval.intervalSeconds = 59
+        #expect(interval.validationError(now: now) == .invalidInterval)
+        interval.intervalSeconds = 60
+        interval.timezone = "Mars/Olympus_Mons"
+        #expect(interval.validationError(now: now) == .invalidTimezone)
+    }
+
+    @Test func createBodyUsesStructuredBackendContractAndTimeZone() throws {
+        let runAt = Date(timeIntervalSince1970: 1_800_000_600)
+        let draft = ScheduledSessionTaskDraft(
+            message: "  检查状态  ",
+            scheduleType: .once,
+            runAt: runAt,
+            intervalSeconds: 3600,
+            timezone: "Asia/Shanghai",
+            missedPolicy: .skip
+        )
+
+        let body = draft.requestBody()
+        let message = body["message"] as? [String: String]
+
+        #expect(message?["text"] == "检查状态")
+        #expect(body["scheduleType"] as? String == "once")
+        #expect(body["timezone"] as? String == "Asia/Shanghai")
+        #expect(body["missedPolicy"] as? String == "skip")
+        #expect(body["runAt"] as? String == "2027-01-15T08:10:00.000Z")
+    }
+
+    @Test func timeZoneSummaryDisplaysTheChosenZoneAndNextRun() {
+        let draft = ScheduledSessionTaskDraft(
+            message: "检查",
+            scheduleType: .once,
+            runAt: Date(timeIntervalSince1970: 1_800_000_600),
+            intervalSeconds: 3600,
+            timezone: "Asia/Shanghai",
+            missedPolicy: .coalesceOnce
+        )
+
+        #expect(draft.summaryText.contains("Asia/Shanghai"))
+        #expect(draft.summaryText.contains("下一次"))
+    }
+}
+
+@MainActor
+struct ScheduledSessionBackendClientTests {
+    @Test func mapsEveryAuthoritativeBackendStateWithoutCallingQueuedRunning() {
+        #expect(ScheduledSessionRunStatus(rawValue: "claimed").presentation == .due)
+        #expect(ScheduledSessionRunStatus(rawValue: "queued").presentation == .queued)
+        #expect(ScheduledSessionRunStatus(rawValue: "running").presentation == .running)
+        #expect(ScheduledSessionRunStatus(rawValue: "completed").presentation == .completed)
+        #expect(ScheduledSessionRunStatus(rawValue: "failed").presentation == .failed)
+        #expect(ScheduledSessionRunStatus(rawValue: "missed").presentation == .missed)
+        #expect(ScheduledSessionRunStatus(rawValue: "cancelled").presentation == .cancelled)
+        #expect(ScheduledSessionRunStatus(rawValue: "future_state").presentation == .unknown("future_state"))
+    }
+
+    @Test func apiContractCoversCreateEditCancelAndRunNow() {
+        #expect(ScheduledSessionAPIContract.collectionPath == "scheduled-session-tasks")
+        #expect(ScheduledSessionAPIContract.itemPath(taskId: "scheduled_task:1") == "scheduled-session-tasks/scheduled_task:1")
+        #expect(ScheduledSessionAPIContract.actionPath(taskId: "scheduled_task:1", action: .pause).hasSuffix("/pause"))
+        #expect(ScheduledSessionAPIContract.actionPath(taskId: "scheduled_task:1", action: .resume).hasSuffix("/resume"))
+        #expect(ScheduledSessionAPIContract.actionPath(taskId: "scheduled_task:1", action: .cancel).hasSuffix("/cancel"))
+        #expect(ScheduledSessionAPIContract.actionPath(taskId: "scheduled_task:1", action: .runNow).hasSuffix("/run"))
+        #expect(ScheduledSessionAPIContract.actionPath(taskId: "scheduled_task:1", action: .retry).hasSuffix("/resume"))
+    }
+
+    @Test func reconnectReconciliationDeduplicatesByIdAndRejectsWrongSessionOwnership() {
+        let older = makeTask(id: "scheduled_task:1", sessionId: "session:1", version: 1, nextRunAt: "2026-08-23T02:00:00.000Z")
+        let newer = makeTask(id: "scheduled_task:1", sessionId: "session:1", version: 2, nextRunAt: "2026-08-23T01:00:00.000Z")
+        let second = makeTask(id: "scheduled_task:2", sessionId: "session:1", version: 1, nextRunAt: "2026-08-23T03:00:00.000Z")
+        let wrongSession = makeTask(id: "scheduled_task:3", sessionId: "session:other", version: 1, nextRunAt: nil)
+
+        let reconciled = BackendClient.reconciledScheduledTasks(
+            [older, second, wrongSession, newer],
+            for: makeSession(id: "session:1")
+        )
+
+        #expect(reconciled.map(\.id) == ["scheduled_task:1", "scheduled_task:2"])
+        #expect(reconciled.first?.resourceVersion == 2)
+    }
+
+    @Test func permanentBackendDiagnosticsDisableInvalidOperations() {
+        let failed = ScheduledSessionTask(
+            taskId: "scheduled_task:failed",
+            logicalSessionId: "session:1",
+            message: "检查",
+            scheduleType: .once,
+            runAt: "2026-08-23T00:00:00.000Z",
+            nextRunAt: nil,
+            intervalSeconds: nil,
+            timezone: "UTC",
+            status: .failed,
+            missedPolicy: .coalesceOnce,
+            lastErrorCode: "ROUTE_UNAVAILABLE",
+            lastErrorMessage: "No active binding",
+            resourceVersion: 2,
+            createdAt: "2026-08-22T00:00:00.000Z",
+            updatedAt: "2026-08-22T00:00:00.000Z"
+        )
+
+        #expect(failed.operationsDisabledReason == "ROUTE_UNAVAILABLE · No active binding")
+    }
+
+    @Test func stateEventsResolveLogicalSessionFromTaskPayload() {
+        let data = Data(
+            """
+            {"payload":{"task":{"taskId":"scheduled_task:1","logicalSessionId":"session:1"}}}
+            """.utf8
+        )
+
+        #expect(ScheduledSessionEventMapping.sessionId(from: data) == "session:1")
+        #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunQueued"))
+        #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunStarted"))
+        #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunCompleted"))
+        #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunFailed"))
+        #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunMissed"))
+    }
+
+    @Test func runHistoryTargetTurnLocatesTheActualTimelineRow() {
+        let rows = [
+            AppKitChatTimelineRow(
+                id: "message:1", contentRevision: 1, nativeText: "User", copyText: "User",
+                nativeStyle: .user, title: "User", metadata: "", expandableTurnId: nil, isExpanded: false
+            ),
+            AppKitChatTimelineRow(
+                id: "process:turn:scheduled", contentRevision: 1, nativeText: "", copyText: "",
+                nativeStyle: .process, title: "Running", metadata: "",
+                expandableTurnId: "turn:scheduled", isExpanded: false
+            )
+        ]
+
+        #expect(AppKitChatTimelineView.rowIndex(forTurnID: "turn:scheduled", in: rows) == 1)
+        #expect(AppKitChatTimelineView.rowIndex(forTurnID: "turn:missing", in: rows) == nil)
+    }
+}
+
+private func makeTask(
+    id: String,
+    sessionId: String,
+    version: Int,
+    nextRunAt: String?
+) -> ScheduledSessionTask {
+    ScheduledSessionTask(
+        taskId: id,
+        logicalSessionId: sessionId,
+        message: "检查状态",
+        scheduleType: .interval,
+        runAt: "2026-08-23T00:00:00.000Z",
+        nextRunAt: nextRunAt,
+        intervalSeconds: 3600,
+        timezone: "Asia/Shanghai",
+        status: .active,
+        missedPolicy: .coalesceOnce,
+        resourceVersion: version,
+        createdAt: "2026-08-22T00:00:00.000Z",
+        updatedAt: "2026-08-22T00:00:00.000Z"
+    )
+}
+
+private func makeSession(id: String) -> TaskSession {
+    TaskSession(
+        id: id,
+        title: id,
+        agent: "Codex",
+        agentId: nil,
+        status: .complete,
+        progress: 1,
+        summary: "",
+        suggestedOptions: nil,
+        suggestedPrompt: nil,
+        activityStatus: nil,
+        updatedAt: "2026-08-22T00:00:00.000Z",
+        accent: .cyan,
+        archived: false,
+        pinned: false,
+        sortOrder: nil,
+        capabilities: nil,
+        external: nil
+    )
+}
+
+@MainActor
+final class ScheduledSessionUITests: XCTestCase {
+    func testCreateAndEditControlsExposeStableAutomationIdentifiers() {
+        XCTAssertEqual(ScheduledSessionAccessibilityID.composerEntry, "scheduled-session.composer.entry")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorMessage, "scheduled-session.editor.message")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorScheduleType, "scheduled-session.editor.schedule-type")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorRunAt, "scheduled-session.editor.run-at")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorInterval, "scheduled-session.editor.interval")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorTimezone, "scheduled-session.editor.timezone")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorMissedPolicy, "scheduled-session.editor.missed-policy")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorSummary, "scheduled-session.editor.summary")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorSave, "scheduled-session.editor.save")
+    }
+
+    func testManagementControlsExposeStableAutomationIdentifiersAndStateGates() {
+        XCTAssertEqual(ScheduledSessionAccessibilityID.cardEdit, "scheduled-session.card.edit")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.cardPauseResume, "scheduled-session.card.pause-resume")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.cardRunNow, "scheduled-session.card.run-now")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.cardCancel, "scheduled-session.card.cancel")
+        XCTAssertTrue(ScheduledSessionTaskStatus.active.permitsPause)
+        XCTAssertTrue(ScheduledSessionTaskStatus.paused.permitsResume)
+        XCTAssertFalse(ScheduledSessionTaskStatus.cancelled.permitsRunNow)
+    }
+}

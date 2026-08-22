@@ -787,6 +787,103 @@ export class CorptieStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_items_one_running_per_session
       ON agent_work_items(session_id) WHERE status = 'running';
 
+      CREATE TABLE IF NOT EXISTS scheduled_session_tasks (
+        task_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        message_json TEXT NOT NULL,
+        schedule_type TEXT NOT NULL
+          CHECK (schedule_type IN ('once', 'interval', 'process')),
+        run_at TEXT,
+        next_run_at TEXT,
+        interval_seconds INTEGER,
+        timezone TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'paused', 'completed', 'failed', 'cancelled')),
+        missed_policy TEXT NOT NULL DEFAULT 'coalesce_once'
+          CHECK (missed_policy IN ('coalesce_once', 'skip')),
+        process_spec_json TEXT,
+        process_state_json TEXT,
+        creator_type TEXT NOT NULL,
+        creator_id TEXT NOT NULL,
+        objective_id TEXT,
+        environment TEXT NOT NULL,
+        pending_scheduled_for TEXT,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        max_retries INTEGER NOT NULL DEFAULT 5,
+        last_run_id TEXT,
+        last_run_status TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        last_run_at TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        paused_at TEXT,
+        cancelled_at TEXT,
+        completed_at TEXT,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_session_tasks_due
+      ON scheduled_session_tasks(environment, status, next_run_at, lease_expires_at);
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_session_tasks_session
+      ON scheduled_session_tasks(logical_session_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS scheduled_session_runs (
+        run_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_key TEXT NOT NULL UNIQUE,
+        scheduled_for TEXT NOT NULL,
+        trigger_kind TEXT NOT NULL,
+        trigger_reason TEXT NOT NULL,
+        status TEXT NOT NULL
+          CHECK (status IN ('missed', 'claimed', 'retry_wait', 'queued', 'running', 'completed', 'failed', 'cancelled', 'skipped')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        agent_work_item_id TEXT,
+        target_turn_id TEXT,
+        binding_id TEXT,
+        provider_session_id TEXT,
+        routing_version INTEGER,
+        exit_status_json TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        claimed_at TEXT,
+        queued_at TEXT,
+        started_at TEXT,
+        completed_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES scheduled_session_tasks(task_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_session_runs_task
+      ON scheduled_session_runs(task_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_session_runs_work_item
+      ON scheduled_session_runs(agent_work_item_id) WHERE agent_work_item_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS scheduled_session_events (
+        event_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        run_id TEXT,
+        sequence INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        actor_type TEXT,
+        actor_id TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        environment TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (task_id) REFERENCES scheduled_session_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (run_id) REFERENCES scheduled_session_runs(run_id) ON DELETE SET NULL,
+        UNIQUE (task_id, sequence)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scheduled_session_events_task
+      ON scheduled_session_events(task_id, sequence ASC);
+
       CREATE TABLE IF NOT EXISTS collaboration_events (
         event_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
@@ -3878,6 +3975,254 @@ export class CorptieStore {
     }));
   }
 
+  createScheduledSessionTask(input) {
+    const timestamp = createdAtFromOrNow(input.createdAt);
+    this.db.run(
+      `INSERT INTO scheduled_session_tasks (
+        task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
+        interval_seconds, timezone, status, missed_policy, process_spec_json,
+        process_state_json, creator_type, creator_id, objective_id, environment,
+        max_retries, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.taskId,
+        input.logicalSessionId,
+        JSON.stringify(input.message),
+        input.scheduleType,
+        input.runAt ?? null,
+        input.nextRunAt ?? null,
+        input.intervalSeconds ?? null,
+        input.timezone,
+        input.missedPolicy,
+        input.processSpec ? JSON.stringify(input.processSpec) : null,
+        input.processState ? JSON.stringify(input.processState) : null,
+        input.creatorType,
+        input.creatorId,
+        input.objectiveId ?? null,
+        input.environment,
+        input.maxRetries ?? 5,
+        timestamp,
+        timestamp
+      ]
+    );
+    this.scheduleSave();
+    return this.getScheduledSessionTask(input.taskId);
+  }
+
+  getScheduledSessionTask(taskId) {
+    const row = this.selectOne("SELECT * FROM scheduled_session_tasks WHERE task_id = ?", [taskId]);
+    return row ? scheduledSessionTaskFromRow(row) : null;
+  }
+
+  listScheduledSessionTasks(options = {}) {
+    const clauses = ["environment = ?"];
+    const params = [options.environment];
+    if (options.logicalSessionId) {
+      clauses.push("logical_session_id = ?");
+      params.push(options.logicalSessionId);
+    }
+    if (options.status) {
+      clauses.push("status = ?");
+      params.push(options.status);
+    }
+    return this.selectAll(
+      `SELECT * FROM scheduled_session_tasks WHERE ${clauses.join(" AND ")}
+       ORDER BY created_at DESC, task_id ASC`,
+      params
+    ).map(scheduledSessionTaskFromRow);
+  }
+
+  updateScheduledSessionTask(taskId, patch = {}, expectedVersion = null) {
+    const task = this.getScheduledSessionTask(taskId);
+    if (!task) return null;
+    if (expectedVersion != null && Number(expectedVersion) !== task.resourceVersion) {
+      const error = new Error(`Scheduled Session task ${taskId} was modified by another request.`);
+      error.code = "RESOURCE_VERSION_CONFLICT";
+      throw error;
+    }
+    const value = (key, fallback) => Object.hasOwn(patch, key) ? patch[key] : fallback;
+    const timestamp = new Date().toISOString();
+    this.db.run(
+      `UPDATE scheduled_session_tasks SET
+         message_json = ?, run_at = ?, next_run_at = ?, interval_seconds = ?, timezone = ?,
+         status = ?, missed_policy = ?, process_spec_json = ?, process_state_json = ?,
+         pending_scheduled_for = ?, lease_owner = ?, lease_expires_at = ?, retry_count = ?,
+         max_retries = ?, last_run_id = ?, last_run_status = ?, last_error_code = ?,
+         last_error_message = ?, last_run_at = ?, resource_version = resource_version + 1,
+         paused_at = ?, cancelled_at = ?, completed_at = ?, updated_at = ?
+       WHERE task_id = ?`,
+      [
+        JSON.stringify(value("message", task.message)),
+        value("runAt", task.runAt),
+        value("nextRunAt", task.nextRunAt),
+        value("intervalSeconds", task.intervalSeconds),
+        value("timezone", task.timezone),
+        value("status", task.status),
+        value("missedPolicy", task.missedPolicy),
+        value("processSpec", task.processSpec) ? JSON.stringify(value("processSpec", task.processSpec)) : null,
+        value("processState", task.processState) ? JSON.stringify(value("processState", task.processState)) : null,
+        value("pendingScheduledFor", task.pendingScheduledFor),
+        value("leaseOwner", task.leaseOwner),
+        value("leaseExpiresAt", task.leaseExpiresAt),
+        value("retryCount", task.retryCount),
+        value("maxRetries", task.maxRetries),
+        value("lastRunId", task.lastRunId),
+        value("lastRunStatus", task.lastRunStatus),
+        value("lastErrorCode", task.lastErrorCode),
+        value("lastErrorMessage", task.lastErrorMessage),
+        value("lastRunAt", task.lastRunAt),
+        value("pausedAt", task.pausedAt),
+        value("cancelledAt", task.cancelledAt),
+        value("completedAt", task.completedAt),
+        timestamp,
+        taskId
+      ]
+    );
+    this.scheduleSave();
+    return this.getScheduledSessionTask(taskId);
+  }
+
+  claimDueScheduledSessionTasks(input = {}) {
+    const now = input.now;
+    const leaseUntil = input.leaseUntil;
+    const owner = input.leaseOwner;
+    const environment = input.environment;
+    const limit = Math.max(1, Math.min(100, Number(input.limit) || 25));
+    return this.runInTransaction(() => {
+      const rows = this.selectAll(
+        `SELECT task_id FROM scheduled_session_tasks
+         WHERE environment = ? AND status = 'active' AND next_run_at IS NOT NULL
+           AND next_run_at <= ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+         ORDER BY next_run_at ASC, task_id ASC LIMIT ?`,
+        [environment, now, now, limit]
+      );
+      const claimed = [];
+      for (const row of rows) {
+        this.db.run(
+          `UPDATE scheduled_session_tasks SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+           WHERE task_id = ? AND status = 'active'
+             AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+          [owner, leaseUntil, now, row.task_id, now]
+        );
+        if (this.db.getRowsModified() > 0) claimed.push(this.getScheduledSessionTask(row.task_id));
+      }
+      return claimed;
+    });
+  }
+
+  createScheduledSessionRun(input) {
+    const timestamp = input.createdAt ?? new Date().toISOString();
+    this.db.run(
+      `INSERT OR IGNORE INTO scheduled_session_runs (
+         run_id, task_id, run_key, scheduled_for, trigger_kind, trigger_reason,
+         status, attempt_count, exit_status_json, claimed_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.runId,
+        input.taskId,
+        input.runKey,
+        input.scheduledFor,
+        input.triggerKind,
+        input.triggerReason,
+        input.status ?? "claimed",
+        input.attemptCount ?? 1,
+        input.exitStatus ? JSON.stringify(input.exitStatus) : null,
+        input.claimedAt ?? timestamp,
+        timestamp,
+        timestamp
+      ]
+    );
+    if (this.db.getRowsModified() > 0) this.scheduleSave();
+    return this.getScheduledSessionRunByKey(input.runKey);
+  }
+
+  getScheduledSessionRun(runId) {
+    const row = this.selectOne("SELECT * FROM scheduled_session_runs WHERE run_id = ?", [runId]);
+    return row ? scheduledSessionRunFromRow(row) : null;
+  }
+
+  getScheduledSessionRunByKey(runKey) {
+    const row = this.selectOne("SELECT * FROM scheduled_session_runs WHERE run_key = ?", [runKey]);
+    return row ? scheduledSessionRunFromRow(row) : null;
+  }
+
+  getScheduledSessionRunForAgentWorkItem(workItemId) {
+    const row = this.selectOne(
+      "SELECT * FROM scheduled_session_runs WHERE agent_work_item_id = ? ORDER BY created_at DESC LIMIT 1",
+      [workItemId]
+    );
+    return row ? scheduledSessionRunFromRow(row) : null;
+  }
+
+  listScheduledSessionRuns(taskId, limit = 100) {
+    return this.selectAll(
+      "SELECT * FROM scheduled_session_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
+      [taskId, Math.max(1, Math.min(1000, Number(limit) || 100))]
+    ).map(scheduledSessionRunFromRow);
+  }
+
+  updateScheduledSessionRun(runId, patch = {}) {
+    const run = this.getScheduledSessionRun(runId);
+    if (!run) return null;
+    const value = (key, fallback) => Object.hasOwn(patch, key) ? patch[key] : fallback;
+    const timestamp = new Date().toISOString();
+    this.db.run(
+      `UPDATE scheduled_session_runs SET status = ?, attempt_count = ?, agent_work_item_id = ?,
+         target_turn_id = ?, binding_id = ?, provider_session_id = ?, routing_version = ?,
+         exit_status_json = ?, error_code = ?, error_message = ?, claimed_at = ?, queued_at = ?,
+         started_at = ?, completed_at = ?, updated_at = ? WHERE run_id = ?`,
+      [
+        value("status", run.status),
+        value("attemptCount", run.attemptCount),
+        value("agentWorkItemId", run.agentWorkItemId),
+        value("targetTurnId", run.targetTurnId),
+        value("bindingId", run.bindingId),
+        value("providerSessionId", run.providerSessionId),
+        value("routingVersion", run.routingVersion),
+        value("exitStatus", run.exitStatus) ? JSON.stringify(value("exitStatus", run.exitStatus)) : null,
+        value("errorCode", run.errorCode),
+        value("errorMessage", run.errorMessage),
+        value("claimedAt", run.claimedAt),
+        value("queuedAt", run.queuedAt),
+        value("startedAt", run.startedAt),
+        value("completedAt", run.completedAt),
+        timestamp,
+        runId
+      ]
+    );
+    this.scheduleSave();
+    return this.getScheduledSessionRun(runId);
+  }
+
+  recordScheduledSessionEvent(input) {
+    const sequence = Number(this.selectOne(
+      "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM scheduled_session_events WHERE task_id = ?",
+      [input.taskId]
+    )?.sequence ?? 1);
+    const createdAt = input.createdAt ?? new Date().toISOString();
+    this.db.run(
+      `INSERT INTO scheduled_session_events (
+        event_id, task_id, run_id, sequence, type, actor_type, actor_id,
+        payload_json, environment, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.eventId ?? randomUUID(), input.taskId, input.runId ?? null, sequence, input.type,
+        input.actorType ?? null, input.actorId ?? null, JSON.stringify(input.payload ?? {}),
+        input.environment, createdAt
+      ]
+    );
+    this.scheduleSave();
+    return { ...input, sequence, createdAt };
+  }
+
+  listScheduledSessionEvents(taskId, limit = 200) {
+    return this.selectAll(
+      `SELECT * FROM scheduled_session_events WHERE task_id = ?
+       ORDER BY sequence DESC LIMIT ?`,
+      [taskId, Math.max(1, Math.min(1000, Number(limit) || 200))]
+    ).map(scheduledSessionEventFromRow).reverse();
+  }
+
   enqueueAgentWorkItem(item) {
     const timestamp = createdAtFromOrNow(item.createdAt);
     this.db.run(
@@ -6559,6 +6904,85 @@ function providerThreadBindingFromRow(row) {
     state: row.state,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function scheduledSessionTaskFromRow(row) {
+  return {
+    taskId: row.task_id,
+    logicalSessionId: row.logical_session_id,
+    message: parseJson(row.message_json, {}),
+    scheduleType: row.schedule_type,
+    runAt: row.run_at,
+    nextRunAt: row.next_run_at,
+    intervalSeconds: row.interval_seconds == null ? null : Number(row.interval_seconds),
+    timezone: row.timezone,
+    status: row.status,
+    missedPolicy: row.missed_policy,
+    processSpec: parseJson(row.process_spec_json, null),
+    processState: parseJson(row.process_state_json, null),
+    creatorType: row.creator_type,
+    creatorId: row.creator_id,
+    objectiveId: row.objective_id,
+    environment: row.environment,
+    pendingScheduledFor: row.pending_scheduled_for,
+    leaseOwner: row.lease_owner,
+    leaseExpiresAt: row.lease_expires_at,
+    retryCount: Number(row.retry_count ?? 0),
+    maxRetries: Number(row.max_retries ?? 5),
+    lastRunId: row.last_run_id,
+    lastRunStatus: row.last_run_status,
+    lastErrorCode: row.last_error_code,
+    lastErrorMessage: row.last_error_message,
+    lastRunAt: row.last_run_at,
+    resourceVersion: Number(row.resource_version ?? 1),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    pausedAt: row.paused_at,
+    cancelledAt: row.cancelled_at,
+    completedAt: row.completed_at
+  };
+}
+
+function scheduledSessionRunFromRow(row) {
+  return {
+    runId: row.run_id,
+    taskId: row.task_id,
+    runKey: row.run_key,
+    scheduledFor: row.scheduled_for,
+    triggerKind: row.trigger_kind,
+    triggerReason: row.trigger_reason,
+    status: row.status,
+    attemptCount: Number(row.attempt_count ?? 0),
+    agentWorkItemId: row.agent_work_item_id,
+    targetTurnId: row.target_turn_id,
+    bindingId: row.binding_id,
+    providerSessionId: row.provider_session_id,
+    routingVersion: row.routing_version == null ? null : Number(row.routing_version),
+    exitStatus: parseJson(row.exit_status_json, null),
+    errorCode: row.error_code,
+    errorMessage: row.error_message,
+    claimedAt: row.claimed_at,
+    queuedAt: row.queued_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function scheduledSessionEventFromRow(row) {
+  return {
+    eventId: row.event_id,
+    taskId: row.task_id,
+    runId: row.run_id,
+    sequence: Number(row.sequence),
+    type: row.type,
+    actorType: row.actor_type,
+    actorId: row.actor_id,
+    payload: parseJson(row.payload_json, {}),
+    environment: row.environment,
+    createdAt: row.created_at
   };
 }
 

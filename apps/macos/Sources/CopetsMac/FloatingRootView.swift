@@ -3376,6 +3376,8 @@ struct DetailView: View {
     @ObservedObject private var timelineState: SessionTimelineState
     @State private var displaysLoadingDetail: Bool
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
+    @State private var scrollTargetTurnID: String?
+    @State private var scrollTargetTurnRevision = 0
     let sessionId: String
     let composerDraftRepository: ComposerDraftRepository
     let initialTimelinePosition: AppKitChatTimelinePosition?
@@ -3506,6 +3508,10 @@ struct DetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
+            if let session = backendClient.selectedSession, session.id == sessionId {
+                ScheduledSessionStrip(session: session)
+            }
+
             if let sendStatusMessage = backendClient.sendStatusMessage,
                sendStatusMessage.hasPrefix("Send failed") || sendStatusMessage.contains("read-only") {
                 Text(sendStatusMessage)
@@ -3558,6 +3564,12 @@ struct DetailView: View {
         .onReceive(backendClient.$workspaceRecoveryStatus) { status in
             displayedWorkspaceRecoveryStatus = status
         }
+        .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn)) { notification in
+            guard notification.userInfo?["sessionId"] as? String == sessionId,
+                  let turnID = notification.userInfo?["turnId"] as? String else { return }
+            scrollTargetTurnID = turnID
+            scrollTargetTurnRevision &+= 1
+        }
     }
 
     private func appKitCachedDetailMessages() -> some View {
@@ -3579,7 +3591,9 @@ struct DetailView: View {
                 onAction: performNativeTimelineAction,
                 onNearTop: loadEarlierMessagesIfNeeded,
                 initialPosition: initialTimelinePosition,
-                onPositionChange: onTimelinePositionChange
+                onPositionChange: onTimelinePositionChange,
+                scrollToTurnID: scrollTargetTurnID,
+                scrollToTurnRevision: scrollTargetTurnRevision
             )
             .onAppear {
                 if let currentDetail = displayedDetail {
@@ -9142,6 +9156,8 @@ struct MessageComposer: View {
     @State private var inputHeight = ComposerInputLayout.minimumHeight
     @State private var editorController: ComposerEditorController
     @State private var hasSendableText: Bool
+    @State private var isShowingScheduleSheet = false
+    @State private var scheduleSubmission: ComposerDraftBuffer.Submission?
 
     init(sessionId: String, draftRepository: ComposerDraftRepository) {
         self.sessionId = sessionId
@@ -9171,6 +9187,7 @@ struct MessageComposer: View {
                     },
                     onSubmit: send
                 )
+                    .frame(minWidth: 0, maxWidth: .infinity)
                     .frame(height: inputHeight)
                     .padding(.leading, 10)
                     .padding(.trailing, 2)
@@ -9178,6 +9195,7 @@ struct MessageComposer: View {
                         isFocused = true
                     }
                     .disabled(false)
+                    .layoutPriority(-1)
 
                 if isRunningTurn {
                     Button {
@@ -9216,6 +9234,26 @@ struct MessageComposer: View {
                 .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(isSendDisabled)
                 .help(L10n("Send instruction"))
+
+                Button {
+                    scheduleSubmission = editorController.submission()
+                    isShowingScheduleSheet = true
+                } label: {
+                    Image(systemName: "clock.badge.plus")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .background { ComposerGlassActionBackground(tint: .orange) }
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+                .frame(width: 28, height: 28)
+                .fixedSize()
+                .layoutPriority(3)
+                .zIndex(3)
+                .help(L10n("创建定时消息"))
+                .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
                 .padding(.trailing, 4)
             }
             .background(
@@ -9256,6 +9294,16 @@ struct MessageComposer: View {
                 await backendClient.loadModelsForSelectedSession()
             }
         }
+        .sheet(isPresented: $isShowingScheduleSheet) {
+            if let session = backendClient.selectedSession, session.id == sessionId {
+                ScheduledTaskEditorSheet(
+                    session: session,
+                    initialMessage: scheduleSubmission?.text ?? "",
+                    onSaved: clearScheduledSubmissionIfUnchanged
+                )
+                .environmentObject(backendClient)
+            }
+        }
     }
 
     private func sendCurrentDraft() {
@@ -9263,6 +9311,15 @@ struct MessageComposer: View {
             return
         }
         send(submission)
+    }
+
+    private func clearScheduledSubmissionIfUnchanged() {
+        guard let scheduleSubmission else { return }
+        if editorController.clear(ifUnchangedSince: scheduleSubmission) {
+            hasSendableText = false
+            inputHeight = ComposerInputLayout.minimumHeight
+        }
+        self.scheduleSubmission = nil
     }
 
     private func send(_ submission: ComposerDraftBuffer.Submission) {
