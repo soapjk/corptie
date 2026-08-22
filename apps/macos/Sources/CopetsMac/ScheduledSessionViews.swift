@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 enum ScheduledSessionAccessibilityID {
+    static let composerSymbol = "calendar.badge.clock"
     static let composerEntry = "scheduled-session.composer.entry"
     static let editorMessage = "scheduled-session.editor.message"
     static let editorScheduleType = "scheduled-session.editor.schedule-type"
