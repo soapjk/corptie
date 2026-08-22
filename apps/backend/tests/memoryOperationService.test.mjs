@@ -41,6 +41,7 @@ async function fixture() {
     objectiveId: "objective:bound",
     workItemId: "work_item:bound"
   });
+  store.bindSessionToWorkItem("session:current", "work_item:bound", "objective:bound");
   core.bindSession({ agentId: agent.agentId, sessionId: "session:current" });
   const hubService = new HubService({ store });
   const service = new MemoryOperationService({

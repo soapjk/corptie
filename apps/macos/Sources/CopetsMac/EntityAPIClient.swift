@@ -447,19 +447,28 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 查某 owner（如 work_item）的记忆：GET /memories?ownerType=&ownerId= → { memories }
-    func memories(ownerType: String, ownerId: String) async -> [MemoryItem] {
+    func memories(ownerType: String, ownerId: String) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "ownerType", value: ownerType),
             URLQueryItem(name: "ownerId", value: ownerId)
         ]
-        guard let url = components?.url else { return [] }
+        guard let url = components?.url else { return nil }
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            return try decoder.decode(MemoryListEnvelope.self, from: data).memories
+            let (data, response) = try await URLSession.shared.data(from: url)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(
+                    message: envelope?.error ?? "加载工作项记忆失败（HTTP \(http.statusCode)）",
+                    code: envelope?.code
+                )
+            }
+            let result = try decoder.decode(MemoryListEnvelope.self, from: data).memories
+            errorMessage = nil
+            return result
         } catch {
             errorMessage = error.localizedDescription
-            return []
+            return nil
         }
     }
 

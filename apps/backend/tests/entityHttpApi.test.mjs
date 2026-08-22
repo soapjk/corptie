@@ -1159,6 +1159,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
 test("GET /memories + GET /hub/search 走通", async () => {
   const services = await createServices();
   try {
+    services.store.createAgent({ id: "a1", name: "Memory Agent" });
     services.hubService.store.createMemory({
       ownerType: "agent",
       ownerId: "a1",
@@ -1212,6 +1213,7 @@ test("GET /collaboration/route 真正可达（修复死代码）", async () => {
 test("POST /memories 缺字段 → 400（不再撞 NOT NULL）", async () => {
   const services = await createServices();
   try {
+    services.store.createAgent({ id: "a1", name: "Memory Agent" });
     const missing = await callApi({
       method: "POST",
       pathname: "/memories",
@@ -1239,7 +1241,12 @@ test("POST /memories 缺字段 → 400（不再撞 NOT NULL）", async () => {
 test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () => {
   const services = await createServices();
   try {
-    services.store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    services.store.createObjective({ id: "o1", name: "Objective" });
+    services.store.createWorkItem({ id: "wi1", objectiveId: "o1", title: "WorkItem" });
+    services.store.createSession({
+      id: "s1", title: "t", provider: "codex-app-server", status: "complete",
+      objectiveId: "o1", workItemId: "wi1", agentId: "a1"
+    });
     services.store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
     services.store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "summary", payload: { summary: "完成实体层" } });
 
@@ -1258,6 +1265,97 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
     // 缺 sessionId → 400
     const bad = await callApi({ method: "POST", pathname: "/memories/extract", body: {}, ...services });
     assert.equal(bad.statusCode, 400);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fields, and isolation", async () => {
+  const services = await createServices();
+  try {
+    services.store.createObjective({ id: "objective:memory-http", name: "Memory HTTP" });
+    for (const id of ["work_item:http-one", "work_item:http-two"]) {
+      services.store.createWorkItem({ id, objectiveId: "objective:memory-http", title: id });
+    }
+
+    const unscoped = await callApi({ method: "GET", pathname: "/memories", ...services });
+    assert.equal(unscoped.statusCode, 400);
+    assert.equal(unscoped.body.code, "INVALID_INPUT");
+    const beforeStart = await callApi({
+      method: "GET",
+      pathname: "/memories",
+      search: "?ownerType=work_item&ownerId=work_item%3Ahttp-one",
+      ...services
+    });
+    assert.equal(beforeStart.statusCode, 200);
+    assert.deepEqual(beforeStart.body.memories, []);
+
+    services.store.createSession({
+      id: "session:http-one", title: "one", provider: "codex-app-server", status: "running",
+      objectiveId: "objective:memory-http", workItemId: "work_item:http-one", agentId: "agent:http"
+    });
+    services.store.createSession({
+      id: "session:http-two", title: "two", provider: "codex-app-server", status: "running",
+      objectiveId: "objective:memory-http", workItemId: "work_item:http-two", agentId: "agent:http"
+    });
+
+    const created = await callApi({
+      method: "POST",
+      pathname: "/memories",
+      body: {
+        ownerType: "work_item",
+        ownerId: "work_item:http-one",
+        kind: "fact",
+        content: "Actual progress context",
+        sourceSessionId: "session:http-one"
+      },
+      ...services
+    });
+    assert.equal(created.statusCode, 201);
+    assert.equal(created.body.work_item_id, "work_item:http-one");
+
+    const crossBound = await callApi({
+      method: "POST",
+      pathname: "/memories",
+      body: {
+        ownerType: "work_item",
+        ownerId: "work_item:http-two",
+        kind: "fact",
+        content: "must fail",
+        sourceSessionId: "session:http-one"
+      },
+      ...services
+    });
+    assert.equal(crossBound.statusCode, 400);
+    assert.equal(crossBound.body.code, "INVALID_MEMORY_SOURCE_SESSION");
+
+    const unknown = await callApi({
+      method: "POST",
+      pathname: "/memories",
+      body: {
+        ownerType: "work_item",
+        ownerId: "work_item:http-one",
+        kind: "fact",
+        content: "must fail",
+        sourceSessionId: "session:http-one",
+        templateMemory: true
+      },
+      ...services
+    });
+    assert.equal(unknown.statusCode, 400);
+    assert.equal(unknown.body.code, "INVALID_INPUT");
+
+    const one = await callApi({
+      method: "GET", pathname: "/memories",
+      search: "?ownerType=work_item&ownerId=work_item%3Ahttp-one", ...services
+    });
+    const two = await callApi({
+      method: "GET", pathname: "/memories",
+      search: "?ownerType=work_item&ownerId=work_item%3Ahttp-two", ...services
+    });
+    assert.equal(one.body.memories.length, 1);
+    assert.deepEqual(two.body.memories, []);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

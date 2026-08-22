@@ -269,6 +269,100 @@ export class CorptieStore {
     }
   }
 
+  migrateWorkItemMemoryAssociations() {
+    const migrationId = "work-item-memory-association-v1";
+    if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
+      return;
+    }
+    const appliedAt = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS quarantined_work_item_memories (
+          memory_id TEXT PRIMARY KEY,
+          owner_id TEXT,
+          source_session_id TEXT,
+          reason TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          quarantined_at TEXT NOT NULL
+        )
+      `);
+      this.db.run(
+        `INSERT OR IGNORE INTO quarantined_work_item_memories (
+           memory_id, owner_id, source_session_id, reason, record_json, quarantined_at
+         )
+         SELECT m.id, m.owner_id, m.source_session_id,
+           CASE
+             WHEN wi.id IS NULL THEN 'work_item_missing'
+             WHEN wi.current_session_id IS NULL THEN 'work_item_not_started'
+             WHEN s.id IS NULL THEN 'source_session_missing'
+             ELSE 'source_session_binding_mismatch'
+           END,
+           json_object(
+             'id', m.id, 'owner_type', m.owner_type, 'owner_id', m.owner_id,
+             'kind', m.kind, 'content', m.content, 'structured_json', m.structured_json,
+             'tags_json', m.tags_json, 'base_confidence', m.base_confidence,
+             'confidence', m.confidence, 'recency_score', m.recency_score,
+             'usage_count', m.usage_count, 'last_accessed_at', m.last_accessed_at,
+             'source_type', m.source_type, 'source_session_id', m.source_session_id,
+             'source_event_seqs_json', m.source_event_seqs_json,
+             'promotion_status', m.promotion_status, 'promoted_skill_id', m.promoted_skill_id,
+             'access_policy', m.access_policy, 'version', m.version,
+             'auto_applied', m.auto_applied, 'applied_at', m.applied_at,
+             'revoked_at', m.revoked_at, 'created_at', m.created_at, 'updated_at', m.updated_at
+           ), ?
+         FROM memories m
+         LEFT JOIN work_items wi ON wi.id = m.owner_id
+         LEFT JOIN sessions s ON s.id = m.source_session_id
+         WHERE m.owner_type = 'work_item'
+           AND (
+             wi.id IS NULL OR wi.current_session_id IS NULL OR s.id IS NULL
+             OR s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id
+           )`,
+        [appliedAt]
+      );
+      this.db.run(`
+        DELETE FROM memories
+        WHERE owner_type = 'work_item'
+          AND id IN (SELECT memory_id FROM quarantined_work_item_memories)
+      `);
+      this.db.run(`
+        UPDATE memories
+        SET work_item_id = CASE WHEN owner_type = 'work_item' THEN owner_id ELSE NULL END,
+            source_event_sequence = CASE
+              WHEN json_valid(source_event_seqs_json)
+               AND json_array_length(source_event_seqs_json) = 1
+              THEN json_extract(source_event_seqs_json, '$[0]')
+              ELSE NULL
+            END
+      `);
+      this.db.run(
+        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+        [migrationId, appliedAt]
+      );
+    });
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_source_event
+      ON memories(owner_type, owner_id, source_session_id, source_event_sequence)
+      WHERE source_session_id IS NOT NULL AND source_event_sequence IS NOT NULL`);
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS memories_work_item_insert_guard
+      BEFORE INSERT ON memories
+      WHEN (NEW.owner_type = 'work_item' AND (NEW.work_item_id IS NULL OR NEW.work_item_id IS NOT NEW.owner_id))
+        OR (NEW.owner_type <> 'work_item' AND NEW.work_item_id IS NOT NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid work item memory association');
+      END
+    `);
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS memories_work_item_update_guard
+      BEFORE UPDATE OF owner_type, owner_id, work_item_id ON memories
+      WHEN (NEW.owner_type = 'work_item' AND (NEW.work_item_id IS NULL OR NEW.work_item_id IS NOT NEW.owner_id))
+        OR (NEW.owner_type <> 'work_item' AND NEW.work_item_id IS NOT NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'invalid work item memory association');
+      END
+    `);
+  }
+
   migrate() {
     this.db.run("PRAGMA foreign_keys = ON");
     this.migrateSessionLogsForeignKey();
@@ -971,6 +1065,7 @@ export class CorptieStore {
         id TEXT PRIMARY KEY,
         owner_type TEXT NOT NULL,
         owner_id TEXT NOT NULL,
+        work_item_id TEXT,
         kind TEXT NOT NULL,
         content TEXT NOT NULL,
         structured_json TEXT NOT NULL DEFAULT '{}',
@@ -982,13 +1077,15 @@ export class CorptieStore {
         last_accessed_at TEXT,
         source_type TEXT NOT NULL DEFAULT 'user',
         source_session_id TEXT,
+        source_event_sequence INTEGER,
         source_event_seqs_json TEXT,
         promotion_status TEXT NOT NULL DEFAULT 'active',
         promoted_skill_id TEXT,
         access_policy TEXT NOT NULL DEFAULT '{}',
         version INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -1261,6 +1358,9 @@ export class CorptieStore {
     this.ensureColumn("memories", "auto_applied", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("memories", "applied_at", "TEXT");
     this.ensureColumn("memories", "revoked_at", "TEXT");
+    this.ensureColumn("memories", "work_item_id", "TEXT REFERENCES work_items(id) ON DELETE CASCADE");
+    this.ensureColumn("memories", "source_event_sequence", "INTEGER");
+    this.migrateWorkItemMemoryAssociations();
     this.initializeSortOrder();
     this.migrateAgentAvailability();
     this.ensureSkillTables();
@@ -1480,6 +1580,19 @@ export class CorptieStore {
       FROM sessions s
       JOIN work_items wi ON wi.id = s.work_item_id
       WHERE s.objective_id IS NOT wi.objective_id
+      UNION ALL
+      SELECT 'memory_work_item_association_mismatch', m.id, m.work_item_id
+      FROM memories m
+      LEFT JOIN work_items wi ON wi.id = m.work_item_id
+      WHERE m.owner_type = 'work_item'
+        AND (wi.id IS NULL OR m.work_item_id IS NOT m.owner_id)
+      UNION ALL
+      SELECT 'memory_source_session_binding_mismatch', m.id, m.source_session_id
+      FROM memories m
+      LEFT JOIN sessions s ON s.id = m.source_session_id
+      LEFT JOIN work_items wi ON wi.id = m.work_item_id
+      WHERE m.owner_type = 'work_item'
+        AND (s.id IS NULL OR s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id)
       UNION ALL
       SELECT 'integration_conflict_work_item_missing', r.id, r.conflict_work_item_id
       FROM project_integration_runs r
@@ -5573,20 +5686,22 @@ export class CorptieStore {
   // ===== 三层记忆（13：Objective/WorkItem 工作记忆 + Agent 进化记忆）=====
 
   createMemory(input = {}) {
+    const association = this.validateMemoryAssociation(input);
     const id = input.id ?? `memory:${randomUUID()}`;
     const now = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO memories (
-        id, owner_type, owner_id, kind, content, structured_json, tags_json,
+        id, owner_type, owner_id, work_item_id, kind, content, structured_json, tags_json,
         base_confidence, confidence, recency_score, usage_count, last_accessed_at,
-        source_type, source_session_id, source_event_seqs_json,
+        source_type, source_session_id, source_event_sequence, source_event_seqs_json,
         promotion_status, promoted_skill_id, access_policy, version,
         auto_applied, applied_at, revoked_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.ownerType,
         input.ownerId,
+        association.workItemId,
         input.kind,
         input.content,
         JSON.stringify(input.structuredJson ?? {}),
@@ -5598,6 +5713,7 @@ export class CorptieStore {
         input.lastAccessedAt ?? null,
         input.sourceType ?? "user",
         input.sourceSessionId ?? null,
+        input.sourceEventSequence ?? null,
         JSON.stringify(input.sourceEventSeqs ?? []),
         input.promotionStatus ?? "active",
         input.promotedSkillId ?? null,
@@ -5623,6 +5739,60 @@ export class CorptieStore {
       `SELECT * FROM memories WHERE owner_type = ? AND owner_id = ? ORDER BY confidence DESC`,
       [ownerType, ownerId]
     );
+  }
+
+  getMemoryBySourceEvent({ ownerType, ownerId, sourceSessionId, sourceEventSequence }) {
+    return this.selectOne(
+      `SELECT * FROM memories
+       WHERE owner_type = ? AND owner_id = ? AND source_session_id = ? AND source_event_sequence = ?`,
+      [ownerType, ownerId, sourceSessionId, sourceEventSequence]
+    );
+  }
+
+  validateMemoryAssociation(input = {}) {
+    const ownerType = typeof input.ownerType === "string" ? input.ownerType.trim() : "";
+    const ownerId = typeof input.ownerId === "string" ? input.ownerId.trim() : "";
+    if (!ownerType || !ownerId) {
+      throw memoryAssociationError("INVALID_MEMORY_ASSOCIATION", "Memory ownerType and ownerId are required.");
+    }
+    if (ownerType !== "work_item") {
+      if (input.workItemId != null && String(input.workItemId).trim()) {
+        throw memoryAssociationError(
+          "INVALID_MEMORY_ASSOCIATION",
+          "workItemId is only valid for work_item memories."
+        );
+      }
+      return { workItemId: null };
+    }
+    const workItemId = typeof input.workItemId === "string" && input.workItemId.trim()
+      ? input.workItemId.trim()
+      : ownerId;
+    if (workItemId !== ownerId) {
+      throw memoryAssociationError(
+        "INVALID_MEMORY_ASSOCIATION",
+        "workItemId must match ownerId for work_item memories."
+      );
+    }
+    const workItem = this.getWorkItem(workItemId);
+    if (!workItem) {
+      throw memoryAssociationError("WORK_ITEM_NOT_FOUND", `WorkItem not found: ${workItemId}`);
+    }
+    if (!workItem.current_session_id) {
+      throw memoryAssociationError(
+        "WORK_ITEM_NOT_STARTED",
+        "WorkItem memories cannot be created before execution starts."
+      );
+    }
+    const sourceSessionId = typeof input.sourceSessionId === "string" ? input.sourceSessionId.trim() : "";
+    const sourceSession = sourceSessionId ? this.getSession(sourceSessionId) : null;
+    if (!sourceSession || sourceSession.workItemId !== workItem.id
+      || sourceSession.objectiveId !== workItem.objective_id) {
+      throw memoryAssociationError(
+        "INVALID_MEMORY_SOURCE_SESSION",
+        "WorkItem memory requires a bound Worker Session for that WorkItem as its source."
+      );
+    }
+    return { workItemId };
   }
 
   listMemoriesByKind(kind) {
@@ -6976,6 +7146,12 @@ function producerFromSource(source) {
   if (source == null) return null;
   if (typeof source === "string") return source;
   return source.producer ?? source.name ?? source.id ?? null;
+}
+
+function memoryAssociationError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 // 会话日志事件溯源（10）：session_items 的 item.type → 事件类型 + producer。

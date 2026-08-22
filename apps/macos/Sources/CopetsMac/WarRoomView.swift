@@ -1361,7 +1361,15 @@ struct WorkItemDetailView: View {
         // 取后端返回列表里 updatedAt 最新的那一条，避免因陈旧 currentSessionId 导致「当前执行」显示为空。
         currentSession = sessions.first { $0.id == workItem.currentSessionId }
             ?? sessions.max(by: { $0.updatedAt < $1.updatedAt })
-        memories = await client.memories(ownerType: "work_item", ownerId: workItem.id)
+        if WorkItemMemoryPresentationPolicy.shouldLoad(currentSessionId: workItem.currentSessionId) {
+            if let loaded = await client.memories(ownerType: "work_item", ownerId: workItem.id) {
+                memories = loaded.filter {
+                    $0.ownerType == "work_item" && $0.ownerId == workItem.id && $0.workItemId == workItem.id
+                }
+            }
+        } else {
+            memories = []
+        }
     }
 
     private func kindLabel(_ kind: String) -> String {

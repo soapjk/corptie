@@ -16,12 +16,24 @@ async function createStore() {
   return { store, directory };
 }
 
+function createStartedWorkItem(store) {
+  store.createObjective({ id: "o1", name: "Objective" });
+  store.createWorkItem({ id: "wi1", objectiveId: "o1", title: "WorkItem" });
+  store.createSession({
+    id: "s1", title: "Worker", provider: "codex-app-server", status: "running",
+    objectiveId: "o1", workItemId: "wi1", agentId: "a1"
+  });
+}
+
 test("retrieveMemory 按作用域聚合 + 关键词匹配", async () => {
   const { store, directory } = await createStore();
   try {
+    createStartedWorkItem(store);
     store.createMemory({
       ownerType: "work_item",
       ownerId: "wi1",
+      workItemId: "wi1",
+      sourceSessionId: "s1",
       kind: "lesson",
       content: "SQLite 外键要手动开",
       confidence: 0.9
@@ -29,6 +41,8 @@ test("retrieveMemory 按作用域聚合 + 关键词匹配", async () => {
     store.createMemory({
       ownerType: "work_item",
       ownerId: "wi1",
+      workItemId: "wi1",
+      sourceSessionId: "s1",
       kind: "fact",
       content: "无关内容",
       confidence: 0.9

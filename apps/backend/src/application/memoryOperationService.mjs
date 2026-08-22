@@ -66,6 +66,7 @@ export class MemoryOperationService {
       memoryId: id,
       ownerType: owner.ownerType,
       ownerId: owner.ownerId,
+      workItemId: owner.ownerType === "work_item" ? owner.ownerId : null,
       kind,
       content
     });
@@ -151,7 +152,8 @@ export class MemoryOperationService {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references a missing Objective.");
     }
     const workItem = session.workItemId ? this.store.getWorkItem(session.workItemId) : null;
-    if (session.workItemId && (!workItem || workItem.objective_id !== session.objectiveId)) {
+    if (session.workItemId && (!workItem || workItem.objective_id !== session.objectiveId
+      || workItem.current_session_id !== session.id)) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references an invalid WorkItem binding.");
     }
     const owners = new Map([["agent", { ownerType: "agent", ownerId: actorId }]]);
@@ -216,6 +218,7 @@ export function presentMemory(memory) {
     id: memory.id,
     ownerType: memory.owner_type,
     ownerId: memory.owner_id,
+    workItemId: memory.work_item_id ?? null,
     kind: memory.kind,
     content: memory.content,
     structured: safeJson(memory.structured_json, {}),
