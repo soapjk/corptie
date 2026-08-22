@@ -351,6 +351,58 @@ test("startTurn forwards application context for rules that must apply to an exi
   });
 });
 
+test("ensureThreadResumed skips redundant resume and reloads when runtime context changes", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/start") return { thread: { id: "thread-a" } };
+    return { thread: { id: params.threadId } };
+  };
+  const initial = {
+    cwd: "/repo",
+    runtimeWorkspaceRoots: ["/repo"],
+    dynamicToolAgentId: "agent-a",
+    dynamicTools: [{ name: "tool-a" }]
+  };
+
+  await client.startThread(initial);
+  const cached = await client.ensureThreadResumed("thread-a", initial);
+  assert.equal(cached.alreadyLoaded, true);
+  assert.deepEqual(calls.map((call) => call.method), ["thread/start"]);
+
+  await client.ensureThreadResumed("thread-a", {
+    ...initial,
+    dynamicTools: [{ name: "tool-b" }]
+  });
+  assert.deepEqual(calls.map((call) => call.method), ["thread/start", "thread/resume"]);
+});
+
+test("ensureThreadResumed coalesces selection prewarm with foreground send", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  let resumes = 0;
+  client.request = async (method, params) => {
+    assert.equal(method, "thread/resume");
+    resumes += 1;
+    await gate;
+    return { thread: { id: params.threadId } };
+  };
+  const options = { cwd: "/repo", runtimeWorkspaceRoots: ["/repo"] };
+
+  const prewarm = client.ensureThreadResumed("thread-a", options);
+  const send = client.ensureThreadResumed("thread-a", options);
+  release();
+  const [, foreground] = await Promise.all([prewarm, send]);
+
+  assert.equal(resumes, 1);
+  assert.equal(foreground.alreadyLoaded, true);
+  assert.equal(foreground.coalesced, true);
+});
+
 test("startTurn forwards restored sandbox and approval settings", async () => {
   const calls = [];
   const client = new CodexAppServerClient();

@@ -103,6 +103,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         actions?.resume?.available ?? capabilities?.canReconnect ?? false
     }
 
+    var canPrepareExecutionNow: Bool {
+        actions?.prepareExecution?.available ?? capabilities?.canPrepareExecution ?? false
+    }
+
     var canSwitchModelNow: Bool {
         actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
     }
@@ -514,6 +518,7 @@ struct SessionCapabilities: Codable, Equatable, Sendable {
     let canSwitchReasoning: Bool?
     let canInterrupt: Bool?
     let canReconnect: Bool?
+    let canPrepareExecution: Bool?
 }
 
 struct SessionActionAvailability: Codable, Equatable, Sendable {
@@ -524,6 +529,7 @@ struct SessionActionAvailability: Codable, Equatable, Sendable {
 
 struct SessionActions: Codable, Equatable, Sendable {
     let resume: SessionActionAvailability?
+    let prepareExecution: SessionActionAvailability?
     let delete: SessionActionAvailability?
     let restart: SessionActionAvailability?
     let disconnect: SessionActionAvailability?

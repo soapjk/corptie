@@ -181,6 +181,7 @@ final class BackendClient: ObservableObject {
     private var eventStreamTask: Task<Void, Never>?
     private var detailStreamTask: Task<Void, Never>?
     private var detailStreamWatchdogTask: Task<Void, Never>?
+    private var executionPreparationTask: Task<Void, Never>?
     private var initialDetailFallbackTask: Task<Void, Never>?
     private var selectionGeneration = 0
     private var detailStreamGeneration = 0
@@ -272,6 +273,7 @@ final class BackendClient: ObservableObject {
         AppStateSyncController.shared.start()
         if let selectedSession, viewingHistoricalThreadId == nil {
             startDetailStream(for: selectedSession)
+            scheduleExecutionPreparation(for: selectedSession, generation: selectionGeneration)
         }
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -296,6 +298,8 @@ final class BackendClient: ObservableObject {
         detailStreamTask = nil
         detailStreamWatchdogTask?.cancel()
         detailStreamWatchdogTask = nil
+        executionPreparationTask?.cancel()
+        executionPreparationTask = nil
         initialDetailFallbackTask?.cancel()
         initialDetailFallbackTask = nil
         detailStreamGeneration &+= 1
@@ -1520,6 +1524,7 @@ final class BackendClient: ObservableObject {
         deferredDetailPublishTask = nil
         viewingHistoricalThreadId = nil
         selectedSession = session
+        scheduleExecutionPreparation(for: session, generation: generation)
         let cachedDetail = cachedDetail(for: session.id)
         // Publish a cache hit in the same event turn as the row selection. If
         // this waits for the selection Task below, SwiftUI briefly enters the
@@ -1588,6 +1593,56 @@ final class BackendClient: ObservableObject {
                         expectedSelectionGeneration: generation
                     )
                 }
+            }
+        }
+    }
+
+    private func scheduleExecutionPreparation(for session: TaskSession, generation: Int) {
+        executionPreparationTask?.cancel()
+        executionPreparationTask = nil
+        guard session.canPrepareExecutionNow,
+              session.status != .running,
+              session.status != .blocked else { return }
+
+        let selectedAtMs = Int64(Date().timeIntervalSince1970 * 1_000)
+        executionPreparationTask = Task { [weak self] in
+            guard let self,
+                  !Task.isCancelled,
+                  self.selectionGeneration == generation,
+                  self.selectedSession?.id == session.id else { return }
+            NSLog(
+                "[session-execution-preparation] {\"sessionId\":\"%@\",\"stage\":\"requested\",\"sinceSelectionMs\":%lld}",
+                session.id,
+                Int64(Date().timeIntervalSince1970 * 1_000) - selectedAtMs
+            )
+            do {
+                var request = URLRequest(
+                    url: self.baseURL.appending(path: "sessions/\(session.id)/actions/prepare-execution")
+                )
+                request.httpMethod = "POST"
+                let (data, response) = try await URLSession.shared.data(for: request)
+                try Self.requireSuccess(response, data: data)
+                guard !Task.isCancelled,
+                      self.selectionGeneration == generation,
+                      self.selectedSession?.id == session.id else { return }
+                NSLog(
+                    "[session-execution-preparation] {\"sessionId\":\"%@\",\"stage\":\"completed\",\"sinceSelectionMs\":%lld}",
+                    session.id,
+                    Int64(Date().timeIntervalSince1970 * 1_000) - selectedAtMs
+                )
+            } catch is CancellationError {
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                return
+            } catch {
+                // Preparation is speculative. Sending retains the authoritative
+                // foreground path and will retry every required stage.
+                NSLog(
+                    "[session-execution-preparation] {\"sessionId\":\"%@\",\"stage\":\"failed\",\"sinceSelectionMs\":%lld,\"error\":\"%@\"}",
+                    session.id,
+                    Int64(Date().timeIntervalSince1970 * 1_000) - selectedAtMs,
+                    error.localizedDescription
+                )
             }
         }
     }
@@ -1705,6 +1760,8 @@ final class BackendClient: ObservableObject {
         detailStreamTask = nil
         detailStreamWatchdogTask?.cancel()
         detailStreamWatchdogTask = nil
+        executionPreparationTask?.cancel()
+        executionPreparationTask = nil
         initialDetailFallbackTask?.cancel()
         initialDetailFallbackTask = nil
         detailStreamGeneration &+= 1
@@ -2693,6 +2750,8 @@ final class BackendClient: ObservableObject {
         guard !trimmed.isEmpty else {
             return false
         }
+        let latencyTrace = SessionMessageLatencyTrace(sessionId: session.id)
+        latencyTrace.log(stage: "send_clicked")
         clearSuggestedOptions(for: session)
         let isClearCommand = trimmed.lowercased() == "/clear"
         let resolvesCollaborationConfirmation = selectedDetail?.items.contains(where: {
@@ -2708,15 +2767,21 @@ final class BackendClient: ObservableObject {
             defer { isSendingMessage = false }
 
             do {
+                let requestStartedAtMs = SessionMessageLatencyTrace.nowMs
                 var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/messages"))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.setValue(latencyTrace.traceId, forHTTPHeaderField: "x-corptie-message-trace-id")
+                request.setValue(String(latencyTrace.clickedAtMs), forHTTPHeaderField: "x-corptie-message-clicked-at-ms")
+                request.setValue(String(requestStartedAtMs), forHTTPHeaderField: "x-corptie-message-request-started-at-ms")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
                     "text": trimmed,
                     "isChoiceSelection": isChoiceSelection
                 ])
 
+                latencyTrace.log(stage: "request_sent", requestStartedAtMs: requestStartedAtMs)
                 let (data, response) = try await URLSession.shared.data(for: request)
+                latencyTrace.log(stage: "response_received", requestStartedAtMs: requestStartedAtMs)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
                 }
@@ -2755,10 +2820,9 @@ final class BackendClient: ObservableObject {
                 } else {
                     sendStatusMessage = L10n("Sent to Codex")
                 }
-                if reloadDetail {
+                if reloadDetail && !detailStreamHealth.isHealthy(for: session.id) {
                     await loadDetail(for: session)
                 }
-                await refresh()
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
@@ -4060,6 +4124,7 @@ final class BackendClient: ObservableObject {
             viewingHistoricalThreadId = nil
             selectedDetail = nil
             removeCachedDetail(for: refreshed.id)
+            scheduleExecutionPreparation(for: refreshed, generation: selectionGeneration)
             Task { [weak self] in
                 guard let self, self.selectedSession?.id == refreshed.id else { return }
                 self.startDetailStream(for: refreshed)

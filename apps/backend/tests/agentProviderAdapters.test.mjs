@@ -111,6 +111,7 @@ function recordingCodexOperations() {
     readSession: (reference) => ({ id: reference.providerSessionId }),
     createSession: () => ({}),
     resumeSession: () => ({}),
+    prepareExecution: () => ({}),
     deleteSession: () => true,
     restartSession: () => ({}),
     renameSession: () => ({}),

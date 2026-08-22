@@ -6,6 +6,18 @@ import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 
+function threadResumeFingerprint(options = {}) {
+  return JSON.stringify({
+    cwd: options.cwd ?? null,
+    runtimeWorkspaceRoots: options.runtimeWorkspaceRoots ?? null,
+    config: options.config ?? null,
+    developerInstructions: options.developerInstructions ?? null,
+    dynamicTools: options.dynamicTools ?? null,
+    dynamicToolAgentId: options.dynamicToolAgentId ?? null,
+    dynamicToolMetadata: options.dynamicToolMetadata ?? null
+  });
+}
+
 export class CodexAppServerClient {
   constructor(options = {}) {
     this.command = options.command ?? "codex";
@@ -26,6 +38,8 @@ export class CodexAppServerClient {
     this.recentApprovedCommands = new Map();
     this.dynamicToolAgentsByThread = new Map();
     this.dynamicToolMetadataByThread = new Map();
+    this.threadResumeFingerprints = new Map();
+    this.threadResumePromises = new Map();
     this.initialized = false;
   }
 
@@ -56,6 +70,8 @@ export class CodexAppServerClient {
       this.initialized = false;
       this.process = null;
       this.readline = null;
+      this.threadResumeFingerprints.clear();
+      this.threadResumePromises.clear();
     });
 
     this.readline = createInterface({
@@ -121,6 +137,8 @@ export class CodexAppServerClient {
       this.serverRequestsByThread.delete(threadId);
       this.dynamicToolAgentsByThread.delete(threadId);
       this.dynamicToolMetadataByThread.delete(threadId);
+      this.threadResumeFingerprints.delete(threadId);
+      this.threadResumePromises.delete(threadId);
     }
   }
 
@@ -143,6 +161,9 @@ export class CodexAppServerClient {
     if (result?.thread?.id && options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(result.thread.id, options.dynamicToolMetadata ?? null);
+    }
+    if (result?.thread?.id) {
+      this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
     }
     return result;
   }
@@ -168,7 +189,38 @@ export class CodexAppServerClient {
       this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
     }
+    this.threadResumeFingerprints.set(threadId, threadResumeFingerprint(options));
     return result;
+  }
+
+  async ensureThreadResumed(threadId, options = {}) {
+    await this.initialize();
+    const fingerprint = threadResumeFingerprint(options);
+    if (this.threadResumeFingerprints.get(threadId) === fingerprint) {
+      return { alreadyLoaded: true, thread: { id: threadId } };
+    }
+    const pending = this.threadResumePromises.get(threadId);
+    if (pending) {
+      try {
+        await pending.promise;
+      } catch {
+        // A speculative prewarm must not make the foreground send inherit its
+        // failure. Retry below using the caller's current runtime context.
+      }
+      if (this.threadResumeFingerprints.get(threadId) === fingerprint) {
+        return { alreadyLoaded: true, coalesced: true, thread: { id: threadId } };
+      }
+    }
+    const promise = this.resumeThread(threadId, options);
+    const entry = { fingerprint, promise };
+    this.threadResumePromises.set(threadId, entry);
+    try {
+      return await promise;
+    } finally {
+      if (this.threadResumePromises.get(threadId) === entry) {
+        this.threadResumePromises.delete(threadId);
+      }
+    }
   }
 
   async forkThread(threadId, options = {}) {
@@ -195,6 +247,9 @@ export class CodexAppServerClient {
     if (result?.thread?.id && options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(result.thread.id, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(result.thread.id, options.dynamicToolMetadata ?? null);
+    }
+    if (result?.thread?.id) {
+      this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
     }
     return result;
   }
@@ -442,6 +497,8 @@ export class CodexAppServerClient {
     this.readline?.close();
     this.readline = null;
     this.initialized = false;
+    this.threadResumeFingerprints.clear();
+    this.threadResumePromises.clear();
   }
 
   liveItemsForThread(threadId) {
