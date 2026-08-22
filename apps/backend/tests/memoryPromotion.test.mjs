@@ -79,6 +79,12 @@ test("promoteMemoryToSkill 落 skills 表并保留溯源", async () => {
 test("listPromotionCandidates 只返回满足置信度/用量阈值的能力类记忆", async () => {
   const { store, directory } = await createStore();
   try {
+    store.createObjective({ id: "o", name: "Objective" });
+    store.createWorkItem({ id: "w", objectiveId: "o", title: "WorkItem" });
+    store.createSession({
+      id: "s", title: "Worker", provider: "codex-app-server", status: "running",
+      objectiveId: "o", workItemId: "w", agentId: "a1"
+    });
     // 合格：agent + skill + 高置信 + 高用量
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "skill", content: "x", confidence: 0.9, usageCount: 6 });
     // 用量不足
@@ -86,7 +92,10 @@ test("listPromotionCandidates 只返回满足置信度/用量阈值的能力类�
     // 非能力类
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "fact", content: "z", confidence: 0.9, usageCount: 6 });
     // 非 agent owner
-    store.createMemory({ ownerType: "work_item", ownerId: "w", kind: "skill", content: "w", confidence: 0.9, usageCount: 6 });
+    store.createMemory({
+      ownerType: "work_item", ownerId: "w", workItemId: "w", sourceSessionId: "s",
+      kind: "skill", content: "w", confidence: 0.9, usageCount: 6
+    });
     // 已晋升
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "dev_experience", content: "d", confidence: 0.9, usageCount: 6, promotionStatus: "promoted_to_skill" });
 

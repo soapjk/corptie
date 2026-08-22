@@ -725,22 +725,40 @@ export function handleEntityHttpRequest({
 
       // ---- Memory ----
       if (request.method === "GET" && path === "/memories") {
-        const { ownerType, ownerId } = url.searchParams;
-        const memories = ownerType && ownerId
-          ? hubService.store.listMemoriesByOwner(ownerType, ownerId)
-          : hubService.store.listAllMemories();
+        const ownerType = url.searchParams.get("ownerType");
+        const ownerId = url.searchParams.get("ownerId");
+        if (!ownerType || !ownerId) {
+          throw apiError("INVALID_INPUT", "ownerType and ownerId are required.", 400);
+        }
+        validateMemoryOwnerReference(hubService.store, ownerType, ownerId);
+        if (ownerType === "work_item") {
+          const workItem = hubService.store.getWorkItem(ownerId);
+          if (!workItem.current_session_id) return sendJson(response, 200, { memories: [] });
+        }
+        const memories = hubService.store.listMemoriesByOwner(ownerType, ownerId)
+          .filter((memory) => memory.promotion_status === "active" && !memory.revoked_at);
         return sendJson(response, 200, { memories });
       }
       // 手动记录记忆（source_type=user）：走字段校验，防 owner_id=null 撞 NOT NULL。
       // 注：记忆写入本身 = 乐观应用（safe，不需审批卡）；晋升 Skill 另走 guard high（见 03 §15.3）。
       if (request.method === "POST" && path === "/memories") {
         const input = await readJson(request);
-        validateMemoryInput(input);
-        return sendJson(response, 201, hubService.store.createMemory({ ...input, sourceType: input.sourceType ?? "user" }));
+        validateMemoryInput(input, hubService.store);
+        return sendJson(response, 201, hubService.store.createMemory({
+          ownerType: input.ownerType,
+          ownerId: input.ownerId,
+          workItemId: input.ownerType === "work_item" ? input.ownerId : null,
+          kind: input.kind,
+          content: input.content,
+          tags: input.tags,
+          sourceType: "user",
+          sourceSessionId: input.sourceSessionId ?? null
+        }));
       }
       // 从 Session 事件流提炼记忆（13 主路径）：MemoryExtractor 提取 + kind→owner 分流 + 乐观应用。
       if (request.method === "POST" && path === "/memories/extract") {
         const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["sessionId", "objectiveId", "workItemId", "agentId"]));
         const sessionId = String(input.sessionId ?? "").trim();
         if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
         const memories = await memoryExtractor.extractFromSession(sessionId, {
@@ -819,7 +837,8 @@ function statusForCode(code) {
 }
 
 // 记忆字段校验：ownerType/ownerId/kind/content 必填，缺失即 400（防 owner_id=null 撞 NOT NULL）。
-function validateMemoryInput(input = {}) {
+function validateMemoryInput(input = {}, store) {
+  rejectUnknownFields(input, new Set(["ownerType", "ownerId", "kind", "content", "tags", "sourceSessionId"]));
   const required = [
     ["ownerType", input.ownerType],
     ["ownerId", input.ownerId],
@@ -830,6 +849,56 @@ function validateMemoryInput(input = {}) {
     if (value == null || String(value).trim() === "") {
       throw apiError("INVALID_INPUT", `Field "${field}" is required.`, 400);
     }
+  }
+  if (!["agent", "objective", "work_item"].includes(input.ownerType)) {
+    throw apiError("INVALID_MEMORY_SCOPE", `Unsupported memory ownerType: ${input.ownerType}`, 400);
+  }
+  if (!["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"].includes(input.kind)) {
+    throw apiError("INVALID_MEMORY_KIND", `Unsupported memory kind: ${input.kind}`, 400);
+  }
+  if (input.tags != null && (!Array.isArray(input.tags)
+    || input.tags.some((tag) => typeof tag !== "string" || !tag.trim()))) {
+    throw apiError("INVALID_INPUT", "tags must be an array of non-empty strings.", 400);
+  }
+  validateMemoryOwnerReference(store, input.ownerType, input.ownerId);
+  if (input.ownerType === "work_item" && (typeof input.sourceSessionId !== "string" || !input.sourceSessionId.trim())) {
+    throw apiError(
+      "INVALID_MEMORY_SOURCE_SESSION",
+      "sourceSessionId is required for work_item memories.",
+      400
+    );
+  }
+  if (input.ownerType === "work_item"
+    && store.getWorkItem(input.ownerId).current_session_id !== input.sourceSessionId.trim()) {
+    throw apiError(
+      "INVALID_MEMORY_SOURCE_SESSION",
+      "sourceSessionId must be the WorkItem's current bound Worker Session.",
+      400
+    );
+  }
+}
+
+function validateMemoryOwnerReference(store, ownerType, ownerId) {
+  const normalizedOwnerId = typeof ownerId === "string" ? ownerId.trim() : "";
+  if (!normalizedOwnerId) throw apiError("INVALID_INPUT", "ownerId is required.", 400);
+  const record = ownerType === "agent"
+    ? store.getAgent(normalizedOwnerId)
+    : ownerType === "objective"
+      ? store.getObjective(normalizedOwnerId)
+      : ownerType === "work_item"
+        ? store.getWorkItem(normalizedOwnerId)
+        : null;
+  if (!record) {
+    const code = ownerType === "agent" ? "AGENT_NOT_FOUND"
+      : ownerType === "objective" ? "OBJECTIVE_NOT_FOUND"
+        : ownerType === "work_item" ? "WORK_ITEM_NOT_FOUND" : "INVALID_MEMORY_SCOPE";
+    throw apiError(code, `${ownerType} owner not found: ${normalizedOwnerId}`, code.endsWith("NOT_FOUND") ? 404 : 400);
+  }
+}
+
+function rejectUnknownFields(input, allowed) {
+  for (const field of Object.keys(input ?? {})) {
+    if (!allowed.has(field)) throw apiError("INVALID_INPUT", `Unknown field "${field}".`, 400);
   }
 }
 

@@ -233,6 +233,7 @@ const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
+const workItemMemoryExtractions = new Map();
 const codexChoiceParseRetryAfter = new Map();
 const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
@@ -3788,6 +3789,7 @@ function settleEntityWorkItemFromSession(session) {
   if (!session?.id) return null;
   const workItem = store.getWorkItemBySessionId(session.id);
   if (!workItem) return null;
+  scheduleWorkItemMemoryExtraction(session, workItem);
   const patch = workItemExecutionPatch(workItem, session.status);
   if (!patch) return workItem;
   const statusChanged = patch.status && patch.status !== workItem.status;
@@ -3802,6 +3804,26 @@ function settleEntityWorkItemFromSession(session) {
   const updated = store.getWorkItem(workItem.id);
   emitEvent("WorkItemChanged", { action: "execution-status-updated", entity: updated });
   return updated;
+}
+
+function scheduleWorkItemMemoryExtraction(session, workItem) {
+  const previous = workItemMemoryExtractions.get(session.id) ?? Promise.resolve();
+  const task = previous.catch(() => {}).then(() => memoryExtractor.extractFromSession(session.id)).then((memories) => {
+    if (memories.length === 0) return;
+    const updated = store.updateWorkItem(workItem.id, {});
+    emitEvent("WorkItemChanged", {
+      action: "memory-updated",
+      entity: updated,
+      memoryIds: memories.map((memory) => memory.id)
+    });
+  }).catch((error) => {
+    console.error(`[work-item-memory] extraction failed for ${workItem.id}: ${error?.message ?? error}`);
+  }).finally(() => {
+    if (workItemMemoryExtractions.get(session.id) === task) {
+      workItemMemoryExtractions.delete(session.id);
+    }
+  });
+  workItemMemoryExtractions.set(session.id, task);
 }
 
 function settleWorkItemForWorkspaceContinuation(transitionId) {

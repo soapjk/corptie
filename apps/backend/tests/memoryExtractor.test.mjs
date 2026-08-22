@@ -20,12 +20,36 @@ async function createStore() {
   return { store, directory };
 }
 
+function createStartedExecution(store, {
+  objectiveId = "o1",
+  workItemId = "wi1",
+  sessionId = "s1",
+  agentId = "a1"
+} = {}) {
+  if (!store.getObjective(objectiveId)) {
+    store.createObjective({ id: objectiveId, name: objectiveId });
+  }
+  store.createWorkItem({ id: workItemId, objectiveId, title: workItemId });
+  store.createSession({
+    id: sessionId,
+    title: sessionId,
+    provider: "codex-app-server",
+    status: "running",
+    objectiveId,
+    workItemId,
+    agentId
+  });
+}
+
 test("memories CRUD + 置信度衰减", async () => {
   const { store, directory } = await createStore();
   try {
+    createStartedExecution(store);
     const memory = store.createMemory({
       ownerType: "work_item",
       ownerId: "wi1",
+      workItemId: "wi1",
+      sourceSessionId: "s1",
       kind: "lesson",
       content: "SQLite 外键要手动开"
     });
@@ -49,13 +73,7 @@ test("memories CRUD + 置信度衰减", async () => {
 test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
   const { store, directory } = await createStore();
   try {
-    store.upsertSession({
-      id: "s1",
-      title: "t",
-      agent: "a",
-      provider: "codex-app-server",
-      status: "complete"
-    });
+    createStartedExecution(store);
     store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "error", payload: { message: "端口被占用" } });
     store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
     store.appendSessionEvent({ eventId: "e3", sessionId: "s1", type: "summary", payload: { summary: "完成了实体层" } });
@@ -90,13 +108,12 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
 test("two Sessions can append memories to one Agent concurrently without lost writes", async () => {
   const { store, directory } = await createStore();
   try {
-    for (const sessionId of ["s1", "s2"]) {
-      store.upsertSession({
-        id: sessionId,
-        title: sessionId,
-        agent: "shared-agent",
-        provider: "codex-app-server",
-        status: "complete"
+    for (const [index, sessionId] of ["s1", "s2"].entries()) {
+      createStartedExecution(store, {
+        objectiveId: `o${index + 1}`,
+        workItemId: `wi${index + 1}`,
+        sessionId,
+        agentId: "agent:shared"
       });
       store.appendSessionEvent({
         eventId: `event:${sessionId}`,
@@ -116,10 +133,9 @@ test("two Sessions can append memories to one Agent concurrently without lost wr
         }));
       }
     });
-    const scope = { agentId: "agent:shared" };
     const [first, second] = await Promise.all([
-      extractor.extractFromSession("s1", scope),
-      extractor.extractFromSession("s2", scope)
+      extractor.extractFromSession("s1"),
+      extractor.extractFromSession("s2")
     ]);
 
     assert.equal(first.length, 1);
@@ -166,7 +182,7 @@ test("ownerForKind 缺失 agentId 时能力类返回 null（不再写 owner_id=n
 test("extractFromSession 缺失 agentId 时跳过能力类事件（不撞 NOT NULL）", async () => {
   const { store, directory } = await createStore();
   try {
-    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    createStartedExecution(store, { agentId: null });
     store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
     store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "summary", payload: { summary: "完成" } });
 

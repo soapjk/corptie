@@ -268,10 +268,18 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let id: String
     let ownerType: String
     let ownerId: String
+    let workItemId: String?
     let kind: String
     let content: String
     let sourceType: String
     let createdAt: String
+}
+
+enum WorkItemMemoryPresentationPolicy {
+    static func shouldLoad(currentSessionId: String?) -> Bool {
+        guard let currentSessionId else { return false }
+        return !currentSessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 // 后端响应 envelope：GET /memories?ownerType=&ownerId= → { memories: [...] }

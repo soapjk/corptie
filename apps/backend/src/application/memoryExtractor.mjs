@@ -120,7 +120,8 @@ export class MemoryExtractor {
   }
 
   // 从 Session 事件流提取候选并乐观应用；返回落库的记忆数组。
-  async extractFromSession(sessionId, scope = {}) {
+  async extractFromSession(sessionId, claimedScope = {}) {
+    const scope = this.resolveExecutionScope(sessionId, claimedScope);
     const events = this.store.listSessionEvents(sessionId);
     const classified = await this.classifyEvents(events);
     const memories = [];
@@ -129,15 +130,36 @@ export class MemoryExtractor {
       if (!result) continue;
       const owner = ownerForKind(result.kind, scope);
       if (!owner) continue; // 无有效归属（如能力类记忆缺失 agentId）时跳过，避免写入 owner_id=null
+      const sourceEventSequence = events[i].sequence;
+      const existing = this.store.getMemoryBySourceEvent({
+        ownerType: owner.ownerType,
+        ownerId: owner.ownerId,
+        sourceSessionId: sessionId,
+        sourceEventSequence
+      });
+      if (existing) {
+        const nextConfidence = result.baseConfidence ?? existing.confidence;
+        if (existing.content === result.content && Number(existing.confidence) === Number(nextConfidence)) {
+          continue;
+        }
+        memories.push(this.store.updateMemory(existing.id, {
+          content: result.content,
+          confidence: nextConfidence,
+          version: Number(existing.version ?? 1) + 1
+        }));
+        continue;
+      }
       memories.push(
         this.store.createMemory({
           ownerType: owner.ownerType,
           ownerId: owner.ownerId,
+          workItemId: owner.ownerType === "work_item" ? scope.workItemId : null,
           kind: result.kind,
           content: result.content,
           sourceType: "extracted",
           sourceSessionId: sessionId,
-          sourceEventSeqs: [events[i].sequence],
+          sourceEventSequence,
+          sourceEventSeqs: [sourceEventSequence],
           baseConfidence: result.baseConfidence ?? 0.5,
           promotionStatus: "active",
           autoApplied: true
@@ -145,6 +167,40 @@ export class MemoryExtractor {
       );
     }
     return memories;
+  }
+
+  resolveExecutionScope(sessionId, claimedScope = {}) {
+    const session = this.store.getSession(sessionId);
+    if (!session) throw memoryExtractionError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`);
+    if (session.sessionKind !== "worker" || !session.workItemId || !session.objectiveId) {
+      throw memoryExtractionError(
+        "WORK_ITEM_SESSION_REQUIRED",
+        "WorkItem memory extraction requires a bound Worker Session."
+      );
+    }
+    const workItem = this.store.getWorkItem(session.workItemId);
+    if (!workItem || workItem.objective_id !== session.objectiveId
+      || workItem.current_session_id !== session.id) {
+      throw memoryExtractionError(
+        "INVALID_WORK_ITEM_SESSION",
+        "The Session is not the WorkItem's current bound execution Session."
+      );
+    }
+    const derived = {
+      objectiveId: session.objectiveId,
+      workItemId: session.workItemId,
+      agentId: session.agentId ?? workItem.main_agent_id ?? null
+    };
+    for (const key of ["objectiveId", "workItemId", "agentId"]) {
+      const claimed = typeof claimedScope[key] === "string" ? claimedScope[key].trim() : "";
+      if (claimed && claimed !== derived[key]) {
+        throw memoryExtractionError(
+          "MEMORY_SCOPE_MISMATCH",
+          `${key} does not match the bound Worker Session.`
+        );
+      }
+    }
+    return derived;
   }
 
   // 优先走批量 LLM 分类器（classifyMany），失败/缺失回退单事件规则分类。
@@ -159,4 +215,10 @@ export class MemoryExtractor {
     }
     return events.map((event) => this.classify(event));
   }
+}
+
+function memoryExtractionError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
