@@ -10,6 +10,7 @@ export class CodexProviderRuntime {
   close(...args) { return this.client.close(...args); }
   deleteThread(...args) { return this.client.deleteThread(...args); }
   execResumeThread(...args) { return this.client.execResumeThread(...args); }
+  ensureThreadResumed(...args) { return this.client.ensureThreadResumed(...args); }
   forkThread(...args) { return this.client.forkThread(...args); }
   interruptTurn(...args) { return this.client.interruptTurn(...args); }
   listThreads(...args) { return this.client.listThreads(...args); }

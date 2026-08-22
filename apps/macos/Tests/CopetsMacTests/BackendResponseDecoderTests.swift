@@ -110,6 +110,7 @@ final class BackendResponseDecoderTests: XCTestCase {
                   "accent": "cyan",
                   "capabilities": { "canSend": false, "canInterrupt": false },
                   "actions": {
+                    "prepareExecution": { "available": true },
                     "send": { "available": true },
                     "interrupt": { "available": true },
                     "approve": { "available": false, "reason": "NO_PENDING_APPROVAL" },
@@ -131,6 +132,7 @@ final class BackendResponseDecoderTests: XCTestCase {
                   "accent": "mint",
                   "capabilities": { "canSend": false, "canInterrupt": false },
                   "actions": {
+                    "prepareExecution": { "available": true },
                     "send": { "available": true },
                     "interrupt": { "available": true },
                     "approve": { "available": false, "reason": "NO_PENDING_APPROVAL" },
@@ -148,6 +150,7 @@ final class BackendResponseDecoderTests: XCTestCase {
 
         let sessions = try await BackendResponseDecoder.sessions(from: data)
         XCTAssertEqual(sessions.map(\.canSendNow), [true, true])
+        XCTAssertEqual(sessions.map(\.canPrepareExecutionNow), [true, true])
         XCTAssertEqual(sessions.map(\.canInterruptNow), [true, true])
         XCTAssertEqual(sessions.map(\.canSwitchModelNow), [true, true])
     }

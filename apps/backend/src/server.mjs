@@ -175,6 +175,11 @@ import {
   shouldReportAgentWorkQueued,
   userMessageStatusForAgentWork
 } from "./utils/agentWorkQueue.mjs";
+import {
+  logSessionMessageLatency,
+  normalizeSessionMessageLatencyTrace,
+  sessionMessageLatencyTraceFromHeaders
+} from "./utils/sessionMessageLatency.mjs";
 import { createGitWorkspaceSnapshot, inspectGitWorkspace } from "./utils/gitWorktreeInventory.mjs";
 import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTransitionManager.mjs";
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
@@ -186,6 +191,7 @@ import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.m
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
+import { WorkspaceRoutePreparationCache } from "./runtime/workspaceRoutePreparationCache.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
 import {
   resumeWorkAfterTransition,
@@ -246,6 +252,7 @@ const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
 const choiceGenerations = new Map();
 const store = new CorptieStore();
+const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
 const objectiveService = new ObjectiveApplicationService({
@@ -604,6 +611,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
     resumeSession: resumeCodexProviderSession,
+    prepareExecution: prepareCodexProviderExecution,
     deleteSession: deleteCodexProviderSession,
     restartSession: restartCodexProviderSession,
     renameSession: renameCodexProviderSession,
@@ -1308,6 +1316,7 @@ async function commitManagedCodexWorkspaceRoute(event) {
   const logical = store.getLogicalSession(event.logicalSessionId);
   const legacySessionId = logical?.legacySessionId;
   if (!legacySessionId) return;
+  workspaceRoutePreparationCache.invalidate(logical.logicalSessionId);
   const previous = sessionPresentationCache.get(legacySessionId) ?? store.getSession(legacySessionId);
   if (!previous) return;
   const session = sessionWithLogicalWorkspace({
@@ -2946,6 +2955,7 @@ function codexAppServerSessionCapabilities(overrides = {}) {
     canSwitchReasoning: false,
     canInterrupt: true,
     canReconnect: false,
+    canPrepareExecution: true,
     ...overrides
   };
 }
@@ -3975,8 +3985,74 @@ async function resumeCodexProviderSession(reference, context = {}) {
   return session;
 }
 
+async function prepareCodexProviderExecution(reference, context = {}) {
+  const startedAt = Date.now();
+  const sessionId = reference.sessionId;
+  const before = reference.metadata?.session
+    ?? sessionPresentationCache.get(sessionId)
+    ?? store.getSession(sessionId);
+  if (!before) throw new Error("Session not found.");
+  if (sessionHasActiveRun(before)) {
+    return { prepared: true, alreadyActive: true, durationMs: Date.now() - startedAt };
+  }
+  const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
+  if (workspaceTransitionBlocksWork(logicalRoute)) {
+    const error = new Error("The Session is switching workspaces; execution preparation is deferred.");
+    error.code = "SESSION_BUSY";
+    throw error;
+  }
+  const threadId = logicalRoute?.activeThreadId ?? reference.providerSessionId;
+  const routeStartedAt = Date.now();
+  const routeResolution = logicalRoute
+    ? await resolvePreparedWorkspaceRoute(logicalRoute, threadId)
+    : null;
+  const routeDurationMs = Date.now() - routeStartedAt;
+  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
+    sessionPresentationCache.get(sessionId) ?? before,
+    logicalRoute
+  ));
+  const activeCwd = routeResolution?.route?.cwd
+    ?? logicalRoute?.activeBinding?.boundCwd
+    ?? managed.external?.cwd;
+  const threadOptions = context.toolHost?.providerAttachment
+    ?? await collaborationThreadOptionsForSession(sessionId);
+  const resumeStartedAt = Date.now();
+  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
+    cwd: activeCwd,
+    runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
+    ...threadOptions
+  });
+  const result = {
+    prepared: true,
+    sessionId: reference.logicalSessionId ?? sessionId,
+    providerSessionId: threadId,
+    routeCacheHit: routeResolution?.cacheHit === true,
+    threadAlreadyLoaded: resumeResult?.alreadyLoaded === true,
+    coalesced: resumeResult?.coalesced === true,
+    routeDurationMs,
+    resumeDurationMs: Date.now() - resumeStartedAt,
+    durationMs: Date.now() - startedAt
+  };
+  console.info(`[session-execution-preparation] ${JSON.stringify(result)}`);
+  return result;
+}
+
+function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
+  return workspaceRoutePreparationCache.resolve({
+    store,
+    logicalSession: logicalRoute,
+    providerThreadId: threadId,
+    resolve: () => assertWorkspaceRouteUsable({
+      store,
+      logicalSession: logicalRoute,
+      providerThreadId: threadId
+    })
+  });
+}
+
 async function deleteCodexProviderSession(reference) {
   await codexRuntime.deleteThread(reference.providerSessionId);
+  workspaceRoutePreparationCache.invalidate(reference.logicalSessionId);
   const existed = sessionPresentationCache.delete(reference.sessionId);
   store.deleteSession(reference.sessionId);
   return existed;
@@ -4328,6 +4404,9 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   const before = context.before ?? reference.metadata?.session;
   const options = context.options ?? context;
   const sessionId = reference.sessionId;
+  const latencyTrace = normalizeSessionMessageLatencyTrace(context.latencyTrace ?? {}, {
+    sessionId: reference.logicalSessionId ?? sessionId
+  });
   const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
   if (workspaceTransitionBlocksWork(logicalRoute)) {
     const error = new Error("The Session is switching workspaces; queued work will resume after the route commits.");
@@ -4335,19 +4414,23 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
     throw error;
   }
   const threadId = logicalRoute?.activeThreadId ?? reference.providerSessionId;
-  const activeRoute = logicalRoute
-    ? await assertWorkspaceRouteUsable({
-        store,
-        logicalSession: logicalRoute,
-        providerThreadId: threadId
-      })
+  const routeResolution = logicalRoute
+    ? await resolvePreparedWorkspaceRoute(logicalRoute, threadId)
     : null;
+  const activeRoute = routeResolution?.route ?? null;
+  logSessionMessageLatency(latencyTrace, "workspace_route_resolved", {
+    cacheHit: routeResolution?.cacheHit === true
+  });
   bumpChoiceGeneration(sessionId);
   store.clearActiveChoicePrompt(sessionId);
+  const permissionsStartedAt = Date.now();
   const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
     sessionPresentationCache.get(sessionId) ?? before,
     logicalRoute
   ));
+  logSessionMessageLatency(latencyTrace, "permissions_resolved", {
+    durationMs: Date.now() - permissionsStartedAt
+  });
   const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
   const startingSession = {
     ...managed,
@@ -4364,11 +4447,25 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   upsertManagedCodexSession(startingSession);
   emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
   try {
-    await codexRuntime.resumeThread(threadId, {
+    const toolContextStartedAt = Date.now();
+    logSessionMessageLatency(latencyTrace, "tool_context_started");
+    const threadOptions = await collaborationThreadOptionsForSession(sessionId);
+    logSessionMessageLatency(latencyTrace, "tool_context_completed", {
+      durationMs: Date.now() - toolContextStartedAt
+    });
+    const resumeStartedAt = Date.now();
+    logSessionMessageLatency(latencyTrace, "thread_resume_started");
+    const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
       cwd: activeCwd,
       runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
-      ...await collaborationThreadOptionsForSession(sessionId)
+      ...threadOptions
     });
+    logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
+      durationMs: Date.now() - resumeStartedAt,
+      skipped: resumeResult?.alreadyLoaded === true
+    });
+    const turnStartedAt = Date.now();
+    logSessionMessageLatency(latencyTrace, "turn_start_requested");
     const result = await codexRuntime.startTurn(threadId, value, {
       cwd: activeCwd,
       model: managed?.external?.currentModel ?? options.model ?? undefined,
@@ -4381,6 +4478,10 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
         }
       } : options.additionalContext,
       ...codexTurnPermissionOptions(managed)
+    });
+    logSessionMessageLatency(latencyTrace, "turn_start_accepted", {
+      durationMs: Date.now() - turnStartedAt,
+      turnId: result.turn?.id ?? null
     });
     upsertManagedCodexSession({
       ...startingSession,
@@ -4550,6 +4651,10 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   const routedSessionId = reference.sessionId;
   const publicSessionId = reference.logicalSessionId ?? routedSessionId;
   const before = reference.metadata.session;
+  const latencyTrace = normalizeSessionMessageLatencyTrace(
+    options.latencyTrace ?? source.latencyTrace ?? {},
+    { sessionId: publicSessionId }
+  );
 
   const confirmationReply = collaborationConfirmationReply(value);
   const pendingConfirmation = confirmationReply
@@ -4587,7 +4692,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   }
 
   if (routedSessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
-    return enqueueUserAgentWork(before, value, source);
+    return enqueueUserAgentWork(before, value, source, latencyTrace);
   }
   if (routedSessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
     const error = new Error("Target Session became busy before queued work started.");
@@ -4595,11 +4700,23 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
 
+  logSessionMessageLatency(latencyTrace, "provider_dispatch_started", {
+    providerId: reference.providerId
+  });
   const result = await sessionApplicationService.sendMessage(sessionId, value, {
     before,
+    latencyTrace,
     options,
     source,
     submit: options.submit
+  });
+  logSessionMessageLatency(latencyTrace, "provider_dispatch_completed", {
+    providerId: reference.providerId,
+    turnId: result?.turn?.id ?? null
+  });
+  logSessionMessageLatency(latencyTrace, "session_execution_started", {
+    providerId: reference.providerId,
+    turnId: result?.turn?.id ?? null
   });
 
   if (source.localVisibility !== "status_only") {
@@ -4715,7 +4832,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   }
 }
 
-function enqueueUserAgentWork(session, text, source) {
+function enqueueUserAgentWork(session, text, source, latencyTrace = null) {
   const agent = collaborationCore.getAgentForSession(session.id) ?? ensureCollaborationAgentForSession(session);
   if (!agent) {
     const error = new Error("Session does not have an Agent identity.");
@@ -4724,6 +4841,7 @@ function enqueueUserAgentWork(session, text, source) {
   }
   const activeRun = sessionHasActiveRun(session);
   const hasRunningWorkItem = Boolean(store.getRunningAgentWorkItemForSession(session.id));
+  const persistedSource = latencyTrace ? { ...source, latencyTrace } : source;
   const workItem = store.enqueueAgentWorkItem({
     workItemId: source.messageId || randomUUID(),
     agentId: agent.agentId,
@@ -4731,7 +4849,7 @@ function enqueueUserAgentWork(session, text, source) {
     kind: "user",
     priority: 100,
     text,
-    source,
+    source: persistedSource,
     localVisibility: "normal",
     createdAt: now()
   });
@@ -4742,8 +4860,9 @@ function enqueueUserAgentWork(session, text, source) {
     hasRunningWorkItem,
     queuedWorkItemsAhead: Math.max(0, queuePosition - 1)
   });
-  emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source }, { sessionId: session.id, source });
-  scheduleAgentWorkDrain(session.id);
+  logSessionMessageLatency(latencyTrace, "task_enqueued", { queuePosition });
+  emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source: persistedSource }, { sessionId: session.id, source: persistedSource });
+  scheduleAgentWorkDrain(session.id, latencyTrace);
   return {
     accepted: true,
     queued: reportAsQueued,
@@ -4753,12 +4872,13 @@ function enqueueUserAgentWork(session, text, source) {
   };
 }
 
-function scheduleAgentWorkDrain(sessionId) {
-  setTimeout(() => {
+function scheduleAgentWorkDrain(sessionId, latencyTrace = null) {
+  queueMicrotask(() => {
+    logSessionMessageLatency(latencyTrace, "queue_drain_dispatched");
     drainAgentWork(sessionId).catch((error) => {
       console.error(`[agent-work] session=${sessionId} drain failed: ${error.message}`);
     });
-  }, 0).unref?.();
+  });
 }
 
 async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
@@ -4856,6 +4976,8 @@ async function drainAgentWorkSession(sessionId) {
 
   const next = store.listQueuedAgentWorkItemsForSession(sessionId, 1)[0];
   if (!next) return;
+  const latencyTrace = normalizeSessionMessageLatencyTrace(next.source?.latencyTrace ?? {}, { sessionId });
+  logSessionMessageLatency(latencyTrace, "task_dequeued");
 
   if (boundAgent.agentId !== next.agentId) {
     const failedWork = store.updateAgentWorkItem(next.workItemId, {
@@ -4883,6 +5005,7 @@ async function drainAgentWorkSession(sessionId) {
 
   const claimed = store.claimAgentWorkItem(next.workItemId);
   if (!claimed) return;
+  logSessionMessageLatency(latencyTrace, "task_claimed");
   try {
     let turnId = null;
     if (claimed.kind === "collaboration") {
@@ -4900,7 +5023,8 @@ async function drainAgentWorkSession(sessionId) {
       workspaceContinuationCoordinator.assertWorkTarget(claimed);
       const response = await sendUnifiedSessionMessage(claimed.sessionId, claimed.text, claimed.source, {
         fromAgentWorkQueue: true,
-        agentWorkItem: claimed
+        agentWorkItem: claimed,
+        latencyTrace
       });
       turnId = response.result?.turn?.id ?? null;
     }
@@ -6708,13 +6832,22 @@ function route(request, response) {
   const sessionMessagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
   if (request.method === "POST" && sessionMessagesMatch) {
     const sessionId = decodeURIComponent(sessionMessagesMatch[1]);
+    const latencyTrace = sessionMessageLatencyTraceFromHeaders(request.headers, {
+      traceId: `message:${randomUUID()}`,
+      sessionId,
+      serverReceivedAtMs: Date.now()
+    });
+    logSessionMessageLatency(latencyTrace, "server_request_received");
     readJson(request)
-      .then((input) => sendUnifiedSessionMessage(
-        sessionId,
-        typeof input.content === "string" ? input.content : input.text,
-        input.source && typeof input.source === "object" ? input.source : { type: "desktop" },
-        input
-      ))
+      .then((input) => {
+        logSessionMessageLatency(latencyTrace, "server_request_parsed");
+        return sendUnifiedSessionMessage(
+          sessionId,
+          typeof input.content === "string" ? input.content : input.text,
+          input.source && typeof input.source === "object" ? input.source : { type: "desktop" },
+          { ...input, latencyTrace }
+        );
+      })
       .then((result) => sendJson(response, 202, result))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
@@ -7408,6 +7541,18 @@ function route(request, response) {
         sendJson(response, 200, { ...result, merge });
       })
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null }));
+    return;
+  }
+
+  const sessionExecutionPreparationMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/prepare-execution$/);
+  if (request.method === "POST" && sessionExecutionPreparationMatch) {
+    const rawId = decodeURIComponent(sessionExecutionPreparationMatch[1]);
+    sessionApplicationService.prepareExecution(rawId, { source: "http-session-selection" })
+      .then((preparation) => sendJson(response, 200, { preparation }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
     return;
   }
 

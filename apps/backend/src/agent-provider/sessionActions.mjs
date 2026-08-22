@@ -2,6 +2,7 @@ import { AGENT_PROVIDER_CAPABILITIES, providerSupports } from "./contracts.mjs";
 
 const ACTION_CAPABILITIES = Object.freeze({
   resume: AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  prepareExecution: AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
   delete: AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   restart: AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
   disconnect: AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
@@ -53,6 +54,11 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
       return unavailable(session.sendUnavailableReason ? "PROVIDER_UNAVAILABLE" : "SESSION_NOT_READY", true);
     }
     return available();
+  }
+  if (action === "prepareExecution") {
+    return ["running", "blocked"].includes(session.status)
+      ? unavailable("SESSION_ALREADY_ACTIVE", true)
+      : available();
   }
   if (action === "interrupt") {
     return legacy.canInterrupt === true

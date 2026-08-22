@@ -12,6 +12,7 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
@@ -40,6 +41,10 @@ function fixture(capabilities = [
     resumeSession: async (...args) => {
       calls.push(["resumeSession", ...args]);
       return { id: "legacy-a", title: "Resumed" };
+    },
+    prepareExecution: async (...args) => {
+      calls.push(["prepareExecution", ...args]);
+      return { prepared: true };
     },
     deleteSession: async (...args) => {
       calls.push(["deleteSession", ...args]);
@@ -139,6 +144,18 @@ test("Session application service resolves stable logical ids before Provider ca
     "hello",
     { source: "desktop" }
   ]]);
+});
+
+test("Session application service prepares execution through the Provider-neutral contract", async () => {
+  const { calls, service } = fixture();
+  const preparation = await service.prepareExecution("logical-a", { source: "session-selection" });
+
+  assert.deepEqual(preparation, { prepared: true });
+  assert.equal(calls[0][0], "prepareExecution");
+  assert.equal(calls[0][1].providerId, "fake.provider");
+  assert.equal(calls[0][1].providerSessionId, "native-a");
+  assert.equal(calls[0][2].source, "session-selection");
+  assert.equal(calls[0][2].purpose, "session");
 });
 
 test("Session application service resolves context once and passes it through the common Provider contract", async () => {

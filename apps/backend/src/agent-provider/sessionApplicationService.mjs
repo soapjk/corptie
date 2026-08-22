@@ -123,6 +123,35 @@ export class SessionApplicationService {
     return this.decorateLifecycleSession(reference.providerId, session, reference);
   }
 
+  async prepareExecution(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    this.registry.requireCapability(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE
+    );
+    const storedSession = reference.metadata?.session ?? null;
+    const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
+    const materializationContext = {
+      actorId,
+      purpose: "session",
+      sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
+      objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
+      workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
+      sessionId: reference.sessionId
+    };
+    const toolHost = this.toolHostService && actorId
+      ? await this.toolHostService.prepareSession(reference.providerId, materializationContext)
+      : null;
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
+      reference,
+      toolHost
+        ? { ...context, ...materializationContext, toolHost }
+        : { ...context, ...materializationContext }
+    );
+  }
+
   async deleteSession(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
     const providerResult = await this.registry.invoke(
