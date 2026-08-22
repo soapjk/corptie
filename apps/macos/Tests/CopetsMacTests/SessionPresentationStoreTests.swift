@@ -3,6 +3,39 @@ import XCTest
 
 @MainActor
 final class SessionPresentationStoreTests: XCTestCase {
+    func testCachedTimelineWinsOverTransportLoadingForTheFirstFrame() {
+        XCTAssertEqual(
+            sessionDetailContentPhase(
+                hasLiveDetail: false,
+                cachedSessionID: "session-a",
+                selectedSessionID: "session-a",
+                isLoading: true,
+                hasError: false
+            ),
+            .cached
+        )
+        XCTAssertEqual(
+            sessionDetailContentPhase(
+                hasLiveDetail: true,
+                cachedSessionID: "session-a",
+                selectedSessionID: "session-a",
+                isLoading: true,
+                hasError: false
+            ),
+            .live
+        )
+    }
+
+    func testDefaultProjectionCacheRetainsNormalSessionBrowsingSet() {
+        let store = SessionPresentationStore()
+        for index in 0..<32 {
+            store.store(cache(sessionID: "session-\(index)"))
+        }
+
+        XCTAssertNotNil(store.cache(for: "session-0"))
+        XCTAssertNotNil(store.cache(for: "session-31"))
+    }
+
     func testProjectionCanRunOffMainActorAndStorePublishesOnlyMeaningfulChanges() async {
         let fixture = ChatPerformanceFixture.make(configuration: .init(
             turnCount: 12,

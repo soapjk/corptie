@@ -147,6 +147,7 @@ test("OpenClacky live completion updates the canonical Session summary before no
   assert.equal(manager.list()[0].status, "complete");
   assert.equal(manager.list()[0].summary, "Finished the work.");
   assert.equal(changes.at(-1).session.status, "complete");
+  assert.equal(changes.at(-1).hasAgentMessage, true);
 });
 
 test("OpenClacky history preserves explicit turn ids across following events", () => {

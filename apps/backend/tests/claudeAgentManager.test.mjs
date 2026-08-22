@@ -484,11 +484,13 @@ test("Claude reports a normalized turn-settled event to product orchestration", 
   session.status = "running";
   session.turnState = "running";
 
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "text", text: "Done." }]));
   manager.handleSdkMessage(session, { type: "result", subtype: "success", result: "Done." });
 
   assert.deepEqual(await settled, {
     providerSessionId: "claude-settled",
     session: manager.toSessionSummary(session),
+    hasAgentMessage: true,
     turnId: "claude-settled:turn:1",
     status: "completed",
     error: null

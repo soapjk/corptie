@@ -720,7 +720,8 @@ struct SessionCountBadge: View {
 }
 
 func isSessionUnread(_ session: TaskSession) -> Bool {
-    (session.lastAgentMessageSequence ?? 0) > (session.lastReadMessageSequence ?? 0)
+    session.status == .complete
+        && (session.lastAgentMessageSequence ?? 0) > (session.lastReadMessageSequence ?? 0)
 }
 
 func countUnreadSessions(

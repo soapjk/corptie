@@ -37,6 +37,30 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func agentMessageCursorAdvanceRefreshesOnlyBackgroundSessionDetails() {
+        let previous = [
+            makeSession(id: "selected", lastAgentMessageSequence: 3),
+            makeSession(id: "completed", lastAgentMessageSequence: 4),
+            makeSession(id: "status-only", lastAgentMessageSequence: 2)
+        ]
+        let current = [
+            makeSession(id: "selected", lastAgentMessageSequence: 5),
+            makeSession(id: "completed", lastAgentMessageSequence: 5),
+            makeSession(id: "status-only", lastAgentMessageSequence: 2),
+            makeSession(id: "new-with-message", lastAgentMessageSequence: 1),
+            makeSession(id: "new-without-message")
+        ]
+
+        let refreshes = SessionDetailPreloadPolicy.sessionsWithAdvancedAgentMessages(
+            previous: previous,
+            current: current,
+            excluding: "selected"
+        )
+
+        #expect(refreshes.map(\.id) == ["completed", "new-with-message"])
+    }
+
+    @Test
     func contentUpdatePreservesStableRowAndDoesNotPublishStructure() {
         let original = makeSession(id: "one", summary: "Before")
         let updated = makeSession(id: "one", summary: "After")
@@ -371,7 +395,7 @@ struct SessionCollectionPatchTests {
             lastReadMessageSequence: 8
         )))
         #expect(!isSessionUnread(makeSession(id: "user-or-tool-only")))
-        #expect(isSessionUnread(makeSession(
+        #expect(!isSessionUnread(makeSession(
             id: "running-with-agent-message",
             status: .running,
             lastAgentMessageSequence: 2,

@@ -3,6 +3,16 @@ import XCTest
 
 @MainActor
 final class SessionTimelineRepositoryTests: XCTestCase {
+    func testDefaultTimelineCacheRetainsNormalSessionBrowsingSet() {
+        let repository = SessionTimelineRepository()
+        for index in 0..<32 {
+            repository.publish(detail(id: "provider-\(index)"), for: "session-\(index)")
+        }
+
+        XCTAssertEqual(repository.detail(for: "session-0")?.id, "provider-0")
+        XCTAssertEqual(repository.detail(for: "session-31")?.id, "provider-31")
+    }
+
     func testSessionStatesAreStableAndReceiveOnlyTheirOwnTimeline() {
         let repository = SessionTimelineRepository()
         let stateA = repository.state(for: "a")

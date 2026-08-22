@@ -3672,6 +3672,32 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  // Provider history snapshots are a materialized read model, not new chat
+  // activity. Persist them without mirroring assistant/user events; mirroring
+  // would advance unread cursors every time an old transcript is refreshed.
+  upsertItemSnapshot(sessionId, item) {
+    const createdAt = createdAtFromOrNow(item);
+    this.db.run(
+      `INSERT OR REPLACE INTO session_items (
+        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        item.id,
+        sessionId,
+        item.turnId || sessionId,
+        item.turnStatus || "completed",
+        item.type || "terminalOutput",
+        item.title || "Agent",
+        item.text || "",
+        Array.isArray(item.options) ? JSON.stringify(item.options) : null,
+        typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null,
+        item.status || null,
+        createdAt
+      ]
+    );
+    this.scheduleSave();
+  }
+
   removeItem(sessionId, itemId) {
     this.db.run("DELETE FROM session_items WHERE session_id = ? AND id = ?", [sessionId, itemId]);
     this.scheduleSave();
@@ -3916,9 +3942,10 @@ export class CorptieStore {
   }
 
   getItems(sessionId, limit = 240, provider = "") {
+    const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
     const rows = this.selectAll(
-      `SELECT * FROM session_items WHERE session_id = ? ORDER BY created_at ASC LIMIT ?`,
-      [sessionId, limit]
+      `SELECT * FROM session_items WHERE session_id = ? ORDER BY created_at ASC${hasLimit ? " LIMIT ?" : ""}`,
+      hasLimit ? [sessionId, Math.floor(Number(limit))] : [sessionId]
     );
     const items = rows
       .map((row) => ({
@@ -3938,6 +3965,32 @@ export class CorptieStore {
       .map((item) => normalizeStoredItem(item, provider))
       .filter((item, index, items) => !isAdjacentDuplicateUserMessage(item, items[index - 1]));
     return items;
+  }
+
+  listStoredTimelineEvents(sessionId) {
+    return this.selectAll(
+      `SELECT * FROM session_events
+       WHERE session_id = ?
+         AND type IN (
+           'user/message', 'assistant/message', 'SessionUserMessageCreated',
+           'CodexThreadCompleted', 'TaskCompleted', 'AgentTurnCompleted'
+         )
+       ORDER BY sequence ASC`,
+      [sessionId]
+    ).map((row) => ({
+      eventId: row.event_id,
+      sessionId: row.session_id,
+      logId: row.log_id,
+      sequence: Number(row.sequence),
+      type: row.type,
+      producer: row.producer,
+      surface: Number(row.surface) === 1,
+      sourceEventSeqs: parseJson(row.source_event_seqs_json, null),
+      callId: row.call_id,
+      source: parseJson(row.source_json, null),
+      payload: parseJson(row.payload_json, {}),
+      createdAt: row.created_at
+    }));
   }
 
   getDetail(id) {
@@ -3965,7 +4018,7 @@ export class CorptieStore {
           ? "This Claude Code session is no longer connected. Start a new Claude session to continue."
         : "This session is not currently attached to a running process.",
       turnCount: 1,
-      items: canonicalCodexItems(id, session) ?? this.getItems(id, 240, session.external?.provider)
+      items: this.getItems(id, null, session.external?.provider)
     };
   }
 
@@ -6912,12 +6965,9 @@ function surfaceForEventType(type) {
 function agentMessageEventSQL(tableAlias) {
   return `(
     (${tableAlias}.type = 'CodexThreadCompleted'
-      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 1) = 1)
-    OR (
-      ${tableAlias}.type = 'assistant/message'
-      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.itemType'), 'agentMessage')
-        IN ('agentMessage', 'text', 'taskComplete')
-    )
+      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1)
+    OR (${tableAlias}.type = 'AgentTurnCompleted'
+      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1)
   )`;
 }
 

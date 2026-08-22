@@ -108,6 +108,7 @@ import {
 } from "./dsh-adapter/dshWebSocket.mjs";
 import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
+import { persistableSessionItems, storedSessionDetail } from "./application/storedSessionDetail.mjs";
 import {
   buildHistoricalSessionContext,
   composeLogicalSessionTimeline
@@ -200,6 +201,7 @@ import {
   SessionTimelineRefreshScheduler
 } from "./utils/sessionTimelineRefreshPolicy.mjs";
 import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
+import { SingleFlight } from "./utils/singleFlight.mjs";
 import { StateSyncService } from "./application/stateSyncService.mjs";
 import {
   MAX_SESSION_HISTORY_PAGE,
@@ -216,6 +218,11 @@ const execFileAsync = promisify(execFile);
 const sessions = new Map();
 const sessionPresentationCache = new Map();
 const historicalSessionBindingDetailCache = new Map();
+// HTTP prefetch, the selected Session's SSE subscription, and the HTTP
+// recovery timer can converge on the same Provider snapshot. Share that
+// in-flight read so a row click never asks the Provider to reconstruct the
+// same logical timeline two or three times concurrently.
+const unifiedSessionSnapshotLoads = new SingleFlight();
 const eventLog = [];
 const sseClients = new Set();
 // Each state-stream client owns its own delivered revision. A shared cursor
@@ -432,6 +439,7 @@ const openClackyManager = new OpenClackyManager({
     toolHostBridge: store.settings().openclackyBridge?.toolHostBridge !== false,
     workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
   },
+  onDetailChanged: (detail) => persistSessionDetailSnapshot(detail?.id, detail),
   resolveSessionBootstrap: async (input) => {
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
@@ -501,6 +509,18 @@ const openClackyManager = new OpenClackyManager({
           eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:assistant-message` : null
         });
       }
+    }
+    if (sessionId && providerEventType === "task_finished") {
+      const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
+      emitEvent("AgentTurnCompleted", {
+        session: change.session ?? store.getSession(sessionId),
+        turn: { id: providerEvent?.turn_id ?? null },
+        hasAgentMessage: change.hasAgentMessage === true
+      }, {
+        sessionId,
+        source: { type: "openclacky" },
+        eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:turn-completed` : null
+      });
     }
     emitEvent("ProviderSessionChanged", {
       provider: "openclacky",
@@ -3948,10 +3968,17 @@ async function renameCodexProviderSession(reference, title) {
 }
 
 async function getUnifiedSessionSnapshot(sessionId) {
+  return unifiedSessionSnapshotLoads.run(
+    sessionId,
+    () => readUnifiedSessionSnapshot(sessionId)
+  );
+}
+
+async function readUnifiedSessionSnapshot(sessionId) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
 
-  const detail = await sessionApplicationService.readSession(sessionId);
+  const detail = await readSessionDetailWithStoredFallback(reference);
   const publicSessionId = reference.logicalSessionId ?? reference.sessionId;
 
   const timelineItems = await logicalSessionTimelineItems(reference, detail);
@@ -3984,7 +4011,7 @@ async function getUnifiedSessionSnapshot(sessionId) {
 // 传输开销远小于首屏，故可接受。切片逻辑 provider-neutral，不触碰 provider 边界。
 async function readSessionHistory(sessionId, beforeId, limit) {
   const reference = requireSessionReference(sessionId);
-  const detail = await sessionApplicationService.readSession(sessionId);
+  const detail = await readSessionDetailWithStoredFallback(reference);
   const timelineItems = await logicalSessionTimelineItems(reference, detail);
   const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
   const page = pageSessionItems(allItems, { beforeId, limit });
@@ -3993,6 +4020,31 @@ async function readSessionHistory(sessionId, beforeId, limit) {
     logicalSessionId: reference.logicalSessionId,
     ...page
   };
+}
+
+async function readSessionDetailWithStoredFallback(reference) {
+  try {
+    const detail = await sessionApplicationService.readSession(reference.sessionId);
+    persistSessionDetailSnapshot(reference.sessionId, detail);
+    return detail;
+  } catch (error) {
+    if (reference.metadata?.historical) throw error;
+    const summary = reference.metadata?.session ?? store.getSession(reference.sessionId);
+    if (!summary) throw error;
+    console.warn(`[session-history] Provider unavailable; using stored detail session=${reference.sessionId} error=${error.message}`);
+    return storedSessionDetail({
+      summary,
+      storedDetail: store.getDetail(reference.sessionId),
+      eventItems: storedTimelineItemsForSession(reference.sessionId)
+    });
+  }
+}
+
+function persistSessionDetailSnapshot(sessionId, detail) {
+  if (!sessionId) return;
+  for (const item of persistableSessionItems(detail)) {
+    store.upsertItemSnapshot(sessionId, item);
+  }
 }
 
 async function logicalSessionTimelineItems(reference, activeDetail) {
@@ -4068,6 +4120,9 @@ async function readCodexProviderSession(reference) {
 }
 
 function storedTimelineItemsForSession(sessionId) {
+  if (typeof store.listStoredTimelineEvents === "function") {
+    return projectStoredSessionTimeline(store.listStoredTimelineEvents(sessionId));
+  }
   const events = [];
   let after = 0;
   while (true) {
@@ -5251,6 +5306,17 @@ async function handleClaudeTurnSettled(event) {
   const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
   if (!logical) return;
   const sessionId = logical.legacySessionId;
+  if (event.status === "completed") {
+    emitEvent("AgentTurnCompleted", {
+      session: event.session ?? store.getSession(sessionId),
+      turn: { id: event.turnId ?? null },
+      hasAgentMessage: event.hasAgentMessage === true
+    }, {
+      sessionId,
+      source: { type: "claude-sdk" },
+      eventId: event.turnId ? `claude-sdk:${sessionId}:${event.turnId}:turn-completed` : null
+    });
+  }
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   if (runningWork) {
     const updatedWork = store.updateAgentWorkItem(runningWork.workItemId, {
