@@ -444,6 +444,17 @@
 "Resolve the current Integration Run conflicts before starting another one" = "请先处理当前集成批次的冲突，再开始新一轮集成";
 "Integrate all completed Worktrees?" = "集成所有已完成的 Worktree？";
 "Start Serial Integration" = "开始串行集成";
+"Worktree integration is already running." = "Worktree 一键集成正在执行，请等待当前操作完成。";
+"Select a Session before starting Worktree integration." = "请先选择一个 Session，再启动 Worktree 一键集成。";
+"The selected Session is not attached to a repository workspace." = "当前 Session 未关联仓库工作区，无法启动 Worktree 一键集成。";
+"The selected Session is not attached to an Objective." = "当前 Session 未关联 Objective，无法启动 Worktree 一键集成。";
+"Integrated %d Worktrees; %d have conflicts; %d failed" = "已集成 %d 个 Worktree；%d 个存在冲突；%d 个失败";
+"Integration finished with %d failed Worktrees. Review the failure details below." = "集成已结束，但有 %d 个 Worktree 失败。请查看下方失败详情。";
+"No completed Worktrees are eligible for integration. Complete the WorkItem, stop its active Session, and commit its local changes before trying again." = "当前没有符合条件的已完成 Worktree。请先完成 WorkItem、停止仍在运行的 Session，并提交本地修改后重试。";
+"Click to see why no Worktrees can be integrated" = "点击查看当前没有可集成 Worktree 的原因";
+"Click to review the blocking integration conflict" = "点击查看阻止本次集成的冲突";
+"Worktree integration failures" = "Worktree 集成失败详情";
+"The Worktree could not be integrated. Refresh and try again." = "该 Worktree 无法完成集成，请刷新后重试。";
 "Corptie will merge these completed Worktrees into main one at a time. Conflicts will be recorded and the remaining Worktrees will continue. No remote push is performed.\n\n%@" = "Corptie 将逐个把以下已完成的 Worktree 合并到主分支。发生冲突时会记录冲突并继续处理剩余 Worktree。不会推送到远程。\n\n%@";
 "Untitled WorkItem" = "未命名 WorkItem";
 "Completed Worktree Integration" = "已完成 Worktree 集成";

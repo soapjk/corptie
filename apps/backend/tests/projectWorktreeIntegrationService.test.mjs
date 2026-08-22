@@ -181,6 +181,68 @@ test("one-click integration serially merges clean Worktrees and records conflict
   );
 });
 
+test("one-click integration completes every eligible Worktree and updates the final main head", async () => {
+  const { store, state, inspection } = fixture();
+  const attempts = [];
+  const service = new ProjectWorktreeIntegrationService({
+    store,
+    inspectProject: async () => inspection(),
+    mergeWorktree: async ({ worktreeId }) => {
+      attempts.push(worktreeId);
+      state.mainHeadOid = `main:${attempts.length + 1}`;
+      state.worktrees.find((item) => item.worktreeId === worktreeId).mergedIntoMain = true;
+      return { mainHead: state.mainHeadOid };
+    },
+    createConflictWorkspace: async () => ({}),
+    createAndLaunchConflictWorkItem: async () => ({})
+  });
+
+  const result = await service.integrateCompleted("repository:1", "objective:1");
+
+  assert.deepEqual(attempts, ["wt:1", "wt:2"]);
+  assert.equal(result.latestRun.status, "integrated");
+  assert.equal(result.latestRun.mainHeadAfter, "main:3");
+  assert.deepEqual(result.latestRun.counts, {
+    total: 2, integrated: 2, conflicts: 0, failed: 0, pending: 0
+  });
+  assert.deepEqual(result.eligibleWorktrees, []);
+});
+
+test("one-click integration rejects a concurrent duplicate while the first run continues", async () => {
+  const { store, state, inspection } = fixture();
+  let releaseFirstMerge;
+  const firstMergeStarted = new Promise((resolve) => { releaseFirstMerge = resolve; });
+  let unblockFirstMerge;
+  const firstMergeBlocked = new Promise((resolve) => { unblockFirstMerge = resolve; });
+  const service = new ProjectWorktreeIntegrationService({
+    store,
+    inspectProject: async () => inspection(),
+    mergeWorktree: async ({ worktreeId }) => {
+      if (worktreeId === "wt:1") {
+        releaseFirstMerge();
+        await firstMergeBlocked;
+      }
+      state.worktrees.find((item) => item.worktreeId === worktreeId).mergedIntoMain = true;
+      state.mainHeadOid = worktreeId === "wt:1" ? "main:2" : "main:3";
+      return { mainHead: state.mainHeadOid };
+    },
+    createConflictWorkspace: async () => ({}),
+    createAndLaunchConflictWorkItem: async () => ({})
+  });
+
+  const first = service.integrateCompleted("repository:1", "objective:1");
+  await firstMergeStarted;
+  await assert.rejects(
+    () => service.integrateCompleted("repository:1", "objective:1"),
+    (error) => error?.code === "INTEGRATION_ALREADY_RUNNING" && error?.statusCode === 409
+  );
+  unblockFirstMerge();
+
+  const result = await first;
+  assert.equal(result.latestRun.status, "integrated");
+  assert.equal(result.latestRun.counts.integrated, 2);
+});
+
 test("conflict parser and counters keep Git conflicts separate from other failures", () => {
   assert.deepEqual(conflictFilesFromError(new Error(
     "CONFLICT (content): Merge conflict in a.mjs\nCONFLICT (add/add): Merge conflict in b.swift"
