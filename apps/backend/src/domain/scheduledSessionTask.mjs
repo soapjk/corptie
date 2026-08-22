@@ -1,11 +1,11 @@
-const SCHEDULE_TYPES = new Set(["once", "interval", "process"]);
+const SCHEDULE_TYPES = new Set(["once", "interval", "condition", "process"]);
 const MISSED_POLICIES = new Set(["coalesce_once", "skip"]);
 
 export function validateScheduledSessionTaskInput(input = {}, options = {}) {
   const now = options.now instanceof Date ? options.now : new Date(options.now ?? Date.now());
   const logicalSessionId = requiredText(input.logicalSessionId, "logicalSessionId");
   const scheduleType = requiredText(input.scheduleType, "scheduleType");
-  if (!SCHEDULE_TYPES.has(scheduleType)) invalid("scheduleType", "must be once, interval, or process");
+  if (!SCHEDULE_TYPES.has(scheduleType)) invalid("scheduleType", "must be once, interval, or condition");
   const message = normalizeMessage(input.message);
   const timezone = normalizeTimezone(input.timezone ?? "UTC");
   const missedPolicy = input.missedPolicy ?? "coalesce_once";
@@ -15,6 +15,7 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
   let runAt = null;
   let nextRunAt = null;
   let intervalSeconds = null;
+  let conditionSpec = null;
   let processSpec = null;
   if (scheduleType === "once") {
     runAt = timestamp(input.runAt, "runAt");
@@ -25,6 +26,10 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
       ? new Date(now.getTime() + intervalSeconds * 1000).toISOString()
       : timestamp(input.runAt, "runAt");
     nextRunAt = runAt;
+  } else if (scheduleType === "condition") {
+    conditionSpec = normalizeConditionSpec(input.condition);
+    nextRunAt = input.runAt == null ? now.toISOString() : timestamp(input.runAt, "runAt");
+    runAt = nextRunAt;
   } else {
     processSpec = normalizeProcessSpec(input.process);
     nextRunAt = input.runAt == null ? now.toISOString() : timestamp(input.runAt, "runAt");
@@ -40,19 +45,16 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
     intervalSeconds,
     timezone,
     missedPolicy,
+    conditionSpec,
+    conditionState: scheduleType === "condition" ? emptyMonitorState() : null,
     processSpec,
-    processState: scheduleType === "process" ? {
-      firstObservedAt: null,
-      lastObservedAt: null,
-      lastObservation: null,
-      terminalObservedAt: null
-    } : null,
+    processState: scheduleType === "process" ? emptyMonitorState() : null,
     maxRetries
   });
 }
 
 export function validateScheduledSessionTaskPatch(input = {}, task, options = {}) {
-  const mutable = ["message", "runAt", "intervalSeconds", "timezone", "missedPolicy", "process", "maxRetries"];
+  const mutable = ["message", "runAt", "intervalSeconds", "timezone", "missedPolicy", "condition", "process", "maxRetries"];
   const unknown = Object.keys(input).filter((key) => !mutable.includes(key) && key !== "resourceVersion");
   if (unknown.length > 0) invalid(unknown[0], "is not mutable");
   const candidate = {
@@ -63,10 +65,43 @@ export function validateScheduledSessionTaskPatch(input = {}, task, options = {}
     intervalSeconds: Object.hasOwn(input, "intervalSeconds") ? input.intervalSeconds : task.intervalSeconds,
     timezone: Object.hasOwn(input, "timezone") ? input.timezone : task.timezone,
     missedPolicy: Object.hasOwn(input, "missedPolicy") ? input.missedPolicy : task.missedPolicy,
+    condition: Object.hasOwn(input, "condition") ? input.condition : task.conditionSpec,
     process: Object.hasOwn(input, "process") ? input.process : task.processSpec,
     maxRetries: Object.hasOwn(input, "maxRetries") ? input.maxRetries : task.maxRetries
   };
   return validateScheduledSessionTaskInput(candidate, options);
+}
+
+function emptyMonitorState() {
+  return {
+    firstObservedAt: null,
+    lastObservedAt: null,
+    lastObservation: null,
+    terminalObservedAt: null
+  };
+}
+
+function normalizeConditionSpec(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    invalid("condition", "is required for condition schedules");
+  }
+  const allowed = new Set(["script", "checkIntervalSeconds", "timeoutSeconds", "workingDirectory"]);
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) invalid(`condition.${unknown[0]}`, "is not supported");
+  const script = requiredText(value.script, "condition.script");
+  if (script.length > 100_000) invalid("condition.script", "must not exceed 100000 characters");
+  const workingDirectory = value.workingDirectory == null
+    ? null
+    : requiredText(value.workingDirectory, "condition.workingDirectory");
+  if (workingDirectory != null && !workingDirectory.startsWith("/")) {
+    invalid("condition.workingDirectory", "must be an absolute path");
+  }
+  return {
+    script,
+    checkIntervalSeconds: integer(value.checkIntervalSeconds ?? 5, "condition.checkIntervalSeconds", 1, 86_400),
+    timeoutSeconds: integer(value.timeoutSeconds ?? 30, "condition.timeoutSeconds", 1, 300),
+    workingDirectory
+  };
 }
 
 export function nextIntervalRun(scheduledFor, intervalSeconds, now = new Date()) {

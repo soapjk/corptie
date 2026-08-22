@@ -100,7 +100,7 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
     service.start();
 
     const runAt = new Date(Date.now() + 80).toISOString();
-    const response = await fetch(`http://127.0.0.1:${server.address().port}/scheduled-session-tasks`, {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/scheduled-tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

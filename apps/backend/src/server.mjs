@@ -405,7 +405,7 @@ const hostToolCatalog = new HostToolCatalog([
     execute: (input) => callSkillDynamicTool(skillRegistryService, input)
   },
   {
-    id: "scheduled-session-tasks",
+    id: "scheduled-tasks",
     tools: scheduledSessionTaskDynamicTools,
     authorize: ({ actorId, metadata }) => Boolean(actorId && metadata?.sessionId),
     execute: (input) => callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input)
@@ -2683,7 +2683,7 @@ function requireAgentLogicalSession(agentId) {
 
 function authorizeScheduledSessionTask({ actor, logicalSessionId, environment }) {
   if (environment !== environmentName) {
-    const error = new Error("Scheduled Session task belongs to another Corptie environment.");
+    const error = new Error("计划任务 belongs to another Corptie environment.");
     error.code = "ENVIRONMENT_MISMATCH";
     throw error;
   }
@@ -2767,7 +2767,7 @@ function scheduledSessionHttpActor(request) {
   if (["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(address)) {
     return { type: "user", id: "user:local-macos" };
   }
-  const error = new Error("Scheduled Session task API requires an authenticated local client or Agent identity.");
+  const error = new Error("计划任务 API requires an authenticated local client or Agent identity.");
   error.code = "ACTOR_REQUIRED";
   throw error;
 }
