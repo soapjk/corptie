@@ -95,6 +95,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     observeWorkItemPerformance: services.observeWorkItemPerformance,
+    observeFormAssistPerformance: services.observeFormAssistPerformance,
     auditLog: services.auditLog,
     onEntityChanged: services.onEntityChanged
   });
@@ -265,6 +266,7 @@ test("POST /assist/form-draft generates every field without creating an entity",
   const services = await createServices();
   try {
     const calls = [];
+    const performanceMeasurements = [];
     const result = await callApi({
       method: "POST",
       pathname: "/assist/form-draft",
@@ -278,6 +280,10 @@ test("POST /assist/form-draft generates every field without creating an entity",
           calls.push(input);
           return {
             providerId: "fake-provider",
+            performance: {
+              phases: { agentContextMs: 2.5, providerInvokeMs: 7.5 },
+              totalMs: 10
+            },
             text: JSON.stringify({
               title: "统一帮我写",
               description: "一次生成并回填全部字段。",
@@ -287,6 +293,7 @@ test("POST /assist/form-draft generates every field without creating an entity",
           };
         }
       },
+      observeFormAssistPerformance: (measurement) => performanceMeasurements.push(measurement),
       ...services
     });
 
@@ -296,7 +303,16 @@ test("POST /assist/form-draft generates every field without creating an entity",
     assert.equal(result.body.providerId, "fake-provider");
     assert.equal(calls[0].purpose, "assist-form-draft");
     assert.equal(calls[0].permissionProfile, "read-only");
+    assert.equal(calls[0].preferredReasoning, "low");
     assert.equal(services.store.listWorkItems().length, 0);
+    assert.equal(performanceMeasurements.length, 1);
+    assert.equal(performanceMeasurements[0].operation, "assist.form-draft");
+    assert.equal(performanceMeasurements[0].formType, "workItem");
+    assert.equal(performanceMeasurements[0].outcome, "succeeded");
+    assert.equal(performanceMeasurements[0].phases.agentContextMs, 2.5);
+    assert.equal(performanceMeasurements[0].phases.providerInvokeMs, 7.5);
+    assert.ok(performanceMeasurements[0].phases.responseParseMs >= 0);
+    assert.ok(performanceMeasurements[0].totalMs >= 0);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

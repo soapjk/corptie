@@ -129,3 +129,38 @@ test("falls back to background default without consulting Agent Provider metadat
 
   assert.equal(result.providerId, "codex-app-server");
 });
+
+test("reports context, Provider, and total duration without exposing the transcript", async () => {
+  const calls = [];
+  const events = [];
+  const registry = new AgentProviderRegistry([
+    provider("codex-app-server", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], calls)
+  ]);
+  const service = new BackgroundAgentService({
+    registry,
+    defaultProviderId: "codex-app-server",
+    resolveAgentContext: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { instructions: "context" };
+    },
+    onOperationEvent: (type, payload) => events.push({ type, payload })
+  });
+
+  const result = await service.run({
+    purpose: "assist-form-draft",
+    cwd: "/tmp",
+    prompt: "Generate fields",
+    agentId: "agent:1"
+  });
+
+  assert.deepEqual(events.map((event) => event.type), ["BackgroundAgentStarted", "BackgroundAgentCompleted"]);
+  const completed = events[1].payload;
+  assert.ok(completed.phases.agentContextMs >= 0);
+  assert.ok(completed.phases.providerInvokeMs >= 0);
+  assert.ok(completed.totalMs >= completed.phases.agentContextMs);
+  assert.deepEqual(result.performance, {
+    phases: completed.phases,
+    totalMs: completed.totalMs
+  });
+  assert.equal(Object.hasOwn(completed, "text"), false);
+});

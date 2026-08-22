@@ -35,6 +35,7 @@ export function handleEntityHttpRequest({
   suggestAgentSessionTitle,
   onEntityChanged,
   observeWorkItemPerformance = () => {},
+  observeFormAssistPerformance = () => {},
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
@@ -88,6 +89,7 @@ export function handleEntityHttpRequest({
   if (!isEntityApi) return false;
 
   let activeWorkItemTiming = null;
+  let activeFormAssistTiming = null;
   const beginWorkItemTiming = (operation, workItemId = null) => {
     activeWorkItemTiming = {
       operation,
@@ -114,6 +116,24 @@ export function handleEntityHttpRequest({
       });
     } catch {
       // Observability must never change creation or execution semantics.
+    }
+  };
+  const finishFormAssistTiming = (outcome, error = null) => {
+    if (!activeFormAssistTiming) return;
+    const timing = activeFormAssistTiming;
+    activeFormAssistTiming = null;
+    try {
+      observeFormAssistPerformance({
+        operation: "assist.form-draft",
+        formType: timing.formType,
+        agentId: timing.agentId,
+        outcome,
+        ...(error ? { errorCode: error.code ?? "INTERNAL" } : {}),
+        phases: timing.phases,
+        totalMs: roundedMilliseconds(performance.now() - timing.startedAt)
+      });
+    } catch {
+      // Observability must never change form generation semantics.
     }
   };
 
@@ -167,7 +187,15 @@ export function handleEntityHttpRequest({
         if (!backgroundAgentService) {
           throw apiError("INTERNAL", "backgroundAgentService is not configured.", 500);
         }
+        activeFormAssistTiming = {
+          startedAt: performance.now(),
+          formType: null,
+          agentId: null,
+          phases: {}
+        };
+        let phaseStartedAt = performance.now();
         const input = await readJson(request);
+        activeFormAssistTiming.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         const formType = String(input.formType ?? "").trim();
         const intent = String(input.prompt ?? "").trim();
         const schema = FORM_DRAFT_SCHEMAS[formType];
@@ -181,6 +209,9 @@ export function handleEntityHttpRequest({
         const agentId = typeof input.agentId === "string" && input.agentId.trim()
           ? input.agentId.trim()
           : null;
+        activeFormAssistTiming.formType = formType;
+        activeFormAssistTiming.agentId = agentId;
+        phaseStartedAt = performance.now();
         const result = await backgroundAgentService.run({
           purpose: "assist-form-draft",
           cwd,
@@ -188,11 +219,21 @@ export function handleEntityHttpRequest({
           permissionProfile: "read-only",
           agentId,
           intent: `${formType}: ${intent}`,
+          // 创建表单是受严格 JSON 契约约束的单轮生成，不需要开发任务级深度推理。
+          // 显式使用 low 可避免继承 Provider 的较高默认推理强度。
+          preferredReasoning: "low",
           developerInstructions: formDraftInstructions(formType, schema),
           prompt: formDraftPrompt(formType, intent, currentValues, schema),
           timeoutMs: input.timeoutMs ?? 120_000
         });
+        activeFormAssistTiming.phases.backgroundAgentMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        if (result.performance?.phases) {
+          Object.assign(activeFormAssistTiming.phases, result.performance.phases);
+        }
+        phaseStartedAt = performance.now();
         const fields = parseGeneratedFormDraft(result.text, schema);
+        activeFormAssistTiming.phases.responseParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        finishFormAssistTiming("succeeded");
         return sendJson(response, 200, { formType, fields, providerId: result.providerId });
       }
 
@@ -851,6 +892,7 @@ export function handleEntityHttpRequest({
     })
     .catch((error) => {
       finishWorkItemTiming("failed", error);
+      finishFormAssistTiming("failed", error);
       const code = error.code ?? "INTERNAL";
       sendJson(response, error.statusCode ?? statusForCode(code), {
         error: error.code ? error.message : "Entity operation failed.",

@@ -768,7 +768,12 @@ const backgroundAgentService = new BackgroundAgentService({
   defaultProviderId: "codex-app-server",
   resolveProviderId: (provider) => resolveSessionProviderId(provider),
   resolveAgentContext: (agentId, { intent } = {}) => agentContextService.buildAgentContext(agentId, { intent }),
-  onOperationEvent: (type, payload) => emitEvent(type, payload)
+  onOperationEvent: (type, payload) => {
+    emitEvent(type, payload);
+    if (type === "BackgroundAgentCompleted" || type === "BackgroundAgentFailed") {
+      console.info(`[background-agent-performance] ${JSON.stringify({ type, ...payload })}`);
+    }
+  }
 });
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
   backgroundAgent: backgroundAgentService
@@ -6294,6 +6299,9 @@ function route(request, response) {
     ),
     observeWorkItemPerformance: (measurement) => {
       console.info(`[work-item-performance] ${JSON.stringify(measurement)}`);
+    },
+    observeFormAssistPerformance: (measurement) => {
+      console.info(`[form-assist-performance] ${JSON.stringify(measurement)}`);
     },
     onEntityChanged: (type, payload) => emitEvent(type, payload)
   })) {

@@ -1,4 +1,5 @@
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
+import { performance } from "node:perf_hooks";
 
 export class BackgroundAgentUnavailableError extends Error {
   constructor() {
@@ -23,12 +24,14 @@ export class BackgroundAgentService {
   }
 
   async run(input = {}) {
+    const operationStartedAt = performance.now();
     const permissionProfile = input.permissionProfile ?? "read-only";
     // 指定 Agent 只解析资源上下文（systemPrompt + description + per-agent 记忆）。
     // Runtime routing comes exclusively from the invoking Session/request or the background default.
     const agentContext = input.agentId && typeof this.resolveAgentContext === "function"
       ? await this.resolveAgentContext(input.agentId, { intent: input.intent ?? "" })
       : null;
+    const agentContextMs = roundedMilliseconds(performance.now() - operationStartedAt);
     const preferredProviderId = input.preferredProviderId ?? null;
 
     const resolvedProviderId = this.resolveProviderId
@@ -55,21 +58,47 @@ export class BackgroundAgentService {
       developerInstructions: developerInstructions || null,
       historyPolicy: "hidden"
     });
-    this.onOperationEvent("BackgroundAgentStarted", { operationId, providerId, purpose: request.purpose });
+    this.onOperationEvent("BackgroundAgentStarted", {
+      operationId,
+      providerId,
+      purpose: request.purpose,
+      phases: { agentContextMs }
+    });
+    const providerStartedAt = performance.now();
     try {
       const result = await this.registry.invoke(
         providerId,
         AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT,
         request
       );
-      this.onOperationEvent("BackgroundAgentCompleted", { operationId, providerId, purpose: request.purpose });
-      return { operationId, providerId, historyPolicy: "hidden", ...result };
+      const performanceMeasurement = {
+        phases: {
+          agentContextMs,
+          providerInvokeMs: roundedMilliseconds(performance.now() - providerStartedAt)
+        },
+        totalMs: roundedMilliseconds(performance.now() - operationStartedAt)
+      };
+      this.onOperationEvent("BackgroundAgentCompleted", {
+        operationId,
+        providerId,
+        purpose: request.purpose,
+        ...performanceMeasurement
+      });
+      return { operationId, providerId, historyPolicy: "hidden", ...result, performance: performanceMeasurement };
     } catch (error) {
+      const performanceMeasurement = {
+        phases: {
+          agentContextMs,
+          providerInvokeMs: roundedMilliseconds(performance.now() - providerStartedAt)
+        },
+        totalMs: roundedMilliseconds(performance.now() - operationStartedAt)
+      };
       this.onOperationEvent("BackgroundAgentFailed", {
         operationId,
         providerId,
         purpose: request.purpose,
-        error: error.message
+        error: error.message,
+        ...performanceMeasurement
       });
       throw error;
     }
@@ -94,6 +123,10 @@ export class BackgroundAgentService {
     const supported = Array.isArray(profiles) && profiles.length > 0 ? profiles : ["read-only"];
     return supported.includes(permissionProfile);
   }
+}
+
+function roundedMilliseconds(value) {
+  return Math.round(Math.max(0, value) * 100) / 100;
 }
 
 function requiredText(value, field) {
