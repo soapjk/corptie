@@ -64,6 +64,16 @@ final class ComposerDraftBuffer {
         revision &+= 1
         return true
     }
+
+    @discardableResult
+    func restoreAfterFailedSubmission(_ submission: Submission) -> Bool {
+        guard revision == submission.revision &+ 1, text.isEmpty else {
+            return false
+        }
+        text = submission.text
+        revision &+= 1
+        return true
+    }
 }
 
 @MainActor
@@ -98,6 +108,19 @@ final class ComposerEditorController {
         if let textView, !textView.hasMarkedText() {
             textView.string = ""
             textView.setSelectedRange(NSRange(location: 0, length: 0))
+            textView.needsDisplay = true
+        }
+        return true
+    }
+
+    @discardableResult
+    func restoreAfterFailedSubmission(_ submission: ComposerDraftBuffer.Submission) -> Bool {
+        guard draft.restoreAfterFailedSubmission(submission) else {
+            return false
+        }
+        if let textView, !textView.hasMarkedText() {
+            textView.string = submission.text
+            textView.setSelectedRange(NSRange(location: submission.text.utf16.count, length: 0))
             textView.needsDisplay = true
         }
         return true
