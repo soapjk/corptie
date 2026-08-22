@@ -9144,11 +9144,17 @@ struct MessageComposer: View {
               !backendClient.isSendingMessage else {
             return
         }
-        backendClient.sendMessage(submission.text) {
-            if editorController.clear(ifUnchangedSince: submission) {
-                hasSendableText = false
-                inputHeight = ComposerInputLayout.minimumHeight
+        let didStartSending = backendClient.sendMessage(submission.text, onFailure: {
+            if editorController.restoreAfterFailedSubmission(submission) {
+                hasSendableText = true
             }
+        })
+        guard didStartSending else {
+            return
+        }
+        if editorController.clear(ifUnchangedSince: submission) {
+            hasSendableText = false
+            inputHeight = ComposerInputLayout.minimumHeight
         }
     }
 

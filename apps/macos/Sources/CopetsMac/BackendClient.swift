@@ -2535,19 +2535,31 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func sendMessage(_ text: String, onSuccess: @escaping () -> Void = {}) {
+    @discardableResult
+    func sendMessage(
+        _ text: String,
+        onSuccess: @escaping () -> Void = {},
+        onFailure: @escaping () -> Void = {}
+    ) -> Bool {
         if selectedDetail?.canSend == false {
             sendStatusMessage = selectedDetail?.sendUnavailableReason ?? "This thread is read-only in Corptie."
-            return
+            return false
         }
 
         guard let selectedSession, selectedSession.external?.threadId != nil else {
             lastError = L10n("This task does not expose a Codex thread id.")
             sendStatusMessage = lastError
-            return
+            return false
         }
 
-        sendText(text, to: selectedSession, reloadDetail: true, isChoiceSelection: false, onSuccess: onSuccess)
+        return sendText(
+            text,
+            to: selectedSession,
+            reloadDetail: true,
+            isChoiceSelection: false,
+            onSuccess: onSuccess,
+            onFailure: onFailure
+        )
     }
 
     func respondToCollaborationConfirmation(confirmationId: String, approve: Bool, in session: TaskSession? = nil) {
@@ -2577,8 +2589,22 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func sendMessage(_ text: String, to session: TaskSession, isChoiceSelection: Bool = false, onSuccess: @escaping () -> Void = {}) {
-        sendText(text, to: session, reloadDetail: selectedSession?.id == session.id, isChoiceSelection: isChoiceSelection, onSuccess: onSuccess)
+    @discardableResult
+    func sendMessage(
+        _ text: String,
+        to session: TaskSession,
+        isChoiceSelection: Bool = false,
+        onSuccess: @escaping () -> Void = {},
+        onFailure: @escaping () -> Void = {}
+    ) -> Bool {
+        sendText(
+            text,
+            to: session,
+            reloadDetail: selectedSession?.id == session.id,
+            isChoiceSelection: isChoiceSelection,
+            onSuccess: onSuccess,
+            onFailure: onFailure
+        )
     }
 
     func reviewTurnChanges(sessionId: String, turnId: String) async -> Result<String, Error> {
@@ -2613,10 +2639,18 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    private func sendText(_ text: String, to session: TaskSession, reloadDetail: Bool, isChoiceSelection: Bool, onSuccess: @escaping () -> Void) {
+    @discardableResult
+    private func sendText(
+        _ text: String,
+        to session: TaskSession,
+        reloadDetail: Bool,
+        isChoiceSelection: Bool,
+        onSuccess: @escaping () -> Void,
+        onFailure: @escaping () -> Void = {}
+    ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return
+            return false
         }
         clearSuggestedOptions(for: session)
         let isClearCommand = trimmed.lowercased() == "/clear"
@@ -2687,8 +2721,10 @@ final class BackendClient: ObservableObject {
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
+                onFailure()
             }
         }
+        return true
     }
 
     private func publishSessionReplacement(_ replacement: SessionReplacement) {

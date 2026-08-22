@@ -61,6 +61,31 @@ final class ComposerDraftTests: XCTestCase {
         }
     }
 
+    func testFailedSubmissionRestoresOptimisticallyClearedDraft() async throws {
+        try await MainActor.run {
+            let draft = ComposerDraftBuffer(text: "send me")
+            let submission = try XCTUnwrap(draft.submission())
+
+            XCTAssertTrue(draft.clear(ifUnchangedSince: submission))
+            XCTAssertTrue(draft.restoreAfterFailedSubmission(submission))
+            XCTAssertEqual(draft.text, "send me")
+            XCTAssertTrue(draft.hasSendableText)
+        }
+    }
+
+    func testFailedSubmissionCannotOverwriteTypingAfterOptimisticClear() async throws {
+        try await MainActor.run {
+            let draft = ComposerDraftBuffer(text: "send me")
+            let submission = try XCTUnwrap(draft.submission())
+
+            XCTAssertTrue(draft.clear(ifUnchangedSince: submission))
+            draft.updateFromEditor("new draft")
+
+            XCTAssertFalse(draft.restoreAfterFailedSubmission(submission))
+            XCTAssertEqual(draft.text, "new draft")
+        }
+    }
+
     func testRepositoryPrunesDeletedSessions() async {
         await MainActor.run {
             let repository = ComposerDraftRepository()
