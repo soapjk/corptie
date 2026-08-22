@@ -47,22 +47,19 @@ struct SessionsView: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            NavigationSplitView {
-                sessionListSidebar
-                    .toolbar(removing: .sidebarToggle)
-                    .navigationSplitViewColumnWidth(
-                        min: TwoPaneLayoutMetrics.sidebarWidth,
-                        ideal: TwoPaneLayoutMetrics.sidebarWidth,
-                        max: max(TwoPaneLayoutMetrics.sidebarWidth, w * 0.34)
-                    )
-            } detail: {
-                sessionConversation
-                    .padding(.horizontal, TwoPaneLayoutMetrics.contentPadding)
-            }
-            .toolbar(removing: .sidebarToggle)
+        NavigationSplitView {
+            sessionListSidebar
+                .toolbar(removing: .sidebarToggle)
+                .navigationSplitViewColumnWidth(
+                    min: TwoPaneLayoutMetrics.sidebarWidth,
+                    ideal: TwoPaneLayoutMetrics.sidebarWidth,
+                    max: TwoPaneLayoutMetrics.sidebarMaximumWidth
+                )
+        } detail: {
+            sessionConversation
+                .padding(.horizontal, TwoPaneLayoutMetrics.contentPadding)
         }
+        .toolbar(removing: .sidebarToggle)
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
