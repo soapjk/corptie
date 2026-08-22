@@ -127,6 +127,10 @@ export class HubService {
 
   // 语义 + 关键词混合打分：有 embedder 则用余弦相似度，否则回退关键词；confidence 加权。
   async scoreMemories(intent, memories) {
+    // Agent 没有活跃记忆时无需计算 intent embedding。远程 embedder 的一次
+    // 网络往返可能比整个本地上下文组装更慢，而空集合的结果恒为 []。
+    if (memories.length === 0) return [];
+
     const terms = tokenize(intent);
     let intentVec = null;
     if (this.embedder) {
@@ -140,19 +144,36 @@ export class HubService {
       intentVec = null;
     }
 
+    const embeddings = new Map();
+    if (intentVec) {
+      const missing = [];
+      for (const memory of memories) {
+        const cached = this.store.getMemoryEmbedding(memory.id);
+        if (cached) embeddings.set(memory.id, cached);
+        else missing.push(memory);
+      }
+      // 每条记忆的 embedding 彼此独立。并发发起可把 N 次串行网络往返
+      // 收敛为一次并发等待；持久化仍按原顺序执行，保持数据库行为确定。
+      const generated = await Promise.all(missing.map(async (memory) => {
+        try {
+          return await this.embedder(memory.content);
+        } catch {
+          return null;
+        }
+      }));
+      for (let index = 0; index < missing.length; index += 1) {
+        const vector = generated[index];
+        if (!vector) continue;
+        this.store.setMemoryEmbedding(missing[index].id, vector);
+        embeddings.set(missing[index].id, vector);
+      }
+    }
+
     const results = [];
     for (const m of memories) {
       let semantic = 0;
       if (intentVec) {
-        let memVec = this.store.getMemoryEmbedding(m.id);
-        if (!memVec) {
-          try {
-            memVec = await this.embedder(m.content);
-            this.store.setMemoryEmbedding(m.id, memVec);
-          } catch {
-            memVec = null;
-          }
-        }
+        const memVec = embeddings.get(m.id) ?? null;
         semantic = memVec ? cosineSimilarity(intentVec, memVec) : 0;
       }
       const lexical = matchScore(m.content, terms);

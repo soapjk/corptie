@@ -189,3 +189,56 @@ test("revoked procedure memories are excluded from both memory recall and hub di
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("retrieveMemory skips remote embedding when the selected Agent has no active memories", async () => {
+  const { store, directory } = await createStore();
+  try {
+    let embedCalls = 0;
+    const hub = new HubService({
+      store,
+      embedder: async () => {
+        embedCalls += 1;
+        return [1, 0];
+      }
+    });
+
+    assert.deepEqual(await hub.retrieveMemory("draft a plan", { agentId: "agent:empty" }), []);
+    assert.equal(embedCalls, 0);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("retrieveMemory generates missing memory embeddings concurrently and preserves results", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.createMemory({ ownerType: "agent", ownerId: "agent:1", kind: "fact", content: "first plan memory" });
+    store.createMemory({ ownerType: "agent", ownerId: "agent:1", kind: "fact", content: "second plan memory" });
+    let activeMemoryEmbeddings = 0;
+    let peakMemoryEmbeddings = 0;
+    const calls = [];
+    const hub = new HubService({
+      store,
+      embedder: async (text) => {
+        calls.push(text);
+        if (text === "draft a plan") return [1, 0];
+        activeMemoryEmbeddings += 1;
+        peakMemoryEmbeddings = Math.max(peakMemoryEmbeddings, activeMemoryEmbeddings);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeMemoryEmbeddings -= 1;
+        return [1, 0];
+      }
+    });
+
+    const results = await hub.retrieveMemory("draft a plan", { agentId: "agent:1" }, { touch: false });
+
+    assert.equal(results.length, 2);
+    assert.equal(calls.length, 3);
+    assert.equal(peakMemoryEmbeddings, 2);
+    for (const memory of results) assert.deepEqual(store.getMemoryEmbedding(memory.id), [1, 0]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
