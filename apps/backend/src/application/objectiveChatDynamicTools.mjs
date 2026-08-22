@@ -9,23 +9,9 @@ function tool(name, description, properties = {}, required = []) {
 }
 
 const id = (description) => ({ type: "string", minLength: 1, description });
-const patch = { type: "object", additionalProperties: true };
-
 export const objectiveChatDynamicTools = Object.freeze([
-  tool("corptie_objective_context", "Read the current Objective Chat scope, including its Objective, WorkItems, Workspaces, and contributor Agents."),
-  tool("corptie_objective_update", "Update fields on the Objective bound to this Objective Chat.", { patch }, ["patch"]),
-  tool("corptie_objective_work_items_manage", "Create, list, inspect, update, or delete WorkItems within the Objective bound to this chat.", {
-    action: { type: "string", enum: ["list", "get", "create", "update", "delete"] },
-    work_item_id: id("WorkItem id within this Objective."),
-    title: { type: "string", minLength: 1 },
-    patch
-  }, ["action"]),
-  tool("corptie_objective_agents_list", "List Agents attached to this Objective. Independent Contributors can be selected for WorkItem execution."),
-  tool("corptie_objective_work_item_start", "Request execution of a WorkItem in this Objective through the shared Agent Provider lifecycle.", {
-    work_item_id: id("WorkItem id within this Objective."),
-    agent_id: id("Independent Contributor Agent id."),
-    title: { type: "string" }
-  }, ["work_item_id", "agent_id"])
+  tool("corptie_objective_context", "Read the current Objective Chat scope. Mutating WorkItem operations use the strict corptie_collaboration_work_items_* Session-scoped tools."),
+  tool("corptie_objective_agents_list", "List contributor Agents in this Objective. Discover their actual receiving Sessions before routing collaboration.")
 ]);
 
 export function callObjectiveChatDynamicTool(service, input = {}) {

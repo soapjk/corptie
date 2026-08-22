@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
 import { ObjectiveChatContextService } from "../src/application/objectiveChatContextService.mjs";
-import { ObjectiveChatOperationService } from "../src/application/objectiveChatDynamicTools.mjs";
+import { ObjectiveChatOperationService, objectiveChatDynamicTools } from "../src/application/objectiveChatDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { inferSessionKind, normalizeSessionKind } from "../src/utils/sessionKinds.mjs";
 
@@ -117,4 +117,10 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Objective Chat dynamic tools expose no arbitrary WorkItem update or delete surface", () => {
+  const names = objectiveChatDynamicTools.map((tool) => tool.name);
+  assert.deepEqual(names, ["corptie_objective_context", "corptie_objective_agents_list"]);
+  assert.equal(names.some((name) => name.includes("manage") || name.includes("delete") || name.includes("update")), false);
 });

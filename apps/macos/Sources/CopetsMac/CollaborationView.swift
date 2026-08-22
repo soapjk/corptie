@@ -400,6 +400,8 @@ private struct CollaborationTaskDetailView: View {
                 GroupBox(L10n("Participants")) {
                     LabeledContent(L10n("Initiator"), value: task.initiatorAgentId)
                     LabeledContent(L10n("Recipient"), value: task.recipientAgentId)
+                    LabeledContent(L10n("Source Session"), value: task.initiatorSessionId ?? L10n("Unresolved legacy route"))
+                    LabeledContent(L10n("Target Session"), value: task.recipientSessionId ?? L10n("Unresolved legacy route"))
                     if let sourceObjectiveId = task.sourceObjectiveId {
                         LabeledContent(L10n("Source Objective"), value: sourceObjectiveId)
                     }
@@ -413,6 +415,9 @@ private struct CollaborationTaskDetailView: View {
                         LabeledContent(L10n("Source WorkItem"), value: sourceWorkItemId)
                     }
                     if let serviceId = task.serviceId { LabeledContent(L10n("Service"), value: serviceId) }
+                    LabeledContent(L10n("Route"), value: "\(task.routeStatus ?? "unresolved") · v\(task.routingVersion ?? 0)")
+                    LabeledContent(L10n("Execution"), value: task.artifactStatus ?? "pending")
+                    LabeledContent(L10n("Acceptance"), value: task.acceptanceStatus ?? "pending")
                     LabeledContent(L10n("Iteration"), value: L10nFormat("%lld of %lld", task.iteration, task.maxIterations))
                 }
 

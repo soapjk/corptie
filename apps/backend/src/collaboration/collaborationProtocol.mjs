@@ -28,8 +28,8 @@ export function createCollaborationEnvelope(input) {
     version: COLLABORATION_PROTOCOL_VERSION,
     messageId: input.messageId,
     messageType: input.messageType,
-    sender: { agentId: input.senderAgentId, objectiveId: input.sourceObjectiveId },
-    recipient: { agentId: input.recipientAgentId, objectiveId: input.targetObjectiveId },
+    sender: { agentId: input.senderAgentId, sessionId: input.senderSessionId ?? null, objectiveId: input.sourceObjectiveId },
+    recipient: { agentId: input.recipientAgentId, sessionId: input.recipientSessionId ?? null, objectiveId: input.targetObjectiveId },
     objective: { sourceId: input.sourceObjectiveId, targetId: input.targetObjectiveId },
     workItem: { id: input.workItemId, sourceId: input.sourceWorkItemId ?? null },
     taskId: input.taskId,
@@ -57,7 +57,9 @@ export function validateCollaborationEnvelope(input) {
   party(input.sender, "sender");
   party(input.recipient, "recipient");
   if (input.sender.agentId === input.recipient.agentId) {
-    fail("INVALID_PARTICIPANTS", "recipient.agentId", "Sender and recipient Agents must be distinct.");
+    if (!input.sender.sessionId || !input.recipient.sessionId || input.sender.sessionId === input.recipient.sessionId) {
+      fail("INVALID_PARTICIPANTS", "recipient.sessionId", "Same-Agent collaboration requires distinct sender and recipient Sessions.");
+    }
   }
   record(input.objective, "objective");
   exactFields(input.objective, "objective", ["sourceId", "targetId"]);
@@ -96,8 +98,12 @@ export function validateCollaborationEnvelope(input) {
 
 function party(value, field) {
   record(value, field);
-  exactFields(value, field, ["agentId", "objectiveId"]);
+  exactFields(value, field, ["agentId", "sessionId", "objectiveId"], true);
+  if (!Object.hasOwn(value, "agentId") || !Object.hasOwn(value, "objectiveId")) {
+    fail("MISSING_MESSAGE_FIELD", field, `${field}.agentId and ${field}.objectiveId are required.`);
+  }
   text(value.agentId, `${field}.agentId`);
+  if (Object.hasOwn(value, "sessionId")) nullableText(value.sessionId, `${field}.sessionId`);
   text(value.objectiveId, `${field}.objectiveId`);
 }
 

@@ -194,4 +194,20 @@ test("platform Objective and WorkItem tool patch schemas reject additional prope
     assert.equal(Object.hasOwn(schema.properties, "workspacePath"), false);
     assert.equal(Object.hasOwn(schema.properties, "main_agent_id"), false);
   }
+  const manageSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_work_items_manage").inputSchema;
+  assert.equal(manageSchema.additionalProperties, false);
+  assert.deepEqual(
+    manageSchema.allOf.map((rule) => ({
+      action: rule.if.properties.action.const ?? rule.if.properties.action.enum,
+      required: rule.then.required
+    })),
+    [
+      { action: "get", required: ["work_item_id"] },
+      { action: "create", required: ["objective_id", "title"] },
+      { action: "update", required: ["work_item_id", "patch"] },
+      { action: "delete", required: ["work_item_id"] },
+      { action: "dependencies", required: ["work_item_id"] },
+      { action: ["add_dependency", "remove_dependency"], required: ["work_item_id", "target_work_item_id"] }
+    ]
+  );
 });

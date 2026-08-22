@@ -1219,6 +1219,19 @@ export class CorptieStore {
     this.ensureColumn("work_items", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("work_items", "execution_status", "TEXT NOT NULL DEFAULT 'idle'");
     this.ensureColumn("work_items", "acceptance_assessment_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.ensureColumn("work_items", "created_by_session_id", "TEXT");
+    this.ensureColumn("work_items", "source_work_item_id", "TEXT");
+    this.ensureColumn("work_items", "parent_work_item_id", "TEXT");
+    this.ensureColumn("work_items", "collaboration_relation", "TEXT");
+    this.ensureColumn("work_items", "idempotency_key", "TEXT");
+    this.ensureColumn("work_items", "resource_version", "INTEGER NOT NULL DEFAULT 1");
+    this.ensureColumn("work_items", "canceled_at", "TEXT");
+    this.ensureColumn("work_items", "cancel_reason", "TEXT");
+    this.ensureColumn("work_items", "start_idempotency_key", "TEXT");
+    this.ensureColumn("work_items", "start_error", "TEXT");
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_session_idempotency
+      ON work_items(created_by_session_id, idempotency_key)
+      WHERE created_by_session_id IS NOT NULL AND idempotency_key IS NOT NULL`);
     this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("hub_intent_cache", "agent_id", "TEXT");
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -1235,6 +1248,12 @@ export class CorptieStore {
     this.ensureColumn("collaboration_tasks", "recipient_session_id", "TEXT");
     this.ensureColumn("collaboration_tasks", "initiator_name_at_send", "TEXT");
     this.ensureColumn("collaboration_tasks", "recipient_name_at_send", "TEXT");
+    this.ensureColumn("collaboration_tasks", "routing_version", "INTEGER");
+    this.ensureColumn("collaboration_tasks", "route_status", "TEXT NOT NULL DEFAULT 'unresolved'");
+    this.ensureColumn("collaboration_tasks", "artifact_status", "TEXT NOT NULL DEFAULT 'pending'");
+    this.ensureColumn("collaboration_tasks", "acceptance_status", "TEXT NOT NULL DEFAULT 'pending'");
+    this.ensureColumn("collaboration_tasks", "initiator_binding_id", "TEXT");
+    this.ensureColumn("collaboration_tasks", "recipient_binding_id", "TEXT");
     this.ensureColumn("collaboration_tasks", "protocol_version", "TEXT NOT NULL DEFAULT '1.0'");
     this.ensureColumn("collaboration_tasks", "source_objective_id", "TEXT");
     this.ensureColumn("collaboration_tasks", "target_objective_id", "TEXT");
@@ -1247,6 +1266,8 @@ export class CorptieStore {
     this.ensureColumn("collaboration_messages", "work_item_id", "TEXT");
     this.ensureColumn("collaboration_messages", "payload_json", "TEXT NOT NULL DEFAULT '{}'");
     this.ensureColumn("collaboration_messages", "error_json", "TEXT");
+    this.ensureColumn("collaboration_messages", "sender_session_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "recipient_session_id", "TEXT");
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_objective_work_item
       ON collaboration_tasks(source_objective_id, target_objective_id, work_item_id, updated_at DESC)`);
     this.ensureColumn("collaboration_request_confirmations", "initiator_session_id", "TEXT");
@@ -2218,22 +2239,22 @@ export class CorptieStore {
       this.db.run(
         `UPDATE ${table}
          SET initiator_session_id = COALESCE(initiator_session_id, (
-               SELECT ls.logical_session_id
+               SELECT MIN(ls.logical_session_id)
                FROM agent_sessions binding
                JOIN logical_sessions ls
                  ON ls.legacy_session_id = binding.session_id
                     OR ls.logical_session_id = binding.session_id
                WHERE binding.agent_id = ${table}.initiator_agent_id
-               ORDER BY binding.unbound_at IS NULL DESC, binding.bound_at DESC LIMIT 1
+               HAVING COUNT(DISTINCT ls.logical_session_id) = 1
              )),
              recipient_session_id = COALESCE(recipient_session_id, (
-               SELECT ls.logical_session_id
+               SELECT MIN(ls.logical_session_id)
                FROM agent_sessions binding
                JOIN logical_sessions ls
                  ON ls.legacy_session_id = binding.session_id
                     OR ls.logical_session_id = binding.session_id
                WHERE binding.agent_id = ${table}.recipient_agent_id
-               ORDER BY binding.unbound_at IS NULL DESC, binding.bound_at DESC LIMIT 1
+               HAVING COUNT(DISTINCT ls.logical_session_id) = 1
              ))`
       );
       this.db.run(
@@ -2247,6 +2268,13 @@ export class CorptieStore {
                WHERE ls.logical_session_id = recipient_session_id
              ))`
       );
+      if (table === "collaboration_tasks") {
+        this.db.run(
+          `UPDATE collaboration_tasks
+           SET route_status = 'unresolved'
+           WHERE initiator_session_id IS NULL OR recipient_session_id IS NULL`
+        );
+      }
     }
   }
 
@@ -5541,7 +5569,7 @@ export class CorptieStore {
     this.assertWorkItemAssociations(prospective, objective);
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
-      `UPDATE work_items SET title=?, description=?, acceptance_criteria=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, execution_status=?, acceptance_assessment_json=?, updated_at=? WHERE id=?`,
+      `UPDATE work_items SET title=?, description=?, acceptance_criteria=?, priority=?, status=?, main_workspace_id=?, main_agent_id=?, execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1, updated_at=? WHERE id=?`,
       [
         has("title") ? normalized.title : current.title,
         has("description") ? normalized.description : current.description,
