@@ -142,7 +142,7 @@ struct WorktreeManagementView: View {
                 dismissButton: .cancel(Text(L10n("OK")))
             )
         }
-        .alert(L10n("Worktree deleted"), isPresented: Binding(
+        .alert(L10n(client.operationNoticeTitle), isPresented: Binding(
             get: { client.operationNotice != nil },
             set: { if !$0 { client.dismissOperationNotice() } }
         )) {
@@ -282,12 +282,29 @@ struct WorktreeManagementView: View {
                         }
                     }
                     detailSection(L10n("Actions")) {
-                        HStack {
+                        HStack(alignment: .center) {
                             Button {
                                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: worktree.path)])
                             } label: {
                                 Label(L10n("Show in Finder"), systemImage: "folder")
                             }
+                            Button {
+                                Task { await client.pushWorktreeToGitHub(worktree) }
+                            } label: {
+                                if client.pushingWorktreeIds.contains(worktree.worktreeId) {
+                                    ProgressView().controlSize(.small)
+                                    Text(L10n("Pushing to GitHub…"))
+                                } else {
+                                    Label(L10n("Push to GitHub"), systemImage: "arrow.up.circle")
+                                }
+                            }
+                            .disabled(
+                                client.isMutating
+                                    || client.pushingWorktreeIds.contains(worktree.worktreeId)
+                                    || !ManagedWorktreeGitHubPushPolicy.canPush(worktree)
+                            )
+                            .help(worktreePushExplanation(worktree))
+                            .accessibilityIdentifier("worktree.push-github.\(worktree.worktreeId)")
                             if !worktree.isMain, (worktree.behindMain ?? 0) > 0 {
                                 Button {
                                     showingSynchronizationConfirmation = true
@@ -328,7 +345,7 @@ struct WorktreeManagementView: View {
                             }
                         }
                         .controlSize(.small)
-                        Text(L10n("Click a Worktree status to review and run operations for that Worktree only."))
+                        Text(worktreePushExplanation(worktree))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -501,6 +518,10 @@ struct WorktreeManagementView: View {
         } else {
             pendingDeletion = worktree
         }
+    }
+
+    private func worktreePushExplanation(_ worktree: ManagedWorktree) -> String {
+        ManagedWorktreeGitHubPushPolicy.explanation(for: worktree)
     }
 
     private func jobProgress(_ job: WorktreeIntegrationJob) -> some View {
