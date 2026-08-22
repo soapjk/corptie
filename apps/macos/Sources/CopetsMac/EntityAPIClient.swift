@@ -368,6 +368,9 @@ final class EntityAPIClient: ObservableObject {
         var request = URLRequest(url: baseURL.appending(path: "work-items"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let id, !id.isEmpty {
+            request.setValue(id, forHTTPHeaderField: "X-Corptie-Operation-Id")
+        }
         var body: [String: Any] = ["objectiveId": objectiveId, "title": title]
         if let id, !id.isEmpty { body["id"] = id }
         if let description, !description.isEmpty { body["description"] = description }
@@ -483,6 +486,7 @@ final class EntityAPIClient: ObservableObject {
         var request = URLRequest(url: baseURL.appending(path: "sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(workItemId, forHTTPHeaderField: "X-Corptie-Operation-Id")
         var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId, "providerId": providerId]
         if let title { body["title"] = title }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)

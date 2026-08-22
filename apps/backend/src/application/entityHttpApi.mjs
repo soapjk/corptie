@@ -34,6 +34,7 @@ export function handleEntityHttpRequest({
   resolveAgentAvailability,
   suggestAgentSessionTitle,
   onEntityChanged,
+  observeWorkItemPerformance = () => {},
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
@@ -85,6 +86,36 @@ export function handleEntityHttpRequest({
     (path === "/sessions" && request.method === "POST");
 
   if (!isEntityApi) return false;
+
+  let activeWorkItemTiming = null;
+  const beginWorkItemTiming = (operation, workItemId = null) => {
+    activeWorkItemTiming = {
+      operation,
+      operationId: boundedHeaderText(request, "x-corptie-operation-id") || workItemId || randomUUID(),
+      workItemId,
+      startedAt: performance.now(),
+      phases: {}
+    };
+    return activeWorkItemTiming;
+  };
+  const finishWorkItemTiming = (outcome, error = null) => {
+    if (!activeWorkItemTiming) return;
+    const timing = activeWorkItemTiming;
+    activeWorkItemTiming = null;
+    try {
+      observeWorkItemPerformance({
+        operation: timing.operation,
+        operationId: timing.operationId,
+        workItemId: timing.workItemId,
+        outcome,
+        ...(error ? { errorCode: error.code ?? "INTERNAL" } : {}),
+        phases: timing.phases,
+        totalMs: roundedMilliseconds(performance.now() - timing.startedAt)
+      });
+    } catch {
+      // Observability must never change creation or execution semantics.
+    }
+  };
 
   Promise.resolve()
     .then(async () => {
@@ -533,8 +564,18 @@ export function handleEntityHttpRequest({
         });
       }
       if (request.method === "POST" && path === "/work-items") {
+        const timing = beginWorkItemTiming("work-item.create");
+        let phaseStartedAt = performance.now();
         const input = await readJson(request);
-        return sendJson(response, 201, presentWorkItemAcceptance(objectiveService.createWorkItem(input)));
+        timing.workItemId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
+        timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        phaseStartedAt = performance.now();
+        const created = presentWorkItemAcceptance(objectiveService.createWorkItem(input));
+        timing.workItemId = created.id;
+        timing.phases.validateAndPersistMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        const result = sendJson(response, 201, created);
+        finishWorkItemTiming("succeeded");
+        return result;
       }
 
       const workItemMatch = path.match(/^\/work-items\/([^/]+)$/);
@@ -645,11 +686,16 @@ export function handleEntityHttpRequest({
 
       // ---- Session（执行：真正启动模型 + 绑定 work_item + agent，1:1；换 Agent/重来时先提炼旧记忆）----
       if (request.method === "POST" && path === "/sessions") {
+        const timing = beginWorkItemTiming("work-item.execute");
+        let phaseStartedAt = performance.now();
         const input = await readJson(request);
+        timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         rejectSessionAvatarInput(input);
         const workItemId = String(input.workItemId ?? "").trim();
+        timing.workItemId = workItemId || null;
         const agentId = String(input.agentId ?? "").trim();
         if (!workItemId && !agentId) {
+          activeWorkItemTiming = null;
           if (typeof createSession !== "function") {
             throw apiError("INTERNAL", "createSession is not configured.", 500);
           }
@@ -678,12 +724,16 @@ export function handleEntityHttpRequest({
           },
           objective
         );
+        timing.phases.validateReferencesMs = roundedMilliseconds(
+          performance.now() - timing.startedAt - timing.phases.requestParseMs
+        );
         if (typeof launchSession !== "function") {
           throw apiError("INTERNAL", "launchSession is not configured.", 500);
         }
 
         // 已有当前 session → 换 Agent / 重来：先提炼旧 session 记忆，再关闭旧 session。
         const previousSessionId = workItem.current_session_id ?? null;
+        phaseStartedAt = performance.now();
         if (previousSessionId) {
           await memoryExtractor.extractFromSession(previousSessionId, {
             objectiveId: workItem.objective_id,
@@ -692,16 +742,21 @@ export function handleEntityHttpRequest({
           });
           objectiveService.store.closeSession(previousSessionId);
         }
+        timing.phases.previousSessionMs = roundedMilliseconds(performance.now() - phaseStartedAt);
 
         // 真正启动模型执行（provider 映射 / cwd 解析 / prompt 拼装均在 launchSession 内完成）。
         const session = await launchSession({
           agent,
           workItem,
           providerId,
-          title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined
+          title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
+          observePerformance: (phase, durationMs) => {
+            timing.phases[phase] = roundedMilliseconds(durationMs);
+          }
         });
         // 1:1 归属：把启动后的 session 绑定到 work_item（更新 current_session_id），并把状态推进到「进行中」，
         // 同时记录实际执行 Agent（main_agent_id），让看板卡片能显示执行主体。
+        phaseStartedAt = performance.now();
         const boundSession = objectiveService.store.bindSessionToWorkItem(
           session.id,
           workItemId,
@@ -720,7 +775,10 @@ export function handleEntityHttpRequest({
           action: "session-bound",
           entity: objectiveService.store.getWorkItem(workItemId)
         });
-        return sendJson(response, 201, { session: boundSession ?? session });
+        timing.phases.bindAndPersistMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        const result = sendJson(response, 201, { session: boundSession ?? session });
+        finishWorkItemTiming("succeeded");
+        return result;
       }
 
       // ---- Memory ----
@@ -792,6 +850,7 @@ export function handleEntityHttpRequest({
       throw apiError("NOT_FOUND", "Entity endpoint not found.", 404);
     })
     .catch((error) => {
+      finishWorkItemTiming("failed", error);
       const code = error.code ?? "INTERNAL";
       sendJson(response, error.statusCode ?? statusForCode(code), {
         error: error.code ? error.message : "Entity operation failed.",
@@ -1115,4 +1174,8 @@ function sendJson(response, status, payload, extraHeaders = {}) {
   if (response.headersSent) return;
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", ...extraHeaders });
   response.end(JSON.stringify(payload));
+}
+
+function roundedMilliseconds(value) {
+  return Math.round(Math.max(0, value) * 100) / 100;
 }

@@ -56,6 +56,7 @@ import { SessionProviderSwitchCoordinator } from "./application/sessionProviderS
 import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
+import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -848,6 +849,13 @@ const projectApplicationService = new ProjectApplicationService({
   inspectDevelopmentService: (project) => projectToolsetStatusForPath(project.mainPath),
   performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
   performWorkspaceAction: performProjectWorkspaceAction
+});
+const workItemWorkspaceService = new WorkItemWorkspaceService({
+  store,
+  requireProject: (repositoryId) => projectApplicationService.requireProject(repositoryId),
+  inspectProject: (mainPath, repositoryId) => gitWorkspaces.projectStatusForPath(mainPath, repositoryId),
+  ensureWorktree: (input) => gitWorkspaces.ensureWorkItemWorktreeForProject(input),
+  restoreMissingWorktree: (input) => gitWorkspaces.restoreMissingWorktree(input)
 });
 workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
   getWorkItem: (workItemId) => store.getWorkItem(workItemId),
@@ -3664,7 +3672,15 @@ function resolveSessionProviderId(provider) {
 }
 
 // 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
-async function launchWorkItemSession({ agent, workItem, providerId: requestedProviderId, title, prompt: requestedPrompt, workingDirectory = null }) {
+async function launchWorkItemSession({
+  agent,
+  workItem,
+  providerId: requestedProviderId,
+  title,
+  prompt: requestedPrompt,
+  workingDirectory = null,
+  observePerformance = () => {}
+}) {
   if (agent.role !== "independentContributor") {
     const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
     error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
@@ -3679,9 +3695,11 @@ async function launchWorkItemSession({ agent, workItem, providerId: requestedPro
   const previousSession = workItem.current_session_id
     ? store.getSession(workItem.current_session_id)
     : null;
+  let phaseStartedAt = performance.now();
   const preparedWorkspace = typeof workingDirectory === "string" && workingDirectory.trim()
     ? null
     : await workItemExecutionOrchestrator.prepareWorkspace(workItem, previousSession);
+  observePerformance("workspacePrepareMs", performance.now() - phaseStartedAt);
   const cwd = typeof workingDirectory === "string" && workingDirectory.trim()
     ? resolve(workingDirectory.trim())
     : preparedWorkspace?.path;
@@ -3694,6 +3712,7 @@ async function launchWorkItemSession({ agent, workItem, providerId: requestedPro
     ? requestedPrompt.trim()
     : workItemExecutionPrompt(workItem);
 
+  phaseStartedAt = performance.now();
   const session = await createSessionThroughApplication(
     providerId,
     {
@@ -3712,6 +3731,7 @@ async function launchWorkItemSession({ agent, workItem, providerId: requestedPro
       sessionKind: "worker"
     }
   );
+  observePerformance("providerSessionCreateMs", performance.now() - phaseStartedAt);
   return session;
 }
 
@@ -5728,58 +5748,7 @@ function completedWorkItemStatus(status) {
 }
 
 async function ensureWorkItemWorkspace({ workItem, session = null }) {
-  const repositoryId = typeof workItem?.main_workspace_id === "string"
-    ? workItem.main_workspace_id.trim()
-    : "";
-  if (!repositoryId) {
-    const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
-    error.code = "WORKSPACE_REQUIRED";
-    error.statusCode = 409;
-    throw error;
-  }
-  const project = await projectApplicationService.requireProject(repositoryId);
-  const inspection = await gitWorkspaces.projectStatusForPath(project.mainPath, repositoryId);
-  const route = session?.id ? store.getLogicalSessionByLegacySessionId(session.id) : null;
-  const previous = route?.activeWorkspaceId
-    ? inspection.worktrees.find((candidate) => candidate.worktreeId === route.activeWorkspaceId)
-    : null;
-  if (previous?.availability === "available" && previous.isMain !== true) {
-    return {
-      worktreeId: previous.worktreeId,
-      path: previous.canonicalPath || previous.path,
-      branchName: previous.branchName,
-      headOid: previous.headOid,
-      reused: true,
-      requiresSessionTransition: false
-    };
-  }
-  if (previous && previous.isMain !== true && route?.logicalSessionId) {
-    try {
-      const rebuilt = await gitWorkspaces.restoreMissingWorktree({
-        logicalSessionId: route.logicalSessionId
-      });
-      return {
-        worktreeId: rebuilt.restored.worktreeId,
-        path: rebuilt.restored.canonicalPath || rebuilt.restored.path,
-        branchName: rebuilt.restored.branchName,
-        headOid: rebuilt.restored.headOid,
-        reused: false,
-        rebuilt: true,
-        requiresSessionTransition: true
-      };
-    } catch (error) {
-      if (!String(error?.message ?? "").includes("no longer exists")) throw error;
-    }
-  }
-  const workspace = await gitWorkspaces.ensureWorkItemWorktreeForProject({
-    repositoryId,
-    workingDirectory: project.mainPath,
-    workItemId: workItem.id
-  });
-  return {
-    ...workspace,
-    requiresSessionTransition: Boolean(session)
-  };
+  return workItemWorkspaceService.ensure({ workItem, session });
 }
 
 async function inspectWorkItemWorktree(workItemId) {
@@ -6323,6 +6292,9 @@ function route(request, response) {
       null,
       reservedSessionTitleKeys
     ),
+    observeWorkItemPerformance: (measurement) => {
+      console.info(`[work-item-performance] ${JSON.stringify(measurement)}`);
+    },
     onEntityChanged: (type, payload) => emitEvent(type, payload)
   })) {
     return;

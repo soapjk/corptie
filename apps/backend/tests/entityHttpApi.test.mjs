@@ -94,6 +94,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     restoreWorkItemExecution: services.restoreWorkItemExecution,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
+    observeWorkItemPerformance: services.observeWorkItemPerformance,
     auditLog: services.auditLog,
     onEntityChanged: services.onEntityChanged
   });
@@ -1692,6 +1693,7 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
 test("WorkItem creation persists the selected Agent and only the explicit run action launches it", async () => {
   const services = await createServices();
   try {
+    const performance = [];
     const agent = services.store.createAgent({
       name: "Selected contributor",
       role: "independentContributor",
@@ -1702,10 +1704,12 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
       contributorAgentIds: [agent.agentId]
     });
     let launchCount = 0;
-    const launchSession = async ({ agent: launchedAgent, workItem }) => {
+    const launchSession = async ({ agent: launchedAgent, workItem, observePerformance }) => {
       launchCount += 1;
       assert.equal(launchedAgent.agentId, agent.agentId);
       assert.equal(workItem.main_agent_id, agent.agentId);
+      observePerformance("workspacePrepareMs", 12.34);
+      observePerformance("providerSessionCreateMs", 56.78);
       services.store.upsertSession({
         id: `session:explicit:${launchCount}`,
         title: workItem.title,
@@ -1727,6 +1731,7 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
         mainAgentId: agent.agentId
       },
       launchSession,
+      observeWorkItemPerformance: (measurement) => performance.push(measurement),
       ...services
     });
 
@@ -1745,6 +1750,7 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
         providerId: "test-provider"
       },
       launchSession,
+      observeWorkItemPerformance: (measurement) => performance.push(measurement),
       ...services
     });
 
@@ -1755,6 +1761,16 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
     assert.equal(running.execution_status, "running");
     assert.equal(running.current_session_id, started.body.session.id);
     assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
+    assert.deepEqual(performance.map((measurement) => measurement.operation), [
+      "work-item.create",
+      "work-item.execute"
+    ]);
+    assert.equal(performance[0].outcome, "succeeded");
+    assert.equal(performance[0].workItemId, created.body.id);
+    assert.equal(performance[1].phases.workspacePrepareMs, 12.34);
+    assert.equal(performance[1].phases.providerSessionCreateMs, 56.78);
+    assert.equal(performance[1].phases.bindAndPersistMs >= 0, true);
+    assert.equal(performance[1].totalMs >= 0, true);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -1764,6 +1780,7 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
 test("execution failure is explicit and retrying the existing WorkItem does not create another item", async () => {
   const services = await createServices();
   try {
+    const performance = [];
     const agent = services.store.createAgent({ name: "Retry contributor" });
     const objective = services.objectiveService.createObjective({
       name: "Retry without duplicate",
@@ -1786,6 +1803,7 @@ test("execution failure is explicit and retrying the existing WorkItem does not 
         error.statusCode = 502;
         throw error;
       },
+      observeWorkItemPerformance: (measurement) => performance.push(measurement),
       ...services
     });
 
@@ -1794,6 +1812,11 @@ test("execution failure is explicit and retrying the existing WorkItem does not 
     assert.match(failed.body.error, /Provider launch failed clearly/);
     assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
     assert.equal(services.store.getWorkItem(created.body.id).execution_status, "idle");
+    assert.equal(performance.length, 1);
+    assert.equal(performance[0].operation, "work-item.execute");
+    assert.equal(performance[0].outcome, "failed");
+    assert.equal(performance[0].errorCode, "PROVIDER_LAUNCH_FAILED");
+    assert.equal(performance[0].workItemId, created.body.id);
 
     const retried = await callApi({
       method: "POST",

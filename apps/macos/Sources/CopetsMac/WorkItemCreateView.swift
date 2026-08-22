@@ -272,18 +272,22 @@ struct WorkItemCreateView: View {
             id: requestId,
             title: L10nFormat("创建 WorkItem：%@", requestTitle)
         ) {
-            var created = await client.workItem(id: requestId)
+            var created = await PerfStopwatch.measure("WorkItem.create.idempotencyLookup") {
+                await client.workItem(id: requestId)
+            }
             if created == nil {
-                created = await client.createWorkItem(
-                    id: requestId,
-                    objectiveId: requestObjectiveId,
-                    title: requestTitle,
-                    description: requestDetail,
-                    acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
-                    mainWorkspaceId: requestWorkspaceId,
-                    mainAgentId: selectedAgentId,
-                    priority: requestPriority
-                )
+                created = await PerfStopwatch.measure("WorkItem.create.persistRequest") {
+                    await client.createWorkItem(
+                        id: requestId,
+                        objectiveId: requestObjectiveId,
+                        title: requestTitle,
+                        description: requestDetail,
+                        acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
+                        mainWorkspaceId: requestWorkspaceId,
+                        mainAgentId: selectedAgentId,
+                        priority: requestPriority
+                    )
+                }
             }
             guard let workItem = created else {
                 return .failure(client.errorMessage ?? L10n("WorkItem 创建失败，可重试。"))
@@ -296,16 +300,20 @@ struct WorkItemCreateView: View {
             guard let providerId else {
                 return .failure(L10n("WorkItem 已创建，但没有可创建 Session 的 Provider；配置 Provider 后可重试执行。"))
             }
-            if let latest = await client.workItem(id: workItem.id),
-               latest.currentSessionId != nil {
+            let latest = await PerfStopwatch.measure("WorkItem.execute.existingSessionLookup") {
+                await client.workItem(id: workItem.id)
+            }
+            if latest?.currentSessionId != nil {
                 return .success(L10nFormat("WorkItem“%@”已创建并开始执行。", requestTitle))
             }
-            let result = await client.createSession(
-                workItemId: workItem.id,
-                agentId: selectedAgentId,
-                providerId: providerId,
-                title: workItem.title
-            )
+            let result = await PerfStopwatch.measure("WorkItem.execute.startRequest") {
+                await client.createSession(
+                    workItemId: workItem.id,
+                    agentId: selectedAgentId,
+                    providerId: providerId,
+                    title: workItem.title
+                )
+            }
             if let session = result.session {
                 backendClient.acceptCreatedSession(session, selectImmediately: false)
                 return .success(L10nFormat("WorkItem“%@”已创建并开始执行。", requestTitle))
