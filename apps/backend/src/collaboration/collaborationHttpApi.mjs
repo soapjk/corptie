@@ -1,3 +1,5 @@
+import { resolveRecipientSession } from "../application/sessionCollaborationService.mjs";
+
 export function handleCollaborationHttpRequest({
   request,
   response,
@@ -41,6 +43,7 @@ export function handleCollaborationHttpRequest({
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session discovery is unavailable.", 503);
         return sendJson(response, 200, { sessions: sessionCollaborationService.discoverSessions(sessionMetadata, actorAgentId, {
           agentId: url.searchParams.get("agentId") || undefined,
+          objectiveId: url.searchParams.get("objectiveId") || undefined,
           workItemId: url.searchParams.get("workItemId") || undefined,
           sessionKind: url.searchParams.get("sessionKind") || undefined
         }) });
@@ -228,17 +231,15 @@ export function handleCollaborationHttpRequest({
         } else if (input.recipientAgentId) {
           const intent = String(input.routingIntent ?? "").trim();
           if (!intent) throw apiError("ROUTING_INTENT_REQUIRED", "routingIntent is required when only recipientAgentId is supplied.", 400);
-          const candidates = sessionCollaborationService?.discoverSessions(sessionMetadata, actorAgentId, { agentId: input.recipientAgentId }) ?? [];
-          const eligible = intent === "objective_chat" ? candidates.filter((item) => item.sessionKind === "objectiveChat")
-            : intent === "existing_work_item_session" ? candidates.filter((item) => item.workItemId)
-              : candidates;
           if (intent === "create_dedicated_session") {
             throw apiError("DEDICATED_SESSION_CREATION_REQUIRED", "Create the dedicated Session first, then retry with recipientSessionId.", 409);
           }
-          if (!eligible.length || (eligible.length > 1 && intent !== "best_available")) {
-            throw apiError("AMBIGUOUS_RECIPIENT_SESSION", `Routing intent resolved ${eligible.length} Sessions; specify recipientSessionId.`, 409);
-          }
-          recipientSession = (eligible.find((candidate) => candidate.active) ?? eligible[0])?.sessionId ?? null;
+          recipientSession = resolveRecipientSession(
+            sessionCollaborationService,
+            sessionMetadata,
+            actorAgentId,
+            input
+          )?.sessionId ?? null;
         }
         const recipient = recipientSession
           ? core.getAgentForSession(recipientSession)

@@ -114,6 +114,35 @@ test("unbound Assistant Chat does not receive WorkItem creation or collaboration
   }
 });
 
+test("MCP Session discovery carries an explicit peer Objective filter", async () => {
+  const reads = [];
+  const { client } = await connectMcp({
+    get: async (path, search) => { reads.push({ path, search }); return { sessions: [] }; },
+    post: async () => ({})
+  });
+  try {
+    await client.callTool({
+      name: "corptie.sessions.discover",
+      arguments: {
+        agent_id: "agent:marketcow",
+        objective_id: "objective:marketcow",
+        session_kind: "objectiveChat"
+      }
+    });
+    assert.deepEqual(reads, [{
+      path: "/internal/collaboration/sessions",
+      search: {
+        agentId: "agent:marketcow",
+        objectiveId: "objective:marketcow",
+        workItemId: undefined,
+        sessionKind: "objectiveChat"
+      }
+    }]);
+  } finally {
+    await client.close();
+  }
+});
+
 test("MCP server exposes the complete Phase 2 peer tool set and maps request fields", async () => {
   const calls = [];
   const reads = [];
