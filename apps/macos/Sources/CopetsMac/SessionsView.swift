@@ -571,16 +571,17 @@ struct SessionsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 11)
+                .padding(.leading, 10)
+                .padding(.trailing, 6)
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                .contentShape(Capsule())
-                .background {
-                    SessionSidebarLiquidGlassBackground(cornerRadius: 16)
-                }
+                .contentShape(Rectangle())
             }
             .menuStyle(.borderlessButton)
             .frame(maxWidth: .infinity)
             .help(L10n("Work Session Grouping"))
+
+            Divider()
+                .frame(height: 16)
 
             Button {
                 setWorkerArchiveVisible(true)
@@ -590,14 +591,16 @@ struct SessionsView: View {
                     .foregroundStyle(.primary)
                     .frame(width: 32, height: 32)
                     .contentShape(Circle())
-                    .background {
-                        SessionSidebarCircularLiquidGlassBackground()
-                    }
             }
             .buttonStyle(.plain)
             .help(L10n("View Archived Work Sessions"))
         }
         .font(.system(size: 11, weight: .semibold))
+        .padding(.leading, 3)
+        .padding(.trailing, 3)
+        .frame(height: 38)
+        .contentShape(Capsule())
+        .modifier(SessionSidebarFunctionBarGlassModifier())
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
@@ -776,49 +779,15 @@ enum SessionReadAcknowledgementPolicy {
     }
 }
 
-private struct SessionSidebarLiquidGlassBackground: View {
-    let cornerRadius: CGFloat
-
-    var body: some View {
+private struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
         if #available(macOS 26.0, *) {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.clear)
-                .glassEffect(
-                    .clear,
-                    in: .rect(cornerRadius: cornerRadius)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.8)
-                }
+            content
+                .glassEffect(.clear.interactive(), in: .capsule)
         } else {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
-                }
-        }
-    }
-}
-
-private struct SessionSidebarCircularLiquidGlassBackground: View {
-    var body: some View {
-        if #available(macOS 26.0, *) {
-            Circle()
-                .fill(.clear)
-                .glassEffect(.clear, in: .circle)
-                .overlay {
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 0.8)
-                }
-        } else {
-            Circle()
-                .fill(.ultraThinMaterial)
-                .overlay {
-                    Circle()
-                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
-                }
+            content
+                .background(.ultraThinMaterial, in: Capsule())
         }
     }
 }

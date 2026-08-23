@@ -290,6 +290,7 @@ struct MainTabView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(tab == router.selectedTab ? 1 : 0)
                         .allowsHitTesting(tab == router.selectedTab)
+                        .accessibilityHidden(tab != router.selectedTab)
                         .zIndex(tab == router.selectedTab ? 1 : 0)
                 }
             }
