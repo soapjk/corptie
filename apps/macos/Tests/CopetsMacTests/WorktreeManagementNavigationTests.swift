@@ -323,6 +323,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("Task { await client.resolveConflictWithAgent() }"))
         XCTAssertTrue(view.contains("job.currentConflictResolution"))
         XCTAssertTrue(view.contains("Let Agent Resolve Conflicts"))
+        XCTAssertFalse(view.contains("currentConflictItem(job)?.associations.contains"))
         XCTAssertTrue(view.contains("View Agent Session"))
         XCTAssertTrue(view.contains("conflictAgentProgress(job: job, resolution: resolution)"))
         XCTAssertTrue(view.contains("validating and continuing automatically"))

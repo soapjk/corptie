@@ -53,6 +53,12 @@ export function hasCodexSessionPermissions(session) {
 
 export function codexTurnPermissionOptions(session, fallback = {}) {
   const permissions = codexPermissionsForSession(session, fallback);
+  if (fallback.forceFullAccess === true) {
+    return {
+      approvalPolicy: "never",
+      sandboxPolicy: { type: "dangerFullAccess" }
+    };
+  }
   const writableRoots = Array.isArray(fallback.runtimeWorkspaceRoots)
     ? fallback.runtimeWorkspaceRoots
     : null;

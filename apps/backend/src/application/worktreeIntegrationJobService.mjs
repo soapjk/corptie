@@ -730,7 +730,8 @@ export class WorktreeIntegrationJobService {
       job = this.#update(job, { status: "running", phase: "validating", auditEvent: "execution_started" });
       let items = job.details.plan.items;
       const completedAny = items.some((item) => ["completed", "recovered"].includes(item.commitStatus)
-        || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus));
+        || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus))
+        || job.details.conflictResolution?.status === "ready";
       if (!completedAny) {
         const current = await this.inspectRepository(job.repositoryId);
         const mismatch = planInspectionMismatch(job.details.plan, current);
@@ -790,13 +791,17 @@ export class WorktreeIntegrationJobService {
 
       let expectedMainHead = items.find((item) => item.isMain)?.commitHead
         ?? job.details.plan.mainHeadBefore;
-      for (const item of items) {
+      for (let item of items) {
         if (item.isMain || item.mergeStatus === "not_needed"
           || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus)) {
           if (item.mergeMainHead) expectedMainHead = item.mergeMainHead;
           continue;
         }
         if (await this.#stopIfRequested(jobId)) return;
+        const refreshed = await this.#refreshWorktreeItem(job, item.worktreeId, { requireClean: true });
+        job = refreshed.job;
+        item = refreshed.item;
+        items = job.details.plan.items;
         let sourceHead = item.resolutionHead ?? item.commitHead ?? item.sourceHeadBefore;
         const resolution = job.details.conflictResolution;
         const originalSourceHead = item.commitHead ?? item.sourceHeadBefore;
@@ -938,7 +943,7 @@ export class WorktreeIntegrationJobService {
     );
   }
 
-  async #refreshWorktreeItem(job, worktreeId) {
+  async #refreshWorktreeItem(job, worktreeId, { requireClean = false } = {}) {
     const inspection = this.#associate(await this.inspectRepository(job.repositoryId));
     const current = inspection.worktrees.find((candidate) => candidate.worktreeId === worktreeId);
     const recorded = job.details.plan.items.find((candidate) => candidate.worktreeId === worktreeId);
@@ -953,10 +958,25 @@ export class WorktreeIntegrationJobService {
       error.recoverable = false;
       throw error;
     }
+    if (requireClean && current.dirty === true) {
+      const error = new WorktreeIntegrationJobError(
+        "WORKTREE_RECHECK_DIRTY",
+        `${recorded?.branchName ?? worktreeId} gained uncommitted changes while integration was running. The changes were preserved; commit them or generate a fresh plan before retrying.`,
+        409
+      );
+      error.recoverable = false;
+      throw error;
+    }
+    const nextStatusSummary = current.statusSummary ?? "";
+    if (current.headOid === recorded.sourceHeadBefore
+      && nextStatusSummary === recorded.statusSummary
+      && (current.dirty === true) === (recorded.dirty === true)) {
+      return { job, item: recorded };
+    }
     const items = job.details.plan.items.map((item) => item.worktreeId === worktreeId ? {
       ...item,
       sourceHeadBefore: current.headOid,
-      statusSummary: current.statusSummary ?? "",
+      statusSummary: nextStatusSummary,
       changedFiles: current.changedFiles ?? [],
       dirty: current.dirty === true
     } : item);

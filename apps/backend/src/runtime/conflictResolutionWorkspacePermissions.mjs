@@ -59,6 +59,20 @@ export async function upgradeConflictResolutionWritableRoots(workspace, currentR
   }
 }
 
+export async function isConflictResolutionWorkspace(workspace, inspect, readBranch) {
+  const path = typeof workspace?.path === "string" ? workspace.path.trim() : "";
+  if (!path || !workspace?.worktreeId || !basename(path).startsWith("corptie-integration-worktree-")) {
+    return false;
+  }
+  try {
+    await conflictResolutionWritableRoots(workspace, inspect, readBranch);
+    return true;
+  } catch (error) {
+    if (error?.code === "RESOLUTION_WORKSPACE_INVALID") return false;
+    throw error;
+  }
+}
+
 async function readCurrentBranch(path) {
   const result = await execFileAsync("git", ["-C", path, "branch", "--show-current"], {
     encoding: "utf8",

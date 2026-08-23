@@ -533,7 +533,7 @@ test("stop and re-preflight never creates a replacement plan when main cannot be
 });
 
 test("a paused merge conflict launches an Agent and resumes automatically when its Session completes", async () => {
-  const { service, calls } = memoryFixture({ conflictOnce: true });
+  const { service, calls, worktrees } = memoryFixture({ conflictOnce: true });
   const plan = await service.preflight("repository:1");
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
   const paused = await waitForJob(service, plan.id, "paused");
@@ -553,6 +553,12 @@ test("a paused merge conflict launches an Agent and resumes automatically when i
   ]);
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_workspace_created"));
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_agent_started"));
+  worktrees.push({
+    worktreeId: "wt:integration", path: "/repo-integration", isMain: false, availability: "available",
+    headOid: "integration:feature:1:commit", branchName: "integration/job-1", dirty: false,
+    statusSummary: "", changedFiles: [], aheadOfMain: 1, behindMain: 0, mergedIntoMain: false,
+    isLocked: false, isPrunable: false, isDetached: false, operationState: null, conflictFiles: [], sessions: []
+  });
   const [resuming] = service.reconcileConflictResolutionSession(delegated.conflictResolution.sessionId);
   assert.equal(resuming.status, "queued");
   assert.equal(resuming.phase, "conflict_resolution_resume_queued");

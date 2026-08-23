@@ -113,6 +113,14 @@ test("turn permissions use the Codex app-server sandbox policy variants", () => 
       networkAccess: false
     }
   });
+  assert.deepEqual(codexTurnPermissionOptions({
+    external: { sandbox: "workspace-write", approvalPolicy: "on-request" }
+  }, {
+    forceFullAccess: true
+  }), {
+    approvalPolicy: "never",
+    sandboxPolicy: { type: "dangerFullAccess" }
+  });
 });
 
 test("later turns retain the persisted writable Git metadata roots", () => {
