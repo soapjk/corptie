@@ -229,11 +229,19 @@ struct SessionNotificationReducer {
            !hasRunningSession,
            !terminalTransitions.isEmpty,
            sessions.allSatisfy({ $0.status != .running }) {
+            // The authoritative terminal status can arrive one state revision
+            // before the agent/read message cursors. A freshly finished Session
+            // therefore needs attention even when both projected cursors are
+            // temporarily equal (often 0). Union IDs so a transition whose
+            // unread cursor already advanced is still counted exactly once.
+            let pendingUserAttentionIDs = Set(
+                sessions.filter(\.needsUserAttention).map(\.id)
+            ).union(terminalTransitions.map(\.id))
             let counts = SessionNotificationCounts(
                 completed: sessions.filter { $0.status == .complete }.count,
                 blocked: sessions.filter { $0.status == .blocked }.count,
                 failed: sessions.filter { $0.status == .failed }.count,
-                pendingUserAttention: sessions.filter(\.needsUserAttention).count
+                pendingUserAttention: pendingUserAttentionIDs.count
             )
             if counts.total > 0 {
                 return [SessionNotificationEvent(
