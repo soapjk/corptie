@@ -5237,6 +5237,8 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @Environment(\.isLiquidGlass) private var isLiquidGlass
+    @State private var didCopySessionTitle = false
+    @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
     @State private var gitHeadState: GitHeadState?
 
@@ -5258,11 +5260,32 @@ struct DetailHeaderView: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 if !isLiquidGlass, let selectedSession = backendClient.selectedSession {
-                    Text(selectedSession.title)
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    HStack(spacing: 7) {
+                        Button {
+                            copySessionTitle(selectedSession.title)
+                        } label: {
+                            Text(selectedSession.title)
+                                .font(.system(size: 18, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(L10n("Click to copy Session title"))
+                        .accessibilityLabel(L10n("Copy Session title"))
+
+                        if didCopySessionTitle {
+                            Label(L10n("Copied"), systemImage: "checkmark")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(CorptiePalette.connected)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(CorptiePalette.connected.opacity(0.10), in: Capsule())
+                                .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                                .accessibilityHidden(true)
+                        }
+                    }
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if backendClient.viewingHistoricalThreadId != nil {
@@ -5357,6 +5380,15 @@ struct DetailHeaderView: View {
             } else {
                 GitHubPushConfirmationWindowManager.shared.close()
             }
+        }
+        .onChange(of: backendClient.selectedSession?.id) { _, _ in
+            sessionTitleCopyFeedbackTask?.cancel()
+            sessionTitleCopyFeedbackTask = nil
+            didCopySessionTitle = false
+        }
+        .onDisappear {
+            sessionTitleCopyFeedbackTask?.cancel()
+            sessionTitleCopyFeedbackTask = nil
         }
     }
 
@@ -5656,6 +5688,22 @@ struct DetailHeaderView: View {
             withAnimation(.easeOut(duration: 0.12)) {
                 didCopyWorkspacePath = false
             }
+        }
+    }
+
+    private func copySessionTitle(_ title: String) {
+        guard copySessionNameToPasteboard(title) else { return }
+        sessionTitleCopyFeedbackTask?.cancel()
+        withAnimation(.easeOut(duration: 0.12)) {
+            didCopySessionTitle = true
+        }
+        sessionTitleCopyFeedbackTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.12)) {
+                didCopySessionTitle = false
+            }
+            sessionTitleCopyFeedbackTask = nil
         }
     }
 
