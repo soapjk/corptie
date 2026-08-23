@@ -108,6 +108,10 @@ struct MainWindowResizeLayoutTests {
         ] {
             #expect(contents.contains(required))
         }
+        let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView("))
+        let emptyStateEnd = try #require(contents.range(of: "} else {", range: emptyStateStart.upperBound..<contents.endIndex))
+        let emptyState = contents[emptyStateStart.lowerBound..<emptyStateEnd.lowerBound]
+        #expect(emptyState.contains(".frame(maxWidth: .infinity, maxHeight: .infinity)"))
     }
 
     @Test

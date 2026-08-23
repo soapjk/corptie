@@ -88,6 +88,7 @@ struct AutomationsView: View {
                 systemImage: "bolt.badge.clock",
                 description: Text(L10n("Create an Automation from a Session’s message composer."))
             )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
                 LazyVStack(spacing: 12) {
