@@ -7,9 +7,10 @@ struct MainTabContentLayoutTests {
     func selectedIndexTracksTheStableTabOrder() {
         #expect(AppTab.console.index == 0)
         #expect(AppTab.sessions.index == 1)
-        #expect(AppTab.worktrees.index == 2)
-        #expect(AppTab.sessionDSH.index == 3)
-        #expect(AppTab.agents.index == 4)
+        #expect(AppTab.automations.index == 2)
+        #expect(AppTab.worktrees.index == 3)
+        #expect(AppTab.sessionDSH.index == 4)
+        #expect(AppTab.agents.index == 5)
     }
 
     @Test

@@ -4,9 +4,9 @@ import XCTest
 
 final class WorktreeManagementNavigationTests: XCTestCase {
     func testWorktreeTabIsAnIndependentMainNavigationDestination() {
-        XCTAssertEqual(AppTab.allCases, [.console, .sessions, .worktrees, .sessionDSH, .agents])
+        XCTAssertEqual(AppTab.allCases, [.console, .sessions, .automations, .worktrees, .sessionDSH, .agents])
         XCTAssertEqual(AppTab.worktrees.systemImage, "arrow.triangle.branch")
-        XCTAssertEqual(AppTab.worktrees.index, 2)
+        XCTAssertEqual(AppTab.worktrees.index, 3)
     }
 
     func testWorktreeAutomaticLoadWaitsForBackendAndSelectedTab() {
