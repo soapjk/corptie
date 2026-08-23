@@ -352,6 +352,14 @@ const scheduledSessionTaskService = new ScheduledSessionTaskService({
   authorize: authorizeScheduledSessionTask,
   resolveRoute: resolveScheduledSessionRoute,
   enqueue: enqueueScheduledSessionWork,
+  activate: async (payload) => {
+    emitEvent("AutomationSessionActivationRequested", payload, { sessionId: payload.sessionId });
+    return { delivered: true };
+  },
+  notify: async (payload) => {
+    emitEvent("AutomationLocalNotificationRequested", payload, { sessionId: payload.sessionId });
+    return { delivered: true };
+  },
   onEvent: (type, payload) => emitEvent(type, payload, {
     sessionId: payload.task?.logicalSessionId
       ? store.getLogicalSession(payload.task.logicalSessionId)?.legacySessionId ?? null

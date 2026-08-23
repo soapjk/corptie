@@ -514,6 +514,10 @@ extension ScheduledSessionTaskDraft {
         case .interval:
             let estimatedNext = Date().addingTimeInterval(TimeInterval(max(0, intervalSeconds)))
             return L10n("下一次（预计）：\(Self.display(estimatedNext, timezone: timezone)) · 每 \(Self.intervalText(intervalSeconds)) · \(policy)")
+        case .condition:
+            return L10n("条件轮询 · \(policy)")
+        case .process:
+            return L10n("进程退出 · \(policy)")
         }
     }
 
@@ -547,9 +551,12 @@ private extension ScheduledSessionTask {
             formatter.timeStyle = .short
             return formatter.string(from: date)
         } ?? L10n("无下次执行时间")
-        let recurrence = scheduleType == .once
-            ? L10n("一次性")
-            : L10n("每 \(ScheduledSessionTaskDraft.intervalText(intervalSeconds ?? 0))")
+        let recurrence: String = switch scheduleType {
+        case .once: L10n("一次性")
+        case .interval: L10n("每 \(ScheduledSessionTaskDraft.intervalText(intervalSeconds ?? 0))")
+        case .condition: L10n("条件轮询")
+        case .process: L10n("进程退出")
+        }
         return "\(next) · \(recurrence) · \(timezone)"
     }
 }

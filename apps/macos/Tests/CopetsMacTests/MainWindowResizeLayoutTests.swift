@@ -88,6 +88,26 @@ struct MainWindowResizeLayoutTests {
         #expect(contents.contains("ForEach(AppTab.allCases)"))
         #expect(!contents.contains("GeometryReader { geo in"))
         #expect(!contents.contains(".frame(width: geo.size.width, height: geo.size.height)"))
+        #expect(AppTab.allCases.contains(.automations))
+        #expect(contents.contains("case .automations:"))
+        #expect(contents.contains("AutomationsView()"))
+    }
+
+    @Test
+    func automationsTabExposesCategoriesRiskRoutingHistoryAndManagementControls() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/AutomationsView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        for required in [
+            "case all", "case running", "case failed", "case history",
+            "Trigger", "Next Run", "Last Result", "Risk", "Run History",
+            "bindingId", "routingVersion", "Run Now", "Pause", "Resume", "Cancel"
+        ] {
+            #expect(contents.contains(required))
+        }
     }
 
     @Test

@@ -1,6 +1,8 @@
 export function handleScheduledSessionTaskHttpRequest({ request, response, url, service, resolveActor }) {
   const path = url.pathname;
-  const basePath = path === "/scheduled-tasks" || path.startsWith("/scheduled-tasks/")
+  const basePath = path === "/automations" || path.startsWith("/automations/")
+    ? "/automations"
+    : path === "/scheduled-tasks" || path.startsWith("/scheduled-tasks/")
     ? "/scheduled-tasks"
     : path === "/scheduled-session-tasks" || path.startsWith("/scheduled-session-tasks/")
       ? "/scheduled-session-tasks"

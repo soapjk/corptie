@@ -2,7 +2,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
   Object.freeze({
     type: "function",
     name: "corptie_scheduled_tasks_manage",
-    description: "Manage Corptie 计划任务 for a logical Session. Create one-time, fixed-interval, or condition tasks; inspect/list/update/pause/resume/cancel them; or run one immediately. For a condition task, Corptie runs the supplied script at check_interval_seconds: exit 0 means the condition is satisfied and wakes the Session once, while any non-zero exit means not yet satisfied and polling continues. Actor identity is injected by the Tool Host and cannot be supplied here.",
+    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
     deferLoading: false,
     inputSchema: {
       type: "object",
@@ -26,11 +26,34 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
             }
           ]
         },
-        schedule_type: { type: "string", enum: ["once", "interval", "condition"], description: "Required for create. once uses run_at; interval uses interval_seconds; condition uses condition." },
+        schedule_type: { type: "string", enum: ["at", "after", "interval", "processExit", "condition", "once"], description: "Required for create. once is a compatibility alias for at." },
         run_at: { type: "string", description: "ISO-8601 first execution time. Required for once; optional for interval and condition." },
+        delay_seconds: { type: "integer", minimum: 1, maximum: 31536000 },
         interval_seconds: { type: "integer", minimum: 1, description: "Fixed interval in seconds for interval tasks." },
         timezone: { type: "string" },
-        missed_policy: { type: "string", enum: ["coalesce_once", "skip"] },
+        missed_policy: { type: "string", enum: ["skip", "fireOnce", "catchUp", "coalesce_once"] },
+        actions: {
+          type: "array", minItems: 1, maxItems: 16,
+          items: {
+            type: "object", additionalProperties: false,
+            properties: {
+              type: { type: "string", enum: ["queueSessionMessage", "activateSession", "localNotification"] },
+              message: { oneOf: [{ type: "string" }, { type: "object", additionalProperties: true }] },
+              title: { type: "string" },
+              body: { type: "string" }
+            },
+            required: ["type"]
+          }
+        },
+        process: {
+          type: "object", additionalProperties: false,
+          properties: {
+            pid: { type: "integer", minimum: 1 },
+            poll_interval_seconds: { type: "integer", minimum: 1, maximum: 3600 },
+            expected_start_time: { type: "string" }
+          },
+          required: ["pid"]
+        },
         condition: {
           type: "object",
           additionalProperties: false,
@@ -77,11 +100,23 @@ function toTaskInput(args) {
     message: args.message,
     scheduleType: args.schedule_type,
     runAt: args.run_at,
+    delaySeconds: args.delay_seconds,
     intervalSeconds: args.interval_seconds,
     timezone: args.timezone,
     missedPolicy: args.missed_policy,
+    actions: args.actions,
+    process: toProcess(args.process),
     condition: toCondition(args.condition),
     maxRetries: args.max_retries
+  };
+}
+
+function toProcess(process) {
+  if (process == null) return undefined;
+  return {
+    pid: process.pid,
+    pollIntervalSeconds: process.poll_interval_seconds,
+    expectedStartTime: process.expected_start_time
   };
 }
 

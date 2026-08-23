@@ -115,6 +115,7 @@ struct MainTabPageProposalCache {
 enum AppTab: String, CaseIterable, Identifiable {
     case console
     case sessions
+    case automations
     case worktrees
     case sessionDSH
     case agents
@@ -126,9 +127,10 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: 0
         case .sessions: 1
-        case .worktrees: 2
-        case .sessionDSH: 3
-        case .agents: 4
+        case .automations: 2
+        case .worktrees: 3
+        case .sessionDSH: 4
+        case .agents: 5
         }
     }
 
@@ -136,6 +138,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: L10n("Console")
         case .sessions: L10n("Sessions")
+        case .automations: L10n("Automations")
         case .worktrees: L10n("Worktrees")
         case .sessionDSH: L10n("Session DSH")
         case .agents: L10n("Agents")
@@ -146,6 +149,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .console: "square.grid.2x2"
         case .sessions: "bubble.left.and.bubble.right"
+        case .automations: "bolt.badge.clock"
         case .worktrees: "arrow.triangle.branch"
         case .sessionDSH: "globe"
         case .agents: "person.2"
@@ -321,6 +325,8 @@ struct MainTabView: View {
             WarRoomView()
         case .sessions:
             SessionsView()
+        case .automations:
+            AutomationsView()
         case .worktrees:
             WorktreeManagementView()
         case .sessionDSH:
