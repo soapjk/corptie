@@ -556,14 +556,12 @@ struct WorktreeManagementView: View {
                         manualConflictRetryButton()
                     }
                 } else if job.hasMergeConflict {
-                    if currentConflictItem(job)?.associations.contains(where: { $0.workItemId != nil }) == true {
-                        Button(L10n("Let Agent Resolve Conflicts")) {
-                            Task { await client.resolveConflictWithAgent() }
-                        }
-                        .controlSize(.small)
-                        .disabled(client.isMutating)
-                        .accessibilityIdentifier("worktree.integrate.resolve-with-agent")
+                    Button(L10n("Let Agent Resolve Conflicts")) {
+                        Task { await client.resolveConflictWithAgent() }
                     }
+                    .controlSize(.small)
+                    .disabled(client.isMutating)
+                    .accessibilityIdentifier("worktree.integrate.resolve-with-agent")
                     manualConflictRetryButton()
                 } else if job.status == "paused" {
                     Button(L10n("Retry")) { Task { await client.retryJob() } }

@@ -53,6 +53,7 @@ import {
   callObjectiveChatDynamicTool
 } from "./application/objectiveChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { resolveConflictResolutionAgentContext } from "./application/conflictResolutionAgentContext.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
 import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
@@ -1057,18 +1058,15 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   }),
   inspectConflictResolution: (input) => gitWorkspaces.inspectIntegrationConflictResolutionForProject(input),
   launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
-    const sourceWorkItem = (item.associations ?? [])
-      .map((association) => association.workItemId ? store.getWorkItem(association.workItemId) : null)
-      .find((candidate) => candidate?.objective_id && candidate?.main_agent_id);
-    const objective = sourceWorkItem ? store.getObjective(sourceWorkItem.objective_id) : null;
-    const agent = sourceWorkItem ? store.getAgent(sourceWorkItem.main_agent_id) : null;
-    if (!sourceWorkItem || !objective || !agent || agent.role !== "independentContributor") {
+    const context = resolveConflictResolutionAgentContext(item, store);
+    if (!context) {
       const error = new Error(
-        "The conflicted Worktree has no associated WorkItem with an available Independent Contributor Agent."
+        "No Independent Contributor Agent could be recovered from the conflicted Worktree's current or historical Sessions. Open the Worktree detail and bind an Agent-backed WorkItem, then retry."
       );
       error.code = "CONFLICT_AGENT_UNAVAILABLE";
       throw error;
     }
+    const { sourceWorkItem, objective, agent } = context;
     const branchLabel = item.branchName ?? item.worktreeId;
     const title = `处理 ${branchLabel} 的 Worktree 集成冲突`;
     const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
