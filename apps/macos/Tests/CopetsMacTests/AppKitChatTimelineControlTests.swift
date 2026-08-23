@@ -668,6 +668,89 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyHarness.scrollView.contentView.bounds.minY, yBefore, accuracy: 1)
     }
 
+    func testGoalTailRefreshUsesViewportGeometryInsteadOfStaleFollowInput() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "goal-row-\($0)", revision: 0, text: "Goal row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        await settleMainQueue()
+        XCTAssertFalse(harness.followState.value)
+
+        // Reproduce SwiftUI feeding the coordinator the previous frame's
+        // value while Goal progress keeps revising the final card.
+        harness.coordinator.followsLatest = true
+        let refreshed = Array(rows.dropLast()) + [
+            row(id: "goal-row-29", revision: 1, text: "Goal progress streamed again")
+        ]
+        harness.coordinator.apply(rows: refreshed)
+        await settleMainQueue()
+
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 0, accuracy: 1)
+        XCTAssertFalse(isNearBottom(harness))
+    }
+
+    func testGoalMessageAppendPreservesReaderAnchorWithStaleFollowInput() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "goal-message-\($0)", text: "Goal message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 240))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        await settleMainQueue()
+        let before = visibleAnchor(in: harness.tableView, rows: rows)
+
+        harness.coordinator.followsLatest = true
+        let appended = rows + [row(id: "goal-message-30", text: "New user message")]
+        harness.coordinator.apply(rows: appended)
+        await settleMainQueue()
+        let after = visibleAnchor(in: harness.tableView, rows: appended)
+
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.offset, before.offset, accuracy: 4)
+        XCTAssertFalse(isNearBottom(harness))
+    }
+
+    func testUserScrollAwayCancelsQueuedGoalFollowCommand() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "queued-goal-row-\($0)", revision: 0, text: "Goal row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        let refreshed = Array(rows.dropLast()) + [
+            row(id: "queued-goal-row-29", revision: 1, text: "A taller streamed Goal update\n\nwith more content")
+        ]
+        harness.coordinator.apply(rows: refreshed)
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        await settleMainQueue()
+
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 0, accuracy: 1)
+        XCTAssertFalse(harness.followState.value)
+        XCTAssertFalse(isNearBottom(harness))
+    }
+
+    func testGoalAndRegularTimelineFollowStateRemainCoordinatorLocal() async {
+        let goalHarness = makeHarness(followsLatest: true, height: 180)
+        let regularHarness = makeHarness(followsLatest: true, height: 180)
+        let goalRows = (0..<24).map { row(id: "goal-mode-\($0)", text: "Goal \($0)") }
+        let regularRows = (0..<24).map { row(id: "regular-mode-\($0)", text: "Regular \($0)") }
+        goalHarness.coordinator.apply(rows: goalRows)
+        regularHarness.coordinator.apply(rows: regularRows)
+        await settleMainQueue()
+
+        goalHarness.scrollView.contentView.scroll(to: .zero)
+        goalHarness.scrollView.reflectScrolledClipView(goalHarness.scrollView.contentView)
+        await settleMainQueue()
+
+        XCTAssertFalse(goalHarness.followState.value)
+        XCTAssertTrue(regularHarness.followState.value)
+        XCTAssertTrue(isNearBottom(regularHarness))
+    }
+
     func testOffscreenRenderingProducesVisibleTimelineArtifact() throws {
         let harness = makeHarness(followsLatest: false, height: 460)
         let rows = [

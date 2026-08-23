@@ -739,7 +739,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        context.coordinator.followsLatest = followsLatest
         context.coordinator.onToggleExpansion = onToggleExpansion
         context.coordinator.onAction = onAction
         context.coordinator.onNearTop = onNearTop
@@ -897,10 +896,17 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             let oldRevisions = revisionsByID
             let oldTailRevision = rows.last.map { "\($0.id):\($0.contentRevision)" }
             let newTailRevision = nextRows.last.map { "\($0.id):\($0.contentRevision)" }
+            // The AppKit viewport is the source of truth while this host is
+            // mounted. SwiftUI publishes the same value asynchronously, so a
+            // high-frequency tail update (notably an active Goal) can arrive
+            // before a user's scroll-away has propagated through the binding.
+            // Sampling geometry before changing row heights prevents that
+            // stale `true` from pinning the reader back to the newest card.
+            let followedLatestBeforeUpdate = followsLatest && isViewportNearBottom()
             synchronizeTableWidth()
             let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
             let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom
-            let prependAnchor = !followsLatest && !hasPendingInitialViewport
+            let prependAnchor = !followedLatestBeforeUpdate && !hasPendingInitialViewport
                 ? visibleAnchor(in: tableView)
                 : nil
             if abs(width - lastMeasuredWidth) >= 1 {
@@ -921,7 +927,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                     in: tableView
                 )
                 synchronizeDocumentHeight(in: tableView)
-                if followsLatest, !pendingInitialScrollToBottom {
+                if followedLatestBeforeUpdate, !pendingInitialScrollToBottom {
                     scrollToBottom()
                 } else if let prependAnchor {
                     restore(anchor: prependAnchor, in: tableView)
@@ -955,7 +961,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 }
             }
             synchronizeDocumentHeight(in: tableView)
-            if followsLatest, !pendingInitialScrollToBottom, oldTailRevision != newTailRevision {
+            if followedLatestBeforeUpdate,
+               !pendingInitialScrollToBottom,
+               oldTailRevision != newTailRevision {
                 scrollToBottom()
             }
             restoreInitialViewportSynchronouslyIfNeeded()
@@ -1026,12 +1034,21 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func scrollToBottom() {
             guard let tableView, !rows.isEmpty else { return }
+            // Explicit jump-to-latest and automatic follow both opt in here.
+            // If the user leaves the bottom before the queued layout pass,
+            // viewportDidScroll flips this back to false and the command is
+            // discarded instead of pulling the reader down again.
+            followsLatest = true
+            if !followsLatestBinding.wrappedValue {
+                followsLatestBinding.wrappedValue = true
+            }
             suppressNearTopDuringLayout()
             scrollCommandGeneration &+= 1
             let generation = scrollCommandGeneration
             DispatchQueue.main.async { [weak self, weak tableView] in
                 guard let self,
                       self.scrollCommandGeneration == generation,
+                      self.followsLatest,
                       let tableView,
                       !self.rows.isEmpty else { return }
                 tableView.layoutSubtreeIfNeeded()
@@ -1044,11 +1061,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
         }
 
-        private func viewportDidScroll() {
-            guard let scrollView, let tableView, !rows.isEmpty else { return }
+        private func isViewportNearBottom() -> Bool {
+            guard let scrollView, let tableView, !rows.isEmpty else {
+                return followsLatest
+            }
             let visibleMaxY = scrollView.contentView.bounds.maxY
             let contentMaxY = tableView.rect(ofRow: rows.count - 1).maxY
-            let nearBottom = contentMaxY - visibleMaxY <= 8
+            return contentMaxY - visibleMaxY <= 8
+        }
+
+        private func viewportDidScroll() {
+            guard let scrollView, !rows.isEmpty else { return }
+            let nearBottom = isViewportNearBottom()
             followsLatest = nearBottom
             if followsLatestBinding.wrappedValue != nearBottom {
                 followsLatestBinding.wrappedValue = nearBottom
