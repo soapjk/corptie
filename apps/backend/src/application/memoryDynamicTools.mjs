@@ -27,8 +27,18 @@ export const memoryDynamicTools = Object.freeze([
       intent: {
         type: "string",
         description: "What to recall. May be empty to retrieve the current Session's highest-confidence active memories."
+      },
+      deep_recall: {
+        type: "boolean",
+        description: "Request bounded semantic Deep Recall. When unavailable it clearly degrades to local lexical recall."
       }
     }
+  ),
+  tool(
+    "corptie_memory_get",
+    "Get one memory visible to the authenticated current Session, including provenance and audit metadata.",
+    { memory_id: { type: "string", minLength: 1 } },
+    ["memory_id"]
   ),
   tool(
     "corptie_memory_list",

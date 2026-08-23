@@ -1456,6 +1456,9 @@ export class CorptieStore {
         promotion_status TEXT NOT NULL DEFAULT 'active',
         promoted_skill_id TEXT,
         access_policy TEXT NOT NULL DEFAULT '{}',
+        trust_level TEXT NOT NULL DEFAULT 'untrusted',
+        expires_at TEXT,
+        replaces_memory_id TEXT,
         version INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -1471,6 +1474,34 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_type, owner_id);
       CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+
+      CREATE TABLE IF NOT EXISTS memory_audit (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT,
+        action TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        actor_id TEXT,
+        reason TEXT,
+        before_json TEXT,
+        after_json TEXT,
+        rollback_of TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_audit_memory ON memory_audit(memory_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS memory_recall_audit (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        phase TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        scope_json TEXT NOT NULL DEFAULT '{}',
+        candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+        selected_ids_json TEXT NOT NULL DEFAULT '[]',
+        diagnostics_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_memory_recall_session ON memory_recall_audit(session_id, created_at DESC);
     `);
 
     // --- 晋升技能（13.7：Agent 能力类记忆晋升为可发现技能，对接 12 hub） ---
@@ -1836,6 +1867,9 @@ export class CorptieStore {
     this.ensureColumn("memories", "revoked_at", "TEXT");
     this.ensureColumn("memories", "work_item_id", "TEXT REFERENCES work_items(id) ON DELETE CASCADE");
     this.ensureColumn("memories", "source_event_sequence", "INTEGER");
+    this.ensureColumn("memories", "trust_level", "TEXT NOT NULL DEFAULT 'untrusted'");
+    this.ensureColumn("memories", "expires_at", "TEXT");
+    this.ensureColumn("memories", "replaces_memory_id", "TEXT");
     this.migrateWorkItemMemoryAssociations();
     this.initializeSortOrder();
     this.migrateAgentAvailability();
@@ -6898,9 +6932,9 @@ export class CorptieStore {
         id, owner_type, owner_id, work_item_id, kind, content, structured_json, tags_json,
         base_confidence, confidence, recency_score, usage_count, last_accessed_at,
         source_type, source_session_id, source_event_sequence, source_event_seqs_json,
-        promotion_status, promoted_skill_id, access_policy, version,
+        promotion_status, promoted_skill_id, access_policy, trust_level, expires_at, replaces_memory_id, version,
         auto_applied, applied_at, revoked_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.ownerType,
@@ -6922,6 +6956,9 @@ export class CorptieStore {
         input.promotionStatus ?? "active",
         input.promotedSkillId ?? null,
         JSON.stringify(input.accessPolicy ?? {}),
+        input.trustLevel ?? ((input.sourceType ?? "user") === "user" ? "trusted" : "untrusted"),
+        input.expiresAt ?? null,
+        input.replacesMemoryId ?? null,
         input.version ?? 1,
         input.autoApplied ? 1 : 0,
         input.appliedAt ?? null,
@@ -7017,7 +7054,7 @@ export class CorptieStore {
       `UPDATE memories SET
         content=?, structured_json=?, tags_json=?, confidence=?, recency_score=?,
         usage_count=?, last_accessed_at=?, promotion_status=?, promoted_skill_id=?,
-        access_policy=?, version=?, auto_applied=?, applied_at=?, revoked_at=?, updated_at=?
+        access_policy=?, trust_level=?, expires_at=?, replaces_memory_id=?, version=?, auto_applied=?, applied_at=?, revoked_at=?, updated_at=?
        WHERE id=?`,
       [
         patch.content ?? current.content,
@@ -7030,6 +7067,9 @@ export class CorptieStore {
         patch.promotionStatus ?? current.promotion_status,
         patch.promotedSkillId ?? current.promoted_skill_id,
         JSON.stringify(patch.accessPolicy ?? JSON.parse(current.access_policy || "{}")),
+        patch.trustLevel ?? current.trust_level,
+        patch.expiresAt !== undefined ? patch.expiresAt : current.expires_at,
+        patch.replacesMemoryId !== undefined ? patch.replacesMemoryId : current.replaces_memory_id,
         patch.version ?? current.version,
         patch.autoApplied !== undefined ? (patch.autoApplied ? 1 : 0) : current.auto_applied,
         patch.appliedAt !== undefined ? patch.appliedAt : current.applied_at,
@@ -7045,6 +7085,90 @@ export class CorptieStore {
   deleteMemory(id) {
     this.db.run(`DELETE FROM memories WHERE id = ?`, [id]);
     this.scheduleSave();
+  }
+
+  createMemoryAudit(input = {}) {
+    const id = input.id ?? `memory-audit:${randomUUID()}`;
+    this.db.run(
+      `INSERT INTO memory_audit (
+        id, memory_id, action, actor_type, actor_id, reason,
+        before_json, after_json, rollback_of, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.memoryId ?? null, input.action, input.actorType ?? "system", input.actorId ?? null,
+        input.reason ?? null, input.before ? JSON.stringify(input.before) : null,
+        input.after ? JSON.stringify(input.after) : null, input.rollbackOf ?? null, createdAtFromOrNow()]
+    );
+    this.scheduleSave();
+    return this.getMemoryAudit(id);
+  }
+
+  getMemoryAudit(id) {
+    return presentMemoryAudit(this.selectOne(`SELECT * FROM memory_audit WHERE id = ?`, [id]));
+  }
+
+  listMemoryAudit({ memoryId = null, limit = 200 } = {}) {
+    const rows = memoryId
+      ? this.selectAll(`SELECT * FROM memory_audit WHERE memory_id = ? ORDER BY created_at DESC LIMIT ?`, [memoryId, limit])
+      : this.selectAll(`SELECT * FROM memory_audit ORDER BY created_at DESC LIMIT ?`, [limit]);
+    return rows.map(presentMemoryAudit);
+  }
+
+  rollbackMemoryAudit(auditId, actorId = null) {
+    const audit = this.getMemoryAudit(auditId);
+    if (!audit?.memoryId || !audit.before) return null;
+    const current = this.getMemory(audit.memoryId);
+    if (!current) return null;
+    const before = audit.before;
+    const restored = this.updateMemory(current.id, {
+      content: before.content,
+      structuredJson: safeJsonValue(before.structured_json, before.structured ?? {}),
+      tags: safeJsonValue(before.tags_json, before.tags ?? []),
+      confidence: before.confidence,
+      promotionStatus: before.promotion_status ?? before.promotionStatus,
+      promotedSkillId: before.promoted_skill_id ?? before.promotedSkillId,
+      trustLevel: before.trust_level ?? before.trustLevel,
+      expiresAt: before.expires_at ?? before.expiresAt ?? null,
+      replacesMemoryId: before.replaces_memory_id ?? before.replacesMemoryId ?? null,
+      revokedAt: before.revoked_at ?? before.revokedAt ?? null,
+      version: Number(current.version ?? 1) + 1
+    });
+    this.createMemoryAudit({
+      memoryId: current.id, action: "rollback", actorType: "user", actorId,
+      reason: `Rollback ${auditId}`, before: current, after: restored, rollbackOf: auditId
+    });
+    return restored;
+  }
+
+  createMemoryRecallAudit(input = {}) {
+    const id = input.id ?? `memory-recall:${randomUUID()}`;
+    const createdAt = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO memory_recall_audit (
+        id, session_id, phase, mode, reason, scope_json, candidate_ids_json,
+        selected_ids_json, diagnostics_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, input.sessionId ?? null, input.phase, input.mode, input.reason,
+        JSON.stringify(input.scope ?? {}), JSON.stringify(input.candidateIds ?? []),
+        JSON.stringify(input.selectedIds ?? []), JSON.stringify(input.diagnostics ?? {}), createdAt]
+    );
+    this.scheduleSave();
+    return {
+      id, sessionId: input.sessionId ?? null, phase: input.phase, mode: input.mode,
+      reason: input.reason, scope: input.scope ?? {}, candidateIds: input.candidateIds ?? [],
+      selectedIds: input.selectedIds ?? [], diagnostics: input.diagnostics ?? {}, createdAt
+    };
+  }
+
+  listMemoryRecallAudit({ sessionId = null, limit = 200 } = {}) {
+    const rows = sessionId
+      ? this.selectAll(`SELECT * FROM memory_recall_audit WHERE session_id = ? ORDER BY created_at DESC LIMIT ?`, [sessionId, limit])
+      : this.selectAll(`SELECT * FROM memory_recall_audit ORDER BY created_at DESC LIMIT ?`, [limit]);
+    return rows.map((row) => ({
+      id: row.id, sessionId: row.session_id, phase: row.phase, mode: row.mode, reason: row.reason,
+      scope: safeJsonValue(row.scope_json, {}), candidateIds: safeJsonValue(row.candidate_ids_json, []),
+      selectedIds: safeJsonValue(row.selected_ids_json, []), diagnostics: safeJsonValue(row.diagnostics_json, {}),
+      createdAt: row.created_at
+    }));
   }
 
   // 置信度衰减（13）：按 factor 下调某 owner 下所有记忆的 confidence
@@ -7106,6 +7230,7 @@ export class CorptieStore {
           AND confidence >= 0.7
           AND usage_count >= 5
           AND promotion_status != 'promoted_to_skill'
+          AND trust_level = 'trusted'
           AND revoked_at IS NULL
         ORDER BY confidence DESC`
     );
@@ -7115,6 +7240,12 @@ export class CorptieStore {
   promoteMemoryToSkill(memoryId, draft = {}) {
     const mem = this.getMemory(memoryId);
     if (!mem) return null;
+    if (mem.trust_level !== "trusted") {
+      throw memoryAssociationError(
+        "UNTRUSTED_MEMORY_PROMOTION_FORBIDDEN",
+        "Untrusted memory cannot be promoted to a Skill."
+      );
+    }
     const id = draft.id ?? `skill:${randomUUID()}`;
     const now = createdAtFromOrNow();
     this.db.run(
@@ -7140,6 +7271,10 @@ export class CorptieStore {
     this.updateMemory(memoryId, {
       promotionStatus: "promoted_to_skill",
       promotedSkillId: id
+    });
+    this.createMemoryAudit({
+      memoryId, action: "promote_to_skill", actorType: "system",
+      before: mem, after: this.getMemory(memoryId), reason: `Promoted to ${id}`
     });
     this.scheduleSave();
     return this.getSkill(id);
@@ -8579,6 +8714,32 @@ function memoryAssociationError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function presentMemoryAudit(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    memoryId: row.memory_id,
+    action: row.action,
+    actorType: row.actor_type,
+    actorId: row.actor_id,
+    reason: row.reason,
+    before: safeJsonValue(row.before_json, null),
+    after: safeJsonValue(row.after_json, null),
+    rollbackOf: row.rollback_of,
+    createdAt: row.created_at
+  };
+}
+
+function safeJsonValue(value, fallback) {
+  if (value == null) return fallback;
+  if (typeof value !== "string") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
 }
 
 // 会话日志事件溯源（10）：session_items 的 item.type → 事件类型 + producer。

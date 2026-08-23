@@ -19,6 +19,7 @@ struct AgentDetailView: View {
     @State private var showDeleteConfirm = false
     @State private var showSessionCreation = false
     @State private var assistAgentId: String?
+    @State private var selectedPage = "profile"
 
     init(agent: Agent) {
         self.agent = agent
@@ -31,14 +32,25 @@ struct AgentDetailView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             header
-            Divider()
-            form
-            Divider()
-            actions
-            deleteButton
+            Picker("", selection: $selectedPage) {
+                Text(L10n("Profile")).tag("profile")
+                Text(L10n("Memories")).tag("memories")
+            }
+            .pickerStyle(.segmented)
+            if selectedPage == "profile" {
+                Divider()
+                form
+                Divider()
+                actions
+                deleteButton
+            } else {
+                MemoryManagementView(scope: .owner(type: "agent", id: agent.agentId))
+                    .frame(minHeight: 390)
+            }
         }
         .padding(24)
-        .frame(width: 500)
+        .frame(width: selectedPage == "profile" ? 500 : 760)
+        .frame(minHeight: selectedPage == "profile" ? nil : 580)
         .alert(L10n("删除 Agent"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteAgent(agentId: agent.agentId) }

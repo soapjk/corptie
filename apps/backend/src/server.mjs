@@ -100,6 +100,8 @@ import {
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
 import { MemoryOperationService } from "./application/memoryOperationService.mjs";
+import { MemoryRecallService } from "./application/memoryRecallService.mjs";
+import { MemoryLifecycleService } from "./application/memoryLifecycleService.mjs";
 import { memoryDynamicTools, callMemoryDynamicTool } from "./application/memoryDynamicTools.mjs";
 import { SkillRegistryService } from "./application/skillRegistryService.mjs";
 import { skillDynamicTools, callSkillDynamicTool } from "./application/skillDynamicTools.mjs";
@@ -305,10 +307,13 @@ const hubService = new HubService({
   store,
   embedder: createOpenAiEmbedder(store.choiceParserSettings())
 });
-const agentContextService = new AgentContextService({ store, hubService });
+const memoryRecallService = new MemoryRecallService({ store, hubService });
+const memoryLifecycleService = new MemoryLifecycleService({ store });
+const agentContextService = new AgentContextService({ store, hubService, recallService: memoryRecallService });
 const memoryOperationService = new MemoryOperationService({
   store,
   hubService,
+  recallService: memoryRecallService,
   resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId)
 });
 const collaborationRouter = new CollaborationRouter({ store });
@@ -537,7 +542,7 @@ const openClackyManager = new OpenClackyManager({
   resolveSessionBootstrap: async (input) => {
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
-    const agentContext = actorId ? await collaborationAgentContextInstructions(actorId) : "";
+    const agentContext = actorId ? await collaborationAgentContextInstructions(actorId, metadata) : "";
     const runtimeInstructions = actorId ? collaborationRuntimeInstructions(actorId) : "";
     const systemPrompt = [agentContext].filter(Boolean).join("\n\n") || null;
     return {
@@ -772,7 +777,7 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  resolveMessageContext: async (reference) => {
+  resolveMessageContext: async (reference, messageContext = {}) => {
     const session = store.getSession(reference.sessionId);
     let baseContext = null;
     if (session?.sessionKind === "objectiveChat" && session.objectiveId) {
@@ -785,13 +790,31 @@ const sessionApplicationService = new SessionApplicationService({
       const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
       baseContext = buildWorkSessionContext({ session, workItem, objective });
     }
+    let memoryContext = null;
+    if (session?.agentId) {
+      const recall = await memoryRecallService.turn(messageContext.message, {
+        sessionId: session.id,
+        agentId: session.agentId,
+        objectiveId: session.objectiveId ?? null,
+        workItemId: session.workItemId ?? null
+      }, { deepRecall: messageContext.deepRecall === true });
+      if (recall.memories.length > 0) {
+        const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
+        memoryContext = {
+          prompt: `<corptie_memory_recall mode="${recall.mode}" reason="${recall.reason}">\n${lines.join("\n")}\n</corptie_memory_recall>`,
+          memoryRecall: recall
+        };
+      }
+    }
     const historicalContext = await historicalProviderMessageContext(reference);
-    if (!historicalContext?.prompt) return baseContext;
-    if (!baseContext?.prompt) return historicalContext;
+    const contexts = [historicalContext, memoryContext, baseContext].filter((item) => item?.prompt);
+    if (contexts.length === 0) return null;
+    if (contexts.length === 1) return contexts[0];
     return {
       ...baseContext,
-      prompt: `${historicalContext.prompt}\n\n${baseContext.prompt}`,
-      providerHandoffMessageCount: historicalContext.messageCount
+      prompt: contexts.map((item) => item.prompt).join("\n\n"),
+      providerHandoffMessageCount: historicalContext?.messageCount ?? 0,
+      memoryRecall: memoryContext?.memoryRecall ?? null
     };
   },
   bindCreatedSession: async ({ providerId, session, input, context }) => {
@@ -2622,10 +2645,10 @@ function collaborationThreadOptions(agentId) {
 }
 
 // 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
-async function collaborationThreadOptionsWithAgentContext(agentId) {
+async function collaborationThreadOptionsWithAgentContext(agentId, metadata = null) {
   const base = collaborationThreadOptions(agentId);
   if (!agentId) return base;
-  const agentContext = await collaborationAgentContextInstructions(agentId);
+  const agentContext = await collaborationAgentContextInstructions(agentId, metadata);
   if (!agentContext) return base;
   const developerInstructions = [agentContext, base.developerInstructions].filter(Boolean).join("\n\n");
   return { ...base, developerInstructions };
@@ -2634,7 +2657,7 @@ async function collaborationThreadOptionsWithAgentContext(agentId) {
 async function collaborationProviderRuntimeOptionsWithAgentContext(agentId, metadata = null) {
   const base = collaborationProviderRuntimeOptions(agentId, metadata);
   if (!agentId) return base;
-  const agentContext = await collaborationAgentContextInstructions(agentId);
+  const agentContext = await collaborationAgentContextInstructions(agentId, metadata);
   if (!agentContext) return base;
   const developerInstructions = [agentContext, base.developerInstructions].filter(Boolean).join("\n\n");
   return { ...base, developerInstructions };
@@ -2642,9 +2665,16 @@ async function collaborationProviderRuntimeOptionsWithAgentContext(agentId, meta
 
 // Agent 上下文（systemPrompt + description + per-agent 记忆），异步组装。
 // 仅用于会话创建时注入 Agent 身份；resume / workspace 切换沿用静态协议指令。
-async function collaborationAgentContextInstructions(agentId) {
+async function collaborationAgentContextInstructions(agentId, metadata = null) {
   if (!agentId) return "";
-  const context = await agentContextService.buildAgentContext(agentId, { intent: "" });
+  const context = await agentContextService.buildAgentContext(agentId, {
+    intent: "",
+    scope: {
+      sessionId: metadata?.sessionId ?? null,
+      objectiveId: metadata?.objectiveId ?? null,
+      workItemId: metadata?.workItemId ?? null
+    }
+  });
   return context?.instructions ?? "";
 }
 
@@ -2697,7 +2727,7 @@ function claudeCollaborationRuntimeOptions(agentId, metadata = null) {
 async function claudeCollaborationRuntimeOptionsWithAgentContext(agentId, metadata = null) {
   const base = claudeCollaborationRuntimeOptions(agentId, metadata);
   if (!agentId) return base;
-  const agentContext = await collaborationAgentContextInstructions(agentId);
+  const agentContext = await collaborationAgentContextInstructions(agentId, metadata);
   if (!agentContext) return base;
   const append = [agentContext, collaborationRuntimeInstructions(agentId)].filter(Boolean).join("\n\n");
   return {
@@ -4279,7 +4309,10 @@ async function createCodexProviderSession(input = {}) {
       runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
       model: runtime.model,
       modelProvider: input.modelProvider,
-      ...(input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(collaborationAgentId))
+      ...(input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(
+        collaborationAgentId,
+        input.toolHost?.metadata
+      ))
     });
     const prompt = typeof input.prompt === "string" && input.prompt.trim()
       ? input.prompt.trim()
@@ -6903,6 +6936,8 @@ function route(request, response) {
     hubService,
     router: collaborationRouter,
     memoryExtractor,
+    memoryRecallService,
+    memoryLifecycleService,
     assistantService,
     launchSession: launchWorkItemSession,
     startWorkItemExecution: (input) => workItemStartService.start(input),

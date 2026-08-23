@@ -1215,6 +1215,8 @@ struct SessionDetailPanel: View {
                 VStack(alignment: .leading, spacing: 12) {
                     statusCard
 
+                    SessionMemoryDiagnosticsView(session: session)
+
                     ScheduledSessionStrip(session: session)
 
                     if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {

@@ -524,6 +524,98 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
+    func allMemories(includeRevoked: Bool = true) async -> [MemoryItem]? {
+        var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "global", value: "true"),
+            URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false")
+        ]
+        guard let url = components?.url else { return nil }
+        return await loadMemories(url: url)
+    }
+
+    func updateMemory(memoryId: String, tags: [String]) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)"))
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["tags": tags])
+        return await mutateMemory(request)
+    }
+
+    func revokeMemory(memoryId: String, reason: String) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)/revoke"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason])
+        return await mutateMemory(request)
+    }
+
+    func memoryRecalls(sessionId: String) async -> [MemoryRecallAudit]? {
+        var components = URLComponents(url: baseURL.appending(path: "memory-recall-audit"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
+        guard let url = components?.url else { return nil }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try validateMemoryResponse(response, data: data)
+            return try decoder.decode(MemoryRecallListEnvelope.self, from: data).recalls
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func memoryAudit(memoryId: String) async -> [MemoryAuditEntry]? {
+        var components = URLComponents(url: baseURL.appending(path: "memory-audit"), resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "memoryId", value: memoryId)]
+        guard let url = components?.url else { return nil }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try validateMemoryResponse(response, data: data)
+            return try decoder.decode(MemoryAuditListEnvelope.self, from: data).audit
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    func rollbackMemoryAudit(auditId: String) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memory-audit/\(auditId)/rollback"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        return await mutateMemory(request)
+    }
+
+    private func loadMemories(url: URL) async -> [MemoryItem]? {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try validateMemoryResponse(response, data: data)
+            errorMessage = nil
+            return try decoder.decode(MemoryListEnvelope.self, from: data).memories
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func mutateMemory(_ request: URLRequest) async -> MemoryItem? {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateMemoryResponse(response, data: data)
+            errorMessage = nil
+            return try decoder.decode(MemoryEnvelope.self, from: data).memory
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func validateMemoryResponse(_ response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse, http.statusCode >= 400 else { return }
+        let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+        throw EntityLaunchError(message: envelope?.error ?? "Memory request failed (HTTP \(http.statusCode)).", code: envelope?.code)
+    }
+
     // 创建 Worker Session：必须同时绑定 WorkItem 与 Independent Contributor。
     @discardableResult
     func createSession(

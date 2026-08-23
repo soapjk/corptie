@@ -9,6 +9,7 @@ export class MemoryOperationService {
   constructor(options = {}) {
     this.store = options.store;
     this.hubService = options.hubService;
+    this.recallService = options.recallService ?? null;
     this.resolveAgentForSession = options.resolveAgentForSession ?? null;
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory ?? randomUUID;
@@ -24,6 +25,8 @@ export class MemoryOperationService {
       case "corptie_memory_search":
       case "corptie.memory.search":
         return this.#search(context, args);
+      case "corptie_memory_get":
+        return this.#get(context, args);
       case "corptie_memory_list":
         return this.#list(context, args);
       case "corptie_memory_remember":
@@ -38,8 +41,25 @@ export class MemoryOperationService {
   }
 
   async #search(context, args) {
-    const memories = await this.hubService.retrieveMemory(String(args.intent ?? ""), context.scopes);
+    if (this.recallService) {
+      const recall = await this.recallService.explicitSearch(String(args.intent ?? ""), context.scopes, {
+        deepRecall: args.deep_recall === true
+      });
+      return { ...this.#result(context, recall.memories), recall: omitMemories(recall) };
+    }
+    const memories = await this.hubService.retrieveMemory(String(args.intent ?? ""), context.scopes, {
+      allowEmbedding: args.deep_recall === true
+    });
     return this.#result(context, memories);
+  }
+
+  #get(context, args) {
+    const memory = this.#manageableMemory(context, args.memory_id);
+    return {
+      scopes: context.scopes,
+      memory: presentMemory(memory),
+      audit: this.store.listMemoryAudit({ memoryId: memory.id })
+    };
   }
 
   #list(context, args) {
@@ -82,7 +102,12 @@ export class MemoryOperationService {
       sourceEventSeqs: event ? [event.sequence] : [],
       promotionStatus: "active",
       autoApplied: false,
-      appliedAt: this.clock()
+      appliedAt: this.clock(),
+      trustLevel: "trusted"
+    });
+    this.store.createMemoryAudit({
+      memoryId: memory.id, action: "remember", actorType: "user", actorId: context.actorId,
+      after: memory
     });
     return { scopes: context.scopes, memory: presentMemory(memory) };
   }
@@ -102,7 +127,12 @@ export class MemoryOperationService {
       memoryId: memory.id,
       changedFields: [hasContent ? "content" : null, hasTags ? "tags" : null].filter(Boolean)
     });
-    return { scopes: context.scopes, memory: presentMemory(this.store.updateMemory(memory.id, patch)) };
+    const updated = this.store.updateMemory(memory.id, patch);
+    this.store.createMemoryAudit({
+      memoryId: memory.id, action: "update", actorType: "user", actorId: context.actorId,
+      before: memory, after: updated
+    });
+    return { scopes: context.scopes, memory: presentMemory(updated) };
   }
 
   #revoke(context, args) {
@@ -118,6 +148,10 @@ export class MemoryOperationService {
       structuredJson: reason
         ? { ...structuredJson, revocation: { reason, revokedAt, sessionId: context.session.id } }
         : structuredJson
+    });
+    this.store.createMemoryAudit({
+      memoryId: memory.id, action: "revoke", actorType: "user", actorId: context.actorId,
+      reason, before: memory, after: updated
     });
     return { scopes: context.scopes, memory: presentMemory(updated), alreadyRevoked: false };
   }
@@ -230,11 +264,22 @@ export function presentMemory(memory) {
     sourceSessionId: memory.source_session_id ?? null,
     sourceEventSeqs: safeJson(memory.source_event_seqs_json, []),
     promotionStatus: memory.promotion_status,
+    promotedSkillId: memory.promoted_skill_id ?? null,
+    trustLevel: memory.trust_level ?? "untrusted",
+    expiresAt: memory.expires_at ?? null,
+    replacesMemoryId: memory.replaces_memory_id ?? null,
+    autoApplied: Boolean(memory.auto_applied),
+    appliedAt: memory.applied_at ?? null,
     version: Number(memory.version ?? 1),
     revokedAt: memory.revoked_at ?? null,
     createdAt: memory.created_at,
     updatedAt: memory.updated_at
   };
+}
+
+function omitMemories(recall) {
+  const { memories: _memories, ...metadata } = recall;
+  return metadata;
 }
 
 function requiredText(value, field) {

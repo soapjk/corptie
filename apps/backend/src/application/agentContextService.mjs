@@ -7,11 +7,12 @@
 // - per-agent 记忆来自三层记忆的 owner_type='agent' 作用域，经 HubService.retrieveMemory 语义召回。
 
 export class AgentContextService {
-  constructor({ store, hubService, resolveAgentSkills = null }) {
+  constructor({ store, hubService, recallService = null, resolveAgentSkills = null }) {
     if (!store) throw new TypeError("AgentContextService requires a store.");
     if (!hubService) throw new TypeError("AgentContextService requires a hubService.");
     this.store = store;
     this.hubService = hubService;
+    this.recallService = recallService;
     // provider-neutral：由组合根注入，返回该 Agent 启用的 Skill 列表
     // [{ name, description, content }]，content 为 SKILL.md 正文摘要。
     // 为空/未注入则跳过 Skill 注入（保持旧行为）。
@@ -20,11 +21,16 @@ export class AgentContextService {
 
   // 组装指定 Agent 的完整上下文。intent 用于记忆语义召回（可为空，此时取全部 active 记忆）。
   // 返回 { agent, systemPrompt, description, memories, skills, instructions }。
-  async buildAgentContext(agentId, { intent = "" } = {}) {
+  async buildAgentContext(agentId, { intent = "", scope = {} } = {}) {
     const agent = this.store.getAgent(agentId);
     if (!agent) return null;
 
-    const memories = await this.hubService.retrieveMemory(intent, { agentId });
+    const recallScope = { ...scope, agentId };
+    const recall = this.recallService
+      ? await this.recallService.startup(recallScope)
+      : null;
+    const memories = recall?.memories
+      ?? await this.hubService.retrieveMemory(intent, recallScope, { limit: 8, allowEmbedding: false });
 
     let skills = [];
     if (typeof this.resolveAgentSkills === "function") {
@@ -40,7 +46,7 @@ export class AgentContextService {
 
     const instructions = this.#renderInstructions({ agent, systemPrompt, description, memories, skills });
 
-    return { agent, systemPrompt, description, memories, skills, instructions };
+    return { agent, systemPrompt, description, memories, skills, instructions, recall };
   }
 
   // 生成可追加到 Provider 指令的纯文本（不覆盖原协作协议指令，作为补充注入）。

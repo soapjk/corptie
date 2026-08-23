@@ -103,6 +103,12 @@ struct ObjectiveDetailView: View {
                         excludeObjectiveId: objective.id
                     )
 
+                    DisclosureGroup(L10n("Objective Memories")) {
+                        MemoryManagementView(scope: .owner(type: "objective", id: objective.id))
+                            .frame(height: 300)
+                            .padding(.top, 8)
+                    }
+
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
                             field(L10n("标签（逗号分隔）")) {
@@ -134,7 +140,7 @@ struct ObjectiveDetailView: View {
             }
             .padding(16)
         }
-        .frame(width: 500, height: 580)
+        .frame(width: 620, height: 680)
         .alert(L10n("删除 Objective"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteObjective(objectiveId: objective.id) }
