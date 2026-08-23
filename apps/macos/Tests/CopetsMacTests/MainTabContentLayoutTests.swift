@@ -14,7 +14,7 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
-    func mainTabHostUsesCachedPagePlacementInsteadOfGeometryOffsets() throws {
+    func mainTabHostPlacesOnlyTheSelectedPageInsteadOfGeometryOffsets() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -23,7 +23,8 @@ struct MainTabContentLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("MainTabPageLayout(selectedIndex: router.selectedTab.index)"))
-        #expect(contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains("subviews[selectedIndex].place("))
+        #expect(!contents.contains("for (index, subview) in subviews.enumerated()"))
         #expect(!contents.contains(".offset(x: slideOffset("))
         #expect(!contents.contains("GeometryReader { geo in"))
     }

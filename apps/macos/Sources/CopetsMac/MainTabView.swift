@@ -9,32 +9,19 @@ enum TwoPaneLayoutMetrics {
     static let cardCornerRadius: CGFloat = 12
 }
 
-/// Keeps inactive main-tab pages at their last proposed size.
+/// Keeps every main-tab subtree alive while placing only the selected page.
 ///
-/// The main window used to propose every intermediate full-screen animation
-/// size to all five resident pages. Four invisible NavigationSplitView/grid/
-/// WKWebView hierarchies therefore repeated layout work on the main thread for
-/// every animation frame. Only the selected page needs the live window size;
-/// inactive pages retain their state and receive a fresh proposal when selected.
+/// Placing multiple resident NavigationSplitViews offscreen can leave the
+/// selected page without a visible layout after the tab collection changes.
+/// The inactive subtrees retain their state, but only the selected subtree
+/// participates in the current window layout.
 struct MainTabPageLayout: Layout {
-    struct Cache {
-        fileprivate var proposals: MainTabPageProposalCache
-    }
-
     let selectedIndex: Int
-
-    func makeCache(subviews: Subviews) -> Cache {
-        Cache(proposals: MainTabPageProposalCache(pageCount: subviews.count))
-    }
-
-    func updateCache(_ cache: inout Cache, subviews: Subviews) {
-        cache.proposals.resetIfPageCountChanged(subviews.count)
-    }
 
     func sizeThatFits(
         proposal: ProposedViewSize,
         subviews: Subviews,
-        cache: inout Cache
+        cache: inout ()
     ) -> CGSize {
         CGSize(
             width: max(0, proposal.width ?? 0),
@@ -46,68 +33,14 @@ struct MainTabPageLayout: Layout {
         in bounds: CGRect,
         proposal: ProposedViewSize,
         subviews: Subviews,
-        cache: inout Cache
+        cache: inout ()
     ) {
-        let containerSize = bounds.size
-        for (index, subview) in subviews.enumerated() {
-            let pageSize = proposalSize(
-                for: index,
-                selectedIndex: selectedIndex,
-                containerSize: containerSize,
-                cache: &cache
-            )
-            let horizontalDirection: CGFloat
-            if index == selectedIndex {
-                horizontalDirection = 0
-            } else {
-                horizontalDirection = index < selectedIndex ? -1 : 1
-            }
-            subview.place(
-                at: CGPoint(
-                    x: bounds.midX + horizontalDirection * bounds.width,
-                    y: bounds.midY
-                ),
-                anchor: .center,
-                proposal: ProposedViewSize(pageSize)
-            )
-        }
-    }
-
-    private func proposalSize(
-        for index: Int,
-        selectedIndex: Int,
-        containerSize: CGSize,
-        cache: inout Cache
-    ) -> CGSize {
-        cache.proposals.proposal(
-            for: index,
-            selectedIndex: selectedIndex,
-            containerSize: containerSize
+        guard subviews.indices.contains(selectedIndex) else { return }
+        subviews[selectedIndex].place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
         )
-    }
-}
-
-struct MainTabPageProposalCache {
-    private(set) var pageSizes: [CGSize?]
-
-    init(pageCount: Int) {
-        pageSizes = Array(repeating: nil, count: pageCount)
-    }
-
-    mutating func resetIfPageCountChanged(_ pageCount: Int) {
-        guard pageSizes.count != pageCount else { return }
-        pageSizes = Array(repeating: nil, count: pageCount)
-    }
-
-    mutating func proposal(
-        for pageIndex: Int,
-        selectedIndex: Int,
-        containerSize: CGSize
-    ) -> CGSize {
-        if pageIndex == selectedIndex || pageSizes[pageIndex] == nil {
-            pageSizes[pageIndex] = containerSize
-        }
-        return pageSizes[pageIndex] ?? containerSize
     }
 }
 
@@ -291,18 +224,11 @@ struct MainTabView: View {
             MainTabPageLayout(selectedIndex: router.selectedTab.index) {
                 ForEach(AppTab.allCases) { tab in
                     content(for: tab)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(tab == router.selectedTab ? 1 : 0)
                         .allowsHitTesting(tab == router.selectedTab)
                         .accessibilityHidden(tab != router.selectedTab)
-                        .zIndex(tab == router.selectedTab ? 1 : 0)
                 }
             }
             .clipped()
-            .animation(
-                .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
-                value: router.selectedTab
-            )
         }
         .environmentObject(router)
         // The notification owns its subscriptions in a separate overlay subtree.
