@@ -5299,7 +5299,7 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
     }
     let route;
     try {
-      route = await sessionCollaborationService.ensureTaskRecipientSession(envelope.task, { reason: "agent_work_enqueue_preflight" });
+      route = await resolveCollaborationDeliveryRoute(envelope, "agent_work_enqueue_preflight");
       envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId) ?? envelope;
     } catch (error) {
       console.error(`[collaboration-routing] event=enqueue_route_failed taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
@@ -5376,10 +5376,26 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       collaborationCore.updateDelivery(delivery.deliveryId, { status: "queued", nextAttemptAt: null, lastError: null });
       collaborationCore.recordDeliveryEvent(delivery.deliveryId, "delivery_queued", { sessionId, reason: "agent_work_queue" });
     }
-    console.info(`[collaboration-routing] event=delivery_enqueued taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} logicalSessionId=${route.sessionId} providerSessionId=${sessionId}`);
+    console.info(`[collaboration-routing] event=delivery_enqueued taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} channelId=${route.channelId ?? "none"} routeMode=${route.mode ?? "task_route"} logicalSessionId=${route.sessionId} providerSessionId=${sessionId}`);
     emitEvent("AgentWorkQueued", { sessionId, workItem, queuePosition: null, source: workItem.source }, { sessionId, source: workItem.source });
     scheduleAgentWorkDrain(sessionId);
   }
+}
+
+async function resolveCollaborationDeliveryRoute(envelope, reason) {
+  const direct = collaborationCore.resolveDirectReplyRoute(envelope.delivery.deliveryId);
+  if (direct) {
+    console.info(`[collaboration-routing] event=direct_reply_route taskId=${envelope.task.taskId} deliveryId=${envelope.delivery.deliveryId} channelId=${direct.channel?.channelId ?? "none"} routeMode=${direct.mode} senderSessionId=${envelope.message.envelope.sender.sessionId} recipientSessionId=${direct.sessionId}`);
+    return {
+      task: envelope.task,
+      sessionId: direct.sessionId,
+      providerSessionId: direct.providerSessionId,
+      created: false,
+      mode: direct.mode,
+      channelId: direct.channel?.channelId ?? null
+    };
+  }
+  return sessionCollaborationService.ensureTaskRecipientSession(envelope.task, { reason });
 }
 
 async function drainAgentWork(sessionId) {
@@ -5432,7 +5448,7 @@ async function drainAgentWorkSession(sessionId) {
       return;
     }
     try {
-      const route = await sessionCollaborationService.ensureTaskRecipientSession(envelope.task, { reason: "agent_work_dequeue_preflight" });
+      const route = await resolveCollaborationDeliveryRoute(envelope, "agent_work_dequeue_preflight");
       if (route.providerSessionId !== sessionId) {
         const source = { ...next.source, recipientSessionId: route.sessionId };
         store.updateAgentWorkItem(next.workItemId, { sessionId: route.providerSessionId, source });
