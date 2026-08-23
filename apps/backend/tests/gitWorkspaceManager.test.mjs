@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
 import {
   conflictResolutionWritableRoots,
+  isConflictResolutionWorkspace,
   upgradeConflictResolutionWritableRoots
 } from "../src/runtime/conflictResolutionWorkspacePermissions.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -621,6 +622,14 @@ test("conflict workspace writable roots permit merge and commit without exposing
       path: legacyPath,
       worktreeId: workspace.worktreeId
     }, [legacyPath], async () => identity, async () => workspace.branchName), writableRoots);
+    assert.equal(await isConflictResolutionWorkspace({
+      path: legacyPath,
+      worktreeId: workspace.worktreeId
+    }, async () => identity, async () => workspace.branchName), true);
+    assert.equal(await isConflictResolutionWorkspace({
+      path: fixture.activeWorktree,
+      worktreeId: identity.worktreeId
+    }, async () => identity, async () => "integration/not-enough"), false);
 
     await execFileAsync("chmod", ["-R", "a-w", commonGitDir]);
     for (const root of writableRoots.slice(1)) {

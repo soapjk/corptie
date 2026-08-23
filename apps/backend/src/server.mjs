@@ -57,8 +57,7 @@ import { SessionProviderSwitchCoordinator } from "./application/sessionProviderS
 import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import {
-  conflictResolutionWritableRoots,
-  upgradeConflictResolutionWritableRoots
+  isConflictResolutionWorkspace
 } from "./runtime/conflictResolutionWorkspacePermissions.mjs";
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
@@ -1086,7 +1085,6 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       "- Integration Worktree 中的解决结果已提交且工作区干净",
       "- 未直接修改 main，未推送远端，未删除任何来源分支或 Worktree"
     ].join("\n");
-    const runtimeWorkspaceRoots = await conflictResolutionWritableRoots(workspace);
     const prompt = [
       description,
       "",
@@ -1118,9 +1116,8 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         prompt,
         workingDirectory: workspace.path,
         autoUniqueTitle: true,
-        sandbox: "workspace-write",
-        approvalPolicy: "never",
-        runtimeWorkspaceRoots
+        sandbox: "danger-full-access",
+        approvalPolicy: "never"
       });
       session = objectiveService.bindSession(session.id, workItem.id);
       objectiveService.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
@@ -4638,10 +4635,11 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
     durationMs: Date.now() - permissionsStartedAt
   });
   const activeCwd = activeRoute?.cwd ?? logicalRoute?.activeBinding?.boundCwd ?? managed.external?.cwd;
-  const runtimeWorkspaceRoots = await upgradeConflictResolutionWritableRoots({
+  const runtimeWorkspaceRoots = codexRuntimeWorkspaceRoots(logicalRoute, activeCwd);
+  const conflictResolutionSession = await isConflictResolutionWorkspace({
     path: activeCwd,
     worktreeId: logicalRoute?.worktreeId
-  }, codexRuntimeWorkspaceRoots(logicalRoute, activeCwd));
+  });
   const startingSession = {
     ...managed,
     status: "running",
@@ -4668,6 +4666,10 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
     const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
       cwd: activeCwd,
       runtimeWorkspaceRoots,
+      ...(conflictResolutionSession ? {
+        sandbox: "danger-full-access",
+        approvalPolicy: "never"
+      } : {}),
       ...threadOptions
     });
     logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
@@ -4687,7 +4689,10 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
           value: context.sessionContext.prompt
         }
       } : options.additionalContext,
-      ...codexTurnPermissionOptions(managed, { runtimeWorkspaceRoots })
+      ...codexTurnPermissionOptions(managed, {
+        runtimeWorkspaceRoots,
+        forceFullAccess: conflictResolutionSession
+      })
     });
     logSessionMessageLatency(latencyTrace, "turn_start_accepted", {
       durationMs: Date.now() - turnStartedAt,
