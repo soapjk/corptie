@@ -41,43 +41,20 @@ final class SessionNotificationPolicyTests: XCTestCase {
             completed: 1,
             blocked: 1,
             failed: 0,
-            pendingUserAttention: 0
+            pendingUserAttention: 1
         ))
     }
 
-    func testAggregatePendingCountCoversZeroOneAndMultipleUnreadSessions() {
-        let cases: [([SessionNotificationSnapshot], Int)] = [
-            ([
-                snapshot("read", .complete, lastAgentMessageSequence: 4, lastReadMessageSequence: 4)
-            ], 0),
-            ([
-                snapshot("read", .complete, lastAgentMessageSequence: 4, lastReadMessageSequence: 4),
-                snapshot("unread", .complete, lastAgentMessageSequence: 5, lastReadMessageSequence: 4)
-            ], 1),
-            ([
-                snapshot("unread-one", .complete, lastAgentMessageSequence: 5, lastReadMessageSequence: 4),
-                snapshot("unread-two", .complete, lastAgentMessageSequence: 9, lastReadMessageSequence: 3),
-                snapshot("failed-unread", .failed, lastAgentMessageSequence: 8, lastReadMessageSequence: 1)
-            ], 2)
-        ]
+    func testFreshTerminalTransitionNeedsAttentionBeforeMessageCursorAdvances() {
+        var reducer = SessionNotificationReducer()
+        _ = reducer.events(for: [snapshot("fresh", .running)], configuration: aggregateOnly)
 
-        for (terminalSessions, expectedCount) in cases {
-            var reducer = SessionNotificationReducer()
-            let runningSessions = terminalSessions.map {
-                snapshot(
-                    $0.id,
-                    .running,
-                    lastAgentMessageSequence: $0.lastAgentMessageSequence,
-                    lastReadMessageSequence: $0.lastReadMessageSequence
-                )
-            }
-            _ = reducer.events(for: runningSessions, configuration: aggregateOnly)
+        let event = reducer.events(
+            for: [snapshot("fresh", .complete)],
+            configuration: aggregateOnly
+        ).first
 
-            let events = reducer.events(for: terminalSessions, configuration: aggregateOnly)
-
-            XCTAssertEqual(events.count, 1)
-            XCTAssertEqual(events.first?.counts?.pendingUserAttention, expectedCount)
-        }
+        XCTAssertEqual(event?.counts?.pendingUserAttention, 1)
     }
 
     func testMultipleUnreadMessagesInOneSessionCountOnce() {
@@ -95,35 +72,32 @@ final class SessionNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(events.first?.counts?.pendingUserAttention, 1)
     }
 
-    func testPendingCountUsesSameUnreadPredicateAndExcludesIneligibleStatuses() {
+    func testPendingCountUnionsFreshTransitionAndExistingUnreadWithoutDuplicates() {
         var reducer = SessionNotificationReducer()
-        let terminalSessions = [
+        let initialSessions = [
             snapshot("completed-unread", .complete, lastAgentMessageSequence: 2, lastReadMessageSequence: 1),
             snapshot("completed-read", .complete, lastAgentMessageSequence: 2, lastReadMessageSequence: 2),
-            snapshot("completed-without-message", .complete),
             snapshot("blocked-unread", .blocked, lastAgentMessageSequence: 4, lastReadMessageSequence: 1),
-            snapshot("failed-unread", .failed, lastAgentMessageSequence: 4, lastReadMessageSequence: 1)
+            snapshot("failed-unread", .failed, lastAgentMessageSequence: 4, lastReadMessageSequence: 1),
+            snapshot("fresh", .running, lastAgentMessageSequence: 2, lastReadMessageSequence: 1)
         ]
-        _ = reducer.events(
-            for: terminalSessions.map {
-                snapshot(
-                    $0.id,
-                    .running,
-                    lastAgentMessageSequence: $0.lastAgentMessageSequence,
-                    lastReadMessageSequence: $0.lastReadMessageSequence
-                )
-            },
-            configuration: aggregateOnly
+        _ = reducer.events(for: initialSessions, configuration: aggregateOnly)
+        var terminalSessions = initialSessions
+        terminalSessions[4] = snapshot(
+            "fresh",
+            .complete,
+            lastAgentMessageSequence: 2,
+            lastReadMessageSequence: 1
         )
 
         let event = reducer.events(for: terminalSessions, configuration: aggregateOnly).first
 
-        XCTAssertEqual(event?.counts?.pendingUserAttention, 1)
+        XCTAssertEqual(event?.counts?.pendingUserAttention, 2)
         XCTAssertTrue(terminalSessions[0].needsUserAttention)
         XCTAssertFalse(terminalSessions[1].needsUserAttention)
         XCTAssertFalse(terminalSessions[2].needsUserAttention)
         XCTAssertFalse(terminalSessions[3].needsUserAttention)
-        XCTAssertFalse(terminalSessions[4].needsUserAttention)
+        XCTAssertTrue(terminalSessions[4].needsUserAttention)
     }
 
     func testAggregateNotificationBodyStatesCompletionAndPendingSessionCount() {
