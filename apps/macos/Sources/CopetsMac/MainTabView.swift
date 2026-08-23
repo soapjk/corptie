@@ -224,8 +224,10 @@ struct MainTabView: View {
             MainTabPageLayout(selectedIndex: router.selectedTab.index) {
                 ForEach(AppTab.allCases) { tab in
                     content(for: tab)
+                        .opacity(tab == router.selectedTab ? 1 : 0)
                         .allowsHitTesting(tab == router.selectedTab)
                         .accessibilityHidden(tab != router.selectedTab)
+                        .zIndex(tab == router.selectedTab ? 1 : 0)
                 }
             }
             .clipped()

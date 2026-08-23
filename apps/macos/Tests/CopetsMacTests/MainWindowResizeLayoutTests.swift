@@ -50,6 +50,8 @@ struct MainWindowResizeLayoutTests {
         #expect(contents.contains("ForEach(AppTab.allCases)"))
         #expect(contents.contains("subviews[selectedIndex].place("))
         #expect(!contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains(".opacity(tab == router.selectedTab ? 1 : 0)"))
+        #expect(contents.contains(".zIndex(tab == router.selectedTab ? 1 : 0)"))
         #expect(!contents.contains("GeometryReader { geo in"))
         #expect(!contents.contains(".frame(width: geo.size.width, height: geo.size.height)"))
         #expect(AppTab.allCases.contains(.automations))

@@ -25,6 +25,9 @@ struct MainTabContentLayoutTests {
         #expect(contents.contains("MainTabPageLayout(selectedIndex: router.selectedTab.index)"))
         #expect(contents.contains("subviews[selectedIndex].place("))
         #expect(!contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains(".opacity(tab == router.selectedTab ? 1 : 0)"))
+        #expect(contents.contains(".allowsHitTesting(tab == router.selectedTab)"))
+        #expect(contents.contains(".zIndex(tab == router.selectedTab ? 1 : 0)"))
         #expect(!contents.contains(".offset(x: slideOffset("))
         #expect(!contents.contains("GeometryReader { geo in"))
     }
