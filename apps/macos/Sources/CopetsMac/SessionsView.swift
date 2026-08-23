@@ -727,6 +727,7 @@ struct SessionsView: View {
     @ViewBuilder
     private var sessionConversation: some View {
         if let session = selectedSession,
+           session.hasValidProductClassification,
            SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
                 // Keep only the selected timeline mounted. Display projections
@@ -870,6 +871,7 @@ func unreadSessionCounts(
 ) -> [SessionCategory: Int] {
     var counts: [SessionCategory: Int] = [:]
     for session in sessions where isSessionUnread(session)
+        && session.hasValidProductClassification
         && isSessionInActiveBusinessScope(session, workItems: workItems) {
         let category = SessionCategory(session: session)
         counts[category, default: 0] += 1
@@ -938,7 +940,10 @@ func makeSessionGroups(
     workerScope: WorkerSessionScope = .active,
     workerGroupingMode: WorkerSessionGroupingMode = .objective
 ) -> [SessionGroup] {
-    let rows = rows.sorted { left, right in
+    let rows = rows.lazy.filter {
+        $0.session.hasValidProductClassification
+            && SessionCategory(session: $0.session) == category
+    }.sorted { left, right in
         let leftTimestamp = left.session.lastMessageAt ?? left.session.updatedAt
         let rightTimestamp = right.session.lastMessageAt ?? right.session.updatedAt
         if leftTimestamp != rightTimestamp { return leftTimestamp > rightTimestamp }
@@ -954,7 +959,6 @@ func makeSessionGroups(
     var visibleWorkerRows: [SessionRowModel] = []
     var workerRows: [String: [SessionRowModel]] = [:]
     var objectiveRows: [String: [SessionRowModel]] = [:]
-    var legacyRows: [SessionRowModel] = []
 
     func registerObjective(_ objectiveID: String?) -> String {
         let trimmedID = objectiveID?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -968,7 +972,7 @@ func makeSessionGroups(
         return key
     }
 
-    for row in rows where SessionCategory(session: row.session) == category {
+    for row in rows {
         switch row.session.resolvedSessionKind {
         case .assistantChat:
             let key = row.session.agentId ?? "__assistant_unbound__"
@@ -985,7 +989,7 @@ func makeSessionGroups(
             let objectiveKey = registerObjective(workItem?.objectiveId ?? row.session.objectiveId)
             workerRows[objectiveKey, default: []].append(row)
         case .legacy:
-            legacyRows.append(row)
+            continue
         }
     }
 
@@ -1027,13 +1031,6 @@ func makeSessionGroups(
             ))
         }
     }
-    if !legacyRows.isEmpty {
-        groups.append(SessionGroup(
-            key: "__legacy__",
-            title: L10n("Unclassified Session"),
-            rows: legacyRows
-        ))
-    }
     return groups
 }
 
@@ -1064,6 +1061,7 @@ func resolvedSessionSelection(
     workerScope: WorkerSessionScope = .active
 ) -> String? {
     let visibleRows = rows.filter { row in
+        guard row.session.hasValidProductClassification else { return false }
         guard SessionCategory(session: row.session) == category else { return false }
         guard category == .worker else { return true }
         return (workerScope == .archived) == isArchivedWorkerSession(row.session, workItems: workItems)

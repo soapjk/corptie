@@ -40,6 +40,7 @@ import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
+  purgeObsoleteUnclassifiedProviderProjections,
   repairStableSessionFromActiveProviderCache,
   repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection,
@@ -130,6 +131,7 @@ import {
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
+import { isProductSessionKind } from "./utils/sessionKinds.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
   activeSessionsDueForProjectionReconciliation,
@@ -272,6 +274,7 @@ const workItemMemoryExtractions = new Map();
 const codexChoiceParseRetryAfter = new Map();
 const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
+const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
@@ -2552,8 +2555,18 @@ function applyCodexChoiceOptionsToManagedSession(threadId, text, options, genera
 
 function upsertManagedCodexSession(session, preferredAgentId = null) {
   sessionPresentationCache.set(session.id, session);
+  const stored = store.getSession(session.id);
+  const sessionKind = stored?.sessionKind ?? session.sessionKind;
+  if (!isProductSessionKind(sessionKind)) {
+    if (!reportedUnclassifiedProviderSessionIds.has(session.id)) {
+      reportedUnclassifiedProviderSessionIds.add(session.id);
+      console.warn(`[session-classification] skipped unclassified Codex projection session=${session.id}`);
+    }
+    return;
+  }
   store.upsertSession({
     ...session,
+    sessionKind,
     provider: session.external?.provider ?? "codex-app-server",
     cwd: session.external?.cwd,
     command: session.external?.source ?? "codex-app-server"
@@ -3770,6 +3783,13 @@ function listGatewaySessions(options = {}) {
       resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId),
       bindAgentToSession: (binding) => collaborationCore.bindSession(binding)
     });
+    if (projection.visible === false) {
+      if (!reportedUnclassifiedProviderSessionIds.has(session.id)) {
+        reportedUnclassifiedProviderSessionIds.add(session.id);
+        console.warn(`[session-classification] hidden provider session=${session.id} reason=${projection.reason}`);
+      }
+      return [];
+    }
     if (projection.repaired) {
       console.log(`[session-projection] repaired provider session=${session.id}`);
     }
@@ -8331,6 +8351,13 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+const invalidProjectionCleanup = purgeObsoleteUnclassifiedProviderProjections(store);
+for (const entry of invalidProjectionCleanup.purged) {
+  console.log(`[session-classification] purged obsolete projection ${JSON.stringify(entry)}`);
+}
+for (const entry of invalidProjectionCleanup.retained) {
+  console.warn(`[session-classification] retained hidden projection ${JSON.stringify(entry)}`);
+}
 const recoveredInterruptedWorkItemStarts = workItemStartService.recoverInterruptedStarts();
 const detectedLegacyPartialWorkItemStarts = workItemStartService.detectLegacyPartialStarts();
 if (recoveredInterruptedWorkItemStarts > 0 || detectedLegacyPartialWorkItemStarts > 0) {

@@ -7,7 +7,11 @@ import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { resolveAgentWorkDir } from "../runtime/agentWorkDir.mjs";
-import { inferSessionKind, normalizeSessionKind, SESSION_KIND } from "../utils/sessionKinds.mjs";
+import {
+  assertExplicitSessionKind,
+  inferSessionKind,
+  SESSION_KIND
+} from "../utils/sessionKinds.mjs";
 import {
   AGENT_KIND,
   PLATFORM_ASSISTANT_ID,
@@ -1632,11 +1636,13 @@ export class CorptieStore {
       ) WHERE agent_id IS NULL OR TRIM(agent_id) = ''`);
     this.db.run(`UPDATE sessions SET session_kind = 'worker'
       WHERE work_item_id IS NOT NULL AND TRIM(work_item_id) <> ''
-        AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+        AND (session_kind IS NULL OR TRIM(session_kind) = ''
+          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))`);
     this.db.run(`UPDATE sessions SET session_kind = 'objectiveChat'
       WHERE objective_id IS NOT NULL AND TRIM(objective_id) <> ''
         AND (work_item_id IS NULL OR TRIM(work_item_id) = '')
-        AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+        AND (session_kind IS NULL OR TRIM(session_kind) = ''
+          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))`);
     // Objective discussion is a one-to-one association. Preserve the oldest
     // discussion as canonical and retain historical duplicates as ordinary,
     // unbound chats before installing the durable uniqueness guard.
@@ -1658,9 +1664,13 @@ export class CorptieStore {
       ON sessions(objective_id)
       WHERE session_kind = 'objectiveChat' AND objective_id IS NOT NULL`);
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
-      WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
+      WHERE (session_kind IS NULL OR TRIM(session_kind) = ''
+          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))
         AND EXISTS (SELECT 1 FROM agents
           WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
+    this.db.run(`UPDATE sessions SET session_kind = 'legacy'
+      WHERE session_kind IS NULL OR TRIM(session_kind) = ''
+        OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker', 'legacy')`);
     this.ensureColumn("workspace_transitions", "continuation_error", "TEXT");
     this.ensureColumn("workspace_transitions", "transition_kind", "TEXT NOT NULL DEFAULT 'workspace'");
     this.ensureColumn("workspace_transitions", "target_provider_id", "TEXT");
@@ -3731,6 +3741,9 @@ export class CorptieStore {
 
   upsertSession(session) {
     const summary = toSessionSummary(session);
+    const sessionKind = session.sessionKind == null
+      ? inferSessionKind({ objectiveId: session.objectiveId, workItemId: session.workItemId })
+      : assertExplicitSessionKind(session.sessionKind, { allowLegacy: true });
     const values = [
       session.id,
       session.title,
@@ -3752,7 +3765,7 @@ export class CorptieStore {
       JSON.stringify(toRawStatus(session)),
       session.objectiveId ?? null,
       session.workItemId ?? null,
-      normalizeSessionKind(session.sessionKind),
+      sessionKind,
       session.agentId ?? null
     ];
 
@@ -4033,7 +4046,7 @@ export class CorptieStore {
   }
 
   setSessionKind(sessionId, sessionKind, agentId = null) {
-    const normalized = normalizeSessionKind(sessionKind);
+    const normalized = assertExplicitSessionKind(sessionKind);
     this.db.run(
       "UPDATE sessions SET session_kind = ?, agent_id = COALESCE(?, agent_id), updated_at = ? WHERE id = ?",
       [normalized, agentId, createdAtFromOrNow(), sessionId]
@@ -4137,6 +4150,9 @@ export class CorptieStore {
   createSession(input = {}) {
     const id = input.id ?? `session:${randomUUID()}`;
     const now = createdAtFromOrNow();
+    const sessionKind = input.sessionKind == null
+      ? inferSessionKind({ objectiveId: input.objectiveId, workItemId: input.workItemId })
+      : assertExplicitSessionKind(input.sessionKind);
     this.db.run(
       `INSERT INTO sessions (
         id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent,
@@ -4164,7 +4180,7 @@ export class CorptieStore {
         JSON.stringify(input.raw ?? {}),
         input.objectiveId ?? null,
         input.workItemId ?? null,
-        input.workItemId ? SESSION_KIND.worker : normalizeSessionKind(input.sessionKind),
+        input.workItemId ? SESSION_KIND.worker : sessionKind,
         input.agentId ?? null
       ]
     );

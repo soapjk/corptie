@@ -1,16 +1,37 @@
+import {
+  assertExplicitSessionKind,
+  inferSessionKind,
+  isProductSessionKind
+} from "../utils/sessionKinds.mjs";
+
 export function persistProviderSessionProjection(store, session, {
   providerId,
   agentId = null,
   sessionKind = null
 } = {}) {
   if (!store?.db || !session?.id) return null;
+  const suppliedSessionKind = sessionKind ?? session.sessionKind;
+  if (suppliedSessionKind != null) {
+    assertExplicitSessionKind(suppliedSessionKind, { allowLegacy: true });
+  }
+  const resolvedSessionKind = inferSessionKind({
+    sessionKind: suppliedSessionKind,
+    objectiveId: session.objectiveId,
+    workItemId: session.workItemId
+  });
+  if (!isProductSessionKind(resolvedSessionKind)) {
+    const error = new TypeError(`Provider Session ${session.id} has no valid product classification.`);
+    error.code = "SESSION_CLASSIFICATION_REQUIRED";
+    error.sessionId = session.id;
+    throw error;
+  }
   store.upsertSession({
     ...session,
     provider: providerId ?? session.external?.provider ?? "unknown",
     cwd: session.external?.cwd ?? null,
     command: session.external?.source ?? providerId ?? null,
     agentId: agentId ?? session.agentId ?? null,
-    sessionKind: sessionKind ?? session.sessionKind ?? "legacy"
+    sessionKind: resolvedSessionKind
   });
   return store.getSession(session.id);
 }
@@ -70,7 +91,8 @@ export function isBoundPhysicalProviderSession(store, session) {
   const providerId = session.external?.provider;
   const providerSessionId = session.external?.sessionId ?? session.external?.threadId;
   if (!providerId || !providerSessionId) return false;
-  const logical = store.getLogicalSessionByProviderSessionId(providerId, providerSessionId);
+  const binding = store.getAgentSessionBindingByProviderSession(providerId, providerSessionId);
+  const logical = binding ? store.getLogicalSession(binding.logicalSessionId) : null;
   return Boolean(logical && logical.legacySessionId !== session.id);
 }
 
@@ -80,7 +102,71 @@ export function isBoundPhysicalProviderSession(store, session) {
 // Keep this rule at the projection boundary so snapshots and incremental state
 // sync expose exactly one identity with its original kind/entity ownership.
 export function visibleStoredSessionProjections(store, sessions = []) {
-  return sessions.filter((session) => !isBoundPhysicalProviderSession(store, session));
+  return sessions.filter((session) => isProductSessionKind(session?.sessionKind)
+    && !isBoundPhysicalProviderSession(store, session));
+}
+
+// Remove only obsolete physical rows that are provably represented by another
+// canonical logical Session. Provider routing history remains intact. Rows with
+// user content or business references are retained (but hidden) for audit.
+export function purgeObsoleteUnclassifiedProviderProjections(store) {
+  if (!store?.db) return { purged: [], retained: [] };
+  const rows = store.selectAll(
+    `SELECT id FROM sessions
+     WHERE session_kind IS NULL OR TRIM(session_kind) = ''
+        OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker')`
+  );
+  const purged = [];
+  const retained = [];
+  for (const row of rows) {
+    const session = store.getSession(row.id);
+    const providerId = session?.external?.provider;
+    const providerSessionId = session?.external?.sessionId ?? session?.external?.threadId;
+    const binding = providerId && providerSessionId
+      ? store.getAgentSessionBindingByProviderSession(providerId, providerSessionId)
+      : null;
+    const logical = binding ? store.getLogicalSession(binding.logicalSessionId) : null;
+    const canonical = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+    const references = store.selectOne(
+      `SELECT
+         (SELECT COUNT(*) FROM session_events WHERE session_id = ?) AS events,
+         (SELECT COUNT(*) FROM session_items WHERE session_id = ? AND type <> 'warning') AS meaningful_items,
+         (SELECT COUNT(*) FROM session_context_references WHERE owner_session_id = ?) AS context_refs,
+         (SELECT COUNT(*) FROM collaboration_tasks
+            WHERE initiator_session_id = ? OR recipient_session_id = ?) AS collaboration_tasks,
+         (SELECT COUNT(*) FROM collaboration_messages
+            WHERE sender_session_id = ? OR recipient_session_id = ?) AS collaboration_messages,
+         (SELECT COUNT(*) FROM work_items
+            WHERE current_session_id = ? OR created_by_session_id = ?) AS work_items`,
+      [row.id, row.id, row.id, row.id, row.id, row.id, row.id, row.id, row.id]
+    );
+    const referenceCount = Object.values(references ?? {}).reduce((sum, value) => sum + Number(value ?? 0), 0);
+    const safeObsoleteProjection = binding?.state !== "active"
+      && logical
+      && canonical
+      && canonical.id !== row.id
+      && isProductSessionKind(canonical.sessionKind)
+      && referenceCount === 0;
+    if (!safeObsoleteProjection) {
+      retained.push({
+        sessionId: row.id,
+        reason: referenceCount > 0 ? "has_user_or_business_references" : "not_a_redundant_historical_projection"
+      });
+      continue;
+    }
+    const removedWarningItems = Number(store.selectOne(
+      "SELECT COUNT(*) AS count FROM session_items WHERE session_id = ? AND type = 'warning'",
+      [row.id]
+    )?.count ?? 0);
+    store.deleteSession(row.id);
+    purged.push({
+      sessionId: row.id,
+      canonicalSessionId: canonical.id,
+      logicalSessionId: logical.logicalSessionId,
+      removedWarningItems
+    });
+  }
+  return { purged, retained };
 }
 
 export function repairStableSessionFromBoundPhysicalProjection(store, session) {
@@ -153,17 +239,49 @@ export function ensureProviderSessionProjection({
   if (existing) {
     const bindingRepaired = Boolean(agentId && !boundAgent);
     if (bindingRepaired) bindAgentToSession({ agentId, sessionId: session.id });
-    return { session: existing, repaired: bindingRepaired };
+    return {
+      session: existing,
+      repaired: bindingRepaired,
+      visible: isProductSessionKind(existing.sessionKind),
+      reason: isProductSessionKind(existing.sessionKind) ? null : "unclassified_existing_projection"
+    };
   }
 
+  let suppliedSessionKind = session.sessionKind;
+  if (suppliedSessionKind != null) {
+    try {
+      suppliedSessionKind = assertExplicitSessionKind(suppliedSessionKind, { allowLegacy: true });
+    } catch {
+      return {
+        session: null,
+        repaired: false,
+        visible: false,
+        reason: "invalid_provider_session_kind"
+      };
+    }
+  }
+  const sessionKind = inferSessionKind({
+    sessionKind: suppliedSessionKind,
+    objectiveId: session.objectiveId,
+    workItemId: workItem?.id ?? session.workItemId,
+    agentRole: boundAgent?.role
+  });
+  if (!isProductSessionKind(sessionKind)) {
+    return {
+      session: null,
+      repaired: false,
+      visible: false,
+      reason: "unclassified_unowned_provider_session"
+    };
+  }
   persistProviderSessionProjection(store, session, {
     providerId: session.external?.provider,
     agentId,
-    sessionKind: workItem ? "worker" : (session.objectiveId ? "objectiveChat" : (boundAgent?.role === "assistant" ? "assistantChat" : "legacy"))
+    sessionKind
   });
   if (workItem) {
     store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);
   }
   if (agentId && !boundAgent) bindAgentToSession({ agentId, sessionId: session.id });
-  return { session: store.getSession(session.id), repaired: true };
+  return { session: store.getSession(session.id), repaired: true, visible: true, reason: null };
 }
