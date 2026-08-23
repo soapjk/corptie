@@ -207,6 +207,65 @@ test("Session names resolve to stable Session ids and collaboration snapshots su
   });
 });
 
+test("confirmation snapshots keep registry Agent identity separate from exact Session and Objective context", async () => {
+  await withFixture(async ({ core, store, directory }) => {
+    const sourceAgent = store.createAgent({ id: "agent:shared", name: "Stable MarketCow Agent", role: "independentContributor" });
+    store.createAgent({ id: "agent:other", name: "Other Agent", role: "independentContributor" });
+    const sourceObjective = store.createObjective({ id: "objective:source", name: "MarketCow", contributorAgentIds: [sourceAgent.agentId] });
+    const targetObjective = store.createObjective({ id: "objective:target", name: "PolyMarket 实时套利", contributorAgentIds: [sourceAgent.agentId] });
+    const sourceWorkItem = store.createWorkItem({ objectiveId: sourceObjective.id, title: "Snapshot repair", mainAgentId: sourceAgent.agentId });
+    const targetWorkItem = store.createWorkItem({ objectiveId: targetObjective.id, title: "One-hour shadow", mainAgentId: sourceAgent.agentId });
+    for (const route of [
+      { provider: "provider:source", logical: "logical:source", title: "修复 PolyMarket snapshot/bootstrap", objectiveId: sourceObjective.id, workItemId: sourceWorkItem.id },
+      { provider: "provider:target", logical: "logical:target", title: "金融工具开发专家_Session", objectiveId: targetObjective.id, workItemId: targetWorkItem.id }
+    ]) {
+      store.createSession({
+        id: route.provider, title: route.title, agentId: sourceAgent.agentId,
+        sessionKind: "worker", objectiveId: route.objectiveId, workItemId: route.workItemId
+      });
+      store.createLogicalSessionRoute({
+        logicalSessionId: route.logical, legacySessionId: route.provider,
+        providerThreadId: `thread:${route.provider}`, providerSessionId: route.provider,
+        providerId: "codex-app-server", boundCwd: directory, sessionName: route.title
+      });
+      core.bindSession({ agentId: sourceAgent.agentId, sessionId: route.provider });
+    }
+
+    assert.equal(core.getAgentForSession("logical:source").name, "Stable MarketCow Agent");
+    assert.equal(core.getAgentForSession("logical:source").sessionName, "修复 PolyMarket snapshot/bootstrap");
+    const confirmation = core.proposeTask({
+      initiatorAgentId: sourceAgent.agentId,
+      recipientAgentId: sourceAgent.agentId,
+      initiatorSessionId: "logical:source",
+      recipientSessionId: "logical:target",
+      sourceObjectiveId: sourceObjective.id,
+      targetObjectiveId: targetObjective.id,
+      sourceWorkItemId: sourceWorkItem.id,
+      workItemId: targetWorkItem.id,
+      title: "Run shadow",
+      summary: "Use the target Objective context."
+    });
+
+    assert.equal(confirmation.initiatorAgentName, "Stable MarketCow Agent");
+    assert.equal(confirmation.recipientAgentName, "Stable MarketCow Agent");
+    assert.equal(confirmation.initiatorSessionTitle, "修复 PolyMarket snapshot/bootstrap");
+    assert.equal(confirmation.recipientSessionTitle, "金融工具开发专家_Session");
+    assert.equal(confirmation.sourceObjectiveName, "MarketCow");
+    assert.equal(confirmation.targetObjectiveName, "PolyMarket 实时套利");
+    assert.equal(confirmation.initiatorWorkItemId, sourceWorkItem.id);
+    assert.equal(confirmation.recipientWorkItemId, targetWorkItem.id);
+
+    assert.throws(() => core.proposeTask({
+      initiatorAgentId: sourceAgent.agentId,
+      recipientAgentId: "agent:other",
+      initiatorSessionId: "logical:source",
+      recipientSessionId: "logical:target",
+      title: "Spoof target",
+      summary: "Must fail before staging."
+    }), { code: "RECIPIENT_SESSION_AGENT_MISMATCH" });
+  });
+});
+
 test("rejecting a staged request never creates a task or delivery", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);

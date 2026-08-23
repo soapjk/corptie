@@ -145,6 +145,16 @@ test("explicit peer Objective discovery exposes its Objective Chat for routing w
       title: "MarketCow collaboration",
       summary: "Create the target-scoped WorkItem only after confirmation."
     });
+    assert.equal(confirmation.initiatorAgentName, "Source");
+    assert.equal(confirmation.recipientAgentName, "MarketCow");
+    assert.equal(confirmation.initiatorSessionTitle, "session:source");
+    assert.equal(confirmation.recipientSessionTitle, "session:marketcow-chat");
+    assert.equal(confirmation.initiatorSessionKind, "objectiveChat");
+    assert.equal(confirmation.recipientSessionKind, "objectiveChat");
+    assert.equal(confirmation.sourceObjectiveId, sourceObjective.id);
+    assert.equal(confirmation.sourceObjectiveName, "Corptie");
+    assert.equal(confirmation.targetObjectiveId, peerObjective.id);
+    assert.equal(confirmation.targetObjectiveName, "MarketCow");
     assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 1);
     const confirmed = f.core.confirmTaskConfirmation(confirmation.confirmationId);
     const task = f.core.getTask(confirmed.taskId);
@@ -156,6 +166,50 @@ test("explicit peer Objective discovery exposes its Objective Chat for routing w
     assert.throws(() => f.service.createWorkItem(metadata, sourceAgent.agentId, {
       title: "Illegal target write", agentId: peerAgent.agentId, idempotencyKey: "illegal:target"
     }), { code: "AGENT_OUTSIDE_OBJECTIVE" });
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("routing never falls back when a peer Objective has no Objective Chat or has ambiguous Workers", async () => {
+  const f = await fixture();
+  try {
+    const sourceAgent = f.store.createAgent({ id: "agent:source", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:peer", name: "Peer", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({ name: "Source Objective", contributorAgentIds: [sourceAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({ name: "Peer Objective", contributorAgentIds: [peerAgent.agentId] });
+    session(f.store, f.core, { providerSessionId: "provider:source", logicalSessionId: "session:source", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory });
+    for (const suffix of ["one", "two"]) {
+      const workItem = f.objectiveService.createWorkItem({ objectiveId: peerObjective.id, title: `Worker ${suffix}`, mainAgentId: peerAgent.agentId });
+      session(f.store, f.core, {
+        providerSessionId: `provider:peer:${suffix}`, logicalSessionId: `session:peer:${suffix}`,
+        agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+        workItemId: workItem.id, cwd: f.directory
+      });
+    }
+    const metadata = { sessionId: "provider:source" };
+
+    assert.throws(() => resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+      recipientAgentId: peerAgent.agentId,
+      targetObjectiveId: peerObjective.id,
+      routingIntent: "objective_chat"
+    }), (error) => error.code === "RECIPIENT_SESSION_NOT_FOUND"
+      && error.message.includes(peerAgent.agentId)
+      && error.message.includes(peerObjective.id));
+    assert.throws(() => resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+      recipientAgentId: peerAgent.agentId,
+      targetObjectiveId: peerObjective.id,
+      routingIntent: "existing_work_item_session"
+    }), { code: "AMBIGUOUS_RECIPIENT_SESSION" });
+
+    const exact = resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+      recipientAgentId: peerAgent.agentId,
+      targetObjectiveId: peerObjective.id,
+      recipientSessionId: "session:peer:two"
+    });
+    assert.equal(exact.sessionId, "session:peer:two");
+    assert.equal(exact.objectiveId, peerObjective.id);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

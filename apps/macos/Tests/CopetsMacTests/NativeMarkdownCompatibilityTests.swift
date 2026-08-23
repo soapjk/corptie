@@ -135,6 +135,15 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         collaboration.collaborationRecipientAgentId = "agent:macos"
         collaboration.collaborationRecipientSessionTitle = "Sessions UI"
         collaboration.collaborationRecipientSessionId = "session:ui"
+        collaboration.collaborationRecipientSessionKind = "worker"
+        collaboration.collaborationTargetWorkItemId = "work_item:ui"
+        collaboration.collaborationInitiatorSessionTitle = "Platform Objective Chat"
+        collaboration.collaborationInitiatorSessionId = "session:platform"
+        collaboration.collaborationInitiatorSessionKind = "objectiveChat"
+        collaboration.collaborationSourceObjectiveName = "Platform"
+        collaboration.collaborationSourceObjectiveId = "objective:platform"
+        collaboration.collaborationTargetObjectiveName = "macOS"
+        collaboration.collaborationTargetObjectiveId = "objective:macos"
         collaboration.collaborationTaskTitle = "Review collaboration card"
         collaboration.collaborationMessageKind = "change_request"
         collaboration.collaborationProcessingStatus = "running"
@@ -150,6 +159,9 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertTrue(presentation.bodyMarkdown.contains("Platform Agent · agent:platform"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("macOS Agent · agent:macos"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Sessions UI · session:ui"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("worker · work\\_item:ui"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Platform · objective:platform"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("macOS · objective:macos"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Review collaboration card"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Please review the API contract."))
         XCTAssertEqual(presentation.messageText, "Please review the API contract.")
