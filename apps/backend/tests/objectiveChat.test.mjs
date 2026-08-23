@@ -8,7 +8,53 @@ import { ObjectiveApplicationService } from "../src/application/objectiveApplica
 import { ObjectiveChatContextService } from "../src/application/objectiveChatContextService.mjs";
 import { ObjectiveChatOperationService, objectiveChatDynamicTools } from "../src/application/objectiveChatDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
-import { inferSessionKind, normalizeSessionKind } from "../src/utils/sessionKinds.mjs";
+import { assertExplicitSessionKind, inferSessionKind, normalizeSessionKind } from "../src/utils/sessionKinds.mjs";
+
+test("explicit empty, unknown, and legacy classifications are rejected at product write boundaries", async () => {
+  for (const value of ["", "unknown", "legacy", null]) {
+    assert.throws(() => assertExplicitSessionKind(value), { code: "SESSION_KIND_INVALID" });
+  }
+  const { directory, store } = await fixture();
+  try {
+    assert.throws(
+      () => store.createSession({ id: "invalid", sessionKind: "unknown" }),
+      { code: "SESSION_KIND_INVALID" }
+    );
+    store.createSession({ id: "valid", sessionKind: "assistantChat" });
+    assert.throws(
+      () => store.setSessionKind("valid", " "),
+      { code: "SESSION_KIND_INVALID" }
+    );
+    assert.equal(store.getSession("valid").sessionKind, "assistantChat");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("startup migration repairs illegal stored classifications from authoritative ownership", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-kind-migration-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  let store = new CorptieStore({ dbPath, configPath });
+  try {
+    await store.initialize();
+    const assistant = store.createAgent({ id: "agent:assistant", name: "Assistant", role: "assistant" });
+    store.createSession({ id: "recoverable", agentId: assistant.agentId, sessionKind: "assistantChat" });
+    store.createSession({ id: "unowned", sessionKind: "assistantChat" });
+    store.db.run("UPDATE sessions SET session_kind = 'not-a-kind' WHERE id IN ('recoverable', 'unowned')");
+    await store.close();
+
+    store = new CorptieStore({ dbPath, configPath });
+    await store.initialize();
+
+    assert.equal(store.getSession("recoverable").sessionKind, "assistantChat");
+    assert.equal(store.getSession("unowned").sessionKind, "legacy");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-objective-chat-"));

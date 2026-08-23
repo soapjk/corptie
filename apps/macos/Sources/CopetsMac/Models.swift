@@ -7,6 +7,18 @@ enum SessionKind: String, Codable, Equatable, Sendable {
     case objectiveChat
     case worker
     case legacy
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = (try? container.decode(String.self))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        self = value.flatMap(Self.init(rawValue:)) ?? .legacy
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 enum SessionContextReferenceType: String, Codable, CaseIterable, Sendable {
@@ -85,6 +97,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         if let sessionKind { return sessionKind }
         if workItemId?.isEmpty == false { return .worker }
         return objectiveId?.isEmpty == false ? .objectiveChat : .legacy
+    }
+
+    var hasValidProductClassification: Bool {
+        resolvedSessionKind != .legacy
     }
 
     var isConnecting: Bool {

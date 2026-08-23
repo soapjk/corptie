@@ -186,9 +186,9 @@ struct SessionCollectionPatchTests {
             category: .assistant
         )
 
-        #expect(groups.map(\.key) == ["assistant:assistant", "__legacy__"])
+        #expect(groups.map(\.key) == ["assistant:assistant"])
         #expect(groups[0].rows.map(\.id) == ["assistant-chat"])
-        #expect(groups[1].rows.map(\.id) == ["legacy"])
+        #expect(!groups.flatMap(\.rows).contains(where: { $0.id == legacy.id }))
         #expect(!groups.flatMap(\.rows).contains(where: { $0.id == worker.id }))
     }
 
@@ -561,11 +561,49 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func sessionCategoriesKeepLegacySessionsDiscoverableAsAssistantSessions() {
+    func sessionCategoriesClassifyValidProductSessions() {
         #expect(SessionCategory(session: makeSession(id: "worker", sessionKind: .worker)) == .worker)
         #expect(SessionCategory(session: makeSession(id: "objective", sessionKind: .objectiveChat)) == .objective)
         #expect(SessionCategory(session: makeSession(id: "assistant", sessionKind: .assistantChat)) == .assistant)
-        #expect(SessionCategory(session: makeSession(id: "legacy")) == .assistant)
+    }
+
+    @Test
+    func assistantListAndSelectionExcludeMissingOrLegacyClassifications() {
+        let legacy = makeSession(id: "legacy")
+        let assistant = makeSession(id: "assistant", sessionKind: .assistantChat)
+        let rows = [SessionRowModel(session: legacy), SessionRowModel(session: assistant)]
+
+        let groups = makeSessionGroups(
+            rows: rows,
+            agents: [],
+            workItems: [],
+            objectives: [],
+            category: .assistant
+        )
+
+        #expect(groups.flatMap(\.rows).map(\.id) == ["assistant"])
+        #expect(resolvedSessionSelection(
+            category: .assistant,
+            rows: [SessionRowModel(session: legacy)],
+            selectedSessionId: "legacy",
+            lastSelectedId: "legacy"
+        ) == nil)
+        #expect(countUnreadSessions(
+            in: [makeSession(id: "legacy-unread", lastAgentMessageSequence: 1)],
+            category: .assistant,
+            workItems: []
+        ) == 0)
+    }
+
+    @Test
+    func unknownAndEmptySessionKindsDecodeToHiddenLegacySentinel() throws {
+        let decoder = JSONDecoder()
+        let unknown = try decoder.decode(SessionKind.self, from: Data("\"unknown\"".utf8))
+        let empty = try decoder.decode(SessionKind.self, from: Data("\"  \"".utf8))
+
+        #expect(unknown == .legacy)
+        #expect(empty == .legacy)
+        #expect(makeSession(id: "missing").hasValidProductClassification == false)
     }
 
     @Test

@@ -8,7 +8,11 @@ import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { resolveAgentWorkDir } from "../runtime/agentWorkDir.mjs";
-import { inferSessionKind, normalizeSessionKind, SESSION_KIND } from "../utils/sessionKinds.mjs";
+import {
+  assertExplicitSessionKind,
+  inferSessionKind,
+  SESSION_KIND
+} from "../utils/sessionKinds.mjs";
 import {
   AGENT_KIND,
   PLATFORM_ASSISTANT_ID,
@@ -1721,11 +1725,13 @@ export class CorptieStore {
       ) WHERE agent_id IS NULL OR TRIM(agent_id) = ''`);
     this.db.run(`UPDATE sessions SET session_kind = 'worker'
       WHERE work_item_id IS NOT NULL AND TRIM(work_item_id) <> ''
-        AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+        AND (session_kind IS NULL OR TRIM(session_kind) = ''
+          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))`);
     this.db.run(`UPDATE sessions SET session_kind = 'objectiveChat'
       WHERE objective_id IS NOT NULL AND TRIM(objective_id) <> ''
         AND (work_item_id IS NULL OR TRIM(work_item_id) = '')
-        AND (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')`);
+        AND (session_kind IS NULL OR TRIM(session_kind) = ''
+          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))`);
     // Objective discussion is a one-to-one association. Preserve the oldest
     // discussion as canonical and retain historical duplicates as ordinary,
     // unbound chats before installing the durable uniqueness guard.
@@ -1747,9 +1753,13 @@ export class CorptieStore {
       ON sessions(objective_id)
       WHERE session_kind = 'objectiveChat' AND objective_id IS NOT NULL`);
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
-      WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
+      WHERE (session_kind IS NULL OR TRIM(session_kind) = ''
+          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))
         AND EXISTS (SELECT 1 FROM agents
           WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
+    this.db.run(`UPDATE sessions SET session_kind = 'legacy'
+      WHERE session_kind IS NULL OR TRIM(session_kind) = ''
+        OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker', 'legacy')`);
     const historicalSessionRepair = this.repairOrphanedWorkSessions({
       repairedBy: "store-migration",
       reason: "Recovered a historical Worker Session before installing association guards."
@@ -3925,10 +3935,12 @@ export class CorptieStore {
       "SELECT objective_id, work_item_id, session_kind FROM sessions WHERE id = ?",
       [session.id]
     );
-    const normalizedSessionKind = normalizeSessionKind(session.sessionKind);
-    const effectiveSessionKind = normalizedSessionKind === "legacy"
+    const suppliedSessionKind = session.sessionKind == null
+      ? inferSessionKind({ objectiveId: session.objectiveId, workItemId: session.workItemId })
+      : assertExplicitSessionKind(session.sessionKind, { allowLegacy: true });
+    const effectiveSessionKind = suppliedSessionKind === "legacy"
       ? persistedAssociation?.session_kind ?? "legacy"
-      : normalizedSessionKind;
+      : suppliedSessionKind;
     const effectiveObjectiveId = effectiveSessionKind === "worker"
       ? session.objectiveId ?? persistedAssociation?.objective_id ?? null
       : session.objectiveId ?? null;
@@ -4403,7 +4415,7 @@ export class CorptieStore {
   }
 
   setSessionKind(sessionId, sessionKind, agentId = null) {
-    const normalized = normalizeSessionKind(sessionKind);
+    const normalized = assertExplicitSessionKind(sessionKind);
     this.db.run(
       "UPDATE sessions SET session_kind = ?, agent_id = COALESCE(?, agent_id), updated_at = ? WHERE id = ?",
       [normalized, agentId, createdAtFromOrNow(), sessionId]
@@ -4507,6 +4519,9 @@ export class CorptieStore {
   createSession(input = {}) {
     const id = input.id ?? `session:${randomUUID()}`;
     const now = createdAtFromOrNow();
+    const sessionKind = input.sessionKind == null
+      ? inferSessionKind({ objectiveId: input.objectiveId, workItemId: input.workItemId })
+      : assertExplicitSessionKind(input.sessionKind);
     this.db.run(
       `INSERT INTO sessions (
         id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent,
@@ -4534,7 +4549,7 @@ export class CorptieStore {
         JSON.stringify(input.raw ?? {}),
         input.objectiveId ?? null,
         input.workItemId ?? null,
-        input.workItemId ? SESSION_KIND.worker : normalizeSessionKind(input.sessionKind),
+        input.workItemId ? SESSION_KIND.worker : sessionKind,
         input.agentId ?? null
       ]
     );

@@ -134,6 +134,33 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         XCTAssertLessThan(largeP50, 50, "sorting 2000 sessions should stay under 50 ms p50")
     }
 
+    func testAssistantGroupingWithInvalidClassificationsStaysBounded() {
+        var sessions = makeSyntheticSessionList(count: 2_000)
+        for index in sessions.indices {
+            sessions[index].sessionKind = index.isMultiple(of: 2) ? .assistantChat : .legacy
+        }
+        let rows = sessions.map(SessionRowModel.init(session:))
+        let p50 = measure("assistant grouping (2000 mixed classifications)", iterations: 20) {
+            _ = makeSessionGroups(
+                rows: rows,
+                agents: [],
+                workItems: [],
+                objectives: [],
+                category: .assistant
+            )
+        }
+        let groups = makeSessionGroups(
+            rows: rows,
+            agents: [],
+            workItems: [],
+            objectives: [],
+            category: .assistant
+        )
+
+        XCTAssertEqual(groups.flatMap(\.rows).count, 1_000)
+        XCTAssertLessThan(p50, 50, "classification filtering and grouping 2000 sessions should stay under 50 ms p50")
+    }
+
     private let sessionPrecedesProxy: (TaskSession, TaskSession) -> Bool = { left, right in
         if (left.pinned == true) != (right.pinned == true) { return left.pinned == true }
         let leftOrder = left.sortOrder ?? .greatestFiniteMagnitude
