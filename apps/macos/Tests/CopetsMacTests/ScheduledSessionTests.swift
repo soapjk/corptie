@@ -105,6 +105,27 @@ struct ScheduledSessionModelTests {
 
 @MainActor
 struct ScheduledSessionBackendClientTests {
+    @Test func automationRefreshCoalescesEventsArrivingDuringAnActiveLoad() {
+        var refresh = AutomationRefreshCoalescer()
+
+        let startsInitialLoad = refresh.request()
+        let coalescesBeforePass = refresh.request()
+        #expect(startsInitialLoad)
+        #expect(!coalescesBeforePass)
+        refresh.beginPass()
+        let coalescesDuringPass = refresh.request()
+        let needsFollowUpPass = refresh.completePass()
+        #expect(!coalescesDuringPass)
+        #expect(needsFollowUpPass)
+
+        refresh.beginPass()
+        let finishesWithoutMoreEvents = refresh.completePass()
+        #expect(!finishesWithoutMoreEvents)
+        #expect(!refresh.isRunning)
+        let startsNextIndependentLoad = refresh.request()
+        #expect(startsNextIndependentLoad)
+    }
+
     @Test func mapsEveryAuthoritativeBackendStateWithoutCallingQueuedRunning() {
         #expect(ScheduledSessionRunStatus(rawValue: "claimed").presentation == .due)
         #expect(ScheduledSessionRunStatus(rawValue: "queued").presentation == .queued)
@@ -251,6 +272,7 @@ final class ScheduledSessionUITests: XCTestCase {
             )
         )
         XCTAssertEqual(ScheduledSessionAccessibilityID.composerEntry, "scheduled-session.composer.entry")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.detailSection, "scheduled-session.detail.section")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorMessage, "scheduled-session.editor.message")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorScheduleType, "scheduled-session.editor.schedule-type")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorRunAt, "scheduled-session.editor.run-at")
@@ -269,5 +291,24 @@ final class ScheduledSessionUITests: XCTestCase {
         XCTAssertTrue(ScheduledSessionTaskStatus.active.permitsPause)
         XCTAssertTrue(ScheduledSessionTaskStatus.paused.permitsResume)
         XCTAssertFalse(ScheduledSessionTaskStatus.cancelled.permitsRunNow)
+    }
+
+    func testSessionAutomationSummaryLivesInTheDetailCardNotAboveTheComposer() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let sessionsView = try String(
+            contentsOf: sourceRoot.appendingPathComponent("SessionsView.swift"),
+            encoding: .utf8
+        )
+        let conversationView = try String(
+            contentsOf: sourceRoot.appendingPathComponent("FloatingRootView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(sessionsView.contains("statusCard\n\n                    ScheduledSessionStrip(session: session)"))
+        XCTAssertFalse(conversationView.contains("ScheduledSessionStrip(session: session)"))
     }
 }

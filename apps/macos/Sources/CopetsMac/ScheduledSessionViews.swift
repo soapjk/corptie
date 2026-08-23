@@ -4,6 +4,7 @@ import SwiftUI
 enum ScheduledSessionAccessibilityID {
     static let composerSymbol = "calendar.badge.clock"
     static let composerEntry = "scheduled-session.composer.entry"
+    static let detailSection = "scheduled-session.detail.section"
     static let editorMessage = "scheduled-session.editor.message"
     static let editorScheduleType = "scheduled-session.editor.schedule-type"
     static let editorRunAt = "scheduled-session.editor.run-at"
@@ -68,6 +69,7 @@ struct ScheduledSessionStrip: View {
                 ScheduledSessionManagerView(session: session)
                     .environmentObject(backendClient)
             }
+            .accessibilityIdentifier(ScheduledSessionAccessibilityID.detailSection)
         }
     }
 }

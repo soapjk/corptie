@@ -42,6 +42,35 @@ struct ProjectWorktreeIntegrationLaunchGate: Equatable {
     }
 }
 
+struct AutomationRefreshCoalescer: Equatable {
+    private(set) var isRunning = false
+    private(set) var isPending = false
+
+    mutating func request() -> Bool {
+        isPending = true
+        guard !isRunning else { return false }
+        isRunning = true
+        return true
+    }
+
+    mutating func beginPass() {
+        isPending = false
+    }
+
+    mutating func completePass() -> Bool {
+        guard isPending else {
+            isRunning = false
+            return false
+        }
+        return true
+    }
+
+    mutating func finish() {
+        isRunning = false
+        isPending = false
+    }
+}
+
 enum SessionDetailPreloadPolicy {
     // Warm a small navigation neighborhood. Projection now runs off-main and
     // Provider reads are single-flight on the backend, so four nearby rows no
@@ -219,6 +248,7 @@ final class BackendClient: ObservableObject {
     private var usageRefreshTask: Task<Void, Never>?
     private var usageEventRefreshTask: Task<Void, Never>?
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
+    private var automationRefreshCoalescer = AutomationRefreshCoalescer()
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
     private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
@@ -356,6 +386,7 @@ final class BackendClient: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     self.markBackendConnectedFromSessionStream()
+                    await self.loadAutomations()
                     if let selectedSession = self.selectedSession {
                         await self.loadScheduledTasks(for: selectedSession)
                     }
@@ -3768,9 +3799,19 @@ final class BackendClient: ObservableObject {
     }
 
     func loadAutomations() async {
-        guard !isLoadingAutomations else { return }
+        guard automationRefreshCoalescer.request() else { return }
         isLoadingAutomations = true
-        defer { isLoadingAutomations = false }
+        defer {
+            automationRefreshCoalescer.finish()
+            isLoadingAutomations = false
+        }
+        repeat {
+            automationRefreshCoalescer.beginPass()
+            await loadAutomationsPass()
+        } while automationRefreshCoalescer.completePass()
+    }
+
+    private func loadAutomationsPass() async {
         do {
             let listURL = baseURL.appending(path: "automations")
             let (data, response) = try await URLSession.shared.data(from: listURL)
