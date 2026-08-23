@@ -44,6 +44,39 @@ function session(store, core, input) {
   core.bindSession({ agentId: input.agentId, sessionId: input.providerSessionId });
 }
 
+function registerRepository(store, repositoryId) {
+  const observedAt = "2026-08-23T00:00:00.000Z";
+  store.upsertGitWorkspaceSnapshot({
+    repository: {
+      id: repositoryId,
+      commonGitDirCanonicalPath: `/tmp/${repositoryId}/.git`,
+      discoveredAt: observedAt,
+      lastValidatedAt: observedAt
+    },
+    worktrees: [{
+      worktreeId: `worktree:${repositoryId}`,
+      repositoryId,
+      path: `/tmp/${repositoryId}`,
+      canonicalPath: `/tmp/${repositoryId}`,
+      gitDirCanonicalPath: `/tmp/${repositoryId}/.git`,
+      isMain: true,
+      availability: "available",
+      headOid: "b".repeat(40),
+      branchRef: "refs/heads/main",
+      branchName: "main",
+      isDetached: false,
+      isLocked: false,
+      lockReason: null,
+      isPrunable: false,
+      pruneReason: null,
+      inventoryVersion: "inventory:collaboration",
+      observedAt
+    }],
+    inventoryVersion: "inventory:collaboration",
+    observedAt
+  });
+}
+
 test("same-Agent Sessions are separately discoverable and can collaborate without shared-context assumptions", async () => {
   const f = await fixture();
   try {
@@ -102,13 +135,17 @@ test("same-Agent Sessions are separately discoverable and can collaborate withou
   }
 });
 
-test("explicit peer Objective discovery exposes its Objective Chat for routing without leaking Workspace access", async () => {
+test("peer Objective discovery exposes context without allowing Objective Chat as a delivery target", async () => {
   const f = await fixture();
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source", name: "Source", role: "independentContributor" });
     const peerAgent = f.store.createAgent({ id: "agent:marketcow", name: "MarketCow", role: "independentContributor" });
+    const repositoryId = "repository:marketcow";
+    registerRepository(f.store, repositoryId);
     const sourceObjective = f.objectiveService.createObjective({ name: "Corptie", contributorAgentIds: [sourceAgent.agentId] });
-    const peerObjective = f.objectiveService.createObjective({ name: "MarketCow", contributorAgentIds: [peerAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({
+      name: "MarketCow", contributorAgentIds: [peerAgent.agentId], workspaceIds: [repositoryId]
+    });
     const peerWorkItem = f.objectiveService.createWorkItem({ objectiveId: peerObjective.id, title: "Existing", mainAgentId: peerAgent.agentId });
     session(f.store, f.core, { providerSessionId: "provider:source", logicalSessionId: "session:source", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: "/source/private" });
     session(f.store, f.core, { providerSessionId: "provider:marketcow-chat", logicalSessionId: "session:marketcow-chat", agentId: peerAgent.agentId, kind: "objectiveChat", objectiveId: peerObjective.id, cwd: "/marketcow/private" });
@@ -127,20 +164,18 @@ test("explicit peer Objective discovery exposes its Objective Chat for routing w
     assert.ok(discovered.every((item) => item.providerSessionId === null && item.providerId === null && item.bindingId === null));
     assert.ok(discovered.every((item) => item.collaborationCapabilities.includes("receive_task")));
 
-    const recipient = resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+    assert.throws(() => resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
       recipientAgentId: peerAgent.agentId,
       targetObjectiveId: peerObjective.id,
       routingIntent: "objective_chat"
-    });
-    assert.equal(recipient.sessionId, "session:marketcow-chat");
-    assert.equal(recipient.objectiveId, peerObjective.id);
+    }), { code: "INVALID_ROUTING_INTENT" });
     const confirmation = f.core.proposeTask({
       initiatorAgentId: sourceAgent.agentId,
       initiatorSessionId: "session:source",
       recipientAgentId: peerAgent.agentId,
-      recipientSessionId: recipient.sessionId,
       sourceObjectiveId: sourceObjective.id,
       targetObjectiveId: peerObjective.id,
+      routingIntent: "best_available",
       type: "change_request",
       title: "MarketCow collaboration",
       summary: "Create the target-scoped WorkItem only after confirmation."
@@ -148,9 +183,9 @@ test("explicit peer Objective discovery exposes its Objective Chat for routing w
     assert.equal(confirmation.initiatorAgentName, "Source");
     assert.equal(confirmation.recipientAgentName, "MarketCow");
     assert.equal(confirmation.initiatorSessionTitle, "session:source");
-    assert.equal(confirmation.recipientSessionTitle, "session:marketcow-chat");
+    assert.equal(confirmation.recipientSessionTitle, null);
     assert.equal(confirmation.initiatorSessionKind, "objectiveChat");
-    assert.equal(confirmation.recipientSessionKind, "objectiveChat");
+    assert.equal(confirmation.recipientSessionKind, null);
     assert.equal(confirmation.sourceObjectiveId, sourceObjective.id);
     assert.equal(confirmation.sourceObjectiveName, "Corptie");
     assert.equal(confirmation.targetObjectiveId, peerObjective.id);
@@ -158,10 +193,25 @@ test("explicit peer Objective discovery exposes its Objective Chat for routing w
     assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 1);
     const confirmed = f.core.confirmTaskConfirmation(confirmation.confirmationId);
     const task = f.core.getTask(confirmed.taskId);
-    assert.equal(task.recipientSessionId, "session:marketcow-chat");
+    assert.equal(task.recipientSessionId, null);
     assert.equal(task.targetObjectiveId, peerObjective.id);
     assert.equal(f.store.getWorkItem(task.workItemId).objective_id, peerObjective.id);
+    assert.equal(f.store.getWorkItem(task.workItemId).main_workspace_id, repositoryId);
     assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 2);
+    f.service.launchWorkItem = async ({ workItem, agent, autoUniqueTitle }) => {
+      assert.equal(autoUniqueTitle, true);
+      session(f.store, f.core, {
+        providerSessionId: "provider:marketcow-collaboration", logicalSessionId: "session:marketcow-collaboration",
+        agentId: agent.agentId, kind: "worker", objectiveId: workItem.objective_id,
+        workItemId: workItem.id, cwd: f.directory
+      });
+      return { id: "provider:marketcow-collaboration" };
+    };
+    const route = await f.service.ensureTaskRecipientSession(task, { reason: "confirmation_approved" });
+    assert.equal(route.sessionId, "session:marketcow-collaboration");
+    assert.equal(route.created, true);
+    assert.equal(f.store.getSession(route.providerSessionId).sessionKind, "worker");
+    assert.equal(f.store.getSession(route.providerSessionId).workItemId, task.workItemId);
     assert.throws(() => f.service.getWorkItem(metadata, sourceAgent.agentId, peerWorkItem.id), { code: "WORK_ITEM_OUTSIDE_SCOPE" });
     assert.throws(() => f.service.createWorkItem(metadata, sourceAgent.agentId, {
       title: "Illegal target write", agentId: peerAgent.agentId, idempotencyKey: "illegal:target"
@@ -172,7 +222,7 @@ test("explicit peer Objective discovery exposes its Objective Chat for routing w
   }
 });
 
-test("routing never falls back when a peer Objective has no Objective Chat or has ambiguous Workers", async () => {
+test("routing intent returns only suitable active Sessions and leaves creation as the automatic fallback", async () => {
   const f = await fixture();
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source", name: "Source", role: "independentContributor" });
@@ -180,8 +230,10 @@ test("routing never falls back when a peer Objective has no Objective Chat or ha
     const sourceObjective = f.objectiveService.createObjective({ name: "Source Objective", contributorAgentIds: [sourceAgent.agentId] });
     const peerObjective = f.objectiveService.createObjective({ name: "Peer Objective", contributorAgentIds: [peerAgent.agentId] });
     session(f.store, f.core, { providerSessionId: "provider:source", logicalSessionId: "session:source", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory });
+    const peerWorkItems = new Map();
     for (const suffix of ["one", "two"]) {
       const workItem = f.objectiveService.createWorkItem({ objectiveId: peerObjective.id, title: `Worker ${suffix}`, mainAgentId: peerAgent.agentId });
+      peerWorkItems.set(suffix, workItem);
       session(f.store, f.core, {
         providerSessionId: `provider:peer:${suffix}`, logicalSessionId: `session:peer:${suffix}`,
         agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
@@ -194,22 +246,167 @@ test("routing never falls back when a peer Objective has no Objective Chat or ha
       recipientAgentId: peerAgent.agentId,
       targetObjectiveId: peerObjective.id,
       routingIntent: "objective_chat"
-    }), (error) => error.code === "RECIPIENT_SESSION_NOT_FOUND"
-      && error.message.includes(peerAgent.agentId)
-      && error.message.includes(peerObjective.id));
-    assert.throws(() => resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+    }), { code: "INVALID_ROUTING_INTENT" });
+    const selectedWorker = resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
       recipientAgentId: peerAgent.agentId,
       targetObjectiveId: peerObjective.id,
-      routingIntent: "existing_work_item_session"
-    }), { code: "AMBIGUOUS_RECIPIENT_SESSION" });
+      routingIntent: "existing_work_item_session",
+      workItemId: peerWorkItems.get("one").id
+    });
+    assert.equal(selectedWorker.sessionId, "session:peer:one");
 
     const exact = resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
       recipientAgentId: peerAgent.agentId,
       targetObjectiveId: peerObjective.id,
-      recipientSessionId: "session:peer:two"
+      recipientSessionId: "session:peer:two",
+      workItemId: peerWorkItems.get("two").id
     });
     assert.equal(exact.sessionId, "session:peer:two");
     assert.equal(exact.objectiveId, peerObjective.id);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("closed and invalid Sessions are filtered while an active suitable Session is reused", async () => {
+  const f = await fixture();
+  try {
+    const sourceAgent = f.store.createAgent({ id: "agent:source-filter", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:peer-filter", name: "Peer", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({ name: "Source Filter", contributorAgentIds: [sourceAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({ name: "Peer Filter", contributorAgentIds: [peerAgent.agentId] });
+    session(f.store, f.core, { providerSessionId: "provider:source-filter", logicalSessionId: "session:source-filter", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory });
+    const workItems = new Map();
+    for (const suffix of ["closed", "invalid", "active"]) {
+      const workItem = f.objectiveService.createWorkItem({
+        objectiveId: peerObjective.id,
+        title: `Peer ${suffix}`,
+        mainAgentId: peerAgent.agentId
+      });
+      workItems.set(suffix, workItem);
+      session(f.store, f.core, {
+        providerSessionId: `provider:peer-${suffix}`, logicalSessionId: `session:peer-${suffix}`,
+        agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+        workItemId: workItem.id, cwd: f.directory
+      });
+    }
+    f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:peer-closed'");
+    f.store.db.run("UPDATE logical_sessions SET archived=1 WHERE logical_session_id='session:peer-closed'");
+    f.store.db.run("UPDATE provider_thread_bindings SET state='invalid' WHERE logical_session_id='session:peer-invalid'");
+
+    const discovered = f.service.discoverSessions({ sessionId: "provider:source-filter" }, sourceAgent.agentId, {
+      agentId: peerAgent.agentId,
+      objectiveId: peerObjective.id
+    });
+    const byId = new Map(discovered.map((item) => [item.sessionId, item]));
+    assert.equal(byId.get("session:peer-active").active, true);
+    assert.equal(byId.get("session:peer-invalid"), undefined);
+    assert.equal(byId.get("session:peer-closed"), undefined);
+    const selected = resolveRecipientSession(f.service, { sessionId: "provider:source-filter" }, sourceAgent.agentId, {
+      recipientAgentId: peerAgent.agentId,
+      targetObjectiveId: peerObjective.id,
+      routingIntent: "existing_work_item_session",
+      workItemId: workItems.get("active").id
+    });
+    assert.equal(selected.sessionId, "session:peer-active");
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("no suitable active Session creates the collaboration WorkItem Session and records routing evidence", async () => {
+  const f = await fixture();
+  try {
+    const routingEvents = [];
+    f.service.onRoutingEvent = (event, details) => routingEvents.push({ event, details });
+    const sourceAgent = f.store.createAgent({ id: "agent:source-create", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:peer-create", name: "Peer", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({ name: "Source Create", contributorAgentIds: [sourceAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({ name: "Peer Create", contributorAgentIds: [peerAgent.agentId] });
+    session(f.store, f.core, { providerSessionId: "provider:source-create", logicalSessionId: "session:source-create", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory });
+    session(f.store, f.core, { providerSessionId: "provider:peer-closed", logicalSessionId: "session:peer-closed-create", agentId: peerAgent.agentId, kind: "objectiveChat", objectiveId: peerObjective.id, cwd: f.directory });
+    f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:peer-closed'");
+    f.store.db.run("UPDATE logical_sessions SET archived=1 WHERE logical_session_id='session:peer-closed-create'");
+    const task = f.core.createTask({
+      initiatorAgentId: sourceAgent.agentId,
+      recipientAgentId: peerAgent.agentId,
+      initiatorSessionId: "session:source-create",
+      recipientSessionId: "session:peer-closed-create",
+      sourceObjectiveId: sourceObjective.id,
+      targetObjectiveId: peerObjective.id,
+      routingIntent: "best_available",
+      title: "Create a safe route",
+      summary: "No closed Session may receive this message."
+    });
+    f.service.launchWorkItem = async ({ workItem, agent }) => {
+      session(f.store, f.core, {
+        providerSessionId: "provider:peer-created", logicalSessionId: "session:peer-created",
+        agentId: agent.agentId, kind: "worker", objectiveId: workItem.objective_id,
+        workItemId: workItem.id, cwd: f.directory
+      });
+      return { id: "provider:peer-created" };
+    };
+
+    const route = await f.service.ensureTaskRecipientSession(task, { reason: "test_no_active_candidate" });
+    assert.equal(route.created, true);
+    assert.equal(route.sessionId, "session:peer-created");
+    assert.equal(f.core.getTask(task.taskId).recipientSessionId, "session:peer-created");
+    assert.equal(f.store.getWorkItem(task.workItemId).current_session_id, "provider:peer-created");
+    assert.equal(f.core.getTask(task.taskId).messages[0].recipientSessionId, "session:peer-created");
+    assert.ok(f.core.getTask(task.taskId).events.some((event) => event.type === "recipient_route_reselected"
+      && event.payload.createdWorkItemSession === true));
+    assert.ok(routingEvents.some((entry) => entry.event === "candidates_filtered"
+      && entry.details.candidates.some((candidate) => candidate.rejectionReasons.includes("session_archived"))
+      && entry.details.candidates.some((candidate) => candidate.rejectionReasons.includes("session_not_worker"))));
+    assert.ok(routingEvents.some((entry) => entry.event === "work_item_session_created"));
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("recipient closing between selection and delivery preflight is rerouted without losing the pending delivery", async () => {
+  const f = await fixture();
+  try {
+    const sourceAgent = f.store.createAgent({ id: "agent:source-race", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:peer-race", name: "Peer", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({ name: "Source Race", contributorAgentIds: [sourceAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({ name: "Peer Race", contributorAgentIds: [peerAgent.agentId] });
+    session(f.store, f.core, { providerSessionId: "provider:source-race", logicalSessionId: "session:source-race", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory });
+    const peerWorkItem = f.objectiveService.createWorkItem({
+      objectiveId: peerObjective.id, title: "Race-safe route", mainAgentId: peerAgent.agentId
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:peer-race-old", logicalSessionId: "session:peer-race-old",
+      agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+      workItemId: peerWorkItem.id, cwd: f.directory
+    });
+    const task = f.core.createTask({
+      initiatorAgentId: sourceAgent.agentId, recipientAgentId: peerAgent.agentId,
+      initiatorSessionId: "session:source-race", recipientSessionId: "session:peer-race-old",
+      sourceObjectiveId: sourceObjective.id, targetObjectiveId: peerObjective.id,
+      workItemId: peerWorkItem.id, routingIntent: "best_available",
+      title: "Race-safe route", summary: "Deliver after revalidation."
+    });
+    const first = await f.service.ensureTaskRecipientSession(task, { reason: "initial_selection" });
+    assert.equal(first.created, false);
+    f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:peer-race-old'");
+    f.store.db.run("UPDATE logical_sessions SET archived=1 WHERE logical_session_id='session:peer-race-old'");
+    f.service.launchWorkItem = async ({ workItem, agent }) => {
+      session(f.store, f.core, {
+        providerSessionId: "provider:peer-race-new", logicalSessionId: "session:peer-race-new",
+        agentId: agent.agentId, kind: "worker", objectiveId: workItem.objective_id,
+        workItemId: workItem.id, cwd: f.directory
+      });
+      return { id: "provider:peer-race-new" };
+    };
+    const recovered = await f.service.ensureTaskRecipientSession(f.core.getTask(task.taskId), { reason: "delivery_preflight" });
+    const delivery = f.core.listPendingDeliveries()[0];
+    assert.equal(recovered.sessionId, "session:peer-race-new");
+    assert.equal(delivery.status, "pending");
+    assert.equal(f.core.getDeliveryEnvelope(delivery.deliveryId).task.recipientSessionId, "session:peer-race-new");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

@@ -4,7 +4,7 @@ export const COLLABORATION_RELATION_TYPES = Object.freeze([
   "delegated_subtask", "depends_on", "blocks", "review_of"
 ]);
 export const COLLABORATION_ROUTING_INTENTS = Object.freeze([
-  "existing_work_item_session", "objective_chat", "create_dedicated_session", "best_available"
+  "existing_work_item_session", "create_dedicated_session", "best_available"
 ]);
 
 const id = (prefix, description) => ({

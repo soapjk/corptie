@@ -13,6 +13,9 @@ export class SessionCollaborationService {
     this.objectiveService = options.objectiveService;
     this.collaborationCore = options.collaborationCore;
     this.launchWorkItem = options.startWorkItem;
+    this.onRoutingEvent = options.onRoutingEvent ?? ((event, details) => {
+      console.info(`[collaboration-routing] event=${event} ${JSON.stringify(details)}`);
+    });
     if (!this.store || !this.objectiveService || !this.collaborationCore || typeof this.launchWorkItem !== "function") {
       throw new TypeError("SessionCollaborationService requires store, objectiveService, collaborationCore, and startWorkItem().");
     }
@@ -286,6 +289,7 @@ export class SessionCollaborationService {
     const agentId = session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId ?? null;
     const sameObjective = Boolean(scope.session.objectiveId && session.objectiveId === scope.session.objectiveId);
     const peerObjective = Boolean(scope.session.objectiveId && session.objectiveId && !sameObjective);
+    const eligibility = collaborationSessionEligibility(this.store, session);
     return {
       sessionId: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id,
       providerSessionId: peerObjective ? null : session.id,
@@ -295,7 +299,8 @@ export class SessionCollaborationService {
       workItemId: session.workItemId,
       lifecycle: session.archived ? "archived" : session.status,
       routeStatus: binding?.state ?? (logical ? "unresolved" : "legacy_unresolved"),
-      active: binding?.state === "active",
+      active: eligibility.active,
+      routingRejectionReasons: eligibility.reasons,
       superseded: binding?.state === "superseded",
       routingVersion: peerObjective ? null : logical?.routingVersion ?? null,
       bindingId: peerObjective ? null : binding?.bindingId ?? null,
@@ -309,6 +314,127 @@ export class SessionCollaborationService {
       collaborationCapabilities: sameObjective || (!scope.session.objectiveId && agentId === scope.agent.agentId)
         ? ["receive_task", "receive_message", "deliver_artifact"]
         : peerObjective ? ["receive_task"] : []
+    };
+  }
+
+  async ensureTaskRecipientSession(task, options = {}) {
+    if (!task?.taskId) throw coded("COLLABORATION_TASK_REQUIRED", "A collaboration Task is required for recipient routing.");
+    const current = collaborationTargetEligibility(this.store, task, task.recipientSessionId);
+    if (current.active) {
+      if (["confirmation_approved", "initial_selection"].includes(options.reason)) {
+        this.onRoutingEvent("session_reused", {
+          taskId: task.taskId,
+          sessionId: current.logicalSessionId,
+          reason: options.reason
+        });
+      }
+      return { task, sessionId: current.logicalSessionId, providerSessionId: current.providerSessionId, created: false };
+    }
+
+    const sessions = this.store.listSessionsByObjective(task.targetObjectiveId)
+      .filter((session) => (session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId) === task.recipientAgentId);
+    const evaluated = sessions.map((session) => ({
+      session,
+      eligibility: collaborationTargetEligibility(this.store, task, session)
+    }));
+    this.onRoutingEvent("candidates_filtered", {
+      taskId: task.taskId,
+      recipientAgentId: task.recipientAgentId,
+      targetObjectiveId: task.targetObjectiveId,
+      candidates: evaluated.map(({ session, eligibility }) => ({
+        sessionId: eligibility.logicalSessionId ?? session.id,
+        sessionKind: session.sessionKind,
+        workItemId: session.workItemId ?? null,
+        active: eligibility.active,
+        rejectionReasons: eligibility.reasons
+      }))
+    });
+    const active = evaluated.filter((item) => item.eligibility.active);
+    const replacement = active[0] ?? null;
+    if (replacement) {
+      const rerouted = this.collaborationCore.rerouteTaskRecipient(task.taskId, replacement.eligibility.logicalSessionId, {
+        reason: options.reason ?? "selected_route_became_inactive",
+        previousRejectionReasons: current.reasons
+      });
+      this.onRoutingEvent("session_reselected", {
+        taskId: task.taskId,
+        previousSessionId: task.recipientSessionId,
+        sessionId: replacement.eligibility.logicalSessionId
+      });
+      return {
+        task: rerouted,
+        sessionId: replacement.eligibility.logicalSessionId,
+        providerSessionId: replacement.eligibility.providerSessionId,
+        created: false
+      };
+    }
+
+    let workItem = this.store.getWorkItem(task.workItemId);
+    if (!workItem) throw coded("COLLABORATION_WORK_ITEM_NOT_FOUND", `Collaboration WorkItem ${task.workItemId} was not found.`);
+    if (!workItem.main_workspace_id) {
+      const objective = this.store.getObjective(task.targetObjectiveId);
+      const repositoryId = (objective?.workspaceIds ?? [])
+        .find((candidate) => this.store.getGitRepository(candidate));
+      if (repositoryId) {
+        workItem = this.store.updateWorkItem(workItem.id, { mainWorkspaceId: repositoryId });
+        this.onRoutingEvent("work_item_workspace_selected", {
+          taskId: task.taskId,
+          workItemId: workItem.id,
+          repositoryId,
+          source: "target_objective"
+        });
+      }
+    }
+    const agent = this.store.getAgent(task.recipientAgentId);
+    if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${task.recipientAgentId}`);
+    this.onRoutingEvent("work_item_session_creation_started", {
+      taskId: task.taskId,
+      workItemId: workItem.id,
+      recipientAgentId: agent.agentId,
+      previousSessionId: task.recipientSessionId,
+      previousRejectionReasons: current.reasons
+    });
+    let launched;
+    try {
+      launched = await this.launchWorkItem({
+        workItem,
+        agent,
+        title: task.title,
+        autoUniqueTitle: true
+      });
+    } catch (error) {
+      this.onRoutingEvent("work_item_session_creation_failed", {
+        taskId: task.taskId,
+        workItemId: workItem.id,
+        code: error.code ?? "SESSION_CREATION_FAILED",
+        error: error.message
+      });
+      throw error;
+    }
+    const created = collaborationTargetEligibility(this.store, task, launched?.id ?? launched?.sessionId);
+    if (!created.active) {
+      throw coded(
+        "CREATED_SESSION_NOT_ACTIVE",
+        `Created Session is not an active collaboration target: ${created.reasons.join(", ") || "unresolved"}.`,
+        503
+      );
+    }
+    const rerouted = this.collaborationCore.rerouteTaskRecipient(task.taskId, created.logicalSessionId, {
+      reason: options.reason ?? "no_suitable_active_session",
+      createdWorkItemSession: true,
+      previousRejectionReasons: current.reasons
+    });
+    this.onRoutingEvent("work_item_session_created", {
+      taskId: task.taskId,
+      workItemId: workItem.id,
+      sessionId: created.logicalSessionId,
+      providerSessionId: created.providerSessionId
+    });
+    return {
+      task: rerouted,
+      sessionId: created.logicalSessionId,
+      providerSessionId: created.providerSessionId,
+      created: true
     };
   }
 
@@ -373,33 +499,66 @@ export class SessionCollaborationService {
 }
 
 export function resolveRecipientSession(service, metadata, actorId, input = {}) {
-  if (input.recipientSessionId) return service.getSession(metadata, actorId, input.recipientSessionId);
+  if (input.recipientSessionId) {
+    const explicit = service.getSession(metadata, actorId, input.recipientSessionId);
+    return explicit.active
+      && explicit.sessionKind === "worker"
+      && (!input.workItemId || explicit.workItemId === input.workItemId)
+      ? explicit
+      : null;
+  }
   const intent = optional(input.routingIntent);
+  if (!intent) {
+    throw coded("ROUTING_INTENT_REQUIRED", "When only an Agent is specified, routing_intent must be existing_work_item_session, create_dedicated_session, or best_available. Objective Chat is not a collaboration delivery target.");
+  }
   if (!ROUTING_INTENTS.has(intent)) {
-    throw coded("ROUTING_INTENT_REQUIRED", "When only an Agent is specified, routing_intent must be existing_work_item_session, objective_chat, create_dedicated_session, or best_available.");
+    throw coded("INVALID_ROUTING_INTENT", `Unsupported collaboration routing intent: ${intent}. Objective Chat is not a collaboration delivery target.`);
   }
   const candidates = service.discoverSessions(metadata, actorId, {
     agentId: input.recipientAgentId,
     objectiveId: input.targetObjectiveId
   });
-  const filtered = intent === "objective_chat" ? candidates.filter((item) => item.sessionKind === "objectiveChat")
-    : intent === "existing_work_item_session" ? candidates.filter((item) => item.workItemId)
-      : candidates;
-  if (intent === "create_dedicated_session") return null;
-  if (!filtered.length) {
-    throw coded(
-      "RECIPIENT_SESSION_NOT_FOUND",
-      `No visible ${intent} Session was found for Agent ${input.recipientAgentId}${input.targetObjectiveId ? ` in Objective ${input.targetObjectiveId}` : ""}.`,
-      404
-    );
+  if (intent === "create_dedicated_session" || !input.workItemId) return null;
+  return candidates.find((item) => item.active
+    && item.sessionKind === "worker"
+    && item.workItemId === input.workItemId) ?? null;
+}
+
+export function collaborationSessionEligibility(store, sessionOrId) {
+  const logical = typeof sessionOrId === "string"
+    ? (store.getLogicalSession(sessionOrId) ?? store.getLogicalSessionByLegacySessionId(sessionOrId))
+    : (store.getLogicalSession(sessionOrId?.logicalSessionId) ?? store.getLogicalSessionByLegacySessionId(sessionOrId?.id));
+  const session = typeof sessionOrId === "string"
+    ? (logical?.legacySessionId ? store.getSession(logical.legacySessionId) : store.getSession(sessionOrId))
+    : sessionOrId;
+  const reasons = [];
+  if (!session) reasons.push("session_missing");
+  if (!logical) reasons.push("logical_route_missing");
+  if (session?.archived || logical?.archived) reasons.push("session_archived");
+  if (!logical?.activeBinding) reasons.push("active_binding_missing");
+  else if (logical.activeBinding.state !== "active") reasons.push(`binding_${logical.activeBinding.state}`);
+  if (["failed", "cancelled", "canceled"].includes(session?.status)) reasons.push(`session_${session.status}`);
+  if (session?.capabilities?.canSend === false || session?.rawStatus?.capabilities?.canSend === false) {
+    reasons.push("send_capability_unavailable");
   }
-  if (filtered.length > 1 && intent !== "best_available") {
-    throw coded("AMBIGUOUS_RECIPIENT_SESSION", `Routing intent ${intent} resolved ${filtered.length} Sessions; specify recipient_session_id or target_objective_id.`, 409);
+  return {
+    active: reasons.length === 0,
+    reasons,
+    session,
+    logical,
+    logicalSessionId: logical?.logicalSessionId ?? session?.logicalSessionId ?? null,
+    providerSessionId: logical?.legacySessionId ?? session?.id ?? null
+  };
+}
+
+function collaborationTargetEligibility(store, task, sessionOrId) {
+  const eligibility = collaborationSessionEligibility(store, sessionOrId);
+  const reasons = [...eligibility.reasons];
+  if (eligibility.session && eligibility.session.sessionKind !== "worker") reasons.push("session_not_worker");
+  if (eligibility.session?.sessionKind === "worker" && eligibility.session.workItemId !== task.workItemId) {
+    reasons.push("work_item_mismatch");
   }
-  return filtered.find((item) => item.active && item.sessionKind === "objectiveChat")
-    ?? filtered.find((item) => item.active)
-    ?? filtered.find((item) => item.sessionKind === "objectiveChat")
-    ?? filtered[0];
+  return { ...eligibility, active: reasons.length === 0, reasons };
 }
 
 function uniqueSessions(sessions) {

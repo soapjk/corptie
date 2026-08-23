@@ -372,20 +372,21 @@ export class CollaborationCore {
           type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
           idempotency_key, created_at, updated_at, completed_at,
           initiator_session_id, recipient_session_id, initiator_name_at_send, recipient_name_at_send,
-          routing_version, route_status, artifact_status, acceptance_status,
+          routing_version, route_status, routing_intent, artifact_status, acceptance_status,
           initiator_binding_id, recipient_binding_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)`,
         [
           taskId, contextId, optionalText(input.parentTaskId), COLLABORATION_PROTOCOL_VERSION,
           scope.sourceObjectiveId, scope.targetObjectiveId, scope.sourceWorkItemId, workItem.id,
           initiator.agentId, recipient.agentId, service?.serviceId ?? null, taskType,
           maxIterations, title, summary, JSON.stringify(acceptanceCriteria), idempotencyKey, timestamp, timestamp,
           input.initiatorSessionId ?? initiator.sessionId,
-          input.recipientSessionId ?? recipient.sessionId,
+          this.#initialRecipientSessionId(input, recipient),
           input.initiatorNameAtSend ?? initiator.sessionName,
           input.recipientNameAtSend ?? recipient.sessionName,
           scope.routingVersion,
           scope.routeStatus,
+          optionalText(input.routingIntent),
           scope.initiatorBindingId,
           scope.recipientBindingId
         ]
@@ -418,7 +419,7 @@ export class CollaborationCore {
         idempotencyKey: optionalText(input.messageIdempotencyKey),
         deliveryId,
         senderSessionId: input.initiatorSessionId ?? initiator.sessionId,
-        recipientSessionId: input.recipientSessionId ?? recipient.sessionId,
+        recipientSessionId: this.#initialRecipientSessionId(input, recipient),
         timestamp
       });
       this.#appendEvent(taskId, "task_created", initiator.agentId, {
@@ -452,7 +453,7 @@ export class CollaborationCore {
       this.#validateRequestedWorkItem(input.workItemId, scope.targetObjectiveId, recipient.agentId);
     }
     const initiatorSessionId = input.initiatorSessionId ?? initiator.sessionId;
-    const recipientSessionId = input.recipientSessionId ?? recipient.sessionId;
+    const recipientSessionId = this.#initialRecipientSessionId(input, recipient);
     const initiatorSession = sessionPresentationSnapshot(this.store, initiatorSessionId);
     const recipientSession = sessionPresentationSnapshot(this.store, recipientSessionId);
     const sourceObjective = this.store.getObjective(scope.sourceObjectiveId);
@@ -464,7 +465,8 @@ export class CollaborationCore {
       initiatorSessionId,
       recipientSessionId,
       initiatorNameAtSend: input.initiatorNameAtSend ?? initiatorSession?.title ?? initiator.sessionName,
-      recipientNameAtSend: input.recipientNameAtSend ?? recipientSession?.title ?? recipient.sessionName,
+      recipientNameAtSend: input.recipientNameAtSend ?? recipientSession?.title
+        ?? (recipientSessionId ? recipient.sessionName : null),
       sourceObjectiveId: scope.sourceObjectiveId,
       targetObjectiveId: scope.targetObjectiveId,
       sourceWorkItemId: scope.sourceWorkItemId,
@@ -571,6 +573,40 @@ export class CollaborationCore {
       artifacts: this.listArtifacts(taskId),
       events: this.listEvents(taskId)
     };
+  }
+
+  rerouteTaskRecipient(taskId, recipientSessionId, details = {}) {
+    const task = this.#requireTask(taskId);
+    const targetAgent = this.getAgentForSession(recipientSessionId);
+    if (targetAgent?.agentId !== task.recipientAgentId) {
+      throw domainError("RECIPIENT_SESSION_AGENT_MISMATCH", "The replacement Session is not bound to the collaboration recipient Agent.");
+    }
+    const route = this.#routeForSession(recipientSessionId);
+    if (route?.objectiveId !== task.targetObjectiveId) {
+      throw domainError("TARGET_OBJECTIVE_MISMATCH", "The replacement Session does not belong to the collaboration target Objective.");
+    }
+    const stableSessionId = this.#stableSessionIdentity(recipientSessionId);
+    const timestamp = this.clock();
+    this.#transaction(() => {
+      this.store.db.run(
+        `UPDATE collaboration_tasks SET recipient_session_id=?, routing_version=?, recipient_binding_id=?,
+         route_status='active', updated_at=? WHERE task_id=?`,
+        [stableSessionId, route.routingVersion, route.bindingId, timestamp, taskId]
+      );
+      this.store.db.run(
+        `UPDATE collaboration_messages SET recipient_session_id=? WHERE task_id=? AND message_id IN (
+           SELECT message_id FROM collaboration_deliveries WHERE status != 'delivered'
+         )`,
+        [stableSessionId, taskId]
+      );
+      this.#appendEvent(taskId, "recipient_route_reselected", task.recipientAgentId, {
+        previousSessionId: task.recipientSessionId,
+        recipientSessionId: stableSessionId,
+        routingVersion: route.routingVersion,
+        ...details
+      }, timestamp);
+    });
+    return this.getTask(taskId);
   }
 
   listInbox(agentId, options = {}) {
@@ -845,12 +881,16 @@ export class CollaborationCore {
 
   getDeliveryEnvelope(deliveryId) {
     const row = this.store.selectOne(
-      `SELECT d.*, m.task_id, m.sender_agent_id, m.message_type, m.body,
+      `SELECT d.*, m.task_id, m.sender_agent_id, m.sender_session_id, m.recipient_session_id AS message_recipient_session_id,
+              m.message_type, m.body,
               m.protocol_version, m.source_objective_id AS message_source_objective_id,
               m.target_objective_id AS message_target_objective_id,
               m.source_work_item_id AS message_source_work_item_id, m.work_item_id AS message_work_item_id,
               m.evidence_json, m.payload_json, m.error_json, m.resource_version, m.created_at AS message_created_at,
               t.context_id, t.service_id, t.type AS task_type, t.status AS task_status,
+              t.initiator_agent_id, t.recipient_agent_id AS task_recipient_agent_id,
+              t.initiator_session_id, t.recipient_session_id AS task_recipient_session_id,
+              t.routing_version, t.route_status, t.routing_intent,
               t.source_objective_id, t.target_objective_id, t.source_work_item_id, t.work_item_id,
               t.iteration, t.max_iterations, t.title, t.summary,
               t.acceptance_criteria_json, a.name AS sender_agent_name,
@@ -884,6 +924,8 @@ export class CollaborationCore {
           messageType: row.message_type,
           senderAgentId: row.sender_agent_id,
           recipientAgentId: row.recipient_agent_id,
+          senderSessionId: row.sender_session_id,
+          recipientSessionId: row.message_recipient_session_id,
           sourceObjectiveId: row.message_source_objective_id,
           targetObjectiveId: row.message_target_objective_id,
           sourceWorkItemId: row.message_source_work_item_id,
@@ -900,6 +942,10 @@ export class CollaborationCore {
       task: {
         taskId: row.task_id,
         contextId: row.context_id,
+        initiatorAgentId: row.initiator_agent_id,
+        recipientAgentId: row.task_recipient_agent_id,
+        initiatorSessionId: row.initiator_session_id || null,
+        recipientSessionId: row.task_recipient_session_id || null,
         sourceObjectiveId: row.source_objective_id,
         targetObjectiveId: row.target_objective_id,
         sourceWorkItemId: row.source_work_item_id || null,
@@ -912,7 +958,10 @@ export class CollaborationCore {
         maxIterations: Number(row.max_iterations),
         title: row.title,
         summary: row.summary,
-        acceptanceCriteria: parseJson(row.acceptance_criteria_json, [])
+        acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
+        routingVersion: row.routing_version == null ? null : Number(row.routing_version),
+        routeStatus: row.route_status || "unresolved",
+        routingIntent: row.routing_intent || null
       },
       latestArtifact
     };
@@ -1303,6 +1352,15 @@ export class CollaborationCore {
     }
   }
 
+  #initialRecipientSessionId(input, recipient) {
+    const explicit = optionalText(input.recipientSessionId);
+    if (explicit) return explicit;
+    // Agent-only collaboration routing deliberately starts unresolved. Objective
+    // Chat is an orchestration surface, never a delivery target; the routing
+    // service will bind the task to its WorkItem's Worker Session after approval.
+    return optionalText(input.routingIntent) ? null : recipient.sessionId;
+  }
+
   #routeForSession(sessionId) {
     const normalized = optionalText(sessionId);
     if (!normalized) return null;
@@ -1403,8 +1461,14 @@ export class CollaborationCore {
       acceptanceCriteria: input.acceptanceCriteria.map((entry) => `- ${entry}`).join("\n"),
       priority: "medium",
       status: input.status ?? "todo",
+      mainWorkspaceId: this.#defaultCollaborationWorkspace(input.targetObjectiveId),
       mainAgentId: input.recipientAgentId
     });
+  }
+
+  #defaultCollaborationWorkspace(objectiveId) {
+    const objective = this.store.getObjective(objectiveId);
+    return (objective?.workspaceIds ?? []).find((repositoryId) => this.store.getGitRepository(repositoryId)) ?? null;
   }
 
   #syncWorkItemStatus(workItemId, taskId, taskStatus, timestamp) {
@@ -1690,6 +1754,7 @@ function taskFromRow(row) {
     recipientNameAtSend: row.recipient_name_at_send || null,
     routingVersion: row.routing_version == null ? null : Number(row.routing_version),
     routeStatus: row.route_status || "unresolved",
+    routingIntent: row.routing_intent || null,
     artifactStatus: row.artifact_status || "pending",
     acceptanceStatus: row.acceptance_status || "pending",
     initiatorBindingId: row.initiator_binding_id || null,
@@ -1795,6 +1860,7 @@ function taskConfirmationFromRow(row, core) {
   const presentation = request.presentation ?? {};
   const initiator = core.getAgent(row.initiator_agent_id);
   const recipient = core.getAgent(row.recipient_agent_id);
+  const recipientRouteUnresolved = Boolean(request.routingIntent) && !row.recipient_session_id;
   return {
     confirmationId: row.confirmation_id,
     initiatorAgentId: row.initiator_agent_id,
@@ -1804,7 +1870,7 @@ function taskConfirmationFromRow(row, core) {
     initiatorSessionKind: presentation.initiatorSession?.sessionKind || null,
     initiatorWorkItemId: presentation.initiatorSession?.workItemId || request.sourceWorkItemId || null,
     recipientAgentId: row.recipient_agent_id,
-    recipientSessionId: row.recipient_session_id || recipient?.sessionId || null,
+    recipientSessionId: row.recipient_session_id || (recipientRouteUnresolved ? null : recipient?.sessionId) || null,
     recipientAgentName: presentation.recipientAgentName || recipient?.name || row.recipient_agent_id,
     recipientSessionTitle: presentation.recipientSession?.title || row.recipient_name_at_send || null,
     recipientSessionKind: presentation.recipientSession?.sessionKind || null,

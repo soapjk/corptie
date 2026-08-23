@@ -110,7 +110,7 @@ export const collaborationDynamicTools = Object.freeze([
     recipient_session_name: { type: "string", minLength: 1 },
     recipient_session_id: sessionIdSchema,
     recipient_agent_id: { type: "string", minLength: 1 },
-    routing_intent: { type: "string", enum: [...COLLABORATION_ROUTING_INTENTS], description: "Required when recipient_session_id is omitted; ambiguity is never guessed silently." },
+    routing_intent: { type: "string", enum: [...COLLABORATION_ROUTING_INTENTS], description: "Required when recipient_session_id is omitted. Choose from task context. A final collaboration target is always the target WorkItem's active Worker Session; Objective Chat only orchestrates creation. Reuse requires work_item_id, otherwise Corptie creates the WorkItem Session." },
     service_id: { type: "string", minLength: 1 },
     target_objective_id: { type: "string", minLength: 1, description: "Target Objective. Defaults to the recipient's current Objective or compatibility Objective." },
     work_item_id: { type: "string", minLength: 1, description: "Existing target-Objective WorkItem to use instead of creating one." },
