@@ -41,6 +41,18 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var mainAgentId: String?
     var currentSessionId: String?
     var executionStatus: String?
+    var startStage: String? = nil
+    var startFailureStage: String? = nil
+    var startErrorCode: String? = nil
+    var startError: String? = nil
+    var startStartedAt: String? = nil
+    var startStageUpdatedAt: String? = nil
+    var startFailedAt: String? = nil
+    var startProviderId: String? = nil
+    var startAgentId: String? = nil
+    var startWorktreeId: String? = nil
+    var startWorktreePath: String? = nil
+    var startWorktreeBranch: String? = nil
     var acceptanceAssessment: WorkItemAcceptanceAssessment?
     var completionSuggestion: WorkItemCompletionSuggestion?
     var createdAt: String
@@ -49,6 +61,9 @@ struct WorkItem: Identifiable, Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case id, objectiveId, title, description, acceptanceCriteria, priority, status
         case mainWorkspaceId, mainAgentId, currentSessionId, executionStatus
+        case startStage, startFailureStage, startErrorCode, startError
+        case startStartedAt, startStageUpdatedAt, startFailedAt, startProviderId, startAgentId
+        case startWorktreeId, startWorktreePath, startWorktreeBranch
         case acceptanceAssessment, completionSuggestion, createdAt, updatedAt
     }
 }
@@ -70,6 +85,18 @@ extension WorkItem {
         mainAgentId = try container.decodeIfPresent(String.self, forKey: .mainAgentId)
         currentSessionId = try container.decodeIfPresent(String.self, forKey: .currentSessionId)
         executionStatus = try container.decodeIfPresent(String.self, forKey: .executionStatus)
+        startStage = try container.decodeIfPresent(String.self, forKey: .startStage)
+        startFailureStage = try container.decodeIfPresent(String.self, forKey: .startFailureStage)
+        startErrorCode = try container.decodeIfPresent(String.self, forKey: .startErrorCode)
+        startError = try container.decodeIfPresent(String.self, forKey: .startError)
+        startStartedAt = try container.decodeIfPresent(String.self, forKey: .startStartedAt)
+        startStageUpdatedAt = try container.decodeIfPresent(String.self, forKey: .startStageUpdatedAt)
+        startFailedAt = try container.decodeIfPresent(String.self, forKey: .startFailedAt)
+        startProviderId = try container.decodeIfPresent(String.self, forKey: .startProviderId)
+        startAgentId = try container.decodeIfPresent(String.self, forKey: .startAgentId)
+        startWorktreeId = try container.decodeIfPresent(String.self, forKey: .startWorktreeId)
+        startWorktreePath = try container.decodeIfPresent(String.self, forKey: .startWorktreePath)
+        startWorktreeBranch = try container.decodeIfPresent(String.self, forKey: .startWorktreeBranch)
         // A pre-contract collaboration object used this field for unrelated
         // metadata. Drop only that invalid optional field; keep the WorkItem.
         acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
@@ -193,11 +220,30 @@ enum WorkItemExecutionPresentation {
         case "running": L10n("Running")
         case "blocked": L10n("Waiting for Input")
         case "completed", "complete", "done": L10n("Complete")
-        case "failed": L10n("Failed")
+        case "failed", "start_failed": L10n("Failed to Start")
         case "paused": L10n("Paused")
         case "cancelled", "canceled": L10n("Interrupted")
         case "idle", nil: L10n("Not Started")
         default: L10n("Unknown")
+        }
+    }
+}
+
+enum WorkItemStartPresentation {
+    static func isPartialFailure(_ workItem: WorkItem) -> Bool {
+        workItem.startStage == "failed" && workItem.currentSessionId == nil
+    }
+
+    @MainActor
+    static func stageLabel(_ stage: String?) -> String {
+        switch stage {
+        case "validating": L10n("Validating")
+        case "preparingWorkspace": L10n("Preparing Worktree")
+        case "creatingSession": L10n("Creating Worker Session")
+        case "binding": L10n("Binding Session")
+        case "running": L10n("Running")
+        case "failed": L10n("Failed")
+        default: L10n("Unknown Stage")
         }
     }
 }
