@@ -642,6 +642,69 @@ test("creates a dedicated Integration Worktree from the current main revision", 
   }
 });
 
+test("Integration Worktree allocation suffixes an occupied branch and path without deleting either", async () => {
+  const fixture = await createFixture("integration-worktree-occupied");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await git(["branch", "integration/run-one"], fixture.repository);
+  try {
+    const created = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:run-one"
+    });
+    assert.equal(created.branchName, "integration/run-one-2");
+    assert.equal(created.retryCount, 1);
+    assert.equal(created.reused, false);
+    await git(["show-ref", "--verify", "refs/heads/integration/run-one"], fixture.repository);
+    await git(["show-ref", "--verify", "refs/heads/integration/run-one-2"], fixture.repository);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("retry reuses an intact Integration Worktree while concurrent distinct tasks get unique identifiers", async () => {
+  const fixture = await createFixture("integration-worktree-concurrent");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const first = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:retryable"
+    });
+    const reused = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:retryable"
+    });
+    assert.equal(reused.worktreeId, first.worktreeId);
+    assert.equal(reused.reused, true);
+
+    const [left, right] = await Promise.all([
+      manager.createIntegrationWorktreeForProject({
+        repositoryId: fixture.repositoryId,
+        workingDirectory: fixture.repository,
+        runId: "integration:parallel-left"
+      }),
+      manager.createIntegrationWorktreeForProject({
+        repositoryId: fixture.repositoryId,
+        workingDirectory: fixture.repository,
+        runId: "integration:parallel-right"
+      })
+    ]);
+    assert.notEqual(left.worktreeId, right.worktreeId);
+    assert.notEqual(left.branchName, right.branchName);
+    assert.notEqual(left.path, right.path);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("ensures one deterministic WorkItem Worktree and reuses it on retry", async () => {
   const fixture = await createFixture("workitem-worktree");
   const manager = new GitWorkspaceManager({

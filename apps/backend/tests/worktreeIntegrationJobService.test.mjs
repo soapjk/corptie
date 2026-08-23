@@ -21,7 +21,10 @@ function memoryFixture({
   abortMergeError = null,
   conflictSessionStatus = "complete",
   protectedPaths = [],
-  activeFeatureSession = false
+  activeFeatureSession = false,
+  prepareConflictErrors = [],
+  launchConflictErrors = [],
+  commitErrors = []
 } = {}) {
   const jobs = new Map();
   let sequence = 0;
@@ -121,6 +124,8 @@ function memoryFixture({
     isSessionActive: (session) => session.status === "running",
     commitChanges: async (input) => {
       calls.push(`commit:${input.path}`);
+      const commitError = commitErrors.shift();
+      if (commitError) throw commitError;
       if (input.protectionDecision) {
         calls.push(`protect:${input.path}:${input.protectionDecision}:${input.neverRemindPrivateFiles === true}`);
       }
@@ -158,6 +163,8 @@ function memoryFixture({
     },
     prepareConflictResolution: async (input) => {
       calls.push(`prepare-conflict:${input.sourceHead}`);
+      const prepareError = prepareConflictErrors.shift();
+      if (prepareError) throw prepareError;
       if (externalConflictResolved) {
         worktrees[0].headOid = `${input.expectedMainHead}:external-merge`;
         worktrees[1].mergedIntoMain = true;
@@ -181,10 +188,13 @@ function memoryFixture({
     },
     launchConflictResolution: async (input) => {
       calls.push(`launch-agent:${input.item.worktreeId}`);
+      const launchError = launchConflictErrors.shift();
+      if (launchError) throw launchError;
       launchedSession += 1;
       return {
         workItemId: `work_item:conflict:${launchedSession}`,
         sessionId: launchedSession === 1 ? "session:conflict" : `session:conflict:${launchedSession}`,
+        sessionName: launchedSession === 1 ? "Resolve conflicts" : `Resolve conflicts ${launchedSession}`,
         agentId: "agent:one", agentName: "Conflict Agent"
       };
     },
@@ -550,7 +560,104 @@ test("a paused merge conflict launches an Agent and resumes automatically when i
   assert.ok(resuming.audit.some((entry) =>
     entry.event === "conflict_agent_completed" && entry.automaticResume === true));
   const completed = await waitForJob(service, plan.id, "completed");
-  assert.ok(completed.audit.some((entry) => entry.event === "conflict_resolution_verified"));
+  assert.ok(completed.audit.some((entry) => entry.event === "conflict_resolution_verified"
+    && entry.sessionName === "Resolve conflicts"
+    && entry.branchName === "integration/job-1"
+    && entry.worktreePath === "/repo-integration"
+    && entry.retryCount === 0
+    && entry.failureStage === "completed"));
+});
+
+test("conflict Session title collisions are retried automatically with structured identifiers", async () => {
+  const titleConflict = new Error("A session with that title already exists.");
+  titleConflict.code = "SESSION_TITLE_CONFLICT";
+  const concurrentCreation = new Error("Another session is being created.");
+  concurrentCreation.code = "SESSION_CREATION_IN_PROGRESS";
+  const { service, calls, removalInputs } = memoryFixture({
+    conflictOnce: true,
+    launchConflictErrors: [titleConflict, concurrentCreation]
+  });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+
+  const delegated = await service.resolveConflictWithAgent(plan.id);
+
+  assert.equal(delegated.conflictResolution.sessionName, "Resolve conflicts");
+  assert.equal(delegated.conflictResolution.retryCount, 2);
+  assert.equal(calls.filter((call) => call === "launch-agent:wt:feature").length, 3);
+  assert.equal(removalInputs.length, 0);
+  assert.ok(delegated.audit.some((entry) => entry.event === "conflict_fallback_retry"
+    && entry.failureStage === "session_creation"
+    && entry.code === "SESSION_TITLE_CONFLICT"
+    && entry.branchName === "integration/job-1"
+    && entry.worktreePath === "/repo-integration"));
+  assert.ok(delegated.audit.some((entry) => entry.event === "conflict_fallback_retry"
+    && entry.failureStage === "session_creation"
+    && entry.code === "SESSION_CREATION_IN_PROGRESS"
+    && entry.retryCount === 2));
+  assert.ok(delegated.audit.some((entry) => entry.event === "conflict_agent_started"
+    && entry.sessionName === "Resolve conflicts"
+    && entry.retryCount === 2));
+});
+
+test("concurrent duplicate triggers share the same in-flight conflict launch instead of returning a race error", async () => {
+  const { service, calls } = memoryFixture({ conflictOnce: true, conflictSessionStatus: "running" });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+
+  const [left, right] = await Promise.all([
+    service.resolveConflictWithAgent(plan.id),
+    service.resolveConflictWithAgent(plan.id)
+  ]);
+
+  assert.equal(left.conflictResolution.sessionId, right.conflictResolution.sessionId);
+  assert.equal(left.conflictResolution.workspace.worktreeId, right.conflictResolution.workspace.worktreeId);
+  assert.equal(calls.filter((call) => call === "launch-agent:wt:feature").length, 1);
+});
+
+test("conflict fallback retries are bounded and preserve every existing Worktree on failure", async () => {
+  const failures = Array.from({ length: 3 }, () => {
+    const error = new Error("main is temporarily dirty");
+    error.code = "MAIN_DIRTY";
+    return error;
+  });
+  const { service, removalInputs } = memoryFixture({
+    conflictOnce: true,
+    prepareConflictErrors: failures
+  });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJob(service, plan.id, "paused");
+
+  await assert.rejects(
+    () => service.resolveConflictWithAgent(plan.id),
+    (error) => error.code === "CONFLICT_FALLBACK_RETRY_EXHAUSTED"
+      && error.failureStage === "workspace_creation"
+      && error.retryCount === 3
+      && /Root cause: main is temporarily dirty/.test(error.message)
+      && /Preserved all branches, Worktrees, commits/.test(error.message)
+  );
+  const failed = service.get(plan.id);
+  assert.equal(failed.status, "paused");
+  assert.equal(removalInputs.length, 0);
+  assert.equal(failed.audit.filter((entry) => entry.event === "conflict_fallback_retry").length, 2);
+});
+
+test("a recoverable commit failure re-detects state and retries without manual intervention", async () => {
+  const commitFailure = new Error("transient commit hook failure");
+  commitFailure.code = "WORKTREE_COMMIT_FAILED";
+  const { service, calls } = memoryFixture({ commitErrors: [commitFailure] });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const completed = await waitForJob(service, plan.id, "completed");
+
+  assert.equal(calls.filter((call) => call === "commit:/repo-feature").length, 2);
+  assert.ok(completed.audit.some((entry) => entry.event === "worktree_state_refreshed"));
+  assert.ok(completed.audit.some((entry) => entry.event === "integration_stage_retry"
+    && entry.failureStage === "worktree_commit"
+    && entry.retryCount === 1));
 });
 
 test("an unrelated Agent completion signal does not change a paused conflict task", async () => {
