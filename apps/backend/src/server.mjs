@@ -69,6 +69,9 @@ import { WorkItemStartService } from "./application/workItemStartService.mjs";
 import { WorkItemDeletionService } from "./application/workItemDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
+import { ArtifactService } from "./application/artifactService.mjs";
+import { artifactDynamicTools, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
+import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
@@ -291,7 +294,8 @@ const objectiveService = new ObjectiveApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
-const objectiveChatContextService = new ObjectiveChatContextService({ store });
+const artifactService = new ArtifactService({ store });
+const objectiveChatContextService = new ObjectiveChatContextService({ store, artifactService });
 const objectiveChatOperationService = new ObjectiveChatOperationService({
   store,
   objectiveService,
@@ -403,6 +407,18 @@ const hostToolCatalog = new HostToolCatalog([
     id: "memory",
     tools: memoryDynamicTools,
     execute: (input) => callMemoryDynamicTool(memoryOperationService, input)
+  },
+  {
+    id: "artifacts",
+    tools: artifactDynamicTools,
+    authorize: ({ tool, metadata }) => {
+      const scoped = ["objectiveChat", "worker"].includes(metadata?.sessionKind)
+        && Boolean(metadata?.objectiveId && metadata?.sessionId);
+      if (!scoped) return false;
+      if (["corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search"].includes(tool)) return true;
+      return metadata.sessionKind === "objectiveChat";
+    },
+    execute: (input) => callArtifactDynamicTool(artifactService, input)
   },
   {
     id: "workspace",
@@ -791,7 +807,9 @@ const sessionApplicationService = new SessionApplicationService({
       const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
       const workItem = store.getWorkItem(ownership.workItemId);
       const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
-      baseContext = buildWorkSessionContext({ session, workItem, objective });
+      baseContext = buildWorkSessionContext({
+        session, workItem, objective, artifactIndex: artifactService.indexForSession(session)
+      });
     }
     let memoryContext = null;
     if (session?.agentId) {
@@ -6964,6 +6982,10 @@ function route(request, response) {
     return;
   }
 
+  if (handleArtifactHttpRequest({ request, response, url, service: artifactService })) {
+    return;
+  }
+
   if (handleEntityHttpRequest({
     request,
     response,
@@ -8522,6 +8544,10 @@ for (const entry of invalidProjectionCleanup.purged) {
 }
 for (const entry of invalidProjectionCleanup.retained) {
   console.warn(`[session-classification] retained hidden projection ${JSON.stringify(entry)}`);
+}
+const recoveredArtifactContentOperations = await artifactService.initialize();
+if (recoveredArtifactContentOperations.length > 0) {
+  console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
 }
 const recoveredInterruptedWorkItemStarts = workItemStartService.recoverInterruptedStarts();
 const detectedLegacyPartialWorkItemStarts = workItemStartService.detectLegacyPartialStarts();

@@ -109,6 +109,10 @@ struct ObjectiveDetailView: View {
                             .padding(.top, 8)
                     }
 
+                    Divider()
+
+                    ArtifactSectionView(objectiveId: objective.id, workItemId: nil)
+
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
                             field(L10n("标签（逗号分隔）")) {
