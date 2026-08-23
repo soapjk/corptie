@@ -9,6 +9,7 @@ enum WorktreeAutomaticLoadPolicy {
 
 struct WorktreeManagementView: View {
     @EnvironmentObject private var router: AppTabRouter
+    @EnvironmentObject private var sidebarState: TabSidebarState
     @ObservedObject private var backendClient = BackendClient.shared
     @StateObject private var client = WorktreeManagementClient()
     @State private var showingPlan = false
@@ -21,7 +22,7 @@ struct WorktreeManagementView: View {
     @State private var worktreeScrollRequest: WorktreeListScrollRequest?
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
+        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             repositoryColumn
                 .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
         } content: {

@@ -19,6 +19,7 @@ struct WarRoomView: View {
     @StateObject private var client = EntityAPIClient.shared
     @StateObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
+    @EnvironmentObject private var sidebarState: TabSidebarState
     @State private var selectedObjectiveId: String?
     @State private var selectedWorkItemId: String?
     @State private var workItems: [WorkItem] = []
@@ -31,7 +32,7 @@ struct WarRoomView: View {
     private static let lastSelectedWorkItemKey = "warRoom.lastSelectedWorkItemId"
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
+        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             objectiveSidebar
                 .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(

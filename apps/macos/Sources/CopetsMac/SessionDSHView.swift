@@ -6,11 +6,13 @@ import WebKit
 // 这是独立于现有 Session Tab 的隔离实验页，不改动任何现有会话 UI。
 
 struct SessionDSHView: View {
+    @EnvironmentObject private var sidebarState: TabSidebarState
+
     // DSH web 前端静态快照由 Corptie backend 直接服务（路径 B2，脱离 DSH host）：
     // 加载 Corptie backend 的根路径 `/`，其 index.html 已注入 __DSH_BOOT__，
     // /api/session.* 由 dshRpcAdapter 响应（同源，无需桥接）。
     var body: some View {
-        DSHWebView(store: .shared)
+        DSHWebView(store: .shared, isSidebarVisible: sidebarState.isVisible)
     }
 }
 
@@ -26,6 +28,7 @@ final class SessionDSHWebViewStore {
     private var retryWorkItem: DispatchWorkItem?
     private var presentationWorkItem: DispatchWorkItem?
     private var retryAttempt = 0
+    private var requestedSidebarVisibility = true
 
     private init() {
         let coordinator = DSHWebView.Coordinator()
@@ -44,6 +47,9 @@ final class SessionDSHWebViewStore {
             self?.retryAttempt = 0
             self?.retryWorkItem?.cancel()
             self?.retryWorkItem = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                self?.applyRequestedSidebarVisibility()
+            }
         }
     }
 
@@ -67,9 +73,52 @@ final class SessionDSHWebViewStore {
             guard let self, self.webView.window != nil else { return }
             self.webView.needsDisplay = true
             self.webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))") { _, _ in }
+            self.applyRequestedSidebarVisibility()
         }
         presentationWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
+    }
+
+    func setSidebarVisible(_ isVisible: Bool) {
+        guard requestedSidebarVisibility != isVisible else { return }
+        requestedSidebarVisibility = isVisible
+        applyRequestedSidebarVisibility()
+    }
+
+    /// DSH advertises its sidebar state on the stable AppFrame data attribute
+    /// and exposes a localized, accessible toggle button. Use those declared
+    /// DOM contracts instead of coupling the native client to generated CSS
+    /// module names. One script runs only when this tab's toggle changes.
+    private func applyRequestedSidebarVisibility() {
+        guard webView.url != nil else { return }
+        let requested = requestedSidebarVisibility ? "true" : "false"
+        let script = """
+        (() => {
+          const frame = document.querySelector('[data-sidebar-collapsed]')
+            || Array.from(document.querySelectorAll('div')).find(
+              element => getComputedStyle(element).display === 'grid'
+                && element.querySelector('button[aria-label="打开侧边栏"], button[aria-label="收起侧边栏"], button[aria-label="Open sidebar"], button[aria-label="Collapse sidebar"]')
+            );
+          if (!frame) return 'unavailable';
+          const collapsed = frame.hasAttribute('data-sidebar-collapsed');
+          const requestedVisible = \(requested);
+          if (requestedVisible !== collapsed) return 'unchanged';
+          const toggle = frame.querySelector(
+            'button[aria-label="打开侧边栏"], button[aria-label="收起侧边栏"], button[aria-label="Open sidebar"], button[aria-label="Collapse sidebar"]'
+          );
+          if (!toggle) return 'missing-toggle';
+          toggle.click();
+          return 'toggled';
+        })()
+        """
+        webView.evaluateJavaScript(script) { result, error in
+            if let error {
+                NSLog("[SessionDSH] sidebar synchronization failed: \(error)")
+            } else if let result = result as? String,
+                      result == "unavailable" || result == "missing-toggle" {
+                NSLog("[SessionDSH] sidebar synchronization unavailable: \(result)")
+            }
+        }
     }
 
     private func scheduleRetry() {
@@ -88,6 +137,7 @@ final class SessionDSHWebViewStore {
 // 最小 WKWebView 桥接：仅负责加载并展示 DSH 前端，不做任何 JS 交互或数据注入。
 struct DSHWebView: NSViewRepresentable {
     let store: SessionDSHWebViewStore
+    let isSidebarVisible: Bool
 
     func makeNSView(context: Context) -> WKWebView {
         DispatchQueue.main.async {
@@ -98,6 +148,7 @@ struct DSHWebView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         store.loadIfNeeded()
+        store.setSidebarVisible(isSidebarVisible)
     }
 
     func makeCoordinator() -> Coordinator {
