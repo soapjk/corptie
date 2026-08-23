@@ -37,6 +37,7 @@ import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import {
+  canonicalSessionIdFromEventPayload,
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
@@ -141,6 +142,7 @@ import {
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
   sessionNeedsAuthoritativeProjectionRecovery,
+  sessionProjectionRecoveryCandidates,
   workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
@@ -2195,10 +2197,15 @@ async function reconcileActiveSessionProviderProjections() {
   if (activeSessionReconciliationInFlight || stateSyncClients.size === 0) return;
   activeSessionReconciliationInFlight = true;
   try {
-    const activeSessions = visibleStoredSessionProjections(store, [
+    const persistedSessions = visibleStoredSessionProjections(store, [
       ...store.listSessions({ archived: false }),
       ...store.listSessions({ archived: true })
-    ]).filter(sessionHasActiveRun);
+    ]);
+    const liveSessions = [
+      ...listLiveGatewaySessions({ archived: false }),
+      ...listLiveGatewaySessions({ archived: true })
+    ];
+    const activeSessions = sessionProjectionRecoveryCandidates(persistedSessions, liveSessions);
     const activeIds = new Set(activeSessions.map((session) => session.id));
     for (const sessionId of activeSessionReconciledAt.keys()) {
       if (!activeIds.has(sessionId)) activeSessionReconciledAt.delete(sessionId);
@@ -2254,20 +2261,25 @@ function updateStateSyncConsistencyTimer() {
 }
 
 function sessionIdFromEventPayload(payload = {}) {
-  const value = payload.session?.id || payload.sessionId || null;
-  if (value) {
-    if (String(value).startsWith("codex:")) {
-      return String(value);
+  return canonicalSessionIdFromEventPayload(payload, {
+    resolveStableSessionId: ({
+      rawSessionId,
+      providerId,
+      providerSessionId,
+      threadId,
+      logicalSessionId
+    }) => {
+      const logical = (logicalSessionId ? store.getLogicalSession(logicalSessionId) : null)
+        ?? (providerId && providerSessionId
+          ? store.getLogicalSessionByProviderSessionId(providerId, providerSessionId)
+          : null)
+        ?? (threadId ? store.getLogicalSessionByProviderThreadId(threadId) : null);
+      if (logical?.legacySessionId) return logical.legacySessionId;
+      return rawSessionId && store.getSession(String(rawSessionId))
+        ? String(rawSessionId)
+        : null;
     }
-    if (payload.session?.external?.provider === "codex-app-server") {
-      return `codex:${value}`;
-    }
-    return String(value);
-  }
-  if (payload.threadId) {
-    return `codex:${payload.threadId}`;
-  }
-  return null;
+  });
 }
 
 function streamCanonicalSessionSnapshots(request, response, requestedSessionId, eventSessionId = requestedSessionId) {
@@ -3757,7 +3769,7 @@ async function assertDirectory(path) {
   }
 }
 
-function listGatewaySessions(options = {}) {
+function listLiveGatewaySessions(options = {}) {
   const sessions = agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).flatMap((session) => {
     const routed = resolveRoutedProviderSessionProjection(store, session);
     if (routed.disposition === "historical") return [];
@@ -3783,9 +3795,18 @@ function listGatewaySessions(options = {}) {
     }
     return byId;
   }, new Map()).values());
+  return uniqueSessions.map((session) => ({
+    ...session,
+    sessionKind: session.sessionKind ?? "legacy"
+  }));
+}
+
+function listGatewaySessions(options = {}) {
+  const uniqueSessions = listLiveGatewaySessions(options);
   // Corptie owns list presentation order. A Provider may keep an active
-  // session object in memory with the sort order it had at startup, so always
-  // project the persisted order back onto the unified Session list.
+  // session object in memory with runtime state it had before another writer or
+  // a missed notification committed a terminal projection. Always merge the
+  // durable list projection back at this boundary.
   return applyPersistedSessionOrder(uniqueSessions, (id) => store.getSession(id)).map((session) => ({
     ...session,
     sessionKind: session.sessionKind ?? "legacy"

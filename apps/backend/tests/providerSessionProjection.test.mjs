@@ -6,6 +6,7 @@ import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import {
+  canonicalSessionIdFromEventPayload,
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   repairStableSessionFromActiveProviderCache,
@@ -13,6 +14,42 @@ import {
   resolveRoutedProviderSessionProjection,
   visibleStoredSessionProjections
 } from "../src/application/providerSessionProjection.mjs";
+
+test("a switched Provider event keeps the stable namespaced Session id", () => {
+  const id = canonicalSessionIdFromEventPayload({
+    session: {
+      id: "openclacky:stable",
+      external: {
+        provider: "codex-app-server",
+        sessionId: "codex-target",
+        threadId: "codex-target"
+      }
+    }
+  }, {
+    resolveStableSessionId: ({ providerId, providerSessionId }) => (
+      providerId === "codex-app-server" && providerSessionId === "codex-target"
+        ? "openclacky:stable"
+        : null
+    )
+  });
+
+  assert.equal(id, "openclacky:stable");
+});
+
+test("an unresolved namespaced Session id is never prefixed twice", () => {
+  assert.equal(canonicalSessionIdFromEventPayload({
+    session: {
+      id: "openclacky:stable",
+      external: { provider: "codex-app-server" }
+    }
+  }), "openclacky:stable");
+  assert.equal(canonicalSessionIdFromEventPayload({
+    session: {
+      id: "plain-codex-thread",
+      external: { provider: "codex-app-server" }
+    }
+  }), "codex:plain-codex-thread");
+});
 
 test("a historical OpenClacky Work Session projection is repaired idempotently", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-projection-"));

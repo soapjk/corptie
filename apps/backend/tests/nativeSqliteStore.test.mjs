@@ -7,6 +7,40 @@ import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 
+test("Session activity status survives store restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-activity-status-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const first = new CorptieStore({ dbPath, configPath });
+
+  try {
+    await first.initialize();
+    first.upsertSession({
+      id: "codex:active-session",
+      title: "Active Session",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "running",
+      activityStatus: "Running command",
+      external: { activeTurnId: "turn:active" }
+    });
+    await first.close();
+
+    const restarted = new CorptieStore({ dbPath, configPath });
+    try {
+      await restarted.initialize();
+      const session = restarted.getSession("codex:active-session");
+      assert.equal(session.activityStatus, "Running command");
+      assert.equal(session.external.activeTurnId, "turn:active");
+    } finally {
+      await restarted.close();
+    }
+  } finally {
+    await first.close().catch(() => {});
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Session tables do not own avatar columns while Agents still do", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-avatar-schema-"));
   const dbPath = join(directory, "corptie.sqlite");
