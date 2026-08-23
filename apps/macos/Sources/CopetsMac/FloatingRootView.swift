@@ -3508,10 +3508,6 @@ struct DetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if let session = backendClient.selectedSession, session.id == sessionId {
-                ScheduledSessionStrip(session: session)
-            }
-
             if let sendStatusMessage = backendClient.sendStatusMessage,
                sendStatusMessage.hasPrefix("Send failed") || sendStatusMessage.contains("read-only") {
                 Text(sendStatusMessage)
