@@ -269,6 +269,56 @@ export class CorptieStore {
     }
   }
 
+  migrateWorkspaceCreationRequestAuditReferences() {
+    const table = this.selectOne(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='workspace_creation_requests'"
+    );
+    if (!table || this.selectAll("PRAGMA foreign_key_list(workspace_creation_requests)").length === 0) return;
+    // Audit rows retain the identities observed at request time. They must not
+    // own or block deletion of live Agent/Session/Objective/Workspace records.
+    this.db.run("PRAGMA foreign_keys = OFF");
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(`
+        CREATE TABLE workspace_creation_requests_audit_v1 (
+          operation_id TEXT PRIMARY KEY,
+          idempotency_key TEXT NOT NULL,
+          input_fingerprint TEXT NOT NULL,
+          actor_agent_id TEXT NOT NULL,
+          source_session_id TEXT NOT NULL,
+          logical_session_id TEXT NOT NULL,
+          objective_id TEXT NOT NULL,
+          work_item_id TEXT,
+          repository_id TEXT NOT NULL,
+          target_path TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
+          failure_stage TEXT,
+          request_json TEXT NOT NULL DEFAULT '{}',
+          result_json TEXT,
+          error_code TEXT,
+          error_message TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE (logical_session_id, idempotency_key)
+        )
+      `);
+      this.db.run(`
+        INSERT INTO workspace_creation_requests_audit_v1
+        SELECT * FROM workspace_creation_requests
+      `);
+      this.db.run("DROP TABLE workspace_creation_requests");
+      this.db.run("ALTER TABLE workspace_creation_requests_audit_v1 RENAME TO workspace_creation_requests");
+      this.db.run(`CREATE INDEX idx_workspace_creation_requests_context
+        ON workspace_creation_requests(objective_id, source_session_id, created_at DESC)`);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    } finally {
+      this.db.run("PRAGMA foreign_keys = ON");
+    }
+  }
+
   migrateScheduledSessionConditionTasks() {
     this.ensureColumn("scheduled_session_runs", "condition_result_json", "TEXT");
     const table = this.selectOne(
@@ -1047,6 +1097,31 @@ export class CorptieStore {
         FOREIGN KEY (active_workspace_id) REFERENCES git_worktrees(worktree_id) ON DELETE SET NULL
       );
 
+      CREATE TABLE IF NOT EXISTS workspace_creation_requests (
+        operation_id TEXT PRIMARY KEY,
+        idempotency_key TEXT NOT NULL,
+        input_fingerprint TEXT NOT NULL,
+        actor_agent_id TEXT NOT NULL,
+        source_session_id TEXT NOT NULL,
+        logical_session_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT,
+        repository_id TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
+        failure_stage TEXT,
+        request_json TEXT NOT NULL DEFAULT '{}',
+        result_json TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (logical_session_id, idempotency_key)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_workspace_creation_requests_context
+      ON workspace_creation_requests(objective_id, source_session_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS session_name_aliases (
         alias_key TEXT PRIMARY KEY,
         alias TEXT NOT NULL,
@@ -1354,6 +1429,7 @@ export class CorptieStore {
         ON collaborator_registry(entry_type, availability);
     `);
 
+    this.migrateWorkspaceCreationRequestAuditReferences();
     this.migrateScheduledSessionConditionTasks();
 
     // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---

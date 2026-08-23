@@ -59,6 +59,11 @@ export const workspaceDynamicTools = Object.freeze([
         type: "string",
         minLength: 1,
         description: "Optional concise description of the remaining work Corptie should continue automatically after switching."
+      },
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        description: "Optional retry key. Reusing it with identical input returns the original result; different input is rejected."
       }
     },
     ["target_path"]
