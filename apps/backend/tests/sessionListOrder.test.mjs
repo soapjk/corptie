@@ -64,3 +64,26 @@ test("third-party Provider sessions receive all persisted Corptie bindings", () 
   assert.equal(session.workItemId, "work-item:poly");
   assert.equal(session.sessionKind, "worker");
 });
+
+test("persisted list runtime state wins over a stale Provider cache", () => {
+  const [session] = applyPersistedSessionOrder([
+    {
+      id: "openclacky:owned",
+      status: "running",
+      progress: 0.5,
+      activityStatus: "Working",
+      external: { provider: "codex-app-server", activeTurnId: "turn:old" }
+    }
+  ], () => ({
+    id: "openclacky:owned",
+    status: "complete",
+    progress: 1,
+    summary: "Done",
+    updatedAt: "2026-08-23T12:00:00.000Z",
+    external: { provider: "codex-app-server", activeTurnId: null }
+  }));
+
+  assert.equal(session.status, "complete");
+  assert.equal(session.activityStatus, null);
+  assert.equal(session.external.activeTurnId, null);
+});
