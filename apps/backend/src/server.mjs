@@ -123,6 +123,7 @@ import {
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
+  reconcileSessionProjectionsIndependently,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
   sessionNeedsAuthoritativeProjectionRecovery,
@@ -233,6 +234,7 @@ let stateSyncConsistencyTimer = null;
 let activeSessionReconciliationTimer = null;
 let activeSessionReconciliationInFlight = false;
 const activeSessionReconciledAt = new Map();
+const activeSessionReconciliationPendingIds = new Set();
 let stateSyncService = null;
 let workItemExecutionOrchestrator = null;
 const sessionEventListeners = new Set();
@@ -2023,13 +2025,24 @@ async function reconcileActiveSessionProviderProjections() {
       activeSessions,
       activeSessionReconciledAt,
       { now: checkedAt }
-    );
+    ).filter((session) => !activeSessionReconciliationPendingIds.has(session.id));
     candidates.forEach((session) => activeSessionReconciledAt.set(session.id, checkedAt));
-    await Promise.all(candidates.map((session) => reconcileSessionProviderProjection(
-      session.id,
-      "active-state-stream-recovery",
-      { emitReconciledEvent: false, logFailure: false }
-    )));
+    candidates.forEach((session) => activeSessionReconciliationPendingIds.add(session.id));
+    await reconcileSessionProjectionsIndependently(
+      candidates,
+      async (session) => {
+        try {
+          return await reconcileSessionProviderProjection(
+            session.id,
+            "active-state-stream-recovery",
+            { emitReconciledEvent: false, logFailure: false }
+          );
+        } finally {
+          activeSessionReconciliationPendingIds.delete(session.id);
+        }
+      },
+      { timeoutMs: 5_000 }
+    );
     // readSession() persists a corrected Provider projection when a terminal
     // notification was missed. Publish that revision without waiting for an
     // unrelated mutation or for the user to open the conversation.

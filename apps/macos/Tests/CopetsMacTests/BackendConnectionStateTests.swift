@@ -96,4 +96,33 @@ struct BackendConnectionStateTests {
         #expect(client.lastError == nil)
         #expect(client.projectWorktreeActionError == "Merge conflict in server.mjs")
     }
+
+    @Test func terminalLifecycleEventsRequireAuthoritativeListRefresh() {
+        for eventName in [
+            "AgentTurnCompleted",
+            "CodexThreadCompleted",
+            "CodexThreadFailed",
+            "CodexThreadCancelled",
+            "SessionRunInterrupted",
+            "TaskCompleted",
+            "TaskCancelled",
+            "AgentWorkCompleted"
+        ] {
+            #expect(SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: eventName))
+        }
+        #expect(!SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: "SessionUsageUpdated"))
+        #expect(!SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: "CodexThreadProgressChanged"))
+    }
+
+    @Test func stateStreamHeartbeatExpiryUsesAConservativeWindow() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        #expect(!StateStreamLivenessPolicy.hasExpired(
+            lastActivityAt: start,
+            now: start.addingTimeInterval(44.9)
+        ))
+        #expect(StateStreamLivenessPolicy.hasExpired(
+            lastActivityAt: start,
+            now: start.addingTimeInterval(45)
+        ))
+    }
 }

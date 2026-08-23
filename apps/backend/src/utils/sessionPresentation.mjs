@@ -97,6 +97,40 @@ export function activeSessionsDueForProjectionReconciliation(
     && now - (reconciledAt.get(session.id) ?? 0) >= minimumIntervalMs);
 }
 
+export async function reconcileSessionProjectionsIndependently(
+  sessions = [],
+  reconcile,
+  { timeoutMs = 5_000, setTimer = setTimeout, clearTimer = clearTimeout } = {}
+) {
+  if (typeof reconcile !== "function") {
+    throw new TypeError("reconcileSessionProjectionsIndependently requires reconcile().");
+  }
+  return Promise.all(sessions.map(async (session) => {
+    let timer = null;
+    try {
+      const value = await Promise.race([
+        Promise.resolve().then(() => reconcile(session)),
+        new Promise((_, reject) => {
+          timer = setTimer(() => {
+            const error = new Error(`Session projection reconciliation timed out: ${session?.id ?? "unknown"}`);
+            error.code = "SESSION_PROJECTION_RECONCILIATION_TIMEOUT";
+            reject(error);
+          }, timeoutMs);
+        })
+      ]);
+      return { sessionId: session?.id ?? null, status: "fulfilled", value };
+    } catch (error) {
+      return {
+        sessionId: session?.id ?? null,
+        status: error?.code === "SESSION_PROJECTION_RECONCILIATION_TIMEOUT" ? "timedOut" : "rejected",
+        error
+      };
+    } finally {
+      if (timer != null) clearTimer(timer);
+    }
+  }));
+}
+
 export function applyWorkspaceContinuationPresentation(session, transition) {
   if (!session || !transition) return session;
   const state = transition.continuationState;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activeSessionsDueForProjectionReconciliation,
+  reconcileSessionProjectionsIndependently,
   applyWorkspaceContinuationPresentation,
   composeStoredSessionList,
   mergeStoredSessionPresentation,
@@ -406,4 +407,22 @@ test("active projection recovery runs promptly but throttles repeated Provider r
     }).map((session) => session.id),
     ["running:new", "blocked:stale"]
   );
+});
+
+test("active projection recovery isolates a Provider read that never settles", async () => {
+  const sessions = [{ id: "hung" }, { id: "healthy" }];
+  const results = await reconcileSessionProjectionsIndependently(
+    sessions,
+    async (session) => {
+      if (session.id === "hung") return new Promise(() => {});
+      return `${session.id}:complete`;
+    },
+    { timeoutMs: 10 }
+  );
+
+  assert.deepEqual(results.map(({ sessionId, status }) => ({ sessionId, status })), [
+    { sessionId: "hung", status: "timedOut" },
+    { sessionId: "healthy", status: "fulfilled" }
+  ]);
+  assert.equal(results[1].value, "healthy:complete");
 });
