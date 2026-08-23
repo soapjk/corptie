@@ -38,6 +38,35 @@ export function mergeStoredSessionPresentation(session, stored) {
   };
 }
 
+// Session lists are a durable control-plane projection. Provider objects may
+// be newer while an event is being persisted, but every runtime callback writes
+// the sessions row synchronously before state sync runs. Once that write has
+// committed, an older in-memory Provider object must never put a terminal row
+// back into running. Keep the general merge above for Provider operations such
+// as resume; use this stricter merge only at list/state-sync boundaries.
+export function mergeAuthoritativeStoredSessionPresentation(session, stored) {
+  const merged = mergeStoredSessionPresentation(session, stored);
+  if (!stored) return merged;
+  const status = stored.status ?? merged.status;
+  const active = ["running", "blocked"].includes(status);
+  return {
+    ...merged,
+    status,
+    progress: stored.progress ?? merged.progress,
+    summary: stored.summary ?? merged.summary,
+    updatedAt: stored.updatedAt ?? merged.updatedAt,
+    activityStatus: active
+      ? (stored.activityStatus ?? session.activityStatus ?? null)
+      : null,
+    capabilities: stored.capabilities ?? merged.capabilities,
+    rawStatus: stored.rawStatus ?? merged.rawStatus,
+    external: {
+      ...(merged.external ?? {}),
+      activeTurnId: stored.external?.activeTurnId ?? null
+    }
+  };
+}
+
 function providerSessionId(session) {
   return nonEmptyText(session?.external?.sessionId) || nonEmptyText(session?.external?.threadId);
 }
@@ -95,6 +124,28 @@ export function activeSessionsDueForProjectionReconciliation(
 ) {
   return sessions.filter((session) => sessionHasActiveRun(session)
     && now - (reconciledAt.get(session.id) ?? 0) >= minimumIntervalMs);
+}
+
+// Recovery must observe both authorities. If another backend/process commits a
+// terminal database projection while this process still has a stale running
+// Provider cache (or vice versa), selecting candidates from only one side makes
+// the disagreement permanent until the user opens the Session detail.
+export function sessionProjectionRecoveryCandidates(
+  persistedSessions = [],
+  liveSessions = []
+) {
+  const byId = new Map();
+  for (const session of persistedSessions) {
+    if (!session?.id || !sessionHasActiveRun(session)) continue;
+    byId.set(session.id, session);
+  }
+  // Live active rows replace durable active rows only for the Provider read
+  // input; the resulting list projection remains database-authoritative.
+  for (const session of liveSessions) {
+    if (!session?.id || !sessionHasActiveRun(session)) continue;
+    byId.set(session.id, session);
+  }
+  return [...byId.values()];
 }
 
 export async function reconcileSessionProjectionsIndependently(

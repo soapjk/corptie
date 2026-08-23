@@ -1,4 +1,4 @@
-import { mergeStoredSessionPresentation } from "../utils/sessionPresentation.mjs";
+import { mergeAuthoritativeStoredSessionPresentation } from "../utils/sessionPresentation.mjs";
 
 export function storedSessionIdForListSession(sessionId) {
   const id = String(sessionId ?? "");
@@ -10,6 +10,6 @@ export function applyPersistedSessionOrder(sessions = [], lookupStoredSession) {
   return sessions.map((session) => {
     const stored = lookupStoredSession(storedSessionIdForListSession(session?.id));
     if (!stored) return session;
-    return mergeStoredSessionPresentation(session, stored);
+    return mergeAuthoritativeStoredSessionPresentation(session, stored);
   });
 }

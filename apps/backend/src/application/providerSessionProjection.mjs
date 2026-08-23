@@ -19,6 +19,39 @@ export function persistProviderSessionProjection(store, session, {
   return store.getSession(session.id);
 }
 
+export function canonicalSessionIdFromEventPayload(payload = {}, {
+  resolveStableSessionId = null
+} = {}) {
+  const rawSessionId = payload.session?.id ?? payload.sessionId ?? null;
+  const providerId = payload.session?.external?.provider ?? payload.providerId ?? null;
+  const providerSessionId = payload.session?.external?.sessionId
+    ?? payload.providerSessionId
+    ?? null;
+  const threadId = payload.session?.external?.threadId ?? payload.threadId ?? null;
+  const logicalSessionId = payload.session?.logicalSessionId
+    ?? payload.session?.external?.logicalSessionId
+    ?? payload.logicalSessionId
+    ?? null;
+  const resolved = typeof resolveStableSessionId === "function"
+    ? resolveStableSessionId({
+        rawSessionId,
+        providerId,
+        providerSessionId,
+        threadId,
+        logicalSessionId
+      })
+    : null;
+  if (resolved) return String(resolved);
+  if (rawSessionId) {
+    const value = String(rawSessionId);
+    // A namespaced ID is already a product/provider identity. Prefixing it
+    // again produced invalid IDs such as codex:openclacky:… after a switch.
+    if (value.includes(":")) return value;
+    return providerId === "codex-app-server" ? `codex:${value}` : value;
+  }
+  return threadId ? `codex:${threadId}` : null;
+}
+
 // Resolve a physical Provider Session against the durable logical route before
 // the generic projection repair runs. The active target thread keeps the
 // original public Session identity; superseded/invalid physical threads are

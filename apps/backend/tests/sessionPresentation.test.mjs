@@ -5,12 +5,14 @@ import {
   reconcileSessionProjectionsIndependently,
   applyWorkspaceContinuationPresentation,
   composeStoredSessionList,
+  mergeAuthoritativeStoredSessionPresentation,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
   sessionNeedsAuthoritativeProjectionRecovery,
+  sessionProjectionRecoveryCandidates,
   workspaceContinuationKeepsSessionActive
 } from "../src/utils/sessionPresentation.mjs";
 
@@ -125,6 +127,40 @@ test("a stored Agent binding survives merging with a provider session", () => {
   );
 
   assert.equal(merged.agentId, "assistant");
+});
+
+test("a durable terminal projection wins over a stale running Provider list cache", () => {
+  const merged = mergeAuthoritativeStoredSessionPresentation(
+    {
+      id: "stable:session-a",
+      status: "running",
+      progress: 0.5,
+      summary: "Still working",
+      activityStatus: "Running command",
+      updatedAt: "2026-08-23T12:00:00.000Z",
+      capabilities: { canInterrupt: true },
+      external: { provider: "codex-app-server", activeTurnId: "turn:stale" }
+    },
+    {
+      id: "stable:session-a",
+      status: "complete",
+      progress: 1,
+      summary: "Finished",
+      updatedAt: "2026-08-23T12:00:01.000Z",
+      capabilities: { canInterrupt: false },
+      activityStatus: "Stale stored activity must be cleared",
+      rawStatus: { activeTurnId: null },
+      external: { provider: "codex-app-server", activeTurnId: null }
+    }
+  );
+
+  assert.equal(merged.status, "complete");
+  assert.equal(merged.progress, 1);
+  assert.equal(merged.summary, "Finished");
+  assert.equal(merged.activityStatus, null);
+  assert.equal(merged.updatedAt, "2026-08-23T12:00:01.000Z");
+  assert.equal(merged.capabilities.canInterrupt, false);
+  assert.equal(merged.external.activeTurnId, null);
 });
 
 test("a stored provider-neutral session kind survives provider refresh", () => {
@@ -407,6 +443,27 @@ test("active projection recovery runs promptly but throttles repeated Provider r
     }).map((session) => session.id),
     ["running:new", "blocked:stale"]
   );
+});
+
+test("projection recovery observes active state from either durable or live authority", () => {
+  const candidates = sessionProjectionRecoveryCandidates(
+    [
+      { id: "durable-active", status: "running" },
+      { id: "live-stale", status: "complete" },
+      { id: "idle", status: "complete" }
+    ],
+    [
+      { id: "durable-active", status: "complete" },
+      { id: "live-stale", status: "running", external: { activeTurnId: "turn:stale" } },
+      { id: "idle", status: "complete" }
+    ]
+  );
+
+  assert.deepEqual(candidates.map((session) => session.id).sort(), [
+    "durable-active",
+    "live-stale"
+  ]);
+  assert.equal(candidates.find((session) => session.id === "live-stale").status, "running");
 });
 
 test("active projection recovery isolates a Provider read that never settles", async () => {
