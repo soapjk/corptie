@@ -647,6 +647,21 @@ struct AppKitChatTimelinePosition: Equatable, Sendable {
     let followsLatest: Bool
 }
 
+enum LiveResizeRowReflowPolicy {
+    static func indexes(
+        rowCount: Int,
+        visibleRows: NSRange,
+        isLiveResize: Bool
+    ) -> IndexSet {
+        guard rowCount > 0 else { return [] }
+        guard isLiveResize else { return IndexSet(integersIn: 0..<rowCount) }
+        guard visibleRows.location != NSNotFound else { return [] }
+        let lowerBound = min(rowCount, visibleRows.location)
+        let upperBound = min(rowCount, visibleRows.location + visibleRows.length)
+        return IndexSet(integersIn: lowerBound..<upperBound)
+    }
+}
+
 struct AppKitChatTimelineView: NSViewRepresentable {
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
@@ -782,6 +797,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var pendingRestorePosition: AppKitChatTimelinePosition?
         private var pendingInitialScrollToBottom = false
         private var isRestoringInitialViewport = false
+        private var needsExactWidthReflow = false
 
         /// The timeline width is a parent-owned layout input. Reserving a
         /// legacy scroller gutter unconditionally prevents the feedback loop
@@ -796,6 +812,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             let id: String
             let revision: Int
             let widthBucket: Int
+            let isLiveResizeApproximation: Bool
         }
 
         init(
@@ -810,6 +827,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             self.onAction = onAction
             self.onNearTop = onNearTop
             self.onPositionChange = onPositionChange
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
         }
 
         func attach(tableView: NSTableView, scrollView: NSScrollView) {
@@ -837,6 +858,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 name: NSView.frameDidChangeNotification,
                 object: scrollView
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidEndLiveResize(_:)),
+                name: NSWindow.didEndLiveResizeNotification,
+                object: nil
+            )
             synchronizeTableWidth()
         }
 
@@ -853,8 +880,16 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 ChatBubbleWidthPolicy.cardWidth(for: item, availableWidth: columnWidth)
                     - ChatBubbleWidthPolicy.horizontalPadding
             )
-            let widthBucket = Int(availableWidth.rounded(.down))
-            let key = HeightCacheKey(id: item.id, revision: item.contentRevision, widthBucket: widthBucket)
+            let isLiveResize = tableView.window?.inLiveResize == true
+            let widthBucket = isLiveResize
+                ? Int((availableWidth / 8).rounded()) * 8
+                : Int(availableWidth.rounded(.down))
+            let key = HeightCacheKey(
+                id: item.id,
+                revision: item.contentRevision,
+                widthBucket: widthBucket,
+                isLiveResizeApproximation: isLiveResize
+            )
             if let cached = heightCache[key] { return cached }
 
             let height = NativeTimelineLayoutCache.shared.layout(
@@ -1099,18 +1134,30 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             synchronizeTableWidth()
         }
 
+        @objc private func windowDidEndLiveResize(_ notification: Notification) {
+            guard let window = notification.object as? NSWindow,
+                  window === scrollView?.window,
+                  needsExactWidthReflow else { return }
+            performExactWidthReflow()
+        }
+
         private func synchronizeTableWidth() {
             guard let tableView, let scrollView, let column = tableView.tableColumns.first else { return }
             let width = max(120, scrollView.bounds.width - Self.verticalScrollerGutter)
             guard abs(column.width - width) >= 0.5 else { return }
+            let anchor = visibleAnchor(in: tableView)
             column.width = width
             // This path now runs only for an actual container resize. Scroller
             // visibility no longer changes the layout width.
-            heightCache.removeAll(keepingCapacity: true)
             lastMeasuredWidth = width
             if !rows.isEmpty {
-                let allRows = IndexSet(integersIn: 0..<rows.count)
                 let visible = tableView.rows(in: tableView.visibleRect)
+                let isLiveResize = scrollView.window?.inLiveResize == true
+                let rowsToReflow = LiveResizeRowReflowPolicy.indexes(
+                    rowCount: rows.count,
+                    visibleRows: visible,
+                    isLiveResize: isLiveResize
+                )
                 if visible.location != NSNotFound {
                     let upperBound = min(rows.count, visible.location + visible.length)
                     for row in visible.location..<upperBound {
@@ -1128,9 +1175,33 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                         }
                     }
                 }
-                tableView.noteHeightOfRows(withIndexesChanged: allRows)
-                synchronizeDocumentHeight(in: tableView)
+                if isLiveResize {
+                    // Keep the native viewport and visible text exact enough to
+                    // interact with, but do not synchronously ask NSTableView
+                    // to remeasure every offscreen message for every drag tick.
+                    needsExactWidthReflow = true
+                    if !rowsToReflow.isEmpty {
+                        tableView.noteHeightOfRows(withIndexesChanged: rowsToReflow)
+                    }
+                } else {
+                    tableView.noteHeightOfRows(withIndexesChanged: rowsToReflow)
+                    synchronizeDocumentHeight(in: tableView)
+                }
+                if let anchor { _ = restore(anchor: anchor, in: tableView) }
             }
+        }
+
+        private func performExactWidthReflow() {
+            guard let tableView else { return }
+            needsExactWidthReflow = false
+            heightCache = heightCache.filter { !$0.key.isLiveResizeApproximation }
+            guard !rows.isEmpty else { return }
+            let anchor = visibleAnchor(in: tableView)
+            tableView.noteHeightOfRows(
+                withIndexesChanged: IndexSet(integersIn: 0..<rows.count)
+            )
+            synchronizeDocumentHeight(in: tableView)
+            if let anchor { _ = restore(anchor: anchor, in: tableView) }
         }
 
         private func visibleAnchor(in tableView: NSTableView) -> (id: String, offset: CGFloat)? {

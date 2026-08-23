@@ -22,21 +22,16 @@ struct MainTabContentLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/MainTabView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        #expect(contents.contains("MainTabPageLayout(selectedIndex: router.selectedTab.index)"))
-        #expect(contents.contains("for (index, subview) in subviews.enumerated()"))
-        #expect(contents.contains("x: bounds.midX + horizontalDirection * bounds.width"))
-        #expect(contents.contains("proposal: pageProposal"))
-        #expect(!contents.contains("MainTabPageProposalCache"))
-        #expect(contents.contains(".opacity(tab == router.selectedTab ? 1 : 0)"))
-        #expect(contents.contains(".allowsHitTesting(tab == router.selectedTab)"))
-        #expect(contents.contains(".zIndex(tab == router.selectedTab ? 1 : 0)"))
-        #expect(contents.contains("value: router.selectedTab"))
-        #expect(!contents.contains(".offset(x: slideOffset("))
-        #expect(!contents.contains("GeometryReader { geo in"))
+        #expect(contents.contains("MainTabPageHost("))
+        #expect(contents.contains("final class MainTabPageContainer: NSView"))
+        #expect(contents.contains("pages[selectedTab]?.removeFromSuperview()"))
+        #expect(contents.contains("pages[tab] = created"))
+        #expect(contents.contains("addSubview(page)"))
+        #expect(!contents.contains("MainTabPageLayout(selectedIndex:"))
     }
 
     @Test
-    func mainWindowFreezesLiveResizeAndEnforcesContentMinimum() throws {
+    func mainWindowCoalescesNativeLiveResizeAndEnforcesContentMinimum() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -44,10 +39,16 @@ struct MainTabContentLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/CopetsMacApp.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        #expect(contents.contains("LiveResizeFrozenHostingView(rootView: MainTabView())"))
+        #expect(contents.contains("let hostingView = LiveResizeHostingView("))
         #expect(contents.contains("override func viewWillStartLiveResize()"))
         #expect(contents.contains("override func viewDidEndLiveResize()"))
         #expect(contents.contains("NSWindow.willEnterFullScreenNotification"))
+        #expect(contents.contains("scheduleExactLayoutAfterStability()"))
+        #expect(contents.contains("RunLoop.main.add(timer, forMode: .common)"))
+        #expect(!contents.contains("scaleAxesIndependently"))
+        #expect(!contents.contains("setAffineTransform"))
+        #expect(!contents.contains("bitmapImageRepForCachingDisplay"))
+        #expect(contents.contains("window.preservesContentDuringLiveResize = true"))
         #expect(contents.contains("window.contentMinSize = NSSize(width: 980, height: 620)"))
     }
 }
