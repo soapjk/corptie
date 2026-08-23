@@ -43,6 +43,153 @@ enum ApplicationTerminationUI {
     }
 }
 
+/// Prevents SwiftUI from recomputing text wrapping and nested layouts on every
+/// frame of a window drag or fullscreen transition. AppKit stretches one cached
+/// image during the transition, then the live hierarchy lays out exactly once
+/// at the final content size.
+@MainActor
+final class LiveResizeFrozenHostingView<Content: View>: NSView {
+    private enum FreezeReason: Hashable {
+        case liveResize
+        case fullScreenTransition
+    }
+
+    private let hostingView: NSHostingView<Content>
+    private let snapshotView = NSImageView()
+    private var freezeReasons = Set<FreezeReason>()
+    private var windowNotificationTokens: [NSObjectProtocol] = []
+
+    init(rootView: Content) {
+        hostingView = NSHostingView(rootView: rootView)
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.masksToBounds = true
+
+        hostingView.sizingOptions = []
+        hostingView.autoresizingMask = []
+        addSubview(hostingView)
+
+        snapshotView.imageAlignment = .alignCenter
+        snapshotView.imageScaling = .scaleAxesIndependently
+        snapshotView.isHidden = true
+        snapshotView.autoresizingMask = []
+        addSubview(snapshotView, positioned: .above, relativeTo: hostingView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeWindowObservers()
+        guard let window else { return }
+
+        let center = NotificationCenter.default
+        windowNotificationTokens = [
+            center.addObserver(
+                forName: NSWindow.willEnterFullScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.beginFreeze(for: .fullScreenTransition)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.didEnterFullScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.endFreeze(for: .fullScreenTransition)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.willExitFullScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.beginFreeze(for: .fullScreenTransition)
+                }
+            },
+            center.addObserver(
+                forName: NSWindow.didExitFullScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.endFreeze(for: .fullScreenTransition)
+                }
+            }
+        ]
+    }
+
+    override func viewWillStartLiveResize() {
+        super.viewWillStartLiveResize()
+        beginFreeze(for: .liveResize)
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        endFreeze(for: .liveResize)
+    }
+
+    override func layout() {
+        super.layout()
+        if freezeReasons.isEmpty {
+            hostingView.frame = bounds
+        } else {
+            snapshotView.frame = bounds
+        }
+    }
+
+    private func beginFreeze(for reason: FreezeReason) {
+        let wasFrozen = !freezeReasons.isEmpty
+        freezeReasons.insert(reason)
+        guard !wasFrozen else { return }
+
+        layoutSubtreeIfNeeded()
+        snapshotView.image = snapshotImage()
+        snapshotView.frame = bounds
+        snapshotView.isHidden = snapshotView.image == nil
+        hostingView.isHidden = snapshotView.image != nil
+    }
+
+    private func endFreeze(for reason: FreezeReason) {
+        freezeReasons.remove(reason)
+        guard freezeReasons.isEmpty else { return }
+
+        hostingView.frame = bounds
+        hostingView.isHidden = false
+        snapshotView.isHidden = true
+        snapshotView.image = nil
+        needsLayout = true
+    }
+
+    private func snapshotImage() -> NSImage? {
+        guard hostingView.bounds.width > 0,
+              hostingView.bounds.height > 0,
+              let representation = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
+        else { return nil }
+
+        hostingView.cacheDisplay(in: hostingView.bounds, to: representation)
+        let image = NSImage(size: hostingView.bounds.size)
+        image.addRepresentation(representation)
+        return image
+    }
+
+    private func removeWindowObservers() {
+        let center = NotificationCenter.default
+        windowNotificationTokens.forEach(center.removeObserver)
+        windowNotificationTokens.removeAll()
+    }
+
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     static weak var shared: AppDelegate?
@@ -444,17 +591,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.titlebarSeparatorStyle = .none
         window.center()
         window.isReleasedWhenClosed = false
-        let hostingView = NSHostingView(rootView: MainTabView())
+        let hostingView = LiveResizeFrozenHostingView(rootView: MainTabView())
         // This is a user-resizable AppKit-owned window. The SwiftUI root must
         // follow its bounds, not feed its ideal size back into NSWindow. The
         // default sizing options can call updateAnimatedWindowSize during a
         // tab replacement, producing a safe-area/constraint feedback loop.
-        hostingView.sizingOptions = []
-        hostingView.autoresizingMask = [.width, .height]
         hostingView.frame = window.contentView?.bounds ?? NSRect(
             origin: .zero,
             size: window.contentRect(forFrameRect: window.frame).size
         )
+        window.contentMinSize = NSSize(width: 980, height: 620)
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window

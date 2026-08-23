@@ -26,4 +26,20 @@ struct MainTabContentLayoutTests {
         #expect(!contents.contains(".offset(x: slideOffset("))
         #expect(!contents.contains("GeometryReader { geo in"))
     }
+
+    @Test
+    func mainWindowFreezesLiveResizeAndEnforcesContentMinimum() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/CopetsMacApp.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        #expect(contents.contains("LiveResizeFrozenHostingView(rootView: MainTabView())"))
+        #expect(contents.contains("override func viewWillStartLiveResize()"))
+        #expect(contents.contains("override func viewDidEndLiveResize()"))
+        #expect(contents.contains("NSWindow.willEnterFullScreenNotification"))
+        #expect(contents.contains("window.contentMinSize = NSSize(width: 980, height: 620)"))
+    }
 }
