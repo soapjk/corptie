@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import {
+  codexRuntimeWorkspaceRoots,
   codexTurnPermissionOptions,
   hasCodexSessionPermissions,
   readInitialCodexPermissionsFromRollout,
@@ -100,6 +101,26 @@ test("turn permissions use the Codex app-server sandbox policy variants", () => 
     approvalPolicy: "on-request",
     sandboxPolicy: { type: "readOnly" }
   });
+  assert.deepEqual(codexTurnPermissionOptions({
+    external: { sandbox: "workspace-write", approvalPolicy: "never" }
+  }, {
+    runtimeWorkspaceRoots: ["/repo-integration", "/repo/.git/worktrees/integration"]
+  }), {
+    approvalPolicy: "never",
+    sandboxPolicy: {
+      type: "workspaceWrite",
+      writableRoots: ["/repo-integration", "/repo/.git/worktrees/integration"],
+      networkAccess: false
+    }
+  });
+});
+
+test("later turns retain the persisted writable Git metadata roots", () => {
+  const roots = ["/repo-integration", "/repo/.git/worktrees/integration"];
+  assert.deepEqual(codexRuntimeWorkspaceRoots({
+    permissionSnapshot: { runtimeWorkspaceRoots: roots }
+  }, "/repo-integration"), roots);
+  assert.deepEqual(codexRuntimeWorkspaceRoots({}, "/repo-integration"), ["/repo-integration"]);
 });
 
 test("app-server sandbox variants normalize back to persisted CLI names", () => {

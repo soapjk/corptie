@@ -53,12 +53,26 @@ export function hasCodexSessionPermissions(session) {
 
 export function codexTurnPermissionOptions(session, fallback = {}) {
   const permissions = codexPermissionsForSession(session, fallback);
+  const writableRoots = Array.isArray(fallback.runtimeWorkspaceRoots)
+    ? fallback.runtimeWorkspaceRoots
+    : null;
   return {
     approvalPolicy: ["ask-risky", "on-failure"].includes(permissions.approvalPolicy)
       ? "on-request"
       : permissions.approvalPolicy,
-    sandboxPolicy: { type: APP_SERVER_SANDBOX_TYPES[permissions.sandbox] }
+    sandboxPolicy: {
+      type: APP_SERVER_SANDBOX_TYPES[permissions.sandbox],
+      ...(permissions.sandbox === "workspace-write" && writableRoots
+        ? { writableRoots, networkAccess: false }
+        : {})
+    }
   };
+}
+
+export function codexRuntimeWorkspaceRoots(logicalRoute, activeCwd) {
+  const persisted = logicalRoute?.permissionSnapshot?.runtimeWorkspaceRoots;
+  if (Array.isArray(persisted) && persisted.length > 0) return [...persisted];
+  return activeCwd ? [activeCwd] : undefined;
 }
 
 export function withCodexSessionPermissions(session, permissions = {}) {

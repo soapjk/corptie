@@ -6,6 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { GitWorkspaceManager } from "../src/runtime/gitWorkspaceManager.mjs";
+import {
+  conflictResolutionWritableRoots,
+  upgradeConflictResolutionWritableRoots
+} from "../src/runtime/conflictResolutionWorkspacePermissions.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import {
   createGitWorkspaceSnapshot,
@@ -575,6 +579,61 @@ test("verified Agent resolution stays isolated until the backend promotes its In
     assert.equal(await readFile(join(fixture.repository, "shared.txt"), "utf8"), "main and feature\n");
     await git(["merge-base", "--is-ancestor", sourceHead, "HEAD"], fixture.repository);
   } finally {
+    await fixture.close();
+  }
+});
+
+test("conflict workspace writable roots permit merge and commit without exposing Worktree deletion metadata", async () => {
+  const fixture = await createFixture("agent-resolution-metadata-permissions", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "shared.txt"), "main\n");
+  await git(["add", "shared.txt"], fixture.repository);
+  await git(["commit", "-m", "Main version"], fixture.repository);
+  await writeFile(join(fixture.activeWorktree, "shared.txt"), "feature\n");
+  await git(["add", "shared.txt"], fixture.activeWorktree);
+  await git(["commit", "-m", "Feature version"], fixture.activeWorktree);
+
+  let commonGitDir = null;
+  try {
+    const expectedMainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    const workspace = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:metadata-permissions"
+    });
+    const identity = await inspectGitWorkspace(workspace.path);
+    commonGitDir = identity.commonGitDirCanonicalPath;
+    const writableRoots = await conflictResolutionWritableRoots({
+      path: workspace.path,
+      worktreeId: workspace.worktreeId
+    });
+
+    assert.equal(writableRoots.includes(identity.gitDirCanonicalPath), true);
+    assert.equal(writableRoots.includes(commonGitDir), false);
+    assert.equal(writableRoots.includes(join(commonGitDir, "worktrees")), false);
+    assert.equal(writableRoots.includes(fixture.repository), false);
+    const legacyPath = "/tmp/corptie-integration-worktree-integration-efd";
+    assert.deepEqual(await upgradeConflictResolutionWritableRoots({
+      path: legacyPath,
+      worktreeId: workspace.worktreeId
+    }, [legacyPath], async () => identity, async () => workspace.branchName), writableRoots);
+
+    await execFileAsync("chmod", ["-R", "a-w", commonGitDir]);
+    for (const root of writableRoots.slice(1)) {
+      await execFileAsync("chmod", ["-R", "u+w", root]);
+    }
+    await assert.rejects(() => git(["merge", "--no-ff", "--no-edit", sourceHead], workspace.path));
+    await writeFile(join(workspace.path, "shared.txt"), "main and feature\n");
+    await git(["add", "shared.txt"], workspace.path);
+    await git(["commit", "--no-edit"], workspace.path);
+    await git(["merge-base", "--is-ancestor", sourceHead, "HEAD"], workspace.path);
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], workspace.path)).trim(), "");
+  } finally {
+    if (commonGitDir) await execFileAsync("chmod", ["-R", "u+w", commonGitDir]).catch(() => {});
     await fixture.close();
   }
 });
