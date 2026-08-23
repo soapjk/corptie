@@ -566,7 +566,9 @@ final class BackendClient: ObservableObject {
             "CodexThreadProgressChanged",
             "CodexThreadCompleted",
             "CodexThreadFailed",
+            "CodexThreadCancelled",
             "CodexThreadError",
+            "AgentTurnCompleted",
             "CodexThreadChoiceOptionsUpdated",
             "CodexThreadApprovalRequested",
             "CodexThreadApprovalResponded",
@@ -593,12 +595,21 @@ final class BackendClient: ObservableObject {
             "PtySessionInputSent",
             "PtySessionTerminated",
             "PtySessionInterrupted",
+            "SessionRunInterrupted",
             "TaskCompleted",
             "TaskBlocked",
+            "TaskCancelled",
             "TaskProgressChanged"
         ]
         guard refreshEvents.contains(eventName) else {
             return
+        }
+        // The revisioned state stream remains the normal list transport, but a
+        // terminal lifecycle event is too important to rely on one long-lived
+        // connection alone. An immediate snapshot also repairs a half-open or
+        // temporarily suspended state stream without requiring row selection.
+        if SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: eventName) {
+            await AppStateSyncController.shared.refreshSnapshot()
         }
         if eventName == "CodexThreadCompleted"
             || eventName == "CodexThreadFailed"

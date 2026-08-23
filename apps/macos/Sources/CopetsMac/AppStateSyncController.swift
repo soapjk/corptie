@@ -1,5 +1,39 @@
 import Foundation
 
+enum SessionStateRefreshPolicy {
+    private static let terminalEventNames: Set<String> = [
+        "AgentTurnCompleted",
+        "CodexThreadCompleted",
+        "CodexThreadFailed",
+        "CodexThreadCancelled",
+        "CodexThreadError",
+        "SessionRunInterrupted",
+        "TaskCompleted",
+        "TaskBlocked",
+        "TaskCancelled",
+        "PtySessionTerminated",
+        "PtySessionInterrupted",
+        "AgentWorkCompleted",
+        "AgentWorkFailed"
+    ]
+
+    static func requiresAuthoritativeRefresh(eventName: String) -> Bool {
+        terminalEventNames.contains(eventName)
+    }
+}
+
+enum StateStreamLivenessPolicy {
+    static let inactivityTimeout: TimeInterval = 45
+
+    static func hasExpired(
+        lastActivityAt: Date,
+        now: Date = Date(),
+        timeout: TimeInterval = inactivityTimeout
+    ) -> Bool {
+        now.timeIntervalSince(lastActivityAt) >= timeout
+    }
+}
+
 @MainActor
 final class AppStateSyncController {
     static let shared = AppStateSyncController()
@@ -7,6 +41,9 @@ final class AppStateSyncController {
     private let store = AppStateStore.shared
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var streamTask: Task<Void, Never>?
+    private var streamWatchdogTask: Task<Void, Never>?
+    private var streamGeneration: UInt64 = 0
+    private var streamLastActivityAt = Date()
     private var snapshotRequestGeneration: UInt64 = 0
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -18,21 +55,15 @@ final class AppStateSyncController {
 
     func start() {
         snapshotRequestGeneration &+= 1
-        streamTask?.cancel()
-        streamTask = Task { [weak self] in
-            guard let self else { return }
-            await refreshSnapshot()
-            while !Task.isCancelled {
-                await consumeStream()
-                guard !Task.isCancelled else { return }
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
+        restartStream(refreshSnapshotFirst: true)
     }
 
     func stop() {
         streamTask?.cancel()
         streamTask = nil
+        streamWatchdogTask?.cancel()
+        streamWatchdogTask = nil
+        streamGeneration &+= 1
         snapshotRequestGeneration &+= 1
     }
 
@@ -59,7 +90,37 @@ final class AppStateSyncController {
         return store.session(id)
     }
 
-    private func consumeStream() async {
+    private func restartStream(refreshSnapshotFirst: Bool) {
+        streamTask?.cancel()
+        streamWatchdogTask?.cancel()
+        streamGeneration &+= 1
+        let generation = streamGeneration
+        streamLastActivityAt = Date()
+
+        streamTask = Task { [weak self] in
+            guard let self else { return }
+            if refreshSnapshotFirst { await refreshSnapshot() }
+            while !Task.isCancelled, generation == streamGeneration {
+                await consumeStream(generation: generation)
+                guard !Task.isCancelled, generation == streamGeneration else { return }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+        streamWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                guard !Task.isCancelled, let self, generation == self.streamGeneration else { return }
+                guard StateStreamLivenessPolicy.hasExpired(lastActivityAt: self.streamLastActivityAt) else {
+                    continue
+                }
+                self.store.reportSyncError("Session state stream stopped receiving heartbeats.")
+                self.restartStream(refreshSnapshotFirst: true)
+                return
+            }
+        }
+    }
+
+    private func consumeStream(generation: UInt64) async {
         do {
             var components = URLComponents(
                 url: baseURL.appending(path: "state/events"),
@@ -70,10 +131,15 @@ final class AppStateSyncController {
             request.timeoutInterval = .infinity
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
             try Self.requireSuccess(response)
+            guard generation == streamGeneration else { return }
+            streamLastActivityAt = Date()
             var eventName = ""
             var dataLines: [String] = []
             for try await line in bytes.lines {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, generation == streamGeneration else { return }
+                // Heartbeat comment lines carry no state payload, but they are
+                // authoritative proof that this long-lived stream is alive.
+                streamLastActivityAt = Date()
                 if line.isEmpty {
                     await applyFrame(eventName: eventName, data: dataLines.joined(separator: "\n"))
                     eventName = ""
