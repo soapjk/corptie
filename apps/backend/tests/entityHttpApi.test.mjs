@@ -74,6 +74,29 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
   const request = mockRequest(method, pathname, search, body, requestHeaders);
   const response = mockResponse();
   const url = new URL(request.url);
+  const startWorkItemExecution = services.startWorkItemExecution ?? (services.launchSession
+    ? async (input) => {
+        const workItem = services.objectiveService.store.getWorkItem(input.workItemId);
+        const agent = services.objectiveService.store.getAgent(input.agentId);
+        const session = await services.launchSession({
+          workItem,
+          agent,
+          providerId: input.providerId,
+          title: input.title,
+          observePerformance: () => {}
+        });
+        const bound = services.objectiveService.store.bindSessionToWorkItem(
+          session.id, workItem.id, workItem.objective_id
+        );
+        services.objectiveService.store.updateWorkItem(workItem.id, {
+          status: "in_progress", mainAgentId: agent.agentId, executionStatus: "running"
+        });
+        return {
+          phase: "running", idempotentReplay: false, session: bound,
+          logicalSessionId: null, providerBinding: null, workspace: null
+        };
+      }
+    : undefined);
   const handled = handleEntityHttpRequest({
     request,
     response,
@@ -87,6 +110,8 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     backgroundAgentService: services.backgroundAgentService,
     createSession: services.createSession,
     launchSession: services.launchSession,
+    startWorkItemExecution,
+    cancelWorkItemStart: services.cancelWorkItemStart,
     launchAgentSession: services.launchAgentSession,
     launchObjectiveChatSession: services.launchObjectiveChatSession,
     inspectWorkItemWorktree: services.inspectWorkItemWorktree,
@@ -1783,9 +1808,7 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
     ]);
     assert.equal(performance[0].outcome, "succeeded");
     assert.equal(performance[0].workItemId, created.body.id);
-    assert.equal(performance[1].phases.workspacePrepareMs, 12.34);
-    assert.equal(performance[1].phases.providerSessionCreateMs, 56.78);
-    assert.equal(performance[1].phases.bindAndPersistMs >= 0, true);
+    assert.equal(performance[1].phases.orchestrationMs >= 0, true);
     assert.equal(performance[1].totalMs >= 0, true);
   } finally {
     await services.store.close();

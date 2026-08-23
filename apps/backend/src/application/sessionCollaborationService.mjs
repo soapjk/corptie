@@ -161,51 +161,26 @@ export class SessionCollaborationService {
     if (expectedVersion !== actualVersion) throw coded("RESOURCE_VERSION_CONFLICT", `Expected WorkItem version ${expectedVersion}, current version is ${actualVersion}.`, 409);
     const idempotencyKey = required(input.idempotencyKey, "idempotency_key");
     if (item.current_session_id) return this.#startReceipt(item, this.store.getSession(item.current_session_id), "already_running", true);
-    if (item.execution_status === "starting") {
-      if (item.start_idempotency_key !== idempotencyKey) {
-        throw coded("START_IN_PROGRESS", "Another start operation is already in progress for this WorkItem.", 409);
-      }
-      return this.#startReceipt(item, null, "starting", true, idempotencyKey);
-    }
     const agentId = optional(input.agentId) ?? item.main_agent_id;
     const agent = this.#requireContributor(scope.session.objectiveId, required(agentId, "agent_id"));
-    let transactionOpen = true;
-    this.store.db.run("BEGIN IMMEDIATE");
     try {
-      const current = this.store.getWorkItem(item.id);
-      if (current.current_session_id || current.execution_status === "starting") {
-        this.store.db.run("ROLLBACK");
-        transactionOpen = false;
-        if (current.start_idempotency_key === idempotencyKey) {
-          return this.#startReceipt(current, current.current_session_id ? this.store.getSession(current.current_session_id) : null,
-            current.current_session_id ? "already_running" : "starting", true, idempotencyKey);
-        }
-        throw coded("START_IN_PROGRESS", "Another start operation won the concurrency race.", 409);
-      }
-      this.store.db.run(
-        "UPDATE work_items SET execution_status='starting', start_idempotency_key=?, start_error=NULL, updated_at=? WHERE id=?",
-        [idempotencyKey, new Date().toISOString(), item.id]
-      );
-      this.store.db.run("COMMIT");
-      transactionOpen = false;
-    } catch (error) {
-      if (transactionOpen) this.store.db.run("ROLLBACK");
-      throw error;
-    }
-    try {
-      const launched = await this.launchWorkItem({ workItem: item, agent, title: optional(input.title) });
+      const launched = await this.launchWorkItem({
+        workItem: item,
+        agent,
+        title: optional(input.title),
+        idempotencyKey,
+        source: "collaboration"
+      });
       const session = this.#resolveSession(launched?.id ?? launched?.sessionId ?? this.store.getWorkItem(item.id)?.current_session_id);
       if (!session) throw coded("START_SESSION_UNRESOLVED", "Provider accepted the launch but no Corptie Session binding was persisted.");
-      this.store.db.run("UPDATE work_items SET resource_version=resource_version+1, execution_status='running' WHERE id=?", [item.id]);
-      this.store.scheduleSave();
       return this.#startReceipt(this.store.getWorkItem(item.id), session, "running", false, idempotencyKey);
     } catch (error) {
-      this.store.db.run(
-        "UPDATE work_items SET execution_status='start_failed', start_error=?, updated_at=? WHERE id=?",
-        [error.message, new Date().toISOString(), item.id]
-      );
-      this.store.scheduleSave();
-      error.receipt = { phase: "created", workItemId: item.id, executionStatus: "start_failed", idempotencyKey };
+      error.receipt ??= {
+        phase: "failed",
+        workItemId: item.id,
+        executionStatus: this.store.getWorkItem(item.id)?.execution_status ?? "start_failed",
+        idempotencyKey
+      };
       throw error;
     }
   }

@@ -1052,7 +1052,62 @@ struct WorkItemDetailView: View {
                     .help(currentSession.title.isEmpty ? L10n("Open Session") : L10nFormat("Open: %@", currentSession.title))
                 }
             }
+
+            if WorkItemStartPresentation.isPartialFailure(workItem) {
+                startFailurePanel
+            }
         }
+    }
+
+    private var startFailurePanel: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label(L10n("Worker Session was not started"), systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+            Text(L10nFormat(
+                "Failed stage: %@",
+                WorkItemStartPresentation.stageLabel(workItem.startFailureStage)
+            ))
+            .font(.system(size: 10.5, weight: .medium))
+            if let reason = workItem.startError, !reason.isEmpty {
+                Text(reason)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            if let path = workItem.startWorktreePath, !path.isEmpty {
+                Label(L10n("The existing Worktree and local changes are preserved and will be reused."), systemImage: "arrow.triangle.branch")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .help(path)
+            }
+            HStack(spacing: 8) {
+                Button(L10n("Retry")) {
+                    Task { await startOrResumeExecution() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                Button(L10n("Details")) {
+                    executionError = EntityLaunchError(
+                        message: [workItem.startErrorCode, workItem.startError].compactMap { $0 }.joined(separator: ": "),
+                        code: workItem.startErrorCode
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button(L10n("Cancel Safely"), role: .destructive) {
+                    Task {
+                        if await client.cancelWorkItemStart(workItemId: workItem.id) != nil {
+                            onRequestReload()
+                        }
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var memorySection: some View {

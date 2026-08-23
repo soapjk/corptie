@@ -40,6 +40,44 @@ final class WorkItemResponseHandlingTests: XCTestCase {
         XCTAssertNil(items[0].acceptanceAssessment)
     }
 
+    func testPartialStartFailureDecodesStageReasonAndPreservedWorktree() throws {
+        let data = Data(
+            """
+            {
+              "workItems": [{
+                "id": "work-item:partial",
+                "objective_id": "objective:one",
+                "title": "Partial start",
+                "description": "",
+                "acceptance_criteria": "",
+                "priority": "medium",
+                "status": "todo",
+                "main_workspace_id": "repository:one",
+                "main_agent_id": "agent:one",
+                "current_session_id": null,
+                "execution_status": "start_failed",
+                "start_stage": "failed",
+                "start_failure_stage": "creatingSession",
+                "start_error_code": "SESSION_TITLE_CONFLICT",
+                "start_error": "Session title already exists.",
+                "start_worktree_id": "worktree:one",
+                "start_worktree_path": "/tmp/repo-workitem-one",
+                "start_worktree_branch": "workitem/one",
+                "created_at": "2026-08-23T00:00:00.000Z",
+                "updated_at": "2026-08-23T00:01:00.000Z"
+              }]
+            }
+            """.utf8
+        )
+
+        let item = try XCTUnwrap(decoder().decode(WorkItemListEnvelope.self, from: data).workItems.first)
+        XCTAssertTrue(WorkItemStartPresentation.isPartialFailure(item))
+        XCTAssertEqual(item.startFailureStage, "creatingSession")
+        XCTAssertEqual(item.startErrorCode, "SESSION_TITLE_CONFLICT")
+        XCTAssertEqual(item.startWorktreePath, "/tmp/repo-workitem-one")
+        XCTAssertNil(item.currentSessionId)
+    }
+
     func testPassingAcceptanceDecodesWithoutReplacingLifecycleStatus() throws {
         let data = Data(
             """

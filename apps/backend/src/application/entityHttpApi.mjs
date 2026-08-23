@@ -23,6 +23,8 @@ export function handleEntityHttpRequest({
   memoryExtractor,
   assistantService,
   launchSession,
+  startWorkItemExecution,
+  cancelWorkItemStart,
   launchAgentSession,
   launchObjectiveChatSession,
   createSession,
@@ -712,6 +714,17 @@ export function handleEntityHttpRequest({
         return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByWorkItem(id) });
       }
 
+      const cancelStartMatch = path.match(/^\/work-items\/([^/]+)\/actions\/cancel-start$/);
+      if (request.method === "POST" && cancelStartMatch) {
+        if (typeof cancelWorkItemStart !== "function") throw apiError("INTERNAL", "cancelWorkItemStart is not configured.", 500);
+        const id = decodeURIComponent(cancelStartMatch[1]);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["reason"]));
+        return sendJson(response, 200, presentWorkItemAcceptance(
+          cancelWorkItemStart(id, typeof input.reason === "string" ? input.reason : undefined)
+        ));
+      }
+
       const dependencyMatch = path.match(/^\/work-items\/([^/]+)\/dependencies$/);
       if (dependencyMatch) {
         const id = decodeURIComponent(dependencyMatch[1]);
@@ -768,56 +781,30 @@ export function handleEntityHttpRequest({
         timing.phases.validateReferencesMs = roundedMilliseconds(
           performance.now() - timing.startedAt - timing.phases.requestParseMs
         );
-        if (typeof launchSession !== "function") {
-          throw apiError("INTERNAL", "launchSession is not configured.", 500);
+        if (typeof startWorkItemExecution !== "function") {
+          throw apiError("INTERNAL", "startWorkItemExecution is not configured.", 500);
         }
-
-        // 已有当前 session → 换 Agent / 重来：先提炼旧 session 记忆，再关闭旧 session。
-        const previousSessionId = workItem.current_session_id ?? null;
         phaseStartedAt = performance.now();
-        if (previousSessionId) {
-          await memoryExtractor.extractFromSession(previousSessionId, {
-            objectiveId: workItem.objective_id,
-            workItemId: workItem.id,
-            agentId: workItem.main_agent_id
-          });
-          objectiveService.store.closeSession(previousSessionId);
-        }
-        timing.phases.previousSessionMs = roundedMilliseconds(performance.now() - phaseStartedAt);
-
-        // 真正启动模型执行（provider 映射 / cwd 解析 / prompt 拼装均在 launchSession 内完成）。
-        const session = await launchSession({
-          agent,
-          workItem,
+        const started = await startWorkItemExecution({
+          workItemId,
+          agentId,
           providerId,
           title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-          observePerformance: (phase, durationMs) => {
-            timing.phases[phase] = roundedMilliseconds(durationMs);
+          idempotencyKey: timing.operationId,
+          source: "macos-entity-api",
+          actorId: "user:local-macos"
+        });
+        timing.phases.orchestrationMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        const result = sendJson(response, started.idempotentReplay ? 200 : 201, {
+          session: started.session,
+          start: {
+            phase: started.phase,
+            idempotentReplay: started.idempotentReplay,
+            logicalSessionId: started.logicalSessionId,
+            providerBinding: started.providerBinding,
+            workspace: started.workspace
           }
         });
-        // 1:1 归属：把启动后的 session 绑定到 work_item（更新 current_session_id），并把状态推进到「进行中」，
-        // 同时记录实际执行 Agent（main_agent_id），让看板卡片能显示执行主体。
-        phaseStartedAt = performance.now();
-        const boundSession = objectiveService.store.bindSessionToWorkItem(
-          session.id,
-          workItemId,
-          workItem.objective_id
-        );
-        const executionPatch = {
-          executionStatus: "running",
-          acceptanceAssessment: null
-        };
-        if (workItem.status !== "in_progress") executionPatch.status = "in_progress";
-        if (workItem.main_agent_id !== agent.agentId) executionPatch.mainAgentId = agent.agentId;
-        if (Object.keys(executionPatch).length > 0) {
-          objectiveService.store.updateWorkItem(workItemId, executionPatch);
-        }
-        onEntityChanged?.("WorkItemChanged", {
-          action: "session-bound",
-          entity: objectiveService.store.getWorkItem(workItemId)
-        });
-        timing.phases.bindAndPersistMs = roundedMilliseconds(performance.now() - phaseStartedAt);
-        const result = sendJson(response, 201, { session: boundSession ?? session });
         finishWorkItemTiming("succeeded");
         return result;
       }
@@ -903,7 +890,8 @@ export function handleEntityHttpRequest({
         ...(error.received && typeof error.received === "object" ? { received: error.received } : {}),
         ...(Array.isArray(error.candidates) ? { candidates: error.candidates } : {}),
         ...(error.impact && typeof error.impact === "object" ? { impact: error.impact } : {}),
-        ...(error.operation && typeof error.operation === "object" ? { operation: error.operation } : {})
+        ...(error.operation && typeof error.operation === "object" ? { operation: error.operation } : {}),
+        ...(error.receipt && typeof error.receipt === "object" ? { receipt: error.receipt } : {})
       });
     });
 
