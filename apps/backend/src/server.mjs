@@ -1136,7 +1136,10 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         providerId: agentProviderRegistry.defaultProviderId,
         title,
         prompt,
-        workingDirectory: workspace.path
+        workingDirectory: workspace.path,
+        autoUniqueTitle: true,
+        sandbox: "workspace-write",
+        approvalPolicy: "never"
       });
       session = objectiveService.bindSession(session.id, workItem.id);
       objectiveService.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
@@ -1147,6 +1150,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     return {
       workItemId: workItem.id,
       sessionId: session.id,
+      sessionName: session.title,
       agentId: agent.agentId,
       agentName: agent.name
     };
@@ -3763,7 +3767,7 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   const requestedTitle = typeof input.title === "string" ? input.title.trim() : "";
   const defaultTitle = typeof input.defaultTitle === "string" ? input.defaultTitle.trim() : "";
   const baseTitle = requestedTitle || defaultTitle || sessionTitleForWorkspace("", cwd);
-  const title = requestedTitle
+  const title = requestedTitle && input.autoUniqueTitle !== true
     ? baseTitle
     : resolveAvailableSessionTitle(
         knownSessionsForTitleValidation(),
@@ -3771,7 +3775,11 @@ async function createSessionThroughApplication(providerId, input = {}, context =
         null,
         reservedSessionTitleKeys
       );
-  const { defaultTitle: _defaultTitle, ...providerInput } = input;
+  const {
+    defaultTitle: _defaultTitle,
+    autoUniqueTitle: _autoUniqueTitle,
+    ...providerInput
+  } = input;
   const prepared = {
     ...providerInput,
     cwd,
@@ -3848,6 +3856,9 @@ async function launchWorkItemSession({
   title,
   prompt: requestedPrompt,
   workingDirectory = null,
+  autoUniqueTitle = false,
+  sandbox = null,
+  approvalPolicy = null,
   observePerformance = () => {}
 }) {
   if (agent.role !== "independentContributor") {
@@ -3890,7 +3901,10 @@ async function launchWorkItemSession({
       defaultTitle: defaultSessionTitleForWorkItem(workItem.title, agent.name),
       prompt,
       agent: agent.name,
-      sessionKind: "worker"
+      sessionKind: "worker",
+      autoUniqueTitle,
+      ...(sandbox ? { sandbox } : {}),
+      ...(approvalPolicy ? { approvalPolicy } : {})
     },
     {
       source: "entity",

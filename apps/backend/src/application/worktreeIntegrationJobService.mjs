@@ -29,7 +29,8 @@ export class WorktreeIntegrationJobService {
     this.onDeletionFailure = options.onDeletionFailure ?? (() => {});
     this.onEvent = options.onEvent ?? (() => {});
     this.activeJobs = new Set();
-    this.activeConflictResolutions = new Set();
+    this.activeConflictResolutions = new Map();
+    this.maxConflictFallbackAttempts = Math.max(1, Math.min(Number(options.maxConflictFallbackAttempts) || 3, 10));
     for (const name of [
       "inspectRepository",
       "inspectCommitProtection",
@@ -490,14 +491,22 @@ export class WorktreeIntegrationJobService {
 
   async resolveConflictWithAgent(jobId) {
     const key = String(jobId);
-    if (this.activeConflictResolutions.has(key)) {
-      throw new WorktreeIntegrationJobError(
-        "CONFLICT_RESOLUTION_ALREADY_STARTING",
-        "The conflict-resolution Agent is already being started.",
-        409
-      );
+    const active = this.activeConflictResolutions.get(key);
+    if (active) return active;
+    const operation = this.#resolveConflictWithAgent(key);
+    this.activeConflictResolutions.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.activeConflictResolutions.get(key) === operation) {
+        this.activeConflictResolutions.delete(key);
+      }
     }
-    this.activeConflictResolutions.add(key);
+  }
+
+  async #resolveConflictWithAgent(key) {
+    let failureStage = "conflict_preflight";
+    let retryCount = 0;
     try {
       let job = this.#requireJob(key);
       const item = job.details.plan.items.find((candidate) => candidate.worktreeId === job.details.currentWorktreeId);
@@ -526,14 +535,34 @@ export class WorktreeIntegrationJobService {
 
       let workspace = resolution?.workspace ?? null;
       if (!workspace) {
-        const preparation = await this.prepareConflictResolution({
-          repositoryId: job.repositoryId,
-          mainPath: job.details.plan.mainPath,
-          jobId: job.id,
-          sourceHead,
-          expectedMainHead,
-          conflictFiles: item.conflictFiles
-        });
+        failureStage = "workspace_creation";
+        let preparation;
+        for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
+          retryCount = attempt;
+          try {
+            preparation = await this.prepareConflictResolution({
+              repositoryId: job.repositoryId,
+              mainPath: job.details.plan.mainPath,
+              jobId: job.id,
+              sourceHead,
+              expectedMainHead,
+              conflictFiles: item.conflictFiles
+            });
+            break;
+          } catch (error) {
+            if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+              throw conflictFallbackFailure(error, failureStage, attempt + 1);
+            }
+            job = this.#update(job, {
+              auditEvent: "conflict_fallback_retry",
+              auditData: {
+                failureStage,
+                retryCount: attempt + 1,
+                code: error.code ?? "CONFLICT_WORKSPACE_PREPARE_FAILED"
+              }
+            });
+          }
+        }
         if (preparation.alreadyResolved) {
           job = this.#item(job, item.worktreeId, {
             mergeStatus: "recovered",
@@ -573,17 +602,44 @@ export class WorktreeIntegrationJobService {
             }
           },
           auditEvent: "conflict_workspace_created",
-          auditData: { worktreeId: item.worktreeId }
+          auditData: {
+            worktreeId: workspace.worktreeId,
+            branchName: workspace.branchName,
+            worktreePath: workspace.path,
+            retryCount: retryCount + Number(workspace.retryCount ?? 0)
+          }
         });
       }
 
-      const created = await this.launchConflictResolution({
-        job: presentJob(job),
-        item,
-        workspace,
-        sourceHead,
-        expectedMainHead: workspace.headOid ?? expectedMainHead
-      });
+      failureStage = "session_creation";
+      let created;
+      for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
+        retryCount = attempt;
+        try {
+          created = await this.launchConflictResolution({
+            job: presentJob(job),
+            item,
+            workspace,
+            sourceHead,
+            expectedMainHead: workspace.headOid ?? expectedMainHead
+          });
+          break;
+        } catch (error) {
+          if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+            throw conflictFallbackFailure(error, failureStage, attempt + 1);
+          }
+          job = this.#update(job, {
+            auditEvent: "conflict_fallback_retry",
+            auditData: {
+              failureStage,
+              retryCount: attempt + 1,
+              code: error.code ?? "CONFLICT_SESSION_CREATE_FAILED",
+              branchName: workspace.branchName,
+              worktreePath: workspace.path
+            }
+          });
+        }
+      }
       return presentJob(this.#update(job, {
         status: "paused",
         phase: "conflict_resolution_running",
@@ -597,12 +653,21 @@ export class WorktreeIntegrationJobService {
             workspace,
             workItemId: created.workItemId,
             sessionId: created.sessionId,
+            sessionName: created.sessionName ?? null,
             agentId: created.agentId,
-            agentName: created.agentName
+            agentName: created.agentName,
+            retryCount
           }
         },
         auditEvent: "conflict_agent_started",
-        auditData: { worktreeId: item.worktreeId }
+        auditData: {
+          worktreeId: workspace.worktreeId,
+          sessionName: created.sessionName ?? null,
+          branchName: workspace.branchName,
+          worktreePath: workspace.path,
+          retryCount,
+          failureStage: null
+        }
       }));
     } catch (error) {
       const job = this.store.getWorktreeIntegrationJob(key);
@@ -616,12 +681,17 @@ export class WorktreeIntegrationJobService {
             conflictResolution: { ...job.details.conflictResolution, status: "failed" }
           },
           auditEvent: "conflict_agent_failed",
-          auditData: { code: error.code ?? "CONFLICT_AGENT_FAILED" }
+          auditData: {
+            code: error.code ?? "CONFLICT_AGENT_FAILED",
+            failureStage: error.failureStage ?? failureStage,
+            retryCount: error.retryCount ?? retryCount,
+            sessionName: job.details.conflictResolution.sessionName ?? null,
+            branchName: job.details.conflictResolution.workspace.branchName,
+            worktreePath: job.details.conflictResolution.workspace.path
+          }
         });
       }
       throw error;
-    } finally {
-      this.activeConflictResolutions.delete(key);
     }
   }
 
@@ -676,15 +746,39 @@ export class WorktreeIntegrationJobService {
         if (await this.#stopIfRequested(jobId)) return;
         await this.#assertWorktreeIdle(job.repositoryId, item.worktreeId);
         job = this.#item(job, item.worktreeId, { commitStatus: "running", error: null }, "committing", "commit_started");
-        const result = await this.commitChanges({
-          path: item.path,
-          expectedHead: item.sourceHeadBefore,
-          expectedStatusSummary: item.statusSummary,
-          commitMessage: item.commitMessage,
-          protectionDecision: job.details.commitProtectionDecisions?.[item.worktreeId]?.decision ?? null,
-          neverRemindPrivateFiles: job.details.commitProtectionDecisions?.[item.worktreeId]?.neverRemind === true,
-          jobId
-        });
+        let result;
+        let commitInputItem = item;
+        for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
+          try {
+            result = await this.commitChanges({
+              path: commitInputItem.path,
+              expectedHead: commitInputItem.sourceHeadBefore,
+              expectedStatusSummary: commitInputItem.statusSummary,
+              commitMessage: commitInputItem.commitMessage,
+              protectionDecision: job.details.commitProtectionDecisions?.[item.worktreeId]?.decision ?? null,
+              neverRemindPrivateFiles: job.details.commitProtectionDecisions?.[item.worktreeId]?.neverRemind === true,
+              jobId
+            });
+            break;
+          } catch (error) {
+            if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+              throw conflictFallbackFailure(error, "worktree_commit", attempt + 1);
+            }
+            const refreshed = await this.#refreshWorktreeItem(job, item.worktreeId);
+            job = refreshed.job;
+            commitInputItem = refreshed.item;
+            job = this.#update(job, {
+              auditEvent: "integration_stage_retry",
+              auditData: {
+                failureStage: "worktree_commit",
+                retryCount: attempt + 1,
+                code: error.code ?? "WORKTREE_COMMIT_FAILED",
+                branchName: commitInputItem.branchName,
+                worktreePath: commitInputItem.path
+              }
+            });
+          }
+        }
         job = this.#item(job, item.worktreeId, {
           commitStatus: result.recovered ? "recovered" : (result.committed ? "completed" : "not_needed"),
           commitHead: result.headOid,
@@ -726,7 +820,15 @@ export class WorktreeIntegrationJobService {
             resolutionHead: verified.resolvedHead,
             conflictFiles: [],
             error: null
-          }, "validating_resolution", "conflict_resolution_verified");
+          }, "validating_resolution", "conflict_resolution_verified", {
+            auditData: {
+              sessionName: resolution.sessionName ?? null,
+              branchName: resolution.workspace.branchName,
+              worktreePath: resolution.workspace.path,
+              retryCount: resolution.retryCount ?? 0,
+              failureStage: "completed"
+            }
+          });
         }
         await this.#assertWorktreeIdle(job.repositoryId, item.worktreeId);
         job = this.#item(
@@ -738,12 +840,38 @@ export class WorktreeIntegrationJobService {
           { clearConflictResolution: true }
         );
         try {
-          const result = await this.mergeSource({
-            mainPath: job.details.plan.mainPath,
-            sourceHead,
-            expectedMainHead,
-            jobId
-          });
+          let result;
+          for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
+            try {
+              result = await this.mergeSource({
+                mainPath: job.details.plan.mainPath,
+                sourceHead,
+                expectedMainHead,
+                jobId
+              });
+              break;
+            } catch (error) {
+              if (error.code === "MERGE_CONFLICT") throw error;
+              if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+                throw conflictFallbackFailure(error, "merge_source", attempt + 1);
+              }
+              const inspection = await this.inspectRepository(job.repositoryId);
+              const main = inspection.worktrees.find((candidate) => candidate.isMain);
+              if (main?.availability === "available" && main.dirty !== true && !main.operationState) {
+                expectedMainHead = main.headOid;
+              }
+              job = this.#update(job, {
+                auditEvent: "integration_stage_retry",
+                auditData: {
+                  failureStage: "merge_source",
+                  retryCount: attempt + 1,
+                  code: error.code ?? "MERGE_FAILED",
+                  branchName: item.branchName,
+                  worktreePath: item.path
+                }
+              });
+            }
+          }
           expectedMainHead = result.mainHead;
           job = this.#item(job, item.worktreeId, {
             mergeStatus: result.alreadyMerged ? "already_integrated" : (result.recovered ? "recovered" : "completed"),
@@ -810,6 +938,39 @@ export class WorktreeIntegrationJobService {
     );
   }
 
+  async #refreshWorktreeItem(job, worktreeId) {
+    const inspection = this.#associate(await this.inspectRepository(job.repositoryId));
+    const current = inspection.worktrees.find((candidate) => candidate.worktreeId === worktreeId);
+    const recorded = job.details.plan.items.find((candidate) => candidate.worktreeId === worktreeId);
+    if (!current || current.availability !== "available" || current.path !== recorded?.path
+      || current.branchName !== recorded?.branchName || current.operationState
+      || (current.conflictFiles ?? []).length > 0) {
+      const error = new WorktreeIntegrationJobError(
+        "WORKTREE_RECHECK_UNSAFE",
+        `Could not safely refresh ${recorded?.branchName ?? worktreeId}; its identity or Git operation changed. All existing data was preserved.`,
+        409
+      );
+      error.recoverable = false;
+      throw error;
+    }
+    const items = job.details.plan.items.map((item) => item.worktreeId === worktreeId ? {
+      ...item,
+      sourceHeadBefore: current.headOid,
+      statusSummary: current.statusSummary ?? "",
+      changedFiles: current.changedFiles ?? [],
+      dirty: current.dirty === true
+    } : item);
+    const updated = this.#update(job, {
+      details: { ...job.details, plan: { ...job.details.plan, items } },
+      auditEvent: "worktree_state_refreshed",
+      auditData: { worktreeId, branchName: current.branchName, worktreePath: current.path }
+    });
+    return {
+      job: updated,
+      item: updated.details.plan.items.find((candidate) => candidate.worktreeId === worktreeId)
+    };
+  }
+
   #pause(job, error) {
     const updated = this.#update(job, {
       status: "paused",
@@ -822,7 +983,7 @@ export class WorktreeIntegrationJobService {
     return updated;
   }
 
-  #item(job, worktreeId, patch, phase, event, { clearConflictResolution = false } = {}) {
+  #item(job, worktreeId, patch, phase, event, { clearConflictResolution = false, auditData = {} } = {}) {
     const latest = this.store.getWorktreeIntegrationJob(job.id) ?? job;
     const items = latest.details.plan.items.map((item) => item.worktreeId === worktreeId ? { ...item, ...patch } : item);
     const details = clearConflictResolution
@@ -833,7 +994,7 @@ export class WorktreeIntegrationJobService {
       details: { ...details, plan: { ...details.plan, items }, progress: progressFor(items) },
       currentWorktreeId: worktreeId,
       auditEvent: event,
-      auditData: { worktreeId }
+      auditData: { worktreeId, ...auditData }
     });
   }
 
@@ -1200,6 +1361,38 @@ function progressFor(items) {
 
 function fingerprint(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function isRecoverableConflictFallbackError(error) {
+  if (error?.recoverable === false) return false;
+  return new Set([
+    "SESSION_TITLE_CONFLICT",
+    "SESSION_CREATION_IN_PROGRESS",
+    "INTEGRATION_WORKSPACE_NAME_OCCUPIED",
+    "INTEGRATION_WORKSPACE_CREATE_RETRYABLE",
+    "INTEGRATION_WORKSPACE_INVENTORY_STALE",
+    "WORKTREE_COMMIT_FAILED",
+    "MERGE_COMMIT_FAILED",
+    "MERGE_FAILED",
+    "PLAN_STALE",
+    "WORKTREE_HEAD_CHANGED",
+    "WORKTREE_CHANGES_CHANGED",
+    "MAIN_HEAD_CHANGED",
+    "MAIN_DIRTY"
+  ]).has(error?.code) || error?.code == null;
+}
+
+function conflictFallbackFailure(cause, failureStage, retryCount) {
+  const error = new WorktreeIntegrationJobError(
+    "CONFLICT_FALLBACK_RETRY_EXHAUSTED",
+    `Conflict handling failed during ${failureStage} after ${retryCount} attempt(s). Root cause: ${cause?.message ?? "unknown error"}. Preserved all branches, Worktrees, commits, and uncommitted changes. Recovery: re-check Git status and retry this conflict task; if the reported state is still present, preserve the named changes before continuing.`,
+    cause?.statusCode ?? 409
+  );
+  error.cause = cause;
+  error.failureStage = failureStage;
+  error.retryCount = retryCount;
+  error.rootCauseCode = cause?.code ?? "UNKNOWN";
+  return error;
 }
 
 export function presentJob(job) {

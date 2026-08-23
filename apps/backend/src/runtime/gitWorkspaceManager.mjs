@@ -415,51 +415,101 @@ export class GitWorkspaceManager {
   }
 
   async createIntegrationWorktreeForProject(input) {
-    const snapshot = await createGitWorkspaceSnapshot(absolutePath(input.workingDirectory));
+    let snapshot = await createGitWorkspaceSnapshot(absolutePath(input.workingDirectory));
     if (snapshot.repository.id !== input.repositoryId) {
       throw new Error("The integration project no longer belongs to the registered repository.");
     }
-    const main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+    let main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
     if (!main) throw new Error("The repository's main worktree is unavailable.");
     const mainStatus = await this.gitOutput(main.path, ["status", "--porcelain=v1"]);
     if (mainStatus.trim()) {
-      throw new Error("The main worktree has uncommitted changes. Clean it before resolving integration conflicts.");
+      const error = integrationGitError(
+        "MAIN_DIRTY",
+        "The main worktree has uncommitted changes. Corptie preserved them and did not create or remove a Worktree."
+      );
+      error.failureStage = "workspace_preflight";
+      error.recoverySuggestion = "Commit or preserve the main changes, then retry conflict resolution.";
+      throw error;
     }
-    const suffix = String(input.runId ?? "integration")
+    const baseSuffix = String(input.runId ?? "integration")
       .replace(/^integration:/, "")
       .replace(/[^a-zA-Z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 24) || Date.now().toString(36);
-    const branchName = `integration/${suffix}`;
-    const targetPath = resolve(dirname(main.path), `${basename(main.path)}-integration-${suffix}`);
-    await assertPathMissing(targetPath);
-    if (await this.gitSucceeds(main.path, ["show-ref", "--verify", `refs/heads/${branchName}`])) {
-      throw new Error(`Integration branch already exists: ${branchName}`);
+    const maxAttempts = Math.max(1, Math.min(Number(input.maxAttempts) || 8, 32));
+    let lastError = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (attempt > 0) {
+        snapshot = await createGitWorkspaceSnapshot(main.path);
+        this.store.upsertGitWorkspaceSnapshot(snapshot);
+        main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+        if (!main) throw integrationGitError("MAIN_UNAVAILABLE", "The repository's main worktree became unavailable.");
+      }
+      const suffix = attempt === 0 ? baseSuffix : `${baseSuffix}-${attempt + 1}`;
+      const branchName = `integration/${suffix}`;
+      const targetPath = resolve(dirname(main.path), `${basename(main.path)}-integration-${suffix}`);
+      const byPath = snapshot.worktrees.find((worktree) => resolve(worktree.path) === targetPath);
+      if (byPath?.availability === "available"
+        && byPath.branchName === branchName
+        && byPath.headOid === main.headOid) {
+        return this.#presentIntegrationWorkspace(snapshot, main, byPath, attempt, true);
+      }
+      const branchOccupied = snapshot.worktrees.some((worktree) => worktree.branchName === branchName)
+        || await this.gitSucceeds(main.path, ["show-ref", "--verify", `refs/heads/${branchName}`]);
+      if (byPath || branchOccupied || await pathExists(targetPath)) {
+        lastError = integrationGitError(
+          "INTEGRATION_WORKSPACE_NAME_OCCUPIED",
+          `Integration workspace name is occupied: ${branchName} (${targetPath}).`
+        );
+        continue;
+      }
+      try {
+        await this.execFile(
+          "git",
+          ["-C", main.path, "worktree", "add", "-b", branchName, targetPath, main.headOid],
+          { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
+        );
+        const updated = await createGitWorkspaceSnapshot(targetPath);
+        this.store.upsertGitWorkspaceSnapshot(updated);
+        const created = updated.worktrees.find((worktree) => resolve(worktree.path) === targetPath);
+        if (created?.availability === "available") {
+          return this.#presentIntegrationWorkspace(updated, main, created, attempt, false);
+        }
+        lastError = integrationGitError(
+          "INTEGRATION_WORKSPACE_INVENTORY_STALE",
+          "Git created the Integration Worktree, but inventory had not observed it yet."
+        );
+      } catch (error) {
+        lastError = integrationGitError(
+          "INTEGRATION_WORKSPACE_CREATE_RETRYABLE",
+          safeGitError(error, "Could not create the Integration Worktree")
+        );
+      }
     }
-    try {
-      await this.execFile(
-        "git",
-        ["-C", main.path, "worktree", "add", "-b", branchName, targetPath, main.headOid],
-        { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
-      );
-    } catch (error) {
-      throw new Error(safeGitError(error, "Could not create the Integration Worktree"));
-    }
-    const updated = await createGitWorkspaceSnapshot(targetPath);
-    this.store.upsertGitWorkspaceSnapshot(updated);
-    const created = updated.worktrees.find((worktree) => resolve(worktree.path) === targetPath);
-    if (!created) throw new Error("The Integration Worktree was created but could not be inventoried.");
+    const error = integrationGitError(
+      "INTEGRATION_WORKSPACE_RETRY_EXHAUSTED",
+      `Could not allocate a unique Integration branch and Worktree after ${maxAttempts} attempts. Root cause: ${lastError?.message ?? "unknown Git error"}`
+    );
+    error.failureStage = "workspace_creation";
+    error.retryCount = maxAttempts;
+    error.recoverySuggestion = "Inspect the preserved integration/* branches and sibling Integration Worktrees, then retry; no existing Worktree or change was deleted.";
+    throw error;
+  }
+
+  async #presentIntegrationWorkspace(snapshot, main, workspace, retryCount, reused) {
     const sharedAgentConfiguration = await linkSharedAgentConfiguration({
       mainPath: main.canonicalPath || main.path,
-      targetPath: created.canonicalPath || created.path,
-      commonGitDir: updated.repository.commonGitDirCanonicalPath
+      targetPath: workspace.canonicalPath || workspace.path,
+      commonGitDir: snapshot.repository.commonGitDirCanonicalPath
     });
     return {
-      worktreeId: created.worktreeId,
-      path: created.path,
-      branchName: created.branchName,
-      headOid: created.headOid,
-      sharedAgentConfiguration
+      worktreeId: workspace.worktreeId,
+      path: workspace.path,
+      branchName: workspace.branchName,
+      headOid: workspace.headOid,
+      sharedAgentConfiguration,
+      retryCount,
+      reused
     };
   }
 
