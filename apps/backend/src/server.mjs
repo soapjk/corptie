@@ -255,6 +255,7 @@ const sseClients = new Set();
 // receive it, leaving their Session list stale until another mutation occurs.
 const stateSyncClients = new Map();
 let stateSyncConsistencyTimer = null;
+let stateSyncPublishTimer = null;
 let activeSessionReconciliationTimer = null;
 let activeSessionReconciliationInFlight = false;
 const activeSessionReconciledAt = new Map();
@@ -1946,7 +1947,7 @@ function emitEvent(type, payload, options = {}) {
   for (const response of sseClients) {
     response.write(frame);
   }
-  setImmediate(publishStateChangesIfNeeded);
+  scheduleStateSyncPublish();
 
   const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
   if (sessionId && store.db) {
@@ -2191,6 +2192,19 @@ function publishStateChangesIfNeeded() {
   }
 }
 
+function scheduleStateSyncPublish() {
+  if (process.env.CORPTIE_OPTIMIZED_STATE_SYNC === "0") {
+    setImmediate(publishStateChangesIfNeeded);
+    return;
+  }
+  if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
+  stateSyncPublishTimer = setTimeout(() => {
+    stateSyncPublishTimer = null;
+    publishStateChangesIfNeeded();
+  }, 20);
+  stateSyncPublishTimer.unref?.();
+}
+
 async function reconcileActiveSessionProviderProjections() {
   if (activeSessionReconciliationInFlight || stateSyncClients.size === 0) return;
   activeSessionReconciliationInFlight = true;
@@ -2250,6 +2264,10 @@ function updateStateSyncConsistencyTimer() {
     stateSyncConsistencyTimer = null;
     clearInterval(activeSessionReconciliationTimer);
     activeSessionReconciliationTimer = null;
+    if (stateSyncPublishTimer) {
+      clearTimeout(stateSyncPublishTimer);
+      stateSyncPublishTimer = null;
+    }
   }
 }
 
@@ -7164,13 +7182,21 @@ function route(request, response) {
           streamCanonicalSessionSnapshots(request, response, sessionId, reference.sessionId);
           return;
         }
+        const hasAfter = url.searchParams.has("after");
         const after = Number(url.searchParams.get("after") || 0);
+        const beforeSequence = url.searchParams.get("beforeSequence");
         const limit = Number(url.searchParams.get("limit") || 200);
+        const events = beforeSequence != null || !hasAfter
+          ? store.listSessionEventPage(reference.sessionId, { beforeSequence, limit })
+          : store.listSessionEvents(reference.sessionId, after, limit);
         sendJson(response, 200, {
           sessionId: reference.logicalSessionId ?? reference.sessionId,
           legacySessionId: reference.sessionId,
-          events: store.listSessionEvents(reference.sessionId, after, limit),
-          lastEventSequence: store.lastSessionEventSequence(reference.sessionId)
+          events,
+          lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
+          beforeSequence: events[0]?.sequence ?? null,
+          hasMoreHistory: !hasAfter && events.length >= Math.max(1, Math.min(500, limit || 200))
+            && Number(events[0]?.sequence ?? 0) > 1
         });
       })
       .catch((error) => sendJson(response, unifiedErrorStatus(error), {
@@ -8200,9 +8226,16 @@ function route(request, response) {
       oldestRevision,
       replayDepth: Math.max(0, revision - oldestRevision + 1),
       connectedClients: stateSyncClients.size,
+      sync: stateSyncService.diagnostics(),
       healthy: consistencyIssues.length === 0,
       consistencyIssues
     });
+    return;
+  }
+
+
+  if (request.method === "GET" && url.pathname === "/diagnostics/sqlite-queries") {
+    sendJson(response, 200, store.queryMetrics({ limit: url.searchParams.get("limit") }));
     return;
   }
 
@@ -8348,6 +8381,7 @@ if (recoveredWorktreeIntegrationJobs > 0) {
   console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
 }
 stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
+store.setStateDirtyListener(scheduleStateSyncPublish);
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({

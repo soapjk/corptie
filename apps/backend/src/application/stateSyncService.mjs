@@ -21,25 +21,32 @@ const ENTITY_ID = Object.freeze({
 export const STATE_COLLECTIONS = Object.freeze(Object.values(ENTITY_COLLECTION));
 
 export class StateSyncService {
-  constructor({ store, snapshot }) {
+  constructor({ store, snapshot, optimized = process.env.CORPTIE_OPTIMIZED_STATE_SYNC !== "0" }) {
     if (!store || typeof snapshot !== "function") {
       throw new Error("StateSyncService requires store and snapshot.");
     }
     this.store = store;
     this.snapshotProvider = snapshot;
+    this.optimized = optimized;
+    this.cachedSnapshot = null;
+    this.snapshotBuilds = 0;
   }
 
   snapshot() {
+    const currentRevision = this.store.stateRevision();
+    if (this.optimized && this.cachedSnapshot?.revision === currentRevision) {
+      return this.cachedSnapshot;
+    }
     // Snapshot projection may repair a missing Provider session projection and
     // advance the store revision while it is being assembled. Retry a bounded
     // number of times so payload and revision describe the same stable state.
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const revision = this.store.stateRevision();
       const state = normalizeSnapshot(this.snapshotProvider());
-      if (revision === this.store.stateRevision()) return { revision, state };
+      if (revision === this.store.stateRevision()) return this.cacheSnapshot({ revision, state });
     }
     const state = normalizeSnapshot(this.snapshotProvider());
-    return { revision: this.store.stateRevision(), state };
+    return this.cacheSnapshot({ revision: this.store.stateRevision(), state });
   }
 
   changesAfter(requestedRevision) {
@@ -60,7 +67,11 @@ export class StateSyncService {
     if (rows.length === 0 || rows.at(-1).revision !== currentRevision) {
       return { snapshotRequired: true, currentRevision };
     }
-    const state = normalizeSnapshot(this.snapshotProvider());
+    const projected = this.optimized ? this.snapshot() : null;
+    if (projected && projected.revision !== currentRevision) {
+      return { snapshotRequired: true, currentRevision: projected.revision };
+    }
+    const state = projected?.state ?? normalizeSnapshot(this.snapshotProvider());
     const latestByEntity = new Map();
     for (const row of rows) {
       latestByEntity.set(`${row.entityType}\0${row.entityId}`, row);
@@ -101,6 +112,20 @@ export class StateSyncService {
       upserts,
       deletes
     };
+  }
+
+  diagnostics() {
+    return {
+      optimized: this.optimized,
+      cachedRevision: this.cachedSnapshot?.revision ?? null,
+      snapshotBuilds: this.snapshotBuilds
+    };
+  }
+
+  cacheSnapshot(snapshot) {
+    this.snapshotBuilds += 1;
+    if (this.optimized) this.cachedSnapshot = snapshot;
+    return snapshot;
   }
 }
 

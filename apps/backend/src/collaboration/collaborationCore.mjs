@@ -126,13 +126,23 @@ export class CollaborationCore {
              ELSE session_kind
            END,
            updated_at = ?
-         WHERE id = ?`,
-        [agent.agentId, agent.role, timestamp, sessionId]
+         WHERE id = ?
+           AND (
+             agent_id IS NOT ?
+             OR (session_kind = 'legacy' AND ? = 'assistant')
+           )`,
+        [agent.agentId, agent.role, timestamp, sessionId, agent.agentId, agent.role]
       );
-      this.store.db.run(
-        "UPDATE agents SET current_session_id = ?, updated_at = ? WHERE agent_id = ?",
-        [sessionId, timestamp, agent.agentId]
-      );
+      // Re-observing an existing Provider projection must not rotate an Agent's
+      // current Session through every historical active binding. Only a newly
+      // created binding advances the recency cursor.
+      if (!current) {
+        this.store.db.run(
+          `UPDATE agents SET current_session_id = ?, updated_at = ?
+           WHERE agent_id = ? AND current_session_id IS NOT ?`,
+          [sessionId, timestamp, agent.agentId, sessionId]
+        );
+      }
     });
     return this.getAgent(agent.agentId);
   }

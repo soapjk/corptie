@@ -305,6 +305,21 @@ test("an Agent can own multiple active Sessions while each Session has one curre
   });
 });
 
+test("re-observing existing Agent Session bindings is revision-idempotent", async () => {
+  await withFixture(async ({ core, store }) => {
+    seedAgentsAndService(core);
+    core.bindSession({ agentId: "research-agent", sessionId: "codex:old-thread" });
+    core.bindSession({ agentId: "research-agent", sessionId: "codex:new-thread" });
+    const revision = store.stateRevision();
+
+    core.bindSession({ agentId: "research-agent", sessionId: "codex:old-thread" });
+    core.bindSession({ agentId: "research-agent", sessionId: "codex:new-thread" });
+
+    assert.equal(store.stateRevision(), revision);
+    assert.equal(core.getAgent("research-agent").currentSessionId, "codex:new-thread");
+  });
+});
+
 test("detaching one Session keeps the Agent attached to its other active Session", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
