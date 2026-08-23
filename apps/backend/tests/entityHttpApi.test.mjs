@@ -1857,7 +1857,9 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
         agentId: launchedAgent.agentId,
         provider: "test-provider",
         status: "running",
-        sessionKind: "worker"
+        sessionKind: "worker",
+        objectiveId: workItem.objective_id,
+        workItemId: workItem.id
       });
       return services.store.getSession(`session:explicit:${launchCount}`);
     };
@@ -1968,7 +1970,9 @@ test("execution failure is explicit and retrying the existing WorkItem does not 
           agentId: agent.agentId,
           provider: "test-provider",
           status: "running",
-          sessionKind: "worker"
+          sessionKind: "worker",
+          objectiveId: workItem.objective_id,
+          workItemId: workItem.id
         });
         return services.store.getSession("session:retry");
       },
@@ -2011,7 +2015,7 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
         providerId: "codex-app-server",
         title: "自定义 Worker"
       },
-      launchSession: async ({ agent, title }) => {
+      launchSession: async ({ agent, workItem: launchedWorkItem, title }) => {
         assert.equal(title, "自定义 Worker");
         services.store.upsertSession({
           id: "worker-session",
@@ -2020,7 +2024,9 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
           agentId: agent.agentId,
           provider: "codex-app-server",
           status: "running",
-          sessionKind: "worker"
+          sessionKind: "worker",
+          objectiveId: launchedWorkItem.objective_id,
+          workItemId: launchedWorkItem.id
         });
         return services.store.getSession("worker-session");
       }
