@@ -155,7 +155,7 @@ test("binding failure keeps the created Session and retry reuses both Session an
   }
 });
 
-test("binding finalization repairs a persisted Worker Session whose entity ownership is missing", async () => {
+test("binding finalization preserves a Provider-created Worker Session's complete entity ownership", async () => {
   const f = await fixture();
   try {
     f.service.createSession = async ({ providerId, workspace }) => {
@@ -167,6 +167,8 @@ test("binding finalization repairs a persisted Worker Session whose entity owner
         provider: providerId,
         agentId: f.agent.agentId,
         sessionKind: "worker",
+        objectiveId: f.objective.id,
+        workItemId: f.workItem.id,
         cwd: workspace.path
       });
       f.store.createLogicalSessionRoute({

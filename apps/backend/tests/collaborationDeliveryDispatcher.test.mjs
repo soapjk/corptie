@@ -23,15 +23,30 @@ async function fixture() {
   });
   core.registerAgent({ agentId: "agent-a", name: "Agent A" });
   core.registerAgent({ agentId: "agent-b", name: "Agent B" });
+  const objective = store.createObjective({
+    id: "objective:collaboration-fixture",
+    name: "Collaboration Fixture",
+    contributorAgentIds: ["agent-a", "agent-b"]
+  });
+  let workItemOrdinal = 0;
+  const createWorkerOwnership = (agentId, title) => store.createWorkItem({
+    id: `work-item:collaboration-fixture:${++workItemOrdinal}`,
+    objectiveId: objective.id,
+    title,
+    mainAgentId: agentId
+  });
   for (const [providerSessionId, logicalSessionId, agentId, title] of [
     ["codex:thread-a", "session:thread-a", "agent-a", "Agent A Session"],
     ["codex:thread-b", "session:thread-b", "agent-b", "Agent B Session"]
   ]) {
+    const workItem = createWorkerOwnership(agentId, title);
     store.createSession({
       id: providerSessionId,
       title,
       agentId,
       sessionKind: "worker",
+      objectiveId: objective.id,
+      workItemId: workItem.id,
       cwd: directory
     });
     store.createLogicalSessionRoute({
@@ -47,7 +62,7 @@ async function fixture() {
   core.bindSession({ agentId: "agent-a", sessionId: "codex:thread-a" });
   core.bindSession({ agentId: "agent-b", sessionId: "codex:thread-b" });
   core.registerService({ serviceId: "service-b", name: "Service B", ownerAgentId: "agent-b", status: "running" });
-  return { directory, store, core };
+  return { directory, store, core, objective, createWorkerOwnership };
 }
 
 function createRequest(core, suffix = "1") {
@@ -142,9 +157,11 @@ test("a result reply uses the established Session channel without recipient rero
 
     value.core.accept(task.taskId, "agent-b", "session:thread-b");
     value.core.startWorking(task.taskId, "agent-b", "session:thread-b");
+    const otherWorkItem = value.createWorkerOwnership("agent-b", "Other B Session");
     value.store.createSession({
       id: "codex:thread-b-other", title: "Other B Session", agentId: "agent-b",
-      sessionKind: "worker", cwd: value.directory
+      sessionKind: "worker", objectiveId: value.objective.id,
+      workItemId: otherWorkItem.id, cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
       logicalSessionId: "session:thread-b-other", legacySessionId: "codex:thread-b-other",
@@ -200,9 +217,11 @@ test("a result reply uses the established Session channel without recipient rero
 test("concurrent tasks preserve independent reply Session endpoints", async () => {
   const value = await fixture();
   try {
+    const secondWorkItem = value.createWorkerOwnership("agent-a", "Agent A Session 2");
     value.store.createSession({
       id: "codex:thread-a-2", title: "Agent A Session 2", agentId: "agent-a",
-      sessionKind: "worker", cwd: value.directory
+      sessionKind: "worker", objectiveId: value.objective.id,
+      workItemId: secondWorkItem.id, cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
       logicalSessionId: "session:thread-a-2", legacySessionId: "codex:thread-a-2",

@@ -99,11 +99,12 @@ test("legacy collaboration with multiple candidate Sessions remains explicitly u
     seedAgentsAndService(core);
     const task = newTask(core);
     for (const suffix of ["one", "two"]) {
-      store.createSession({
+      store.upsertSession({
         id: `provider:journal:${suffix}`,
         title: suffix,
         agentId: "journal-agent",
-        sessionKind: "legacy"
+        sessionKind: "legacy",
+        status: "complete"
       });
       store.createLogicalSessionRoute({
         logicalSessionId: `session:journal:${suffix}`,
