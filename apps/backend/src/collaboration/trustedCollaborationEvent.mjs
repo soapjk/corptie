@@ -4,6 +4,8 @@ export function formatTrustedCollaborationEvent(envelope) {
     line("协议版本", envelope.message.envelope?.version),
     line("来源 Objective", envelope.message.envelope?.objective?.sourceId ?? envelope.task.sourceObjectiveId),
     line("目标 Objective", envelope.message.envelope?.objective?.targetId ?? envelope.task.targetObjectiveId),
+    line("目标 Session", envelope.task.recipientSessionId),
+    line("路由版本", envelope.task.routingVersion),
     line("执行 WorkItem", envelope.task.workItemId),
     line("来源 WorkItem", envelope.task.sourceWorkItemId),
     serviceLine(envelope.task),
@@ -21,8 +23,17 @@ export function formatTrustedCollaborationEvent(envelope) {
     "<peer_content>",
     ...peerContent,
     "</peer_content>",
-    `建议动作：${actionHint(envelope)}。可直接调用相应工具，无需先 get_task；仅状态冲突或需要历史时查询。`
+    `建议动作：${actionHint(envelope)}。${routeInstruction(envelope)}`
   ].join("\n");
+}
+
+function routeInstruction(envelope) {
+  if (!envelope.task.recipientSessionId
+      || !Number.isInteger(Number(envelope.task.routingVersion))
+      || Number(envelope.task.routingVersion) < 1) {
+    return "执行胶囊缺少 recipientSessionId 或 routingVersion；必须先调用 get_task 补查并确认接收路由，禁止直接 accept。";
+  }
+  return "路由字段完整，可直接调用相应工具；仅状态冲突或需要历史时查询 get_task。";
 }
 
 function errorBlock(error) {

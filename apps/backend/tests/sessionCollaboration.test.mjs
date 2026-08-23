@@ -135,6 +135,68 @@ test("same-Agent Sessions are separately discoverable and can collaborate withou
   }
 });
 
+test("accept fail-closes when authoritative recipient route metadata is missing", async () => {
+  const f = await fixture();
+  try {
+    const source = f.store.createAgent({ id: "agent:route-source", name: "Route Source", role: "independentContributor" });
+    const recipient = f.store.createAgent({ id: "agent:route-recipient", name: "Route Recipient", role: "independentContributor" });
+    const objective = f.objectiveService.createObjective({
+      name: "Route Guard",
+      contributorAgentIds: [source.agentId, recipient.agentId]
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:route-source", logicalSessionId: "session:route-source",
+      agentId: source.agentId, kind: "objectiveChat", objectiveId: objective.id, cwd: f.directory
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:route-recipient", logicalSessionId: "session:route-recipient",
+      agentId: recipient.agentId, kind: "worker", objectiveId: objective.id, cwd: f.directory
+    });
+    const task = f.core.createTask({
+      taskId: "c4471174-177e-4fe9-ab1d-cd10e070da35",
+      initiatorAgentId: source.agentId,
+      recipientAgentId: recipient.agentId,
+      initiatorSessionId: "session:route-source",
+      recipientSessionId: "session:route-recipient",
+      initiatorNameAtSend: "Historical Initiator Session",
+      recipientNameAtSend: "Recipient Worker Session",
+      sourceObjectiveId: objective.id,
+      targetObjectiveId: objective.id,
+      title: "Route metadata guard",
+      summary: "Do not accept an ambiguous capsule."
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:route-source-current", logicalSessionId: "session:route-source-current",
+      agentId: source.agentId, kind: "worker", objectiveId: objective.id, cwd: f.directory
+    });
+    const delivery = f.core.listPendingDeliveries().find((item) => item.recipientAgentId === recipient.agentId);
+    const envelope = f.core.getDeliveryEnvelope(delivery.deliveryId);
+    assert.equal(envelope.task.taskId, "c4471174-177e-4fe9-ab1d-cd10e070da35");
+    assert.equal(envelope.task.initiatorAgentId, source.agentId);
+    assert.equal(envelope.task.recipientAgentId, recipient.agentId);
+    assert.equal(envelope.task.initiatorSessionId, "session:route-source");
+    assert.equal(envelope.task.recipientSessionId, "session:route-recipient");
+    assert.equal(envelope.task.initiatorNameAtSend, "Historical Initiator Session");
+    assert.equal(envelope.task.recipientNameAtSend, "Recipient Worker Session");
+    assert.equal(envelope.message.envelope.objective.sourceId, objective.id);
+    assert.equal(envelope.message.envelope.objective.targetId, objective.id);
+    assert.notEqual(f.core.getAgent(source.agentId).currentSessionId, envelope.task.initiatorSessionId);
+    f.store.db.run(
+      "UPDATE collaboration_tasks SET recipient_session_id=NULL, routing_version=NULL WHERE task_id=?",
+      [task.taskId]
+    );
+
+    assert.throws(
+      () => f.core.accept(task.taskId, recipient.agentId, "session:route-recipient"),
+      { code: "RECIPIENT_ROUTE_METADATA_REQUIRED" }
+    );
+    assert.equal(f.core.getTask(task.taskId).status, "proposed");
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("peer Objective discovery exposes context without allowing Objective Chat as a delivery target", async () => {
   const f = await fixture();
   try {

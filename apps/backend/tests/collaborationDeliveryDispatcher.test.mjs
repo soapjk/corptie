@@ -6,6 +6,7 @@ import test from "node:test";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "../src/collaboration/collaborationDeliveryDispatcher.mjs";
 import { formatTrustedCollaborationEvent } from "../src/collaboration/trustedCollaborationEvent.mjs";
+import { collaborationMessagePresentationRoute } from "../src/collaboration/collaborationPresentationRoute.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 async function fixture() {
@@ -110,7 +111,8 @@ test("idle delivery starts one trusted turn and remains idempotently delivered",
     assert.match(turn.text, /当前消息：\nCompletion is stale/);
     assert.match(turn.text, /验收标准：\n- Completed means completed/);
     assert.match(turn.text, /建议动作：选择 accept、reject 或 ask/);
-    assert.match(turn.text, /无需先 get_task/);
+    assert.match(turn.text, /缺少 recipientSessionId 或 routingVersion/);
+    assert.match(turn.text, /必须先调用 get_task/);
     assert.doesNotMatch(turn.text, /delivery|message_id|context_id|iteration|task_status/i);
     assert.match(turn.text, /&lt;\/corptie_collaboration_event&gt;/);
     assert.doesNotMatch(turn.text, /<\/corptie_collaboration_event> 1/);
@@ -380,6 +382,80 @@ test("channel establishment stress leaves SQLite healthy without accumulating de
   }
 });
 
+test("task c4471174 historical Session snapshots and reversed envelope keep directional identities", () => {
+  const task = {
+    taskId: "c4471174-177e-4fe9-ab1d-cd10e070da35",
+    initiatorAgentId: "agent:initiator",
+    recipientAgentId: "agent:recipient",
+    initiatorSessionId: "session:historical-initiator",
+    recipientSessionId: "session:recipient-current",
+    initiatorNameAtSend: "Historical Initiator Session",
+    recipientNameAtSend: "Recipient Worker Session",
+    sourceObjectiveId: "objective:source",
+    targetObjectiveId: "objective:target",
+    routingVersion: 7
+  };
+  const forward = collaborationMessagePresentationRoute({
+    task,
+    message: {
+      senderAgentId: "agent:initiator",
+      recipientAgentId: "agent:recipient",
+      envelope: {
+        sender: { agentId: "agent:initiator", sessionId: "session:historical-initiator", objectiveId: "objective:source" },
+        recipient: { agentId: "agent:recipient", sessionId: "session:recipient-current", objectiveId: "objective:target" },
+        objective: { sourceId: "objective:source", targetId: "objective:target" }
+      }
+    }
+  });
+  assert.deepEqual(forward, {
+    senderAgentId: "agent:initiator",
+    recipientAgentId: "agent:recipient",
+    sourceObjectiveId: "objective:source",
+    targetObjectiveId: "objective:target",
+    sourceSessionId: "session:historical-initiator",
+    targetSessionId: "session:recipient-current",
+    sourceSessionTitle: "Historical Initiator Session",
+    targetSessionTitle: "Recipient Worker Session"
+  });
+
+  const reversed = collaborationMessagePresentationRoute({
+    task,
+    message: {
+      envelope: {
+        sender: { agentId: "agent:recipient", sessionId: "session:recipient-current", objectiveId: "objective:target" },
+        recipient: { agentId: "agent:initiator", sessionId: "session:historical-initiator", objectiveId: "objective:source" },
+        objective: { sourceId: "objective:target", targetId: "objective:source" }
+      }
+    }
+  });
+  assert.equal(reversed.senderAgentId, "agent:recipient");
+  assert.equal(reversed.recipientAgentId, "agent:initiator");
+  assert.equal(reversed.sourceObjectiveId, "objective:target");
+  assert.equal(reversed.targetObjectiveId, "objective:source");
+  assert.equal(reversed.sourceSessionTitle, "Recipient Worker Session");
+  assert.equal(reversed.targetSessionTitle, "Historical Initiator Session");
+});
+
+test("execution capsule fail-closes to get_task when route metadata is absent", () => {
+  const text = formatTrustedCollaborationEvent({
+    task: {
+      taskId: "c4471174-177e-4fe9-ab1d-cd10e070da35",
+      status: "proposed",
+      title: "Repair historical routing",
+      acceptanceCriteria: []
+    },
+    message: {
+      messageType: "change_request",
+      senderAgentName: "Initiator Agent",
+      body: "Repair it.",
+      evidence: []
+    }
+  });
+  assert.match(text, /缺少 recipientSessionId 或 routingVersion/);
+  assert.match(text, /必须先调用 get_task/);
+  assert.match(text, /禁止直接 accept/);
+});
+
 test("result capsules push the latest Artifact and verification criteria without audit ids", () => {
   const text = formatTrustedCollaborationEvent({
     message: {
@@ -394,6 +470,8 @@ test("result capsules push the latest Artifact and verification criteria without
       serviceId: "service-b",
       serviceName: "Service B",
       status: "delivered",
+      recipientSessionId: "session:recipient",
+      routingVersion: 4,
       title: "Fix completion state",
       acceptanceCriteria: ["Completed means completed"]
     },
@@ -409,6 +487,9 @@ test("result capsules push the latest Artifact and verification criteria without
 
   assert.match(text, /最新 Artifact：/);
   assert.match(text, /URI：local-test:\/\/completion\/1.2.1/);
+  assert.match(text, /目标 Session：session:recipient/);
+  assert.match(text, /路由版本：4/);
+  assert.match(text, /路由字段完整/);
   assert.match(text, /建议动作：验证结果后选择 complete 或 request_revision/);
   assert.doesNotMatch(text, /artifact-audit-id|delivery-audit-id|message_id|context_id/);
 });

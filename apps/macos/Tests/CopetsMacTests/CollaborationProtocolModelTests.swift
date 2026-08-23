@@ -2,6 +2,58 @@ import XCTest
 @testable import CorptieMac
 
 final class CollaborationProtocolModelTests: XCTestCase {
+    func testTaskC4471174DecodesHistoricalInitiatorSnapshotAndStableIdentities() throws {
+        let data = Data(#"""
+        {
+          "taskId": "c4471174-177e-4fe9-ab1d-cd10e070da35",
+          "contextId": "context:c4471174",
+          "parentTaskId": null,
+          "protocolVersion": "2.0",
+          "sourceObjectiveId": "objective:source",
+          "targetObjectiveId": "objective:target",
+          "sourceWorkItemId": "work_item:source",
+          "workItemId": "work_item:target",
+          "initiatorAgentId": "agent:initiator",
+          "recipientAgentId": "agent:recipient",
+          "initiatorSessionId": "session:historical-initiator",
+          "recipientSessionId": "session:recipient-current",
+          "initiatorNameAtSend": "Historical Initiator Session",
+          "recipientNameAtSend": "Recipient Worker Session",
+          "routingVersion": 7,
+          "routeStatus": "active",
+          "artifactStatus": "pending",
+          "acceptanceStatus": "pending",
+          "initiatorBindingId": "binding:historical",
+          "recipientBindingId": "binding:recipient",
+          "serviceId": null,
+          "type": "change_request",
+          "status": "proposed",
+          "iteration": 1,
+          "maxIterations": 3,
+          "title": "Repair collaboration identity",
+          "summary": "Preserve historical routing snapshots.",
+          "acceptanceCriteria": [],
+          "createdAt": "2026-08-23T00:00:00.000Z",
+          "updatedAt": "2026-08-23T00:00:00.000Z",
+          "completedAt": null,
+          "messages": [],
+          "artifacts": [],
+          "events": []
+        }
+        """#.utf8)
+
+        let task = try JSONDecoder().decode(CollaborationTask.self, from: data)
+        XCTAssertEqual(task.initiatorAgentId, "agent:initiator")
+        XCTAssertEqual(task.recipientAgentId, "agent:recipient")
+        XCTAssertEqual(task.sourceObjectiveId, "objective:source")
+        XCTAssertEqual(task.targetObjectiveId, "objective:target")
+        XCTAssertEqual(task.initiatorSessionId, "session:historical-initiator")
+        XCTAssertEqual(task.recipientSessionId, "session:recipient-current")
+        XCTAssertEqual(task.initiatorNameAtSend, "Historical Initiator Session")
+        XCTAssertEqual(task.recipientNameAtSend, "Recipient Worker Session")
+        XCTAssertEqual(task.routingVersion, 7)
+    }
+
     func testPendingConfirmationDecodesExplicitAgentSessionAndObjectiveRoute() throws {
         let data = Data(#"""
         {

@@ -1132,10 +1132,10 @@ private struct DetachedCollaborationConfirmationCard: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let initiatorName = confirmation.initiatorName {
-                        confirmationField("来源 Agent", value: party(initiatorName, confirmation.initiatorAgentId))
+                    if confirmation.initiatorName != nil || confirmation.initiatorAgentId != nil {
+                        confirmationField("来源 Agent", value: party(confirmation.initiatorName, confirmation.initiatorAgentId))
                     }
-                    confirmationField("目标 Agent", value: confirmation.recipientName)
+                    confirmationField("目标 Agent", value: party(confirmation.recipientName, confirmation.recipientAgentId))
                     if let recipientAgentId = confirmation.recipientAgentId,
                        !recipientAgentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         confirmationField("Agent ID", value: recipientAgentId, monospaced: true)
