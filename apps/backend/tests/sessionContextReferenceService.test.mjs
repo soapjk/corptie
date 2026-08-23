@@ -65,7 +65,10 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
 test("context references reject non-Assistant owners, self references, and duplicates", async () => {
   const value = await fixture();
   try {
-    value.store.createSession({ id: "worker", title: "Worker", sessionKind: "worker", status: "complete", workItemId: "work-item-a" });
+    value.store.createSession({
+      id: "worker", title: "Worker", sessionKind: "worker", status: "complete",
+      objectiveId: "objective-a", workItemId: "work-item-a"
+    });
     await assert.rejects(
       value.service.create("worker", { targetType: "objective", targetId: "objective-a" }),
       { code: "CONTEXT_REFERENCES_REQUIRE_ASSISTANT" }

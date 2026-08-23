@@ -794,7 +794,9 @@ const sessionApplicationService = new SessionApplicationService({
     persistProviderSessionProjection(store, session, {
       providerId,
       agentId: input.toolHost?.actorId ?? context.actorId ?? null,
-      sessionKind: input.sessionKind
+      sessionKind: input.sessionKind,
+      objectiveId: context.objectiveId ?? null,
+      workItemId: context.workItemId ?? null
     });
     ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
     const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
