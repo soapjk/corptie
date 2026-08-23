@@ -111,7 +111,9 @@ export class HubService {
 
     const active = memories.filter((m) => m.promotion_status === "active" && !m.revoked_at);
     const normalizedIntent = String(intent ?? "").trim();
-    const scored = await this.scoreMemories(normalizedIntent, active);
+    const scored = await this.rankMemory(normalizedIntent, active, {
+      allowEmbedding: options.allowEmbedding !== false
+    });
     const limit = Math.max(1, Math.min(100, Number(options.limit) || 20));
     const selected = scored
       .filter((x) => normalizedIntent === "" || x.score > 0)
@@ -125,15 +127,24 @@ export class HubService {
     return selected;
   }
 
+  async rankMemory(intent, memories, options = {}) {
+    const scopePriority = { work_item: 3, objective: 2, agent: 1 };
+    const scored = await this.scoreMemories(intent, memories, options);
+    return scored.sort((left, right) => right.score - left.score
+      || (scopePriority[right.memory.owner_type] ?? 0) - (scopePriority[left.memory.owner_type] ?? 0)
+      || Number(right.memory.confidence ?? 0) - Number(left.memory.confidence ?? 0)
+      || String(right.memory.updated_at ?? "").localeCompare(String(left.memory.updated_at ?? "")));
+  }
+
   // 语义 + 关键词混合打分：有 embedder 则用余弦相似度，否则回退关键词；confidence 加权。
-  async scoreMemories(intent, memories) {
+  async scoreMemories(intent, memories, options = {}) {
     // Agent 没有活跃记忆时无需计算 intent embedding。远程 embedder 的一次
     // 网络往返可能比整个本地上下文组装更慢，而空集合的结果恒为 []。
     if (memories.length === 0) return [];
 
     const terms = tokenize(intent);
     let intentVec = null;
-    if (this.embedder) {
+    if (options.allowEmbedding !== false && this.embedder) {
       try {
         intentVec = await this.embedder(intent);
       } catch {

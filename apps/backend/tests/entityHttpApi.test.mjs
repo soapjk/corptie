@@ -9,6 +9,7 @@ import { ObjectiveApplicationService } from "../src/application/objectiveApplica
 import { HubService } from "../src/application/hubService.mjs";
 import { CollaborationRouter } from "../src/application/collaborationRouter.mjs";
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
+import { MemoryRecallService } from "../src/application/memoryRecallService.mjs";
 import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
@@ -51,13 +52,15 @@ async function createServices() {
   const entityEvents = [];
   const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
   const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
+  const hubService = new HubService({ store });
   return {
     store,
     directory,
     entityEvents,
     onEntityChanged,
     objectiveService,
-    hubService: new HubService({ store }),
+    hubService,
+    memoryRecallService: new MemoryRecallService({ store, hubService }),
     router: new CollaborationRouter({ store }),
     memoryExtractor: new MemoryExtractor({ store }),
     assistantService: new AssistantService({ store, objectiveService, onEntityChanged }),
@@ -105,6 +108,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     hubService: services.hubService,
     router: services.router,
     memoryExtractor: services.memoryExtractor,
+    memoryRecallService: services.memoryRecallService,
     assistantService: services.assistantService,
     skillRegistryService: services.skillRegistryService,
     backgroundAgentService: services.backgroundAgentService,
@@ -1398,6 +1402,64 @@ test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fi
     });
     assert.equal(one.body.memories.length, 1);
     assert.deepEqual(two.body.memories, []);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollback without physical delete", async () => {
+  const services = await createServices();
+  try {
+    const created = await callApi({
+      method: "POST", pathname: "/memories",
+      body: { ownerType: "agent", ownerId: "assistant", kind: "preference", content: "Keep this auditable", tags: ["initial"] },
+      ...services
+    });
+    assert.equal(created.statusCode, 201);
+    const memoryId = created.body.id;
+    const encoded = encodeURIComponent(memoryId);
+    const global = await callApi({
+      method: "GET", pathname: "/memories", search: "?global=true&includeRevoked=true", ...services
+    });
+    assert.equal(global.statusCode, 200);
+    assert.ok(global.body.memories.some((memory) => memory.id === memoryId && memory.trustLevel === "trusted"));
+
+    const updated = await callApi({
+      method: "PATCH", pathname: `/memories/${encoded}`, body: { tags: ["edited", "audit"] }, ...services
+    });
+    assert.equal(updated.statusCode, 200);
+    assert.deepEqual(updated.body.memory.tags, ["edited", "audit"]);
+    const audit = await callApi({
+      method: "GET", pathname: "/memory-audit", search: `?memoryId=${encoded}`, ...services
+    });
+    const updateAudit = audit.body.audit.find((entry) => entry.action === "update");
+    assert.ok(updateAudit);
+
+    const recalled = await callApi({
+      method: "GET", pathname: "/memory-recall",
+      search: "?agentId=assistant&intent=auditable", ...services
+    });
+    assert.equal(recalled.statusCode, 200);
+    assert.deepEqual(recalled.body.memories.map((memory) => memory.id), [memoryId]);
+
+    const revoked = await callApi({
+      method: "POST", pathname: `/memories/${encoded}/revoke`, body: { reason: "test revoke" }, ...services
+    });
+    assert.equal(revoked.statusCode, 200);
+    assert.ok(revoked.body.memory.revokedAt);
+    assert.ok(services.store.getMemory(memoryId), "revoke must preserve the physical record");
+    const afterRevokeRecall = await callApi({
+      method: "GET", pathname: "/memory-recall",
+      search: "?agentId=assistant&intent=auditable", ...services
+    });
+    assert.deepEqual(afterRevokeRecall.body.memories, []);
+
+    const rollback = await callApi({
+      method: "POST", pathname: `/memory-audit/${encodeURIComponent(updateAudit.id)}/rollback`, body: {}, ...services
+    });
+    assert.equal(rollback.statusCode, 200);
+    assert.deepEqual(rollback.body.memory.tags, ["initial"]);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

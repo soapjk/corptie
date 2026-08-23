@@ -861,6 +861,7 @@ enum CorptiePermissionManager {
 
 private enum SettingsTab: Hashable {
     case general
+    case memory
     case notifications
     case proxy
     case gateway
@@ -907,6 +908,12 @@ struct SettingsView: View {
                     }
                     .tag(SettingsTab.notifications)
 
+                MemoryManagementView(scope: .global)
+                    .tabItem {
+                        Label(L10n("Memory Inspector"), systemImage: "brain.head.profile")
+                    }
+                    .tag(SettingsTab.memory)
+
                 proxySettingsTab
                     .tabItem {
                         Label(L10n("Proxy"), systemImage: "network")
@@ -930,7 +937,7 @@ struct SettingsView: View {
 
             HStack {
                 Spacer()
-                if selectedTab == .archivedSessions || selectedTab == .notifications {
+                if selectedTab == .archivedSessions || selectedTab == .notifications || selectedTab == .memory {
                     Button(L10n("Close")) {
                         onClose()
                     }
@@ -952,7 +959,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 560, height: 580)
+        .frame(width: selectedTab == .memory ? 860 : 560, height: selectedTab == .memory ? 680 : 580)
         .task {
             await backendClient.loadSettings()
             await backendClient.loadFeishuBots()

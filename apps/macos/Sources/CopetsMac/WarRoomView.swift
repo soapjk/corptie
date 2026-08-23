@@ -778,6 +778,7 @@ struct WorkItemDetailView: View {
     @State private var isLoadingWorktree = false
     @State private var isReclaimingWorktree = false
     @State private var showReclaimConfirmation = false
+    @State private var showMemoryInspector = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1122,6 +1123,13 @@ struct WorkItemDetailView: View {
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.tertiary)
                 }
+                Button {
+                    showMemoryInspector = true
+                } label: {
+                    Image(systemName: "arrow.up.right.square")
+                }
+                .buttonStyle(.borderless)
+                .help(L10n("Open Memory Inspector"))
             }
             if memories.isEmpty {
                 Text(L10n("暂无记忆"))
@@ -1143,6 +1151,14 @@ struct WorkItemDetailView: View {
                     .padding(.vertical, 2)
                 }
             }
+        }
+        .sheet(isPresented: $showMemoryInspector) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(L10n("WorkItem Memories")).font(.headline)
+                MemoryManagementView(scope: .owner(type: "work_item", id: workItem.id))
+            }
+            .padding(20)
+            .frame(width: 760, height: 580)
         }
     }
 

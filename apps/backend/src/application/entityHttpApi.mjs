@@ -5,6 +5,7 @@ import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentWorkItemAcceptance } from "./workItemAcceptance.mjs";
+import { presentMemory } from "./memoryOperationService.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 
@@ -21,6 +22,8 @@ export function handleEntityHttpRequest({
   hubService,
   router,
   memoryExtractor,
+  memoryRecallService,
+  memoryLifecycleService,
   assistantService,
   launchSession,
   startWorkItemExecution,
@@ -78,7 +81,8 @@ export function handleEntityHttpRequest({
     path === "/objectives" || path.startsWith("/objectives/") ||
     path === "/work-items" || path.startsWith("/work-items/") ||
     path === "/repositories" || path === "/repositories/detect" ||
-    path === "/memories" || path === "/memories/extract" ||
+    path === "/memories" || path.startsWith("/memories/") || path === "/memory-audit" ||
+    path.startsWith("/memory-audit/") || path === "/memory-recall-audit" || path === "/memory-recall" ||
     path === "/agents" || path.startsWith("/agents/") ||
     path === "/skills" || path.startsWith("/skills/") ||
     path === "/assistant/chat" || path === "/assist/draft" || path === "/assist/form-draft" ||
@@ -813,24 +817,121 @@ export function handleEntityHttpRequest({
       if (request.method === "GET" && path === "/memories") {
         const ownerType = url.searchParams.get("ownerType");
         const ownerId = url.searchParams.get("ownerId");
-        if (!ownerType || !ownerId) {
+        const global = url.searchParams.get("global") === "true";
+        if ((!ownerType || !ownerId) && !global) {
           throw apiError("INVALID_INPUT", "ownerType and ownerId are required.", 400);
         }
-        validateMemoryOwnerReference(hubService.store, ownerType, ownerId);
+        if (!global) validateMemoryOwnerReference(hubService.store, ownerType, ownerId);
         if (ownerType === "work_item") {
           const workItem = hubService.store.getWorkItem(ownerId);
           if (!workItem.current_session_id) return sendJson(response, 200, { memories: [] });
         }
-        const memories = hubService.store.listMemoriesByOwner(ownerType, ownerId)
-          .filter((memory) => memory.promotion_status === "active" && !memory.revoked_at);
-        return sendJson(response, 200, { memories });
+        const includeRevoked = url.searchParams.get("includeRevoked") === "true";
+        const query = String(url.searchParams.get("query") ?? "").trim().toLocaleLowerCase();
+        const filters = {
+          kind: url.searchParams.get("kind"),
+          status: url.searchParams.get("status"),
+          sourceType: url.searchParams.get("sourceType"),
+          trustLevel: url.searchParams.get("trustLevel")
+        };
+        const memories = (global
+          ? hubService.store.listAllMemories()
+          : hubService.store.listMemoriesByOwner(ownerType, ownerId))
+          .filter((memory) => includeRevoked || !memory.revoked_at)
+          .filter((memory) => !query || `${memory.content} ${memory.tags_json}`.toLocaleLowerCase().includes(query))
+          .filter((memory) => !filters.kind || memory.kind === filters.kind)
+          .filter((memory) => !filters.status || memory.promotion_status === filters.status)
+          .filter((memory) => !filters.sourceType || memory.source_type === filters.sourceType)
+          .filter((memory) => !filters.trustLevel || memory.trust_level === filters.trustLevel);
+        return sendJson(response, 200, { memories: memories.map(presentMemory) });
+      }
+      const memoryMatch = path.match(/^\/memories\/([^/]+)$/);
+      if (request.method === "GET" && memoryMatch) {
+        const memory = hubService.store.getMemory(decodeURIComponent(memoryMatch[1]));
+        if (!memory) throw apiError("MEMORY_NOT_FOUND", "Memory not found.", 404);
+        return sendJson(response, 200, {
+          memory: presentMemory(memory),
+          audit: hubService.store.listMemoryAudit({ memoryId: memory.id })
+        });
+      }
+      if (request.method === "PATCH" && memoryMatch) {
+        const memory = hubService.store.getMemory(decodeURIComponent(memoryMatch[1]));
+        if (!memory) throw apiError("MEMORY_NOT_FOUND", "Memory not found.", 404);
+        if (memory.revoked_at) throw apiError("MEMORY_REVOKED", "A revoked Memory is immutable.", 409);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["content", "tags", "expiresAt"]));
+        if (input.tags != null && (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== "string" || !tag.trim()))) {
+          throw apiError("INVALID_INPUT", "tags must be an array of non-empty strings.", 400);
+        }
+        if (input.content != null && !String(input.content).trim()) throw apiError("INVALID_INPUT", "content cannot be empty.", 400);
+        const updated = hubService.store.updateMemory(memory.id, {
+          ...(input.content != null ? { content: String(input.content).trim() } : {}),
+          ...(input.tags != null ? { tags: input.tags.map((tag) => tag.trim()) } : {}),
+          ...(Object.hasOwn(input, "expiresAt") ? { expiresAt: input.expiresAt || null } : {}),
+          version: Number(memory.version ?? 1) + 1
+        });
+        hubService.store.createMemoryAudit({
+          memoryId: memory.id, action: "update", actorType: "user", actorId: "user:local-macos",
+          before: memory, after: updated
+        });
+        return sendJson(response, 200, { memory: presentMemory(updated) });
+      }
+      const revokeMatch = path.match(/^\/memories\/([^/]+)\/revoke$/);
+      if (request.method === "POST" && revokeMatch) {
+        const memory = hubService.store.getMemory(decodeURIComponent(revokeMatch[1]));
+        if (!memory) throw apiError("MEMORY_NOT_FOUND", "Memory not found.", 404);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["reason"]));
+        if (memory.revoked_at) return sendJson(response, 200, { memory: presentMemory(memory), alreadyRevoked: true });
+        const updated = hubService.store.updateMemory(memory.id, {
+          revokedAt: new Date().toISOString(), version: Number(memory.version ?? 1) + 1
+        });
+        hubService.store.createMemoryAudit({
+          memoryId: memory.id, action: "revoke", actorType: "user", actorId: "user:local-macos",
+          reason: input.reason ?? null, before: memory, after: updated
+        });
+        return sendJson(response, 200, { memory: presentMemory(updated), alreadyRevoked: false });
+      }
+      if (request.method === "GET" && path === "/memory-audit") {
+        return sendJson(response, 200, {
+          audit: hubService.store.listMemoryAudit({ memoryId: url.searchParams.get("memoryId") })
+        });
+      }
+      const rollbackMatch = path.match(/^\/memory-audit\/([^/]+)\/rollback$/);
+      if (request.method === "POST" && rollbackMatch) {
+        const restored = hubService.store.rollbackMemoryAudit(decodeURIComponent(rollbackMatch[1]), "user:local-macos");
+        if (!restored) throw apiError("MEMORY_AUDIT_NOT_ROLLBACKABLE", "Memory audit cannot be rolled back.", 409);
+        return sendJson(response, 200, { memory: presentMemory(restored) });
+      }
+      if (request.method === "GET" && path === "/memory-recall-audit") {
+        return sendJson(response, 200, {
+          recalls: hubService.store.listMemoryRecallAudit({ sessionId: url.searchParams.get("sessionId") })
+        });
+      }
+      if (request.method === "GET" && path === "/memory-recall") {
+        if (!memoryRecallService) throw apiError("MEMORY_RECALL_UNAVAILABLE", "Memory recall is unavailable.", 503);
+        const scope = {
+          sessionId: url.searchParams.get("sessionId") ?? null,
+          agentId: url.searchParams.get("agentId") ?? null,
+          objectiveId: url.searchParams.get("objectiveId") ?? null,
+          workItemId: url.searchParams.get("workItemId") ?? null
+        };
+        validateMemoryRecallScope(hubService.store, scope);
+        const phase = url.searchParams.get("phase") === "startup" ? "startup" : "explicit";
+        const recall = phase === "startup"
+          ? await memoryRecallService.startup(scope)
+          : await memoryRecallService.explicitSearch(url.searchParams.get("intent") ?? "", scope, {
+            deepRecall: url.searchParams.get("deep") === "true"
+          });
+        const { memories, ...diagnostics } = recall;
+        return sendJson(response, 200, { recall: diagnostics, memories: memories.map(presentMemory) });
       }
       // 手动记录记忆（source_type=user）：走字段校验，防 owner_id=null 撞 NOT NULL。
       // 注：记忆写入本身 = 乐观应用（safe，不需审批卡）；晋升 Skill 另走 guard high（见 03 §15.3）。
       if (request.method === "POST" && path === "/memories") {
         const input = await readJson(request);
         validateMemoryInput(input, hubService.store);
-        return sendJson(response, 201, hubService.store.createMemory({
+        const memory = hubService.store.createMemory({
           ownerType: input.ownerType,
           ownerId: input.ownerId,
           workItemId: input.ownerType === "work_item" ? input.ownerId : null,
@@ -838,8 +939,14 @@ export function handleEntityHttpRequest({
           content: input.content,
           tags: input.tags,
           sourceType: "user",
-          sourceSessionId: input.sourceSessionId ?? null
-        }));
+          sourceSessionId: input.sourceSessionId ?? null,
+          trustLevel: "trusted"
+        });
+        hubService.store.createMemoryAudit({
+          memoryId: memory.id, action: "remember", actorType: "user", actorId: "user:local-macos",
+          after: memory
+        });
+        return sendJson(response, 201, memory);
       }
       // 从 Session 事件流提炼记忆（13 主路径）：MemoryExtractor 提取 + kind→owner 分流 + 乐观应用。
       if (request.method === "POST" && path === "/memories/extract") {
@@ -914,12 +1021,12 @@ function rejectSessionAvatarInput(input) {
 }
 
 function statusForCode(code) {
-  if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND"].includes(code)) return 404;
+  if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND", "MEMORY_NOT_FOUND"].includes(code)) return 404;
   if (["INTERNAL", "SKILL_CLEANUP_FAILED", "SKILL_DATABASE_DELETE_FAILED"].includes(code)) return 500;
   if ([
     "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "SKILL_HAS_ACTIVE_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
     "ASSOCIATION_OUT_OF_SCOPE", "OBJECTIVE_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR",
-    "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_RESOURCE_GONE"
+    "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_RESOURCE_GONE", "MEMORY_REVOKED", "MEMORY_AUDIT_NOT_ROLLBACKABLE"
   ].includes(code)) return 409;
   if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN", "SKILL_DELETE_CONFIRMATION_REQUIRED"].includes(code)) return 403;
   return 400;
@@ -982,6 +1089,27 @@ function validateMemoryOwnerReference(store, ownerType, ownerId) {
       : ownerType === "objective" ? "OBJECTIVE_NOT_FOUND"
         : ownerType === "work_item" ? "WORK_ITEM_NOT_FOUND" : "INVALID_MEMORY_SCOPE";
     throw apiError(code, `${ownerType} owner not found: ${normalizedOwnerId}`, code.endsWith("NOT_FOUND") ? 404 : 400);
+  }
+}
+
+function validateMemoryRecallScope(store, scope) {
+  if (!scope.agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
+  validateMemoryOwnerReference(store, "agent", scope.agentId);
+  if (scope.objectiveId) validateMemoryOwnerReference(store, "objective", scope.objectiveId);
+  if (scope.workItemId) {
+    validateMemoryOwnerReference(store, "work_item", scope.workItemId);
+    const workItem = store.getWorkItem(scope.workItemId);
+    if (!scope.objectiveId || workItem.objective_id !== scope.objectiveId) {
+      throw apiError("MEMORY_SCOPE_MISMATCH", "WorkItem does not belong to the requested Objective.", 400);
+    }
+  }
+  if (scope.sessionId) {
+    const session = store.getSession(scope.sessionId);
+    if (!session) throw apiError("SESSION_NOT_FOUND", `Session not found: ${scope.sessionId}`, 404);
+    if (session.agentId !== scope.agentId || (scope.objectiveId && session.objectiveId !== scope.objectiveId)
+      || (scope.workItemId && session.workItemId !== scope.workItemId)) {
+      throw apiError("MEMORY_SCOPE_MISMATCH", "Session does not match the requested Memory scope.", 400);
+    }
   }
 }
 

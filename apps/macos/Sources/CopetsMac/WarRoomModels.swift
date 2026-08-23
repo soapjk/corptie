@@ -309,7 +309,7 @@ struct EntityWorkItemRestoreResult {
     }
 }
 
-// 记忆（work_item 级记忆，跨执行上下文载体；对齐后端 memories 表 snake_case 字段）
+// Provider-neutral structured Memory. Optional lifecycle fields keep old server snapshots decodable.
 struct MemoryItem: Identifiable, Codable, Hashable {
     let id: String
     let ownerType: String
@@ -318,7 +318,24 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let kind: String
     let content: String
     let sourceType: String
+    let sourceSessionId: String?
+    let sourceEventSequence: Int?
+    let sourceEventSeqs: [Int]?
+    let tags: [String]?
+    let confidence: Double?
+    let usageCount: Int?
+    let lastAccessedAt: String?
+    let promotionStatus: String?
+    let promotedSkillId: String?
+    let trustLevel: String?
+    let expiresAt: String?
+    let replacesMemoryId: String?
+    let version: Int?
+    let autoApplied: Bool?
+    let appliedAt: String?
+    let revokedAt: String?
     let createdAt: String
+    let updatedAt: String?
 }
 
 enum WorkItemMemoryPresentationPolicy {
@@ -331,4 +348,38 @@ enum WorkItemMemoryPresentationPolicy {
 // 后端响应 envelope：GET /memories?ownerType=&ownerId= → { memories: [...] }
 struct MemoryListEnvelope: Codable {
     let memories: [MemoryItem]
+}
+
+struct MemoryEnvelope: Codable {
+    let memory: MemoryItem
+}
+
+struct MemoryRecallAudit: Identifiable, Codable, Hashable {
+    let id: String
+    let sessionId: String?
+    let phase: String
+    let mode: String
+    let reason: String
+    let candidateIds: [String]
+    let selectedIds: [String]
+    let createdAt: String
+}
+
+struct MemoryRecallListEnvelope: Codable {
+    let recalls: [MemoryRecallAudit]
+}
+
+struct MemoryAuditEntry: Identifiable, Codable, Hashable {
+    let id: String
+    let memoryId: String?
+    let action: String
+    let actorType: String
+    let actorId: String?
+    let reason: String?
+    let rollbackOf: String?
+    let createdAt: String
+}
+
+struct MemoryAuditListEnvelope: Codable {
+    let audit: [MemoryAuditEntry]
 }

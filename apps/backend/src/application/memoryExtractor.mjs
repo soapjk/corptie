@@ -1,6 +1,6 @@
 // 记忆提炼骨架（13）：从 Session 事件流提取记忆候选，按 kind 分类并分流归属。
 //
-// - 提取即乐观应用（auto_applied）：落库 promotion_status='active'，不等待用户确认。
+// - 提取结果仅作为不可信候选落库；未经可信来源确认不得自动应用或晋升。
 // - kind → owner 分流（13 归属规则）：能力类（skill/procedure/dev_experience）→ Agent 进化记忆；
 //   其余（fact/lesson/preference/feedback/episodic）→ 工作记忆（work_item > objective 兜底）。
 // - classify 可注入 LLM 实现，默认用规则版 defaultClassify。
@@ -119,13 +119,15 @@ export class MemoryExtractor {
     this.classifyMany = classifyMany;
   }
 
-  // 从 Session 事件流提取候选并乐观应用；返回落库的记忆数组。
+  // 从 Session 事件流提取不可信候选；返回落库的记忆数组。
   async extractFromSession(sessionId, claimedScope = {}) {
     const scope = this.resolveExecutionScope(sessionId, claimedScope);
     const events = this.store.listSessionEvents(sessionId);
     const classified = await this.classifyEvents(events);
     const memories = [];
     for (let i = 0; i < events.length; i++) {
+      if (events[i]?.type === "memory/inject" || events[i]?.producer === "memory"
+        || events[i]?.source?.type === "memory-recall") continue;
       const result = classified[i];
       if (!result) continue;
       const owner = ownerForKind(result.kind, scope);
@@ -161,8 +163,9 @@ export class MemoryExtractor {
           sourceEventSequence,
           sourceEventSeqs: [sourceEventSequence],
           baseConfidence: result.baseConfidence ?? 0.5,
-          promotionStatus: "active",
-          autoApplied: true
+          promotionStatus: "candidate",
+          autoApplied: false,
+          trustLevel: "untrusted"
         })
       );
     }
