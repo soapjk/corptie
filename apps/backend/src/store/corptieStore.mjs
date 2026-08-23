@@ -1414,6 +1414,23 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_entity_association_audit_status
       ON objective_work_item_association_audit(status, entity_type, entity_id);
+
+      CREATE TABLE IF NOT EXISTS session_association_repair_audit (
+        audit_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        anomaly_code TEXT NOT NULL,
+        previous_objective_id TEXT,
+        previous_work_item_id TEXT,
+        repaired_objective_id TEXT NOT NULL,
+        repaired_work_item_id TEXT NOT NULL,
+        source_operation_id TEXT NOT NULL,
+        repaired_by TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        repaired_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_association_repair_audit_session
+      ON session_association_repair_audit(session_id, repaired_at DESC);
     `);
 
     // --- 三层记忆（13：Objective/WorkItem 工作记忆 + Agent 进化记忆） ---
@@ -1702,6 +1719,54 @@ export class CorptieStore {
       WHERE (session_kind IS NULL OR session_kind = '' OR session_kind = 'legacy')
         AND EXISTS (SELECT 1 FROM agents
           WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
+    const historicalSessionRepair = this.repairOrphanedWorkSessions({
+      repairedBy: "store-migration",
+      reason: "Recovered a historical Worker Session before installing association guards."
+    });
+    if (historicalSessionRepair.repaired.length > 0) {
+      console.info(`[session-association] repaired=${historicalSessionRepair.repaired.length} source=store-migration`);
+    }
+    if (historicalSessionRepair.unresolved.length > 0) {
+      console.warn(`[session-association] unresolved=${historicalSessionRepair.unresolved.length} source=store-migration`);
+    }
+    this.db.run("DROP TRIGGER IF EXISTS sessions_worker_association_insert_guard");
+    this.db.run("DROP TRIGGER IF EXISTS sessions_worker_association_update_guard");
+    this.db.run(`CREATE TRIGGER sessions_worker_association_insert_guard
+      BEFORE INSERT ON sessions
+      WHEN NEW.session_kind = 'worker'
+      BEGIN
+        SELECT CASE
+          WHEN NEW.objective_id IS NULL OR TRIM(NEW.objective_id) = ''
+            OR NEW.work_item_id IS NULL OR TRIM(NEW.work_item_id) = ''
+          THEN RAISE(ABORT, 'WORKER_SESSION_ASSOCIATION_REQUIRED')
+          WHEN NOT EXISTS (
+            SELECT 1 FROM work_items wi
+            JOIN objectives o ON o.id = wi.objective_id
+            WHERE wi.id = NEW.work_item_id AND wi.objective_id = NEW.objective_id
+          )
+          THEN RAISE(ABORT, 'SESSION_WORK_ITEM_OBJECTIVE_MISMATCH')
+        END;
+      END`);
+    this.db.run(`CREATE TRIGGER sessions_worker_association_update_guard
+      BEFORE UPDATE OF session_kind, objective_id, work_item_id ON sessions
+      WHEN NEW.session_kind = 'worker' AND (
+        OLD.session_kind IS NOT NEW.session_kind
+        OR OLD.objective_id IS NOT NEW.objective_id
+        OR OLD.work_item_id IS NOT NEW.work_item_id
+      )
+      BEGIN
+        SELECT CASE
+          WHEN NEW.objective_id IS NULL OR TRIM(NEW.objective_id) = ''
+            OR NEW.work_item_id IS NULL OR TRIM(NEW.work_item_id) = ''
+          THEN RAISE(ABORT, 'WORKER_SESSION_ASSOCIATION_REQUIRED')
+          WHEN NOT EXISTS (
+            SELECT 1 FROM work_items wi
+            JOIN objectives o ON o.id = wi.objective_id
+            WHERE wi.id = NEW.work_item_id AND wi.objective_id = NEW.objective_id
+          )
+          THEN RAISE(ABORT, 'SESSION_WORK_ITEM_OBJECTIVE_MISMATCH')
+        END;
+      END`);
     this.ensureColumn("workspace_transitions", "continuation_error", "TEXT");
     this.ensureColumn("workspace_transitions", "transition_kind", "TEXT NOT NULL DEFAULT 'workspace'");
     this.ensureColumn("workspace_transitions", "target_provider_id", "TEXT");
@@ -2005,7 +2070,16 @@ export class CorptieStore {
 
   stateConsistencyIssues() {
     return this.selectAll(`
-      SELECT 'work_item_current_session_missing' AS code, wi.id AS entity_id,
+      SELECT 'worker_session_objective_missing' AS code, s.id AS entity_id,
+             s.work_item_id AS reference_id
+      FROM sessions s
+      WHERE s.session_kind='worker' AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      UNION ALL
+      SELECT 'worker_session_work_item_missing', s.id, s.objective_id
+      FROM sessions s
+      WHERE s.session_kind='worker' AND (s.work_item_id IS NULL OR TRIM(s.work_item_id)='')
+      UNION ALL
+      SELECT 'work_item_current_session_missing', wi.id,
              wi.current_session_id AS reference_id
       FROM work_items wi
       LEFT JOIN sessions s ON s.id = wi.current_session_id
@@ -3813,6 +3887,26 @@ export class CorptieStore {
   }
 
   upsertSession(session) {
+    const persistedAssociation = this.selectOne(
+      "SELECT objective_id, work_item_id, session_kind FROM sessions WHERE id = ?",
+      [session.id]
+    );
+    const normalizedSessionKind = normalizeSessionKind(session.sessionKind);
+    const effectiveSessionKind = normalizedSessionKind === "legacy"
+      ? persistedAssociation?.session_kind ?? "legacy"
+      : normalizedSessionKind;
+    const effectiveObjectiveId = effectiveSessionKind === "worker"
+      ? session.objectiveId ?? persistedAssociation?.objective_id ?? null
+      : session.objectiveId ?? null;
+    const effectiveWorkItemId = effectiveSessionKind === "worker"
+      ? session.workItemId ?? persistedAssociation?.work_item_id ?? null
+      : session.workItemId ?? null;
+    this.assertSessionAssociation({
+      sessionId: session.id,
+      sessionKind: effectiveSessionKind,
+      objectiveId: effectiveObjectiveId,
+      workItemId: effectiveWorkItemId
+    });
     const summary = toSessionSummary(session);
     const values = [
       session.id,
@@ -3833,9 +3927,9 @@ export class CorptieStore {
       Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
       serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
       JSON.stringify(toRawStatus(session)),
-      session.objectiveId ?? null,
-      session.workItemId ?? null,
-      normalizeSessionKind(session.sessionKind),
+      effectiveObjectiveId,
+      effectiveWorkItemId,
+      effectiveSessionKind,
       session.agentId ?? null
     ];
 
@@ -3928,10 +4022,17 @@ export class CorptieStore {
       error.code = "SESSION_NOT_FOUND";
       throw error;
     }
-    if (workItemId && !this.getWorkItem(workItemId)) {
+    const workItem = workItemId ? this.getWorkItem(workItemId) : null;
+    if (workItemId && !workItem) {
       const error = new Error(`WorkItem not found: ${workItemId}`);
       error.name = "WorkItemNotFoundError";
       error.code = "WORK_ITEM_NOT_FOUND";
+      throw error;
+    }
+    if (!workItemId || !objectiveId || workItem.objective_id !== objectiveId) {
+      const error = new Error(`Worker Session ${sessionId} must use the Objective owned by WorkItem ${workItemId ?? "<missing>"}.`);
+      error.name = "SessionAssociationError";
+      error.code = "SESSION_WORK_ITEM_OBJECTIVE_MISMATCH";
       throw error;
     }
     const timestamp = createdAtFromOrNow();
@@ -3957,11 +4058,38 @@ export class CorptieStore {
     return this.getSession(sessionId);
   }
 
+  assertSessionAssociation({ sessionId, sessionKind, objectiveId, workItemId }) {
+    if (sessionKind !== "worker") return;
+    if (!objectiveId || !workItemId) {
+      const error = new Error(`Worker Session ${sessionId ?? "<unknown>"} requires objectiveId and workItemId.`);
+      error.name = "SessionAssociationError";
+      error.code = "WORKER_SESSION_ASSOCIATION_REQUIRED";
+      throw error;
+    }
+    const workItem = this.getWorkItem(workItemId);
+    if (!workItem) {
+      const error = new Error(`WorkItem not found for Worker Session ${sessionId ?? "<unknown>"}: ${workItemId}`);
+      error.name = "SessionAssociationError";
+      error.code = "SESSION_WORK_ITEM_NOT_FOUND";
+      throw error;
+    }
+    if (workItem.objective_id !== objectiveId || !this.getObjective(objectiveId)) {
+      const error = new Error(`Worker Session ${sessionId ?? "<unknown>"} Objective does not match WorkItem ${workItemId}.`);
+      error.name = "SessionAssociationError";
+      error.code = "SESSION_WORK_ITEM_OBJECTIVE_MISMATCH";
+      throw error;
+    }
+  }
+
   // Finalize every durable relationship established by a WorkItem start in one
   // transaction. Provider creation may already have persisted the Session,
   // logical route, Provider binding, and Agent binding; this method refuses to
   // publish `running` unless that complete graph is present and consistent.
-  finalizeWorkItemStart({ sessionId, workItemId, objectiveId, agentId, operationId, workspace }) {
+  finalizeWorkItemStart({
+    sessionId, workItemId, objectiveId, agentId, operationId, workspace,
+    repairedBy = "work-item-start-finalizer",
+    repairReason = "Recovered a Provider-created Worker Session from its authoritative start operation."
+  }) {
     const session = this.getSession(sessionId);
     const workItem = this.getWorkItem(workItemId);
     const logical = this.getLogicalSessionByLegacySessionId(sessionId);
@@ -3971,10 +4099,12 @@ export class CorptieStore {
        WHERE agent_id=? AND session_id=? AND unbound_at IS NULL`,
       [agentId, sessionId]
     );
-    const sessionObjectiveConflicts = session?.objectiveId != null && session.objectiveId !== objectiveId;
-    const sessionWorkItemConflicts = session?.workItemId != null && session.workItemId !== workItemId;
+    const associationMissing = session
+      && !session.objectiveId && !session.workItemId && session.sessionKind === "worker";
+    const associationMatches = session?.objectiveId === objectiveId
+      && session?.workItemId === workItemId && session?.sessionKind === "worker";
     if (!session || !workItem || workItem.objective_id !== objectiveId
-      || sessionObjectiveConflicts || sessionWorkItemConflicts
+      || (!associationMissing && !associationMatches)
       || session.agentId !== agentId || !logical || !activeBinding || !agentBinding) {
       const error = new Error("Worker Session graph is incomplete; WorkItem start was not published as running.");
       error.code = "WORK_ITEM_START_INVARIANT_VIOLATION";
@@ -4011,6 +4141,16 @@ export class CorptieStore {
          provider_binding_id=?, updated_at=?, completed_at=? WHERE operation_id=?`,
         [sessionId, logical.logicalSessionId, activeBinding.bindingId, timestamp, timestamp, operationId]
       );
+      if (associationMissing) {
+        this.db.run(
+          `INSERT INTO session_association_repair_audit (
+             audit_id, session_id, anomaly_code, previous_objective_id, previous_work_item_id,
+             repaired_objective_id, repaired_work_item_id, source_operation_id,
+             repaired_by, reason, repaired_at
+           ) VALUES (?, ?, 'worker_association_missing', NULL, NULL, ?, ?, ?, ?, ?, ?)`,
+          [randomUUID(), sessionId, objectiveId, workItemId, operationId, repairedBy, repairReason, timestamp]
+        );
+      }
       const invariant = this.selectOne(
         `SELECT wi.id FROM work_items wi
          JOIN sessions s ON s.id=wi.current_session_id
@@ -4036,6 +4176,107 @@ export class CorptieStore {
       workItem: this.getWorkItem(workItemId),
       logicalSession: this.getLogicalSession(logical.logicalSessionId)
     };
+  }
+
+  sessionAssociationIssues() {
+    return this.selectAll(`
+      SELECT 'worker_objective_missing' AS code, s.id AS session_id,
+             s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s
+      WHERE s.session_kind='worker' AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      UNION ALL
+      SELECT 'worker_work_item_missing', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s
+      WHERE s.session_kind='worker' AND (s.work_item_id IS NULL OR TRIM(s.work_item_id)='')
+      UNION ALL
+      SELECT 'session_objective_not_found', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s LEFT JOIN objectives o ON o.id=s.objective_id
+      WHERE s.objective_id IS NOT NULL AND TRIM(s.objective_id)<>'' AND o.id IS NULL
+      UNION ALL
+      SELECT 'session_work_item_not_found', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s LEFT JOIN work_items wi ON wi.id=s.work_item_id
+      WHERE s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>'' AND wi.id IS NULL
+      UNION ALL
+      SELECT 'session_work_item_objective_mismatch', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s JOIN work_items wi ON wi.id=s.work_item_id
+      WHERE s.objective_id IS NOT wi.objective_id
+      UNION ALL
+      SELECT 'bound_session_kind_not_worker', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s
+      WHERE s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>'' AND s.session_kind<>'worker'
+      UNION ALL
+      SELECT 'objective_chat_objective_missing', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s
+      WHERE s.session_kind='objectiveChat' AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      UNION ALL
+      SELECT 'objective_chat_has_work_item', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
+      FROM sessions s
+      WHERE s.session_kind='objectiveChat' AND s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>''
+      UNION ALL
+      SELECT 'work_item_current_session_not_found', wi.current_session_id, wi.objective_id, wi.id, NULL, wi.title
+      FROM work_items wi LEFT JOIN sessions s ON s.id=wi.current_session_id
+      WHERE wi.current_session_id IS NOT NULL AND TRIM(wi.current_session_id)<>'' AND s.id IS NULL
+      UNION ALL
+      SELECT 'work_item_current_session_binding_mismatch', wi.current_session_id, wi.objective_id, wi.id, s.session_kind, wi.title
+      FROM work_items wi JOIN sessions s ON s.id=wi.current_session_id
+      WHERE s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id OR s.session_kind<>'worker'
+      ORDER BY code, session_id
+    `).map((row) => ({
+      code: row.code,
+      sessionId: row.session_id,
+      objectiveId: row.objective_id ?? null,
+      workItemId: row.work_item_id ?? null,
+      sessionKind: row.session_kind ?? null,
+      title: row.title
+    }));
+  }
+
+  repairOrphanedWorkSessions(options = {}) {
+    const repaired = [];
+    const unresolved = [];
+    const sessionIds = [...new Set(this.sessionAssociationIssues()
+      .filter((issue) => issue.code === "worker_objective_missing" || issue.code === "worker_work_item_missing")
+      .map((issue) => issue.sessionId))];
+    for (const sessionId of sessionIds) {
+      const candidates = this.selectAll(
+        `SELECT op.* FROM work_item_start_operations op
+         JOIN work_items wi ON wi.id=op.work_item_id AND wi.objective_id=op.objective_id
+         JOIN sessions s ON s.id=op.session_id AND s.agent_id=op.agent_id
+         WHERE op.session_id=? ORDER BY op.created_at DESC`,
+        [sessionId]
+      );
+      if (candidates.length !== 1) {
+        unresolved.push({
+          sessionId,
+          reason: candidates.length === 0 ? "authoritative_start_operation_not_found" : "ambiguous_start_operations",
+          candidateOperationIds: candidates.map((candidate) => candidate.operation_id)
+        });
+        continue;
+      }
+      const candidate = candidates[0];
+      try {
+        const result = this.finalizeWorkItemStart({
+          sessionId,
+          workItemId: candidate.work_item_id,
+          objectiveId: candidate.objective_id,
+          agentId: candidate.agent_id,
+          operationId: candidate.operation_id,
+          workspace: { path: candidate.worktree_path },
+          repairedBy: options.repairedBy ?? "session-association-integrity",
+          repairReason: options.reason ?? "Repaired historical Worker Session association from its unique WorkItem start operation."
+        });
+        repaired.push({
+          sessionId,
+          objectiveId: candidate.objective_id,
+          workItemId: candidate.work_item_id,
+          operationId: candidate.operation_id,
+          logicalSessionId: result.logicalSession.logicalSessionId
+        });
+      } catch (error) {
+        unresolved.push({ sessionId, reason: error.code ?? "repair_failed", detail: error.message });
+      }
+    }
+    return { repaired, unresolved, remainingIssues: this.sessionAssociationIssues() };
   }
 
   finalizeConflictResolutionLaunch({ sessionId, workItemId, objectiveId, agentId, integrationRunId }) {
