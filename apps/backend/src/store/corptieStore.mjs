@@ -3878,8 +3878,10 @@ export class CorptieStore {
        WHERE agent_id=? AND session_id=? AND unbound_at IS NULL`,
       [agentId, sessionId]
     );
+    const sessionObjectiveConflicts = session?.objectiveId != null && session.objectiveId !== objectiveId;
+    const sessionWorkItemConflicts = session?.workItemId != null && session.workItemId !== workItemId;
     if (!session || !workItem || workItem.objective_id !== objectiveId
-      || session.objectiveId !== objectiveId || session.workItemId !== workItemId
+      || sessionObjectiveConflicts || sessionWorkItemConflicts
       || session.agentId !== agentId || !logical || !activeBinding || !agentBinding) {
       const error = new Error("Worker Session graph is incomplete; WorkItem start was not published as running.");
       error.code = "WORK_ITEM_START_INVARIANT_VIOLATION";

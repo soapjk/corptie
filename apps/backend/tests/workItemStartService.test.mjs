@@ -155,6 +155,44 @@ test("binding failure keeps the created Session and retry reuses both Session an
   }
 });
 
+test("binding finalization repairs a persisted Worker Session whose entity ownership is missing", async () => {
+  const f = await fixture();
+  try {
+    f.service.createSession = async ({ providerId, workspace }) => {
+      f.calls.create += 1;
+      const id = "provider:worker:missing-ownership";
+      f.store.createSession({
+        id,
+        title: f.workItem.title,
+        provider: providerId,
+        agentId: f.agent.agentId,
+        sessionKind: "worker",
+        cwd: workspace.path
+      });
+      f.store.createLogicalSessionRoute({
+        logicalSessionId: "session:worker:missing-ownership",
+        legacySessionId: id,
+        providerThreadId: "thread:missing-ownership",
+        providerSessionId: id,
+        providerId,
+        boundCwd: workspace.path,
+        sessionName: "Missing ownership"
+      });
+      f.core.bindSession({ agentId: f.agent.agentId, sessionId: id });
+      return f.store.getSession(id);
+    };
+
+    const result = await f.service.start(startInput());
+
+    assert.equal(result.phase, "running");
+    assert.equal(result.session.objectiveId, f.objective.id);
+    assert.equal(result.session.workItemId, f.workItem.id);
+    assert.equal(result.workItem.current_session_id, result.session.id);
+  } finally {
+    await cleanup(f);
+  }
+});
+
 test("Provider validation fails before Worktree preparation and uses a stable code", async () => {
   const f = await fixture();
   try {

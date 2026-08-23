@@ -52,6 +52,29 @@ final class BackgroundTaskCenterTests: XCTestCase {
         XCTAssertTrue(center.records.isEmpty)
     }
 
+    func testAuthoritativeSuccessReconcilesAStaleBackendConnectionFailure() async throws {
+        let center = BackgroundTaskCenter()
+        XCTAssertTrue(center.start(
+            id: BackgroundTaskCenter.backendConnectionTaskID,
+            title: L10n("Connect to the server")
+        ) {
+            .failure("Connection refused")
+        })
+        try await waitForState(
+            .failed,
+            id: BackgroundTaskCenter.backendConnectionTaskID,
+            center: center
+        )
+
+        XCTAssertTrue(center.completeSuccessfully(
+            id: BackgroundTaskCenter.backendConnectionTaskID,
+            detail: L10n("Connected to the server")
+        ))
+        XCTAssertEqual(center.records.first?.state, .succeeded)
+        XCTAssertEqual(center.records.first?.detail, L10n("Connected to the server"))
+        XCTAssertFalse(center.retry(id: BackgroundTaskCenter.backendConnectionTaskID))
+    }
+
     func testBackendConnectionFirstAttemptObservesWithoutDuplicateRefresh() async {
         let state = BackendConnectionTestState(connected: true)
         let operation = BackendConnectionStatusOperation(

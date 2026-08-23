@@ -63,6 +63,19 @@ final class BackgroundTaskCenter: ObservableObject {
         operations[id] = nil
     }
 
+    /// Reconciles a task whose authoritative state completed outside its
+    /// original operation. Backend startup is the primary case: a cold launch
+    /// may outlive the initial observation window, but a later successful sync
+    /// must replace the stale failure shown in the global status bar.
+    @discardableResult
+    func completeSuccessfully(id: String, detail: String) -> Bool {
+        guard let index = records.firstIndex(where: { $0.id == id }) else { return false }
+        records[index].state = .succeeded
+        records[index].detail = detail
+        operations[id] = nil
+        return true
+    }
+
     private func run(id: String) {
         guard let operation = operations[id] else { return }
         Task { @MainActor [weak self] in
@@ -101,7 +114,7 @@ final class BackendConnectionStatusOperation {
     private var attemptCount = 0
 
     init(
-        timeout: Duration = .seconds(12),
+        timeout: Duration = .seconds(60),
         pollInterval: Duration = .milliseconds(100),
         isConnected: @escaping IsConnected,
         errorMessage: @escaping ErrorMessage,

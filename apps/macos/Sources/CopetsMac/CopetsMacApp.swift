@@ -278,6 +278,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .removeDuplicates()
             .filter { $0 }
             .sink { _ in
+                BackgroundTaskCenter.shared.completeSuccessfully(
+                    id: BackgroundTaskCenter.backendConnectionTaskID,
+                    detail: L10n("Connected to the server")
+                )
                 Task { @MainActor in
                     await EntityAPIClient.shared.refreshAfterBackendConnected()
                 }

@@ -8,11 +8,44 @@ import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
+  persistProviderSessionProjection,
   repairStableSessionFromActiveProviderCache,
   repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection,
   visibleStoredSessionProjections
 } from "../src/application/providerSessionProjection.mjs";
+
+test("a newly created Provider Session persists provider-neutral entity ownership", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-created-provider-projection-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    persistProviderSessionProjection(store, {
+      id: "codex:created",
+      title: "Created Worker",
+      status: "complete",
+      external: { provider: "codex-app-server", cwd: directory }
+    }, {
+      providerId: "codex-app-server",
+      agentId: "agent:worker",
+      sessionKind: "worker",
+      objectiveId: "objective:one",
+      workItemId: "work-item:one"
+    });
+
+    const stored = store.getSession("codex:created");
+    assert.equal(stored.agentId, "agent:worker");
+    assert.equal(stored.sessionKind, "worker");
+    assert.equal(stored.objectiveId, "objective:one");
+    assert.equal(stored.workItemId, "work-item:one");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("a historical OpenClacky Work Session projection is repaired idempotently", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-projection-"));
