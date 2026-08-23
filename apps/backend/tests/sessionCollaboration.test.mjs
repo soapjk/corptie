@@ -148,9 +148,15 @@ test("accept fail-closes when authoritative recipient route metadata is missing"
       providerSessionId: "provider:route-source", logicalSessionId: "session:route-source",
       agentId: source.agentId, kind: "objectiveChat", objectiveId: objective.id, cwd: f.directory
     });
+    const recipientWorkItem = f.objectiveService.createWorkItem({
+      objectiveId: objective.id,
+      title: "Recipient route",
+      mainAgentId: recipient.agentId
+    });
     session(f.store, f.core, {
       providerSessionId: "provider:route-recipient", logicalSessionId: "session:route-recipient",
-      agentId: recipient.agentId, kind: "worker", objectiveId: objective.id, cwd: f.directory
+      agentId: recipient.agentId, kind: "worker", objectiveId: objective.id,
+      workItemId: recipientWorkItem.id, cwd: f.directory
     });
     const task = f.core.createTask({
       taskId: "c4471174-177e-4fe9-ab1d-cd10e070da35",
@@ -165,9 +171,15 @@ test("accept fail-closes when authoritative recipient route metadata is missing"
       title: "Route metadata guard",
       summary: "Do not accept an ambiguous capsule."
     });
+    const currentSourceWorkItem = f.objectiveService.createWorkItem({
+      objectiveId: objective.id,
+      title: "Current source route",
+      mainAgentId: source.agentId
+    });
     session(f.store, f.core, {
       providerSessionId: "provider:route-source-current", logicalSessionId: "session:route-source-current",
-      agentId: source.agentId, kind: "worker", objectiveId: objective.id, cwd: f.directory
+      agentId: source.agentId, kind: "worker", objectiveId: objective.id,
+      workItemId: currentSourceWorkItem.id, cwd: f.directory
     });
     const delivery = f.core.listPendingDeliveries().find((item) => item.recipientAgentId === recipient.agentId);
     const envelope = f.core.getDeliveryEnvelope(delivery.deliveryId);
