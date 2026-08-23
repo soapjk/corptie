@@ -770,6 +770,11 @@
 "Agent is resolving conflicts…" = "Agent is resolving conflicts…";
 "Agent finished; automatic validation needs attention" = "Agent finished; automatic validation needs attention";
 "Agent resolved the conflicts; validating and continuing automatically…" = "Agent resolved the conflicts; validating and continuing automatically…";
+"Retry Agent for Remaining Worktrees" = "Retry Agent for Remaining Worktrees";
+"Integration plan completed. All planned Worktrees reached a final state." = "Integration plan completed. All planned Worktrees reached a final state.";
+"Automatic conflict resolution is blocked at %@." = "Automatic conflict resolution is blocked at %@.";
+"Conflicting files: %@" = "Conflicting files: %@";
+"The conflict could not be resolved automatically." = "The conflict could not be resolved automatically.";
 "Agent stopped before resolving the conflicts" = "Agent stopped before resolving the conflicts";
 "Preparing the Agent conflict workspace" = "Preparing the Agent conflict workspace";
 "Agent is resolving conflicts" = "Agent is resolving conflicts";
