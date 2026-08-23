@@ -21,6 +21,7 @@ enum AgentsSkillsLayoutMetrics {
 struct AgentManagementView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @EnvironmentObject private var router: AppTabRouter
+    @EnvironmentObject private var sidebarState: TabSidebarState
     @State private var isCreatingAgent = false
     @State private var isRegisteringSkill = false
     @State private var isShowingSkillsSheet = false
@@ -38,10 +39,10 @@ struct AgentManagementView: View {
             let layoutMode = AgentsSkillsLayoutMetrics.mode(for: geometry.size.width)
 
             HStack(spacing: 0) {
-                agentsColumn(showsSkillsButton: layoutMode == .compact)
+                agentsColumn(showsSkillsButton: sidebarState.isVisible && layoutMode == .compact)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                if layoutMode == .split {
+                if sidebarState.isVisible && layoutMode == .split {
                     Divider()
                     skillsColumn
                         .frame(width: AgentsSkillsLayoutMetrics.skillsColumnWidth)

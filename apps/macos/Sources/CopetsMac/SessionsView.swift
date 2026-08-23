@@ -31,6 +31,7 @@ struct SessionsView: View {
         store: CorptieAppEnvironment.userDefaults
     ) private var workerGroupingModeRawValue = WorkerSessionGroupingMode.objective.rawValue
     @EnvironmentObject private var router: AppTabRouter
+    @EnvironmentObject private var sidebarState: TabSidebarState
     /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
     @State private var showNewSessionCreation = false
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
@@ -49,7 +50,7 @@ struct SessionsView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             sessionListSidebar
                 .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(

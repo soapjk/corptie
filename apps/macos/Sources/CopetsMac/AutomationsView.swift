@@ -27,6 +27,7 @@ private enum AutomationCategory: String, CaseIterable, Identifiable {
 
 struct AutomationsView: View {
     @EnvironmentObject private var router: AppTabRouter
+    @EnvironmentObject private var sidebarState: TabSidebarState
     @StateObject private var backendClient = BackendClient.shared
     @State private var category: AutomationCategory? = .all
 
@@ -42,7 +43,7 @@ struct AutomationsView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $router.sidebarVisibility) {
+        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             List(AutomationCategory.allCases, selection: $category) { item in
                 Label(item.title, systemImage: item.symbol)
                     .tag(Optional(item))

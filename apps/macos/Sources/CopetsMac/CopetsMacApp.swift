@@ -57,6 +57,24 @@ enum MainWindowTitlebarZoomPolicy {
     }
 }
 
+enum MainWindowLevelPolicy {
+    static func level(isPinned: Bool) -> NSWindow.Level {
+        isPinned ? .floating : .normal
+    }
+}
+
+@MainActor
+final class MainWindowPresentationState: ObservableObject {
+    static let shared = MainWindowPresentationState()
+
+    @Published private(set) var isPinned = false
+
+    func setPinned(_ isPinned: Bool) {
+        guard self.isPinned != isPinned else { return }
+        self.isPinned = isPinned
+    }
+}
+
 /// Restores the standard title-bar double-click maximize/restore interaction
 /// for the full-size transparent title bar. SwiftUI owns the content under the
 /// title bar, so NSWindow's default empty-title-bar handler never sees it.
@@ -261,10 +279,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
 
-        // Corptie is a menu-bar and floating-panel utility. Accessory apps can
-        // still own key windows and text input, but don't appear in the Dock or
-        // the Command-Tab application switcher.
-        NSApp.setActivationPolicy(.accessory)
+        // The main window is a first-class macOS app window. A regular
+        // activation policy keeps Corptie in the Dock and Command-Tab switcher;
+        // the status item and auxiliary floating panels remain available.
+        NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
 
         showWelcomePromptIfNeeded()
@@ -443,6 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        presentMainWindowAfterActivation()
         // Reconcile list state on foregrounding and replace any stream that was
         // silently stalled while the app was inactive.
         AppStateSyncController.shared.start()
@@ -473,6 +492,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         openWarRoom()
         return true
+    }
+
+    private func presentMainWindowAfterActivation() {
+        // Command-Tab does not invoke applicationShouldHandleReopen. Restore a
+        // closed main window and explicitly establish normal key/main ordering
+        // when the application becomes active. This runs once per activation,
+        // not during rendering, tab selection, or ordinary focus changes.
+        guard let window = warRoomWindow, window.isVisible else {
+            openWarRoom()
+            return
+        }
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func configureApplicationIcon() {
@@ -629,6 +663,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         panelController?.hide()
 
         if let warRoomWindow {
+            if warRoomWindow.isMiniaturized {
+                warRoomWindow.deminiaturize(nil)
+            }
+            applyMainWindowLevel(to: warRoomWindow)
             warRoomWindow.makeKeyAndOrderFront(nil)
             return
         }
@@ -656,8 +694,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         window.contentMinSize = NSSize(width: 980, height: 620)
         window.contentView = hostingView
+        applyMainWindowLevel(to: window)
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window
+    }
+
+    func setMainWindowPinned(_ isPinned: Bool) {
+        MainWindowPresentationState.shared.setPinned(isPinned)
+        guard let warRoomWindow else { return }
+        applyMainWindowLevel(to: warRoomWindow)
+        // Reinsert the window at the front of its new level without bypassing
+        // the normal activation and key-window rules.
+        warRoomWindow.makeKeyAndOrderFront(nil)
+    }
+
+    private func applyMainWindowLevel(to window: NSWindow) {
+        window.level = MainWindowLevelPolicy.level(
+            isPinned: MainWindowPresentationState.shared.isPinned
+        )
     }
 
     private func openSessionOverview() {
