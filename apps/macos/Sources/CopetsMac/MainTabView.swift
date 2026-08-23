@@ -9,12 +9,12 @@ enum TwoPaneLayoutMetrics {
     static let cardCornerRadius: CGFloat = 12
 }
 
-/// Keeps every main-tab subtree alive while placing only the selected page.
+/// Keeps every main-tab subtree alive and positions inactive pages just outside
+/// the visible bounds so tab selection can animate in the expected direction.
 ///
-/// Placing multiple resident NavigationSplitViews offscreen can leave the
-/// selected page without a visible layout after the tab collection changes.
-/// The inactive subtrees retain their state, but only the selected subtree
-/// participates in the current window layout.
+/// Every placement uses the current non-cached bounds. This avoids restoring a
+/// zero or stale proposal after the tab collection changes while preserving the
+/// original full-page left/right transition.
 struct MainTabPageLayout: Layout {
     let selectedIndex: Int
 
@@ -36,11 +36,23 @@ struct MainTabPageLayout: Layout {
         cache: inout ()
     ) {
         guard subviews.indices.contains(selectedIndex) else { return }
-        subviews[selectedIndex].place(
-            at: CGPoint(x: bounds.minX, y: bounds.minY),
-            anchor: .topLeading,
-            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
-        )
+        let pageProposal = ProposedViewSize(width: bounds.width, height: bounds.height)
+        for (index, subview) in subviews.enumerated() {
+            let horizontalDirection: CGFloat
+            if index == selectedIndex {
+                horizontalDirection = 0
+            } else {
+                horizontalDirection = index < selectedIndex ? -1 : 1
+            }
+            subview.place(
+                at: CGPoint(
+                    x: bounds.midX + horizontalDirection * bounds.width,
+                    y: bounds.midY
+                ),
+                anchor: .center,
+                proposal: pageProposal
+            )
+        }
     }
 }
 
@@ -224,6 +236,7 @@ struct MainTabView: View {
             MainTabPageLayout(selectedIndex: router.selectedTab.index) {
                 ForEach(AppTab.allCases) { tab in
                     content(for: tab)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(tab == router.selectedTab ? 1 : 0)
                         .allowsHitTesting(tab == router.selectedTab)
                         .accessibilityHidden(tab != router.selectedTab)
@@ -231,6 +244,10 @@ struct MainTabView: View {
                 }
             }
             .clipped()
+            .animation(
+                .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
+                value: router.selectedTab
+            )
         }
         .environmentObject(router)
         // The notification owns its subscriptions in a separate overlay subtree.

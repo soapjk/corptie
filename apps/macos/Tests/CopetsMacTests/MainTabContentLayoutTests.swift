@@ -14,7 +14,7 @@ struct MainTabContentLayoutTests {
     }
 
     @Test
-    func mainTabHostPlacesOnlyTheSelectedPageInsteadOfGeometryOffsets() throws {
+    func mainTabHostUsesCurrentBoundsForDirectionalPagePlacement() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -23,11 +23,14 @@ struct MainTabContentLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("MainTabPageLayout(selectedIndex: router.selectedTab.index)"))
-        #expect(contents.contains("subviews[selectedIndex].place("))
-        #expect(!contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains("x: bounds.midX + horizontalDirection * bounds.width"))
+        #expect(contents.contains("proposal: pageProposal"))
+        #expect(!contents.contains("MainTabPageProposalCache"))
         #expect(contents.contains(".opacity(tab == router.selectedTab ? 1 : 0)"))
         #expect(contents.contains(".allowsHitTesting(tab == router.selectedTab)"))
         #expect(contents.contains(".zIndex(tab == router.selectedTab ? 1 : 0)"))
+        #expect(contents.contains("value: router.selectedTab"))
         #expect(!contents.contains(".offset(x: slideOffset("))
         #expect(!contents.contains("GeometryReader { geo in"))
     }

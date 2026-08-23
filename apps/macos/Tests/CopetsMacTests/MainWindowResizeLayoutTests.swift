@@ -48,8 +48,9 @@ struct MainWindowResizeLayoutTests {
 
         #expect(contents.contains("MainTabPageLayout(selectedIndex: router.selectedTab.index)"))
         #expect(contents.contains("ForEach(AppTab.allCases)"))
-        #expect(contents.contains("subviews[selectedIndex].place("))
-        #expect(!contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains("for (index, subview) in subviews.enumerated()"))
+        #expect(contents.contains("let pageProposal = ProposedViewSize(width: bounds.width, height: bounds.height)"))
+        #expect(!contents.contains("MainTabPageProposalCache"))
         #expect(contents.contains(".opacity(tab == router.selectedTab ? 1 : 0)"))
         #expect(contents.contains(".zIndex(tab == router.selectedTab ? 1 : 0)"))
         #expect(!contents.contains("GeometryReader { geo in"))
