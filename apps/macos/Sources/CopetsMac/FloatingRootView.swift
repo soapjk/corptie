@@ -5021,8 +5021,9 @@ func nativeCollaborationCardPresentation(
             .replacingOccurrences(of: "[", with: "\\[")
     }
     func party(name: String?, id: String?, fallback: String) -> String {
-        let resolvedName = nonEmpty(name) ?? fallback
-        guard let id = nonEmpty(id) else { return resolvedName }
+        let stableID = nonEmpty(id)
+        let resolvedName = nonEmpty(name) ?? stableID ?? fallback
+        guard let id = stableID, id != resolvedName else { return resolvedName }
         return "\(resolvedName) · \(id)"
     }
     func sessionParty(name: String?, id: String?, kind: String?, workItemId: String?, fallback: String) -> String {
