@@ -116,6 +116,8 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     launchObjectiveChatSession: services.launchObjectiveChatSession,
     inspectWorkItemWorktree: services.inspectWorkItemWorktree,
     reclaimWorkItemWorktree: services.reclaimWorkItemWorktree,
+    inspectWorkItemDeletion: services.inspectWorkItemDeletion,
+    deleteWorkItemSafely: services.deleteWorkItemSafely,
     restoreWorkItemExecution: services.restoreWorkItemExecution,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
@@ -168,6 +170,52 @@ test("WorkItem Worktree endpoints inspect and reclaim through the project servic
     assert.deepEqual(calls, [
       ["inspect", "work-item:one"],
       ["reclaim", "work-item:one"]
+    ]);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem deletion endpoints expose preflight and execute only through the safe deletion service", async () => {
+  const services = await createServices();
+  const calls = [];
+  const plan = {
+    workItemId: "work-item:one",
+    status: "risky",
+    retryable: true,
+    worktree: { worktreeId: "worktree:one", path: "/repo-one", branchName: "workitem/one" },
+    risks: [{ code: "UNTRACKED_FILES", message: "untracked", files: ["draft.txt"] }],
+    blockers: []
+  };
+  try {
+    const inspected = await callApi({
+      method: "GET",
+      pathname: "/work-items/work-item%3Aone/deletion",
+      inspectWorkItemDeletion: async (workItemId) => {
+        calls.push(["inspect", workItemId]);
+        return plan;
+      },
+      ...services
+    });
+    assert.equal(inspected.statusCode, 200);
+    assert.deepEqual(inspected.body.risks, plan.risks);
+
+    const deleted = await callApi({
+      method: "POST",
+      pathname: "/work-items/work-item%3Aone/actions/delete",
+      body: { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" },
+      deleteWorkItemSafely: async (workItemId, input) => {
+        calls.push(["delete", workItemId, input]);
+        return { ok: true, workItemId };
+      },
+      ...services
+    });
+    assert.equal(deleted.statusCode, 200);
+    assert.equal(deleted.body.ok, true);
+    assert.deepEqual(calls, [
+      ["inspect", "work-item:one"],
+      ["delete", "work-item:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" }]
     ]);
   } finally {
     await services.store.close();
@@ -882,6 +930,57 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
     });
     assert.equal(cycle.statusCode, 409);
     assert.equal(cycle.body.code, "CYCLE_DETECTED");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("binding a valid Workspace is persisted and immediately visible to WorkItem start validation", async () => {
+  const services = await createServices();
+  try {
+    const repositoryId = registerRepository(services.store, "repository:immediate", "worktree:immediate-main");
+    const agent = services.store.createAgent({
+      name: "Immediate starter", role: "independentContributor", status: "available"
+    });
+    const objective = services.objectiveService.createObjective({
+      name: "Immediate binding",
+      idealState: "Starts without rebinding",
+      workspaceIds: [repositoryId],
+      contributorAgentIds: [agent.agentId]
+    });
+    const item = services.objectiveService.createWorkItem({
+      objectiveId: objective.id,
+      title: "Bind then start",
+      mainAgentId: agent.agentId
+    });
+
+    const bound = await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${encodeURIComponent(item.id)}`,
+      body: { mainWorkspaceId: repositoryId },
+      ...services
+    });
+    assert.equal(bound.statusCode, 200);
+    assert.equal(bound.body.main_workspace_id, repositoryId);
+
+    let observedRepositoryId = null;
+    const started = await callApi({
+      method: "POST",
+      pathname: "/sessions",
+      body: { workItemId: item.id, agentId: agent.agentId, providerId: "codex-app-server" },
+      startWorkItemExecution: async (input) => {
+        observedRepositoryId = services.store.getWorkItem(input.workItemId).main_workspace_id;
+        return {
+          phase: "running", idempotentReplay: false,
+          session: { id: "session:immediate" }, logicalSessionId: null,
+          providerBinding: null, workspace: { repositoryId: observedRepositoryId }
+        };
+      },
+      ...services
+    });
+    assert.equal(started.statusCode, 201);
+    assert.equal(observedRepositoryId, repositoryId);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

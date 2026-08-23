@@ -150,6 +150,38 @@ struct WorkItemWorktreeStatus: Decodable, Equatable {
     let retiredWorkspace: WorkItemRetiredWorkspace?
 }
 
+struct WorkItemDeletionRisk: Codable, Equatable, Identifiable {
+    var id: String { code }
+    let code: String
+    let message: String
+    let files: [String]?
+    let commitCount: Int?
+}
+
+struct WorkItemDeletionWorktree: Codable, Equatable {
+    let worktreeId: String
+    let path: String
+    let branchName: String?
+    let isMain: Bool
+    let dirty: Bool
+    let mergedIntoMain: Bool
+    let aheadOfMain: Int
+}
+
+struct WorkItemDeletionPlan: Codable, Equatable {
+    let workItemId: String
+    let status: String
+    let retryable: Bool
+    let worktree: WorkItemDeletionWorktree?
+    let risks: [WorkItemDeletionRisk]
+    let blockers: [WorkItemDeletionRisk]
+}
+
+struct WorkItemDeletionResult: Decodable {
+    let ok: Bool
+    let workItemId: String
+}
+
 // 后端响应 envelope：GET /objectives → { objectives: [...] }；GET /work-items → { workItems: [...] }
 struct ObjectiveListEnvelope: Codable {
     let objectives: [Objective]
@@ -268,6 +300,7 @@ struct EntityErrorEnvelope: Codable {
     let code: String?
     let field: String?
     let expected: String?
+    let deletion: WorkItemDeletionPlan?
 
     var displayMessage: String {
         guard let field, let expected else { return error }

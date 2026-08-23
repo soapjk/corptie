@@ -176,6 +176,14 @@ final class AppStateStore: ObservableObject {
         return next.sessions[session.id] ?? session
     }
 
+    @discardableResult
+    func acceptWorkItem(_ workItem: WorkItem) -> WorkItem {
+        var next = state
+        next.workItems[workItem.id] = workItem
+        state = next
+        return workItem
+    }
+
     func replaceActiveSessions(_ sessions: [TaskSession]) {
         var next = state
         next.sessions = next.sessions.filter { $0.value.archived == true }
