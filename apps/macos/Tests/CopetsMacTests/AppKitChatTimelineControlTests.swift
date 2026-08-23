@@ -5,6 +5,27 @@ import XCTest
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testLiveResizeReflowsOnlyVisibleRowsThenExactReflowCoversAllRows() {
+        let visible = NSRange(location: 40, length: 12)
+
+        XCTAssertEqual(
+            LiveResizeRowReflowPolicy.indexes(
+                rowCount: 500,
+                visibleRows: visible,
+                isLiveResize: true
+            ),
+            IndexSet(integersIn: 40..<52)
+        )
+        XCTAssertEqual(
+            LiveResizeRowReflowPolicy.indexes(
+                rowCount: 500,
+                visibleRows: visible,
+                isLiveResize: false
+            ),
+            IndexSet(integersIn: 0..<500)
+        )
+    }
+
     func testDuplicateRowsAreCollapsedBeforeBuildingRevisionIndex() {
         let rows = [
             row(id: "same", revision: 1, text: "old"),
