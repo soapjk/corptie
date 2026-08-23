@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // Sessions 与控制台共用的栏位几何，确保 sidebar 与详情卡片宽度稳定。
@@ -7,53 +8,6 @@ enum TwoPaneLayoutMetrics {
     static let detailCardWidth: CGFloat = 300
     static let contentPadding: CGFloat = 16
     static let cardCornerRadius: CGFloat = 12
-}
-
-/// Keeps every main-tab subtree alive and positions inactive pages just outside
-/// the visible bounds so tab selection can animate in the expected direction.
-///
-/// Every placement uses the current non-cached bounds. This avoids restoring a
-/// zero or stale proposal after the tab collection changes while preserving the
-/// original full-page left/right transition.
-struct MainTabPageLayout: Layout {
-    let selectedIndex: Int
-
-    func sizeThatFits(
-        proposal: ProposedViewSize,
-        subviews: Subviews,
-        cache: inout ()
-    ) -> CGSize {
-        CGSize(
-            width: max(0, proposal.width ?? 0),
-            height: max(0, proposal.height ?? 0)
-        )
-    }
-
-    func placeSubviews(
-        in bounds: CGRect,
-        proposal: ProposedViewSize,
-        subviews: Subviews,
-        cache: inout ()
-    ) {
-        guard subviews.indices.contains(selectedIndex) else { return }
-        let pageProposal = ProposedViewSize(width: bounds.width, height: bounds.height)
-        for (index, subview) in subviews.enumerated() {
-            let horizontalDirection: CGFloat
-            if index == selectedIndex {
-                horizontalDirection = 0
-            } else {
-                horizontalDirection = index < selectedIndex ? -1 : 1
-            }
-            subview.place(
-                at: CGPoint(
-                    x: bounds.midX + horizontalDirection * bounds.width,
-                    y: bounds.midY
-                ),
-                anchor: .center,
-                proposal: pageProposal
-            )
-        }
-    }
 }
 
 // 顶层 Tab 枚举：控制台 / Sessions / Agents（设置已移至右上角齿轮入口的独立页面）。
@@ -99,6 +53,110 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .sessionDSH: "globe"
         case .agents: "person.2"
         }
+    }
+}
+
+/// Retains each tab's hosting view and SwiftUI state, while attaching and sizing
+/// only the selected page. Inactive pages therefore do not receive every main
+/// window resize proposal. A normal tab switch reattaches the cached host at the
+/// current exact bounds; no page bitmap or geometry transform is involved.
+@MainActor
+final class MainTabPageContainer: NSView {
+    private let pageProvider: (AppTab) -> NSView
+    private var pages: [AppTab: NSView] = [:]
+    private(set) var selectedTab: AppTab?
+    private(set) var activePageLayoutCount = 0
+
+    init(pageProvider: @escaping (AppTab) -> NSView) {
+        self.pageProvider = pageProvider
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    override func layout() {
+        super.layout()
+        guard let selectedTab, let page = pages[selectedTab], page.frame != bounds else { return }
+        page.frame = bounds
+        activePageLayoutCount += 1
+    }
+
+    func select(_ tab: AppTab) {
+        guard selectedTab != tab else {
+            needsLayout = true
+            return
+        }
+
+        if let selectedTab {
+            pages[selectedTab]?.removeFromSuperview()
+        }
+        let page = pages[tab] ?? {
+            let created = pageProvider(tab)
+            created.autoresizingMask = []
+            pages[tab] = created
+            return created
+        }()
+        selectedTab = tab
+        page.frame = bounds
+        addSubview(page)
+        activePageLayoutCount += 1
+    }
+
+    var cachedPageCount: Int { pages.count }
+    var attachedPageCount: Int { subviews.count }
+
+    func cachedPage(for tab: AppTab) -> NSView? {
+        pages[tab]
+    }
+}
+
+private struct MainTabPageHost: NSViewRepresentable {
+    let selection: AppTab
+    let router: AppTabRouter
+    let resizeState: MainWindowResizeState
+
+    func makeNSView(context: Context) -> MainTabPageContainer {
+        let container = MainTabPageContainer { tab in
+            let root: AnyView
+            switch tab {
+            case .console:
+                root = AnyView(WarRoomView())
+            case .sessions:
+                root = AnyView(SessionsView())
+            case .automations:
+                root = AnyView(AutomationsView())
+            case .worktrees:
+                root = AnyView(WorktreeManagementView())
+            case .sessionDSH:
+                root = AnyView(SessionDSHView())
+            case .agents:
+                root = AnyView(AgentManagementView())
+            }
+            let hostingView = NSHostingView(
+                rootView: root
+                    .environmentObject(router)
+                    .environmentObject(resizeState)
+            )
+            hostingView.sizingOptions = []
+            hostingView.layerContentsRedrawPolicy = .duringViewResize
+            return hostingView
+        }
+        container.select(selection)
+        return container
+    }
+
+    func updateNSView(_ container: MainTabPageContainer, context: Context) {
+        container.select(selection)
     }
 }
 
@@ -191,6 +249,7 @@ private struct UnderlineTabButton: View {
 // 主窗口顶层容器：顶部中间 Tab 切换器（控制台 / Sessions / Agents / 设置）+ 对应内容。
 struct MainTabView: View {
     @StateObject private var router = AppTabRouter.shared
+    @EnvironmentObject private var resizeState: MainWindowResizeState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -233,23 +292,20 @@ struct MainTabView: View {
             }
             .padding(.horizontal, 12)
 
-            MainTabPageLayout(selectedIndex: router.selectedTab.index) {
-                ForEach(AppTab.allCases) { tab in
-                    content(for: tab)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(tab == router.selectedTab ? 1 : 0)
-                        .allowsHitTesting(tab == router.selectedTab)
-                        .accessibilityHidden(tab != router.selectedTab)
-                        .zIndex(tab == router.selectedTab ? 1 : 0)
-                }
-            }
-            .clipped()
-            .animation(
-                .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
-                value: router.selectedTab
+            MainTabPageHost(
+                selection: router.selectedTab,
+                router: router,
+                resizeState: resizeState
             )
+            .clipped()
         }
         .environmentObject(router)
+        .transaction { transaction in
+            if resizeState.isLiveResize {
+                transaction.animation = nil
+                transaction.disablesAnimations = true
+            }
+        }
         // The notification owns its subscriptions in a separate overlay subtree.
         // Overlay sizing never participates in the tab header's ZStack layout, so
         // task insertion, mutation, removal, and intrinsic-width changes cannot
@@ -260,24 +316,6 @@ struct MainTabView: View {
                 .padding(.top, 8)
                 .padding(.trailing, 12)
                 .offset(y: -32)
-        }
-    }
-
-    @ViewBuilder
-    private func content(for tab: AppTab) -> some View {
-        switch tab {
-        case .console:
-            WarRoomView()
-        case .sessions:
-            SessionsView()
-        case .automations:
-            AutomationsView()
-        case .worktrees:
-            WorktreeManagementView()
-        case .sessionDSH:
-            SessionDSHView()
-        case .agents:
-            AgentManagementView()
         }
     }
 

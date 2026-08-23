@@ -94,38 +94,68 @@ final class MainWindow: NSWindow {
     }
 }
 
-/// Prevents SwiftUI from recomputing text wrapping and nested layouts on every
-/// frame of a window drag or fullscreen transition. AppKit stretches one cached
-/// image during the transition, then the live hierarchy lays out exactly once
-/// at the final content size.
+struct LiveResizeLayoutStatistics: Equatable {
+    fileprivate(set) var sizeChangeEvents = 0
+    fileprivate(set) var layoutCommits = 0
+    fileprivate(set) var coalescedEvents = 0
+    fileprivate(set) var exactLayouts = 0
+    fileprivate(set) var maximumLayoutDuration: TimeInterval = 0
+}
+
 @MainActor
-final class LiveResizeFrozenHostingView<Content: View>: NSView {
-    private enum FreezeReason: Hashable {
+final class MainWindowResizeState: ObservableObject {
+    @Published fileprivate(set) var isLiveResize = false
+}
+
+/// Coalesces native, real-size layout during window transitions. The opaque
+/// background follows every AppKit bounds change immediately; the SwiftUI host
+/// consumes only the latest size at a bounded cadence. No snapshot or layer
+/// transform is used, so text, icons, images, and hit-testing remain in the same
+/// coordinate system. Transition completion always forces one exact layout.
+@MainActor
+final class LiveResizeHostingView<Content: View>: NSView {
+    private enum ResizeReason: Hashable {
         case liveResize
         case fullScreenTransition
     }
 
-    private let hostingView: NSHostingView<Content>
-    private let snapshotView = NSImageView()
-    private var freezeReasons = Set<FreezeReason>()
-    private var windowNotificationTokens: [NSObjectProtocol] = []
+    static var liveLayoutInterval: TimeInterval { 1.0 / 30.0 }
+    static var animatedLayoutInterval: TimeInterval { 1.0 / 60.0 }
+    static var stabilityDelay: TimeInterval { 0.12 }
 
-    init(rootView: Content) {
+    private let backgroundView = NSView()
+    private let hostingView: NSHostingView<Content>
+    private let resizeState: MainWindowResizeState
+    private var resizeReasons = Set<ResizeReason>()
+    private var windowNotificationTokens: [NSObjectProtocol] = []
+    private var layoutTimer: Timer?
+    private var exactLayoutTimer: Timer?
+    private var lastLayoutTime: TimeInterval = -.infinity
+    private var lastSizeChangeTime: TimeInterval = -.infinity
+    private var lastObservedSize = NSSize.zero
+    private(set) var layoutStatistics = LiveResizeLayoutStatistics()
+    var renderedContentSize: NSSize { hostingView.frame.size }
+    var contentUsesIdentityTransform: Bool {
+        hostingView.layer?.affineTransform() == .identity
+    }
+
+    init(rootView: Content, resizeState: MainWindowResizeState) {
         hostingView = NSHostingView(rootView: rootView)
+        self.resizeState = resizeState
         super.init(frame: .zero)
 
         wantsLayer = true
         layer?.masksToBounds = true
 
+        backgroundView.wantsLayer = true
+        backgroundView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        backgroundView.autoresizingMask = []
+        addSubview(backgroundView)
+
         hostingView.sizingOptions = []
         hostingView.autoresizingMask = []
+        hostingView.layerContentsRedrawPolicy = .duringViewResize
         addSubview(hostingView)
-
-        snapshotView.imageAlignment = .alignCenter
-        snapshotView.imageScaling = .scaleAxesIndependently
-        snapshotView.isHidden = true
-        snapshotView.autoresizingMask = []
-        addSubview(snapshotView, positioned: .above, relativeTo: hostingView)
     }
 
     @available(*, unavailable)
@@ -146,7 +176,7 @@ final class LiveResizeFrozenHostingView<Content: View>: NSView {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.beginFreeze(for: .fullScreenTransition)
+                    self?.beginResize(for: .fullScreenTransition)
                 }
             },
             center.addObserver(
@@ -155,7 +185,7 @@ final class LiveResizeFrozenHostingView<Content: View>: NSView {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.endFreeze(for: .fullScreenTransition)
+                    self?.endResize(for: .fullScreenTransition)
                 }
             },
             center.addObserver(
@@ -164,7 +194,7 @@ final class LiveResizeFrozenHostingView<Content: View>: NSView {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.beginFreeze(for: .fullScreenTransition)
+                    self?.beginResize(for: .fullScreenTransition)
                 }
             },
             center.addObserver(
@@ -173,67 +203,150 @@ final class LiveResizeFrozenHostingView<Content: View>: NSView {
                 queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    self?.endFreeze(for: .fullScreenTransition)
+                    self?.endResize(for: .fullScreenTransition)
                 }
             }
         ]
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        backgroundView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
     override func viewWillStartLiveResize() {
         super.viewWillStartLiveResize()
-        beginFreeze(for: .liveResize)
+        beginResize(for: .liveResize)
     }
 
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
-        endFreeze(for: .liveResize)
+        endResize(for: .liveResize)
     }
 
     override func layout() {
         super.layout()
-        if freezeReasons.isEmpty {
-            hostingView.frame = bounds
-        } else {
-            snapshotView.frame = bounds
+        backgroundView.frame = bounds
+        guard bounds.size != lastObservedSize else { return }
+        lastObservedSize = bounds.size
+        lastSizeChangeTime = ProcessInfo.processInfo.systemUptime
+        layoutStatistics.sizeChangeEvents += 1
+
+        if hostingView.frame.size == .zero {
+            applyExactLayout()
+            return
         }
+
+        scheduleExactLayoutAfterStability()
+        scheduleLayoutIfNeeded()
     }
 
-    private func beginFreeze(for reason: FreezeReason) {
-        let wasFrozen = !freezeReasons.isEmpty
-        freezeReasons.insert(reason)
-        guard !wasFrozen else { return }
-
-        layoutSubtreeIfNeeded()
-        snapshotView.image = snapshotImage()
-        snapshotView.frame = bounds
-        snapshotView.isHidden = snapshotView.image == nil
-        hostingView.isHidden = snapshotView.image != nil
+    private func beginResize(for reason: ResizeReason) {
+        let wasResizing = !resizeReasons.isEmpty
+        resizeReasons.insert(reason)
+        guard !wasResizing else { return }
+        resizeState.isLiveResize = true
+        lastLayoutTime = ProcessInfo.processInfo.systemUptime
     }
 
-    private func endFreeze(for reason: FreezeReason) {
-        freezeReasons.remove(reason)
-        guard freezeReasons.isEmpty else { return }
+    private func endResize(for reason: ResizeReason) {
+        resizeReasons.remove(reason)
+        guard resizeReasons.isEmpty else { return }
+        resizeState.isLiveResize = false
+        invalidateLayoutTimers()
+        applyExactLayout()
+    }
 
+    private func scheduleLayoutIfNeeded() {
+        guard layoutTimer == nil else {
+            layoutStatistics.coalescedEvents += 1
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        let interval = resizeReasons.isEmpty
+            ? Self.animatedLayoutInterval
+            : Self.liveLayoutInterval
+        let delay = max(0, interval - (now - lastLayoutTime))
+        guard delay > 0 else {
+            applyLayoutCommit()
+            return
+        }
+
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.layoutTimer = nil
+                self.applyLayoutCommit()
+            }
+        }
+        layoutTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func scheduleExactLayoutAfterStability() {
+        guard exactLayoutTimer == nil else { return }
+        scheduleStabilityTimer(after: Self.stabilityDelay)
+    }
+
+    private func scheduleStabilityTimer(after delay: TimeInterval) {
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.exactLayoutTimer = nil
+                let elapsed = ProcessInfo.processInfo.systemUptime - self.lastSizeChangeTime
+                guard elapsed >= Self.stabilityDelay else {
+                    self.scheduleStabilityTimer(after: Self.stabilityDelay - elapsed)
+                    return
+                }
+                self.layoutTimer?.invalidate()
+                self.layoutTimer = nil
+                self.applyExactLayout()
+            }
+        }
+        exactLayoutTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func applyLayoutCommit() {
+        let startedAt = ProcessInfo.processInfo.systemUptime
         hostingView.frame = bounds
-        hostingView.isHidden = false
-        snapshotView.isHidden = true
-        snapshotView.image = nil
-        needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.needsDisplay = true
+        hostingView.displayIfNeeded()
+        let finishedAt = ProcessInfo.processInfo.systemUptime
+        lastLayoutTime = finishedAt
+        layoutStatistics.layoutCommits += 1
+        layoutStatistics.maximumLayoutDuration = max(
+            layoutStatistics.maximumLayoutDuration,
+            finishedAt - startedAt
+        )
     }
 
-    private func snapshotImage() -> NSImage? {
-        guard hostingView.bounds.width > 0,
-              hostingView.bounds.height > 0,
-              let representation = hostingView.bitmapImageRepForCachingDisplay(in: hostingView.bounds)
-        else { return nil }
+    private func applyExactLayout() {
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        hostingView.frame = bounds
+        hostingView.needsLayout = true
+        hostingView.layoutSubtreeIfNeeded()
+        hostingView.needsDisplay = true
+        hostingView.displayIfNeeded()
+        let finishedAt = ProcessInfo.processInfo.systemUptime
+        lastLayoutTime = finishedAt
+        layoutStatistics.exactLayouts += 1
+        layoutStatistics.maximumLayoutDuration = max(
+            layoutStatistics.maximumLayoutDuration,
+            finishedAt - startedAt
+        )
+    }
 
-        hostingView.cacheDisplay(in: hostingView.bounds, to: representation)
-        let image = NSImage(size: hostingView.bounds.size)
-        image.addRepresentation(representation)
-        return image
+    private func invalidateLayoutTimers() {
+        layoutTimer?.invalidate()
+        layoutTimer = nil
+        exactLayoutTimer?.invalidate()
+        exactLayoutTimer = nil
     }
 
     private func removeWindowObservers() {
+        invalidateLayoutTimers()
         let center = NotificationCenter.default
         windowNotificationTokens.forEach(center.removeObserver)
         windowNotificationTokens.removeAll()
@@ -641,7 +754,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.titlebarSeparatorStyle = .none
         window.center()
         window.isReleasedWhenClosed = false
-        let hostingView = LiveResizeFrozenHostingView(rootView: MainTabView())
+        let resizeState = MainWindowResizeState()
+        let hostingView = LiveResizeHostingView(
+            rootView: MainTabView().environmentObject(resizeState),
+            resizeState: resizeState
+        )
         // This is a user-resizable AppKit-owned window. The SwiftUI root must
         // follow its bounds, not feed its ideal size back into NSWindow. The
         // default sizing options can call updateAnimatedWindowSize during a
@@ -651,6 +768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             size: window.contentRect(forFrameRect: window.frame).size
         )
         window.contentMinSize = NSSize(width: 980, height: 620)
+        window.preservesContentDuringLiveResize = true
         window.contentView = hostingView
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window

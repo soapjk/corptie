@@ -4,6 +4,90 @@ import XCTest
 @testable import CorptieMac
 
 struct MainWindowResizeLayoutTests {
+    @MainActor
+    @Test
+    func rapidLiveResizeCoalescesLayoutAndFinishesAtExactSize() {
+        let resizeState = MainWindowResizeState()
+        let view = LiveResizeHostingView(
+            rootView: Text("Undistorted"),
+            resizeState: resizeState
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
+        view.layoutSubtreeIfNeeded()
+        let eventsBeforeResize = view.layoutStatistics.sizeChangeEvents
+        let exactLayoutsBeforeResize = view.layoutStatistics.exactLayouts
+
+        view.viewWillStartLiveResize()
+        #expect(resizeState.isLiveResize)
+        for index in 0..<180 {
+            let direction: CGFloat = index.isMultiple(of: 2) ? 1 : -1
+            view.frame.size = NSSize(
+                width: 1_100 + direction * CGFloat(index % 90),
+                height: 700 + direction * CGFloat(index % 50)
+            )
+            view.layoutSubtreeIfNeeded()
+        }
+        view.viewDidEndLiveResize()
+
+        #expect(view.layoutStatistics.sizeChangeEvents - eventsBeforeResize == 180)
+        #expect(view.layoutStatistics.layoutCommits < 180)
+        #expect(view.layoutStatistics.coalescedEvents > 0)
+        #expect(view.layoutStatistics.exactLayouts == exactLayoutsBeforeResize + 1)
+        #expect(view.renderedContentSize == view.bounds.size)
+        #expect(view.contentUsesIdentityTransform)
+        #expect(!resizeState.isLiveResize)
+    }
+
+    @MainActor
+    @Test
+    func resizeStabilityDebouncePerformsExactLayoutBeforeDragEnds() async throws {
+        let resizeState = MainWindowResizeState()
+        let view = LiveResizeHostingView(
+            rootView: Image(systemName: "rectangle"),
+            resizeState: resizeState
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
+        view.layoutSubtreeIfNeeded()
+        view.viewWillStartLiveResize()
+        view.frame.size = NSSize(width: 1_240, height: 760)
+        view.layoutSubtreeIfNeeded()
+        let exactLayoutsBeforeStability = view.layoutStatistics.exactLayouts
+
+        try await Task.sleep(for: .milliseconds(180))
+
+        #expect(view.layoutStatistics.exactLayouts == exactLayoutsBeforeStability + 1)
+        #expect(view.renderedContentSize == view.bounds.size)
+        #expect(view.contentUsesIdentityTransform)
+        view.viewDidEndLiveResize()
+    }
+
+    @MainActor
+    @Test
+    func inactiveTabHostsRetainStateWithoutReceivingResizeFrames() throws {
+        var created: [AppTab: NSView] = [:]
+        let container = MainTabPageContainer { tab in
+            let page = NSView(frame: .zero)
+            created[tab] = page
+            return page
+        }
+        container.frame = NSRect(x: 0, y: 0, width: 1_200, height: 700)
+        container.select(.console)
+        container.layoutSubtreeIfNeeded()
+        container.select(.sessions)
+        container.layoutSubtreeIfNeeded()
+        let detachedConsoleFrame = try #require(created[.console]?.frame)
+
+        container.frame.size = NSSize(width: 1_450, height: 860)
+        container.layoutSubtreeIfNeeded()
+
+        #expect(container.cachedPageCount == 2)
+        #expect(container.attachedPageCount == 1)
+        #expect(created[.console]?.frame == detachedConsoleFrame)
+        #expect(created[.sessions]?.frame == container.bounds)
+        #expect(created[.console]?.superview == nil)
+        #expect(created[.sessions]?.superview === container)
+    }
+
     @Test
     func mainWindowTopEdgeDoubleClickTogglesZoom() {
         #expect(MainWindowTitlebarZoomPolicy.shouldToggleZoom(
@@ -38,7 +122,7 @@ struct MainWindowResizeLayoutTests {
     }
 
     @Test
-    func mainTabLayoutContractKeepsEveryPageResidentWithoutGeometryReader() throws {
+    func mainTabLayoutContractRetainsButDetachesInactivePages() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -46,15 +130,12 @@ struct MainWindowResizeLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/MainTabView.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        #expect(contents.contains("MainTabPageLayout(selectedIndex: router.selectedTab.index)"))
-        #expect(contents.contains("ForEach(AppTab.allCases)"))
-        #expect(contents.contains("for (index, subview) in subviews.enumerated()"))
-        #expect(contents.contains("let pageProposal = ProposedViewSize(width: bounds.width, height: bounds.height)"))
-        #expect(!contents.contains("MainTabPageProposalCache"))
-        #expect(contents.contains(".opacity(tab == router.selectedTab ? 1 : 0)"))
-        #expect(contents.contains(".zIndex(tab == router.selectedTab ? 1 : 0)"))
-        #expect(!contents.contains("GeometryReader { geo in"))
-        #expect(!contents.contains(".frame(width: geo.size.width, height: geo.size.height)"))
+        #expect(contents.contains("private var pages: [AppTab: NSView] = [:]"))
+        #expect(contents.contains("pages[selectedTab]?.removeFromSuperview()"))
+        #expect(contents.contains("pages[tab] = created"))
+        #expect(contents.contains("page.frame = bounds"))
+        #expect(contents.contains("addSubview(page)"))
+        #expect(!contents.contains("MainTabPageLayout"))
         #expect(AppTab.allCases.contains(.automations))
         #expect(contents.contains("case .automations:"))
         #expect(contents.contains("AutomationsView()"))
@@ -116,6 +197,12 @@ final class MainWindowTitlebarDispatchTests: XCTestCase {
             defer: false
         )
         window.animationBehavior = .none
+        let resizeState = MainWindowResizeState()
+        let hostingView = LiveResizeHostingView(
+            rootView: Text("Zoom contract"),
+            resizeState: resizeState
+        )
+        window.contentView = hostingView
         Self.retainedWindows.append(window)
         window.makeKeyAndOrderFront(nil)
 
@@ -140,10 +227,14 @@ final class MainWindowTitlebarDispatchTests: XCTestCase {
         window.sendEvent(try doubleClick(eventNumber: 1))
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         XCTAssertTrue(window.isZoomed)
+        XCTAssertEqual(hostingView.renderedContentSize, hostingView.bounds.size)
+        XCTAssertTrue(hostingView.contentUsesIdentityTransform)
 
         window.sendEvent(try doubleClick(eventNumber: 2))
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         XCTAssertFalse(window.isZoomed)
+        XCTAssertEqual(hostingView.renderedContentSize, hostingView.bounds.size)
+        XCTAssertTrue(hostingView.contentUsesIdentityTransform)
         window.orderOut(nil)
     }
 }
