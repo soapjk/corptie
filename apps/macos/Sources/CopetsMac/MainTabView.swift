@@ -195,32 +195,10 @@ struct MainTabView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                HStack(spacing: 8) {
-                    // Sidebar 开关与设置入口共同位于 macOS 窗口按钮右侧。
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            router.toggleSidebar()
-                        }
-                    } label: {
-                        Image(systemName: "sidebar.left")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n(router.isSidebarVisible ? "Hide Sidebar" : "Show Sidebar"))
-
-                    Button {
-                        openSettings()
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n("设置"))
-                }
+                MainWindowChromeControls(
+                    sidebarState: router.sidebarState(for: router.selectedTab),
+                    openSettings: openSettings
+                )
                 .frame(width: 220, alignment: .leading)
                 .offset(x: 64, y: -32)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -236,6 +214,7 @@ struct MainTabView: View {
             MainTabPageLayout(selectedIndex: router.selectedTab.index) {
                 ForEach(AppTab.allCases) { tab in
                     content(for: tab)
+                        .environmentObject(router.sidebarState(for: tab))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(tab == router.selectedTab ? 1 : 0)
                         .allowsHitTesting(tab == router.selectedTab)
@@ -286,6 +265,68 @@ struct MainTabView: View {
     }
 }
 
+/// Isolates the two toggle publications from the resident tab page hierarchy.
+/// Only this small header subtree and the selected tab observe either change.
+private struct MainWindowChromeControls: View {
+    @ObservedObject var sidebarState: TabSidebarState
+    @ObservedObject private var windowState = MainWindowPresentationState.shared
+    let openSettings: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                AppDelegate.shared?.setMainWindowPinned(!windowState.isPinned)
+            } label: {
+                chromeIcon(
+                    systemName: windowState.isPinned ? "pin.fill" : "pin",
+                    isActive: windowState.isPinned
+                )
+            }
+            .buttonStyle(.plain)
+            .help(L10n(windowState.isPinned ? "Disable Always on Top" : "Enable Always on Top"))
+            .accessibilityLabel(L10n("Always on Top"))
+            .accessibilityValue(L10n(windowState.isPinned ? "On" : "Off"))
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    sidebarState.toggle()
+                }
+            } label: {
+                chromeIcon(systemName: "sidebar.left", isActive: sidebarState.isVisible)
+            }
+            .buttonStyle(.plain)
+            .help(L10n(sidebarState.isVisible ? "Hide Sidebar" : "Show Sidebar"))
+            .accessibilityLabel(L10n("Sidebar"))
+            .accessibilityValue(L10n(sidebarState.isVisible ? "Expanded" : "Collapsed"))
+
+            Button(action: openSettings) {
+                chromeIcon(systemName: "gearshape", isActive: false)
+            }
+            .buttonStyle(.plain)
+            .help(L10n("设置"))
+        }
+    }
+
+    private func chromeIcon(systemName: String, isActive: Bool) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+            .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+            .frame(width: 24, height: 22)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isActive ? Color.accentColor.opacity(0.16) : Color.clear)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(
+                        isActive ? Color.accentColor.opacity(0.45) : Color.clear,
+                        lineWidth: 1
+                    )
+            }
+            .contentShape(Rectangle())
+    }
+}
+
 /// The main-window notification renderer is intentionally a leaf view.
 ///
 /// Keeping these observable dependencies out of `MainTabView` prevents task and
@@ -331,14 +372,19 @@ final class AppTabRouter: ObservableObject {
     @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
     @Published var navigationError: String?
 
-    // .all displays the leading navigation columns. Worktree management uses
-    // all three native split columns; the other tabs use sidebar + detail.
-    @Published var sidebarVisibility: NavigationSplitViewVisibility = .all
+    // Each resident page owns a distinct observable state. Updating one tab's
+    // sidebar therefore does not publish into the other five page subtrees.
+    private let sidebarStates: [AppTab: TabSidebarState] = Dictionary(
+        uniqueKeysWithValues: AppTab.allCases.map { ($0, TabSidebarState(tab: $0)) }
+    )
 
-    var isSidebarVisible: Bool { sidebarVisibility != .detailOnly }
-
-    func toggleSidebar() {
-        sidebarVisibility = isSidebarVisible ? .detailOnly : .all
+    func sidebarState(for tab: AppTab) -> TabSidebarState {
+        // AppTab.allCases is the source used to build the dictionary, so a
+        // missing value is a programming error rather than recoverable input.
+        guard let state = sidebarStates[tab] else {
+            preconditionFailure("Missing sidebar state for \(tab.rawValue)")
+        }
+        return state
     }
 
     func selectTab(_ tab: AppTab) {
@@ -360,7 +406,7 @@ final class AppTabRouter: ObservableObject {
             worktreeId: worktreeId,
             worktreePath: worktreePath
         )
-        sidebarVisibility = .all
+        sidebarState(for: .worktrees).visibility = .all
         selectTab(.worktrees)
     }
 
@@ -371,6 +417,23 @@ final class AppTabRouter: ObservableObject {
     func failSessionNavigation(_ sessionId: String) {
         navigationError = L10nFormat("Session %@ could not be loaded.", sessionId)
         pendingSessionId = nil
+    }
+}
+
+@MainActor
+final class TabSidebarState: ObservableObject {
+    let tab: AppTab
+    @Published var visibility: NavigationSplitViewVisibility
+
+    init(tab: AppTab, visibility: NavigationSplitViewVisibility = .all) {
+        self.tab = tab
+        self.visibility = visibility
+    }
+
+    var isVisible: Bool { visibility != .detailOnly }
+
+    func toggle() {
+        visibility = isVisible ? .detailOnly : .all
     }
 }
 
