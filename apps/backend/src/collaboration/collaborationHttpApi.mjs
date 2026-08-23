@@ -94,17 +94,17 @@ export function handleCollaborationHttpRequest({
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/workspaces") {
         if (!onListWorkspaces) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
-        return sendJson(response, 200, await onListWorkspaces(actorAgentId));
+        return sendJson(response, 200, await onListWorkspaces(actorAgentId, sessionMetadata));
       }
 
       if (request.method === "POST" && url.pathname === "/internal/collaboration/worktrees") {
         if (!onCreateWorktree) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
-        return sendJson(response, 201, await onCreateWorktree(actorAgentId, await readJson(request)));
+        return sendJson(response, 201, await onCreateWorktree(actorAgentId, await readJson(request), sessionMetadata));
       }
 
       if (request.method === "POST" && url.pathname === "/internal/collaboration/workspaces/switch") {
         if (!onSwitchWorkspace) throw apiError("WORKSPACE_TOOLS_UNAVAILABLE", "Workspace tools are unavailable.", 503);
-        return sendJson(response, 202, await onSwitchWorkspace(actorAgentId, await readJson(request)));
+        return sendJson(response, 202, await onSwitchWorkspace(actorAgentId, await readJson(request), sessionMetadata));
       }
 
       if (request.method === "POST" && url.pathname === "/internal/collaboration/work-items/acceptance") {

@@ -174,7 +174,8 @@ export function createCollaborationMcpServer(options) {
       detach: z.boolean().optional(),
       switch_after_create: z.boolean().optional(),
       inventory_version: z.string().min(1).optional(),
-      continuation_checkpoint: z.string().min(1).optional()
+      continuation_checkpoint: z.string().min(1).optional(),
+      idempotency_key: z.string().min(1).optional()
     },
     handler: (input) => client.post("/internal/collaboration/worktrees", input)
   });

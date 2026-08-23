@@ -319,16 +319,16 @@ test("authenticated MCP workspace routes preserve the calling Agent identity", a
         response,
         url,
         core,
-        onListWorkspaces: async (agentId) => {
-          calls.push({ operation: "list", agentId });
+        onListWorkspaces: async (agentId, metadata) => {
+          calls.push({ operation: "list", agentId, metadata });
           return { activeWorktreeId: "worktree:main", workspaces: [] };
         },
-        onCreateWorktree: async (agentId, input) => {
-          calls.push({ operation: "create", agentId, input });
+        onCreateWorktree: async (agentId, input, metadata) => {
+          calls.push({ operation: "create", agentId, input, metadata });
           return { worktree: { id: "worktree:feature" } };
         },
-        onSwitchWorkspace: async (agentId, input) => {
-          calls.push({ operation: "switch", agentId, input });
+        onSwitchWorkspace: async (agentId, input, metadata) => {
+          calls.push({ operation: "switch", agentId, input, metadata });
           return { status: "waitingForTurn" };
         },
         onMemoryOperation: async (agentId, tool, arguments_, metadata) => {
@@ -354,9 +354,15 @@ test("authenticated MCP workspace routes preserve the calling Agent identity", a
     await client.get("/internal/collaboration/memory/search", { intent: "" });
 
     assert.deepEqual(calls, [
-      { operation: "list", agentId: "research-agent" },
-      { operation: "create", agentId: "research-agent", input: { target_path: "/repo/feature" } },
-      { operation: "switch", agentId: "research-agent", input: { target_worktree_id: "worktree:feature" } },
+      { operation: "list", agentId: "research-agent", metadata: {
+        sessionId: "session:research", objectiveId: "objective:research", workItemId: "work_item:research"
+      } },
+      { operation: "create", agentId: "research-agent", input: { target_path: "/repo/feature" }, metadata: {
+        sessionId: "session:research", objectiveId: "objective:research", workItemId: "work_item:research"
+      } },
+      { operation: "switch", agentId: "research-agent", input: { target_worktree_id: "worktree:feature" }, metadata: {
+        sessionId: "session:research", objectiveId: "objective:research", workItemId: "work_item:research"
+      } },
       {
         operation: "memory",
         agentId: "research-agent",

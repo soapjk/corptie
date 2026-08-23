@@ -56,6 +56,7 @@ import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoord
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
 import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
+import { SessionWorkspaceOperationService } from "./application/sessionWorkspaceOperationService.mjs";
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
@@ -249,6 +250,7 @@ let activeSessionReconciliationInFlight = false;
 const activeSessionReconciledAt = new Map();
 let stateSyncService = null;
 let workItemExecutionOrchestrator = null;
+let sessionWorkspaceOperations = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -904,6 +906,22 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
 const sessionWorktrees = new SessionWorktreeService({
   gitWorkspaces,
   workspaceCoordinator: sessionWorkspaceCoordinator
+});
+sessionWorkspaceOperations = new SessionWorkspaceOperationService({
+  store,
+  collaborationCore,
+  worktrees: sessionWorktrees,
+  inventory: (logical) => workspaceInventory(logical),
+  onAudit: (record) => {
+    console.log(`[workspace-creation] ${JSON.stringify(record)}`);
+    const sessionId = record.providerSessionId
+      ?? (record.sourceSessionId ? store.getLogicalSession(record.sourceSessionId)?.legacySessionId : null)
+      ?? null;
+    emitEvent("SessionWorkspaceOperationObserved", record, {
+      sessionId,
+      source: { type: "session_workspace_operation", operationId: record.operationId ?? null }
+    });
+  }
 });
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
@@ -2773,49 +2791,23 @@ function scheduledSessionHttpActor(request) {
   throw error;
 }
 
-async function createAgentWorktree(agentId, input = {}) {
-  const { sessionId, logical } = requireAgentLogicalSession(agentId);
-  return sessionWorktrees.createWorktree(sessionId, {
-    logicalSessionId: logical.logicalSessionId,
-    targetPath: input.target_path,
-    branch: input.branch,
-    baseRef: input.base_ref,
-    createBranch: input.create_branch,
-    detach: input.detach,
-    switchAfterCreate: input.switch_after_create,
-    inventoryVersion: input.inventory_version,
-    continuationPrompt: input.continuation_checkpoint
-  });
-}
-
 async function callWorkspaceDynamicTool(params) {
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId) {
-    throw new Error("Workspace operations are only available from the active logical Session thread.");
+    const error = new Error("Workspace operations are only available from the active logical Session thread.");
+    error.code = "WORKSPACE_SESSION_ROUTE_STALE";
+    error.stage = "route_validation";
+    throw error;
   }
+  const metadata = params.metadata ?? {};
   if (params.tool === "corptie_list_workspaces") {
-    return workspaceInventory(logical);
+    return sessionWorkspaceOperations.listWorkspaces(metadata, params.actorId);
   }
   if (params.tool === "corptie_create_worktree") {
-    const input = params.arguments ?? {};
-    return sessionWorktrees.createWorktree(logical.legacySessionId, {
-      logicalSessionId: logical.logicalSessionId,
-      targetPath: input.target_path,
-      branch: input.branch,
-      baseRef: input.base_ref,
-      createBranch: input.create_branch,
-      detach: input.detach,
-      switchAfterCreate: input.switch_after_create,
-      inventoryVersion: input.inventory_version,
-      continuationPrompt: input.continuation_checkpoint
-    });
+    return sessionWorkspaceOperations.createWorktree(metadata, params.actorId, params.arguments ?? {});
   }
   if (params.tool === "corptie_switch_workspace") {
-    return sessionWorktrees.switchWorkspace(
-      logical.legacySessionId,
-      params.arguments?.target_worktree_id,
-      params.arguments?.continuation_checkpoint
-    );
+    return sessionWorkspaceOperations.switchWorkspace(metadata, params.actorId, params.arguments ?? {});
   }
   throw new Error(`Unsupported workspace tool: ${params.tool}`);
 }
@@ -6555,15 +6547,9 @@ function route(request, response) {
       }, { sessionId: confirmation.sourceSessionId });
     },
     onConfirmationResolved: resolveCollaborationConfirmation,
-    onListWorkspaces: async (agentId) => {
-      const { logical } = requireAgentLogicalSession(agentId);
-      return workspaceInventory(logical);
-    },
-    onCreateWorktree: createAgentWorktree,
-    onSwitchWorkspace: async (agentId, input) => {
-      const { sessionId } = requireAgentLogicalSession(agentId);
-      return switchSessionWorkspace(sessionId, input.target_worktree_id, undefined, input.continuation_checkpoint);
-    },
+    onListWorkspaces: (agentId, metadata) => sessionWorkspaceOperations.listWorkspaces(metadata, agentId),
+    onCreateWorktree: (agentId, input, metadata) => sessionWorkspaceOperations.createWorktree(metadata, agentId, input),
+    onSwitchWorkspace: (agentId, input, metadata) => sessionWorkspaceOperations.switchWorkspace(metadata, agentId, input),
     onMemoryOperation: (agentId, tool, args, metadata) => memoryOperationService.execute({
       actorId: agentId,
       tool,
