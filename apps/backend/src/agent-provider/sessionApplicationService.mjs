@@ -228,7 +228,7 @@ export class SessionApplicationService {
   async sendMessage(sessionId, message, context = {}) {
     const reference = await this.referenceFor(sessionId);
     const sessionContext = this.resolveMessageContext
-      ? await this.resolveMessageContext(reference, context)
+      ? await this.resolveMessageContext(reference, { ...context, message })
       : null;
     return this.registry.invoke(
       reference.providerId,

@@ -244,9 +244,9 @@ test("Claude Provider preserves extra native tool restrictions while reserving W
   assert.deepEqual(mapped.disallowedTools, ["EnterWorktree", "ExitWorktree", "WebSearch"]);
 });
 
-test("Codex and Claude Provider sessions receive the same provider-neutral memory tool contract", async () => {
+test("Codex, Claude, and OpenClacky Provider sessions receive the same provider-neutral memory tool contract", async () => {
   const attachments = new Map();
-  const providers = ["codex-contract", "claude-contract"].map((id) => provider(
+  const providers = ["codex-contract", "claude-contract", "openclacky-contract"].map((id) => provider(
     id,
     [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH],
     {
@@ -266,8 +266,10 @@ test("Codex and Claude Provider sessions receive the same provider-neutral memor
   });
   await service.prepareSession("codex-contract", { actorId: "agent:1", sessionId: "session:1" });
   await service.prepareSession("claude-contract", { actorId: "agent:1", sessionId: "session:1" });
+  await service.prepareSession("openclacky-contract", { actorId: "agent:1", sessionId: "session:1" });
   const expected = [
     "corptie_memory_search",
+    "corptie_memory_get",
     "corptie_memory_list",
     "corptie_memory_remember",
     "corptie_memory_update",
@@ -275,6 +277,7 @@ test("Codex and Claude Provider sessions receive the same provider-neutral memor
   ];
   assert.deepEqual(attachments.get("codex-contract").tools.map((tool) => tool.name), expected);
   assert.deepEqual(attachments.get("claude-contract").tools.map((tool) => tool.name), expected);
+  assert.deepEqual(attachments.get("openclacky-contract").tools.map((tool) => tool.name), expected);
   assert.deepEqual(
     attachments.get("claude-contract").tools.map((tool) => tool.inputSchema),
     attachments.get("codex-contract").tools.map((tool) => tool.inputSchema)
