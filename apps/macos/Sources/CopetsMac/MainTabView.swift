@@ -206,23 +206,14 @@ struct MainTabView: View {
             }
             .padding(.horizontal, 12)
 
-            GeometryReader { geo in
-                ZStack {
-                    ForEach(AppTab.allCases) { tab in
-                        content(for: tab)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .offset(x: slideOffset(for: tab, width: geo.size.width))
-                            .opacity(tab == router.selectedTab ? 1 : 0)
-                            .allowsHitTesting(tab == router.selectedTab)
-                            .zIndex(tab == router.selectedTab ? 1 : 0)
-                    }
+            MainTabContentLayout(selectedIndex: router.selectedTab.index) {
+                ForEach(AppTab.allCases) { tab in
+                    content(for: tab)
+                        .allowsHitTesting(tab == router.selectedTab)
+                        .accessibilityHidden(tab != router.selectedTab)
                 }
-                .clipped()
-                .animation(
-                    .timingCurve(0.22, 0.9, 0.24, 1.0, duration: 0.26),
-                    value: router.selectedTab
-                )
             }
+            .clipped()
         }
         .environmentObject(router)
     }
@@ -243,16 +234,38 @@ struct MainTabView: View {
         }
     }
 
-    // 常驻滑动：选中 Tab 居中（offset 0），其余 Tab 按相对位置停靠在
-    // 左/右屏幕外。切 Tab 时 withAnimation 让新 Tab 从对应侧滑入、旧 Tab 滑出，
-    // 方向天然由 index 相对关系决定，无需显式 slideForward。
-    private func slideOffset(for tab: AppTab, width: CGFloat) -> CGFloat {
-        if tab == router.selectedTab { return 0 }
-        return tab.index < router.selectedTab.index ? -width : width
-    }
-
     private func openSettings() {
         AppDelegate.shared?.openSettings()
+    }
+}
+
+/// Keeps every main-tab subtree alive so local state and warmed caches survive
+/// tab switches, while measuring and placing only the visible subtree. Window
+/// resize and fullscreen animation therefore do not relayout five heavyweight
+/// screens on every frame.
+struct MainTabContentLayout: Layout {
+    let selectedIndex: Int
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.indices.contains(selectedIndex) else { return }
+        subviews[selectedIndex].place(
+            at: CGPoint(x: bounds.minX, y: bounds.minY),
+            anchor: .topLeading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height)
+        )
     }
 }
 
