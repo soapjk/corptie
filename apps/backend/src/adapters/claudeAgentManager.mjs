@@ -67,9 +67,13 @@ export class ClaudeAgentManager {
       inputQueue: [],
       inputResolvers: []
     };
-    session.runtimeOptions = normalizeClaudeRuntimeOptions(
-      input.toolHost?.providerAttachment ?? input.runtimeOptions
-    );
+    session.runtimeOptions = normalizeClaudeRuntimeOptions({
+      ...(input.runtimeOptions ?? {}),
+      ...(input.toolHost?.providerAttachment ?? {}),
+      ...(Array.isArray(input.runtimeWorkspaceRoots)
+        ? { additionalDirectories: input.runtimeWorkspaceRoots }
+        : {})
+    });
     this.sessions.set(id, session);
     console.log(`[claude-sdk] session created id=${id} cwd=${session.cwd}`);
     this.persistSession(session);
@@ -1704,6 +1708,11 @@ export function normalizeClaudeRuntimeOptions(input = {}) {
   }
   if (Array.isArray(input.settingSources)) {
     result.settingSources = [...input.settingSources];
+  }
+  if (Array.isArray(input.additionalDirectories)) {
+    result.additionalDirectories = [...new Set(input.additionalDirectories.filter((path) => (
+      typeof path === "string" && path.trim()
+    )).map((path) => path.trim()))];
   }
   if (Array.isArray(input.disallowedTools)) {
     result.disallowedTools = [...new Set(input.disallowedTools.filter((tool) => {

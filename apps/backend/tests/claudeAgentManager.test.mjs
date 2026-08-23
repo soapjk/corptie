@@ -237,6 +237,7 @@ test("Claude Query receives Corptie MCP, skills, plugin, and project settings", 
   manager.start({
     id: "claude-corptie-runtime",
     cwd: "/tmp/project",
+    runtimeWorkspaceRoots: ["/tmp/project", "/tmp/repo/.git/worktrees/integration"],
     toolHost: {
       providerAttachment: {
         mcpServers: { corptie: { type: "stdio", command: "node" } },
@@ -255,6 +256,9 @@ test("Claude Query receives Corptie MCP, skills, plugin, and project settings", 
   assert.equal(capturedOptions.plugins[0].path, "/runtime/corptie-plugin");
   assert.equal(capturedOptions.skills, "all");
   assert.deepEqual(capturedOptions.settingSources, ["user", "project", "local"]);
+  assert.deepEqual(capturedOptions.additionalDirectories, [
+    "/tmp/project", "/tmp/repo/.git/worktrees/integration"
+  ]);
   assert.deepEqual(capturedOptions.disallowedTools, ["EnterWorktree", "ExitWorktree"]);
   assert.match(capturedOptions.systemPrompt.append, /Corptie collaboration/);
 });
