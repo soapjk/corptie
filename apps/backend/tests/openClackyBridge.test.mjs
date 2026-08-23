@@ -37,6 +37,94 @@ test("healthy bridge handshake unlocks Tool Host and Workspace transition capabi
   assert.equal(caps.has(CAP.SESSION_USAGE_READ), true);
 });
 
+test("OpenClacky bridge installs Session-scoped tools and executes calls with trusted identity", async () => {
+  const requests = [];
+  const socketMessages = [];
+  const toolCalls = [];
+  class FakeSocket {
+    constructor() { this.readyState = 1; }
+    addEventListener() {}
+    send(value) { socketMessages.push(JSON.parse(value)); }
+    close() {}
+  }
+  const manager = new OpenClackyManager({
+    fetch: async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      const body = init.body ? JSON.parse(init.body) : undefined;
+      requests.push({ path, method: init.method ?? "GET", body });
+      if (path === "/api/sessions" && init.method === "POST") {
+        return Response.json({ session: { id: "clacky-tools", name: "Tools", working_dir: "/tmp", status: "idle" } });
+      }
+      if (path === "/api/sessions/clacky-tools/messages") return Response.json({ events: [] });
+      if (path === "/api/sessions/clacky-tools") {
+        return Response.json({ session: { id: "clacky-tools", name: "Tools", working_dir: "/tmp", status: "idle" } });
+      }
+      return Response.json({ ok: true });
+    },
+    WebSocket: FakeSocket,
+    issueToolHostToken: () => "opaque-session-token",
+    onToolCall: async (input) => { toolCalls.push(input); return { taskId: "scheduled_task:one" }; }
+  });
+  const toolHost = {
+    actorId: "agent:owner",
+    providerAttachment: {
+      kind: "corptie_call",
+      metadata: { sessionId: "session:logical", sessionKind: "worker" },
+      tools: [{ name: "corptie_scheduled_tasks_manage", inputSchema: { type: "object" } }]
+    }
+  };
+
+  await manager.create({ title: "Tools", cwd: "/tmp", toolHost });
+  assert.deepEqual(requests[0].body.corptie_tool_host, {
+    protocol: "corptie-bridge-v1",
+    kind: "corptie_call",
+    token: "opaque-session-token",
+    tools: [{ name: "corptie_scheduled_tasks_manage", inputSchema: { type: "object" } }]
+  });
+
+  manager.handleSocketEvent("clacky-tools", JSON.stringify({
+    type: "corptie_tool_call",
+    call_id: "call:one",
+    token: "opaque-session-token",
+    tool: "corptie_scheduled_tasks_manage",
+    arguments: { action: "create", schedule_type: "after", delay_seconds: 60 }
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(toolCalls, [{
+    actorId: "agent:owner",
+    metadata: { sessionId: "session:logical", sessionKind: "worker" },
+    tool: "corptie_scheduled_tasks_manage",
+    arguments: { action: "create", schedule_type: "after", delay_seconds: 60 }
+  }]);
+  assert.deepEqual(socketMessages.find((message) => message.type === "corptie_tool_result"), {
+    type: "corptie_tool_result",
+    session_id: "clacky-tools",
+    call_id: "call:one",
+    success: true,
+    result: { taskId: "scheduled_task:one" }
+  });
+
+  manager.handleSocketEvent("clacky-tools", JSON.stringify({
+    type: "corptie_tool_call",
+    call_id: "call:forged",
+    token: "forged",
+    tool: "corptie_scheduled_tasks_manage",
+    arguments: {}
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(toolCalls.length, 1);
+  const rejected = socketMessages.find((message) => message.call_id === "call:forged");
+  assert.equal(rejected.success, false);
+  assert.equal(rejected.error.code, "TOOL_HOST_UNAUTHORIZED");
+
+  await manager.resume("clacky-tools", { toolHost });
+  assert.ok(requests.some((request) =>
+    request.path === "/api/sessions/clacky-tools/corptie/tool-host"
+    && request.method === "POST"
+    && request.body.token === "opaque-session-token"
+  ));
+});
+
 test("missing or outdated bridge degrades to basic chat and never over-claims", () => {
   const manager = new OpenClackyManager({
     fetch: async () => Response.json({}, { status: 404 }),

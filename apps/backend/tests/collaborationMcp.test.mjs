@@ -20,6 +20,14 @@ const expectedTools = [
   "corptie.collaboration.capabilities",
   "corptie.sessions.discover",
   "corptie.sessions.get",
+  "corptie_automations_create",
+  "corptie_automations_list",
+  "corptie_automations_get",
+  "corptie_automations_update",
+  "corptie_automations_pause",
+  "corptie_automations_resume",
+  "corptie_automations_cancel",
+  "corptie_automations_run_now",
   "corptie.collaboration.work_items.list",
   "corptie.collaboration.work_items.get",
   "corptie.collaboration.work_items.create",
@@ -107,6 +115,7 @@ test("unbound Assistant Chat does not receive WorkItem creation or collaboration
   try {
     const names = (await client.listTools()).tools.map((tool) => tool.name);
     assert.ok(names.includes("corptie.sessions.discover"));
+    assert.ok(names.includes("corptie_automations_create"));
     assert.equal(names.includes("corptie.collaboration.work_items.create"), false);
     assert.equal(names.includes("corptie.collaboration.request"), false);
   } finally {
@@ -138,6 +147,87 @@ test("MCP Session discovery carries an explicit peer Objective filter", async ()
         sessionKind: "objectiveChat"
       }
     }]);
+  } finally {
+    await client.close();
+  }
+});
+
+test("authenticated Session MCP exposes and maps the complete Automation lifecycle", async () => {
+  const calls = [];
+  const backendClient = {
+    get: async (path, search) => { calls.push(["get", path, search]); return { tasks: [] }; },
+    post: async (path, body) => { calls.push(["post", path, body]); return { task: { taskId: "scheduled_task:one" } }; },
+    patch: async (path, body) => { calls.push(["patch", path, body]); return { task: { taskId: "scheduled_task:one" } }; }
+  };
+  const { client } = await connectMcp(backendClient, {
+    sessionId: "session:current", sessionKind: "assistantChat", sessionObjectiveId: ""
+  });
+  try {
+    const tools = (await client.listTools()).tools;
+    const names = tools.map((tool) => tool.name);
+    for (const name of [
+      "corptie_automations_create", "corptie_automations_list", "corptie_automations_get",
+      "corptie_automations_update", "corptie_automations_pause", "corptie_automations_resume",
+      "corptie_automations_cancel", "corptie_automations_run_now"
+    ]) assert.ok(names.includes(name), `${name} must be discoverable`);
+    assert.equal(tools.find((tool) => tool.name === "corptie_automations_list").annotations.readOnlyHint, true);
+    assert.equal(tools.find((tool) => tool.name === "corptie_automations_get").annotations.readOnlyHint, true);
+
+    await client.callTool({
+      name: "corptie_automations_create",
+      arguments: {
+        name: "Follow up",
+        schedule_type: "after",
+        delay_seconds: 60,
+        message: "Continue the review",
+        actions: [
+          { type: "queueSessionMessage", message: "Continue the review" },
+          { type: "activateSession" },
+          { type: "localNotification", title: "Ready", body: "Review resumed" }
+        ],
+        misfire_policy: "fireOnce",
+        max_retries: 3
+      }
+    });
+    await client.callTool({ name: "corptie_automations_list", arguments: {} });
+    await client.callTool({ name: "corptie_automations_get", arguments: { automation_id: "scheduled_task:one" } });
+    await client.callTool({
+      name: "corptie_automations_update",
+      arguments: { automation_id: "scheduled_task:one", resource_version: 2, name: "Updated" }
+    });
+    for (const action of ["pause", "resume", "cancel", "run_now"]) {
+      await client.callTool({
+        name: `corptie_automations_${action}`,
+        arguments: { automation_id: "scheduled_task:one" }
+      });
+    }
+
+    assert.deepEqual(calls[0], ["post", "/automations", {
+      name: "Follow up",
+      scheduleType: "after",
+      delaySeconds: 60,
+      message: "Continue the review",
+      actions: [
+        { type: "queueSessionMessage", message: "Continue the review" },
+        { type: "activateSession" },
+        { type: "localNotification", title: "Ready", body: "Review resumed" }
+      ],
+      misfirePolicy: "fireOnce",
+      maxRetries: 3
+    }]);
+    assert.deepEqual(calls[1], ["get", "/automations", {
+      logicalSessionId: undefined, currentSession: "true", status: undefined
+    }]);
+    assert.deepEqual(calls[2], ["get", "/automations/scheduled_task%3Aone", undefined]);
+    assert.deepEqual(calls[3], ["patch", "/automations/scheduled_task%3Aone", {
+      resourceVersion: 2, name: "Updated"
+    }]);
+    assert.deepEqual(calls.slice(4).map((call) => call.slice(0, 2)), [
+      ["post", "/automations/scheduled_task%3Aone/pause"],
+      ["post", "/automations/scheduled_task%3Aone/resume"],
+      ["post", "/automations/scheduled_task%3Aone/cancel"],
+      ["post", "/automations/scheduled_task%3Aone/run"]
+    ]);
   } finally {
     await client.close();
   }

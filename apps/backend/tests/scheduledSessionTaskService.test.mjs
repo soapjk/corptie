@@ -637,6 +637,26 @@ test("Automation projection supports after plus ordered message, activation, and
   }
 });
 
+test("conversation creation defaults to the authenticated Agent's current Logical Session", async () => {
+  const f = await fixture();
+  try {
+    f.service.resolveActorLogicalSessionId = (actor) => {
+      assert.deepEqual(actor, f.actor);
+      return "logical:stable";
+    };
+    const task = f.service.create({
+      name: "Current conversation follow-up",
+      scheduleType: "after",
+      delaySeconds: 30,
+      message: "Continue here"
+    }, f.actor);
+    assert.equal(task.logicalSessionId, "logical:stable");
+    assert.equal(task.trigger.type, "after");
+  } finally {
+    await cleanup(f);
+  }
+});
+
 test("canonical at, interval, processExit, and condition Trigger models persist without Provider fields", async () => {
   const f = await fixture({ inspectProcess: async () => ({
     state: "exited", reason: "process_normal_exit", exitStatus: { kind: "normal", code: 0, signal: null }

@@ -48,7 +48,9 @@ export function createOpenClackyProvider(manager, options = {}) {
     listSessions: (listOptions) => manager.list(listOptions),
     readSession: (reference) => manager.read(reference.providerSessionId),
     createSession: (input) => manager.create(input),
-    resumeSession: (reference) => manager.resume(reference.providerSessionId),
+    resumeSession: (reference, context = {}) => manager.resume(reference.providerSessionId, {
+      toolHost: context.toolHost ?? null
+    }),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, context),

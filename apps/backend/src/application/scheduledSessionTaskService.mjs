@@ -16,6 +16,7 @@ export class ScheduledSessionTaskService {
     this.store = options.store;
     this.environment = options.environment;
     this.resolveRoute = options.resolveRoute;
+    this.resolveActorLogicalSessionId = options.resolveActorLogicalSessionId ?? null;
     this.authorize = options.authorize;
     this.enqueue = options.enqueue;
     this.activate = options.activate ?? (async () => ({ delivered: true }));
@@ -49,12 +50,18 @@ export class ScheduledSessionTaskService {
   }
 
   create(input, actor) {
-    const normalized = validateScheduledSessionTaskInput(input, { now: this.now() });
+    const taskInput = input ?? {};
+    const logicalSessionId = taskInput.logicalSessionId
+      ?? (typeof this.resolveActorLogicalSessionId === "function"
+        ? this.resolveActorLogicalSessionId(actor)
+        : null);
+    const resolvedInput = logicalSessionId ? { ...taskInput, logicalSessionId } : taskInput;
+    const normalized = validateScheduledSessionTaskInput(resolvedInput, { now: this.now() });
     const scope = this.#authorize(actor, normalized.logicalSessionId, "create");
     validateConditionResources(normalized.conditionSpec);
     const task = this.store.createScheduledSessionTask({
       ...normalized,
-      taskId: input.taskId ?? `scheduled_task:${randomUUID()}`,
+      taskId: resolvedInput.taskId ?? `scheduled_task:${randomUUID()}`,
       creatorType: actor.type,
       creatorId: actor.id,
       objectiveId: scope.objectiveId ?? null,

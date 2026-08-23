@@ -23,6 +23,34 @@ const messageFields = {
   idempotency_key: z.string().min(1).optional()
 };
 const strictId = (schema) => z.string().min(1).describe(schema.description);
+const automationMessageSchema = z.union([
+  z.string().min(1),
+  z.object({
+    text: z.string().min(1),
+    type: z.string().min(1).optional(),
+    payload: z.record(z.string(), z.unknown()).optional()
+  }).strict()
+]);
+const automationActionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("queueSessionMessage"), message: automationMessageSchema }).strict(),
+  z.object({ type: z.literal("activateSession") }).strict(),
+  z.object({
+    type: z.literal("localNotification"),
+    title: z.string().min(1).optional(),
+    body: z.string().min(1)
+  }).strict()
+]);
+const automationConditionSchema = z.object({
+  script: z.string().min(1).describe("Read-only observer script. Its final JSON line may return fire/message/state."),
+  check_interval_seconds: z.number().int().min(1).max(86_400).optional(),
+  timeout_seconds: z.number().int().min(1).max(300).optional(),
+  working_directory: z.string().min(1).optional()
+}).strict();
+const automationProcessSchema = z.object({
+  pid: z.number().int().min(1),
+  poll_interval_seconds: z.number().int().min(1).max(3_600).optional(),
+  expected_start_time: z.string().min(1).optional()
+}).strict();
 
 export function createCollaborationMcpServer(options) {
   const agentId = required(options.agentId, "agentId");
@@ -103,6 +131,87 @@ export function createCollaborationMcpServer(options) {
     inputSchema: { session_id: strictId(sessionIdSchema) }, readOnly: true,
     handler: ({ session_id }) => client.get(`/internal/collaboration/sessions/${encodeURIComponent(session_id)}`)
   });
+
+  if (authenticatedSessionId) register(server, "corptie_automations_create", {
+    description: "Create a provider-neutral Corptie Automation. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
+    inputSchema: {
+      name: z.string().min(1).max(120).optional(),
+      logical_session_id: z.string().min(1).optional(),
+      schedule_type: z.enum(["at", "after", "interval", "processExit", "condition"]),
+      run_at: z.string().min(1).optional().describe("ISO-8601 timestamp for at, or optional first run for interval/condition."),
+      delay_seconds: z.number().int().min(1).max(31_536_000).optional(),
+      interval_seconds: z.number().int().min(1).max(31_536_000).optional(),
+      timezone: z.string().min(1).optional(),
+      message: automationMessageSchema.optional(),
+      actions: z.array(automationActionSchema).min(1).max(16).optional(),
+      condition: automationConditionSchema.optional(),
+      process: automationProcessSchema.optional(),
+      misfire_policy: z.enum(["skip", "fireOnce", "catchUp"]).optional(),
+      max_retries: z.number().int().min(0).max(20).optional(),
+      max_concurrent_runs: z.number().int().min(1).max(32).optional(),
+      max_catch_up_runs: z.number().int().min(1).max(100).optional(),
+      timeout_seconds: z.number().int().min(1).max(86_400).optional(),
+      backpressure_limit: z.number().int().min(1).max(10_000).optional()
+    },
+    handler: (input) => client.post("/automations", automationCreateBody(input))
+  });
+
+  if (authenticatedSessionId) register(server, "corptie_automations_list", {
+    description: "List Automations for this authenticated logical Session by default. Optionally target another authorized logical Session or filter by status.",
+    inputSchema: {
+      logical_session_id: z.string().min(1).optional(),
+      status: z.enum(["active", "paused", "completed", "failed", "cancelled"]).optional()
+    },
+    readOnly: true,
+    handler: ({ logical_session_id, status }) => client.get("/automations", {
+      logicalSessionId: logical_session_id,
+      currentSession: logical_session_id ? undefined : "true",
+      status
+    })
+  });
+
+  if (authenticatedSessionId) register(server, "corptie_automations_get", {
+    description: "Get one authorized Automation with Run stages, action results, routing data, and audit history.",
+    inputSchema: { automation_id: z.string().min(1) },
+    readOnly: true,
+    handler: ({ automation_id }) => client.get(`/automations/${encodeURIComponent(automation_id)}`)
+  });
+
+  if (authenticatedSessionId) register(server, "corptie_automations_update", {
+    description: "Update mutable fields of an authorized Automation using its current resource_version for optimistic concurrency.",
+    inputSchema: {
+      automation_id: z.string().min(1),
+      resource_version: z.number().int().min(1),
+      name: z.string().min(1).max(120).optional(),
+      run_at: z.string().min(1).optional(),
+      interval_seconds: z.number().int().min(1).max(31_536_000).optional(),
+      timezone: z.string().min(1).optional(),
+      message: automationMessageSchema.optional(),
+      actions: z.array(automationActionSchema).min(1).max(16).optional(),
+      condition: automationConditionSchema.optional(),
+      process: automationProcessSchema.optional(),
+      misfire_policy: z.enum(["skip", "fireOnce", "catchUp"]).optional(),
+      max_retries: z.number().int().min(0).max(20).optional(),
+      max_concurrent_runs: z.number().int().min(1).max(32).optional(),
+      max_catch_up_runs: z.number().int().min(1).max(100).optional(),
+      timeout_seconds: z.number().int().min(1).max(86_400).optional(),
+      backpressure_limit: z.number().int().min(1).max(10_000).optional()
+    },
+    handler: ({ automation_id, ...input }) => client.patch(
+      `/automations/${encodeURIComponent(automation_id)}`,
+      automationPatchBody(input)
+    )
+  });
+
+  for (const action of ["pause", "resume", "cancel", "run_now"]) {
+    if (authenticatedSessionId) register(server, `corptie_automations_${action}`, {
+      description: automationActionDescription(action),
+      inputSchema: { automation_id: z.string().min(1) },
+      handler: ({ automation_id }) => client.post(
+        `/automations/${encodeURIComponent(automation_id)}/${action === "run_now" ? "run" : action}`
+      )
+    });
+  }
   if (sessionObjectiveId && ["objectiveChat", "worker"].includes(sessionKind)) register(server, "corptie.collaboration.work_items.list", {
     description: "List WorkItems visible to this authenticated Session.", inputSchema: {}, readOnly: true,
     handler: () => client.get("/internal/collaboration/work-items")
@@ -490,6 +599,76 @@ function mapRequest(input) {
     parentTaskId: input.parent_task_id,
     contextId: input.context_id
   });
+}
+
+function automationCreateBody(input) {
+  return compact({
+    name: input.name,
+    logicalSessionId: input.logical_session_id,
+    scheduleType: input.schedule_type,
+    runAt: input.run_at,
+    delaySeconds: input.delay_seconds,
+    intervalSeconds: input.interval_seconds,
+    timezone: input.timezone,
+    message: input.message,
+    actions: input.actions,
+    condition: automationConditionBody(input.condition),
+    process: automationProcessBody(input.process),
+    misfirePolicy: input.misfire_policy,
+    maxRetries: input.max_retries,
+    maxConcurrentRuns: input.max_concurrent_runs,
+    maxCatchUpRuns: input.max_catch_up_runs,
+    timeoutSeconds: input.timeout_seconds,
+    backpressureLimit: input.backpressure_limit
+  });
+}
+
+function automationPatchBody(input) {
+  return compact({
+    resourceVersion: input.resource_version,
+    name: input.name,
+    runAt: input.run_at,
+    intervalSeconds: input.interval_seconds,
+    timezone: input.timezone,
+    message: input.message,
+    actions: input.actions,
+    condition: automationConditionBody(input.condition),
+    process: automationProcessBody(input.process),
+    misfirePolicy: input.misfire_policy,
+    maxRetries: input.max_retries,
+    maxConcurrentRuns: input.max_concurrent_runs,
+    maxCatchUpRuns: input.max_catch_up_runs,
+    timeoutSeconds: input.timeout_seconds,
+    backpressureLimit: input.backpressure_limit
+  });
+}
+
+function automationConditionBody(value) {
+  if (!value) return undefined;
+  return compact({
+    script: value.script,
+    checkIntervalSeconds: value.check_interval_seconds,
+    timeoutSeconds: value.timeout_seconds,
+    workingDirectory: value.working_directory
+  });
+}
+
+function automationProcessBody(value) {
+  if (!value) return undefined;
+  return compact({
+    pid: value.pid,
+    pollIntervalSeconds: value.poll_interval_seconds,
+    expectedStartTime: value.expected_start_time
+  });
+}
+
+function automationActionDescription(action) {
+  switch (action) {
+    case "pause": return "Pause an authorized active Automation while preserving its schedule and audit history.";
+    case "resume": return "Resume an authorized paused or failed Automation after permissions and scope are revalidated.";
+    case "cancel": return "Cancel an authorized Automation without deleting its Run or audit history.";
+    default: return "Run an authorized Automation immediately without changing its future schedule.";
+  }
 }
 
 function actionPath(taskId, action) {
