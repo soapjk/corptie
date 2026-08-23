@@ -159,6 +159,9 @@
 "Controls when Codex asks before running privileged actions" = "控制 Codex 在执行高权限操作前何时询问";
 "Copy" = "复制";
 "Copy message" = "复制消息";
+"Click to copy Session title" = "单击复制会话标题";
+"Copy Session title" = "复制会话标题";
+"Copied" = "已复制";
 "Create task" = "创建任务";
 "Dismiss" = "关闭";
 "Enable model-assisted parsing for terminal choice prompts" = "启用模型辅助解析终端选项提示";
