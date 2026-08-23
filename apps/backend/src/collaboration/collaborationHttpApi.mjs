@@ -222,28 +222,38 @@ export function handleCollaborationHttpRequest({
         const input = await readJson(request);
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session-scoped collaboration is unavailable.", 503);
         const sourceCapabilities = sessionCollaborationService.capabilities(sessionMetadata, actorAgentId);
-        let recipientSession = null;
+        let recipientSessionDescriptor = null;
         if (input.recipientSessionId) {
-          recipientSession = sessionCollaborationService?.getSession(sessionMetadata, actorAgentId, input.recipientSessionId)?.sessionId ?? null;
-        } else if (input.recipientSessionName) {
-          recipientSession = core.store.getLogicalSessionByName(input.recipientSessionName)?.logicalSessionId ?? null;
-          if (recipientSession) sessionCollaborationService.getSession(sessionMetadata, actorAgentId, recipientSession);
-        } else if (input.recipientAgentId) {
-          const intent = String(input.routingIntent ?? "").trim();
-          if (!intent) throw apiError("ROUTING_INTENT_REQUIRED", "routingIntent is required when only recipientAgentId is supplied.", 400);
-          if (intent === "create_dedicated_session") {
-            throw apiError("DEDICATED_SESSION_CREATION_REQUIRED", "Create the dedicated Session first, then retry with recipientSessionId.", 409);
-          }
-          recipientSession = resolveRecipientSession(
+          recipientSessionDescriptor = resolveRecipientSession(
             sessionCollaborationService,
             sessionMetadata,
             actorAgentId,
             input
-          )?.sessionId ?? null;
+          );
+        } else if (input.recipientSessionName) {
+          const namedSessionId = core.store.getLogicalSessionByName(input.recipientSessionName)?.logicalSessionId ?? null;
+          if (namedSessionId) {
+            recipientSessionDescriptor = resolveRecipientSession(
+              sessionCollaborationService,
+              sessionMetadata,
+              actorAgentId,
+              { ...input, recipientSessionId: namedSessionId }
+            );
+          }
+        } else if (input.recipientAgentId) {
+          const intent = String(input.routingIntent ?? "").trim();
+          if (!intent) throw apiError("ROUTING_INTENT_REQUIRED", "routingIntent is required when only recipientAgentId is supplied.", 400);
+          recipientSessionDescriptor = resolveRecipientSession(
+            sessionCollaborationService,
+            sessionMetadata,
+            actorAgentId,
+            input
+          );
         }
+        const recipientSession = recipientSessionDescriptor?.sessionId ?? null;
         const recipient = recipientSession
           ? core.getAgentForSession(recipientSession)
-          : null;
+          : (input.recipientAgentId ? core.getAgent(input.recipientAgentId) : null);
         if (!recipient) {
           throw apiError(
             "AGENT_NOT_FOUND",
@@ -263,6 +273,7 @@ export function handleCollaborationHttpRequest({
           ...input,
           sourceObjectiveId: sourceCapabilities.objectiveId ?? undefined,
           sourceWorkItemId: sourceCapabilities.workItemId ?? undefined,
+          workItemId: input.workItemId ?? recipientSessionDescriptor?.workItemId ?? undefined,
           recipientAgentId: recipient.agentId,
           recipientSessionId: recipientSession,
           initiatorAgentId: actorAgentId,

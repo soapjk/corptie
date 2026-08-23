@@ -1542,6 +1542,7 @@ export class CorptieStore {
     this.ensureColumn("collaboration_tasks", "recipient_name_at_send", "TEXT");
     this.ensureColumn("collaboration_tasks", "routing_version", "INTEGER");
     this.ensureColumn("collaboration_tasks", "route_status", "TEXT NOT NULL DEFAULT 'unresolved'");
+    this.ensureColumn("collaboration_tasks", "routing_intent", "TEXT");
     this.ensureColumn("collaboration_tasks", "artifact_status", "TEXT NOT NULL DEFAULT 'pending'");
     this.ensureColumn("collaboration_tasks", "acceptance_status", "TEXT NOT NULL DEFAULT 'pending'");
     this.ensureColumn("collaboration_tasks", "initiator_binding_id", "TEXT");
@@ -4628,10 +4629,11 @@ export class CorptieStore {
       ? patch.completedAt
       : (["completed", "failed", "cancelled"].includes(status) ? timestamp : item.completedAt);
     this.db.run(
-      `UPDATE agent_work_items SET status = ?, target_turn_id = ?, last_error = ?,
+      `UPDATE agent_work_items SET status = ?, session_id = ?, target_turn_id = ?, last_error = ?,
        started_at = ?, completed_at = ?, source_json = ?, updated_at = ? WHERE work_item_id = ?`,
       [
         status,
+        Object.hasOwn(patch, "sessionId") ? patch.sessionId : item.sessionId,
         Object.hasOwn(patch, "targetTurnId") ? patch.targetTurnId : item.targetTurnId,
         Object.hasOwn(patch, "lastError") ? patch.lastError : item.lastError,
         Object.hasOwn(patch, "startedAt") ? patch.startedAt : item.startedAt,

@@ -156,6 +156,56 @@ test("running delivery queues without consuming an attempt and drains when the S
   }
 });
 
+test("delivery preflight reroutes when the selected Session closes before startTurn", async () => {
+  const value = await fixture();
+  try {
+    const task = createRequest(value.core, "route-race");
+    const delivery = value.core.listPendingDeliveries()[0];
+    const replacementProviderId = "provider:replacement";
+    const replacementLogicalId = "session:replacement";
+    value.store.createSession({
+      id: replacementProviderId,
+      title: "Replacement",
+      agentId: "agent-b",
+      sessionKind: "worker",
+      objectiveId: task.targetObjectiveId,
+      workItemId: task.workItemId,
+      cwd: value.directory
+    });
+    value.store.createLogicalSessionRoute({
+      logicalSessionId: replacementLogicalId,
+      legacySessionId: replacementProviderId,
+      providerThreadId: replacementProviderId,
+      providerSessionId: replacementProviderId,
+      providerId: "codex-app-server",
+      boundCwd: value.directory,
+      sessionName: "Replacement"
+    });
+    value.core.bindSession({ agentId: "agent-b", sessionId: replacementProviderId });
+    const runtime = fakeRuntime("idle");
+    let preflightCalls = 0;
+    const dispatcher = new CollaborationDeliveryDispatcher({
+      core: value.core,
+      runtime,
+      ensureRecipientSession: async (selectedTask) => {
+        preflightCalls += 1;
+        value.core.rerouteTaskRecipient(selectedTask.taskId, replacementLogicalId, {
+          reason: "target_closed_between_route_and_delivery"
+        });
+      }
+    });
+
+    const delivered = await dispatcher.dispatch(delivery.deliveryId);
+    assert.equal(delivered.status, "delivered");
+    assert.equal(preflightCalls, 1);
+    assert.equal(runtime.calls.find((call) => call.type === "startTurn").sessionId, replacementProviderId);
+    assert.equal(value.core.getTask(task.taskId).recipientSessionId, replacementLogicalId);
+    assert.ok(value.core.getTask(task.taskId).events.some((event) => event.type === "recipient_route_reselected"));
+  } finally {
+    await cleanup(value);
+  }
+});
+
 test("stopped Sessions resume before turn/start", async () => {
   const value = await fixture();
   try {

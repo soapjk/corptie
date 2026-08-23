@@ -9,6 +9,7 @@ export class CollaborationDeliveryDispatcher {
     this.maxAttempts = options.maxAttempts ?? 3;
     this.retryBaseMs = options.retryBaseMs ?? 2000;
     this.onEvent = options.onEvent ?? (() => {});
+    this.ensureRecipientSession = options.ensureRecipientSession ?? null;
     this.timer = null;
     this.ticking = false;
   }
@@ -55,8 +56,22 @@ export class CollaborationDeliveryDispatcher {
   }
 
   async dispatch(deliveryId) {
-    const envelope = this.core.getDeliveryEnvelope(deliveryId);
+    let envelope = this.core.getDeliveryEnvelope(deliveryId);
     if (!envelope || envelope.delivery.status === "delivered") return envelope?.delivery ?? null;
+    if (this.ensureRecipientSession) {
+      try {
+        await this.ensureRecipientSession(envelope.task, { reason: "delivery_preflight" });
+        envelope = this.core.getDeliveryEnvelope(deliveryId) ?? envelope;
+      } catch (error) {
+        this.onEvent("CollaborationRecipientRouteFailed", {
+          deliveryId,
+          taskId: envelope.task.taskId,
+          code: error.code ?? "RECIPIENT_ROUTE_FAILED",
+          error: error.message
+        });
+        return this.#fail(envelope, `Recipient route recovery failed: ${error.message}`, "recipient_route_failed");
+      }
+    }
     const agent = this.core.getAgent(envelope.delivery.recipientAgentId);
     const routed = envelope.task.recipientSessionId
       ? (this.core.store.getLogicalSession(envelope.task.recipientSessionId)

@@ -69,7 +69,7 @@ export function createCollaborationMcpServer(options) {
         "When a trusted turn includes a peer_content execution capsule, act from that payload; query get_task only for conflicts, missing context, or history.",
         "Discover a service owner before requesting changes. Non-owners must not modify or publish that service.",
         "Agent is the stable identity, capability/configuration, and authorization principal. Session is the actual collaboration, context, WorkItem, Workspace/Worktree, and message-routing principal; Sessions owned by one Agent never imply shared context.",
-        "Discover the target Session by Objective/WorkItem before sending. Prefer recipient_session_id. If only an Agent is specified, routing_intent is mandatory and ambiguity must be surfaced rather than guessed.",
+        "Choose routing_intent from the task context. Collaboration is delivered only to an active Worker Session bound to the target WorkItem; Objective Chat is orchestration-only. Supply work_item_id to reuse its suitable Worker Session, otherwise Corptie creates the WorkItem and Worker Session automatically.",
         "Each new user instruction is a new task unless the user explicitly continues the exact same task and acceptance criteria. Never use collaboration.reply for a different objective.",
         "After collaboration.request stages confirmation, end the current turn without writing a confirmation, polling, or waiting. Corptie handles the user's decision and later peer response programmatically.",
         "Use structured tasks, minimal necessary context, evidence, and explicit acceptance criteria.",

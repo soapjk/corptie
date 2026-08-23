@@ -288,7 +288,9 @@ const sessionCollaborationService = new SessionCollaborationService({
   store,
   objectiveService,
   collaborationCore,
-  startWorkItem: ({ workItem, agent, title }) => launchAndBindWorkItemSession({ workItem, agent, title })
+  startWorkItem: ({ workItem, agent, title, autoUniqueTitle }) => launchAndBindWorkItemSession({
+    workItem, agent, title, autoUniqueTitle
+  })
 });
 const hubService = new HubService({
   store,
@@ -351,6 +353,7 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
     resume: resumeCollaborationSession,
     startTurn: startCollaborationTurn
   },
+  ensureRecipientSession: (task, options) => sessionCollaborationService.ensureTaskRecipientSession(task, options),
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const scheduledSessionTaskService = new ScheduledSessionTaskService({
@@ -4045,7 +4048,13 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
   return store.bindSessionToObjective(session.id, objective.id);
 }
 
-async function launchAndBindWorkItemSession({ workItem, agent, title, providerId = agentProviderRegistry.defaultProviderId }) {
+async function launchAndBindWorkItemSession({
+  workItem,
+  agent,
+  title,
+  autoUniqueTitle = false,
+  providerId = agentProviderRegistry.defaultProviderId
+}) {
   if (workItem.current_session_id) {
     await memoryExtractor.extractFromSession(workItem.current_session_id, {
       objectiveId: workItem.objective_id,
@@ -4054,7 +4063,7 @@ async function launchAndBindWorkItemSession({ workItem, agent, title, providerId
     });
     store.closeSession(workItem.current_session_id);
   }
-  const session = await launchWorkItemSession({ agent, workItem, providerId, title });
+  const session = await launchWorkItemSession({ agent, workItem, providerId, title, autoUniqueTitle });
   const bound = store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);
   store.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
   emitEvent("WorkItemChanged", { action: "execution-started", entity: store.getWorkItem(workItem.id) });
@@ -5189,8 +5198,37 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
     ...collaborationCore.listQueuedDeliveries(100)
   ];
   for (const delivery of deliveries) {
+    let envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId);
+    if (!envelope) {
+      console.warn(`[collaboration-routing] event=delivery_envelope_missing deliveryId=${delivery.deliveryId}`);
+      continue;
+    }
+    let route;
+    try {
+      route = await sessionCollaborationService.ensureTaskRecipientSession(envelope.task, { reason: "agent_work_enqueue_preflight" });
+      envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId) ?? envelope;
+    } catch (error) {
+      console.error(`[collaboration-routing] event=enqueue_route_failed taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
+      continue;
+    }
     const existingWork = store.getAgentWorkItemForDelivery(delivery.deliveryId);
     if (existingWork) {
+      if (["queued", "failed", "cancelled"].includes(existingWork.status)
+          && route.providerSessionId && existingWork.sessionId !== route.providerSessionId) {
+        const source = { ...existingWork.source, recipientSessionId: route.sessionId };
+        store.updateAgentWorkItem(existingWork.workItemId, {
+          sessionId: route.providerSessionId,
+          status: "queued",
+          startedAt: null,
+          completedAt: null,
+          targetTurnId: null,
+          lastError: null,
+          source
+        });
+        console.info(`[collaboration-routing] event=queued_work_rerouted taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} fromSessionId=${existingWork.sessionId} toSessionId=${route.providerSessionId}`);
+        scheduleAgentWorkDrain(route.providerSessionId);
+        continue;
+      }
       if (["failed", "cancelled"].includes(existingWork.status)) {
         store.updateAgentWorkItem(existingWork.workItemId, {
           status: "queued",
@@ -5203,13 +5241,12 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       }
       continue;
     }
-    const envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId);
     const agent = collaborationCore.getAgent(delivery.recipientAgentId);
     const recipientLogical = envelope?.task?.recipientSessionId
       ? (store.getLogicalSession(envelope.task.recipientSessionId)
         ?? store.getLogicalSessionByLegacySessionId(envelope.task.recipientSessionId))
       : null;
-    const sessionId = recipientLogical?.legacySessionId
+    const sessionId = route.providerSessionId ?? recipientLogical?.legacySessionId
       ?? (!envelope?.task?.recipientSessionId ? agent?.currentSessionId : null);
     if (!envelope || !agent || !sessionId) continue;
     const workItem = store.enqueueAgentWorkItem({
@@ -5245,6 +5282,7 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       collaborationCore.updateDelivery(delivery.deliveryId, { status: "queued", nextAttemptAt: null, lastError: null });
       collaborationCore.recordDeliveryEvent(delivery.deliveryId, "delivery_queued", { sessionId, reason: "agent_work_queue" });
     }
+    console.info(`[collaboration-routing] event=delivery_enqueued taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} logicalSessionId=${route.sessionId} providerSessionId=${sessionId}`);
     emitEvent("AgentWorkQueued", { sessionId, workItem, queuePosition: null, source: workItem.source }, { sessionId, source: workItem.source });
     scheduleAgentWorkDrain(sessionId);
   }
@@ -5289,6 +5327,30 @@ async function drainAgentWorkSession(sessionId) {
 
   const next = store.listQueuedAgentWorkItemsForSession(sessionId, 1)[0];
   if (!next) return;
+  if (next.kind === "collaboration") {
+    const envelope = collaborationCore.getDeliveryEnvelope(next.deliveryId);
+    if (!envelope) {
+      const failedWork = store.updateAgentWorkItem(next.workItemId, {
+        status: "failed",
+        lastError: `Collaboration delivery ${next.deliveryId} no longer has an envelope.`
+      });
+      emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
+      return;
+    }
+    try {
+      const route = await sessionCollaborationService.ensureTaskRecipientSession(envelope.task, { reason: "agent_work_dequeue_preflight" });
+      if (route.providerSessionId !== sessionId) {
+        const source = { ...next.source, recipientSessionId: route.sessionId };
+        store.updateAgentWorkItem(next.workItemId, { sessionId: route.providerSessionId, source });
+        console.info(`[collaboration-routing] event=dequeue_route_changed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} fromSessionId=${sessionId} toSessionId=${route.providerSessionId}`);
+        scheduleAgentWorkDrain(route.providerSessionId);
+        return;
+      }
+    } catch (error) {
+      console.error(`[collaboration-routing] event=dequeue_route_failed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
+      return;
+    }
+  }
   const latencyTrace = normalizeSessionMessageLatencyTrace(next.source?.latencyTrace ?? {}, { sessionId });
   logSessionMessageLatency(latencyTrace, "task_dequeued");
 
@@ -5447,6 +5509,8 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
   const sessionId = confirmation.sourceSessionId ?? before?.sourceSessionId ?? null;
   emitEvent("CollaborationConfirmationResolved", { sessionId, confirmation }, { sessionId, source });
   if (approved) {
+    const task = confirmation.taskId ? collaborationCore.getTask(confirmation.taskId) : null;
+    if (task) await sessionCollaborationService.ensureTaskRecipientSession(task, { reason: "confirmation_approved" });
     await syncCollaborationDeliveriesIntoAgentWorkQueue().catch((error) => {
       console.error(`[collaboration] confirmation delivery sync failed: ${error.message}`);
     });
