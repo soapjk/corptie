@@ -802,6 +802,8 @@ struct WorkItemDetailView: View {
                         text: workItem.acceptanceCriteria
                     )
 
+                    ArtifactSectionView(objectiveId: workItem.objectiveId, workItemId: workItem.id)
+
                     Divider()
 
                     executionSection

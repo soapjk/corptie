@@ -1300,6 +1300,136 @@ export class CorptieStore {
         FOREIGN KEY (target_work_item_id) REFERENCES work_items(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS artifacts (
+        artifact_id TEXT PRIMARY KEY,
+        objective_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        visibility TEXT NOT NULL CHECK (visibility IN (
+          'objective_private', 'work_item_private', 'session_private', 'repository_tracked'
+        )),
+        bound_work_item_id TEXT,
+        bound_session_id TEXT,
+        repository_locator TEXT,
+        current_version INTEGER NOT NULL DEFAULT 0,
+        approved_version INTEGER,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'revoked')),
+        source_session_id TEXT,
+        source_event_id TEXT,
+        created_by_actor_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (bound_work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifacts_objective
+      ON artifacts(objective_id, status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS artifact_versions (
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        mime_type TEXT NOT NULL DEFAULT 'text/markdown',
+        storage_key TEXT,
+        source_session_id TEXT,
+        source_event_id TEXT,
+        supersedes_version INTEGER,
+        approval_status TEXT NOT NULL DEFAULT 'approved'
+          CHECK (approval_status IN ('draft', 'approved', 'rejected')),
+        created_by_actor_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, version),
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id, supersedes_version)
+          REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_versions_storage
+      ON artifact_versions(artifact_id, content_hash);
+
+      CREATE TABLE IF NOT EXISTS artifact_references (
+        reference_id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT,
+        session_id TEXT,
+        relation TEXT NOT NULL CHECK (relation IN (
+          'implementation_spec', 'security_requirement', 'test_plan', 'research_evidence',
+          'handoff', 'acceptance_evidence'
+        )),
+        required INTEGER NOT NULL DEFAULT 0,
+        version_policy TEXT NOT NULL CHECK (version_policy IN ('fixed', 'latest_approved')),
+        pinned_version INTEGER NOT NULL,
+        pinned_hash TEXT NOT NULL,
+        pending_version INTEGER,
+        pending_hash TEXT,
+        authorized_by_actor_id TEXT NOT NULL,
+        authorized_at TEXT NOT NULL,
+        revoked_at TEXT,
+        revoked_by_actor_id TEXT,
+        revocation_reason TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id, pinned_version)
+          REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_work_item
+      ON artifact_references(work_item_id, revoked_at, required, relation);
+
+      CREATE TABLE IF NOT EXISTS artifact_audit_events (
+        audit_id TEXT PRIMARY KEY,
+        artifact_id TEXT,
+        objective_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        session_id TEXT,
+        work_item_id TEXT,
+        from_version INTEGER,
+        to_version INTEGER,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_audit_objective
+      ON artifact_audit_events(objective_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS artifact_content_operations (
+        operation_id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        temp_path TEXT NOT NULL,
+        final_path TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('prepared', 'file_committed', 'completed', 'rolled_back')),
+        error_code TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS artifact_usage_events (
+        usage_id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        work_item_id TEXT,
+        operation TEXT NOT NULL,
+        byte_offset INTEGER NOT NULL DEFAULT 0,
+        byte_length INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (artifact_id, version)
+          REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT
+      );
+
       CREATE INDEX IF NOT EXISTS idx_work_items_objective_id ON work_items(objective_id);
       CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
 
@@ -1497,6 +1627,17 @@ export class CorptieStore {
         intent_hash TEXT NOT NULL,
         result_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS artifact_storage_audit_events (
+        audit_id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        storage_key TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        byte_length INTEGER NOT NULL,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        UNIQUE (action, storage_key)
       );
 
       CREATE TABLE IF NOT EXISTS session_active_tools (
@@ -6059,6 +6200,228 @@ export class CorptieStore {
     );
   }
 
+  createArtifactMetadata(input) {
+    this.db.run(
+      `INSERT INTO artifacts (
+         artifact_id, objective_id, title, summary, visibility, bound_work_item_id,
+         bound_session_id, repository_locator, source_session_id, source_event_id,
+         created_by_actor_id, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.artifactId, input.objectiveId, input.title, input.summary ?? "", input.visibility,
+        input.boundWorkItemId ?? null, input.boundSessionId ?? null, input.repositoryLocator ?? null,
+        input.sourceSessionId ?? null, input.sourceEventId ?? null, input.actorId,
+        input.createdAt, input.createdAt
+      ]
+    );
+    return this.getArtifact(input.artifactId);
+  }
+
+  getArtifact(artifactId) {
+    const row = this.selectOne(`SELECT * FROM artifacts WHERE artifact_id = ?`, [artifactId]);
+    return row ? artifactFromRow(row) : null;
+  }
+
+  listArtifactsByObjective(objectiveId, { includeRevoked = false } = {}) {
+    return this.selectAll(
+      `SELECT * FROM artifacts WHERE objective_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}
+       ORDER BY updated_at DESC, artifact_id`,
+      [objectiveId]
+    ).map(artifactFromRow);
+  }
+
+  updateArtifact(artifactId, patch = {}) {
+    const current = this.getArtifact(artifactId);
+    if (!current) return null;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
+    this.db.run(
+      `UPDATE artifacts SET title=?, summary=?, visibility=?, bound_work_item_id=?, bound_session_id=?,
+       repository_locator=?, current_version=?, approved_version=?, status=?, updated_at=?,
+       resource_version=resource_version+1 WHERE artifact_id=?`,
+      [
+        has("title") ? patch.title : current.title,
+        has("summary") ? patch.summary : current.summary,
+        has("visibility") ? patch.visibility : current.visibility,
+        has("boundWorkItemId") ? patch.boundWorkItemId : current.boundWorkItemId,
+        has("boundSessionId") ? patch.boundSessionId : current.boundSessionId,
+        has("repositoryLocator") ? patch.repositoryLocator : current.repositoryLocator,
+        has("currentVersion") ? patch.currentVersion : current.currentVersion,
+        has("approvedVersion") ? patch.approvedVersion : current.approvedVersion,
+        has("status") ? patch.status : current.status,
+        patch.updatedAt ?? createdAtFromOrNow(), artifactId
+      ]
+    );
+    return this.getArtifact(artifactId);
+  }
+
+  createArtifactVersion(input) {
+    this.db.run(
+      `INSERT INTO artifact_versions (
+         artifact_id, version, content_hash, byte_length, mime_type, storage_key,
+         source_session_id, source_event_id, supersedes_version, approval_status,
+         created_by_actor_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.artifactId, input.version, input.contentHash, input.byteLength, input.mimeType,
+        input.storageKey ?? null, input.sourceSessionId ?? null, input.sourceEventId ?? null,
+        input.supersedesVersion ?? null, input.approvalStatus, input.actorId, input.createdAt
+      ]
+    );
+    return this.getArtifactVersion(input.artifactId, input.version);
+  }
+
+  getArtifactVersion(artifactId, version) {
+    const row = this.selectOne(
+      `SELECT * FROM artifact_versions WHERE artifact_id = ? AND version = ?`,
+      [artifactId, version]
+    );
+    return row ? artifactVersionFromRow(row) : null;
+  }
+
+  listArtifactVersions(artifactId) {
+    return this.selectAll(
+      `SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC`,
+      [artifactId]
+    ).map(artifactVersionFromRow);
+  }
+
+  createArtifactReference(input) {
+    this.db.run(
+      `INSERT INTO artifact_references (
+         reference_id, artifact_id, objective_id, work_item_id, session_id, relation, required,
+         version_policy, pinned_version, pinned_hash, authorized_by_actor_id, authorized_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.referenceId, input.artifactId, input.objectiveId, input.workItemId ?? null,
+        input.sessionId ?? null, input.relation, input.required, input.versionPolicy,
+        input.pinnedVersion, input.pinnedHash, input.actorId, input.authorizedAt
+      ]
+    );
+    return this.getArtifactReference(input.referenceId);
+  }
+
+  getArtifactReference(referenceId) {
+    const row = this.selectOne(`SELECT * FROM artifact_references WHERE reference_id = ?`, [referenceId]);
+    return row ? artifactReferenceFromRow(row) : null;
+  }
+
+  listArtifactReferences({ artifactId = null, workItemId = null, sessionId = null, includeRevoked = false } = {}) {
+    const clauses = [];
+    const params = [];
+    if (artifactId) { clauses.push("artifact_id = ?"); params.push(artifactId); }
+    if (workItemId) { clauses.push("work_item_id = ?"); params.push(workItemId); }
+    if (sessionId) { clauses.push("session_id = ?"); params.push(sessionId); }
+    if (!includeRevoked) clauses.push("revoked_at IS NULL");
+    return this.selectAll(
+      `SELECT * FROM artifact_references ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY required DESC, authorized_at DESC`,
+      params
+    ).map(artifactReferenceFromRow);
+  }
+
+  updateArtifactReference(referenceId, patch = {}) {
+    const current = this.getArtifactReference(referenceId);
+    if (!current) return null;
+    const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
+    this.db.run(
+      `UPDATE artifact_references SET pinned_version=?, pinned_hash=?, pending_version=?, pending_hash=?,
+       revoked_at=?, revoked_by_actor_id=?, revocation_reason=?, resource_version=resource_version+1
+       WHERE reference_id=?`,
+      [
+        has("pinnedVersion") ? patch.pinnedVersion : current.pinnedVersion,
+        has("pinnedHash") ? patch.pinnedHash : current.pinnedHash,
+        has("pendingVersion") ? patch.pendingVersion : current.pendingVersion,
+        has("pendingHash") ? patch.pendingHash : current.pendingHash,
+        has("revokedAt") ? patch.revokedAt : current.revokedAt,
+        has("revokedByActorId") ? patch.revokedByActorId : current.revokedByActorId,
+        has("revocationReason") ? patch.revocationReason : current.revocationReason,
+        referenceId
+      ]
+    );
+    return this.getArtifactReference(referenceId);
+  }
+
+  appendArtifactAudit(input) {
+    this.db.run(
+      `INSERT INTO artifact_audit_events (
+         audit_id, artifact_id, objective_id, action, actor_id, session_id, work_item_id,
+         from_version, to_version, details_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.auditId, input.artifactId ?? null, input.objectiveId, input.action, input.actorId,
+        input.sessionId ?? null, input.workItemId ?? null, input.fromVersion ?? null,
+        input.toVersion ?? null, JSON.stringify(input.details ?? {}), input.createdAt
+      ]
+    );
+  }
+
+  listArtifactAudit(objectiveId, artifactId = null) {
+    return this.selectAll(
+      `SELECT * FROM artifact_audit_events WHERE objective_id = ? ${artifactId ? "AND artifact_id = ?" : ""}
+       ORDER BY created_at DESC`,
+      artifactId ? [objectiveId, artifactId] : [objectiveId]
+    ).map(artifactAuditFromRow);
+  }
+
+  createArtifactContentOperation(input) {
+    this.db.run(
+      `INSERT INTO artifact_content_operations (
+         operation_id, artifact_id, version, content_hash, temp_path, final_path, status, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
+      [input.operationId, input.artifactId, input.version, input.contentHash, input.tempPath,
+        input.finalPath, input.createdAt, input.createdAt]
+    );
+  }
+
+  updateArtifactContentOperation(operationId, status, errorCode = null) {
+    this.db.run(
+      `UPDATE artifact_content_operations SET status=?, error_code=?, updated_at=? WHERE operation_id=?`,
+      [status, errorCode, createdAtFromOrNow(), operationId]
+    );
+  }
+
+  listIncompleteArtifactContentOperations() {
+    return this.selectAll(
+      `SELECT * FROM artifact_content_operations WHERE status IN ('prepared', 'file_committed') ORDER BY created_at`
+    );
+  }
+
+  recordArtifactUsage(input) {
+    this.db.run(
+      `INSERT INTO artifact_usage_events (
+         usage_id, artifact_id, version, content_hash, actor_id, session_id, work_item_id,
+         operation, byte_offset, byte_length, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.usageId, input.artifactId, input.version, input.contentHash, input.actorId,
+        input.sessionId, input.workItemId ?? null, input.operation, input.byteOffset ?? 0,
+        input.byteLength ?? 0, input.createdAt]
+    );
+  }
+
+  appendArtifactStorageAudit(input) {
+    this.db.run(
+      `INSERT OR IGNORE INTO artifact_storage_audit_events (
+         audit_id, action, storage_key, content_hash, byte_length, details_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [input.auditId, input.action, input.storageKey, input.contentHash, input.byteLength,
+        JSON.stringify(input.details ?? {}), input.createdAt]
+    );
+  }
+
+  listArtifactStorageAudit() {
+    return this.selectAll(
+      `SELECT * FROM artifact_storage_audit_events ORDER BY created_at DESC`
+    ).map((row) => ({
+      auditId: row.audit_id,
+      action: row.action,
+      storageKey: row.storage_key,
+      contentHash: row.content_hash,
+      byteLength: Number(row.byte_length),
+      details: parseJson(row.details_json, {}),
+      createdAt: row.created_at
+    }));
+  }
+
   createProjectIntegrationRun(input) {
     const id = input.id ?? `integration:${randomUUID()}`;
     const timestamp = createdAtFromOrNow();
@@ -7506,6 +7869,84 @@ function objectiveFromRow(row) {
     budgetConfig: parseJson(row.budget_config, {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function artifactFromRow(row) {
+  return {
+    artifactId: row.artifact_id,
+    objectiveId: row.objective_id,
+    title: row.title,
+    summary: row.summary ?? "",
+    visibility: row.visibility,
+    boundWorkItemId: row.bound_work_item_id ?? null,
+    boundSessionId: row.bound_session_id ?? null,
+    repositoryLocator: row.repository_locator ?? null,
+    currentVersion: Number(row.current_version ?? 0),
+    approvedVersion: row.approved_version == null ? null : Number(row.approved_version),
+    status: row.status,
+    sourceSessionId: row.source_session_id ?? null,
+    sourceEventId: row.source_event_id ?? null,
+    createdByActorId: row.created_by_actor_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    resourceVersion: Number(row.resource_version ?? 1)
+  };
+}
+
+function artifactVersionFromRow(row) {
+  return {
+    artifactId: row.artifact_id,
+    version: Number(row.version),
+    contentHash: row.content_hash,
+    byteLength: Number(row.byte_length),
+    mimeType: row.mime_type,
+    storageKey: row.storage_key ?? null,
+    sourceSessionId: row.source_session_id ?? null,
+    sourceEventId: row.source_event_id ?? null,
+    supersedesVersion: row.supersedes_version == null ? null : Number(row.supersedes_version),
+    approvalStatus: row.approval_status,
+    createdByActorId: row.created_by_actor_id,
+    createdAt: row.created_at
+  };
+}
+
+function artifactReferenceFromRow(row) {
+  return {
+    referenceId: row.reference_id,
+    artifactId: row.artifact_id,
+    objectiveId: row.objective_id,
+    workItemId: row.work_item_id ?? null,
+    sessionId: row.session_id ?? null,
+    relation: row.relation,
+    required: Boolean(row.required),
+    versionPolicy: row.version_policy,
+    pinnedVersion: Number(row.pinned_version),
+    pinnedHash: row.pinned_hash,
+    pendingVersion: row.pending_version == null ? null : Number(row.pending_version),
+    pendingHash: row.pending_hash ?? null,
+    authorizedByActorId: row.authorized_by_actor_id,
+    authorizedAt: row.authorized_at,
+    revokedAt: row.revoked_at ?? null,
+    revokedByActorId: row.revoked_by_actor_id ?? null,
+    revocationReason: row.revocation_reason ?? null,
+    resourceVersion: Number(row.resource_version ?? 1)
+  };
+}
+
+function artifactAuditFromRow(row) {
+  return {
+    auditId: row.audit_id,
+    artifactId: row.artifact_id ?? null,
+    objectiveId: row.objective_id,
+    action: row.action,
+    actorId: row.actor_id,
+    sessionId: row.session_id ?? null,
+    workItemId: row.work_item_id ?? null,
+    fromVersion: row.from_version == null ? null : Number(row.from_version),
+    toVersion: row.to_version == null ? null : Number(row.to_version),
+    details: parseJson(row.details_json, {}),
+    createdAt: row.created_at
   };
 }
 

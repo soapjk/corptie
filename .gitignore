@@ -88,5 +88,6 @@ docs/**
 !docs/automation-scheduler.md
 !docs/popup-background-execution-audit.md
 !docs/copilot-assistant-mcp-skill-coverage.md
+!docs/private-artifacts.md
 # Corptie local Agent configuration
 /.corptie/

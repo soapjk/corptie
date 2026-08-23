@@ -103,6 +103,10 @@ struct ObjectiveDetailView: View {
                         excludeObjectiveId: objective.id
                     )
 
+                    Divider()
+
+                    ArtifactSectionView(objectiveId: objective.id, workItemId: nil)
+
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
                             field(L10n("标签（逗号分隔）")) {
@@ -134,7 +138,7 @@ struct ObjectiveDetailView: View {
             }
             .padding(16)
         }
-        .frame(width: 500, height: 580)
+        .frame(width: 560, height: 680)
         .alert(L10n("删除 Objective"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteObjective(objectiveId: objective.id) }

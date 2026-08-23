@@ -1,4 +1,4 @@
-export function buildWorkSessionContext({ session, workItem, objective } = {}) {
+export function buildWorkSessionContext({ session, workItem, objective, artifactIndex = null } = {}) {
   if (!session || session.sessionKind !== "worker" || !workItem) return null;
   if (session.workItemId !== workItem.id || session.objectiveId !== workItem.objective_id) {
     const error = new Error("Worker Session context does not match its bound WorkItem.");
@@ -23,6 +23,11 @@ export function buildWorkSessionContext({ session, workItem, objective } = {}) {
     workItem.acceptance_criteria ? `WorkItem acceptance criteria:\n${text(workItem.acceptance_criteria)}` : "",
     objective?.name ? `Parent Objective: ${text(objective.name)}` : "",
     objective?.idealState ? `Objective ideal state:\n${text(objective.idealState)}` : "",
+    artifactIndex?.items?.length ? [
+      "Authorized Artifact index (metadata only; bodies must be read on demand):",
+      JSON.stringify({ artifacts: artifactIndex.items, omittedCount: artifactIndex.omittedCount ?? 0 }),
+      "Use the exact pinned version/hash shown. A pendingUpdate is an impact notice, not permission to silently change versions."
+    ].join("\n") : "",
     "</corptie_work_session_binding>"
   ].filter(Boolean);
   return { prompt: lines.join("\n") };

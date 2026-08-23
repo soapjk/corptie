@@ -13,6 +13,7 @@ import {
 } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
+import { artifactDynamicTools } from "../src/application/artifactDynamicTools.mjs";
 
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
@@ -44,6 +45,31 @@ test("Tool Host attaches one product-owned catalog through a Provider capability
   assert.equal(calls[0].tools[0].name, "corptie_list_workspaces");
   assert.equal(prepared.actorId, "agent-one");
   assert.equal(prepared.providerAttachment.identity, "agent-one");
+});
+
+test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact contracts", async () => {
+  const attachments = new Map();
+  const providerIds = ["codex-app-server", "claude-sdk", "openclacky"];
+  const registry = new AgentProviderRegistry(providerIds.map((id) => provider(
+    id,
+    [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH],
+    { attachTools(attachment) { attachments.set(id, attachment); return { attached: true }; } }
+  )));
+  const service = new ToolHostService({
+    registry,
+    catalog: new HostToolCatalog([{ id: "artifacts", tools: artifactDynamicTools, execute: () => ({}) }])
+  });
+  for (const id of providerIds) await service.prepareSession(id, {
+    actorId: "agent:artifact", sessionId: "session:artifact",
+    objectiveId: "objective:artifact", sessionKind: "worker"
+  });
+  const expected = artifactDynamicTools.map((tool) => tool.name);
+  for (const id of providerIds) {
+    assert.deepEqual(attachments.get(id).tools.map((tool) => tool.name), expected);
+    assert.deepEqual(attachments.get(id).tools.slice(0, 3).map((tool) => tool.name), [
+      "corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search"
+    ]);
+  }
 });
 
 test("Tool Host carries immutable Session scope metadata into authorization and Provider attachment", async () => {
