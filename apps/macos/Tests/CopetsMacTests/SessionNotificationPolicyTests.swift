@@ -238,20 +238,19 @@ final class SessionNotificationPolicyTests: XCTestCase {
         )
     }
 
-    func testCancelledSessionPreventsAllSessionsWaitingNotification() {
+    func testAlreadyCancelledSessionDoesNotPreventAllSessionsWaitingNotification() {
         var reducer = SessionNotificationReducer()
         _ = reducer.events(
             for: [snapshot("one", .running), snapshot("two", .cancelled)],
             configuration: aggregateOnly
         )
 
-        XCTAssertEqual(
-            reducer.events(
-                for: [snapshot("one", .complete), snapshot("two", .cancelled)],
-                configuration: aggregateOnly
-            ),
-            []
+        let events = reducer.events(
+            for: [snapshot("one", .complete), snapshot("two", .cancelled)],
+            configuration: aggregateOnly
         )
+
+        XCTAssertEqual(events.map(\.kind), [.allSessionsWaiting])
     }
 
     func testAResumedSessionCanProduceANewCompletionEvent() {
@@ -264,6 +263,19 @@ final class SessionNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(first.count, 1)
         XCTAssertEqual(second.count, 1)
         XCTAssertNotEqual(first.first?.id, second.first?.id)
+    }
+
+    func testAggregateIdentifierIsBoundedAndStableForLargeSessionCollections() {
+        let sessions = (0..<2_000).map {
+            snapshot("session-\($0)-\(String(repeating: "x", count: 80))", .complete)
+        }
+
+        let first = SessionNotificationEventIdentity.allSessionsWaiting(for: sessions)
+        let reordered = SessionNotificationEventIdentity.allSessionsWaiting(for: Array(sessions.reversed()))
+
+        XCTAssertEqual(first, reordered)
+        XCTAssertLessThan(first.utf8.count, 64)
+        XCTAssertTrue(first.hasPrefix("all-sessions-waiting:v2:"))
     }
 
     func testNotificationNavigationTargetsSessionOrOverview() {
@@ -497,17 +509,54 @@ final class SystemNotificationCenterTests: XCTestCase {
 }
 
 final class SessionNotificationDeliveryHistoryTests: XCTestCase {
-    func testClaimPersistsAndRejectsDuplicateAcrossInstances() {
+    func testDeliveredEventPersistsAcrossInstances() {
         let suite = "SessionNotificationDeliveryHistoryTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         var history = SessionNotificationDeliveryHistory(defaults: defaults)
 
-        XCTAssertTrue(history.claim("event-one"))
-        XCTAssertFalse(history.claim("event-one"))
+        XCTAssertFalse(history.contains("event-one"))
+        history.recordDelivered("event-one")
+        XCTAssertTrue(history.contains("event-one"))
 
-        var reloaded = SessionNotificationDeliveryHistory(defaults: defaults)
-        XCTAssertFalse(reloaded.claim("event-one"))
-        XCTAssertTrue(reloaded.claim("event-two"))
+        let reloaded = SessionNotificationDeliveryHistory(defaults: defaults)
+        XCTAssertTrue(reloaded.contains("event-one"))
+        XCTAssertFalse(reloaded.contains("event-two"))
     }
+
+    @MainActor
+    func testCoordinatorRecordsOnlySuccessfulDeliveryAndRetriesAfterFailure() async {
+        let suite = "SessionNotificationDeliveryCoordinatorTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        var attempts = 0
+        let coordinator = SessionNotificationDeliveryCoordinator(defaults: defaults) { _ in
+            attempts += 1
+            if attempts == 1 {
+                throw TestDeliveryError.rejected
+            }
+        }
+        let event = SessionNotificationEvent(
+            id: "all-sessions-waiting:v2:test",
+            kind: .allSessionsWaiting,
+            session: nil,
+            counts: SessionNotificationCounts(completed: 1, blocked: 0, failed: 0, pendingUserAttention: 0)
+        )
+
+        let failedOutcome = await coordinator.deliver(event)
+        XCTAssertEqual(failedOutcome, .failed("rejected"))
+        XCTAssertFalse(coordinator.hasDelivered(event.id))
+        let deliveredOutcome = await coordinator.deliver(event)
+        XCTAssertEqual(deliveredOutcome, .delivered)
+        XCTAssertTrue(coordinator.hasDelivered(event.id))
+        let duplicateOutcome = await coordinator.deliver(event)
+        XCTAssertEqual(duplicateOutcome, .skippedPreviouslyDelivered)
+        XCTAssertEqual(attempts, 2)
+    }
+}
+
+private enum TestDeliveryError: LocalizedError {
+    case rejected
+
+    var errorDescription: String? { "rejected" }
 }
