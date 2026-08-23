@@ -956,6 +956,32 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_collaboration_deliveries_pending
       ON collaboration_deliveries(status, next_attempt_at, created_at ASC);
 
+      CREATE TABLE IF NOT EXISTS collaboration_channels (
+        channel_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL UNIQUE,
+        initiator_agent_id TEXT NOT NULL,
+        recipient_agent_id TEXT NOT NULL,
+        initiator_session_id TEXT NOT NULL,
+        recipient_session_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active'
+          CHECK (status IN ('active', 'invalid', 'closed')),
+        established_delivery_id TEXT NOT NULL,
+        last_delivery_id TEXT NOT NULL,
+        invalidated_reason TEXT,
+        established_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        invalidated_at TEXT,
+        closed_at TEXT,
+        FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE,
+        FOREIGN KEY (initiator_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (recipient_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (established_delivery_id) REFERENCES collaboration_deliveries(delivery_id) ON DELETE RESTRICT,
+        FOREIGN KEY (last_delivery_id) REFERENCES collaboration_deliveries(delivery_id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_collaboration_channels_sessions
+      ON collaboration_channels(status, initiator_session_id, recipient_session_id);
+
       CREATE TABLE IF NOT EXISTS agent_work_items (
         work_item_id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,

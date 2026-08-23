@@ -82,11 +82,15 @@ test("Phase 1 migration creates every collaboration table", async () => {
       "collaboration_messages",
       "collaboration_artifacts",
       "collaboration_deliveries",
+      "collaboration_channels",
       "collaboration_events",
       "agent_work_items"
     ]) {
       assert.ok(names.includes(table), `missing ${table}`);
     }
+    assert.ok(store.selectOne(
+      "SELECT migration_id FROM data_migrations WHERE migration_id='collaboration-session-channels-v1'"
+    ));
   });
 });
 

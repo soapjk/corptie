@@ -26,7 +26,9 @@ export class CollaborationCore {
   }
 
   initialize() {
-    return this.#migrateLegacyCollaborationTasks();
+    const result = this.#migrateLegacyCollaborationTasks();
+    if (this.store.db) this.#recordChannelSchemaMigration();
+    return result;
   }
 
   registerAgent(input) {
@@ -166,6 +168,7 @@ export class CollaborationCore {
 
   detachSession(sessionId) {
     const normalizedSessionId = requiredId(sessionId, "sessionId");
+    const stableSessionId = this.#stableSessionIdentity(normalizedSessionId);
     const agent = this.store.selectOne(
       `SELECT a.agent_id
        FROM agents a
@@ -181,6 +184,7 @@ export class CollaborationCore {
 
     const timestamp = this.clock();
     this.#transaction(() => {
+      this.#invalidateChannelsForSession(stableSessionId, "session_detached", timestamp);
       this.store.db.run(
         "UPDATE agent_sessions SET unbound_at = ? WHERE session_id = ? AND unbound_at IS NULL",
         [timestamp, normalizedSessionId]
@@ -585,6 +589,47 @@ export class CollaborationCore {
     };
   }
 
+  getChannel(taskId) {
+    const row = this.store.selectOne(
+      "SELECT * FROM collaboration_channels WHERE task_id = ?",
+      [requiredId(taskId, "taskId")]
+    );
+    return row ? channelFromRow(row) : null;
+  }
+
+  resolveDirectReplyRoute(deliveryId) {
+    const envelope = this.getDeliveryEnvelope(deliveryId);
+    if (!envelope) throw domainError("DELIVERY_NOT_FOUND", `Delivery ${deliveryId} was not found.`);
+    const reply = this.#isReplyEnvelope(envelope);
+
+    const channel = this.getChannel(envelope.task.taskId);
+    if (channel?.status === "active") {
+      const senderSessionId = this.#stableSessionIdentity(envelope.message.envelope.sender.sessionId);
+      const expectedSenderSessionId = reply ? channel.recipientSessionId : channel.initiatorSessionId;
+      const expectedSenderAgentId = reply ? channel.recipientAgentId : channel.initiatorAgentId;
+      const expectedRecipientAgentId = reply ? channel.initiatorAgentId : channel.recipientAgentId;
+      const targetSessionId = reply ? channel.initiatorSessionId : channel.recipientSessionId;
+      if (senderSessionId === expectedSenderSessionId
+          && envelope.message.senderAgentId === expectedSenderAgentId
+          && envelope.delivery.recipientAgentId === expectedRecipientAgentId) {
+        const route = this.#activeProviderRoute(targetSessionId, expectedRecipientAgentId);
+        if (route) return { ...route, mode: "channel", channel };
+        this.#invalidateChannel(channel.channelId, reply ? "initiator_session_unavailable" : "recipient_session_unavailable");
+      } else {
+        this.#invalidateChannel(channel.channelId, "task_endpoint_mismatch");
+      }
+    }
+
+    if (!reply) return null;
+    const fallbackSessionId = this.#stableSessionIdentity(envelope.message.envelope.recipient.sessionId);
+    const fallback = this.#activeProviderRoute(fallbackSessionId, envelope.delivery.recipientAgentId);
+    if (fallback) return { ...fallback, mode: "fallback", channel: this.getChannel(envelope.task.taskId) };
+    throw domainError(
+      "COLLABORATION_CHANNEL_UNAVAILABLE",
+      `No valid collaboration channel or original Session route remains for task ${envelope.task.taskId}.`
+    );
+  }
+
   rerouteTaskRecipient(taskId, recipientSessionId, details = {}) {
     const task = this.#requireTask(taskId);
     const targetAgent = this.getAgentForSession(recipientSessionId);
@@ -692,10 +737,12 @@ export class CollaborationCore {
   reply(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
     const sameAgent = task.initiatorAgentId === task.recipientAgentId;
+    const initiatorSessionMatches = this.#sessionIdentityMatches(options.actorSessionId, task.initiatorSessionId);
+    const recipientSessionMatches = this.#sessionIdentityMatches(options.actorSessionId, task.recipientSessionId);
     const isInitiator = actorAgentId === task.initiatorAgentId
-      && (!sameAgent || this.#sessionIdentityMatches(options.actorSessionId, task.initiatorSessionId));
+      && (initiatorSessionMatches || (!sameAgent && (!options.actorSessionId || !task.initiatorSessionId)));
     const isRecipient = actorAgentId === task.recipientAgentId
-      && (!sameAgent || this.#sessionIdentityMatches(options.actorSessionId, task.recipientSessionId));
+      && (recipientSessionMatches || (!sameAgent && (!options.actorSessionId || !task.recipientSessionId)));
     if (!isInitiator && !isRecipient) {
       throw domainError("ACTOR_NOT_AUTHORIZED", "Only task participants may reply.");
     }
@@ -757,6 +804,8 @@ export class CollaborationCore {
         evidence: input.evidence,
         resourceVersion: input.resourceVersion ?? artifact.metadata?.version,
         idempotencyKey: optionalText(input.idempotencyKey),
+        senderSessionId: input.actorSessionId,
+        recipientSessionId: task.initiatorSessionId,
         timestamp
       });
       this.#updateTaskStatus(taskId, "delivered", timestamp);
@@ -1048,16 +1097,27 @@ export class CollaborationCore {
     const nextAttemptAt = Object.hasOwn(patch, "nextAttemptAt") ? patch.nextAttemptAt : delivery.nextAttemptAt;
     const targetTurnId = Object.hasOwn(patch, "targetTurnId") ? patch.targetTurnId : delivery.targetTurnId;
     const lastError = Object.hasOwn(patch, "lastError") ? patch.lastError : delivery.lastError;
-    this.store.db.run(
-      `UPDATE collaboration_deliveries SET status = ?, attempt_count = ?, next_attempt_at = ?,
-       delivered_at = ?, target_turn_id = ?, last_error = ?, updated_at = ? WHERE delivery_id = ?`,
-      [
-        status, attemptCount, nextAttemptAt,
-        status === "delivered" ? (patch.deliveredAt ?? timestamp) : delivery.deliveredAt,
-        targetTurnId, lastError, timestamp, deliveryId
-      ]
-    );
-    this.store.scheduleSave();
+    const write = () => {
+      this.store.db.run(
+        `UPDATE collaboration_deliveries SET status = ?, attempt_count = ?, next_attempt_at = ?,
+         delivered_at = ?, target_turn_id = ?, last_error = ?, updated_at = ? WHERE delivery_id = ?`,
+        [
+          status, attemptCount, nextAttemptAt,
+          status === "delivered" ? (patch.deliveredAt ?? timestamp) : delivery.deliveredAt,
+          targetTurnId, lastError, timestamp, deliveryId
+        ]
+      );
+      if (status === "delivered" && delivery.status !== "delivered" && patch.targetSessionId) {
+        this.#establishChannel(deliveryId, patch.targetSessionId, timestamp);
+        this.#closeChannelIfSettled(deliveryId, timestamp);
+      }
+    };
+    if (status === "delivered" && delivery.status !== "delivered" && patch.targetSessionId) {
+      this.#transaction(write);
+    } else {
+      write();
+      this.store.scheduleSave();
+    }
     return this.getDelivery(deliveryId);
   }
 
@@ -1073,6 +1133,164 @@ export class CollaborationCore {
       }, this.clock());
     });
     return this.getDelivery(deliveryId);
+  }
+
+  #isReplyEnvelope(envelope) {
+    if (envelope.task.initiatorAgentId !== envelope.task.recipientAgentId) {
+      return envelope.message.senderAgentId === envelope.task.recipientAgentId
+        && envelope.delivery.recipientAgentId === envelope.task.initiatorAgentId;
+    }
+    return this.#sessionIdentityMatches(
+      envelope.message.envelope.sender.sessionId,
+      envelope.task.recipientSessionId
+    ) && this.#sessionIdentityMatches(
+      envelope.message.envelope.recipient.sessionId,
+      envelope.task.initiatorSessionId
+    );
+  }
+
+  #activeProviderRoute(sessionId, agentId) {
+    if (!sessionId) return null;
+    const logical = this.store.getLogicalSession(sessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(sessionId);
+    const providerSessionId = logical?.legacySessionId ?? sessionId;
+    const session = this.store.getSession(providerSessionId);
+    if ((logical && !logical.activeBinding) || session?.archived) return null;
+    const bound = this.getAgentForSession(providerSessionId);
+    if ((!session && !bound) || bound?.agentId !== agentId) return null;
+    return {
+      sessionId: logical?.logicalSessionId ?? sessionId,
+      providerSessionId
+    };
+  }
+
+  #establishChannel(deliveryId, targetSessionId, timestamp) {
+    const envelope = this.getDeliveryEnvelope(deliveryId);
+    if (!envelope) throw domainError("DELIVERY_NOT_FOUND", `Delivery ${deliveryId} was not found.`);
+    const targetStableId = this.#stableSessionIdentity(targetSessionId);
+    const senderStableId = this.#stableSessionIdentity(envelope.message.envelope.sender.sessionId);
+    if (!senderStableId || !targetStableId) {
+      this.#appendEvent(envelope.task.taskId, "collaboration_channel_unavailable", null, {
+        deliveryId,
+        reason: "session_endpoint_missing"
+      }, timestamp);
+      return null;
+    }
+    const reply = this.#isReplyEnvelope(envelope);
+    const initiatorSessionId = reply ? targetStableId : senderStableId;
+    const recipientSessionId = reply ? senderStableId : targetStableId;
+    const existing = this.getChannel(envelope.task.taskId);
+    const initiatorRoute = this.#activeProviderRoute(initiatorSessionId, envelope.task.initiatorAgentId);
+    const recipientRoute = this.#activeProviderRoute(recipientSessionId, envelope.task.recipientAgentId);
+    if (!initiatorRoute || !recipientRoute) {
+      if (existing?.status === "active") {
+        this.store.db.run(
+          `UPDATE collaboration_channels SET status='invalid', invalidated_reason=?,
+           invalidated_at=?, updated_at=? WHERE channel_id=? AND status='active'`,
+          ["session_endpoint_unavailable_after_delivery", timestamp, timestamp, existing.channelId]
+        );
+      }
+      this.#appendEvent(envelope.task.taskId, "collaboration_channel_unavailable", null, {
+        channelId: existing?.channelId ?? null,
+        deliveryId,
+        reason: "session_endpoint_unavailable_after_delivery"
+      }, timestamp);
+      return null;
+    }
+    const channelId = existing?.channelId ?? this.idFactory();
+    this.store.db.run(
+      `INSERT INTO collaboration_channels (
+        channel_id, task_id, initiator_agent_id, recipient_agent_id,
+        initiator_session_id, recipient_session_id, status,
+        established_delivery_id, last_delivery_id, invalidated_reason,
+        established_at, updated_at, invalidated_at, closed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, NULL, ?, ?, NULL, NULL)
+      ON CONFLICT(task_id) DO UPDATE SET
+        initiator_agent_id=excluded.initiator_agent_id,
+        recipient_agent_id=excluded.recipient_agent_id,
+        initiator_session_id=excluded.initiator_session_id,
+        recipient_session_id=excluded.recipient_session_id,
+        status='active', last_delivery_id=excluded.last_delivery_id,
+        invalidated_reason=NULL, updated_at=excluded.updated_at,
+        invalidated_at=NULL, closed_at=NULL`,
+      [
+        channelId, envelope.task.taskId, envelope.task.initiatorAgentId, envelope.task.recipientAgentId,
+        initiatorSessionId, recipientSessionId, deliveryId, deliveryId, timestamp, timestamp
+      ]
+    );
+    this.#appendEvent(envelope.task.taskId, existing ? "collaboration_channel_updated" : "collaboration_channel_established", null, {
+      channelId,
+      deliveryId,
+      initiatorSessionId,
+      recipientSessionId
+    }, timestamp);
+  }
+
+  #invalidateChannel(channelId, reason) {
+    const channel = this.store.selectOne(
+      "SELECT * FROM collaboration_channels WHERE channel_id = ? AND status = 'active'",
+      [channelId]
+    );
+    if (!channel) return null;
+    const timestamp = this.clock();
+    this.#transaction(() => {
+      this.store.db.run(
+        `UPDATE collaboration_channels SET status='invalid', invalidated_reason=?,
+         invalidated_at=?, updated_at=? WHERE channel_id=? AND status='active'`,
+        [reason, timestamp, timestamp, channelId]
+      );
+      this.#appendEvent(channel.task_id, "collaboration_channel_invalidated", null, {
+        channelId,
+        reason
+      }, timestamp);
+    });
+    return this.getChannel(channel.task_id);
+  }
+
+  #invalidateChannelsForSession(sessionId, reason, timestamp) {
+    if (!sessionId) return;
+    const channels = this.store.selectAll(
+      `SELECT channel_id, task_id FROM collaboration_channels
+       WHERE status='active' AND (initiator_session_id=? OR recipient_session_id=?)`,
+      [sessionId, sessionId]
+    );
+    for (const channel of channels) {
+      this.store.db.run(
+        `UPDATE collaboration_channels SET status='invalid', invalidated_reason=?,
+         invalidated_at=?, updated_at=? WHERE channel_id=? AND status='active'`,
+        [reason, timestamp, timestamp, channel.channel_id]
+      );
+      this.#appendEvent(channel.task_id, "collaboration_channel_invalidated", null, {
+        channelId: channel.channel_id,
+        reason,
+        sessionId
+      }, timestamp);
+    }
+  }
+
+  #closeChannelIfSettled(deliveryId, timestamp) {
+    const row = this.store.selectOne(
+      `SELECT t.task_id, t.status, c.channel_id,
+              (SELECT COUNT(*) FROM collaboration_deliveries pending
+               JOIN collaboration_messages pm ON pm.message_id=pending.message_id
+               WHERE pm.task_id=t.task_id AND pending.status!='delivered') AS unsettled_count
+       FROM collaboration_deliveries d
+       JOIN collaboration_messages m ON m.message_id=d.message_id
+       JOIN collaboration_tasks t ON t.task_id=m.task_id
+       LEFT JOIN collaboration_channels c ON c.task_id=t.task_id AND c.status='active'
+       WHERE d.delivery_id=?`,
+      [deliveryId]
+    );
+    if (!row?.channel_id || !TERMINAL_TASK_STATUSES.has(row.status) || Number(row.unsettled_count) > 0) return;
+    this.store.db.run(
+      `UPDATE collaboration_channels SET status='closed', closed_at=?, updated_at=?
+       WHERE channel_id=? AND status='active'`,
+      [timestamp, timestamp, row.channel_id]
+    );
+    this.#appendEvent(row.task_id, "collaboration_channel_closed", null, {
+      channelId: row.channel_id,
+      reason: "task_terminal"
+    }, timestamp);
   }
 
   #listTasks(column, agentId, options) {
@@ -1305,6 +1523,26 @@ export class CollaborationCore {
       [taskId]
     );
     if (task?.work_item_id) this.#syncWorkItemStatus(task.work_item_id, taskId, status, timestamp);
+    if (TERMINAL_TASK_STATUSES.has(status)) {
+      const unsettled = this.store.selectOne(
+        `SELECT COUNT(*) AS count FROM collaboration_deliveries d
+         JOIN collaboration_messages m ON m.message_id=d.message_id
+         WHERE m.task_id=? AND d.status!='delivered'`,
+        [taskId]
+      );
+      const channel = this.getChannel(taskId);
+      if (channel?.status === "active" && Number(unsettled?.count ?? 0) === 0) {
+        this.store.db.run(
+          `UPDATE collaboration_channels SET status='closed', closed_at=?, updated_at=?
+           WHERE channel_id=? AND status='active'`,
+          [timestamp, timestamp, channel.channelId]
+        );
+        this.#appendEvent(taskId, "collaboration_channel_closed", null, {
+          channelId: channel.channelId,
+          reason: "task_terminal"
+        }, timestamp);
+      }
+    }
   }
 
   #resolveTaskScope(input, initiator, recipient) {
@@ -1614,6 +1852,15 @@ export class CollaborationCore {
     }
   }
 
+  #recordChannelSchemaMigration() {
+    const migrationId = "collaboration-session-channels-v1";
+    this.store.db.run(
+      "INSERT OR IGNORE INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+      [migrationId, this.clock()]
+    );
+    if (this.store.db.getRowsModified() > 0) this.store.scheduleSave();
+  }
+
   #objectiveForSession(sessionId) {
     if (!sessionId) return null;
     const logical = this.store.getLogicalSession(sessionId);
@@ -1636,7 +1883,8 @@ export class CollaborationCore {
       throw domainError("ACTOR_NOT_AUTHORIZED", `Only the task ${role} (${expected}) may perform this action.`);
     }
     const expectedSessionId = role === "initiator" ? task.initiatorSessionId : task.recipientSessionId;
-    if (task.initiatorAgentId === task.recipientAgentId
+    const exactSessionRequired = task.initiatorAgentId === task.recipientAgentId;
+    if ((exactSessionRequired || (actorSessionId && expectedSessionId))
       && !this.#sessionIdentityMatches(actorSessionId, expectedSessionId)) {
       throw domainError("SESSION_ACTOR_MISMATCH", `This action belongs to the task ${role} Session ${expectedSessionId}.`);
     }
@@ -1862,6 +2110,25 @@ function deliveryFromRow(row) {
     lastError: row.last_error || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  };
+}
+
+function channelFromRow(row) {
+  return {
+    channelId: row.channel_id,
+    taskId: row.task_id,
+    initiatorAgentId: row.initiator_agent_id,
+    recipientAgentId: row.recipient_agent_id,
+    initiatorSessionId: row.initiator_session_id,
+    recipientSessionId: row.recipient_session_id,
+    status: row.status,
+    establishedDeliveryId: row.established_delivery_id,
+    lastDeliveryId: row.last_delivery_id,
+    invalidatedReason: row.invalidated_reason || null,
+    establishedAt: row.established_at,
+    updatedAt: row.updated_at,
+    invalidatedAt: row.invalidated_at || null,
+    closedAt: row.closed_at || null
   };
 }
 

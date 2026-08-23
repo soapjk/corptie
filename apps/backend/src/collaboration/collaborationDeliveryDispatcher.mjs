@@ -58,7 +58,19 @@ export class CollaborationDeliveryDispatcher {
   async dispatch(deliveryId) {
     let envelope = this.core.getDeliveryEnvelope(deliveryId);
     if (!envelope || envelope.delivery.status === "delivered") return envelope?.delivery ?? null;
-    if (this.ensureRecipientSession) {
+    let directRoute = null;
+    try {
+      directRoute = this.core.resolveDirectReplyRoute(deliveryId);
+    } catch (error) {
+      this.onEvent("CollaborationChannelRouteFailed", {
+        deliveryId,
+        taskId: envelope.task.taskId,
+        code: error.code ?? "COLLABORATION_CHANNEL_UNAVAILABLE",
+        error: error.message
+      });
+      return this.#fail(envelope, error.message, "collaboration_channel_unavailable");
+    }
+    if (!directRoute && this.ensureRecipientSession) {
       try {
         await this.ensureRecipientSession(envelope.task, { reason: "delivery_preflight" });
         envelope = this.core.getDeliveryEnvelope(deliveryId) ?? envelope;
@@ -77,7 +89,7 @@ export class CollaborationDeliveryDispatcher {
       ? (this.core.store.getLogicalSession(envelope.task.recipientSessionId)
         ?? this.core.store.getLogicalSessionByLegacySessionId(envelope.task.recipientSessionId))
       : null;
-    const sessionId = routed?.legacySessionId
+    const sessionId = directRoute?.providerSessionId ?? routed?.legacySessionId
       ?? (!envelope.task.recipientSessionId ? agent?.currentSessionId : null);
     if (!sessionId) {
       return this.#fail(envelope, "Recipient logical Session has no active resolvable Provider route.", "recipient_unavailable");
@@ -112,6 +124,7 @@ export class CollaborationDeliveryDispatcher {
         status: "delivered",
         deliveredAt: this.clock(),
         targetTurnId: result?.turnId ?? result?.turn?.id ?? null,
+        targetSessionId: directRoute?.sessionId ?? sessionId,
         nextAttemptAt: null,
         lastError: null
       });
@@ -121,6 +134,16 @@ export class CollaborationDeliveryDispatcher {
         attemptCount: delivered.attemptCount
       });
       this.onEvent("CollaborationDeliverySucceeded", { delivery: delivered, sessionId });
+      if (directRoute) {
+        this.onEvent("CollaborationChannelDeliverySucceeded", {
+          channelId: directRoute.channel?.channelId ?? null,
+          taskId: envelope.task.taskId,
+          deliveryId,
+          senderSessionId: envelope.message.envelope.sender.sessionId,
+          recipientSessionId: directRoute.sessionId,
+          routeMode: directRoute.mode
+        });
+      }
       return delivered;
     } catch (error) {
       if (error.code === "SESSION_BUSY") {
