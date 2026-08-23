@@ -38,9 +38,10 @@ export class SessionCollaborationService {
 
   discoverSessions(metadata, actorId, filters = {}) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
-    const visible = this.#visibleSessions(scope);
+    const visible = this.#visibleSessions(scope, filters);
     return visible
       .filter((session) => !filters.agentId || session.agentId === filters.agentId)
+      .filter((session) => !filters.objectiveId || session.objectiveId === filters.objectiveId)
       .filter((session) => !filters.workItemId || session.workItemId === filters.workItemId)
       .filter((session) => !filters.sessionKind || session.sessionKind === filters.sessionKind)
       .map((session) => this.#sessionDescriptor(session, scope));
@@ -49,7 +50,7 @@ export class SessionCollaborationService {
   getSession(metadata, actorId, sessionId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     const target = this.#resolveSession(sessionId);
-    if (!target || !this.#visibleSessions(scope).some((item) => item.id === target.id)) {
+    if (!target || !this.#isVisibleSession(scope, target, { explicitPeerLookup: true })) {
       throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Objective/Agent scope.");
     }
     return this.#sessionDescriptor(target, scope);
@@ -240,15 +241,42 @@ export class SessionCollaborationService {
     return { agent: bound, session, logical, logicalSessionId: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id };
   }
 
-  #visibleSessions(scope) {
+  #visibleSessions(scope, filters = {}) {
     if (scope.session.objectiveId) {
-      const objective = this.objectiveService.getObjective(scope.session.objectiveId);
-      const contributors = new Set(objective.contributorAgentIds ?? []);
-      contributors.add(scope.agent.agentId);
-      return this.store.listSessionsByObjective(scope.session.objectiveId)
-        .filter((session) => contributors.has(session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId));
+      const own = this.store.listSessionsByObjective(scope.session.objectiveId)
+        .filter((session) => this.#isVisibleSession(scope, session));
+      if (!filters.agentId && !filters.objectiveId) return own;
+      const peerCandidates = filters.objectiveId
+        ? this.store.listSessionsByObjective(filters.objectiveId)
+        : this.store.listSessionsByAgent(filters.agentId);
+      const peer = peerCandidates
+        .filter((session) => session.objectiveId !== scope.session.objectiveId)
+        .filter((session) => !filters.agentId || session.agentId === filters.agentId)
+        .filter((session) => !filters.objectiveId || session.objectiveId === filters.objectiveId)
+        .filter((session) => this.#isVisibleSession(scope, session, { explicitPeerLookup: true }));
+      return uniqueSessions([...own, ...peer]);
     }
     return this.store.listSessionsByAgent(scope.agent.agentId);
+  }
+
+  #isVisibleSession(scope, session, options = {}) {
+    const agentId = session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId;
+    if (!agentId) return false;
+    if (scope.session.objectiveId && session.objectiveId === scope.session.objectiveId) {
+      const objective = this.objectiveService.getObjective(scope.session.objectiveId);
+      return agentId === scope.agent.agentId || (objective.contributorAgentIds ?? []).includes(agentId);
+    }
+    if (!scope.session.objectiveId) return agentId === scope.agent.agentId;
+    if (!options.explicitPeerLookup || !session.objectiveId || session.archived) return false;
+    const objective = this.store.getObjective(session.objectiveId);
+    if (!objective) return false;
+    const assignedWorkItem = session.workItemId ? this.store.getWorkItem(session.workItemId) : null;
+    const agentAuthorized = (objective.contributorAgentIds ?? []).includes(agentId)
+      || assignedWorkItem?.main_agent_id === agentId;
+    if (!agentAuthorized) return false;
+    const logical = this.store.getLogicalSession(session.logicalSessionId)
+      ?? this.store.getLogicalSessionByLegacySessionId(session.id);
+    return logical?.activeBinding?.state === "active";
   }
 
   #sessionDescriptor(session, scope) {
@@ -257,9 +285,10 @@ export class SessionCollaborationService {
     const binding = logical?.activeBinding ?? null;
     const agentId = session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId ?? null;
     const sameObjective = Boolean(scope.session.objectiveId && session.objectiveId === scope.session.objectiveId);
+    const peerObjective = Boolean(scope.session.objectiveId && session.objectiveId && !sameObjective);
     return {
       sessionId: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id,
-      providerSessionId: session.id,
+      providerSessionId: peerObjective ? null : session.id,
       agentId,
       sessionKind: session.sessionKind,
       objectiveId: session.objectiveId,
@@ -268,17 +297,18 @@ export class SessionCollaborationService {
       routeStatus: binding?.state ?? (logical ? "unresolved" : "legacy_unresolved"),
       active: binding?.state === "active",
       superseded: binding?.state === "superseded",
-      routingVersion: logical?.routingVersion ?? null,
-      bindingId: binding?.bindingId ?? null,
-      providerId: binding?.providerId ?? session.external?.provider ?? null,
-      workspace: {
+      routingVersion: peerObjective ? null : logical?.routingVersion ?? null,
+      bindingId: peerObjective ? null : binding?.bindingId ?? null,
+      providerId: peerObjective ? null : binding?.providerId ?? session.external?.provider ?? null,
+      visibilityScope: peerObjective ? "peer_objective" : "current_scope",
+      workspace: peerObjective ? { repositoryId: null, worktreeId: null, path: null } : {
         repositoryId: logical?.repositoryId ?? null,
         worktreeId: logical?.activeWorkspaceId ?? null,
         path: binding?.boundCwd ?? session.external?.cwd ?? null
       },
       collaborationCapabilities: sameObjective || (!scope.session.objectiveId && agentId === scope.agent.agentId)
         ? ["receive_task", "receive_message", "deliver_artifact"]
-        : []
+        : peerObjective ? ["receive_task"] : []
     };
   }
 
@@ -348,15 +378,32 @@ export function resolveRecipientSession(service, metadata, actorId, input = {}) 
   if (!ROUTING_INTENTS.has(intent)) {
     throw coded("ROUTING_INTENT_REQUIRED", "When only an Agent is specified, routing_intent must be existing_work_item_session, objective_chat, create_dedicated_session, or best_available.");
   }
-  const candidates = service.discoverSessions(metadata, actorId, { agentId: input.recipientAgentId });
+  const candidates = service.discoverSessions(metadata, actorId, {
+    agentId: input.recipientAgentId,
+    objectiveId: input.targetObjectiveId
+  });
   const filtered = intent === "objective_chat" ? candidates.filter((item) => item.sessionKind === "objectiveChat")
     : intent === "existing_work_item_session" ? candidates.filter((item) => item.workItemId)
       : candidates;
   if (intent === "create_dedicated_session") return null;
-  if (filtered.length !== 1 && intent !== "best_available") {
-    throw coded("AMBIGUOUS_RECIPIENT_SESSION", `Routing intent ${intent} resolved ${filtered.length} Sessions; specify recipient_session_id.`);
+  if (!filtered.length) {
+    throw coded(
+      "RECIPIENT_SESSION_NOT_FOUND",
+      `No visible ${intent} Session was found for Agent ${input.recipientAgentId}${input.targetObjectiveId ? ` in Objective ${input.targetObjectiveId}` : ""}.`,
+      404
+    );
   }
-  return filtered.find((item) => item.active) ?? filtered[0] ?? null;
+  if (filtered.length > 1 && intent !== "best_available") {
+    throw coded("AMBIGUOUS_RECIPIENT_SESSION", `Routing intent ${intent} resolved ${filtered.length} Sessions; specify recipient_session_id or target_objective_id.`, 409);
+  }
+  return filtered.find((item) => item.active && item.sessionKind === "objectiveChat")
+    ?? filtered.find((item) => item.active)
+    ?? filtered.find((item) => item.sessionKind === "objectiveChat")
+    ?? filtered[0];
+}
+
+function uniqueSessions(sessions) {
+  return [...new Map(sessions.map((session) => [session.id, session])).values()];
 }
 
 function required(value, field) {

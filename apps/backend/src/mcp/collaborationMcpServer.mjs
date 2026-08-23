@@ -8,6 +8,7 @@ import {
   COLLABORATION_ROUTING_INTENTS,
   repositoryIdSchema,
   sessionIdSchema,
+  objectiveIdSchema,
   workItemIdSchema,
   WORK_ITEM_PRIORITIES
 } from "../domain/workItemToolSchema.mjs";
@@ -86,18 +87,19 @@ export function createCollaborationMcpServer(options) {
     handler: () => client.get("/internal/collaboration/session-capabilities")
   });
   if (authenticatedSessionId) register(server, "corptie.sessions.discover", {
-    description: "Discover receiving Sessions visible within the authenticated Objective/Agent scope, including stable Session/Agent identity, kind, lifecycle, route, Worktree, and capabilities.",
+    description: "Discover receiving Sessions. Default results stay in the authenticated Objective; explicit peer Agent/Objective filters return minimal routing descriptors with Workspace and Provider details redacted.",
     inputSchema: {
       agent_id: strictId(agentIdSchema).optional(),
+      objective_id: strictId(objectiveIdSchema).optional(),
       work_item_id: strictId(workItemIdSchema).optional(),
       session_kind: z.enum(["objectiveChat", "worker", "assistantChat", "legacy"]).optional()
     }, readOnly: true,
-    handler: ({ agent_id, work_item_id, session_kind }) => client.get("/internal/collaboration/sessions", {
-      agentId: agent_id, workItemId: work_item_id, sessionKind: session_kind
+    handler: ({ agent_id, objective_id, work_item_id, session_kind }) => client.get("/internal/collaboration/sessions", {
+      agentId: agent_id, objectiveId: objective_id, workItemId: work_item_id, sessionKind: session_kind
     })
   });
   if (authenticatedSessionId) register(server, "corptie.sessions.get", {
-    description: "Read one visible logical Session. Same-Agent Sessions are distinct contexts.",
+    description: "Read one visible logical Session. Same-Agent Sessions are distinct contexts; peer-Objective results expose only the minimal collaboration route.",
     inputSchema: { session_id: strictId(sessionIdSchema) }, readOnly: true,
     handler: ({ session_id }) => client.get(`/internal/collaboration/sessions/${encodeURIComponent(session_id)}`)
   });

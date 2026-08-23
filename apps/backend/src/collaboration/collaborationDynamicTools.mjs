@@ -4,6 +4,7 @@ import {
   COLLABORATION_ROUTING_INTENTS,
   repositoryIdSchema,
   sessionIdSchema,
+  objectiveIdSchema,
   workItemFieldsSchema,
   workItemIdSchema
 } from "../domain/workItemToolSchema.mjs";
@@ -50,12 +51,13 @@ function tool(name, description, properties = {}, required = []) {
 
 export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Agent is the identity/authorization principal; Session is the context and routing principal."),
-  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions visible within the authenticated Objective/Agent scope. Returns stable Session, Agent, kind, Objective, WorkItem, lifecycle, route, Workspace/Worktree, and capabilities.", {
+  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions. Without peer filters, results stay in the authenticated Objective; explicit agent_id/objective_id filters may return minimal peer-Objective routing descriptors with Workspace and Provider details redacted.", {
     agent_id: agentIdSchema,
+    objective_id: objectiveIdSchema,
     work_item_id: workItemIdSchema,
     session_kind: { type: "string", enum: ["objectiveChat", "worker", "assistantChat", "legacy"] }
   }),
-  tool("corptie_sessions_get", "Read one visible logical Session without assuming that Sessions owned by the same Agent share context.", {
+  tool("corptie_sessions_get", "Read one visible logical Session without assuming that Sessions owned by the same Agent share context. Peer-Objective results expose only the minimal collaboration route.", {
     session_id: sessionIdSchema
   }, ["session_id"]),
   tool("corptie_collaboration_work_items_list", "List WorkItems visible to this Session. Objective Chat sees its Objective; Worker sees its bound WorkItem and explicitly related collaboration WorkItems."),
@@ -167,7 +169,8 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
   const handlers = {
     corptie_collaboration_capabilities: () => client.get("/internal/collaboration/session-capabilities"),
     corptie_sessions_discover: () => client.get("/internal/collaboration/sessions", {
-      agentId: input.agent_id, workItemId: input.work_item_id, sessionKind: input.session_kind
+      agentId: input.agent_id, objectiveId: input.objective_id,
+      workItemId: input.work_item_id, sessionKind: input.session_kind
     }),
     corptie_sessions_get: () => client.get(`/internal/collaboration/sessions/${encodeURIComponent(input.session_id)}`),
     corptie_collaboration_work_items_list: () => client.get("/internal/collaboration/work-items"),

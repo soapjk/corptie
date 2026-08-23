@@ -73,3 +73,29 @@ test("dynamic read tools use the same backend endpoints as the MCP transport", a
   }]);
   assert.deepEqual(result, { agents: [] });
 });
+
+test("Session discovery maps an explicit peer Objective boundary", async () => {
+  const calls = [];
+  const client = {
+    get: async (path, search) => {
+      calls.push({ path, search });
+      return { sessions: [] };
+    }
+  };
+
+  await callCollaborationDynamicTool(client, "corptie_sessions_discover", {
+    agent_id: "agent:marketcow",
+    objective_id: "objective:marketcow",
+    session_kind: "objectiveChat"
+  });
+
+  assert.deepEqual(calls, [{
+    path: "/internal/collaboration/sessions",
+    search: {
+      agentId: "agent:marketcow",
+      objectiveId: "objective:marketcow",
+      workItemId: undefined,
+      sessionKind: "objectiveChat"
+    }
+  }]);
+});

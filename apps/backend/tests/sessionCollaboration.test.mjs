@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
-import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
+import { resolveRecipientSession, SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -96,6 +96,66 @@ test("same-Agent Sessions are separately discoverable and can collaborate withou
     assert.ok(f.store.selectAll("SELECT * FROM collaboration_events WHERE task_id=? AND type='route_recovered'", [task.taskId]).length === 1);
     task = f.core.reply(task.taskId, agent.agentId, "Stable sender identity", { actorSessionId: "provider:two" });
     assert.equal(task.messages.at(-1).senderSessionId, "session:two");
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("explicit peer Objective discovery exposes its Objective Chat for routing without leaking Workspace access", async () => {
+  const f = await fixture();
+  try {
+    const sourceAgent = f.store.createAgent({ id: "agent:source", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:marketcow", name: "MarketCow", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({ name: "Corptie", contributorAgentIds: [sourceAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({ name: "MarketCow", contributorAgentIds: [peerAgent.agentId] });
+    const peerWorkItem = f.objectiveService.createWorkItem({ objectiveId: peerObjective.id, title: "Existing", mainAgentId: peerAgent.agentId });
+    session(f.store, f.core, { providerSessionId: "provider:source", logicalSessionId: "session:source", agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: "/source/private" });
+    session(f.store, f.core, { providerSessionId: "provider:marketcow-chat", logicalSessionId: "session:marketcow-chat", agentId: peerAgent.agentId, kind: "objectiveChat", objectiveId: peerObjective.id, cwd: "/marketcow/private" });
+    session(f.store, f.core, { providerSessionId: "provider:marketcow-worker", logicalSessionId: "session:marketcow-worker", agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id, workItemId: peerWorkItem.id, cwd: "/marketcow/workitem" });
+    const metadata = { sessionId: "provider:source" };
+
+    assert.deepEqual(f.service.discoverSessions(metadata, sourceAgent.agentId), [
+      f.service.getSession(metadata, sourceAgent.agentId, "session:source")
+    ]);
+    const discovered = f.service.discoverSessions(metadata, sourceAgent.agentId, {
+      agentId: peerAgent.agentId, objectiveId: peerObjective.id
+    });
+    assert.deepEqual(new Set(discovered.map((item) => item.sessionId)), new Set(["session:marketcow-chat", "session:marketcow-worker"]));
+    assert.ok(discovered.every((item) => item.visibilityScope === "peer_objective"));
+    assert.ok(discovered.every((item) => item.workspace.path === null && item.workspace.repositoryId === null));
+    assert.ok(discovered.every((item) => item.providerSessionId === null && item.providerId === null && item.bindingId === null));
+    assert.ok(discovered.every((item) => item.collaborationCapabilities.includes("receive_task")));
+
+    const recipient = resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+      recipientAgentId: peerAgent.agentId,
+      targetObjectiveId: peerObjective.id,
+      routingIntent: "objective_chat"
+    });
+    assert.equal(recipient.sessionId, "session:marketcow-chat");
+    assert.equal(recipient.objectiveId, peerObjective.id);
+    const confirmation = f.core.proposeTask({
+      initiatorAgentId: sourceAgent.agentId,
+      initiatorSessionId: "session:source",
+      recipientAgentId: peerAgent.agentId,
+      recipientSessionId: recipient.sessionId,
+      sourceObjectiveId: sourceObjective.id,
+      targetObjectiveId: peerObjective.id,
+      type: "change_request",
+      title: "MarketCow collaboration",
+      summary: "Create the target-scoped WorkItem only after confirmation."
+    });
+    assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 1);
+    const confirmed = f.core.confirmTaskConfirmation(confirmation.confirmationId);
+    const task = f.core.getTask(confirmed.taskId);
+    assert.equal(task.recipientSessionId, "session:marketcow-chat");
+    assert.equal(task.targetObjectiveId, peerObjective.id);
+    assert.equal(f.store.getWorkItem(task.workItemId).objective_id, peerObjective.id);
+    assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 2);
+    assert.throws(() => f.service.getWorkItem(metadata, sourceAgent.agentId, peerWorkItem.id), { code: "WORK_ITEM_OUTSIDE_SCOPE" });
+    assert.throws(() => f.service.createWorkItem(metadata, sourceAgent.agentId, {
+      title: "Illegal target write", agentId: peerAgent.agentId, idempotencyKey: "illegal:target"
+    }), { code: "AGENT_OUTSIDE_OBJECTIVE" });
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
