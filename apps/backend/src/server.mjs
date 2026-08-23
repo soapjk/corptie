@@ -84,6 +84,7 @@ import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDeliveryDispatcher.mjs";
 import { formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
+import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { ObjectiveApplicationService } from "./application/objectiveApplicationService.mjs";
 import {
@@ -4937,26 +4938,29 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
   const envelope = workItem.deliveryId
     ? collaborationCore.getDeliveryEnvelope(workItem.deliveryId)
     : null;
-  const recipient = collaborationCore.getAgent(workItem.agentId);
-  const recipientSession = sessionId
-    ? sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId)
-    : null;
+  const route = collaborationMessagePresentationRoute(envelope);
+  const sender = route.senderAgentId ? collaborationCore.getAgent(route.senderAgentId) : null;
+  const recipient = route.recipientAgentId ? collaborationCore.getAgent(route.recipientAgentId) : null;
+  const sourceSession = collaborationSessionPresentation(route.sourceSessionId);
+  const targetSession = collaborationSessionPresentation(route.targetSessionId);
   const targetWorkItemId = envelope?.task.workItemId ?? workItem.source?.targetWorkItemId ?? null;
   const targetWorkItem = targetWorkItemId ? store.getWorkItem(targetWorkItemId) : null;
-  const sourceObjectiveId = envelope?.task.sourceObjectiveId ?? workItem.source?.sourceObjectiveId ?? null;
-  const targetObjectiveId = envelope?.task.targetObjectiveId ?? workItem.source?.targetObjectiveId ?? null;
+  const sourceObjectiveId = route.sourceObjectiveId ?? workItem.source?.sourceObjectiveId ?? null;
+  const targetObjectiveId = route.targetObjectiveId ?? workItem.source?.targetObjectiveId ?? null;
   return {
     presentationRole: "collaboration",
     presentationText: envelope?.message.body ?? workItem.source?.presentationText ?? "",
     collaborationDirection: "inbound",
-    collaborationSenderAgentId: envelope?.message.senderAgentId ?? workItem.source?.senderAgentId ?? null,
-    collaborationSenderName: envelope?.message.senderAgentName ?? workItem.source?.senderAgentName ?? "Peer Agent",
-    collaborationRecipientAgentId: recipient?.agentId ?? workItem.agentId,
-    collaborationRecipientName: recipient?.name ?? "Current Agent",
-    collaborationInitiatorSessionId: envelope?.task.initiatorSessionId ?? workItem.source?.initiatorSessionId ?? null,
-    collaborationInitiatorSessionTitle: envelope?.task.initiatorNameAtSend ?? null,
-    collaborationRecipientSessionId: envelope?.task.recipientSessionId ?? workItem.source?.recipientSessionId ?? sessionId ?? null,
-    collaborationRecipientSessionTitle: recipientSession?.title ?? null,
+    collaborationSenderAgentId: route.senderAgentId ?? workItem.source?.senderAgentId ?? null,
+    collaborationSenderName: sender?.name ?? envelope?.message.senderAgentName ?? workItem.source?.senderAgentName ?? route.senderAgentId,
+    collaborationRecipientAgentId: route.recipientAgentId ?? workItem.agentId,
+    collaborationRecipientName: recipient?.name ?? route.recipientAgentId,
+    collaborationInitiatorSessionId: route.sourceSessionId ?? workItem.source?.initiatorSessionId ?? null,
+    collaborationInitiatorSessionTitle: route.sourceSessionTitle ?? sourceSession?.title ?? null,
+    collaborationInitiatorSessionKind: sourceSession?.sessionKind ?? null,
+    collaborationRecipientSessionId: route.targetSessionId ?? workItem.source?.recipientSessionId ?? sessionId ?? null,
+    collaborationRecipientSessionTitle: route.targetSessionTitle ?? targetSession?.title ?? null,
+    collaborationRecipientSessionKind: targetSession?.sessionKind ?? null,
     collaborationSourceObjectiveId: sourceObjectiveId,
     collaborationSourceObjectiveName: sourceObjectiveId ? store.getObjective(sourceObjectiveId)?.name ?? null : null,
     collaborationTargetObjectiveId: targetObjectiveId,
@@ -4969,6 +4973,18 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
     collaborationRoutingVersion: envelope?.task.routingVersion ?? workItem.source?.routingVersion ?? null,
     collaborationMessageKind: envelope?.message.messageType ?? workItem.source?.messageKind ?? "message",
     collaborationProcessingStatus: workItem.status
+  };
+}
+
+function collaborationSessionPresentation(sessionId) {
+  if (!sessionId) return null;
+  const logical = store.getLogicalSession(sessionId) ?? store.getLogicalSessionByLegacySessionId(sessionId);
+  const providerSessionId = logical?.legacySessionId ?? sessionId;
+  const session = sessionPresentationCache.get(providerSessionId) ?? store.getSession(providerSessionId);
+  if (!logical && !session) return null;
+  return {
+    title: logical?.sessionName ?? session?.title ?? null,
+    sessionKind: session?.sessionKind ?? null
   };
 }
 

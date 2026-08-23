@@ -398,10 +398,10 @@ private struct CollaborationTaskDetailView: View {
                 }
 
                 GroupBox(L10n("Participants")) {
-                    LabeledContent(L10n("Initiator"), value: task.initiatorAgentId)
-                    LabeledContent(L10n("Recipient"), value: task.recipientAgentId)
-                    LabeledContent(L10n("Source Session"), value: task.initiatorSessionId ?? L10n("Unresolved legacy route"))
-                    LabeledContent(L10n("Target Session"), value: task.recipientSessionId ?? L10n("Unresolved legacy route"))
+                    LabeledContent(L10n("Initiator"), value: agentIdentity(task.initiatorAgentId))
+                    LabeledContent(L10n("Recipient"), value: agentIdentity(task.recipientAgentId))
+                    LabeledContent(L10n("Source Session"), value: sessionIdentity(task.initiatorNameAtSend, task.initiatorSessionId))
+                    LabeledContent(L10n("Target Session"), value: sessionIdentity(task.recipientNameAtSend, task.recipientSessionId))
                     if let sourceObjectiveId = task.sourceObjectiveId {
                         LabeledContent(L10n("Source Objective"), value: sourceObjectiveId)
                     }
@@ -482,6 +482,22 @@ private struct CollaborationTaskDetailView: View {
         } message: {
             Text(L10n("This is recorded as a user intervention in the task timeline."))
         }
+    }
+
+    private func agentIdentity(_ agentID: String) -> String {
+        guard let name = model.agents.first(where: { $0.agentId == agentID })?.name,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return agentID
+        }
+        return "\(name) · \(agentID)"
+    }
+
+    private func sessionIdentity(_ nameAtSend: String?, _ sessionID: String?) -> String {
+        guard let sessionID, !sessionID.isEmpty else { return L10n("Unresolved legacy route") }
+        guard let nameAtSend, !nameAtSend.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return sessionID
+        }
+        return "\(nameAtSend) · \(sessionID)"
     }
 
     private var timeline: [CollaborationTimelineEntry] {

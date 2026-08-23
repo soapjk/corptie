@@ -183,6 +183,38 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testTaskC4471174CardUsesStableIDsAndDistinctHistoricalSessionSnapshots() throws {
+        var collaboration = item(
+            id: "c4471174-177e-4fe9-ab1d-cd10e070da35",
+            type: "userMessage",
+            text: "Repair the historical route."
+        )
+        collaboration.sourceType = "collaboration"
+        collaboration.presentationRole = "collaboration"
+        collaboration.collaborationSenderAgentId = "agent:initiator"
+        collaboration.collaborationRecipientAgentId = "agent:recipient"
+        collaboration.collaborationInitiatorSessionId = "session:historical-initiator"
+        collaboration.collaborationInitiatorSessionTitle = "Historical Initiator Session"
+        collaboration.collaborationRecipientSessionId = "session:recipient-current"
+        collaboration.collaborationRecipientSessionTitle = "Recipient Worker Session"
+        collaboration.collaborationSourceObjectiveId = "objective:source"
+        collaboration.collaborationTargetObjectiveId = "objective:target"
+
+        let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
+            for: collaboration,
+            currentSessionTitle: "Recipient Worker Session"
+        ))
+
+        XCTAssertTrue(presentation.bodyMarkdown.contains("agent:initiator"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("agent:recipient"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("未知 Agent")))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("objective:source"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("objective:target"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Historical Initiator Session · session:historical-initiator"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Recipient Worker Session · session:recipient-current"))
+    }
+
+    @MainActor
     func testExpandedExecutionRawStatusUsesLatestProviderItem() {
         var first = item(id: "command", type: "commandExecution", text: "$ npm test")
         first.rawMetadataJSON = "{\"command\":\"npm test\"}"

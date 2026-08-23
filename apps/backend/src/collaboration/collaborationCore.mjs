@@ -638,6 +638,9 @@ export class CollaborationCore {
   }
 
   accept(taskId, actorAgentId, actorSessionId = null) {
+    const task = this.#requireTask(taskId);
+    this.#assertActor(task, actorAgentId, "recipient", actorSessionId);
+    this.#assertRecipientRouteMetadata(task);
     return this.#transition(taskId, actorAgentId, ["proposed"], "accepted", "task_accepted", "recipient", {}, actorSessionId);
   }
 
@@ -890,6 +893,7 @@ export class CollaborationCore {
               t.context_id, t.service_id, t.type AS task_type, t.status AS task_status,
               t.initiator_agent_id, t.recipient_agent_id AS task_recipient_agent_id,
               t.initiator_session_id, t.recipient_session_id AS task_recipient_session_id,
+              t.initiator_name_at_send, t.recipient_name_at_send,
               t.routing_version, t.route_status, t.routing_intent,
               t.source_objective_id, t.target_objective_id, t.source_work_item_id, t.work_item_id,
               t.iteration, t.max_iterations, t.title, t.summary,
@@ -946,6 +950,8 @@ export class CollaborationCore {
         recipientAgentId: row.task_recipient_agent_id,
         initiatorSessionId: row.initiator_session_id || null,
         recipientSessionId: row.task_recipient_session_id || null,
+        initiatorNameAtSend: row.initiator_name_at_send || null,
+        recipientNameAtSend: row.recipient_name_at_send || null,
         sourceObjectiveId: row.source_objective_id,
         targetObjectiveId: row.target_objective_id,
         sourceWorkItemId: row.source_work_item_id || null,
@@ -1148,6 +1154,16 @@ export class CollaborationCore {
       previousBindingId: task.recipientBindingId,
       recipientBindingId: binding.bindingId
     }, timestamp);
+  }
+
+  #assertRecipientRouteMetadata(task) {
+    if (task.routeStatus === "unresolved") return;
+    if (!task.recipientSessionId || !Number.isInteger(Number(task.routingVersion)) || Number(task.routingVersion) < 1) {
+      throw domainError(
+        "RECIPIENT_ROUTE_METADATA_REQUIRED",
+        `Task ${task.taskId} is missing recipientSessionId or routingVersion; query the task and recover its recipient route before accept.`
+      );
+    }
   }
 
   #insertMessage(input) {
