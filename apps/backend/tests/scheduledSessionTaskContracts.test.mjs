@@ -25,7 +25,9 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
   })[0];
   assert.equal(definition.name, "corptie_scheduled_tasks_manage");
   assert.match(definition.description, /计划任务/);
-  assert.deepEqual(definition.inputSchema.properties.schedule_type.enum, ["once", "interval", "condition"]);
+  assert.deepEqual(definition.inputSchema.properties.schedule_type.enum, [
+    "at", "after", "interval", "processExit", "condition", "once"
+  ]);
   assert.equal(definition.inputSchema.additionalProperties, false);
   assert.equal(Object.hasOwn(definition.inputSchema.properties, "actor_id"), false);
 
@@ -117,6 +119,7 @@ test("HTTP contract exposes create, list, detail, update, lifecycle actions, and
       assert.equal((await fetch(`${base}/scheduled-tasks/task%3Aone/${action}`, { method: "POST" })).status, 200);
     }
     assert.equal((await fetch(`${base}/scheduled-session-tasks`)).status, 200);
+    assert.equal((await fetch(`${base}/automations`)).status, 200);
     assert.equal(calls.every((call) => call.at(-1).id === "user:trusted-runtime"), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));

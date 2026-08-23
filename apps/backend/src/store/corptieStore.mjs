@@ -360,6 +360,28 @@ export class CorptieStore {
     }
   }
 
+  migrateAutomationSchedulerV1() {
+    const taskColumns = {
+      name: "TEXT",
+      trigger_spec_json: "TEXT",
+      condition_specs_json: "TEXT NOT NULL DEFAULT '[]'",
+      actions_json: "TEXT NOT NULL DEFAULT '[]'",
+      policy_spec_json: "TEXT NOT NULL DEFAULT '{}'",
+      risk_json: "TEXT NOT NULL DEFAULT '{}'",
+      max_concurrent_runs: "INTEGER NOT NULL DEFAULT 1",
+      timeout_seconds: "INTEGER NOT NULL DEFAULT 3600",
+      backpressure_limit: "INTEGER NOT NULL DEFAULT 100"
+    };
+    for (const [column, definition] of Object.entries(taskColumns)) {
+      this.ensureColumn("scheduled_session_tasks", column, definition);
+    }
+    this.ensureColumn("scheduled_session_runs", "stages_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("scheduled_session_runs", "action_results_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("scheduled_session_runs", "deadline_at", "TEXT");
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_scheduled_session_runs_status_deadline
+      ON scheduled_session_runs(status, deadline_at)`);
+  }
+
   migrateWorkItemMemoryAssociations() {
     const migrationId = "work-item-memory-association-v1";
     if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
@@ -1355,6 +1377,7 @@ export class CorptieStore {
     `);
 
     this.migrateScheduledSessionConditionTasks();
+    this.migrateAutomationSchedulerV1();
 
     // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---
     this.db.run(`
@@ -4079,8 +4102,10 @@ export class CorptieStore {
         interval_seconds, timezone, status, missed_policy, condition_spec_json,
         condition_state_json, process_spec_json, process_state_json,
         creator_type, creator_id, objective_id, environment,
-        max_retries, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        max_retries, name, trigger_spec_json, condition_specs_json, actions_json,
+        policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds, backpressure_limit,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.taskId,
         input.logicalSessionId,
@@ -4100,6 +4125,15 @@ export class CorptieStore {
         input.objectiveId ?? null,
         input.environment,
         input.maxRetries ?? 5,
+        input.name ?? null,
+        input.triggerSpec ? JSON.stringify(input.triggerSpec) : null,
+        JSON.stringify(input.conditionSpecs ?? []),
+        JSON.stringify(input.actions ?? []),
+        JSON.stringify(input.policySpec ?? {}),
+        JSON.stringify(input.risk ?? {}),
+        input.maxConcurrentRuns ?? 1,
+        input.timeoutSeconds ?? 3600,
+        input.backpressureLimit ?? 100,
         timestamp,
         timestamp
       ]
@@ -4143,16 +4177,24 @@ export class CorptieStore {
     const timestamp = new Date().toISOString();
     this.db.run(
       `UPDATE scheduled_session_tasks SET
-         message_json = ?, run_at = ?, next_run_at = ?, interval_seconds = ?, timezone = ?,
+         name = ?, message_json = ?, trigger_spec_json = ?, condition_specs_json = ?, actions_json = ?,
+         policy_spec_json = ?, risk_json = ?, run_at = ?, next_run_at = ?, interval_seconds = ?, timezone = ?,
          status = ?, missed_policy = ?, condition_spec_json = ?, condition_state_json = ?,
          process_spec_json = ?, process_state_json = ?,
          pending_scheduled_for = ?, lease_owner = ?, lease_expires_at = ?, retry_count = ?,
          max_retries = ?, last_run_id = ?, last_run_status = ?, last_error_code = ?,
          last_error_message = ?, last_run_at = ?, resource_version = resource_version + 1,
+         max_concurrent_runs = ?, timeout_seconds = ?, backpressure_limit = ?,
          paused_at = ?, cancelled_at = ?, completed_at = ?, updated_at = ?
        WHERE task_id = ?`,
       [
+        value("name", task.name),
         JSON.stringify(value("message", task.message)),
+        value("triggerSpec", task.triggerSpec) ? JSON.stringify(value("triggerSpec", task.triggerSpec)) : null,
+        JSON.stringify(value("conditionSpecs", task.conditionSpecs) ?? []),
+        JSON.stringify(value("actions", task.actions) ?? []),
+        JSON.stringify(value("policySpec", task.policySpec) ?? {}),
+        JSON.stringify(value("risk", task.risk) ?? {}),
         value("runAt", task.runAt),
         value("nextRunAt", task.nextRunAt),
         value("intervalSeconds", task.intervalSeconds),
@@ -4173,6 +4215,9 @@ export class CorptieStore {
         value("lastErrorCode", task.lastErrorCode),
         value("lastErrorMessage", task.lastErrorMessage),
         value("lastRunAt", task.lastRunAt),
+        value("maxConcurrentRuns", task.maxConcurrentRuns),
+        value("timeoutSeconds", task.timeoutSeconds),
+        value("backpressureLimit", task.backpressureLimit),
         value("pausedAt", task.pausedAt),
         value("cancelledAt", task.cancelledAt),
         value("completedAt", task.completedAt),
@@ -4218,8 +4263,8 @@ export class CorptieStore {
       `INSERT OR IGNORE INTO scheduled_session_runs (
          run_id, task_id, run_key, scheduled_for, trigger_kind, trigger_reason,
          status, attempt_count, exit_status_json, condition_result_json,
-         claimed_at, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         stages_json, action_results_json, deadline_at, claimed_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.runId,
         input.taskId,
@@ -4231,6 +4276,9 @@ export class CorptieStore {
         input.attemptCount ?? 1,
         input.exitStatus ? JSON.stringify(input.exitStatus) : null,
         input.conditionResult ? JSON.stringify(input.conditionResult) : null,
+        JSON.stringify(input.stages ?? []),
+        JSON.stringify(input.actionResults ?? []),
+        input.deadlineAt ?? null,
         input.claimedAt ?? timestamp,
         timestamp,
         timestamp
@@ -4265,6 +4313,33 @@ export class CorptieStore {
     ).map(scheduledSessionRunFromRow);
   }
 
+  countActiveScheduledSessionRuns(taskId) {
+    return Number(this.selectOne(
+      `SELECT COUNT(*) AS count FROM scheduled_session_runs
+       WHERE task_id = ? AND status IN ('claimed', 'running')`,
+      [taskId]
+    )?.count ?? 0);
+  }
+
+  countPendingScheduledSessionRunsForLogicalSession(logicalSessionId) {
+    return Number(this.selectOne(
+      `SELECT COUNT(*) AS count FROM scheduled_session_runs r
+       JOIN scheduled_session_tasks t ON t.task_id = r.task_id
+       WHERE t.logical_session_id = ? AND r.status IN ('claimed', 'queued', 'running', 'retry_wait')`,
+      [logicalSessionId]
+    )?.count ?? 0);
+  }
+
+  listExpiredScheduledSessionRuns(now, environment) {
+    return this.selectAll(
+      `SELECT r.* FROM scheduled_session_runs r
+       JOIN scheduled_session_tasks t ON t.task_id = r.task_id
+       WHERE t.environment = ? AND r.status IN ('claimed', 'queued', 'running')
+         AND r.deadline_at IS NOT NULL AND r.deadline_at <= ?`,
+      [environment, now]
+    ).map(scheduledSessionRunFromRow);
+  }
+
   updateScheduledSessionRun(runId, patch = {}) {
     const run = this.getScheduledSessionRun(runId);
     if (!run) return null;
@@ -4273,7 +4348,8 @@ export class CorptieStore {
     this.db.run(
       `UPDATE scheduled_session_runs SET status = ?, attempt_count = ?, agent_work_item_id = ?,
          target_turn_id = ?, binding_id = ?, provider_session_id = ?, routing_version = ?,
-         exit_status_json = ?, condition_result_json = ?, error_code = ?, error_message = ?, claimed_at = ?, queued_at = ?,
+         exit_status_json = ?, condition_result_json = ?, stages_json = ?, action_results_json = ?, deadline_at = ?,
+         error_code = ?, error_message = ?, claimed_at = ?, queued_at = ?,
          started_at = ?, completed_at = ?, updated_at = ? WHERE run_id = ?`,
       [
         value("status", run.status),
@@ -4285,6 +4361,9 @@ export class CorptieStore {
         value("routingVersion", run.routingVersion),
         value("exitStatus", run.exitStatus) ? JSON.stringify(value("exitStatus", run.exitStatus)) : null,
         value("conditionResult", run.conditionResult) ? JSON.stringify(value("conditionResult", run.conditionResult)) : null,
+        JSON.stringify(value("stages", run.stages) ?? []),
+        JSON.stringify(value("actionResults", run.actionResults) ?? []),
+        value("deadlineAt", run.deadlineAt),
         value("errorCode", run.errorCode),
         value("errorMessage", run.errorMessage),
         value("claimedAt", run.claimedAt),
@@ -7013,11 +7092,38 @@ function providerThreadBindingFromRow(row) {
 }
 
 function scheduledSessionTaskFromRow(row) {
+  const message = parseJson(row.message_json, {});
+  const fallbackTrigger = row.schedule_type === "once"
+    ? { type: "at", at: row.run_at }
+    : row.schedule_type === "interval"
+      ? { type: "interval", startAt: row.run_at, intervalSeconds: Number(row.interval_seconds) }
+      : row.schedule_type === "condition"
+        ? { type: "condition", condition: parseJson(row.condition_spec_json, null) }
+        : { type: "processExit", process: parseJson(row.process_spec_json, null) };
+  const trigger = parseJson(row.trigger_spec_json, fallbackTrigger);
+  const actions = parseJson(row.actions_json, [{ type: "queueSessionMessage", message }]);
+  const policy = parseJson(row.policy_spec_json, {
+    misfire: row.missed_policy === "skip" ? "skip" : "fireOnce",
+    maxCatchUpRuns: 10,
+    maxConcurrentRuns: Number(row.max_concurrent_runs ?? 1),
+    timeoutSeconds: Number(row.timeout_seconds ?? 3600),
+    backpressureLimit: Number(row.backpressure_limit ?? 100)
+  });
   return {
     taskId: row.task_id,
+    automationId: row.task_id,
+    name: row.name || message.text || row.task_id,
     logicalSessionId: row.logical_session_id,
-    message: parseJson(row.message_json, {}),
+    message,
     scheduleType: row.schedule_type,
+    trigger,
+    triggerSpec: trigger,
+    conditions: parseJson(row.condition_specs_json, []),
+    conditionSpecs: parseJson(row.condition_specs_json, []),
+    actions,
+    policy,
+    policySpec: policy,
+    risk: parseJson(row.risk_json, { level: "minimal", remoteWrite: false, destructive: false }),
     runAt: row.run_at,
     nextRunAt: row.next_run_at,
     intervalSeconds: row.interval_seconds == null ? null : Number(row.interval_seconds),
@@ -7037,6 +7143,9 @@ function scheduledSessionTaskFromRow(row) {
     leaseExpiresAt: row.lease_expires_at,
     retryCount: Number(row.retry_count ?? 0),
     maxRetries: Number(row.max_retries ?? 5),
+    maxConcurrentRuns: Number(row.max_concurrent_runs ?? policy.maxConcurrentRuns ?? 1),
+    timeoutSeconds: Number(row.timeout_seconds ?? policy.timeoutSeconds ?? 3600),
+    backpressureLimit: Number(row.backpressure_limit ?? policy.backpressureLimit ?? 100),
     lastRunId: row.last_run_id,
     lastRunStatus: row.last_run_status,
     lastErrorCode: row.last_error_code,
@@ -7068,6 +7177,9 @@ function scheduledSessionRunFromRow(row) {
     routingVersion: row.routing_version == null ? null : Number(row.routing_version),
     exitStatus: parseJson(row.exit_status_json, null),
     conditionResult: parseJson(row.condition_result_json, null),
+    stages: parseJson(row.stages_json, []),
+    actionResults: parseJson(row.action_results_json, []),
+    deadlineAt: row.deadline_at,
     errorCode: row.error_code,
     errorMessage: row.error_message,
     claimedAt: row.claimed_at,

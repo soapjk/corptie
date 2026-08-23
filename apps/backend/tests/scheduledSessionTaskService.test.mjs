@@ -70,6 +70,8 @@ async function fixture(options = {}) {
       queued.push(work);
       return store.enqueueAgentWorkItem(work);
     }),
+    activate: options.activate,
+    notify: options.notify,
     evaluateCondition: options.evaluateCondition,
     inspectProcess: options.inspectProcess
   });
@@ -590,6 +592,225 @@ test("Development and Production task claims and reads remain isolated even in o
     assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "active");
   } finally {
     production.stop();
+    await cleanup(f);
+  }
+});
+
+test("Automation projection supports after plus ordered message, activation, and local-notification actions", async () => {
+  const actionCalls = [];
+  const f = await fixture({
+    activate: async (value) => actionCalls.push(["activate", value]),
+    notify: async (value) => actionCalls.push(["notify", value])
+  });
+  try {
+    const task = f.service.create({
+      name: "Follow up",
+      logicalSessionId: "logical:stable",
+      scheduleType: "after",
+      delaySeconds: 2,
+      actions: [
+        { type: "queueSessionMessage", message: "follow up now" },
+        { type: "activateSession" },
+        { type: "localNotification", title: "Ready", body: "Follow-up queued" }
+      ],
+      misfirePolicy: "fireOnce",
+      maxConcurrentRuns: 2,
+      timeoutSeconds: 60
+    }, f.actor);
+    assert.equal(task.trigger.type, "after");
+    assert.equal(task.trigger.delaySeconds, 2);
+    assert.deepEqual(task.actions.map((action) => action.type), [
+      "queueSessionMessage", "activateSession", "localNotification"
+    ]);
+    assert.equal(task.policy.misfire, "fireOnce");
+    assert.equal(task.risk.remoteWrite, false);
+    f.advance(2_000);
+    await f.service.tick();
+    const run = f.store.listScheduledSessionRuns(task.taskId)[0];
+    assert.equal(run.status, "queued");
+    assert.deepEqual(run.actionResults.map((result) => result.status), ["queued", "requested", "requested"]);
+    assert.ok(run.stages.some((value) => value.name === "authorization" && value.status === "completed"));
+    assert.ok(run.stages.some((value) => value.name === "routing" && value.status === "completed"));
+    assert.equal(actionCalls.length, 2);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("canonical at, interval, processExit, and condition Trigger models persist without Provider fields", async () => {
+  const f = await fixture({ inspectProcess: async () => ({
+    state: "exited", reason: "process_normal_exit", exitStatus: { kind: "normal", code: 0, signal: null }
+  }) });
+  try {
+    const at = f.service.create({
+      logicalSessionId: "logical:stable", message: "at", scheduleType: "at", runAt: "2026-08-22T12:01:00Z"
+    }, f.actor);
+    const interval = f.service.create({
+      logicalSessionId: "logical:stable", message: "interval", scheduleType: "interval", intervalSeconds: 30
+    }, f.actor);
+    const processExit = f.service.create({
+      logicalSessionId: "logical:stable", message: "process", scheduleType: "processExit", process: { pid: 99 }
+    }, f.actor);
+    const condition = f.service.create({
+      logicalSessionId: "logical:stable", message: "condition", scheduleType: "condition", condition: { script: "false" }
+    }, f.actor);
+    assert.deepEqual([at.trigger.type, interval.trigger.type, processExit.trigger.type, condition.trigger.type], [
+      "at", "interval", "processExit", "condition"
+    ]);
+    for (const task of [at, interval, processExit, condition]) {
+      assert.equal(Object.hasOwn(task.trigger, "providerId"), false);
+      assert.equal(task.logicalSessionId, "logical:stable");
+    }
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("structured condition protocol returns fire/message/state and overrides the queued message", async () => {
+  const f = await fixture({
+    evaluateCondition: async () => ({
+      state: "matched", fire: true, message: "structured wake", observerState: { revision: 7 }, exitCode: 0
+    })
+  });
+  try {
+    const task = f.service.create({
+      logicalSessionId: "logical:stable",
+      scheduleType: "condition",
+      message: "fallback",
+      condition: { script: "printf '{\"fire\":true,\"message\":\"ready\",\"state\":{}}'" }
+    }, f.actor);
+    await f.service.tick();
+    assert.equal(f.queued[0].text, "structured wake");
+    assert.deepEqual(f.store.listScheduledSessionRuns(task.taskId)[0].conditionResult.observerState, { revision: 7 });
+    const actual = await executeConditionScript({
+      script: "printf '{\"fire\":false,\"message\":\"waiting\",\"state\":{\"cursor\":3}}'",
+      timeoutSeconds: 3,
+      workingDirectory: null
+    });
+    assert.equal(actual.fire, false);
+    assert.equal(actual.message, "waiting");
+    assert.deepEqual(actual.observerState, { cursor: 3 });
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("misfire policies support skip, fireOnce, and bounded catchUp", async () => {
+  const f = await fixture({ missedGraceMs: 100 });
+  try {
+    const caught = f.service.create({
+      logicalSessionId: "logical:stable", message: "catch up", scheduleType: "interval",
+      runAt: "2026-08-22T11:59:50Z", intervalSeconds: 2,
+      misfirePolicy: "catchUp", maxCatchUpRuns: 3, backpressureLimit: 10
+    }, f.actor);
+    await f.service.tick();
+    const caughtRuns = f.store.listScheduledSessionRuns(caught.taskId);
+    assert.equal(caughtRuns.filter((run) => run.triggerReason === "misfire_catch_up").length, 3);
+    assert.ok(new Date(f.store.getScheduledSessionTask(caught.taskId).nextRunAt) > f.service.now());
+
+    const skipped = f.service.create({
+      logicalSessionId: "logical:stable", message: "skip", scheduleType: "once",
+      runAt: "2026-08-22T11:00:00Z", misfirePolicy: "skip"
+    }, f.actor);
+    await f.service.tick();
+    assert.equal(f.store.getScheduledSessionTask(skipped.taskId).lastRunStatus, "missed");
+
+    const fireOnce = f.service.create({
+      logicalSessionId: "logical:stable", message: "one", scheduleType: "once",
+      runAt: "2026-08-22T11:00:00Z", misfirePolicy: "fireOnce"
+    }, f.actor);
+    await f.service.tick();
+    assert.equal(f.store.listScheduledSessionRuns(fireOnce.taskId).filter((run) => run.status === "queued").length, 1);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("read-only observer validation rejects remote, destructive, and filesystem-write scripts", async () => {
+  const f = await fixture();
+  try {
+    for (const script of ["curl https://example.com", "rm -f flag", "printf x > flag", "python3 -c 'open(\"x\",\"w\")'"]) {
+      assert.throws(() => f.service.create({
+        logicalSessionId: "logical:stable", message: "unsafe", scheduleType: "condition",
+        condition: { script }
+      }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK");
+    }
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("the same provider-neutral Automation contract routes across Codex, Claude, and OpenClacky bindings", async () => {
+  const f = await fixture();
+  try {
+    const task = f.service.create({
+      logicalSessionId: "logical:stable", message: "provider neutral", scheduleType: "interval", intervalSeconds: 60
+    }, f.actor);
+    const providers = ["codex-app-server", "claude-sdk", "openclacky"];
+    const observed = [];
+    for (let index = 0; index < providers.length; index += 1) {
+      if (index > 0) {
+        const logical = f.store.getLogicalSession("logical:stable");
+        f.store.beginWorkspaceTransition({
+          transitionId: `transition:contract:${index}`,
+          logicalSessionId: "logical:stable",
+          transitionKind: "provider",
+          targetProviderId: providers[index],
+          targetCwd: f.directory,
+          sourceRoutingVersion: logical.routingVersion,
+          phase: "waitingForTurn",
+          strategy: "fork"
+        });
+        f.store.commitWorkspaceTransition(`transition:contract:${index}`, {
+          providerThreadId: `provider:${index}`,
+          providerSessionId: `provider:${index}`,
+          providerId: providers[index],
+          boundCwd: f.directory
+        });
+      }
+      const run = await f.service.runNow(task.taskId, f.actor);
+      observed.push({
+        provider: f.store.getLogicalSession("logical:stable").activeBinding.providerId,
+        providerSessionId: run.providerSessionId,
+        routingVersion: run.routingVersion
+      });
+    }
+    assert.deepEqual(observed.map((value) => value.provider), providers);
+    assert.deepEqual(observed.map((value) => value.routingVersion), [1, 2, 3]);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("concurrency, backpressure, deadlines, and retry state remain explicit", async () => {
+  const f = await fixture();
+  try {
+    const task = f.service.create({
+      logicalSessionId: "logical:stable", message: "bounded", scheduleType: "interval", intervalSeconds: 60,
+      maxConcurrentRuns: 1, backpressureLimit: 1, timeoutSeconds: 2
+    }, f.actor);
+    f.store.createScheduledSessionRun({
+      runId: "scheduled_run:running", taskId: task.taskId, runKey: `${task.taskId}:running`,
+      scheduledFor: f.service.now().toISOString(), triggerKind: "manual", triggerReason: "fixture",
+      status: "running", deadlineAt: "2026-08-22T12:00:10Z"
+    });
+    await assert.rejects(() => f.service.runNow(task.taskId, f.actor), (error) => error.code === "AUTOMATION_CONCURRENCY_LIMIT");
+
+    f.store.updateScheduledSessionRun("scheduled_run:running", {
+      status: "queued", deadlineAt: "2026-08-22T11:59:59Z"
+    });
+    await f.service.tick();
+    const expired = f.store.getScheduledSessionRun("scheduled_run:running");
+    assert.equal(expired.status, "retry_wait");
+    assert.equal(expired.errorCode, "AUTOMATION_RUN_TIMEOUT");
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).lastRunStatus, "retry_wait");
+
+    const second = f.service.create({
+      logicalSessionId: "logical:stable", message: "pressure", scheduleType: "at",
+      runAt: "2026-08-22T12:01:00Z", backpressureLimit: 1
+    }, f.actor);
+    await assert.rejects(() => f.service.runNow(second.taskId, f.actor), (error) => error.code === "AUTOMATION_BACKPRESSURE");
+  } finally {
     await cleanup(f);
   }
 });

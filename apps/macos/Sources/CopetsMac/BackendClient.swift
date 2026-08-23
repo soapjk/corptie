@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import UserNotifications
 
 extension Notification.Name {
     /// 请求在主悬浮窗（液态玻璃）打开某个 session 的对话，userInfo["sessionId"] 传 session id。
@@ -14,6 +15,17 @@ extension Notification.Name {
 struct SessionRestartActivity: Equatable {
     let text: String
     let isActive: Bool
+}
+
+private struct AutomationClientActionEnvelope: Decodable {
+    let payload: Payload
+
+    struct Payload: Decodable {
+        let sessionId: String
+        let runId: String
+        let title: String?
+        let body: String?
+    }
 }
 
 struct ProjectWorktreeIntegrationLaunchGate: Equatable {
@@ -173,6 +185,9 @@ final class BackendClient: ObservableObject {
     @Published private(set) var worktreeCommitReviewPrompt: WorktreeCommitReviewPrompt?
     @Published private(set) var isGeneratingWorktreeCommitMessage = false
     @Published private(set) var selectedScheduledTasks: [ScheduledSessionTask] = []
+    @Published private(set) var automations: [ScheduledSessionTask] = []
+    @Published private(set) var isLoadingAutomations = false
+    @Published private(set) var automationsError: String?
     @Published private(set) var isLoadingScheduledTasks = false
     @Published private(set) var scheduledTaskMutationIds = Set<String>()
     @Published private(set) var scheduledTaskError: String?
@@ -436,9 +451,31 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "AutomationSessionActivationRequested" {
+            guard let payload = data.data(using: .utf8),
+                  let event = try? JSONDecoder().decode(AutomationClientActionEnvelope.self, from: payload) else { return }
+            AppTabRouter.shared.openSession(event.payload.sessionId)
+            return
+        }
+        if eventName == "AutomationLocalNotificationRequested" {
+            guard let payload = data.data(using: .utf8),
+                  let event = try? JSONDecoder().decode(AutomationClientActionEnvelope.self, from: payload),
+                  let center = SystemNotificationCenter.currentIfAvailable() else { return }
+            let content = UNMutableNotificationContent()
+            content.title = event.payload.title ?? L10n("Corptie Automation")
+            content.body = event.payload.body ?? L10n("Automation completed.")
+            content.userInfo = ["sessionId": event.payload.sessionId]
+            try? await center.add(UNNotificationRequest(
+                identifier: "automation:\(event.payload.runId)",
+                content: content,
+                trigger: nil
+            ))
+            return
+        }
         if ScheduledSessionEventMapping.authoritativeEventNames.contains(eventName) {
-            guard let selectedSession,
-                  let payload = data.data(using: .utf8) else { return }
+            await loadAutomations()
+            guard let payload = data.data(using: .utf8) else { return }
+            guard let selectedSession else { return }
             let eventSessionId = ScheduledSessionEventMapping.sessionId(from: payload)
             let selectedLogicalSessionId = selectedSession.external?.logicalSessionId ?? selectedSession.id
             if eventSessionId == nil || eventSessionId == selectedLogicalSessionId || eventSessionId == selectedSession.id {
@@ -3716,6 +3753,58 @@ final class BackendClient: ObservableObject {
         } catch {
             guard selectedSession?.id == session.id else { return }
             scheduledTaskError = error.localizedDescription
+        }
+    }
+
+    func loadAutomations() async {
+        guard !isLoadingAutomations else { return }
+        isLoadingAutomations = true
+        defer { isLoadingAutomations = false }
+        do {
+            let listURL = baseURL.appending(path: "automations")
+            let (data, response) = try await URLSession.shared.data(from: listURL)
+            try Self.requireScheduledTaskSuccess(response, data: data)
+            let summaries = try JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data).tasks
+            let endpointBaseURL = baseURL
+            var details: [ScheduledSessionTask] = []
+            try await withThrowingTaskGroup(of: ScheduledSessionTask.self) { group in
+                for summary in summaries {
+                    group.addTask {
+                        let url = endpointBaseURL.appending(path: "automations/\(summary.id)")
+                        let (detailData, detailResponse) = try await URLSession.shared.data(from: url)
+                        try Self.requireScheduledTaskSuccess(detailResponse, data: detailData)
+                        return try JSONDecoder().decode(ScheduledSessionTask.self, from: detailData)
+                    }
+                }
+                for try await detail in group { details.append(detail) }
+            }
+            automations = details.sorted {
+                let left = ScheduledSessionDateFormatting.date(from: $0.nextRunAt) ?? .distantFuture
+                let right = ScheduledSessionDateFormatting.date(from: $1.nextRunAt) ?? .distantFuture
+                return left == right ? $0.id < $1.id : left < right
+            }
+            automationsError = nil
+        } catch {
+            automationsError = error.localizedDescription
+        }
+    }
+
+    @discardableResult
+    func performAutomationAction(_ action: ScheduledSessionTaskAction, task: ScheduledSessionTask) async -> Bool {
+        guard scheduledTaskMutationIds.insert(task.id).inserted else { return false }
+        defer { scheduledTaskMutationIds.remove(task.id) }
+        do {
+            var request = URLRequest(url: baseURL.appending(
+                path: "automations/\(task.id)/\(action == .retry ? ScheduledSessionTaskAction.resume.rawValue : action.rawValue)"
+            ))
+            request.httpMethod = "POST"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireScheduledTaskSuccess(response, data: data)
+            await loadAutomations()
+            return true
+        } catch {
+            automationsError = error.localizedDescription
+            return false
         }
     }
 

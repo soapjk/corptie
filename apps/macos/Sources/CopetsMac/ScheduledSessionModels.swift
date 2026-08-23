@@ -3,6 +3,8 @@ import Foundation
 enum ScheduledSessionScheduleType: String, Codable, CaseIterable, Sendable {
     case once
     case interval
+    case condition
+    case process
 }
 
 enum ScheduledSessionMissedPolicy: String, Codable, CaseIterable, Sendable {
@@ -107,6 +109,12 @@ struct ScheduledSessionRun: Identifiable, Codable, Equatable, Sendable {
     let attemptCount: Int
     let agentWorkItemId: String?
     let targetTurnId: String?
+    let bindingId: String?
+    let providerSessionId: String?
+    let routingVersion: Int?
+    let stages: [AutomationRunStage]?
+    let actionResults: [AutomationActionResult]?
+    let deadlineAt: String?
     let errorCode: String?
     let errorMessage: String?
     let claimedAt: String?
@@ -115,13 +123,110 @@ struct ScheduledSessionRun: Identifiable, Codable, Equatable, Sendable {
     let completedAt: String?
     let createdAt: String
     let updatedAt: String
+
+    init(
+        runId: String,
+        taskId: String,
+        scheduledFor: String,
+        triggerKind: String,
+        triggerReason: String,
+        status: ScheduledSessionRunStatus,
+        attemptCount: Int,
+        agentWorkItemId: String? = nil,
+        targetTurnId: String? = nil,
+        bindingId: String? = nil,
+        providerSessionId: String? = nil,
+        routingVersion: Int? = nil,
+        stages: [AutomationRunStage]? = nil,
+        actionResults: [AutomationActionResult]? = nil,
+        deadlineAt: String? = nil,
+        errorCode: String? = nil,
+        errorMessage: String? = nil,
+        claimedAt: String? = nil,
+        queuedAt: String? = nil,
+        startedAt: String? = nil,
+        completedAt: String? = nil,
+        createdAt: String,
+        updatedAt: String
+    ) {
+        self.runId = runId
+        self.taskId = taskId
+        self.scheduledFor = scheduledFor
+        self.triggerKind = triggerKind
+        self.triggerReason = triggerReason
+        self.status = status
+        self.attemptCount = attemptCount
+        self.agentWorkItemId = agentWorkItemId
+        self.targetTurnId = targetTurnId
+        self.bindingId = bindingId
+        self.providerSessionId = providerSessionId
+        self.routingVersion = routingVersion
+        self.stages = stages
+        self.actionResults = actionResults
+        self.deadlineAt = deadlineAt
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+        self.claimedAt = claimedAt
+        self.queuedAt = queuedAt
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+struct AutomationRunStage: Codable, Equatable, Sendable {
+    let name: String
+    let status: String
+    let at: String
+}
+
+struct AutomationActionResult: Codable, Equatable, Sendable {
+    let type: String
+    let status: String
+    let workItemId: String?
+    let completedAt: String?
+}
+
+struct AutomationTrigger: Decodable, Equatable, Sendable {
+    let type: String
+    let at: String?
+    let delaySeconds: Int?
+    let startAt: String?
+    let intervalSeconds: Int?
+}
+
+struct AutomationAction: Decodable, Equatable, Sendable {
+    let type: String
+    let title: String?
+    let body: String?
+}
+
+struct AutomationPolicy: Decodable, Equatable, Sendable {
+    let misfire: String
+    let maxCatchUpRuns: Int
+    let maxConcurrentRuns: Int
+    let timeoutSeconds: Int
+    let backpressureLimit: Int
+}
+
+struct AutomationRisk: Decodable, Equatable, Sendable {
+    let level: String
+    let summary: String?
+    let remoteWrite: Bool
+    let destructive: Bool
 }
 
 struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
     var id: String { taskId }
     let taskId: String
     let logicalSessionId: String
+    let name: String
     let message: String
+    let trigger: AutomationTrigger?
+    let actions: [AutomationAction]
+    let policy: AutomationPolicy?
+    let risk: AutomationRisk?
     let scheduleType: ScheduledSessionScheduleType
     let runAt: String?
     let nextRunAt: String?
@@ -166,7 +271,8 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case taskId, logicalSessionId, message, scheduleType, runAt, nextRunAt, intervalSeconds
+        case taskId, logicalSessionId, name, message, trigger, actions, policy, risk
+        case scheduleType, runAt, nextRunAt, intervalSeconds
         case timezone, status, missedPolicy, lastRunId, lastRunStatus, lastErrorCode
         case lastErrorMessage, lastRunAt, resourceVersion, createdAt, updatedAt, pausedAt
         case cancelledAt, completedAt, runs, runHistory
@@ -182,6 +288,11 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
             let structured = try values.decode(StructuredMessage.self, forKey: .message)
             message = structured.text
         }
+        name = try values.decodeIfPresent(String.self, forKey: .name) ?? message
+        trigger = try values.decodeIfPresent(AutomationTrigger.self, forKey: .trigger)
+        actions = try values.decodeIfPresent([AutomationAction].self, forKey: .actions) ?? []
+        policy = try values.decodeIfPresent(AutomationPolicy.self, forKey: .policy)
+        risk = try values.decodeIfPresent(AutomationRisk.self, forKey: .risk)
         scheduleType = try values.decode(ScheduledSessionScheduleType.self, forKey: .scheduleType)
         runAt = try values.decodeIfPresent(String.self, forKey: .runAt)
         nextRunAt = try values.decodeIfPresent(String.self, forKey: .nextRunAt)
@@ -212,7 +323,12 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
     init(
         taskId: String,
         logicalSessionId: String,
+        name: String? = nil,
         message: String,
+        trigger: AutomationTrigger? = nil,
+        actions: [AutomationAction] = [],
+        policy: AutomationPolicy? = nil,
+        risk: AutomationRisk? = nil,
         scheduleType: ScheduledSessionScheduleType,
         runAt: String?,
         nextRunAt: String?,
@@ -235,7 +351,12 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
     ) {
         self.taskId = taskId
         self.logicalSessionId = logicalSessionId
+        self.name = name ?? message
         self.message = message
+        self.trigger = trigger
+        self.actions = actions
+        self.policy = policy
+        self.risk = risk
         self.scheduleType = scheduleType
         self.runAt = runAt
         self.nextRunAt = nextRunAt
@@ -293,6 +414,8 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
             if runAt <= now { return .pastRunAt }
         case .interval:
             if intervalSeconds < 60 || intervalSeconds > 31_536_000 { return .invalidInterval }
+        case .condition, .process:
+            return .unsupportedTrigger
         }
         return nil
     }
@@ -307,6 +430,7 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
         switch scheduleType {
         case .once: body["runAt"] = ScheduledSessionDateFormatting.string(from: runAt)
         case .interval: body["intervalSeconds"] = intervalSeconds
+        case .condition, .process: break
         }
         return body
     }
@@ -317,6 +441,7 @@ enum ScheduledSessionValidationError: String, Error, Equatable, Sendable {
     case pastRunAt
     case invalidInterval
     case invalidTimezone
+    case unsupportedTrigger
 }
 
 extension ScheduledSessionValidationError: LocalizedError {
@@ -326,6 +451,7 @@ extension ScheduledSessionValidationError: LocalizedError {
         case .pastRunAt: "执行时间必须晚于当前时间。"
         case .invalidInterval: "固定间隔必须在 1 分钟到 365 天之间。"
         case .invalidTimezone: "请选择有效的 IANA 时区。"
+        case .unsupportedTrigger: "请在 Automations Tab 中管理该事件触发器。"
         }
     }
 }

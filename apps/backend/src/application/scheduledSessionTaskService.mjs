@@ -18,6 +18,8 @@ export class ScheduledSessionTaskService {
     this.resolveRoute = options.resolveRoute;
     this.authorize = options.authorize;
     this.enqueue = options.enqueue;
+    this.activate = options.activate ?? (async () => ({ delivered: true }));
+    this.notify = options.notify ?? (async () => ({ delivered: true }));
     this.onEvent = options.onEvent ?? null;
     this.inspectProcess = options.inspectProcess ?? inspectProcess;
     this.evaluateCondition = options.evaluateCondition ?? executeConditionScript;
@@ -91,7 +93,13 @@ export class ScheduledSessionTaskService {
     const normalized = validateScheduledSessionTaskPatch(input, task, { now: this.now() });
     validateConditionResources(normalized.conditionSpec);
     const updated = this.store.updateScheduledSessionTask(taskId, {
+      name: normalized.name,
       message: normalized.message,
+      triggerSpec: normalized.triggerSpec,
+      conditionSpecs: normalized.conditionSpecs,
+      actions: normalized.actions,
+      policySpec: normalized.policySpec,
+      risk: normalized.risk,
       runAt: normalized.runAt,
       nextRunAt: normalized.nextRunAt,
       intervalSeconds: normalized.intervalSeconds,
@@ -102,6 +110,9 @@ export class ScheduledSessionTaskService {
       processSpec: normalized.processSpec,
       processState: normalized.processState,
       maxRetries: normalized.maxRetries,
+      maxConcurrentRuns: normalized.maxConcurrentRuns,
+      timeoutSeconds: normalized.timeoutSeconds,
+      backpressureLimit: normalized.backpressureLimit,
       retryCount: 0,
       lastErrorCode: null,
       lastErrorMessage: null,
@@ -169,6 +180,8 @@ export class ScheduledSessionTaskService {
       triggerKind: "manual",
       triggerReason: "run_now",
       status: "claimed",
+      stages: [stage("trigger", "completed", timestamp, { reason: "run_now" })],
+      deadlineAt: new Date(this.now().getTime() + task.timeoutSeconds * 1000).toISOString(),
       createdAt: timestamp
     });
     this.#record("ScheduledSessionTaskDue", task, run, actor, { triggerReason: "run_now" });
@@ -180,6 +193,7 @@ export class ScheduledSessionTaskService {
     this.ticking = true;
     try {
       const now = this.now();
+      this.#recoverExpiredRuns(now);
       const tasks = this.store.claimDueScheduledSessionTasks({
         environment: this.environment,
         now: now.toISOString(),
@@ -206,6 +220,7 @@ export class ScheduledSessionTaskService {
       ? this.store.getScheduledSessionRunForAgentWorkItem(workItem.workItemId)
       : null;
     if (!run) return null;
+    if (["completed", "failed", "cancelled", "skipped", "missed"].includes(run.status)) return run;
     const task = this.store.getScheduledSessionTask(run.taskId);
     if (!task || task.environment !== this.environment) return null;
     const timestamp = this.now().toISOString();
@@ -257,8 +272,12 @@ export class ScheduledSessionTaskService {
       this.#record("ScheduledSessionRunMissed", task, missedRun, { type: "system", id: this.leaseOwner }, {
         scheduledFor, policy: task.missedPolicy
       });
-      if (task.missedPolicy === "skip") {
+      const policy = task.policySpec?.misfire ?? (task.missedPolicy === "skip" ? "skip" : "fireOnce");
+      if (policy === "skip") {
         return this.#advanceWithoutDispatch(task, now, "missed_policy_skip");
+      }
+      if (policy === "catchUp" && task.scheduleType === "interval") {
+        return this.#catchUp(task, scheduledFor, now);
       }
     }
     const runKey = `${task.taskId}:scheduled:${scheduledFor}`;
@@ -272,6 +291,8 @@ export class ScheduledSessionTaskService {
       triggerReason: missed ? "missed_run_coalesced" : "schedule_due",
       status: "claimed",
       attemptCount: task.retryCount + 1,
+      stages: [stage("trigger", "completed", now.toISOString(), { missed })],
+      deadlineAt: new Date(now.getTime() + task.timeoutSeconds * 1000).toISOString(),
       createdAt: now.toISOString()
     });
     this.#record("ScheduledSessionTaskDue", task, run, { type: "system", id: this.leaseOwner }, {
@@ -315,6 +336,8 @@ export class ScheduledSessionTaskService {
       triggerReason: observation.reason,
       status: "claimed",
       exitStatus: observation.exitStatus,
+      stages: [stage("trigger", "completed", now.toISOString(), { observation })],
+      deadlineAt: new Date(now.getTime() + task.timeoutSeconds * 1000).toISOString(),
       createdAt: now.toISOString()
     });
     this.store.updateScheduledSessionTask(task.taskId, { processState: state });
@@ -341,7 +364,7 @@ export class ScheduledSessionTaskService {
       lastObservedAt: now.toISOString(),
       lastObservation: observation
     };
-    if (observation.state === "not_matched") {
+    if (observation.state === "not_matched" || observation.fire === false) {
       this.store.updateScheduledSessionTask(task.taskId, {
         conditionState: state,
         nextRunAt: new Date(now.getTime() + task.conditionSpec.checkIntervalSeconds * 1000).toISOString(),
@@ -368,6 +391,8 @@ export class ScheduledSessionTaskService {
       triggerReason: "condition_script_satisfied",
       status: "claimed",
       conditionResult: observation,
+      stages: [stage("condition", "completed", now.toISOString(), { result: observation })],
+      deadlineAt: new Date(now.getTime() + task.timeoutSeconds * 1000).toISOString(),
       createdAt: now.toISOString()
     });
     this.store.updateScheduledSessionTask(task.taskId, { conditionState: state });
@@ -390,10 +415,29 @@ export class ScheduledSessionTaskService {
         "trigger",
         task
       );
+      run = this.store.updateScheduledSessionRun(run.runId, {
+        stages: appendStage(run.stages, stage("authorization", "completed", now.toISOString()))
+      });
+      if (this.store.countActiveScheduledSessionRuns(task.taskId) > task.maxConcurrentRuns) {
+        operationError("AUTOMATION_CONCURRENCY_LIMIT", `Automation ${task.taskId} reached its concurrent run limit.`);
+      }
+      if (this.store.countPendingScheduledSessionRunsForLogicalSession(task.logicalSessionId) > task.backpressureLimit) {
+        operationError("AUTOMATION_BACKPRESSURE", `Logical Session ${task.logicalSessionId} reached its automation queue limit.`);
+      }
       const route = await this.resolveRoute(task.logicalSessionId, task);
       if (!route?.sessionId || !route?.agentId || !route?.binding) {
         operationError("ROUTE_UNAVAILABLE", `Logical Session ${task.logicalSessionId} has no usable active binding.`);
       }
+      run = this.store.updateScheduledSessionRun(run.runId, {
+        bindingId: route.binding.bindingId,
+        providerSessionId: route.binding.providerSessionId,
+        routingVersion: route.binding.routingVersion,
+        stages: appendStage(run.stages, stage("routing", "completed", now.toISOString(), {
+          logicalSessionId: task.logicalSessionId,
+          bindingId: route.binding.bindingId,
+          routingVersion: route.binding.routingVersion
+        }))
+      });
       const currentTask = this.store.getScheduledSessionTask(task.taskId);
       if (currentTask?.status === "cancelled") {
         const cancelledRun = this.store.updateScheduledSessionRun(run.runId, {
@@ -407,46 +451,81 @@ export class ScheduledSessionTaskService {
         }, { reason: "cancelled_before_delivery" });
         return cancelledRun;
       }
-      const workItemId = `scheduled:${run.runId}`;
-      const workItem = await this.enqueue({
-        workItemId,
-        agentId: route.agentId,
-        sessionId: route.sessionId,
-        kind: "user",
-        priority: 75,
-        text: task.message.text,
-        source: {
-          type: "scheduled_session_task",
-          scheduledTaskId: task.taskId,
-          scheduledRunId: run.runId,
-          messageType: task.message.type,
-          payload: task.message.payload,
-          triggerKind: run.triggerKind,
-          triggerReason: run.triggerReason,
-          scheduledFor: run.scheduledFor,
-          exitStatus: run.exitStatus,
-          conditionResult: run.conditionResult
-        },
-        localVisibility: "normal",
-        createdAt: now.toISOString()
-      });
+      const actionResults = [];
+      let workItem = null;
+      const actions = task.actions?.length ? task.actions : [{ type: "queueSessionMessage", message: task.message }];
+      for (let index = 0; index < actions.length; index += 1) {
+        const action = actions[index];
+        run = this.store.updateScheduledSessionRun(run.runId, {
+          stages: appendStage(run.stages, stage(`action:${index}:${action.type}`, "running", this.now().toISOString()))
+        });
+        if (action.type === "queueSessionMessage") {
+          const message = run.conditionResult?.message
+            ? { ...action.message, text: run.conditionResult.message }
+            : action.message;
+          workItem = await this.enqueue({
+            workItemId: `scheduled:${run.runId}:${index}`,
+            agentId: route.agentId,
+            sessionId: route.sessionId,
+            kind: "user",
+            priority: 75,
+            text: message.text,
+            source: {
+              type: "scheduled_session_task",
+              automationId: task.taskId,
+              scheduledTaskId: task.taskId,
+              scheduledRunId: run.runId,
+              messageType: message.type,
+              payload: message.payload,
+              triggerKind: run.triggerKind,
+              triggerReason: run.triggerReason,
+              scheduledFor: run.scheduledFor,
+              exitStatus: run.exitStatus,
+              conditionResult: run.conditionResult
+            },
+            localVisibility: "normal",
+            createdAt: now.toISOString()
+          });
+          actionResults.push({ type: action.type, status: "queued", workItemId: workItem.workItemId, completedAt: this.now().toISOString() });
+        } else if (action.type === "activateSession") {
+          await this.activate({ logicalSessionId: task.logicalSessionId, sessionId: route.sessionId, automationId: task.taskId, runId: run.runId });
+          actionResults.push({ type: action.type, status: "requested", completedAt: this.now().toISOString() });
+        } else if (action.type === "localNotification") {
+          await this.notify({ ...action, logicalSessionId: task.logicalSessionId, sessionId: route.sessionId, automationId: task.taskId, runId: run.runId });
+          actionResults.push({ type: action.type, status: "requested", completedAt: this.now().toISOString() });
+        } else {
+          operationError("AUTOMATION_ACTION_UNSUPPORTED", `Unsupported Automation action ${action.type}.`);
+        }
+        run = this.store.updateScheduledSessionRun(run.runId, {
+          actionResults,
+          stages: appendStage(run.stages, stage(
+            `action:${index}:${action.type}`,
+            action.type === "queueSessionMessage" ? "completed" : "dispatched",
+            this.now().toISOString()
+          ))
+        });
+      }
+      const deliveryStatus = workItem ? "queued" : "completed";
       const updatedRun = this.store.updateScheduledSessionRun(run.runId, {
-        status: "queued",
-        agentWorkItemId: workItem.workItemId,
+        status: deliveryStatus,
+        agentWorkItemId: workItem?.workItemId ?? null,
         bindingId: route.binding.bindingId,
         providerSessionId: route.binding.providerSessionId,
         routingVersion: route.binding.routingVersion,
-        queuedAt: now.toISOString(),
+        queuedAt: workItem ? now.toISOString() : null,
+        completedAt: workItem ? null : now.toISOString(),
+        stages: appendStage(run.stages, stage("dispatch", "completed", this.now().toISOString(), { status: deliveryStatus })),
+        actionResults,
         errorCode: null,
         errorMessage: null
       });
       const taskPatch = options.preserveSchedule ? {
         lastRunId: run.runId,
-        lastRunStatus: "queued",
+        lastRunStatus: deliveryStatus,
         lastRunAt: now.toISOString(),
         lastErrorCode: null,
         lastErrorMessage: null
-      } : this.#successTaskPatch(task, run, now);
+      } : this.#successTaskPatch(task, updatedRun, now);
       const updatedTask = this.store.updateScheduledSessionTask(task.taskId, {
         ...taskPatch,
         leaseOwner: null,
@@ -454,8 +533,8 @@ export class ScheduledSessionTaskService {
         retryCount: 0,
         pendingScheduledFor: null
       });
-      this.#record("ScheduledSessionRunQueued", updatedTask, updatedRun, { type: "system", id: this.leaseOwner }, {
-        agentWorkItemId: workItem.workItemId,
+      this.#record(workItem ? "ScheduledSessionRunQueued" : "ScheduledSessionRunCompleted", updatedTask, updatedRun, { type: "system", id: this.leaseOwner }, {
+        agentWorkItemId: workItem?.workItemId ?? null,
         targetSessionId: route.sessionId,
         bindingId: route.binding.bindingId,
         routingVersion: route.binding.routingVersion
@@ -472,7 +551,7 @@ export class ScheduledSessionTaskService {
         status: "active",
         nextRunAt: nextIntervalRun(run.scheduledFor, task.intervalSeconds, now),
         lastRunId: run.runId,
-        lastRunStatus: "queued",
+        lastRunStatus: run.status,
         lastRunAt: now.toISOString(),
         lastErrorCode: null,
         lastErrorMessage: null
@@ -483,7 +562,7 @@ export class ScheduledSessionTaskService {
       nextRunAt: null,
       completedAt: now.toISOString(),
       lastRunId: run.runId,
-      lastRunStatus: "queued",
+      lastRunStatus: run.status,
       lastRunAt: now.toISOString(),
       lastErrorCode: null,
       lastErrorMessage: null
@@ -504,6 +583,57 @@ export class ScheduledSessionTaskService {
       lastErrorMessage: reason
     });
     return updated;
+  }
+
+  async #catchUp(task, firstScheduledFor, now) {
+    const limit = task.policySpec?.maxCatchUpRuns ?? 10;
+    const intervalMs = task.intervalSeconds * 1000;
+    const slots = [];
+    for (let at = new Date(firstScheduledFor).getTime(); at <= now.getTime() && slots.length < limit; at += intervalMs) {
+      slots.push(new Date(at).toISOString());
+    }
+    let lastRun = null;
+    for (const scheduledFor of slots) {
+      const runKey = `${task.taskId}:scheduled:${scheduledFor}`;
+      const run = this.store.getScheduledSessionRunByKey(runKey) ?? this.store.createScheduledSessionRun({
+        runId: stableId("scheduled_run", task.taskId, scheduledFor),
+        taskId: task.taskId,
+        runKey,
+        scheduledFor,
+        triggerKind: "recovery",
+        triggerReason: "misfire_catch_up",
+        status: "claimed",
+        stages: [stage("trigger", "completed", now.toISOString(), { missed: true, policy: "catchUp" })],
+        deadlineAt: new Date(now.getTime() + task.timeoutSeconds * 1000).toISOString(),
+        createdAt: now.toISOString()
+      });
+      this.#record("ScheduledSessionTaskDue", task, run, { type: "system", id: this.leaseOwner }, {
+        scheduledFor, missed: true, policy: "catchUp"
+      });
+      lastRun = await this.#dispatch(task, run, { preserveSchedule: true });
+    }
+    const nextRunAt = nextIntervalRun(slots.at(-1) ?? firstScheduledFor, task.intervalSeconds, now);
+    this.store.updateScheduledSessionTask(task.taskId, {
+      status: "active",
+      nextRunAt,
+      pendingScheduledFor: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      lastRunId: lastRun?.runId ?? task.lastRunId,
+      lastRunStatus: lastRun?.status ?? "missed",
+      lastRunAt: now.toISOString()
+    });
+    return lastRun;
+  }
+
+  #recoverExpiredRuns(now) {
+    for (const run of this.store.listExpiredScheduledSessionRuns(now.toISOString(), this.environment)) {
+      const task = this.store.getScheduledSessionTask(run.taskId);
+      if (!task) continue;
+      const error = new Error(`Automation run ${run.runId} exceeded ${task.timeoutSeconds} seconds.`);
+      error.code = "AUTOMATION_RUN_TIMEOUT";
+      this.#handleTriggerFailure(task, run, error, now);
+    }
   }
 
   #handleTriggerFailure(task, run, error, now = this.now(), options = {}) {
@@ -623,9 +753,26 @@ export async function inspectProcess(spec) {
 
 export async function executeConditionScript(spec) {
   try {
+    const resourceWrappedScript = [
+      "ulimit -t 5",
+      "ulimit -f 128",
+      spec.script
+    ].join("\n");
+    const sandboxProfile = [
+      "(version 1)",
+      "(deny default)",
+      "(allow process*)",
+      "(allow file-read*)",
+      "(allow sysctl-read)",
+      "(allow mach-lookup)"
+    ].join(" ");
+    const command = process.platform === "darwin" ? "/usr/bin/sandbox-exec" : "/bin/zsh";
+    const args = process.platform === "darwin"
+      ? ["-p", sandboxProfile, "/bin/zsh", "-f", "-c", resourceWrappedScript]
+      : ["-f", "-c", resourceWrappedScript];
     const { stdout, stderr } = await execFileAsync(
-      "/bin/zsh",
-      ["-f", "-c", spec.script],
+      command,
+      args,
       {
         cwd: spec.workingDirectory ?? undefined,
         timeout: spec.timeoutSeconds * 1_000,
@@ -633,7 +780,8 @@ export async function executeConditionScript(spec) {
         env: {
           PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
           LANG: "en_US.UTF-8",
-          CORPTIE_SCHEDULED_TASK: "1"
+          CORPTIE_SCHEDULED_TASK: "1",
+          CORPTIE_AUTOMATION_OBSERVER: "readonly-v1"
         }
       }
     );
@@ -664,17 +812,64 @@ export async function executeConditionScript(spec) {
 }
 
 function conditionObservation(state, exitCode, stdout, stderr) {
+  const boundedStdout = boundedOutput(stdout);
+  const structured = structuredConditionResult(boundedStdout);
+  if (structured) {
+    return {
+      state: structured.state,
+      fire: structured.fire,
+      message: structured.message,
+      observerState: structured.statePayload,
+      exitCode,
+      stdout: boundedStdout,
+      stderr: boundedOutput(stderr),
+      protocol: "structured-json-v1",
+      sandbox: process.platform === "darwin" ? "macos-readonly" : "resource-limited"
+    };
+  }
   return {
     state,
     exitCode,
-    stdout: boundedOutput(stdout),
+    stdout: boundedStdout,
     stderr: boundedOutput(stderr)
+  };
+}
+
+function structuredConditionResult(stdout) {
+  const line = String(stdout).split(/\r?\n/).map((value) => value.trim()).filter(Boolean).at(-1);
+  if (!line?.startsWith("{")) return null;
+  let value;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof value.fire !== "boolean") return null;
+  if (value.message != null && typeof value.message !== "string") return null;
+  if (value.state != null && (typeof value.state !== "object" || Array.isArray(value.state))) return null;
+  return {
+    fire: value.fire,
+    message: value.message ?? null,
+    statePayload: value.state ?? null,
+    state: value.fire ? "matched" : "not_matched"
   };
 }
 
 function boundedOutput(value) {
   const text = String(value ?? "");
   return text.length <= 16_384 ? text : `${text.slice(0, 16_384)}\n[truncated]`;
+}
+
+function stage(name, status, at, details = {}) {
+  return { name, status, at, details };
+}
+
+function appendStage(stages, next) {
+  const values = Array.isArray(stages) ? [...stages] : [];
+  const runningIndex = values.findIndex((value) => value.name === next.name && value.status === "running");
+  if (runningIndex >= 0 && next.status !== "running") values.splice(runningIndex, 1);
+  values.push(next);
+  return values;
 }
 
 function validateConditionResources(spec) {
