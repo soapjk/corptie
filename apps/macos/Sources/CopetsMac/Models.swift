@@ -147,10 +147,24 @@ struct SessionReadReceiptResponse: Decodable, Sendable {
 
 struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let confirmationId: String
+    let initiatorAgentId: String?
+    let initiatorName: String?
     let recipientAgentId: String?
     let recipientName: String
+    let sourceObjectiveId: String?
+    let sourceObjectiveName: String?
+    let targetObjectiveId: String?
+    let targetObjectiveName: String?
     let initiatorSessionId: String?
+    let initiatorSessionTitle: String?
+    let initiatorSessionKind: String?
+    let initiatorWorkItemId: String?
     let recipientSessionId: String?
+    let recipientSessionTitle: String?
+    let recipientSessionKind: String?
+    let recipientWorkItemId: String?
+    let routeStatus: String?
+    let routingVersion: Int?
     let taskTitle: String
     let summary: String
     let acceptanceCriteria: [String]
@@ -1268,8 +1282,14 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationRecipientName: String? = nil
     var collaborationInitiatorSessionId: String? = nil
     var collaborationInitiatorSessionTitle: String? = nil
+    var collaborationInitiatorSessionKind: String? = nil
     var collaborationRecipientSessionId: String? = nil
     var collaborationRecipientSessionTitle: String? = nil
+    var collaborationRecipientSessionKind: String? = nil
+    var collaborationSourceObjectiveId: String? = nil
+    var collaborationSourceObjectiveName: String? = nil
+    var collaborationTargetObjectiveId: String? = nil
+    var collaborationTargetObjectiveName: String? = nil
     var collaborationSourceWorkItemId: String? = nil
     var collaborationTargetWorkItemId: String? = nil
     var collaborationRelation: String? = nil

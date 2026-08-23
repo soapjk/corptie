@@ -5029,6 +5029,12 @@ func nativeCollaborationCardPresentation(
         guard let id = nonEmpty(id) else { return resolvedName }
         return "\(resolvedName) · \(id)"
     }
+    func sessionParty(name: String?, id: String?, kind: String?, workItemId: String?, fallback: String) -> String {
+        var result = party(name: name, id: id, fallback: fallback)
+        let context = [nonEmpty(kind), nonEmpty(workItemId)].compactMap { $0 }
+        if !context.isEmpty { result += " · " + context.joined(separator: " · ") }
+        return result
+    }
 
     let kind: String = switch item.collaborationMessageKind?.lowercased() {
     case "change_request": L10n("修改请求")
@@ -5062,15 +5068,29 @@ func nativeCollaborationCardPresentation(
     let targetSessionFallback = isMessage
         ? nonEmpty(currentSessionTitle) ?? L10n("当前 Session")
         : L10n("未知 Session")
-    let targetSession = party(
+    let targetSession = sessionParty(
         name: item.collaborationRecipientSessionTitle,
         id: item.collaborationRecipientSessionId,
+        kind: item.collaborationRecipientSessionKind,
+        workItemId: item.collaborationTargetWorkItemId,
         fallback: targetSessionFallback
     )
-    let sourceSession = party(
+    let sourceSession = sessionParty(
         name: item.collaborationInitiatorSessionTitle,
         id: item.collaborationInitiatorSessionId,
+        kind: item.collaborationInitiatorSessionKind,
+        workItemId: item.collaborationSourceWorkItemId,
         fallback: nonEmpty(currentSessionTitle) ?? L10n("当前 Session")
+    )
+    let sourceObjective = party(
+        name: item.collaborationSourceObjectiveName,
+        id: item.collaborationSourceObjectiveId,
+        fallback: L10n("未知 Objective")
+    )
+    let targetObjective = party(
+        name: item.collaborationTargetObjectiveName,
+        id: item.collaborationTargetObjectiveId,
+        fallback: L10n("未知 Objective")
     )
     let task = nonEmpty(item.collaborationTaskTitle) ?? L10n("未命名协作任务")
     let message = nonEmpty(item.presentationText)
@@ -5079,6 +5099,8 @@ func nativeCollaborationCardPresentation(
     var lines = [
         "**\(L10n("来自 Agent"))**  \(markdownEscaped(sender))",
         "**\(L10n("发送至 Agent"))**  \(markdownEscaped(recipient))",
+        "**\(L10n("来源 Objective"))**  \(markdownEscaped(sourceObjective))",
+        "**\(L10n("目标 Objective"))**  \(markdownEscaped(targetObjective))",
         "**\(L10n("来源 Session"))**  \(markdownEscaped(sourceSession))",
         "**\(L10n("目标 Session"))**  \(markdownEscaped(targetSession))",
         "**\(L10n("协作任务"))**  \(markdownEscaped(task))",
@@ -8125,18 +8147,58 @@ struct ThreadItemView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 7) {
                         collaborationConfirmationField(
+                            icon: "person.crop.circle",
+                            label: "来源 Agent",
+                            value: collaborationAgentIdentity(
+                                name: item.collaborationSenderName,
+                                id: item.collaborationSenderAgentId,
+                                fallback: "未知 Agent"
+                            )
+                        )
+                        collaborationConfirmationField(
                             icon: "person.crop.circle.badge.checkmark",
                             label: "目标 Agent",
-                            value: collaborationRecipientName
+                            value: collaborationAgentIdentity(
+                                name: item.collaborationRecipientName,
+                                id: item.collaborationRecipientAgentId,
+                                fallback: "当前 Agent"
+                            )
                         )
-                        if let recipientId = nonEmpty(item.collaborationRecipientAgentId) {
-                            collaborationConfirmationField(icon: "number", label: "Agent ID", value: recipientId, monospaced: true)
+                        if let sourceObjective = collaborationObjective(
+                            name: item.collaborationSourceObjectiveName,
+                            id: item.collaborationSourceObjectiveId
+                        ) {
+                            collaborationConfirmationField(icon: "arrow.up.right.square", label: "来源 Objective", value: sourceObjective)
+                        }
+                        if let targetObjective = collaborationObjective(
+                            name: item.collaborationTargetObjectiveName,
+                            id: item.collaborationTargetObjectiveId
+                        ) {
+                            collaborationConfirmationField(icon: "arrow.down.left.square", label: "目标 Objective", value: targetObjective)
                         }
                         if let sourceSession = nonEmpty(item.collaborationInitiatorSessionId) {
-                            collaborationConfirmationField(icon: "arrow.up.right", label: "来源 Session", value: sourceSession, monospaced: true)
+                            collaborationConfirmationField(
+                                icon: "arrow.up.right",
+                                label: "来源 Session",
+                                value: collaborationSessionIdentity(
+                                    title: item.collaborationInitiatorSessionTitle,
+                                    id: sourceSession,
+                                    kind: item.collaborationInitiatorSessionKind,
+                                    workItemId: item.collaborationSourceWorkItemId
+                                )
+                            )
                         }
                         if let recipientSession = nonEmpty(item.collaborationRecipientSessionId) {
-                            collaborationConfirmationField(icon: "arrow.down.left", label: "目标 Session", value: recipientSession, monospaced: true)
+                            collaborationConfirmationField(
+                                icon: "arrow.down.left",
+                                label: "目标 Session",
+                                value: collaborationSessionIdentity(
+                                    title: item.collaborationRecipientSessionTitle,
+                                    id: recipientSession,
+                                    kind: item.collaborationRecipientSessionKind,
+                                    workItemId: item.collaborationTargetWorkItemId
+                                )
+                            )
                         }
                         if let title = nonEmpty(item.collaborationTaskTitle) {
                             collaborationConfirmationField(icon: "checklist", label: "任务", value: title)
@@ -8223,6 +8285,24 @@ struct ThreadItemView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
+    }
+
+    private func collaborationAgentIdentity(name: String?, id: String?, fallback: String) -> String {
+        let resolvedName = nonEmpty(name) ?? fallback
+        guard let id = nonEmpty(id) else { return resolvedName }
+        return "\(resolvedName) · \(id)"
+    }
+
+    private func collaborationObjective(name: String?, id: String?) -> String? {
+        guard let id = nonEmpty(id) else { return nil }
+        guard let name = nonEmpty(name), name != id else { return id }
+        return "\(name) · \(id)"
+    }
+
+    private func collaborationSessionIdentity(title: String?, id: String, kind: String?, workItemId: String?) -> String {
+        let identity = nonEmpty(title).map { "\($0) · \(id)" } ?? id
+        let scope = [nonEmpty(kind), nonEmpty(workItemId)].compactMap { $0 }.joined(separator: " · ")
+        return scope.isEmpty ? identity : "\(identity) [\(scope)]"
     }
 
     private var isCollaborationConfirmationItem: Bool {

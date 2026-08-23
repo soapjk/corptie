@@ -13,7 +13,8 @@ const TASK_INPUT_FIELDS = new Set([
   "contextTitle", "contextMetadata", "messageId", "deliveryId", "sourceSessionId", "sourceTurnId",
   "initiatorSessionId", "recipientSessionId", "initiatorNameAtSend", "recipientNameAtSend",
   "sourceObjectiveId", "targetObjectiveId", "sourceWorkItemId", "workItemId",
-  "routingVersion", "routeStatus", "initiatorBindingId", "recipientBindingId", "routingIntent"
+  "routingVersion", "routeStatus", "initiatorBindingId", "recipientBindingId", "routingIntent",
+  "presentation"
 ]);
 
 export class CollaborationCore {
@@ -72,7 +73,7 @@ export class CollaborationCore {
        ORDER BY s.bound_at DESC LIMIT 1`,
       [sessionId, logical?.legacySessionId ?? sessionId]
     );
-    return row ? agentFromRow(row, this.store) : null;
+    return row ? agentFromRow(row, this.store, logical) : null;
   }
 
   resolveAgentBySessionName(sessionName) {
@@ -86,7 +87,7 @@ export class CollaborationCore {
        ORDER BY binding.bound_at DESC LIMIT 1`,
       [logical.logicalSessionId, logical.legacySessionId]
     );
-    return row ? agentFromRow(row, this.store) : null;
+    return row ? agentFromRow(row, this.store, logical) : null;
   }
 
   listAgents(options = {}) {
@@ -450,14 +451,20 @@ export class CollaborationCore {
     if (input.workItemId) {
       this.#validateRequestedWorkItem(input.workItemId, scope.targetObjectiveId, recipient.agentId);
     }
+    const initiatorSessionId = input.initiatorSessionId ?? initiator.sessionId;
+    const recipientSessionId = input.recipientSessionId ?? recipient.sessionId;
+    const initiatorSession = sessionPresentationSnapshot(this.store, initiatorSessionId);
+    const recipientSession = sessionPresentationSnapshot(this.store, recipientSessionId);
+    const sourceObjective = this.store.getObjective(scope.sourceObjectiveId);
+    const targetObjective = this.store.getObjective(scope.targetObjectiveId);
     const request = {
       ...input,
       initiatorAgentId: initiator.agentId,
       recipientAgentId: recipient.agentId,
-      initiatorSessionId: input.initiatorSessionId ?? initiator.sessionId,
-      recipientSessionId: input.recipientSessionId ?? recipient.sessionId,
-      initiatorNameAtSend: input.initiatorNameAtSend ?? initiator.sessionName,
-      recipientNameAtSend: input.recipientNameAtSend ?? recipient.sessionName,
+      initiatorSessionId,
+      recipientSessionId,
+      initiatorNameAtSend: input.initiatorNameAtSend ?? initiatorSession?.title ?? initiator.sessionName,
+      recipientNameAtSend: input.recipientNameAtSend ?? recipientSession?.title ?? recipient.sessionName,
       sourceObjectiveId: scope.sourceObjectiveId,
       targetObjectiveId: scope.targetObjectiveId,
       sourceWorkItemId: scope.sourceWorkItemId,
@@ -470,6 +477,15 @@ export class CollaborationCore {
       summary: requiredText(input.summary, "summary"),
       acceptanceCriteria: stringList(input.acceptanceCriteria),
       maxIterations: positiveInteger(input.maxIterations, 3)
+    };
+    request.presentation = {
+      initiatorAgentName: initiator.name,
+      recipientAgentName: recipient.name,
+      sourceObjective: { id: scope.sourceObjectiveId, name: sourceObjective?.name ?? scope.sourceObjectiveId },
+      targetObjective: { id: scope.targetObjectiveId, name: targetObjective?.name ?? scope.targetObjectiveId },
+      initiatorSession,
+      recipientSession,
+      routingIntent: optionalText(input.routingIntent)
     };
     const confirmationId = optionalText(input.confirmationId) ?? this.idFactory();
     const timestamp = this.clock();
@@ -1269,14 +1285,21 @@ export class CollaborationCore {
   #assertSessionParticipants(input, initiator, recipient) {
     const initiatorSessionId = optionalText(input.initiatorSessionId);
     const recipientSessionId = optionalText(input.recipientSessionId);
-    if (initiator.agentId !== recipient.agentId) return;
-    if (!initiatorSessionId || !recipientSessionId || initiatorSessionId === recipientSessionId) {
+    if (initiator.agentId === recipient.agentId
+        && (!initiatorSessionId || !recipientSessionId || initiatorSessionId === recipientSessionId)) {
       throw domainError("DISTINCT_SESSIONS_REQUIRED", "Collaboration within one Agent requires two explicit, distinct Sessions.");
     }
-    const sourceAgent = this.getAgentForSession(initiatorSessionId);
-    const targetAgent = this.getAgentForSession(recipientSessionId);
-    if (sourceAgent?.agentId !== initiator.agentId || targetAgent?.agentId !== recipient.agentId) {
-      throw domainError("SESSION_AGENT_MISMATCH", "Each selected Session must be bound to the declared Agent identity.");
+    if (initiatorSessionId) {
+      const sourceAgent = this.getAgentForSession(initiatorSessionId);
+      if (sourceAgent?.agentId !== initiator.agentId) {
+        throw domainError("INITIATOR_SESSION_AGENT_MISMATCH", "The selected source Session is not bound to initiatorAgentId.");
+      }
+    }
+    if (recipientSessionId) {
+      const targetAgent = this.getAgentForSession(recipientSessionId);
+      if (targetAgent?.agentId !== recipient.agentId) {
+        throw domainError("RECIPIENT_SESSION_AGENT_MISMATCH", "The selected target Session is not bound to recipientAgentId.");
+      }
     }
   }
 
@@ -1599,20 +1622,25 @@ export class CollaborationCore {
   }
 }
 
-function agentFromRow(row, store) {
-  const logical = row.current_session_id
-    ? (store.getLogicalSession(row.current_session_id) ?? store.getLogicalSessionByLegacySessionId(row.current_session_id))
+function agentFromRow(row, store, sessionReference = null) {
+  const selectedSessionId = typeof sessionReference === "string"
+    ? sessionReference
+    : sessionReference?.logicalSessionId ?? sessionReference?.legacySessionId ?? row.current_session_id;
+  const logical = selectedSessionId
+    ? (store.getLogicalSession(selectedSessionId) ?? store.getLogicalSessionByLegacySessionId(selectedSessionId))
     : null;
-  const session = row.current_session_id ? store.getSession(row.current_session_id) : null;
+  const selectedProviderSessionId = logical?.legacySessionId ?? selectedSessionId;
+  const selectedSession = selectedProviderSessionId ? store.getSession(selectedProviderSessionId) : null;
+  const currentSession = row.current_session_id ? store.getSession(row.current_session_id) : null;
   const objectiveIds = store.listObjectives()
     .filter((objective) => (objective.contributorAgentIds ?? []).includes(row.agent_id))
     .map((objective) => objective.id);
   return {
     agentId: row.agent_id,
-    name: logical?.sessionName ?? row.name,
-    sessionName: logical?.sessionName ?? row.name,
-    sessionId: logical?.logicalSessionId ?? null,
-    providerSessionId: row.current_session_id || null,
+    name: row.name,
+    sessionName: logical?.sessionName ?? selectedSession?.title ?? null,
+    sessionId: logical?.logicalSessionId ?? selectedSession?.id ?? null,
+    providerSessionId: selectedSession?.id ?? null,
     description: row.description,
     role: row.role,
     agentKind: row.agent_kind ?? "user",
@@ -1620,8 +1648,8 @@ function agentFromRow(row, store) {
     status: "available",
     capabilities: parseJson(row.capabilities_json, []),
     currentSessionId: row.current_session_id || null,
-    currentObjectiveId: session?.objectiveId ?? null,
-    currentWorkItemId: session?.workItemId ?? null,
+    currentObjectiveId: currentSession?.objectiveId ?? null,
+    currentWorkItemId: currentSession?.workItemId ?? null,
     objectiveIds,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -1764,16 +1792,27 @@ function deliveryFromRow(row) {
 
 function taskConfirmationFromRow(row, core) {
   const request = parseJson(row.request_json, {});
+  const presentation = request.presentation ?? {};
   const initiator = core.getAgent(row.initiator_agent_id);
   const recipient = core.getAgent(row.recipient_agent_id);
   return {
     confirmationId: row.confirmation_id,
     initiatorAgentId: row.initiator_agent_id,
     initiatorSessionId: row.initiator_session_id || initiator?.sessionId || null,
-    initiatorAgentName: row.initiator_name_at_send || initiator?.sessionName || initiator?.name || row.initiator_agent_id,
+    initiatorAgentName: presentation.initiatorAgentName || initiator?.name || row.initiator_agent_id,
+    initiatorSessionTitle: presentation.initiatorSession?.title || row.initiator_name_at_send || null,
+    initiatorSessionKind: presentation.initiatorSession?.sessionKind || null,
+    initiatorWorkItemId: presentation.initiatorSession?.workItemId || request.sourceWorkItemId || null,
     recipientAgentId: row.recipient_agent_id,
     recipientSessionId: row.recipient_session_id || recipient?.sessionId || null,
-    recipientAgentName: row.recipient_name_at_send || recipient?.sessionName || recipient?.name || row.recipient_agent_id,
+    recipientAgentName: presentation.recipientAgentName || recipient?.name || row.recipient_agent_id,
+    recipientSessionTitle: presentation.recipientSession?.title || row.recipient_name_at_send || null,
+    recipientSessionKind: presentation.recipientSession?.sessionKind || null,
+    recipientWorkItemId: presentation.recipientSession?.workItemId || request.workItemId || null,
+    sourceObjectiveId: presentation.sourceObjective?.id || request.sourceObjectiveId || null,
+    sourceObjectiveName: presentation.sourceObjective?.name || request.sourceObjectiveId || null,
+    targetObjectiveId: presentation.targetObjective?.id || request.targetObjectiveId || null,
+    targetObjectiveName: presentation.targetObjective?.name || request.targetObjectiveId || null,
     sourceSessionId: row.source_session_id || null,
     sourceTurnId: row.source_turn_id || null,
     request,
@@ -1781,6 +1820,20 @@ function taskConfirmationFromRow(row, core) {
     taskId: row.task_id || null,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at || null
+  };
+}
+
+function sessionPresentationSnapshot(store, sessionId) {
+  if (!sessionId) return null;
+  const logical = store.getLogicalSession(sessionId) ?? store.getLogicalSessionByLegacySessionId(sessionId);
+  const providerSessionId = logical?.legacySessionId ?? sessionId;
+  const session = store.getSession(providerSessionId);
+  if (!session) return null;
+  return {
+    id: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id,
+    title: logical?.sessionName ?? session.title,
+    sessionKind: session.sessionKind,
+    workItemId: session.workItemId ?? null
   };
 }
 

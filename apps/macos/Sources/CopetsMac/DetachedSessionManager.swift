@@ -1132,10 +1132,31 @@ private struct DetachedCollaborationConfirmationCard: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 8) {
+                    if let initiatorName = confirmation.initiatorName {
+                        confirmationField("来源 Agent", value: party(initiatorName, confirmation.initiatorAgentId))
+                    }
                     confirmationField("目标 Agent", value: confirmation.recipientName)
                     if let recipientAgentId = confirmation.recipientAgentId,
                        !recipientAgentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         confirmationField("Agent ID", value: recipientAgentId, monospaced: true)
+                    }
+                    if let sourceObjectiveId = confirmation.sourceObjectiveId {
+                        confirmationField("来源 Objective", value: party(confirmation.sourceObjectiveName, sourceObjectiveId))
+                    }
+                    if let targetObjectiveId = confirmation.targetObjectiveId {
+                        confirmationField("目标 Objective", value: party(confirmation.targetObjectiveName, targetObjectiveId))
+                    }
+                    if let sourceSessionId = confirmation.initiatorSessionId {
+                        confirmationField("来源 Session", value: sessionParty(
+                            confirmation.initiatorSessionTitle, sourceSessionId, confirmation.initiatorSessionKind,
+                            confirmation.initiatorWorkItemId
+                        ))
+                    }
+                    if let targetSessionId = confirmation.recipientSessionId {
+                        confirmationField("目标 Session", value: sessionParty(
+                            confirmation.recipientSessionTitle, targetSessionId, confirmation.recipientSessionKind,
+                            confirmation.recipientWorkItemId
+                        ))
                     }
                     confirmationField("任务", value: confirmation.taskTitle)
                     confirmationField("指令", value: confirmation.summary)
@@ -1187,6 +1208,22 @@ private struct DetachedCollaborationConfirmationCard: View {
                 .foregroundStyle(CorptiePalette.primaryText)
                 .textSelection(.enabled)
         }
+    }
+
+    private func party(_ name: String?, _ id: String?) -> String {
+        [name, id].compactMap { value in
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+    }
+
+    private func sessionParty(_ title: String?, _ id: String, _ kind: String?, _ workItemId: String?) -> String {
+        let identity = party(title, id)
+        let scope = [kind, workItemId].compactMap { value in
+            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return value
+        }.joined(separator: " · ")
+        return scope.isEmpty ? identity : "\(identity) [\(scope)]"
     }
 }
 
