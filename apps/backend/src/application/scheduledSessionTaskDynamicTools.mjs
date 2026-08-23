@@ -10,7 +10,8 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
       properties: {
         action: { type: "string", enum: ["create", "get", "list", "update", "pause", "resume", "cancel", "run"], description: "Operation to perform on a 计划任务." },
         task_id: { type: "string", minLength: 1, description: "Required except for create and list." },
-        logical_session_id: { type: "string", minLength: 1, description: "Target logical Session. Required for create; optional list filter. Never pass a Provider thread id." },
+        logical_session_id: { type: "string", minLength: 1, description: "Optional target logical Session. Create defaults to the calling Agent's current logical Session. Never pass a Provider thread id." },
+        name: { type: "string", minLength: 1, maxLength: 120 },
         message: {
           oneOf: [
             { type: "string", minLength: 1 },
@@ -66,6 +67,10 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
           required: ["script"]
         },
         max_retries: { type: "integer", minimum: 0, maximum: 20 },
+        max_concurrent_runs: { type: "integer", minimum: 1, maximum: 32 },
+        max_catch_up_runs: { type: "integer", minimum: 1, maximum: 100 },
+        timeout_seconds: { type: "integer", minimum: 1, maximum: 86400 },
+        backpressure_limit: { type: "integer", minimum: 1, maximum: 10000 },
         resource_version: { type: "integer", minimum: 1 },
         status: { type: "string", enum: ["active", "paused", "completed", "failed", "cancelled"] }
       },
@@ -96,6 +101,7 @@ export async function callScheduledSessionTaskDynamicTool(service, input = {}) {
 
 function toTaskInput(args) {
   return {
+    name: args.name,
     logicalSessionId: args.logical_session_id,
     message: args.message,
     scheduleType: args.schedule_type,
@@ -107,7 +113,11 @@ function toTaskInput(args) {
     actions: args.actions,
     process: toProcess(args.process),
     condition: toCondition(args.condition),
-    maxRetries: args.max_retries
+    maxRetries: args.max_retries,
+    maxConcurrentRuns: args.max_concurrent_runs,
+    maxCatchUpRuns: args.max_catch_up_runs,
+    timeoutSeconds: args.timeout_seconds,
+    backpressureLimit: args.backpressure_limit
   };
 }
 
@@ -123,12 +133,17 @@ function toProcess(process) {
 function toTaskPatch(args) {
   const mappings = {
     message: "message",
+    name: "name",
     run_at: "runAt",
     interval_seconds: "intervalSeconds",
     timezone: "timezone",
     missed_policy: "missedPolicy",
     condition: "condition",
     max_retries: "maxRetries",
+    max_concurrent_runs: "maxConcurrentRuns",
+    max_catch_up_runs: "maxCatchUpRuns",
+    timeout_seconds: "timeoutSeconds",
+    backpressure_limit: "backpressureLimit",
     resource_version: "resourceVersion"
   };
   const patch = Object.fromEntries(Object.entries(mappings)

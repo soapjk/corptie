@@ -1,4 +1,6 @@
-export function handleScheduledSessionTaskHttpRequest({ request, response, url, service, resolveActor }) {
+export function handleScheduledSessionTaskHttpRequest({
+  request, response, url, service, resolveActor, resolveCurrentLogicalSessionId = null
+}) {
   const path = url.pathname;
   const basePath = path === "/automations" || path.startsWith("/automations/")
     ? "/automations"
@@ -12,15 +14,23 @@ export function handleScheduledSessionTaskHttpRequest({ request, response, url, 
   Promise.resolve().then(async () => {
     const actor = resolveActor(request);
     if (request.method === "GET" && path === basePath) {
+      const requestedLogicalSessionId = url.searchParams.get("logicalSessionId") ?? undefined;
+      const currentLogicalSessionId = !requestedLogicalSessionId && url.searchParams.get("currentSession") === "true"
+        ? resolveCurrentLogicalSessionId?.(request, actor) ?? undefined
+        : undefined;
       return sendJson(response, 200, {
         tasks: service.list({
-          logicalSessionId: url.searchParams.get("logicalSessionId") ?? undefined,
+          logicalSessionId: requestedLogicalSessionId ?? currentLogicalSessionId,
           status: url.searchParams.get("status") ?? undefined
         }, actor)
       });
     }
     if (request.method === "POST" && path === basePath) {
-      const task = service.create(await readJson(request), actor);
+      const input = await readJson(request);
+      if (!input.logicalSessionId && typeof resolveCurrentLogicalSessionId === "function") {
+        input.logicalSessionId = resolveCurrentLogicalSessionId(request, actor);
+      }
+      const task = service.create(input, actor);
       return sendJson(response, 201, { task });
     }
 

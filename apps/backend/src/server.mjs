@@ -349,6 +349,9 @@ const scheduledSessionTaskService = new ScheduledSessionTaskService({
   environment: environmentName,
   authorize: authorizeScheduledSessionTask,
   resolveRoute: resolveScheduledSessionRoute,
+  resolveActorLogicalSessionId: (actor) => actor?.type === "agent"
+    ? requireAgentLogicalSession(actor.id).logical.logicalSessionId
+    : null,
   enqueue: enqueueScheduledSessionWork,
   activate: async (payload) => {
     emitEvent("AutomationSessionActivationRequested", payload, { sessionId: payload.sessionId });
@@ -508,6 +511,7 @@ const openClackyManager = new OpenClackyManager({
     toolHostBridge: store.settings().openclackyBridge?.toolHostBridge !== false,
     workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
   },
+  onToolCall: (input) => toolHostService.execute(input),
   onDetailChanged: (detail) => persistSessionDetailSnapshot(detail?.id, detail),
   resolveSessionBootstrap: async (input) => {
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
@@ -2622,12 +2626,16 @@ async function collaborationThreadOptionsForSession(sessionId) {
 }
 
 function sessionToolMetadata(session) {
+  const logical = session?.id
+    ? store.getLogicalSessionByLegacySessionId(session.id)
+    : null;
   return {
     purpose: "session",
     sessionKind: session?.sessionKind ?? "legacy",
     objectiveId: session?.objectiveId ?? null,
     workItemId: session?.workItemId ?? null,
-    sessionId: session?.id ?? null
+    sessionId: session?.id ?? null,
+    logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null
   };
 }
 
@@ -2781,6 +2789,21 @@ function scheduledSessionHttpActor(request) {
   throw error;
 }
 
+function scheduledSessionHttpLogicalSessionId(request) {
+  const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
+    ? request.headers["x-corptie-session-id"].trim()
+    : "";
+  if (!sessionId) return null;
+  const logical = store.getLogicalSession(sessionId)
+    ?? store.getLogicalSessionByLegacySessionId(sessionId);
+  if (!logical) {
+    const error = new Error(`Logical Session not found for authenticated Session ${sessionId}.`);
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
+  }
+  return logical.logicalSessionId;
+}
+
 async function createAgentWorktree(agentId, input = {}) {
   const { sessionId, logical } = requireAgentLogicalSession(agentId);
   return sessionWorktrees.createWorktree(sessionId, {
@@ -2835,6 +2858,7 @@ function collaborationRuntimeInstructions(agentId) {
     "For a new peer request, resolve the user-provided alias with corptie_agents_discover, then call corptie_collaboration_request immediately with the final recipient and task fields. The tool stages a structured confirmation card; do not write your own confirmation message and do not call the tool a second time after confirmation.",
     "Every new user instruction to a peer is a new collaboration task, even if it resembles a previous failed request. Reuse an existing task only when the user explicitly names that task and continues the exact same objective and acceptance criteria. Never call collaboration.reply for a new user instruction.",
     "After collaboration.request stages confirmation, end the current turn immediately. Corptie handles confirm or reject programmatically and pushes any peer response into this Agent's unified queue as a later turn; do not poll or wait.",
+    "When the user asks to schedule, remind, monitor, defer, repeat, pause, resume, cancel, inspect, or run an Automation, use the corptie_automations_* tools. Creation defaults to the current logical Session, so do not invent or persist a Provider thread id.",
     "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. These operations may appear as host tools or as tools from the local Corptie MCP server; use the available form. Never treat changing a command workdir or running cd as a logical workspace switch. A switch requested during a turn is applied only after that turn completes."
   ].join(" ");
 }
@@ -6599,7 +6623,8 @@ function route(request, response) {
     response,
     url,
     service: scheduledSessionTaskService,
-    resolveActor: scheduledSessionHttpActor
+    resolveActor: scheduledSessionHttpActor,
+    resolveCurrentLogicalSessionId: scheduledSessionHttpLogicalSessionId
   })) {
     return;
   }

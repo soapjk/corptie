@@ -23,6 +23,14 @@ export class CollaborationHttpClient {
     });
   }
 
+  patch(path, body = {}) {
+    return this.#request(new URL(path, this.baseUrl), {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+  }
+
   async #request(url, init) {
     let response;
     try {

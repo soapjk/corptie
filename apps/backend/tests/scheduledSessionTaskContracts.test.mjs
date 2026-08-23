@@ -95,7 +95,8 @@ test("HTTP contract exposes create, list, detail, update, lifecycle actions, and
       response,
       url,
       service,
-      resolveActor: () => ({ type: "user", id: "user:trusted-runtime" })
+      resolveActor: () => ({ type: "user", id: "user:trusted-runtime" }),
+      resolveCurrentLogicalSessionId: () => "logical:current"
     })) {
       response.writeHead(404).end();
     }
@@ -120,6 +121,18 @@ test("HTTP contract exposes create, list, detail, update, lifecycle actions, and
     }
     assert.equal((await fetch(`${base}/scheduled-session-tasks`)).status, 200);
     assert.equal((await fetch(`${base}/automations`)).status, 200);
+    const currentCreate = await fetch(`${base}/automations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-corptie-session-id": "session:current" },
+      body: JSON.stringify({ scheduleType: "after", delaySeconds: 10, message: "current" })
+    });
+    assert.equal(currentCreate.status, 201);
+    assert.equal(calls.at(-1)[1].logicalSessionId, "logical:current");
+    const currentList = await fetch(`${base}/automations?currentSession=true`, {
+      headers: { "x-corptie-session-id": "session:current" }
+    });
+    assert.equal(currentList.status, 200);
+    assert.equal(calls.at(-1)[1].logicalSessionId, "logical:current");
     assert.equal(calls.every((call) => call.at(-1).id === "user:trusted-runtime"), true);
   } finally {
     await new Promise((resolve) => server.close(resolve));

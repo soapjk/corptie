@@ -33,6 +33,7 @@ export class OpenClackyManager {
     // must not be readable/forgeable by the model; it is bound to Session/Agent/
     // Objective/WorkItem/Workspace roots and re-verified by the Corptie server.
     this.issueToolHostToken = options.issueToolHostToken ?? null;
+    this.onToolCall = options.onToolCall ?? null;
     this.onProbe = options.onProbe ?? null;
     this.featureFlags = {
       toolHostBridge: options.featureFlags?.toolHostBridge !== false,
@@ -45,6 +46,7 @@ export class OpenClackyManager {
     this.sockets = new Map();
     this.eventCursors = new Map();
     this.deliveryAcks = new Map();
+    this.toolHosts = new Map();
     this.historySyncs = new Map();
     this.refreshTimer = null;
     this.lastSnapshotSignature = null;
@@ -204,10 +206,13 @@ export class OpenClackyManager {
     // trusted session contract; it never mutates the user's native configuration.
     const bootstrap = await this.buildSessionBootstrap(input);
     if (bootstrap) Object.assign(body, bootstrap.body ?? {});
+    const toolHost = await this.prepareToolHost(input.toolHost);
+    if (toolHost) body.corptie_tool_host = toolHost.manifest;
     const payload = await this.request("/api/sessions", { method: "POST", body });
     const row = payload?.session ?? payload;
     const summary = openClackySessionSummary(row, { bootstrap: bootstrap?.summary ?? null });
     const sessionId = summary.external.sessionId;
+    if (toolHost) this.toolHosts.set(sessionId, toolHost.context);
     this.ownedSessionIds.add(sessionId);
     this.sessions.set(sessionId, summary);
     this.ensureSocket(sessionId);
@@ -318,7 +323,15 @@ export class OpenClackyManager {
     return { events, hasMore, cursor: before };
   }
 
-  async resume(sessionId) {
+  async resume(sessionId, options = {}) {
+    const toolHost = await this.prepareToolHost(options.toolHost);
+    if (toolHost) {
+      await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/corptie/tool-host`, {
+        method: "POST",
+        body: toolHost.manifest
+      });
+      this.toolHosts.set(sessionId, toolHost.context);
+    }
     await this.read(sessionId);
     return this.sessions.get(sessionId);
   }
@@ -331,6 +344,7 @@ export class OpenClackyManager {
     this.sessions.delete(sessionId);
     this.details.delete(sessionId);
     this.eventCursors.delete(sessionId);
+    this.toolHosts.delete(sessionId);
     this.onSessionChanged?.({ type: "deleted", sessionId });
     return true;
   }
@@ -431,6 +445,32 @@ export class OpenClackyManager {
     };
   }
 
+  async prepareToolHost(toolHost) {
+    const attachment = toolHost?.providerAttachment;
+    if (!attachment || attachment.kind !== "corptie_call" || !Array.isArray(attachment.tools)) return null;
+    if (!toolHost.actorId) throw new Error("OpenClacky Tool Host requires a trusted Agent identity.");
+    const metadata = attachment.metadata ?? toolHost.metadata ?? null;
+    const issued = typeof this.issueToolHostToken === "function"
+      ? await this.issueToolHostToken({ actorId: toolHost.actorId, metadata })
+      : randomUUID();
+    const token = optionalText(issued?.token ?? issued);
+    if (!token) throw new Error("OpenClacky Tool Host token provider returned an empty token.");
+    return {
+      manifest: {
+        protocol: CORPTIE_BRIDGE_PROTOCOL,
+        kind: "corptie_call",
+        token,
+        tools: attachment.tools.map((tool) => ({ ...tool }))
+      },
+      context: {
+        token,
+        actorId: toolHost.actorId,
+        metadata,
+        tools: new Set(attachment.tools.map((tool) => tool.name))
+      }
+    };
+  }
+
   // ---- WebSocket: reconnect with backoff, resubscribe, replay -------------
 
   ensureSocket(sessionId) {
@@ -512,6 +552,10 @@ export class OpenClackyManager {
     } catch {
       return;
     }
+    if (event.type === "corptie_tool_call") {
+      void this.handleBridgeToolCall(sessionId, event);
+      return;
+    }
     // Acknowledged delivery: when the provider echoes a turn id or a user message
     // with our turn id, mark the delivery as confirmed.
     this.confirmDelivery(sessionId, event);
@@ -562,6 +606,47 @@ export class OpenClackyManager {
       session: this.sessions.get(sessionId),
       hasAgentMessage
     });
+  }
+
+  async handleBridgeToolCall(sessionId, event) {
+    const context = this.toolHosts.get(sessionId);
+    const callId = optionalText(event?.call_id ?? event?.id);
+    const tool = optionalText(event?.tool ?? event?.name);
+    const respond = (payload) => this.sendSocket(sessionId, {
+      type: "corptie_tool_result",
+      session_id: sessionId,
+      call_id: callId,
+      ...payload
+    });
+    try {
+      if (!context || !callId || event?.token !== context.token) {
+        const error = new Error("OpenClacky Tool Host call has invalid or expired Session credentials.");
+        error.code = "TOOL_HOST_UNAUTHORIZED";
+        throw error;
+      }
+      if (!tool || !context.tools.has(tool)) {
+        const error = new Error(`OpenClacky Tool Host tool is not attached: ${tool ?? "unknown"}.`);
+        error.code = "HOST_TOOL_UNSUPPORTED";
+        throw error;
+      }
+      if (typeof this.onToolCall !== "function") {
+        const error = new Error("OpenClacky Tool Host callback is unavailable.");
+        error.code = "TOOL_HOST_UNAVAILABLE";
+        throw error;
+      }
+      const result = await this.onToolCall({
+        actorId: context.actorId,
+        metadata: context.metadata,
+        tool,
+        arguments: event.arguments ?? {}
+      });
+      respond({ success: true, result });
+    } catch (error) {
+      respond({
+        success: false,
+        error: { code: error.code ?? "TOOL_HOST_FAILED", message: error.message }
+      });
+    }
   }
 
   confirmDelivery(sessionId, event) {
