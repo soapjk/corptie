@@ -77,6 +77,8 @@ export function forkSession(store, sessionId, atSeq, { newSessionId } = {}) {
     title: sourceSession ? `${sourceSession.title}（分支）` : "分支会话",
     agent: sourceSession?.agent,
     agentName: sourceSession?.agent,
+    agentId: sourceSession?.agentId,
+    sessionKind: sourceSession?.sessionKind,
     provider: sourceSession?.provider,
     status: "running",
     objectiveId: sourceSession?.objectiveId,

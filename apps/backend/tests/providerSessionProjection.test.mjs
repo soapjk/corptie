@@ -10,6 +10,7 @@ import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
+  purgeObsoleteUnclassifiedProviderProjections,
   repairStableSessionFromActiveProviderCache,
   repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection,
@@ -24,6 +25,18 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
   });
   try {
     await store.initialize();
+    const agent = store.createAgent({ id: "agent:worker", name: "Worker" });
+    const objective = store.createObjective({
+      id: "objective:one",
+      name: "Objective",
+      contributorAgentIds: [agent.agentId]
+    });
+    const workItem = store.createWorkItem({
+      id: "work-item:one",
+      objectiveId: objective.id,
+      title: "Work Item",
+      mainAgentId: agent.agentId
+    });
     persistProviderSessionProjection(store, {
       id: "codex:created",
       title: "Created Worker",
@@ -31,17 +44,61 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
       external: { provider: "codex-app-server", cwd: directory }
     }, {
       providerId: "codex-app-server",
-      agentId: "agent:worker",
+      agentId: agent.agentId,
       sessionKind: "worker",
-      objectiveId: "objective:one",
-      workItemId: "work-item:one"
+      objectiveId: objective.id,
+      workItemId: workItem.id
     });
 
     const stored = store.getSession("codex:created");
-    assert.equal(stored.agentId, "agent:worker");
+    assert.equal(stored.agentId, agent.agentId);
     assert.equal(stored.sessionKind, "worker");
-    assert.equal(stored.objectiveId, "objective:one");
-    assert.equal(stored.workItemId, "work-item:one");
+    assert.equal(stored.objectiveId, objective.id);
+    assert.equal(stored.workItemId, workItem.id);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an unowned Provider Session without a product classification is neither persisted nor visible", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-unclassified-projection-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const providerSession = {
+      id: "codex:unowned",
+      title: "Provider-local thread",
+      status: "complete",
+      external: { provider: "codex-app-server", threadId: "unowned", sessionId: "unowned" }
+    };
+    const projection = ensureProviderSessionProjection({
+      store,
+      session: providerSession,
+      resolveAgentForSession: () => null
+    });
+    assert.equal(projection.visible, false);
+    assert.equal(projection.reason, "unclassified_unowned_provider_session");
+    assert.equal(store.getSession(providerSession.id), null);
+    const invalid = ensureProviderSessionProjection({
+      store,
+      session: { ...providerSession, id: "codex:invalid", sessionKind: "not-a-kind" },
+      resolveAgentForSession: () => ({ agentId: "agent:assistant", role: "assistant" })
+    });
+    assert.equal(invalid.visible, false);
+    assert.equal(invalid.reason, "invalid_provider_session_kind");
+    assert.equal(store.getSession("codex:invalid"), null);
+    assert.throws(
+      () => persistProviderSessionProjection(store, { ...providerSession, sessionKind: " " }),
+      { code: "SESSION_KIND_INVALID" }
+    );
+    assert.deepEqual(visibleStoredSessionProjections(store, [
+      { ...providerSession, sessionKind: "legacy" },
+      { id: "assistant", sessionKind: "assistantChat" }
+    ]).map((session) => session.id), ["assistant"]);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -82,6 +139,102 @@ test("an unresolved namespaced Session id is never prefixed twice", () => {
       external: { provider: "codex-app-server" }
     }
   }), "codex:plain-codex-thread");
+});
+
+test("an assistant-bound Provider Session with a missing kind is inferred as assistantChat", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-assistant-projection-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const projection = ensureProviderSessionProjection({
+      store,
+      session: {
+        id: "codex:assistant",
+        title: "Assistant",
+        status: "complete",
+        external: { provider: "codex-app-server", threadId: "assistant", sessionId: "assistant" }
+      },
+      resolveAgentForSession: () => ({ agentId: "agent:assistant", role: "assistant" }),
+      bindAgentToSession: () => null
+    });
+    assert.equal(projection.visible, true);
+    assert.equal(projection.session.sessionKind, "assistantChat");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("cleanup deletes only a redundant unclassified historical physical projection", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-unclassified-cleanup-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "stable",
+      title: "Stable Session",
+      status: "complete",
+      sessionKind: "assistantChat",
+      external: { provider: "codex-app-server", threadId: "old", sessionId: "old" }
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:stable",
+      legacySessionId: "stable",
+      providerThreadId: "old",
+      providerSessionId: "old",
+      providerId: "codex-app-server",
+      boundCwd: directory,
+      title: "Stable Session"
+    });
+    store.beginWorkspaceTransition({
+      transitionId: "transition:new",
+      logicalSessionId: "logical:stable",
+      transitionKind: "provider",
+      targetProviderId: "codex-app-server",
+      targetCwd: directory,
+      sourceRoutingVersion: 1,
+      phase: "preflighting"
+    });
+    store.commitWorkspaceTransition("transition:new", {
+      providerThreadId: "new",
+      providerSessionId: "new",
+      providerId: "codex-app-server",
+      boundCwd: directory
+    });
+    store.upsertSession({
+      id: "codex:old",
+      title: "Stale physical projection",
+      status: "complete",
+      sessionKind: "legacy",
+      external: { provider: "codex-app-server", threadId: "old", sessionId: "old" }
+    });
+    store.db.run(
+      `INSERT INTO session_items (id, session_id, turn_id, turn_status, type, title, text, status, created_at)
+       VALUES ('warning', 'codex:old', 'turn', 'complete', 'warning', 'Starting', 'thread not loaded', 'starting', ?)`,
+      [new Date().toISOString()]
+    );
+
+    const result = purgeObsoleteUnclassifiedProviderProjections(store);
+
+    assert.deepEqual(result.purged, [{
+      sessionId: "codex:old",
+      canonicalSessionId: "stable",
+      logicalSessionId: "logical:stable",
+      removedWarningItems: 1
+    }]);
+    assert.equal(store.getSession("codex:old"), null);
+    assert.equal(store.getSession("stable").sessionKind, "assistantChat");
+    assert.equal(store.getAgentSessionBindingByProviderSession("codex-app-server", "old").state, "superseded");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("a historical OpenClacky Work Session projection is repaired idempotently", async () => {
