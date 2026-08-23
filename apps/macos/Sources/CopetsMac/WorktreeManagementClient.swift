@@ -409,7 +409,8 @@ final class WorktreeManagementClient: ObservableObject {
     }
 
     func resolveConflictWithAgent() async {
-        guard let job, job.hasMergeConflict else { return }
+        guard let job, job.hasMergeConflict,
+              job.currentConflictResolution?.status != "running" else { return }
         isMutating = true
         defer { isMutating = false }
         do {
@@ -422,6 +423,7 @@ final class WorktreeManagementClient: ObservableObject {
             await AppStateSyncController.shared.refreshSnapshot()
         } catch {
             errorMessage = error.localizedDescription
+            await refreshSelected()
         }
     }
 
@@ -457,16 +459,20 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
-    func pollJob() async {
-        guard let current = job, current.shouldPoll else { return }
+    @discardableResult
+    func pollJob() async -> Bool {
+        guard let current = job, current.shouldPoll else { return false }
         do {
             let envelope: WorktreeIntegrationJobEnvelope = try await get(
                 "worktree-management/jobs/\(current.id)"
             )
-            job = envelope.job
-            if !envelope.job.isActive { await refreshSelected() }
+            let changed = envelope.job != current
+            if changed { job = envelope.job }
+            if current.shouldPoll && !envelope.job.shouldPoll { await refreshSelected() }
+            return changed
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 

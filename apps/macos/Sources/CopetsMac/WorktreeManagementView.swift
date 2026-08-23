@@ -54,10 +54,17 @@ struct WorktreeManagementView: View {
         }
         .task(id: client.job.map { "\($0.id):\($0.shouldPoll)" }) {
             guard let jobId = client.job?.id else { return }
-            while !Task.isCancelled, client.job?.id == jobId, client.job?.shouldPoll == true {
-                try? await Task.sleep(for: .seconds(1))
+            var unchangedPolls = 0
+            // Job changes are infrequent while an Agent works. Back off capped
+            // polling and stop after one hour; SSE/tab refresh remains available.
+            while unchangedPolls < WorktreeJobPollingPolicy.maximumUnchangedPolls,
+                  !Task.isCancelled,
+                  client.job?.id == jobId,
+                  client.job?.shouldPoll == true {
+                let delay = WorktreeJobPollingPolicy.delaySeconds(afterUnchangedPolls: unchangedPolls)
+                try? await Task.sleep(for: .seconds(delay))
                 guard !Task.isCancelled else { return }
-                await client.pollJob()
+                unchangedPolls = await client.pollJob() ? 0 : unchangedPolls + 1
             }
         }
         .sheet(isPresented: $showingPlan) {
@@ -553,10 +560,13 @@ struct WorktreeManagementView: View {
                             .disabled(client.isMutating)
                             .accessibilityIdentifier("worktree.integrate.revalidate")
                     } else if resolution.status == "failed" {
+                        agentConflictRetryButton()
                         manualConflictRetryButton()
                     }
                 } else if job.hasMergeConflict {
-                    Button(L10n("Let Agent Resolve Conflicts")) {
+                    Button(L10n(job.conflictAutomation?.status == "blocked"
+                        ? "Retry Agent for Remaining Worktrees"
+                        : "Let Agent Resolve Conflicts")) {
                         Task { await client.resolveConflictWithAgent() }
                     }
                     .controlSize(.small)
@@ -586,6 +596,8 @@ struct WorktreeManagementView: View {
                 Text(L10n("The integration plan is stale. Regenerate and review it before continuing."))
                     .font(.caption)
                     .foregroundStyle(.orange)
+            } else if job.conflictAutomation?.status == "blocked" {
+                blockedConflictAutomation(job)
             } else if let resolution = job.currentConflictResolution {
                 conflictAgentProgress(job: job, resolution: resolution)
                 if job.phase == "failed", let error = job.error {
@@ -620,6 +632,15 @@ struct WorktreeManagementView: View {
                 .textSelection(.enabled)
             } else if let error = job.error {
                 Text(error).font(.caption).foregroundStyle(.red)
+            }
+            if job.status == "completed" {
+                Text(L10n("Integration plan completed. All planned Worktrees reached a final state."))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                Text(finalWorktreeStatuses(job))
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
             }
         }
         .padding(10)
@@ -659,6 +680,43 @@ struct WorktreeManagementView: View {
             .controlSize(.small)
             .disabled(client.isMutating)
             .accessibilityIdentifier("worktree.integrate.retry-manual-conflict")
+    }
+
+    private func agentConflictRetryButton() -> some View {
+        Button(L10n("Retry Agent for Remaining Worktrees")) {
+            Task { await client.resolveConflictWithAgent() }
+        }
+        .controlSize(.small)
+        .disabled(client.isMutating)
+        .accessibilityIdentifier("worktree.integrate.retry-agent-conflicts")
+    }
+
+    @ViewBuilder
+    private func blockedConflictAutomation(_ job: WorktreeIntegrationJob) -> some View {
+        if let automation = job.conflictAutomation,
+           let worktreeId = automation.blockedWorktreeId,
+           let item = job.plan.items.first(where: { $0.worktreeId == worktreeId }) {
+            Text(L10nFormat("Automatic conflict resolution is blocked at %@.", item.branchName ?? item.path))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+            Text(L10nFormat(
+                "Conflicting files: %@",
+                automation.conflictFiles.isEmpty ? "—" : automation.conflictFiles.joined(separator: ", ")
+            ))
+            .font(.caption)
+            .textSelection(.enabled)
+            Text(automation.failureReason ?? job.error ?? L10n("The conflict could not be resolved automatically."))
+                .font(.caption)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func finalWorktreeStatuses(_ job: WorktreeIntegrationJob) -> String {
+        job.plan.items
+            .filter { !$0.isMain }
+            .map { "\($0.branchName ?? $0.path): \(localizedIntegrationStatus($0.mergeStatus))" }
+            .joined(separator: "  ·  ")
     }
 
     private func worktreeRow(_ worktree: ManagedWorktree) -> some View {

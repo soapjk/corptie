@@ -1146,6 +1146,11 @@
 "Agent is resolving conflicts…" = "Agent 正在解决冲突…";
 "Agent finished; automatic validation needs attention" = "Agent 已完成，但自动验证需要处理";
 "Agent resolved the conflicts; validating and continuing automatically…" = "Agent 已解决冲突，正在验证并自动继续…";
+"Retry Agent for Remaining Worktrees" = "重试 Agent 并继续剩余 Worktree";
+"Integration plan completed. All planned Worktrees reached a final state." = "合并计划已完成，全部计划内 Worktree 均已进入最终状态。";
+"Automatic conflict resolution is blocked at %@." = "自动冲突处理在 %@ 处阻塞。";
+"Conflicting files: %@" = "冲突文件：%@";
+"The conflict could not be resolved automatically." = "Agent 无法自动解决该冲突。";
 "Agent stopped before resolving the conflicts" = "Agent 未解决冲突便停止";
 "Preparing the Agent conflict workspace" = "正在准备 Agent 冲突处理工作区";
 "Agent is resolving conflicts" = "Agent 正在解决冲突";

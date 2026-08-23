@@ -316,6 +316,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
             encoding: .utf8
         )
+        let models = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementModels.swift"),
+            encoding: .utf8
+        )
 
         XCTAssertTrue(view.contains("worktree.integrate.resolve-with-agent"))
         XCTAssertTrue(view.contains("worktree.integrate.open-conflict-agent"))
@@ -330,12 +334,19 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("main remains untouched until validation passes"))
         XCTAssertTrue(view.contains("The Agent result was not promoted"))
         XCTAssertTrue(view.contains("Revalidate and Continue"))
+        XCTAssertTrue(view.contains("worktree.integrate.retry-agent-conflicts"))
+        XCTAssertTrue(view.contains("Automatic conflict resolution is blocked at %@."))
+        XCTAssertTrue(view.contains("Conflicting files: %@"))
+        XCTAssertTrue(view.contains("Integration plan completed. All planned Worktrees reached a final state."))
+        XCTAssertTrue(view.contains("finalWorktreeStatuses(job)"))
         XCTAssertFalse(view.contains("resolution.status != \"ready\""))
         XCTAssertFalse(view.contains("if let sessionId = await client.resolveConflictWithAgent()"))
         XCTAssertTrue(view.contains("client.job?.shouldPoll == true"))
         XCTAssertTrue(client.contains("worktree-management/jobs/\\(job.id)/resolve-conflict"))
         XCTAssertTrue(client.contains("func resolveConflictWithAgent() async"))
         XCTAssertTrue(client.contains("await AppStateSyncController.shared.refreshSnapshot()"))
+        XCTAssertTrue(client.contains("if changed { job = envelope.job }"))
+        XCTAssertTrue(models.contains("let conflictAutomation: WorktreeConflictAutomation?"))
         XCTAssertFalse(client.contains("return envelope.job.currentConflictResolution?.sessionId"))
         XCTAssertFalse(client.contains("codex"))
         XCTAssertFalse(client.contains("claude"))
@@ -411,6 +422,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
           "updatedAt":"2026-08-19T00:01:00Z","confirmedAt":"2026-08-19T00:00:30Z","completedAt":null,
           "currentWorktreeId":"wt:feature","progress":{"completed":2,"total":3,"fraction":0.666},
           "conflictResolution":{"status":"running","worktreeId":"wt:feature","conflictKey":"conflict:1","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"workItemId":"work_item:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
+          "conflictAutomation":{"status":"blocked","scopeWorktreeIds":["wt:feature","wt:next"],"completedWorktreeIds":[],"currentWorktreeId":"wt:feature","blockedWorktreeId":"wt:feature","conflictFiles":["shared.swift"],"failureCode":"CONFLICT_AGENT_STOPPED","failureReason":"Agent stopped","startedAt":"2026-08-19T00:00:45Z","completedAt":null},
           "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"MERGE_CONFLICT"}],
           "plan":{"repositoryId":"repository:1","mainWorktreeId":"wt:main","mainPath":"/repo",
             "mainHeadBefore":"main:1","inventoryVersion":"inventory:1","mergeOrder":["wt:feature"],
@@ -433,6 +445,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(job.conflictResolution?.sessionId, "session:conflict")
         XCTAssertEqual(job.conflictResolution?.workspace.path, "/integration")
         XCTAssertEqual(job.currentConflictResolution?.sessionId, "session:conflict")
+        XCTAssertEqual(job.conflictAutomation?.scopeWorktreeIds, ["wt:feature", "wt:next"])
+        XCTAssertEqual(job.conflictAutomation?.blockedWorktreeId, "wt:feature")
+        XCTAssertEqual(job.conflictAutomation?.conflictFiles, ["shared.swift"])
+        XCTAssertEqual(job.conflictAutomation?.failureReason, "Agent stopped")
         XCTAssertTrue(job.shouldPoll)
 
         let staleJSON = json.replacingOccurrences(
@@ -442,6 +458,13 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         let staleJob = try JSONDecoder().decode(WorktreeIntegrationJob.self, from: Data(staleJSON.utf8))
         XCTAssertNil(staleJob.currentConflictResolution)
         XCTAssertFalse(staleJob.shouldPoll)
+    }
+
+    func testWorktreeJobPollingIsBoundedAndBacksOffWithoutExceedingFiveSeconds() {
+        XCTAssertEqual(WorktreeJobPollingPolicy.maximumUnchangedPolls, 720)
+        XCTAssertEqual(WorktreeJobPollingPolicy.delaySeconds(afterUnchangedPolls: 0), 1)
+        XCTAssertEqual(WorktreeJobPollingPolicy.delaySeconds(afterUnchangedPolls: 4), 2)
+        XCTAssertEqual(WorktreeJobPollingPolicy.delaySeconds(afterUnchangedPolls: 100), 5)
     }
 
     private func repository(_ id: String) -> ManagedRepository {

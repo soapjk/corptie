@@ -6364,7 +6364,9 @@ export class CorptieStore {
   listRecoverableWorktreeIntegrationJobs() {
     return this.selectAll(
       `SELECT * FROM worktree_integration_jobs
-       WHERE status IN ('queued', 'running', 'cancellation_requested', 'replanning') ORDER BY created_at ASC`
+       WHERE status IN ('queued', 'running', 'cancellation_requested', 'replanning')
+          OR (status = 'paused' AND json_extract(details_json, '$.conflictAutomation.status') = 'running')
+       ORDER BY created_at ASC`
     ).map(worktreeIntegrationJobFromRow);
   }
 
