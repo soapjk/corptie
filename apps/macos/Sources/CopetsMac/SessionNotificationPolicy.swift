@@ -109,6 +109,27 @@ struct SessionNotificationEvent: Equatable {
     let counts: SessionNotificationCounts?
 }
 
+enum SessionNotificationEventIdentity {
+    /// Notification Center identifiers travel over an XPC boundary. Keep the
+    /// identifier bounded even when an account has thousands of Sessions.
+    static func allSessionsWaiting(for sessions: [SessionNotificationSnapshot]) -> String {
+        let fingerprint = sessions
+            .sorted { $0.id < $1.id }
+            .map { "\($0.id):\($0.status.rawValue):\($0.updatedAt)" }
+            .joined(separator: "|")
+        return "all-sessions-waiting:v2:\(stableDigest(fingerprint))"
+    }
+
+    private static func stableDigest(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(format: "%016llx", hash)
+    }
+}
+
 enum SessionNotificationDestination: Equatable {
     case session(String)
     case overview
@@ -207,9 +228,7 @@ struct SessionNotificationReducer {
            previousHadRunningSession,
            !hasRunningSession,
            !terminalTransitions.isEmpty,
-           sessions.allSatisfy({
-               $0.status == .complete || $0.status == .blocked || $0.status == .failed
-           }) {
+           sessions.allSatisfy({ $0.status != .running }) {
             let counts = SessionNotificationCounts(
                 completed: sessions.filter { $0.status == .complete }.count,
                 blocked: sessions.filter { $0.status == .blocked }.count,
@@ -217,13 +236,8 @@ struct SessionNotificationReducer {
                 pendingUserAttention: sessions.filter(\.needsUserAttention).count
             )
             if counts.total > 0 {
-                let fingerprint = sessions
-                    .filter { $0.status == .complete || $0.status == .blocked || $0.status == .failed }
-                    .sorted { $0.id < $1.id }
-                    .map { "\($0.id):\($0.status.rawValue):\($0.updatedAt)" }
-                    .joined(separator: "|")
                 return [SessionNotificationEvent(
-                    id: "all-sessions-waiting:\(fingerprint)",
+                    id: SessionNotificationEventIdentity.allSessionsWaiting(for: sessions),
                     kind: .allSessionsWaiting,
                     session: nil,
                     counts: counts

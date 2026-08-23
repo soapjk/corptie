@@ -89,6 +89,25 @@ struct AppStateStoreTests {
         #expect(store.pendingCreatedSessionIDs.isEmpty)
     }
 
+    @Test func sessionStatusChangeSetRefreshesAuthoritativeStatusImmediately() {
+        let store = AppStateStore()
+        let running = TaskSession.fixture(id: "session:status", title: "Status", status: .running)
+        _ = store.apply(snapshot: .init(revision: 20, state: .fixture(sessions: [running])))
+        let completed = TaskSession.fixture(id: running.id, title: running.title, status: .complete)
+        let changes = StateChangeSetEnvelope(
+            snapshotRequired: false,
+            baseRevision: 20,
+            revision: 21,
+            upserts: .fixture(sessions: [completed]),
+            deletes: .fixture()
+        )
+
+        #expect(store.apply(changeSet: changes) == .applied)
+        #expect(store.revision == 21)
+        #expect(store.session(running.id)?.status == .complete)
+        #expect(store.syncError == nil)
+    }
+
     @Test func changeSetsAreIdempotentAndRejectRevisionGaps() {
         let store = AppStateStore()
         _ = store.apply(snapshot: StateSnapshotEnvelope(revision: 3, state: .fixture()))
@@ -214,10 +233,10 @@ private extension StateEntityDeletes {
 }
 
 private extension TaskSession {
-    static func fixture(id: String, title: String) -> Self {
+    static func fixture(id: String, title: String, status: TaskStatus = .running) -> Self {
         .init(
             id: id, title: title, agent: "Codex", agentId: nil, sessionKind: .worker,
-            objectiveId: nil, workItemId: nil, status: .running, progress: 0,
+            objectiveId: nil, workItemId: nil, status: status, progress: 0,
             summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
             updatedAt: "2026-08-18T00:00:00Z", accent: .cyan, archived: false,
             pinned: false, sortOrder: 0, capabilities: nil, external: nil,

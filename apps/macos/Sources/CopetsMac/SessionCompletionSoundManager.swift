@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import OSLog
 @preconcurrency import UserNotifications
 
 struct SessionCompletionSoundOption: Identifiable, Equatable {
@@ -28,6 +29,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
 
     private static let storageKey = "corptie.sessionCompletionSounds"
     private static var activeSound: NSSound?
+    private static let logger = Logger(subsystem: "com.corptie.mac", category: "SessionNotifications")
 
     private let client: BackendClient
     private let preferences: SessionNotificationPreferences
@@ -38,7 +40,8 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     private var reducer = SessionNotificationReducer()
     private var soundTransitionTracker = SessionCompletionSoundTransitionTracker()
     private var cancellables = Set<AnyCancellable>()
-    private var deliveryHistory: SessionNotificationDeliveryHistory
+    private let deliveryCoordinator: SessionNotificationDeliveryCoordinator
+    private var deliveryTasksByEventID: [String: Task<Void, Never>] = [:]
 
     init(
         client: BackendClient,
@@ -54,7 +57,9 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         self.notificationCenter = notificationCenter
         self.isSessionVisible = isSessionVisible
         self.isOverviewVisible = isOverviewVisible
-        deliveryHistory = SessionNotificationDeliveryHistory(defaults: defaults)
+        deliveryCoordinator = SessionNotificationDeliveryCoordinator(defaults: defaults) { event in
+            try await Self.deliverSystemNotification(event, notificationCenter: notificationCenter)
+        }
         super.init()
     }
 
@@ -71,6 +76,8 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
 
     func stop() {
         cancellables.removeAll()
+        deliveryTasksByEventID.values.forEach { $0.cancel() }
+        deliveryTasksByEventID.removeAll()
         notificationCenter?.delegate = nil
         reducer = SessionNotificationReducer()
         soundTransitionTracker = SessionCompletionSoundTransitionTracker()
@@ -151,18 +158,26 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     }
 
     private func requestAuthorizationIfNeeded() {
-        guard let notificationCenter else { return }
+        guard let notificationCenter else {
+            Self.logger.notice("System Notification Center is unavailable; task notifications cannot be delivered")
+            return
+        }
         Task {
             let settings = await notificationCenter.notificationSettings()
             guard settings.authorizationStatus == .notDetermined else { return }
-            _ = try? await notificationCenter.requestAuthorization(options: [.alert])
+            do {
+                let allowed = try await notificationCenter.requestAuthorization(options: [.alert])
+                Self.logger.info("Notification authorization request completed; allowed=\(allowed, privacy: .public)")
+            } catch {
+                Self.logger.error("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 
     private func handleSessionsUpdate(_ sessions: [TaskSession]) {
         let activeSnapshots = SessionNotificationScope.activeSnapshots(
             from: sessions,
-            workItems: EntityAPIClient.shared.workItems
+            workItems: AppStateStore.shared.workItems
         )
         for sessionID in soundTransitionTracker.completedSessionIDs(for: activeSnapshots) {
             guard let soundId = Self.enabledSoundId(for: sessionID, defaults: defaults) else {
@@ -174,17 +189,61 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
             for: activeSnapshots,
             configuration: preferences.configuration
         )
-        for event in events where deliveryHistory.claim(event.id) {
-            deliver(event)
+        if !events.isEmpty {
+            Self.logger.info(
+                "Generated \(events.count, privacy: .public) notification event(s); activeSessions=\(activeSnapshots.count, privacy: .public), runningSessions=\(activeSnapshots.filter { $0.status == .running }.count, privacy: .public)"
+            )
+        }
+        for event in events {
+            enqueueDelivery(event)
         }
     }
 
-    private func deliver(_ event: SessionNotificationEvent) {
-        if let sessionID = event.session?.id, isSessionVisible(sessionID) {
+    private func enqueueDelivery(_ event: SessionNotificationEvent) {
+        guard deliveryTasksByEventID[event.id] == nil else {
+            Self.logger.debug("Skipped in-flight notification \(event.id, privacy: .public)")
             return
         }
-        if event.kind == .allSessionsWaiting, isOverviewVisible() {
-            return
+
+        deliveryTasksByEventID[event.id] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.deliveryTasksByEventID[event.id] = nil }
+            let outcome = await self.deliveryCoordinator.deliver(event)
+            switch outcome {
+            case .delivered:
+                Self.logger.info(
+                    "Delivered notification \(event.id, privacy: .public), kind=\(event.kind.rawValue, privacy: .public)"
+                )
+            case .skippedPreviouslyDelivered:
+                Self.logger.debug("Skipped previously delivered notification \(event.id, privacy: .public)")
+            case .skippedInFlight:
+                Self.logger.debug("Skipped in-flight notification \(event.id, privacy: .public)")
+            case let .failed(message):
+                Self.logger.error(
+                    "Notification delivery failed \(event.id, privacy: .public), kind=\(event.kind.rawValue, privacy: .public): \(message, privacy: .public)"
+                )
+            }
+        }
+    }
+
+    private static func deliverSystemNotification(
+        _ event: SessionNotificationEvent,
+        notificationCenter: UNUserNotificationCenter?
+    ) async throws {
+        guard let notificationCenter else {
+            throw SessionNotificationDeliveryError.notificationCenterUnavailable
+        }
+        let settings = await notificationCenter.notificationSettings()
+        switch settings.authorizationStatus {
+        case .notDetermined:
+            let allowed = try await notificationCenter.requestAuthorization(options: [.alert])
+            guard allowed else { throw SessionNotificationDeliveryError.authorizationDenied }
+        case .denied:
+            throw SessionNotificationDeliveryError.authorizationDenied
+        case .authorized, .provisional, .ephemeral:
+            break
+        @unknown default:
+            throw SessionNotificationDeliveryError.authorizationStatusUnknown
         }
 
         let content = UNMutableNotificationContent()
@@ -196,17 +255,30 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
             content.userInfo = ["destination": "overview"]
         }
 
-        if let notificationCenter {
-            Task {
-                try? await notificationCenter.add(UNNotificationRequest(
-                    identifier: event.id,
-                    content: content,
-                    trigger: nil
-                ))
-            }
-        }
+        try await notificationCenter.add(UNNotificationRequest(
+            identifier: event.id,
+            content: content,
+            trigger: nil
+        ))
     }
 
+}
+
+enum SessionNotificationDeliveryError: LocalizedError {
+    case notificationCenterUnavailable
+    case authorizationDenied
+    case authorizationStatusUnknown
+
+    var errorDescription: String? {
+        switch self {
+        case .notificationCenterUnavailable:
+            "System Notification Center is unavailable for this executable."
+        case .authorizationDenied:
+            "System notification authorization is denied."
+        case .authorizationStatusUnknown:
+            "System notification authorization status is unknown."
+        }
+    }
 }
 
 @MainActor
