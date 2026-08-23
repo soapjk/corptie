@@ -1,7 +1,9 @@
 export function persistProviderSessionProjection(store, session, {
   providerId,
   agentId = null,
-  sessionKind = null
+  sessionKind = null,
+  objectiveId = null,
+  workItemId = null
 } = {}) {
   if (!store?.db || !session?.id) return null;
   store.upsertSession({
@@ -10,7 +12,9 @@ export function persistProviderSessionProjection(store, session, {
     cwd: session.external?.cwd ?? null,
     command: session.external?.source ?? providerId ?? null,
     agentId: agentId ?? session.agentId ?? null,
-    sessionKind: sessionKind ?? session.sessionKind ?? "legacy"
+    sessionKind: sessionKind ?? session.sessionKind ?? "legacy",
+    objectiveId: objectiveId ?? session.objectiveId ?? null,
+    workItemId: workItemId ?? session.workItemId ?? null
   });
   return store.getSession(session.id);
 }
@@ -159,7 +163,9 @@ export function ensureProviderSessionProjection({
   persistProviderSessionProjection(store, session, {
     providerId: session.external?.provider,
     agentId,
-    sessionKind: workItem ? "worker" : (session.objectiveId ? "objectiveChat" : (boundAgent?.role === "assistant" ? "assistantChat" : "legacy"))
+    sessionKind: workItem ? "worker" : (session.objectiveId ? "objectiveChat" : (boundAgent?.role === "assistant" ? "assistantChat" : "legacy")),
+    objectiveId: workItem?.objective_id ?? session.objectiveId ?? null,
+    workItemId: workItem?.id ?? session.workItemId ?? null
   });
   if (workItem) {
     store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);

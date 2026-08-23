@@ -99,7 +99,7 @@ test("legacy collaboration with multiple candidate Sessions remains explicitly u
         id: `provider:journal:${suffix}`,
         title: suffix,
         agentId: "journal-agent",
-        sessionKind: "worker"
+        sessionKind: "legacy"
       });
       store.createLogicalSessionRoute({
         logicalSessionId: `session:journal:${suffix}`,
