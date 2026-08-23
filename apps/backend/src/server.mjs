@@ -179,7 +179,10 @@ import {
 } from "./utils/newSessionDefaults.mjs";
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
 import { mergeSupplementalTimelineItems } from "./utils/sessionItemTimeline.mjs";
-import { collaborationMcpServerName } from "./utils/collaborationRuntime.mjs";
+import {
+  collaborationMcpEnvironment,
+  collaborationMcpServerName
+} from "./utils/collaborationRuntime.mjs";
 import { collaborationDynamicTools, callCollaborationDynamicTool } from "./collaboration/collaborationDynamicTools.mjs";
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
@@ -708,7 +711,10 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     attachTools: async (attachment) => codexToolHostAttachment(
       attachment,
       withObjectiveChatCodexContext(
-        await collaborationProviderRuntimeOptionsWithAgentContext(attachment.actorId),
+        await collaborationProviderRuntimeOptionsWithAgentContext(
+          attachment.actorId,
+          attachment.metadata
+        ),
         attachment.metadata
       )
     ),
@@ -2532,8 +2538,8 @@ async function collaborationThreadOptionsWithAgentContext(agentId) {
   return { ...base, developerInstructions };
 }
 
-async function collaborationProviderRuntimeOptionsWithAgentContext(agentId) {
-  const base = collaborationProviderRuntimeOptions(agentId);
+async function collaborationProviderRuntimeOptionsWithAgentContext(agentId, metadata = null) {
+  const base = collaborationProviderRuntimeOptions(agentId, metadata);
   if (!agentId) return base;
   const agentContext = await collaborationAgentContextInstructions(agentId);
   if (!agentContext) return base;
@@ -2549,8 +2555,8 @@ async function collaborationAgentContextInstructions(agentId) {
   return context?.instructions ?? "";
 }
 
-function collaborationProviderRuntimeOptions(agentId) {
-  const mcp = collaborationMcpProcessOptions(agentId);
+function collaborationProviderRuntimeOptions(agentId, metadata = null) {
+  const mcp = collaborationMcpProcessOptions(agentId, metadata);
   return {
     config: {
       features: {
@@ -2611,21 +2617,12 @@ function collaborationMcpProcessOptions(agentId, metadata = null) {
   return {
     command: process.execPath,
     args: [collaborationMcpServerPath],
-    env: {
-      CORPTIE_AGENT_ID: agentId,
-      CORPTIE_BACKEND_URL: `http://127.0.0.1:${port}`,
-      CORPTIE_ENV: environmentName,
-      CORPTIE_SESSION_ID: metadata?.sessionId ?? "",
-      CORPTIE_SESSION_KIND: metadata?.sessionKind ?? "",
-      CORPTIE_OBJECTIVE_ID: metadata?.objectiveId ?? "",
-      CORPTIE_WORK_ITEM_ID: metadata?.workItemId ?? "",
-      ...(metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
-        ? {
-            CORPTIE_OBJECTIVE_CHAT_ID: metadata.objectiveId,
-            CORPTIE_OBJECTIVE_CHAT_SESSION_ID: metadata.sessionId ?? ""
-          }
-        : {})
-    }
+    env: collaborationMcpEnvironment({
+      agentId,
+      backendUrl: `http://127.0.0.1:${port}`,
+      environmentName,
+      metadata
+    })
   };
 }
 

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { collaborationMcpServerName } from "../src/utils/collaborationRuntime.mjs";
+import {
+  collaborationMcpEnvironment,
+  collaborationMcpServerName
+} from "../src/utils/collaborationRuntime.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "../src/utils/choiceParserBackoff.mjs";
 
 test("collaboration MCP names are stable and isolated per Agent", () => {
@@ -11,6 +14,30 @@ test("collaboration MCP names are stable and isolated per Agent", () => {
     `mcp__${collaborationMcpServerName("agent-a").replaceAll("-", "_")}__corptie_collaboration_request`.length < 64,
     "the longest collaboration tool name must remain below the provider boundary"
   );
+});
+
+test("collaboration MCP environment preserves authenticated Session scope", () => {
+  assert.deepEqual(collaborationMcpEnvironment({
+    agentId: "agent:owner",
+    backendUrl: "http://127.0.0.1:47321",
+    environmentName: "production",
+    metadata: {
+      sessionId: "codex:thread-one",
+      sessionKind: "objectiveChat",
+      objectiveId: "objective:one",
+      workItemId: null
+    }
+  }), {
+    CORPTIE_AGENT_ID: "agent:owner",
+    CORPTIE_BACKEND_URL: "http://127.0.0.1:47321",
+    CORPTIE_ENV: "production",
+    CORPTIE_SESSION_ID: "codex:thread-one",
+    CORPTIE_SESSION_KIND: "objectiveChat",
+    CORPTIE_OBJECTIVE_ID: "objective:one",
+    CORPTIE_WORK_ITEM_ID: "",
+    CORPTIE_OBJECTIVE_CHAT_ID: "objective:one",
+    CORPTIE_OBJECTIVE_CHAT_SESSION_ID: "codex:thread-one"
+  });
 });
 
 test("choice parser rate limits receive a long provider backoff", () => {
