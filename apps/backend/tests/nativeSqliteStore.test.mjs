@@ -240,6 +240,70 @@ test("stored Session detail reads its complete local timeline without Provider a
   }
 });
 
+test("stored item window returns the newest records in stable ascending order", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-latest-items-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "latest-items", title: "Latest", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    for (let index = 0; index < 260; index += 1) {
+      store.upsertItemSnapshot("latest-items", {
+        id: `item-${String(index).padStart(3, "0")}`,
+        type: "agentMessage",
+        text: `message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString()
+      });
+    }
+    const items = store.getItems("latest-items", 200);
+    assert.equal(items.length, 200);
+    assert.equal(items[0].id, "item-060");
+    assert.equal(items.at(-1).id, "item-259");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("identical Provider Session and history projections do not rewrite rows or advance revision", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-projection-noop-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    const session = {
+      id: "projection-noop",
+      title: "Stable",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete",
+      progress: 1,
+      summary: "done",
+      createdAt: "2026-08-23T00:00:00.000Z",
+      updatedAt: "2026-08-23T00:00:01.000Z"
+    };
+    store.upsertSession(session);
+    store.upsertItemSnapshot(session.id, {
+      id: "stable-item",
+      type: "agentMessage",
+      text: "done",
+      createdAt: "2026-08-23T00:00:01.000Z"
+    });
+    const revision = store.stateRevision();
+    store.upsertSession({ ...session, updatedAt: "2026-08-23T00:10:00.000Z" });
+    store.upsertItemSnapshot(session.id, {
+      id: "stable-item",
+      type: "agentMessage",
+      text: "done",
+      createdAt: "2026-08-23T00:00:01.000Z"
+    });
+    assert.equal(store.stateRevision(), revision);
+    assert.equal(store.selectOne("SELECT updated_at FROM sessions WHERE id = ?", [session.id]).updated_at,
+      "2026-08-23T00:00:01.000Z");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Provider history snapshots never create unread message events", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-history-snapshot-"));
   const store = new CorptieStore({

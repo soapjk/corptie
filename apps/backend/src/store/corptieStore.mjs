@@ -3,6 +3,7 @@ import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
+import { performance } from "node:perf_hooks";
 import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
@@ -22,6 +23,7 @@ import {
   validateObjectiveInput,
   validateWorkItemInput
 } from "../domain/objectiveWorkItemValidation.mjs";
+import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -42,6 +44,8 @@ export class CorptieStore {
     this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
     this.db = null;
     this.config = {};
+    this.stateDirtyListener = null;
+    this.performanceMigrationBackupPath = null;
   }
 
   async initialize() {
@@ -52,6 +56,7 @@ export class CorptieStore {
       this.db.run("PRAGMA journal_mode = WAL");
       this.db.run("PRAGMA synchronous = FULL");
       this.db.run("PRAGMA busy_timeout = 5000");
+      await this.ensurePerformanceMigrationBackup();
       this.migrate();
     } catch (error) {
       this.db.close();
@@ -85,6 +90,36 @@ export class CorptieStore {
       await copyFile(legacyDbPath, this.dbPath);
       await this.writeConfig();
     }
+  }
+
+  async ensurePerformanceMigrationBackup() {
+    const sessionEvents = this.db.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ["session_events"],
+      "CorptieStore.ensurePerformanceMigrationBackup"
+    );
+    if (!sessionEvents) return;
+    const columns = this.db.all(
+      "PRAGMA table_info(session_events)",
+      [],
+      "CorptieStore.ensurePerformanceMigrationBackup"
+    );
+    if (columns.some((column) => column.name === "has_agent_message")) return;
+
+    const backupPath = `${this.dbPath}.pre-sqlite-performance-v1.backup`;
+    if (!await exists(backupPath)) {
+      await backup(this.db.database, backupPath);
+    }
+    const verification = new DatabaseSync(backupPath, { readOnly: true });
+    try {
+      const result = verification.prepare("PRAGMA quick_check").get();
+      if (result?.quick_check !== "ok") {
+        throw new Error("SQLite performance migration backup failed integrity verification.");
+      }
+    } finally {
+      verification.close();
+    }
+    this.performanceMigrationBackupPath = backupPath;
   }
 
   async readConfiguredDataDir() {
@@ -571,6 +606,8 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_session_items_session_id ON session_items(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_session_items_latest
+      ON session_items(session_id, created_at DESC, id DESC);
 
       CREATE TABLE IF NOT EXISTS session_context_references (
         reference_id TEXT PRIMARY KEY,
@@ -606,6 +643,7 @@ export class CorptieStore {
         type TEXT NOT NULL,
         source_json TEXT,
         payload_json TEXT NOT NULL DEFAULT '{}',
+        has_agent_message INTEGER NOT NULL DEFAULT 0 CHECK (has_agent_message IN (0, 1)),
         created_at TEXT NOT NULL,
         UNIQUE(session_id, sequence)
       );
@@ -1680,6 +1718,8 @@ export class CorptieStore {
     this.ensureColumn("session_events", "surface", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("session_events", "source_event_seqs_json", "TEXT");
     this.ensureColumn("session_events", "call_id", "TEXT");
+    this.ensureColumn("session_events", "has_agent_message", "INTEGER NOT NULL DEFAULT 0");
+    this.migrateSessionEventAgentMessageFlag();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_producer ON session_events(session_id, producer)");
     this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_call_id ON session_events(session_id, call_id)");
     this.db.run(`
@@ -1688,10 +1728,11 @@ export class CorptieStore {
       WHERE surface = 1
          OR type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
     `);
+    this.db.run("DROP INDEX IF EXISTS idx_session_events_agent_message");
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_session_events_agent_message
       ON session_events(session_id, sequence DESC)
-      WHERE type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
+      WHERE has_agent_message = 1
     `);
     // 回填：为每个已有 session 建立 1:1 的 session_log；并让既有事件指向该 log。
     this.db.run(`
@@ -1873,6 +1914,20 @@ export class CorptieStore {
         END;
       `);
     }
+    // A completed Agent message advances the unread cursor even when no
+    // sessions column changes in the same transaction.
+    this.db.run(`
+      CREATE TRIGGER IF NOT EXISTS state_sync_session_events_agent_message_insert
+      AFTER INSERT ON session_events
+      WHEN NEW.has_agent_message = 1
+      BEGIN
+        UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
+        INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+        SELECT revision, 'session', NEW.session_id, 'upsert',
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM state_sync_clock WHERE singleton = 1;
+      END;
+    `);
     // A bounded durable replay window is sufficient because clients fall back
     // to /state/snapshot when their cursor predates it.
     this.db.run(`
@@ -1898,6 +1953,26 @@ export class CorptieStore {
         END;
       `);
     }
+  }
+
+  migrateSessionEventAgentMessageFlag() {
+    const migrationId = "session-events-has-agent-message-v1";
+    if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
+      return;
+    }
+    this.runInTransaction(() => {
+      this.db.run(`
+        UPDATE session_events
+        SET has_agent_message = CASE
+          WHEN type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
+           AND COALESCE(json_extract(payload_json, '$.hasAgentMessage'), 0) = 1
+          THEN 1 ELSE 0 END
+      `);
+      this.db.run(
+        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+        [migrationId, createdAtFromOrNow()]
+      );
+    });
   }
 
   stateRevision() {
@@ -2621,6 +2696,11 @@ export class CorptieStore {
     // Native SQLite commits each statement directly to the WAL. This method is
     // kept as a compatibility hook for callers that previously scheduled a
     // full in-memory database export.
+    this.stateDirtyListener?.();
+  }
+
+  setStateDirtyListener(listener) {
+    this.stateDirtyListener = typeof listener === "function" ? listener : null;
   }
 
   runInTransaction(operation) {
@@ -3768,6 +3848,15 @@ export class CorptieStore {
       [session.id]
     );
     if (existing) {
+      // Fields omitted by Provider polling retain their persisted storage
+      // identity/order. Generating a fresh fallback here turns every poll into
+      // a semantic UPDATE even though the visible Session is unchanged.
+      values[11] = existing.created_at;
+      if (!Number.isFinite(session.sortOrder)) values[15] = existing.sort_order;
+      if (session.objectiveId == null) values[18] = existing.objective_id;
+      if (session.workItemId == null) values[19] = existing.work_item_id;
+      if (values[20] === SESSION_KIND.legacy) values[20] = existing.session_kind;
+      if (session.agentId == null) values[21] = existing.agent_id;
       const columns = [
         "title", "agent", "provider", "command", "args_json", "cwd", "status", "progress",
         "summary", "accent", "created_at", "updated_at", "archived", "pinned", "sort_order",
@@ -3775,6 +3864,7 @@ export class CorptieStore {
       ];
       let changed = false;
       for (let i = 0; i < columns.length; i++) {
+        if (columns[i] === "updated_at") continue;
         const next = values[i + 1];
         const prev = existing[columns[i]];
         // SQLite returns integers/bools as numbers and NULL for absent values;
@@ -4246,9 +4336,30 @@ export class CorptieStore {
   upsertItemSnapshot(sessionId, item) {
     const createdAt = createdAtFromOrNow(item);
     this.db.run(
-      `INSERT OR REPLACE INTO session_items (
+      `INSERT INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        session_id=excluded.session_id,
+        turn_id=excluded.turn_id,
+        turn_status=excluded.turn_status,
+        type=excluded.type,
+        title=excluded.title,
+        text=excluded.text,
+        options_json=excluded.options_json,
+        raw_metadata_json=excluded.raw_metadata_json,
+        status=excluded.status,
+        created_at=excluded.created_at
+      WHERE session_items.session_id IS NOT excluded.session_id
+         OR session_items.turn_id IS NOT excluded.turn_id
+         OR session_items.turn_status IS NOT excluded.turn_status
+         OR session_items.type IS NOT excluded.type
+         OR session_items.title IS NOT excluded.title
+         OR session_items.text IS NOT excluded.text
+         OR session_items.options_json IS NOT excluded.options_json
+         OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
+         OR session_items.status IS NOT excluded.status
+         OR session_items.created_at IS NOT excluded.created_at`,
       [
         item.id,
         sessionId,
@@ -4263,7 +4374,7 @@ export class CorptieStore {
         createdAt
       ]
     );
-    this.scheduleSave();
+    if (this.db.getRowsModified() > 0) this.scheduleSave();
   }
 
   removeItem(sessionId, itemId) {
@@ -4773,14 +4884,19 @@ export class CorptieStore {
   listSessions(options = {}) {
     const archived = options.archived === true ? 1 : 0;
     const rows = this.selectAll(
-      "SELECT * FROM sessions WHERE archived = ? ORDER BY pinned DESC, sort_order ASC, updated_at DESC",
+      `${sessionProjectionSelectSQL()}
+       WHERE sessions.archived = ?
+       ORDER BY sessions.pinned DESC, sessions.sort_order ASC, sessions.updated_at DESC`,
       [archived]
     );
     return rows.map((row) => this.rowToSession(row));
   }
 
   getSession(id) {
-    const row = this.selectOne("SELECT * FROM sessions WHERE id = ?", [id]);
+    const row = this.selectOne(
+      `${sessionProjectionSelectSQL()} WHERE sessions.id = ?`,
+      [id]
+    );
     return row ? this.rowToSession(row) : null;
   }
 
@@ -4824,10 +4940,22 @@ export class CorptieStore {
   }
 
   getItems(sessionId, limit = 240, provider = "") {
-    const hasLimit = Number.isFinite(limit) && Number(limit) > 0;
+    const pageLimit = Math.max(1, Math.min(500, Number.isFinite(limit) && Number(limit) > 0
+      ? Math.floor(Number(limit))
+      : 240));
     const rows = this.selectAll(
-      `SELECT * FROM session_items WHERE session_id = ? ORDER BY created_at ASC${hasLimit ? " LIMIT ?" : ""}`,
-      hasLimit ? [sessionId, Math.floor(Number(limit))] : [sessionId]
+      `SELECT id, turn_id, turn_status, type, title, text, options_json,
+              raw_metadata_json, status, created_at
+       FROM (
+         SELECT id, turn_id, turn_status, type, title, text, options_json,
+                raw_metadata_json, status, created_at
+         FROM session_items
+         WHERE session_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?
+       )
+       ORDER BY created_at ASC, id ASC`,
+      [sessionId, pageLimit]
     );
     const items = rows
       .map((row) => ({
@@ -4849,30 +4977,28 @@ export class CorptieStore {
     return items;
   }
 
-  listStoredTimelineEvents(sessionId) {
+  listStoredTimelineEvents(sessionId, { beforeSequence = null, limit = 400 } = {}) {
+    const pageLimit = Math.max(1, Math.min(500, Number(limit) || 400));
+    const before = Number(beforeSequence);
+    const hasBefore = Number.isSafeInteger(before) && before > 0;
     return this.selectAll(
-      `SELECT * FROM session_events
-       WHERE session_id = ?
-         AND type IN (
-           'user/message', 'assistant/message', 'SessionUserMessageCreated',
-           'CodexThreadCompleted', 'TaskCompleted', 'AgentTurnCompleted'
-         )
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM (
+         SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+                source_event_seqs_json, call_id, source_json, payload_json, created_at
+         FROM session_events
+         WHERE session_id = ?
+           ${hasBefore ? "AND sequence < ?" : ""}
+           AND type IN (
+             'user/message', 'assistant/message', 'SessionUserMessageCreated',
+             'CodexThreadCompleted', 'TaskCompleted', 'AgentTurnCompleted'
+           )
+         ORDER BY sequence DESC LIMIT ?
+       )
        ORDER BY sequence ASC`,
-      [sessionId]
-    ).map((row) => ({
-      eventId: row.event_id,
-      sessionId: row.session_id,
-      logId: row.log_id,
-      sequence: Number(row.sequence),
-      type: row.type,
-      producer: row.producer,
-      surface: Number(row.surface) === 1,
-      sourceEventSeqs: parseJson(row.source_event_seqs_json, null),
-      callId: row.call_id,
-      source: parseJson(row.source_json, null),
-      payload: parseJson(row.payload_json, {}),
-      createdAt: row.created_at
-    }));
+      hasBefore ? [sessionId, before, pageLimit] : [sessionId, pageLimit]
+    ).map(sessionEventFromRow);
   }
 
   getDetail(id) {
@@ -4900,16 +5026,16 @@ export class CorptieStore {
           ? "This Claude Code session is no longer connected. Start a new Claude session to continue."
         : "This session is not currently attached to a running process.",
       turnCount: 1,
-      items: this.getItems(id, null, session.external?.provider)
+      items: this.getItems(id, 240, session.external?.provider)
     };
   }
 
   getRuntimeState(key) {
-    const statement = this.db.prepare(
+    const row = this.selectOne(
       "SELECT value_json FROM runtime_state WHERE key = ?",
       [String(key)]
     );
-    return statement.step() ? parseJson(statement.getAsObject().value_json, null) : null;
+    return row ? parseJson(row.value_json, null) : null;
   }
 
   setRuntimeState(key, value) {
@@ -5076,8 +5202,8 @@ export class CorptieStore {
       this.db.run(
         `INSERT INTO session_events (
           event_id, session_id, log_id, sequence, type, producer, surface,
-          source_event_seqs_json, call_id, source_json, payload_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source_event_seqs_json, call_id, source_json, payload_json, has_agent_message, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           event.eventId,
           sessionId,
@@ -5090,6 +5216,7 @@ export class CorptieStore {
           callId,
           event.source ? JSON.stringify(event.source) : null,
           JSON.stringify(event.payload ?? {}),
+          eventHasAgentMessage(event) ? 1 : 0,
           event.createdAt || new Date().toISOString()
         ]
       );
@@ -5122,25 +5249,34 @@ export class CorptieStore {
 
   listSessionEvents(sessionId, after = 0, limit = 200) {
     const rows = this.selectAll(
-      `SELECT * FROM session_events
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM session_events
        WHERE session_id = ? AND sequence > ?
        ORDER BY sequence ASC LIMIT ?`,
       [sessionId, Math.max(0, Number(after) || 0), Math.max(1, Math.min(1000, Number(limit) || 200))]
     );
-    return rows.map((row) => ({
-      eventId: row.event_id,
-      sessionId: row.session_id,
-      logId: row.log_id,
-      sequence: Number(row.sequence),
-      type: row.type,
-      producer: row.producer,
-      surface: Number(row.surface) === 1,
-      sourceEventSeqs: parseJson(row.source_event_seqs_json, null),
-      callId: row.call_id,
-      source: parseJson(row.source_json, null),
-      payload: parseJson(row.payload_json, {}),
-      createdAt: row.created_at
-    }));
+    return rows.map(sessionEventFromRow);
+  }
+
+  listSessionEventPage(sessionId, { beforeSequence = null, limit = 200 } = {}) {
+    const pageLimit = Math.max(1, Math.min(500, Number(limit) || 200));
+    const before = Number(beforeSequence);
+    const hasBefore = Number.isSafeInteger(before) && before > 0;
+    const rows = this.selectAll(
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM (
+         SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+                source_event_seqs_json, call_id, source_json, payload_json, created_at
+         FROM session_events
+         WHERE session_id = ? ${hasBefore ? "AND sequence < ?" : ""}
+         ORDER BY sequence DESC LIMIT ?
+       )
+       ORDER BY sequence ASC`,
+      hasBefore ? [sessionId, before, pageLimit] : [sessionId, pageLimit]
+    );
+    return rows.map(sessionEventFromRow);
   }
 
   listLatestSessionMessageTimes() {
@@ -5165,8 +5301,7 @@ export class CorptieStore {
       LEFT JOIN (
         SELECT session_id, MAX(sequence) AS last_agent_message_sequence
         FROM session_events
-        WHERE type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
-          AND COALESCE(json_extract(payload_json, '$.hasAgentMessage'), 0) = 1
+        WHERE ${agentMessageEventSQL("session_events")}
         GROUP BY session_id
       ) AS agent_messages ON agent_messages.session_id = sessions.id
       LEFT JOIN session_read_receipts ON session_read_receipts.session_id = sessions.id
@@ -6987,20 +7122,23 @@ export class CorptieStore {
   }
 
   selectAll(sql, params = []) {
-    const stmt = this.db.prepare(sql, params);
-    const rows = [];
-    try {
-      while (stmt.step()) {
-        rows.push(stmt.getAsObject());
-      }
-    } finally {
-      stmt.free();
-    }
-    return rows;
+    return this.db.all(sql, params, queryCallerSource());
   }
 
   selectOne(sql, params = []) {
-    return this.selectAll(sql, params)[0] ?? null;
+    return this.db.get(sql, params, queryCallerSource());
+  }
+
+  iterate(sql, params = []) {
+    return this.db.iterate(sql, params, queryCallerSource());
+  }
+
+  queryMetrics(options = {}) {
+    return this.db.queryMetrics(options);
+  }
+
+  resetEventLoopDelayMetrics() {
+    this.db.resetEventLoopDelayMetrics();
   }
 
   ensureColumn(table, column, definition) {
@@ -7144,18 +7282,28 @@ export class CorptieStore {
     const displayStatus = status;
     const activeChoicePrompt = parseActiveChoicePrompt(row.active_choice_json);
     const suggestedOptions = activeChoicePrompt?.options ?? null;
-    const logicalIdentity = this.selectOne(
-      `SELECT logical_session_id, session_name
-       FROM logical_sessions WHERE legacy_session_id = ?`,
-      [row.id]
-    );
-    const agentIdentity = this.selectOne(
-      `SELECT bindings.agent_id, agents.role
-       FROM agent_sessions bindings
-       LEFT JOIN agents ON agents.agent_id = bindings.agent_id
-       WHERE bindings.session_id = ? AND bindings.unbound_at IS NULL LIMIT 1`,
-      [row.id]
-    );
+    const logicalIdentity = Object.hasOwn(row, "projection_logical_session_id")
+      ? {
+          logical_session_id: row.projection_logical_session_id,
+          session_name: row.projection_session_name
+        }
+      : this.selectOne(
+        `SELECT logical_session_id, session_name
+         FROM logical_sessions WHERE legacy_session_id = ?`,
+        [row.id]
+      );
+    const agentIdentity = Object.hasOwn(row, "projection_binding_agent_id")
+      ? {
+          agent_id: row.projection_binding_agent_id,
+          role: row.projection_agent_role
+        }
+      : this.selectOne(
+        `SELECT bindings.agent_id, agents.role
+         FROM agent_sessions bindings
+         LEFT JOIN agents ON agents.agent_id = bindings.agent_id
+         WHERE bindings.session_id = ? AND bindings.unbound_at IS NULL LIMIT 1`,
+        [row.id]
+      );
     return {
       id: publicId,
       title: logicalIdentity?.session_name || row.title,
@@ -7213,23 +7361,75 @@ class NativeDatabase {
   constructor(path) {
     this.database = new DatabaseSync(path);
     this.rowsModified = 0;
+    this.observability = new SqliteQueryObservability();
   }
 
   run(sql, params = []) {
-    const bindings = normalizeSqliteBindings(params);
-    if (bindings.length > 0) {
-      const result = this.database.prepare(sql).run(...bindings);
-      this.rowsModified = Number(result.changes);
-      return;
-    }
+    return this.observability.measure(sql, queryCallerSource(), "run", () => {
+      const bindings = normalizeSqliteBindings(params);
+      if (bindings.length > 0) {
+        const result = this.database.prepare(sql).run(...bindings);
+        this.rowsModified = Number(result.changes);
+        return;
+      }
 
-    this.database.exec(sql);
-    const result = this.database.prepare("SELECT changes() AS changes").get();
-    this.rowsModified = Number(result?.changes ?? 0);
+      this.database.exec(sql);
+      const result = this.database.prepare("SELECT changes() AS changes").get();
+      this.rowsModified = Number(result?.changes ?? 0);
+    });
   }
 
-  prepare(sql, params = []) {
-    return new NativeStatement(this.database.prepare(sql), params);
+  all(sql, params = [], source = "unknown") {
+    return this.observability.measure(sql, source, "selectAll", ({ addRows }) => {
+      const rows = this.database.prepare(sql).all(...normalizeSqliteBindings(params));
+      for (const row of rows) normalizeSqliteRowPrototype(row);
+      addRows(rows);
+      return rows;
+    });
+  }
+
+  get(sql, params = [], source = "unknown") {
+    return this.observability.measure(sql, source, "selectOne", ({ addRow }) => {
+      const row = this.database.prepare(sql).get(...normalizeSqliteBindings(params)) ?? null;
+      if (row) {
+        normalizeSqliteRowPrototype(row);
+        addRow(row);
+      }
+      return row;
+    });
+  }
+
+  *iterate(sql, params = [], source = "unknown") {
+    const startedAt = performance.now();
+    let rowCount = 0;
+    let estimatedResultBytes = 0;
+    const iterator = this.database.prepare(sql).iterate(...normalizeSqliteBindings(params));
+    try {
+      for (const row of iterator) {
+        normalizeSqliteRowPrototype(row);
+        rowCount += 1;
+        estimatedResultBytes += estimateSqliteRowBytes(row);
+        yield row;
+      }
+    } finally {
+      iterator.return?.();
+      this.observability.record({
+        sql,
+        source,
+        operation: "iterate",
+        durationMilliseconds: performance.now() - startedAt,
+        rowCount,
+        estimatedResultBytes
+      });
+    }
+  }
+
+  queryMetrics(options = {}) {
+    return this.observability.snapshot(options);
+  }
+
+  resetEventLoopDelayMetrics() {
+    this.observability.resetEventLoopDelay();
   }
 
   getRowsModified() {
@@ -7241,26 +7441,28 @@ class NativeDatabase {
   }
 
   close() {
+    this.observability.close();
     this.database.close();
   }
 }
 
-class NativeStatement {
-  constructor(statement, params) {
-    this.rows = statement.all(...normalizeSqliteBindings(params)).map((row) => ({ ...row }));
-    this.index = -1;
+function estimateSqliteRowBytes(row) {
+  let bytes = 0;
+  for (const [key, value] of Object.entries(row ?? {})) {
+    bytes += Buffer.byteLength(key);
+    if (typeof value === "string") bytes += Buffer.byteLength(value);
+    else if (value instanceof Uint8Array) bytes += value.byteLength;
+    else if (value != null) bytes += 8;
   }
+  return bytes;
+}
 
-  step() {
-    this.index += 1;
-    return this.index < this.rows.length;
-  }
-
-  getAsObject() {
-    return this.rows[this.index] ?? {};
-  }
-
-  free() {}
+function normalizeSqliteRowPrototype(row) {
+  // node:sqlite returns null-prototype records. Preserve the Store's historical
+  // plain-object contract by mutating only the prototype; unlike `{ ...row }`,
+  // this does not allocate or copy every column of every result row.
+  if (Object.getPrototypeOf(row) === null) Object.setPrototypeOf(row, Object.prototype);
+  return row;
 }
 
 function normalizeSqliteBindings(params) {
@@ -7291,6 +7493,22 @@ function providerThreadBindingFromRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function sessionProjectionSelectSQL() {
+  return `SELECT sessions.*,
+    (SELECT logical_session_id FROM logical_sessions
+     WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_logical_session_id,
+    (SELECT session_name FROM logical_sessions
+     WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_session_name,
+    (SELECT bindings.agent_id FROM agent_sessions bindings
+     WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
+     LIMIT 1) AS projection_binding_agent_id,
+    (SELECT agents.role FROM agent_sessions bindings
+     LEFT JOIN agents ON agents.agent_id = bindings.agent_id
+     WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
+     LIMIT 1) AS projection_agent_role
+    FROM sessions`;
 }
 
 function scheduledSessionTaskFromRow(row) {
@@ -8024,12 +8242,35 @@ function surfaceForEventType(type) {
 }
 
 function agentMessageEventSQL(tableAlias) {
-  return `(
-    (${tableAlias}.type = 'CodexThreadCompleted'
-      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1)
-    OR (${tableAlias}.type = 'AgentTurnCompleted'
-      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1)
-  )`;
+  if (process.env.CORPTIE_OPTIMIZED_MESSAGE_CURSOR_READS === "0") {
+    return `(
+      ${tableAlias}.type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
+      AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1
+    )`;
+  }
+  return `${tableAlias}.has_agent_message = 1`;
+}
+
+function sessionEventFromRow(row) {
+  return {
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    logId: row.log_id,
+    sequence: Number(row.sequence),
+    type: row.type,
+    producer: row.producer,
+    surface: Number(row.surface) === 1,
+    sourceEventSeqs: parseJson(row.source_event_seqs_json, null),
+    callId: row.call_id,
+    source: parseJson(row.source_json, null),
+    payload: parseJson(row.payload_json, {}),
+    createdAt: row.created_at
+  };
+}
+
+function eventHasAgentMessage(event) {
+  return (event.type === "CodexThreadCompleted" || event.type === "AgentTurnCompleted")
+    && (event.payload?.hasAgentMessage === true || event.payload?.hasAgentMessage === 1);
 }
 
 // 从 source 元数据提取 producer 标签（source 可能是对象或字符串）。

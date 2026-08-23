@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -230,6 +231,127 @@ test("session_logs：创建 session 即建立 1:1 log，事件指向该 log", as
     assert.equal(event.logId, "log:s1");
     const row = store.selectOne("SELECT log_id FROM session_events WHERE event_id = ?", ["e1"]);
     assert.equal(row.log_id, "log:s1");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("has_agent_message migration is retryable and removes JSON from hot cursor reads", async () => {
+  const { store, directory } = await createStore();
+  const dbPath = join(directory, "corptie.sqlite");
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    store.appendSessionEvent({
+      eventId: "completion",
+      sessionId: "s1",
+      type: "AgentTurnCompleted",
+      payload: { hasAgentMessage: true, text: "sensitive message that must not enter metrics" }
+    });
+    store.db.run("UPDATE session_events SET has_agent_message = 0");
+    store.db.run("DELETE FROM data_migrations WHERE migration_id = ?", ["session-events-has-agent-message-v1"]);
+    await store.close();
+
+    const reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await reopened.initialize();
+    assert.equal(reopened.selectOne(
+      "SELECT has_agent_message FROM session_events WHERE event_id = ?",
+      ["completion"]
+    ).has_agent_message, 1);
+    assert.equal(reopened.lastAgentMessageSequence("s1"), 1);
+
+    const originalSelectAll = reopened.selectAll.bind(reopened);
+    const sql = [];
+    reopened.selectAll = (statement, params = []) => {
+      sql.push(statement);
+      return originalSelectAll(statement, params);
+    };
+    reopened.listSessionMessageCursors();
+    assert.doesNotMatch(sql.join("\n"), /json_extract/i);
+    assert.match(sql.join("\n"), /has_agent_message/);
+    await reopened.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy schema receives a verified local backup before adding the cursor column", async () => {
+  const { store, directory } = await createStore();
+  const dbPath = join(directory, "corptie.sqlite");
+  try {
+    await store.close();
+    const legacy = new DatabaseSync(dbPath);
+    legacy.exec(`
+      DROP INDEX IF EXISTS idx_session_events_agent_message;
+      DROP TRIGGER IF EXISTS state_sync_session_events_agent_message_insert;
+      DELETE FROM data_migrations WHERE migration_id = 'session-events-has-agent-message-v1';
+      ALTER TABLE session_events DROP COLUMN has_agent_message;
+    `);
+    legacy.close();
+
+    const migrated = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await migrated.initialize();
+    assert.ok(migrated.performanceMigrationBackupPath);
+    await access(migrated.performanceMigrationBackupPath);
+    assert.ok(migrated.selectAll("PRAGMA table_info(session_events)")
+      .some((column) => column.name === "has_agent_message"));
+    const backupReader = new DatabaseSync(migrated.performanceMigrationBackupPath, { readOnly: true });
+    assert.equal(backupReader.prepare("PRAGMA quick_check").get().quick_check, "ok");
+    assert.equal(backupReader.prepare("PRAGMA table_info(session_events)").all()
+      .some((column) => column.name === "has_agent_message"), false);
+    backupReader.close();
+    await migrated.close();
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("sequence history pages are latest-first windows returned ascending without overlap", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({ id: "paged", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    for (let sequence = 1; sequence <= 520; sequence += 1) {
+      store.appendSessionEvent({
+        eventId: `event-${sequence}`,
+        sessionId: "paged",
+        type: "tool/call",
+        payload: { sequence }
+      });
+    }
+    const latest = store.listSessionEventPage("paged", { limit: 200 });
+    const prior = store.listSessionEventPage("paged", { beforeSequence: latest[0].sequence, limit: 200 });
+    const oldest = store.listSessionEventPage("paged", { beforeSequence: prior[0].sequence, limit: 200 });
+    assert.deepEqual([latest[0].sequence, latest.at(-1).sequence], [321, 520]);
+    assert.deepEqual([prior[0].sequence, prior.at(-1).sequence], [121, 320]);
+    assert.deepEqual([oldest[0].sequence, oldest.at(-1).sequence], [1, 120]);
+    const sequences = [...oldest, ...prior, ...latest].map((event) => event.sequence);
+    assert.equal(new Set(sequences).size, 520);
+    assert.deepEqual(sequences, sequences.toSorted((left, right) => left - right));
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("query observability aggregates safe fingerprints and iterate releases on early exit", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.selectOne("SELECT 'private-message' AS value, ? AS parameter", ["secret-payload"]);
+    store.selectOne("SELECT 'another-message' AS value, ? AS parameter", ["different-secret"]);
+    let visited = 0;
+    for (const _row of store.iterate("SELECT name FROM sqlite_master ORDER BY name LIMIT 100")) {
+      visited += 1;
+      break;
+    }
+    assert.equal(visited, 1);
+    const snapshot = store.queryMetrics({ limit: 1000 });
+    const metric = snapshot.queries.find((entry) => entry.normalizedSql === "select ? as value, ? as parameter");
+    assert.equal(metric.calls, 2);
+    assert.equal(metric.totalRows, 2);
+    assert.ok(snapshot.queries.some((entry) => entry.operation === "iterate" && entry.totalRows === 1));
+    const serialized = JSON.stringify(snapshot);
+    assert.doesNotMatch(serialized, /private-message|another-message|secret-payload|different-secret/);
+    assert.equal(typeof snapshot.eventLoopDelayMilliseconds.p95, "number");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

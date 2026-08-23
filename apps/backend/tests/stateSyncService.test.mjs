@@ -133,3 +133,58 @@ test("upsert missing from provider-memory snapshot is skipped, not deleted", () 
   assert.deepEqual(changes.deletes.sessions, []);
   assert.deepEqual(changes.upserts.sessions, []);
 });
+
+test("optimized state sync builds one shared snapshot per revision", () => {
+  let revision = 9;
+  let projections = 0;
+  let changeQueries = 0;
+  const store = {
+    stateRevision: () => revision,
+    oldestStateChangeRevision: () => 9,
+    stateChangesAfter: () => {
+      changeQueries += 1;
+      return [{ revision, entityType: "session", entityId: "s1", operation: "upsert" }];
+    }
+  };
+  const service = new StateSyncService({
+    store,
+    snapshot: () => {
+      projections += 1;
+      return { sessions: [{ id: "s1", status: "running" }] };
+    }
+  });
+
+  const firstClient = service.snapshot();
+  const secondClient = service.snapshot();
+  assert.equal(firstClient, secondClient, "new clients share the immutable wire snapshot");
+  assert.equal(projections, 1);
+
+  assert.deepEqual(service.changesAfter(9).upserts.sessions, []);
+  assert.equal(changeQueries, 0, "unchanged revisions never query entities or the replay log");
+
+  revision = 10;
+  service.changesAfter(9);
+  service.changesAfter(9);
+  assert.equal(projections, 2, "all clients targeting revision 10 reuse one projection");
+  assert.equal(service.diagnostics().snapshotBuilds, 2);
+});
+
+test("state sync compatibility switch retains the uncached projection path", () => {
+  let projections = 0;
+  const service = new StateSyncService({
+    store: {
+      stateRevision: () => 2,
+      oldestStateChangeRevision: () => 2,
+      stateChangesAfter: () => []
+    },
+    snapshot: () => {
+      projections += 1;
+      return {};
+    },
+    optimized: false
+  });
+  service.snapshot();
+  service.snapshot();
+  assert.equal(projections, 2);
+  assert.equal(service.diagnostics().optimized, false);
+});
