@@ -34,6 +34,14 @@ enum WorktreeListLoadState: Equatable {
     case failed(String)
 }
 
+enum WorktreeJobPollingPolicy {
+    static let maximumUnchangedPolls = 720
+
+    static func delaySeconds(afterUnchangedPolls count: Int) -> Double {
+        min(5.0, 1.0 + Double(max(0, count)) * 0.25)
+    }
+}
+
 struct WorktreeLoadMetrics: Equatable, Sendable {
     let repositoryId: String
     let repositoryListMilliseconds: Int
@@ -272,6 +280,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     let progress: WorktreeIntegrationProgress
     let audit: [WorktreeIntegrationAuditEvent]
     let conflictResolution: WorktreeConflictResolution?
+    let conflictAutomation: WorktreeConflictAutomation?
     let commitProtectionDecisions: [String: WorktreePersistedCommitProtectionDecision]?
 
     var currentConflictResolution: WorktreeConflictResolution? {
@@ -282,7 +291,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
 
     var isActive: Bool { ["queued", "running", "cancellation_requested", "replanning"].contains(status) }
     var shouldPoll: Bool {
-        isActive || ["running", "failed"].contains(currentConflictResolution?.status ?? "")
+        isActive || currentConflictResolution?.status == "running"
     }
     var requiresPlanRegeneration: Bool {
         let code = audit.last(where: { $0.code != nil })?.code
@@ -295,6 +304,19 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
     var hasMergeConflict: Bool {
         status == "paused" && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
     }
+}
+
+struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {
+    let status: String
+    let scopeWorktreeIds: [String]
+    let completedWorktreeIds: [String]
+    let currentWorktreeId: String?
+    let blockedWorktreeId: String?
+    let conflictFiles: [String]
+    let failureCode: String?
+    let failureReason: String?
+    let startedAt: String?
+    let completedAt: String?
 }
 
 enum WorktreeIntegrationRecoveryPolicy {

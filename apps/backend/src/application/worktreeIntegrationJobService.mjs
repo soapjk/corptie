@@ -519,6 +519,29 @@ export class WorktreeIntegrationJobService {
           409
         );
       }
+      const previousAutomation = job.details.conflictAutomation;
+      if (previousAutomation?.status !== "running") {
+        job = this.#update(job, {
+          details: {
+            ...job.details,
+            conflictAutomation: {
+              status: "running",
+              scopeWorktreeIds: previousAutomation?.scopeWorktreeIds ?? [...job.details.plan.mergeOrder],
+              completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
+              currentWorktreeId: item.worktreeId,
+              blockedWorktreeId: null,
+              conflictFiles: [...(item.conflictFiles ?? [])],
+              failureCode: null,
+              failureReason: null,
+              startedAt: previousAutomation?.startedAt ?? new Date().toISOString()
+            }
+          },
+          auditEvent: previousAutomation?.status === "blocked"
+            ? "conflict_automation_retried"
+            : "conflict_automation_started",
+          auditData: { worktreeId: item.worktreeId }
+        });
+      }
       const sourceHead = item.commitHead ?? item.sourceHeadBefore;
       const expectedMainHead = expectedMainHeadBefore(job.details.plan, item.worktreeId);
       const conflictKey = conflictResolutionKey(job, item, sourceHead, expectedMainHead);
@@ -527,6 +550,14 @@ export class WorktreeIntegrationJobService {
         job = this.#update(job, {
           details: withoutConflictResolution(job.details),
           auditEvent: "stale_conflict_resolution_cleared",
+          auditData: { worktreeId: item.worktreeId }
+        });
+        resolution = null;
+      }
+      if (resolution?.status === "failed") {
+        job = this.#update(job, {
+          details: withoutConflictResolution(job.details),
+          auditEvent: "failed_conflict_resolution_cleared",
           auditData: { worktreeId: item.worktreeId }
         });
         resolution = null;
@@ -550,7 +581,8 @@ export class WorktreeIntegrationJobService {
             });
             break;
           } catch (error) {
-            if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+            if (!isRecoverableConflictFallbackError(error)) throw error;
+            if (attempt + 1 >= this.maxConflictFallbackAttempts) {
               throw conflictFallbackFailure(error, failureStage, attempt + 1);
             }
             job = this.#update(job, {
@@ -625,7 +657,8 @@ export class WorktreeIntegrationJobService {
           });
           break;
         } catch (error) {
-          if (!isRecoverableConflictFallbackError(error) || attempt + 1 >= this.maxConflictFallbackAttempts) {
+          if (!isRecoverableConflictFallbackError(error)) throw error;
+          if (attempt + 1 >= this.maxConflictFallbackAttempts) {
             throw conflictFallbackFailure(error, failureStage, attempt + 1);
           }
           job = this.#update(job, {
@@ -671,23 +704,28 @@ export class WorktreeIntegrationJobService {
       }));
     } catch (error) {
       const job = this.store.getWorktreeIntegrationJob(key);
-      if (job?.details?.conflictResolution?.workspace && !job.details.conflictResolution?.sessionId) {
+      if (job) {
+        const item = job.details.plan.items.find((candidate) => candidate.worktreeId === job.details.currentWorktreeId);
+        const existingResolution = job.details.conflictResolution;
         this.#update(job, {
           status: "paused",
           phase: "conflict",
           error: error.message,
           details: {
             ...job.details,
-            conflictResolution: { ...job.details.conflictResolution, status: "failed" }
+            ...(existingResolution?.workspace && !existingResolution.sessionId ? {
+              conflictResolution: { ...existingResolution, status: "failed" }
+            } : {}),
+            conflictAutomation: blockedConflictAutomation(job, item, error)
           },
           auditEvent: "conflict_agent_failed",
           auditData: {
             code: error.code ?? "CONFLICT_AGENT_FAILED",
             failureStage: error.failureStage ?? failureStage,
             retryCount: error.retryCount ?? retryCount,
-            sessionName: job.details.conflictResolution.sessionName ?? null,
-            branchName: job.details.conflictResolution.workspace.branchName,
-            worktreePath: job.details.conflictResolution.workspace.path
+            sessionName: existingResolution?.sessionName ?? null,
+            branchName: item?.branchName ?? null,
+            worktreePath: item?.path ?? null
           }
         });
       }
@@ -700,6 +738,14 @@ export class WorktreeIntegrationJobService {
     for (const job of jobs) {
       if (["cancellation_requested", "replanning"].includes(job.status)) {
         await this.#finishCancellation(job, { replan: job.details.replanAfterCancel === true });
+        continue;
+      }
+      if (job.status === "paused" && job.details.conflictAutomation?.status === "running") {
+        const reconciled = this.#reconcileConflictResolution(job);
+        if (reconciled.status === "paused"
+          && ["conflict", "conflict_resolution_preparing"].includes(reconciled.phase)) {
+          this.#scheduleAutomaticConflictResolution(reconciled.id);
+        }
         continue;
       }
       this.#update(job, { status: "queued", phase: "recovery_queued", auditEvent: "backend_recovered" });
@@ -898,7 +944,11 @@ export class WorktreeIntegrationJobService {
             });
             return;
           }
-          this.#pause(job, error);
+          const paused = this.#pause(job, error);
+          if (error.code === "MERGE_CONFLICT"
+            && paused.details.conflictAutomation?.status === "running") {
+            this.#scheduleAutomaticConflictResolution(paused.id);
+          }
           return;
         }
         items = job.details.plan.items;
@@ -910,6 +960,20 @@ export class WorktreeIntegrationJobService {
         completedAt: new Date().toISOString(),
         error: null,
         currentWorktreeId: null,
+        details: job.details.conflictAutomation ? {
+          ...job.details,
+          conflictAutomation: {
+            ...job.details.conflictAutomation,
+            status: "completed",
+            completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
+            currentWorktreeId: null,
+            blockedWorktreeId: null,
+            conflictFiles: [],
+            failureCode: null,
+            failureReason: null,
+            completedAt: new Date().toISOString()
+          }
+        } : job.details,
         auditEvent: "execution_completed"
       });
     } catch (error) {
@@ -992,15 +1056,36 @@ export class WorktreeIntegrationJobService {
   }
 
   #pause(job, error) {
+    const currentItem = job.details.plan.items.find((item) => item.worktreeId === job.details.currentWorktreeId);
+    const automation = job.details.conflictAutomation;
+    const shouldBlockAutomation = automation?.status === "running" && error.code !== "MERGE_CONFLICT";
     const updated = this.#update(job, {
       status: "paused",
       phase: error.code === "MERGE_CONFLICT" ? "conflict" : "failed",
       error: error.message,
+      details: automation ? {
+        ...job.details,
+        conflictAutomation: shouldBlockAutomation
+          ? blockedConflictAutomation(job, currentItem, error)
+          : {
+              ...automation,
+              currentWorktreeId: currentItem?.worktreeId ?? null,
+              completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
+              conflictFiles: [...(currentItem?.conflictFiles ?? [])]
+            }
+      } : job.details,
       auditEvent: "execution_paused",
       auditData: { code: error.code ?? "INTEGRATION_FAILED" }
     });
     this.onEvent("WorktreeIntegrationJobPaused", { job: presentJob(updated) });
     return updated;
+  }
+
+  #scheduleAutomaticConflictResolution(jobId) {
+    setImmediate(() => this.resolveConflictWithAgent(jobId).catch(() => {
+      // #resolveConflictWithAgent persists a concrete blocked state. The UI
+      // obtains it through the existing job endpoint without an unhandled task.
+    }));
   }
 
   #item(job, worktreeId, patch, phase, event, { clearConflictResolution = false, auditData = {} } = {}) {
@@ -1062,7 +1147,16 @@ export class WorktreeIntegrationJobService {
       error: nextStatus === "failed" ? "The conflict-resolution Agent stopped before completing." : null,
       details: {
         ...job.details,
-        conflictResolution: { ...resolution, status: nextStatus, sessionStatus: session.status }
+        conflictResolution: { ...resolution, status: nextStatus, sessionStatus: session.status },
+        ...(nextStatus === "failed" && job.details.conflictAutomation ? {
+          conflictAutomation: blockedConflictAutomation(
+            job,
+            item,
+            Object.assign(new Error("The conflict-resolution Agent stopped before completing."), {
+              code: "CONFLICT_AGENT_STOPPED"
+            })
+          )
+        } : {})
       },
       auditEvent: nextStatus === "ready" ? "conflict_agent_completed" : "conflict_agent_stopped",
       auditData: {
@@ -1377,6 +1471,28 @@ function progressFor(items) {
   const mergeDone = mergeItems.filter((item) => ["not_needed", "completed", "already_integrated", "recovered"].includes(item.mergeStatus)).length;
   const total = items.length + mergeItems.length;
   return { completed: commitDone + mergeDone, total, fraction: total ? (commitDone + mergeDone) / total : 1 };
+}
+
+function completedMergeWorktreeIds(items) {
+  return items
+    .filter((item) => !item.isMain
+      && ["not_needed", "completed", "already_integrated", "recovered"].includes(item.mergeStatus))
+    .map((item) => item.worktreeId);
+}
+
+function blockedConflictAutomation(job, item, error) {
+  const automation = job.details.conflictAutomation ?? {};
+  return {
+    ...automation,
+    status: "blocked",
+    scopeWorktreeIds: automation.scopeWorktreeIds ?? [...(job.details.plan.mergeOrder ?? [])],
+    completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
+    currentWorktreeId: item?.worktreeId ?? job.details.currentWorktreeId ?? null,
+    blockedWorktreeId: item?.worktreeId ?? job.details.currentWorktreeId ?? null,
+    conflictFiles: [...(item?.conflictFiles ?? [])],
+    failureCode: error?.code ?? "CONFLICT_AGENT_FAILED",
+    failureReason: error?.message ?? "The conflict could not be resolved automatically."
+  };
 }
 
 function fingerprint(value) {

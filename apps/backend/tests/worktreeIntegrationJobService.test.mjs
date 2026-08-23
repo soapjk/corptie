@@ -69,7 +69,8 @@ function memoryFixture({
     getLatestWorktreeIntegrationJob: () => [...jobs.values()].at(-1) ?? null,
     getWorktreeIntegrationJob: (id) => jobs.get(id) ? structuredClone(jobs.get(id)) : null,
     listRecoverableWorktreeIntegrationJobs: () => [...jobs.values()].filter((job) =>
-      ["queued", "running", "cancellation_requested", "replanning"].includes(job.status)),
+      ["queued", "running", "cancellation_requested", "replanning"].includes(job.status)
+        || (job.status === "paused" && job.details.conflictAutomation?.status === "running")),
     createWorktreeIntegrationJob(input) {
       const now = new Date(Date.now() + sequence++).toISOString();
       const job = {
@@ -688,7 +689,7 @@ test("retry is rejected while the conflict Agent is still running", async () => 
   assert.equal(calls.filter((call) => call.startsWith("merge:")).length, 1);
 });
 
-test("successive conflicting Worktrees promote only their matching verified Agent result", async () => {
+test("one Agent trigger resolves successive conflicting Worktrees across the complete plan", async () => {
   const { service, calls } = memoryFixture({ conflictAttempts: [1, 1], mainDirty: false, featureDirty: false });
   const plan = await service.preflight("repository:1");
   await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
@@ -698,19 +699,13 @@ test("successive conflicting Worktrees promote only their matching verified Agen
   assert.equal(firstConflict.conflictResolution, undefined);
   const firstReady = await service.resolveConflictWithAgent(plan.id);
   assert.equal(firstReady.conflictResolution.worktreeId, "wt:feature");
-  assert.equal(service.get(plan.id).phase, "conflict_resolution_resume_queued");
-  const secondConflict = await waitForJobWhere(service, plan.id, (job) =>
-    job.status === "paused" && job.currentWorktreeId === "wt:feature-two");
-  assert.equal(secondConflict.plan.items.find((item) => item.worktreeId === "wt:feature").mergeStatus, "recovered");
-  assert.equal(secondConflict.plan.items.find((item) => item.worktreeId === "wt:feature-two").mergeStatus, "conflict");
-  assert.equal(secondConflict.conflictResolution, undefined);
-
-  const secondReady = await service.resolveConflictWithAgent(plan.id);
-  assert.equal(secondReady.conflictResolution.worktreeId, "wt:feature-two");
-  assert.notEqual(secondReady.conflictResolution.sessionId, firstReady.conflictResolution.sessionId);
+  assert.deepEqual(firstReady.conflictAutomation.scopeWorktreeIds, ["wt:feature", "wt:feature-two"]);
   assert.equal(service.get(plan.id).phase, "conflict_resolution_resume_queued");
   const completed = await waitForJob(service, plan.id, "completed");
   assert.equal(completed.conflictResolution, undefined);
+  assert.equal(completed.conflictAutomation.status, "completed");
+  assert.deepEqual(completed.conflictAutomation.completedWorktreeIds, ["wt:feature", "wt:feature-two"]);
+  assert.equal(calls.filter((call) => call.startsWith("launch-agent:")).length, 2);
   assert.equal(completed.plan.items.find((item) => item.worktreeId === "wt:feature-two").mergeStatus, "recovered");
   assert.equal(completed.audit.filter((entry) => entry.event === "conflict_resolution_verified").length, 2);
   assert.equal(completed.audit.filter((entry) =>
@@ -718,6 +713,37 @@ test("successive conflicting Worktrees promote only their matching verified Agen
   assert.equal(completed.audit.filter((entry) => entry.event === "retry_requested").length, 0);
   assert.equal(calls.includes("merge:integration:feature:1"), true);
   assert.equal(calls.includes("merge:integration:feature:2"), true);
+});
+
+test("a later automatic conflict blocker is explicit and retry skips already merged Worktrees", async () => {
+  const unavailable = new Error("No eligible Agent is bound to feature/two.");
+  unavailable.code = "CONFLICT_AGENT_UNAVAILABLE";
+  unavailable.recoverable = false;
+  const { service, calls } = memoryFixture({
+    conflictAttempts: [1, 1], mainDirty: false, featureDirty: false,
+    launchConflictErrors: [null, unavailable]
+  });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  await waitForJobWhere(service, plan.id, (job) =>
+    job.status === "paused" && job.currentWorktreeId === "wt:feature");
+
+  await service.resolveConflictWithAgent(plan.id);
+  const blocked = await waitForJobWhere(service, plan.id, (job) =>
+    job.conflictAutomation?.status === "blocked");
+
+  assert.equal(blocked.conflictAutomation.blockedWorktreeId, "wt:feature-two");
+  assert.deepEqual(blocked.conflictAutomation.conflictFiles, ["shared.txt"]);
+  assert.equal(blocked.conflictAutomation.failureCode, "CONFLICT_AGENT_UNAVAILABLE");
+  assert.match(blocked.conflictAutomation.failureReason, /feature\/two/);
+  assert.deepEqual(blocked.conflictAutomation.completedWorktreeIds, ["wt:feature"]);
+  assert.equal(calls.filter((call) => call === "merge:integration:feature:1").length, 1);
+
+  await service.resolveConflictWithAgent(plan.id);
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.conflictAutomation.status, "completed");
+  assert.equal(calls.filter((call) => call === "merge:integration:feature:1").length, 1);
+  assert.equal(calls.filter((call) => call === "launch-agent:wt:feature-two").length, 2);
 });
 
 test("an invalid Agent result stays paused and is never promoted into main", async () => {
@@ -1003,17 +1029,33 @@ test("integration job, per-item state, and audit survive Store restart", async (
     store.updateWorktreeIntegrationJob(stopping.id, {
       status: "cancellation_requested", phase: "stopping"
     });
+    const automatic = store.createWorktreeIntegrationJob({
+      repositoryId: "repository:1", planFingerprint: "automatic-fingerprint",
+      details: {
+        plan: { items: [{ worktreeId: "wt:2", mergeStatus: "conflict" }] },
+        conflictAutomation: {
+          status: "running", scopeWorktreeIds: ["wt:2"], completedWorktreeIds: [],
+          currentWorktreeId: "wt:2", blockedWorktreeId: null,
+          conflictFiles: ["shared.swift"], failureCode: null, failureReason: null
+        },
+        audit: [{ event: "conflict_automation_started" }]
+      }
+    });
+    store.updateWorktreeIntegrationJob(automatic.id, { status: "paused", phase: "conflict" });
     await store.close();
 
     store = new CorptieStore({ dbPath });
     await store.initialize();
     const recovered = store.listRecoverableWorktreeIntegrationJobs();
-    assert.equal(recovered.length, 2);
+    assert.equal(recovered.length, 3);
     const recoveredQueued = recovered.find((job) => job.id === created.id);
     const recoveredStopping = recovered.find((job) => job.id === stopping.id);
+    const recoveredAutomatic = recovered.find((job) => job.id === automatic.id);
     assert.equal(recoveredQueued.details.plan.items[0].mergeStatus, "conflict");
     assert.deepEqual(recoveredQueued.details.audit, [{ event: "paused" }]);
     assert.equal(recoveredStopping.details.replanAfterCancel, true);
+    assert.equal(recoveredAutomatic.details.conflictAutomation.status, "running");
+    assert.deepEqual(recoveredAutomatic.details.conflictAutomation.conflictFiles, ["shared.swift"]);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
