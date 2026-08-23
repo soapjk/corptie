@@ -778,6 +778,11 @@ struct WorkItemDetailView: View {
     @State private var isLoadingWorktree = false
     @State private var isReclaimingWorktree = false
     @State private var showReclaimConfirmation = false
+    @State private var deletionPlan: WorkItemDeletionPlan?
+    @State private var showDeletion = false
+    @State private var isInspectingDeletion = false
+    @State private var isDeletingWorkItem = false
+    @State private var deletionFeedback: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -898,11 +903,12 @@ struct WorkItemDetailView: View {
         }
         .sheet(isPresented: $showWorkspaceBind) {
             WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
-                Task {
-                    await client.updateWorkItem(workItemId: workItem.id, mainWorkspaceId: bindWorkspaceId)
-                    await refreshExecution()
-                    onRequestReload()
+                guard await client.updateWorkItem(workItemId: workItem.id, mainWorkspaceId: bindWorkspaceId) != nil else {
+                    return false
                 }
+                await refreshExecution()
+                onRequestReload()
+                return true
             }
         }
         .confirmationDialog(
@@ -916,6 +922,34 @@ struct WorkItemDetailView: View {
             Button(L10n("Cancel"), role: .cancel) {}
         } message: {
             Text(L10n("The merged Worktree and its local branch will be removed. Session history will be archived and preserved."))
+        }
+        .sheet(isPresented: $showDeletion) {
+            if let deletionPlan {
+                WorkItemDeletionConfirmationView(
+                    workItem: workItem,
+                    plan: deletionPlan,
+                    isDeleting: isDeletingWorkItem,
+                    onCancel: { showDeletion = false },
+                    onMergeFirst: {
+                        showDeletion = false
+                        deletionFeedback = L10nFormat(
+                            "WorkItem 未删除。请先在项目 Worktree 管理中将分支 %@ 合并到目标主分支，确认无待提交文件后再重试删除。",
+                            deletionPlan.worktree?.branchName ?? ""
+                        )
+                    },
+                    onDelete: { force, branch in
+                        Task { await deleteWorkItem(force: force, branch: branch) }
+                    }
+                )
+            }
+        }
+        .alert(L10n("WorkItem 删除"), isPresented: Binding(
+            get: { deletionFeedback != nil },
+            set: { if !$0 { deletionFeedback = nil } }
+        )) {
+            Button(L10n("好"), role: .cancel) { deletionFeedback = nil }
+        } message: {
+            Text(deletionFeedback ?? "")
         }
     }
 
@@ -937,6 +971,20 @@ struct WorkItemDetailView: View {
             }
             .buttonStyle(.plain)
             .help(L10n("编辑工作项"))
+            Button(role: .destructive) {
+                Task { await prepareDeletion() }
+            } label: {
+                if isInspectingDeletion {
+                    ProgressView().controlSize(.small).frame(width: 24, height: 24)
+                } else {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 24, height: 24)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isInspectingDeletion || isDeletingWorkItem)
+            .help(L10n("删除 WorkItem"))
         }
         .padding(.leading, 14)
         .padding(.trailing, 10)
@@ -1279,6 +1327,32 @@ struct WorkItemDetailView: View {
         }
     }
 
+    private func prepareDeletion() async {
+        guard !isInspectingDeletion else { return }
+        isInspectingDeletion = true
+        defer { isInspectingDeletion = false }
+        guard let plan = await client.inspectWorkItemDeletion(workItemId: workItem.id) else {
+            deletionFeedback = client.errorMessage ?? L10n("无法检查 WorkItem 的关联资源。")
+            return
+        }
+        deletionPlan = plan
+        showDeletion = true
+    }
+
+    private func deleteWorkItem(force: Bool, branch: String?) async {
+        guard !isDeletingWorkItem else { return }
+        isDeletingWorkItem = true
+        defer { isDeletingWorkItem = false }
+        if await client.deleteWorkItem(workItemId: workItem.id, force: force, confirmedBranchName: branch) {
+            showDeletion = false
+            onRequestReload()
+            deletionFeedback = L10nFormat("WorkItem“%@”已删除。", workItem.title)
+        } else {
+            deletionFeedback = client.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。")
+            deletionPlan = await client.inspectWorkItemDeletion(workItemId: workItem.id) ?? deletionPlan
+        }
+    }
+
     // 执行/终止/确认完成控制按钮：圆形、仅图标。
     // - 已完成 → 不显示控制按钮，完成状态由概览区的状态徽标表达。
     // - 待确认完成（review）→ 绿色对勾按钮，点击弹确认框，确认后变已完成。
@@ -1488,6 +1562,94 @@ struct WorkItemDetailView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(Color.primary.opacity(0.045), in: Capsule())
+    }
+}
+
+private struct WorkItemDeletionConfirmationView: View {
+    let workItem: WorkItem
+    let plan: WorkItemDeletionPlan
+    let isDeleting: Bool
+    let onCancel: () -> Void
+    let onMergeFirst: () -> Void
+    let onDelete: (_ force: Bool, _ branch: String?) -> Void
+
+    @State private var showForceConfirmation = false
+    @State private var confirmedBranch = ""
+    @State private var acknowledgesDataLoss = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(
+                showForceConfirmation ? L10n("二次确认强制删除") : L10n("删除 WorkItem"),
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(showForceConfirmation ? Color.red : Color.primary)
+
+            Text(workItem.title).font(.headline)
+
+            if let worktree = plan.worktree {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(L10n("关联的专属 Worktree")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(worktree.path).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                    Text(worktree.branchName ?? L10n("未知分支")).font(.system(.caption, design: .monospaced))
+                }
+                .padding(10)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                Text(L10n("此 WorkItem 没有关联专属 Worktree；不会执行 Worktree 或分支清理。"))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+
+            if !plan.blockers.isEmpty {
+                riskList(title: L10n("当前无法安全删除"), risks: plan.blockers, color: .red)
+            }
+            if !plan.risks.isEmpty {
+                riskList(title: L10n("可能丢失的内容"), risks: plan.risks, color: .orange)
+            }
+
+            if showForceConfirmation {
+                Text(L10n("强制删除将永久丢弃上述未提交修改、未跟踪文件和未合并提交，且无法从 Corptie 恢复。"))
+                    .font(.callout.weight(.semibold)).foregroundStyle(.red)
+                TextField(L10n("输入完整分支名以确认"), text: $confirmedBranch)
+                    .textFieldStyle(.roundedBorder)
+                Toggle(L10n("我理解这些内容可能永久丢失"), isOn: $acknowledgesDataLoss)
+            }
+
+            HStack {
+                if isDeleting { ProgressView().controlSize(.small) }
+                Spacer()
+                Button(L10n("取消"), role: .cancel, action: onCancel).disabled(isDeleting)
+                if !showForceConfirmation, !plan.risks.isEmpty, plan.blockers.isEmpty {
+                    Button(L10n("先合并"), action: onMergeFirst).disabled(isDeleting)
+                    Button(L10n("强制删除"), role: .destructive) { showForceConfirmation = true }.disabled(isDeleting)
+                } else if showForceConfirmation {
+                    Button(L10n("确认强制删除"), role: .destructive) {
+                        onDelete(true, confirmedBranch)
+                    }
+                    .disabled(isDeleting || !acknowledgesDataLoss || confirmedBranch != plan.worktree?.branchName)
+                } else if plan.blockers.isEmpty {
+                    Button(L10n("确认删除"), role: .destructive) { onDelete(false, nil) }.disabled(isDeleting)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+
+    private func riskList(title: String, risks: [WorkItemDeletionRisk], color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(color)
+            ForEach(risks) { risk in
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(risk.message, systemImage: "exclamationmark.circle")
+                    ForEach((risk.files ?? []).prefix(8), id: \.self) { file in
+                        Text(file).font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+                .font(.callout)
+            }
+        }
     }
 }
 

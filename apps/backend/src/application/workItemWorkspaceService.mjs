@@ -9,6 +9,7 @@ export class WorkItemWorkspaceService {
     this.inspectProject = options.inspectProject;
     this.ensureWorktree = options.ensureWorktree;
     this.restoreMissingWorktree = options.restoreMissingWorktree;
+    this.accessWorkspace = options.accessWorkspace ?? ((path) => access(path, constants.R_OK | constants.W_OK));
     for (const method of ["requireProject", "inspectProject", "ensureWorktree", "restoreMissingWorktree"]) {
       if (typeof this[method] !== "function") {
         throw new TypeError(`WorkItemWorkspaceService requires ${method}().`);
@@ -25,7 +26,18 @@ export class WorkItemWorkspaceService {
       : "";
     if (!repositoryId) throw workspaceRequiredError();
 
-    const project = await this.requireProject(repositoryId);
+    let project;
+    try {
+      project = await this.requireProject(repositoryId);
+    } catch (error) {
+      if (error?.code !== "PROJECT_NOT_FOUND") throw error;
+      throw workspaceBindingInvalidError(repositoryId);
+    }
+    try {
+      await this.accessWorkspace(project.mainPath);
+    } catch (error) {
+      throw workspaceUnavailableError(project.mainPath, error);
+    }
 
     // The ensure operation independently validates repository identity, main
     // Worktree availability, deterministic branch/path collisions, and the
@@ -90,3 +102,20 @@ function workspaceRequiredError() {
   error.statusCode = 409;
   return error;
 }
+
+function workspaceBindingInvalidError(repositoryId) {
+  const error = new Error(`已绑定的 Workspace 记录 ${repositoryId} 已失效。请重新绑定一个已登记的 Git 仓库。`);
+  error.code = "WORKSPACE_BINDING_INVALID";
+  error.statusCode = 409;
+  return error;
+}
+
+function workspaceUnavailableError(path, cause) {
+  const error = new Error(`已绑定的 Workspace 当前不可访问：${path}。请检查目录、磁盘挂载和读写权限后重试。`);
+  error.code = "WORKSPACE_UNAVAILABLE";
+  error.statusCode = 409;
+  error.cause = cause;
+  return error;
+}
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";

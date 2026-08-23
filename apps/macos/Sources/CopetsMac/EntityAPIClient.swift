@@ -225,6 +225,55 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: WorkItem.self)
     }
 
+    func inspectWorkItemDeletion(workItemId: String) async -> WorkItemDeletionPlan? {
+        let url = baseURL.appending(path: "work-items/\(workItemId)/deletion")
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(message: envelope?.error ?? L10n("Unable to inspect WorkItem deletion."), code: envelope?.code)
+            }
+            let plan = try decoder.decode(WorkItemDeletionPlan.self, from: data)
+            errorMessage = nil
+            return plan
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return nil
+        }
+    }
+
+    func deleteWorkItem(
+        workItemId: String,
+        force: Bool = false,
+        confirmedBranchName: String? = nil
+    ) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "work-items/\(workItemId)/actions/delete"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = ["mode": force ? "force" : "safe"]
+        if force {
+            body["acknowledgeDataLoss"] = true
+            body["confirmedBranchName"] = confirmedBranchName ?? ""
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(message: envelope?.error ?? L10n("Unable to delete WorkItem."), code: envelope?.code)
+            }
+            let result = try decoder.decode(WorkItemDeletionResult.self, from: data)
+            guard result.ok else { throw EntityLaunchError(message: L10n("WorkItem deletion did not complete."), code: "DELETE_INCOMPLETE") }
+            await AppStateSyncController.shared.refreshSnapshot()
+            if let syncError = appState.syncError { throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED") }
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return false
+        }
+    }
+
     // 用户在确认界面作出的最终裁决。通用 PATCH status=done 仍保留证据门禁，
     // 防止 Agent 或后台流程把普通状态更新冒充为用户确认。
     @discardableResult
@@ -963,6 +1012,12 @@ final class EntityAPIClient: ObservableObject {
                 return nil
             }
             let value = try decoder.decode(type, from: data)
+            // Apply a successful WorkItem mutation before the follow-up snapshot.
+            // This is the command's read-your-write boundary: a bind-then-start
+            // action in the same UI turn must not keep using the stale nil binding.
+            if let workItem = value as? WorkItem {
+                appState.acceptWorkItem(workItem)
+            }
             await AppStateSyncController.shared.refreshSnapshot()
             errorMessage = nil
             return value

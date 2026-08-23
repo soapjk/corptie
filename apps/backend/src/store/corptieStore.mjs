@@ -1601,6 +1601,9 @@ export class CorptieStore {
     this.ensureColumn("work_items", "start_worktree_id", "TEXT");
     this.ensureColumn("work_items", "start_worktree_path", "TEXT");
     this.ensureColumn("work_items", "start_worktree_branch", "TEXT");
+    this.ensureColumn("work_items", "deletion_status", "TEXT");
+    this.ensureColumn("work_items", "deletion_error", "TEXT");
+    this.ensureColumn("work_items", "deletion_worktree_removed_at", "TEXT");
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_session_idempotency
       ON work_items(created_by_session_id, idempotency_key)
       WHERE created_by_session_id IS NOT NULL AND idempotency_key IS NOT NULL`);
@@ -6560,6 +6563,57 @@ export class CorptieStore {
   deleteWorkItem(id) {
     this.db.run(`DELETE FROM work_items WHERE id = ?`, [id]);
     this.scheduleSave();
+  }
+
+  markWorkItemDeletion(id, status, error = null) {
+    this.db.run(
+      `UPDATE work_items SET deletion_status=?, deletion_error=?, updated_at=? WHERE id=?`,
+      [status, error, createdAtFromOrNow(), id]
+    );
+    this.scheduleSave();
+  }
+
+  markWorkItemWorktreeRemoved(id) {
+    const timestamp = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE work_items SET deletion_status='deleting', deletion_error=NULL,
+       deletion_worktree_removed_at=COALESCE(deletion_worktree_removed_at, ?), updated_at=? WHERE id=?`,
+      [timestamp, timestamp, id]
+    );
+    this.scheduleSave();
+  }
+
+  finalizeWorkItemDeletion(id) {
+    const item = this.getWorkItem(id);
+    if (!item) return { alreadyDeleted: true };
+    const sessions = this.selectAll("SELECT id FROM sessions WHERE work_item_id=?", [id]);
+    const collaborationTasks = this.selectAll(
+      "SELECT task_id FROM collaboration_tasks WHERE source_work_item_id=? OR work_item_id=?",
+      [id, id]
+    );
+    this.runInTransaction(() => {
+      // Session history is user data, not a disposable WorkItem resource. Keep it
+      // archived and detach only the exclusive WorkItem ownership reference.
+      this.db.run(
+        `UPDATE sessions SET work_item_id=NULL, archived=1, updated_at=? WHERE work_item_id=?`,
+        [createdAtFromOrNow(), id]
+      );
+      // Collaboration records and integration history are shared audit data.
+      // Preserve them while removing their live ownership references.
+      this.db.run(
+        `UPDATE collaboration_messages SET source_work_item_id=NULL WHERE source_work_item_id=?`, [id]
+      );
+      this.db.run(`UPDATE collaboration_messages SET work_item_id=NULL WHERE work_item_id=?`, [id]);
+      this.db.run(`UPDATE collaboration_tasks SET source_work_item_id=NULL WHERE source_work_item_id=?`, [id]);
+      this.db.run(`UPDATE collaboration_tasks SET work_item_id=NULL WHERE work_item_id=?`, [id]);
+      this.db.run(`UPDATE project_integration_runs SET conflict_work_item_id=NULL WHERE conflict_work_item_id=?`, [id]);
+      this.db.run(`DELETE FROM work_items WHERE id=?`, [id]);
+    });
+    this.scheduleSave();
+    return {
+      archivedSessionIds: sessions.map((row) => row.id),
+      preservedCollaborationTaskIds: collaborationTasks.map((row) => row.task_id)
+    };
   }
 
   addWorkItemDependency(workItemId, targetWorkItemId, type = "depends_on") {

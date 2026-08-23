@@ -32,6 +32,8 @@ export function handleEntityHttpRequest({
   skillRegistryService,
   inspectWorkItemWorktree,
   reclaimWorkItemWorktree,
+  inspectWorkItemDeletion,
+  deleteWorkItemSafely,
   restoreWorkItemExecution,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
@@ -635,9 +637,23 @@ export function handleEntityHttpRequest({
           );
         }
         if (request.method === "DELETE") {
-          objectiveService.deleteWorkItem(id);
-          return sendJson(response, 200, { ok: true });
+          if (typeof deleteWorkItemSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe WorkItem deletion is unavailable.", 503);
+          return sendJson(response, 200, await deleteWorkItemSafely(id, await readJson(request)));
         }
+      }
+
+      const workItemDeletionMatch = path.match(/^\/work-items\/([^/]+)\/deletion$/);
+      if (request.method === "GET" && workItemDeletionMatch) {
+        if (typeof inspectWorkItemDeletion !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem deletion inspection is unavailable.", 503);
+        return sendJson(response, 200, await inspectWorkItemDeletion(decodeURIComponent(workItemDeletionMatch[1])));
+      }
+
+      const deleteWorkItemMatch = path.match(/^\/work-items\/([^/]+)\/actions\/delete$/);
+      if (request.method === "POST" && deleteWorkItemMatch) {
+        if (typeof deleteWorkItemSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe WorkItem deletion is unavailable.", 503);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["mode", "acknowledgeDataLoss", "confirmedBranchName"]));
+        return sendJson(response, 200, await deleteWorkItemSafely(decodeURIComponent(deleteWorkItemMatch[1]), input));
       }
 
       const acceptanceAssessmentMatch = path.match(/^\/work-items\/([^/]+)\/acceptance-assessment$/);
@@ -891,7 +907,8 @@ export function handleEntityHttpRequest({
         ...(Array.isArray(error.candidates) ? { candidates: error.candidates } : {}),
         ...(error.impact && typeof error.impact === "object" ? { impact: error.impact } : {}),
         ...(error.operation && typeof error.operation === "object" ? { operation: error.operation } : {}),
-        ...(error.receipt && typeof error.receipt === "object" ? { receipt: error.receipt } : {})
+        ...(error.receipt && typeof error.receipt === "object" ? { receipt: error.receipt } : {}),
+        ...(error.deletion && typeof error.deletion === "object" ? { deletion: error.deletion } : {})
       });
     });
 

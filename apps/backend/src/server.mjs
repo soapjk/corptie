@@ -65,6 +65,7 @@ import {
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
 import { WorkItemStartService } from "./application/workItemStartService.mjs";
+import { WorkItemDeletionService } from "./application/workItemDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -974,6 +975,12 @@ const workItemWorkspaceService = new WorkItemWorkspaceService({
   inspectProject: (mainPath, repositoryId) => gitWorkspaces.projectStatusForPath(mainPath, repositoryId),
   ensureWorktree: (input) => gitWorkspaces.ensureWorkItemWorktreeForProject(input),
   restoreMissingWorktree: (input) => gitWorkspaces.restoreMissingWorktree(input)
+});
+const workItemDeletionService = new WorkItemDeletionService({
+  store,
+  inspectWorktree: (workItemId) => inspectWorkItemWorktree(workItemId),
+  removeWorktree: (input) => removeWorkItemDeletionWorktree(input),
+  onChanged: (type, payload) => emitEvent(type, payload)
 });
 workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
   getWorkItem: (workItemId) => store.getWorkItem(workItemId),
@@ -6335,7 +6342,33 @@ async function inspectWorkItemWorktree(workItemId) {
     ?? sessions.at(-1)
     ?? null;
   if (!session) {
-    return { status: "none", sessionId: null, worktree: null, canReclaim: false, blocker: "NO_WORK_SESSION" };
+    if (!workItem.main_workspace_id) {
+      return { status: "none", sessionId: null, worktree: null, canReclaim: false, blocker: null };
+    }
+    try {
+      const project = await projectApplicationService.requireProject(workItem.main_workspace_id);
+      const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
+      const expectedBranch = workItem.start_worktree_branch
+        ?? `workitem/${String(workItem.id).includes(":") ? String(workItem.id).split(":").at(-1) : workItem.id}`;
+      const worktree = status.worktrees.find((candidate) =>
+        candidate.isMain !== true && (
+          candidate.worktreeId === workItem.start_worktree_id || candidate.branchName === expectedBranch
+        )
+      ) ?? null;
+      if (!worktree) return { status: "none", sessionId: null, repositoryId: status.repositoryId, worktree: null, canReclaim: false, blocker: null };
+      return {
+        status: worktree.availability === "available" ? "available" : "unavailable",
+        sessionId: null,
+        repositoryId: status.repositoryId,
+        worktree,
+        canReclaim: false,
+        blocker: worktree.availability === "available"
+          ? (worktree.isMain ? "MAIN_WORKTREE" : (worktree.dirty ? "UNCOMMITTED_CHANGES" : (worktree.mergedIntoMain === true ? null : "NOT_MERGED_INTO_MAIN")))
+          : "WORKTREE_UNAVAILABLE"
+      };
+    } catch (error) {
+      return { status: "unavailable", sessionId: null, worktree: null, canReclaim: false, blocker: "WORKTREE_UNAVAILABLE", detail: error.message };
+    }
   }
   const logical = store.getLogicalSessionByLegacySessionId(session.id);
   if (!logical?.activeBinding) {
@@ -6392,6 +6425,29 @@ async function inspectWorkItemWorktree(workItemId) {
     canReclaim: blocker == null,
     blocker
   };
+}
+
+async function removeWorkItemDeletionWorktree({ inspection, force, confirmedBranchName }) {
+  const worktree = inspection.worktree;
+  const project = await projectApplicationService.requireProject(inspection.repositoryId);
+  const logicalSessionIds = (worktree.sessions ?? []).map((item) => item.logicalSessionId);
+  const cleanup = await gitWorkspaces.removeWorktreeForProject({
+    repositoryId: inspection.repositoryId,
+    workingDirectory: project.mainPath,
+    sourceWorktreeId: worktree.worktreeId,
+    ignoreLogicalSessionIds: logicalSessionIds,
+    deleteBranch: true,
+    forceDeleteUnmerged: force,
+    acknowledgeIrrecoverable: force,
+    confirmedBranchName
+  });
+  for (const logicalSessionId of logicalSessionIds) {
+    const route = store.getLogicalSession(logicalSessionId);
+    if (route?.activeWorkspaceId === worktree.worktreeId) {
+      store.retireLogicalSessionWorkspace(logicalSessionId, worktree.worktreeId);
+    }
+  }
+  return cleanup;
 }
 
 async function reclaimWorkItemWorktree(workItemId) {
@@ -6861,6 +6917,8 @@ function route(request, response) {
     skillRegistryService,
     inspectWorkItemWorktree,
     reclaimWorkItemWorktree,
+    inspectWorkItemDeletion: (workItemId) => workItemDeletionService.inspect(workItemId),
+    deleteWorkItemSafely: (workItemId, input) => workItemDeletionService.delete(workItemId, input),
     restoreWorkItemExecution: (workItemId) => workItemExecutionOrchestrator.restore(workItemId),
     resolveAgentAvailability: (agent) => {
       return { status: "available", reason: null };

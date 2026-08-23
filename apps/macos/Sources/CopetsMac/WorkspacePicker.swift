@@ -44,22 +44,37 @@ struct WorkspaceBindSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var workspaceId: String?
     let workspaceIds: [String]
-    let onSave: () -> Void
+    let onSave: () async -> Bool
+    @State private var isSaving = false
+    @State private var saveError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(L10n("绑定 Workspace"))
                 .font(.title3.bold())
             WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
+            if let saveError {
+                Text(saveError).font(.caption).foregroundStyle(.red)
+            }
             HStack {
+                if isSaving { ProgressView().controlSize(.small) }
                 Spacer()
-                Button(L10n("取消")) { dismiss() }
+                Button(L10n("取消")) { dismiss() }.disabled(isSaving)
                 Button(L10n("保存")) {
-                    onSave()
-                    dismiss()
+                    guard !isSaving else { return }
+                    isSaving = true
+                    saveError = nil
+                    Task {
+                        if await onSave() {
+                            dismiss()
+                        } else {
+                            saveError = EntityAPIClient.shared.errorMessage ?? L10n("Workspace 绑定失败，请重试。")
+                        }
+                        isSaving = false
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(workspaceId == nil)
+                .disabled(workspaceId == nil || isSaving)
             }
         }
         .padding(20)

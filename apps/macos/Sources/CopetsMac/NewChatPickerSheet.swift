@@ -485,7 +485,12 @@ struct NewSessionCreationSheet: View {
     }
 
     private var selectedWorkItem: WorkItem? {
-        fixedWorkItem ?? workItems.first(where: { $0.id == selectedWorkItemId })
+        let id = fixedWorkItem?.id ?? selectedWorkItemId
+        return id.flatMap { selectedID in
+            client.workItems.first(where: { $0.id == selectedID })
+        }
+            ?? fixedWorkItem
+            ?? workItems.first(where: { $0.id == selectedWorkItemId })
     }
 
     private func createSession() {
