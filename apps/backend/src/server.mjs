@@ -63,6 +63,7 @@ import {
 } from "./runtime/conflictResolutionWorkspacePermissions.mjs";
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
+import { WorkItemStartService } from "./application/workItemStartService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -258,6 +259,7 @@ const activeSessionReconciliationPendingIds = new Set();
 let stateSyncService = null;
 let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
+let workItemStartService = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -288,7 +290,9 @@ const sessionCollaborationService = new SessionCollaborationService({
   store,
   objectiveService,
   collaborationCore,
-  startWorkItem: ({ workItem, agent, title }) => launchAndBindWorkItemSession({ workItem, agent, title })
+  startWorkItem: ({ workItem, agent, title, idempotencyKey, source }) => launchAndBindWorkItemSession({
+    workItem, agent, title, idempotencyKey, source
+  })
 });
 const hubService = new HubService({
   store,
@@ -983,6 +987,55 @@ workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
   }),
   updateWorkItem: (workItemId, patch) => store.updateWorkItem(workItemId, patch),
   onChanged: (type, payload) => emitEvent(type, payload)
+});
+workItemStartService = new WorkItemStartService({
+  store,
+  validateStart: async (operation) => {
+    const workItem = objectiveService.getWorkItem(operation.workItemId);
+    const objective = objectiveService.getObjective(workItem.objective_id);
+    const agent = store.getAgent(operation.agentId);
+    if (!agent) {
+      const error = new Error(`Agent not found: ${operation.agentId}`);
+      error.code = "AGENT_NOT_FOUND";
+      error.statusCode = 404;
+      throw error;
+    }
+    if (agent.role !== "independentContributor") {
+      const error = new Error("Only an Independent Contributor can own a Worker Session.");
+      error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
+      throw error;
+    }
+    // currentSessionId is a recency pointer, not an exclusivity lock. Objective
+    // Chat and Worker Sessions may coexist for the same reusable Agent.
+    store.assertWorkItemAssociations({
+      mainWorkspaceId: workItem.main_workspace_id,
+      mainAgentId: agent.agentId
+    }, objective);
+    const providerId = resolveSessionProviderId(operation.providerId);
+    if (!providerId) {
+      const error = new Error(`Agent Provider is not registered: ${operation.providerId}`);
+      error.code = "AGENT_PROVIDER_NOT_FOUND";
+      throw error;
+    }
+    agentProviderRegistry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE);
+    return { workItem, objective, agent, providerId };
+  },
+  prepareWorkspace: ensureWorkItemWorkspace,
+  createSession: ({ workItem, agent, providerId, title, workspace }) => launchWorkItemSession({
+    agent,
+    workItem,
+    providerId,
+    title,
+    workingDirectory: workspace.path,
+    autoUniqueTitle: true
+  }),
+  finalizeStart: (input) => store.finalizeWorkItemStart(input),
+  onChanged: (type, payload) => emitEvent(type, payload),
+  onAudit: (record, { failed } = {}) => {
+    const line = `[work-item-start] ${JSON.stringify(record)}`;
+    if (failed) console.error(line);
+    else console.info(line);
+  }
 });
 const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
   store,
@@ -4045,20 +4098,24 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
   return store.bindSessionToObjective(session.id, objective.id);
 }
 
-async function launchAndBindWorkItemSession({ workItem, agent, title, providerId = agentProviderRegistry.defaultProviderId }) {
-  if (workItem.current_session_id) {
-    await memoryExtractor.extractFromSession(workItem.current_session_id, {
-      objectiveId: workItem.objective_id,
-      workItemId: workItem.id,
-      agentId: workItem.main_agent_id
-    });
-    store.closeSession(workItem.current_session_id);
-  }
-  const session = await launchWorkItemSession({ agent, workItem, providerId, title });
-  const bound = store.bindSessionToWorkItem(session.id, workItem.id, workItem.objective_id);
-  store.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
-  emitEvent("WorkItemChanged", { action: "execution-started", entity: store.getWorkItem(workItem.id) });
-  return bound;
+async function launchAndBindWorkItemSession({
+  workItem,
+  agent,
+  title,
+  providerId = agentProviderRegistry.defaultProviderId,
+  idempotencyKey = null,
+  source = "application"
+}) {
+  const result = await workItemStartService.start({
+    workItemId: workItem.id,
+    agentId: agent.agentId,
+    providerId,
+    title,
+    idempotencyKey: idempotencyKey ?? `start:${workItem.id}`,
+    source,
+    actorId: agent.agentId
+  });
+  return result.session;
 }
 
 // Session 生命周期只投影到 WorkItem.execution_status。WorkItem.status 的 review
@@ -6698,6 +6755,8 @@ function route(request, response) {
     memoryExtractor,
     assistantService,
     launchSession: launchWorkItemSession,
+    startWorkItemExecution: (input) => workItemStartService.start(input),
+    cancelWorkItemStart: (workItemId, reason) => workItemStartService.cancel(workItemId, reason),
     launchAgentSession,
     launchObjectiveChatSession,
     createSession: (input) => {
@@ -8219,6 +8278,14 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+const recoveredInterruptedWorkItemStarts = workItemStartService.recoverInterruptedStarts();
+const detectedLegacyPartialWorkItemStarts = workItemStartService.detectLegacyPartialStarts();
+if (recoveredInterruptedWorkItemStarts > 0 || detectedLegacyPartialWorkItemStarts > 0) {
+  console.warn(`[work-item-start-recovery] ${JSON.stringify({
+    recoveredInterruptedWorkItemStarts,
+    detectedLegacyPartialWorkItemStarts
+  })}`);
+}
 const collaborationMigration = collaborationCore.initialize();
 if (collaborationMigration.status === "applied") {
   console.log(`[collaboration-migration] id=${collaborationMigration.migrationId} migratedTasks=${collaborationMigration.migratedTaskCount}`);

@@ -486,7 +486,10 @@ final class EntityAPIClient: ObservableObject {
         var request = URLRequest(url: baseURL.appending(path: "sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(workItemId, forHTTPHeaderField: "X-Corptie-Operation-Id")
+        // Stable for retries of the same launch intent, while selecting a
+        // different Agent or Provider intentionally starts a new operation.
+        let operationID = "work-item-start:\(workItemId):\(agentId):\(providerId)"
+        request.setValue(operationID, forHTTPHeaderField: "X-Corptie-Operation-Id")
         var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId, "providerId": providerId]
         if let title { body["title"] = title }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -506,6 +509,17 @@ final class EntityAPIClient: ObservableObject {
             errorMessage = message
             return .failure(message: message)
         }
+    }
+
+    @discardableResult
+    func cancelWorkItemStart(workItemId: String, reason: String = "Canceled by user") async -> WorkItem? {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItemId)/actions/cancel-start")
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason])
+        return await performEntityMutation(request, as: WorkItem.self)
     }
 
     // Assistant Chat Session：仅凭 Assistant 开聊，不绑定 WorkItem。

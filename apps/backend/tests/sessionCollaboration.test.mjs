@@ -272,7 +272,7 @@ test("Assistant Chat without an Objective cannot create and cancellation preserv
   }
 });
 
-test("start is concurrency-safe, exposes partial failure, and retries without creating another WorkItem", async () => {
+test("collaboration start delegates shared orchestration receipts and retries without creating another WorkItem", async () => {
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:starter", name: "Starter", role: "independentContributor" });
@@ -283,7 +283,21 @@ test("start is concurrency-safe, exposes partial failure, and retries without cr
       title: "Retryable launch", agentId: agent.agentId, idempotencyKey: "create:retryable"
     });
 
-    f.service.launchWorkItem = async () => { throw Object.assign(new Error("provider unavailable"), { code: "PROVIDER_UNAVAILABLE" }); };
+    f.service.launchWorkItem = async () => {
+      f.store.db.run(
+        `UPDATE work_items SET execution_status='start_failed', start_stage='failed',
+         start_failure_stage='creatingSession', start_error_code='PROVIDER_UNAVAILABLE',
+         start_error='provider unavailable' WHERE id=?`,
+        [created.workItem.id]
+      );
+      throw Object.assign(new Error("provider unavailable"), {
+        code: "PROVIDER_UNAVAILABLE",
+        receipt: {
+          phase: "failed", workItemId: created.workItem.id, executionStatus: "start_failed",
+          failureStage: "creatingSession", errorCode: "PROVIDER_UNAVAILABLE"
+        }
+      });
+    };
     await assert.rejects(
       f.service.startWorkItem(metadata, agent.agentId, {
         workItemId: created.workItem.id, resourceVersion: "1", idempotencyKey: "start:one"
@@ -291,25 +305,26 @@ test("start is concurrency-safe, exposes partial failure, and retries without cr
       (error) => error.code === "PROVIDER_UNAVAILABLE"
         && error.receipt?.workItemId === created.workItem.id
         && error.receipt?.executionStatus === "start_failed"
+        && error.receipt?.failureStage === "creatingSession"
     );
     assert.equal(f.store.getWorkItem(created.workItem.id).execution_status, "start_failed");
     assert.equal(f.objectiveService.listWorkItemsByObjective(objective.id).filter((item) => item.title === "Retryable launch").length, 1);
 
-    let releaseLaunch;
-    f.service.launchWorkItem = () => new Promise((resolve) => { releaseLaunch = resolve; });
-    const firstStart = f.service.startWorkItem(metadata, agent.agentId, {
+    f.service.launchWorkItem = async () => {
+      session(f.store, f.core, {
+        providerSessionId: "provider:launched", logicalSessionId: "session:launched",
+        agentId: agent.agentId, kind: "worker", objectiveId: objective.id,
+        workItemId: created.workItem.id, cwd: f.directory
+      });
+      f.store.db.run(
+        "UPDATE work_items SET current_session_id=?, execution_status='running', status='in_progress' WHERE id=?",
+        ["provider:launched", created.workItem.id]
+      );
+      return { id: "provider:launched" };
+    };
+    const started = await f.service.startWorkItem(metadata, agent.agentId, {
       workItemId: created.workItem.id, resourceVersion: "1", idempotencyKey: "start:one"
     });
-    const inProgress = await f.service.startWorkItem(metadata, agent.agentId, {
-      workItemId: created.workItem.id, resourceVersion: "1", idempotencyKey: "start:one"
-    });
-    assert.equal(inProgress.executionStatus, "starting");
-    assert.equal(inProgress.idempotentReplay, true);
-
-    session(f.store, f.core, { providerSessionId: "provider:launched", logicalSessionId: "session:launched", agentId: agent.agentId, kind: "worker", objectiveId: objective.id, workItemId: created.workItem.id, cwd: f.directory });
-    f.store.db.run("UPDATE work_items SET current_session_id=? WHERE id=?", ["provider:launched", created.workItem.id]);
-    releaseLaunch({ id: "provider:launched" });
-    const started = await firstStart;
     assert.equal(started.executionStatus, "running");
     assert.equal(started.session.sessionId, "session:launched");
     assert.equal(started.providerBinding.providerId, "codex-app-server");

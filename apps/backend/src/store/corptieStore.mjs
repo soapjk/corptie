@@ -1260,6 +1260,37 @@ export class CorptieStore {
         FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS work_item_start_operations (
+        operation_id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        repository_id TEXT,
+        provider_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        input_fingerprint TEXT NOT NULL,
+        source TEXT NOT NULL,
+        status TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        failure_stage TEXT,
+        error_code TEXT,
+        error_summary TEXT,
+        worktree_id TEXT,
+        worktree_path TEXT,
+        worktree_branch TEXT,
+        session_id TEXT,
+        logical_session_id TEXT,
+        provider_binding_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE (work_item_id, idempotency_key),
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_work_item_start_operations_context
+      ON work_item_start_operations(objective_id, work_item_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS work_item_dependencies (
         work_item_id TEXT NOT NULL,
         target_work_item_id TEXT NOT NULL,
@@ -1521,6 +1552,17 @@ export class CorptieStore {
     this.ensureColumn("work_items", "cancel_reason", "TEXT");
     this.ensureColumn("work_items", "start_idempotency_key", "TEXT");
     this.ensureColumn("work_items", "start_error", "TEXT");
+    this.ensureColumn("work_items", "start_stage", "TEXT");
+    this.ensureColumn("work_items", "start_failure_stage", "TEXT");
+    this.ensureColumn("work_items", "start_error_code", "TEXT");
+    this.ensureColumn("work_items", "start_started_at", "TEXT");
+    this.ensureColumn("work_items", "start_stage_updated_at", "TEXT");
+    this.ensureColumn("work_items", "start_failed_at", "TEXT");
+    this.ensureColumn("work_items", "start_provider_id", "TEXT");
+    this.ensureColumn("work_items", "start_agent_id", "TEXT");
+    this.ensureColumn("work_items", "start_worktree_id", "TEXT");
+    this.ensureColumn("work_items", "start_worktree_path", "TEXT");
+    this.ensureColumn("work_items", "start_worktree_branch", "TEXT");
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_session_idempotency
       ON work_items(created_by_session_id, idempotency_key)
       WHERE created_by_session_id IS NOT NULL AND idempotency_key IS NOT NULL`);
@@ -3819,6 +3861,85 @@ export class CorptieStore {
     }
     this.scheduleSave();
     return this.getSession(sessionId);
+  }
+
+  // Finalize every durable relationship established by a WorkItem start in one
+  // transaction. Provider creation may already have persisted the Session,
+  // logical route, Provider binding, and Agent binding; this method refuses to
+  // publish `running` unless that complete graph is present and consistent.
+  finalizeWorkItemStart({ sessionId, workItemId, objectiveId, agentId, operationId, workspace }) {
+    const session = this.getSession(sessionId);
+    const workItem = this.getWorkItem(workItemId);
+    const logical = this.getLogicalSessionByLegacySessionId(sessionId);
+    const activeBinding = logical?.activeBinding ?? null;
+    const agentBinding = this.selectOne(
+      `SELECT binding_id FROM agent_sessions
+       WHERE agent_id=? AND session_id=? AND unbound_at IS NULL`,
+      [agentId, sessionId]
+    );
+    if (!session || !workItem || workItem.objective_id !== objectiveId
+      || session.objectiveId !== objectiveId || session.workItemId !== workItemId
+      || session.agentId !== agentId || !logical || !activeBinding || !agentBinding) {
+      const error = new Error("Worker Session graph is incomplete; WorkItem start was not published as running.");
+      error.code = "WORK_ITEM_START_INVARIANT_VIOLATION";
+      throw error;
+    }
+    const expectedPath = typeof workspace?.path === "string" ? resolve(workspace.path) : null;
+    const boundPath = typeof activeBinding.boundCwd === "string" ? resolve(activeBinding.boundCwd) : null;
+    if (expectedPath && boundPath !== expectedPath) {
+      const error = new Error("Worker Session Provider binding points to a different Worktree.");
+      error.code = "WORK_ITEM_WORKTREE_BINDING_MISMATCH";
+      throw error;
+    }
+    const timestamp = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      this.db.run(
+        `UPDATE sessions SET objective_id=?, work_item_id=?, session_kind='worker', agent_id=?, updated_at=?
+         WHERE id=?`,
+        [objectiveId, workItemId, agentId, timestamp, sessionId]
+      );
+      this.db.run(
+        `UPDATE work_items SET current_session_id=?, status='in_progress', execution_status='running',
+         main_agent_id=?, acceptance_assessment_json='{}', start_stage='running',
+         start_failure_stage=NULL, start_error_code=NULL, start_error=NULL, start_failed_at=NULL,
+         start_stage_updated_at=?, resource_version=resource_version+1, updated_at=? WHERE id=?`,
+        [sessionId, agentId, timestamp, timestamp, workItemId]
+      );
+      this.db.run(
+        `UPDATE agents SET current_session_id=?, updated_at=? WHERE agent_id=?`,
+        [sessionId, timestamp, agentId]
+      );
+      this.db.run(
+        `UPDATE work_item_start_operations SET status='succeeded', stage='running', failure_stage=NULL,
+         error_code=NULL, error_summary=NULL, session_id=?, logical_session_id=?,
+         provider_binding_id=?, updated_at=?, completed_at=? WHERE operation_id=?`,
+        [sessionId, logical.logicalSessionId, activeBinding.bindingId, timestamp, timestamp, operationId]
+      );
+      const invariant = this.selectOne(
+        `SELECT wi.id FROM work_items wi
+         JOIN sessions s ON s.id=wi.current_session_id
+         JOIN agents a ON a.agent_id=wi.main_agent_id
+         JOIN agent_sessions ab ON ab.agent_id=a.agent_id AND ab.session_id=s.id AND ab.unbound_at IS NULL
+         JOIN logical_sessions ls ON ls.legacy_session_id=s.id
+         JOIN provider_thread_bindings pb ON pb.logical_session_id=ls.logical_session_id
+         JOIN work_item_start_operations op ON op.operation_id=?
+         WHERE wi.id=? AND wi.objective_id=? AND s.objective_id=wi.objective_id
+           AND s.work_item_id=wi.id AND s.agent_id=a.agent_id
+           AND pb.binding_id=op.provider_binding_id AND pb.state='active'`,
+        [operationId, workItemId, objectiveId]
+      );
+      if (!invariant) {
+        const error = new Error("WorkItem start finalization violated persisted relationship invariants.");
+        error.code = "WORK_ITEM_START_INVARIANT_VIOLATION";
+        throw error;
+      }
+    });
+    this.scheduleSave();
+    return {
+      session: this.getSession(sessionId),
+      workItem: this.getWorkItem(workItemId),
+      logicalSession: this.getLogicalSession(logical.logicalSessionId)
+    };
   }
 
   finalizeConflictResolutionLaunch({ sessionId, workItemId, objectiveId, agentId, integrationRunId }) {
