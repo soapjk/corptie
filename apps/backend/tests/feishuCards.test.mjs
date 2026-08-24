@@ -201,16 +201,20 @@ test("the Feishu /sessions command requests and displays only unarchived session
     listSessions: async (options) => {
       listOptions.push(options);
       return [
-        { id: "session-active-a", title: "Active A", status: "idle", archived: false },
-        { id: "session-archived-a", title: "Archived A", status: "complete", archived: true },
-        { id: "session-active-b", title: "Active B", status: "running" },
-        { id: "session-archived-b", title: "Archived B", status: "complete", archived: true },
-        { id: "session-active-c", title: "Active C", status: "blocked", archived: false }
+        { id: "session-active-a", title: "Active A", status: "idle", archived: false, sessionKind: "worker", workItemId: "work-item-active-a" },
+        { id: "session-explicitly-archived", title: "Explicitly Archived", status: "complete", archived: true, sessionKind: "worker", workItemId: "work-item-active-archived" },
+        { id: "session-completed-a", title: "Completed A", status: "complete", archived: false, sessionKind: "worker", workItemId: "work-item-completed-a" },
+        { id: "session-active-b", title: "Active B", status: "running", sessionKind: "assistantChat" },
+        { id: "session-completed-legacy", title: "Completed Legacy", status: "complete", workItemId: "work-item-completed-legacy" },
+        { id: "session-active-c", title: "Active C", status: "blocked", archived: false, sessionKind: "worker", workItemId: "work-item-active-c" }
       ];
     },
     describeSession: (session) => {
       describedSessionIds.push(session.id);
-      return { agentName: `Agent for ${session.title}` };
+      return {
+        agentName: `Agent for ${session.title}`,
+        workItemStatus: session.id.startsWith("session-completed") ? "completed" : "in_progress"
+      };
     }
   });
   manager.sendCard = async (_botId, _chatId, card) => sentCards.push(card);
@@ -225,8 +229,8 @@ test("the Feishu /sessions command requests and displays only unarchived session
 
   assert.deepEqual(listOptions, [{ archived: false }, { archived: false }]);
   assert.deepEqual(describedSessionIds, [
-    "session-active-a", "session-active-b", "session-active-c",
-    "session-active-a", "session-active-b", "session-active-c"
+    "session-active-a", "session-completed-a", "session-active-b", "session-completed-legacy", "session-active-c",
+    "session-active-a", "session-completed-a", "session-active-b", "session-completed-legacy", "session-active-c"
   ]);
   assert.deepEqual(
     cardButtons(card)
@@ -237,24 +241,27 @@ test("the Feishu /sessions command requests and displays only unarchived session
   assert.match(cardContent, /Active A/);
   assert.match(cardContent, /Active B/);
   assert.match(cardContent, /Active C/);
-  assert.doesNotMatch(cardContent, /Archived A|Archived B/);
+  assert.doesNotMatch(cardContent, /Explicitly Archived|Completed A|Completed Legacy/);
   assert.match(text, /Active A/);
   assert.match(text, /Active B/);
   assert.match(text, /Active C/);
-  assert.doesNotMatch(text, /Archived A|Archived B/);
+  assert.doesNotMatch(text, /Explicitly Archived|Completed A|Completed Legacy/);
 });
 
 test("Feishu session lists preserve the existing empty state when every session is archived", async () => {
+  const describedSessionIds = [];
   const manager = new FeishuGatewayManager({
     store: {
       listFeishuAssignments: () => [],
       getFeishuAssignmentForBot: () => null
     },
     listSessions: async () => [
-      { id: "session-archived", title: "Archived Only", status: "complete", archived: true }
+      { id: "session-explicitly-archived", title: "Explicitly Archived", status: "complete", archived: true },
+      { id: "session-completed-work-item", title: "Completed WorkItem", status: "complete", archived: false, sessionKind: "worker", workItemId: "work-item-done" }
     ],
-    describeSession: () => {
-      throw new Error("Archived sessions must not be presented.");
+    describeSession: (session) => {
+      describedSessionIds.push(session.id);
+      return { workItemStatus: "done" };
     }
   });
 
@@ -266,8 +273,9 @@ test("Feishu session lists preserve the existing empty state when every session 
     button.behaviors?.[0]?.value?.corptie_action === "select_session"
   ), false);
   assert.match(cardContent, /暂时没有可用会话/);
-  assert.doesNotMatch(cardContent, /Archived Only/);
+  assert.doesNotMatch(cardContent, /Explicitly Archived|Completed WorkItem/);
   assert.equal(text, "这台电脑上暂时没有可用会话。");
+  assert.deepEqual(describedSessionIds, ["session-completed-work-item", "session-completed-work-item"]);
 });
 
 test("session card paginates long lists", () => {

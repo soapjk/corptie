@@ -12,6 +12,7 @@ const execFileAsync = promisify(execFile);
 const pairingCodePattern = /^\d{6}$/;
 const sessionCardPageSize = 5;
 const workspaceCardPageSize = 5;
+const completedWorkItemStatuses = new Set(["done", "complete", "completed"]);
 const feishuHiddenSessionItemTypes = new Set([
   "reasoning",
   "plan",
@@ -806,10 +807,11 @@ export class FeishuGatewayManager {
 
   async presentedSessions() {
     const sessions = await this.listSessions({ archived: false });
-    return Promise.all(sessions.filter((session) => session.archived !== true).map(async (session) => ({
+    const presented = await Promise.all(sessions.filter((session) => session.archived !== true).map(async (session) => ({
       ...session,
       ...(await this.describeSession(session) ?? {})
     })));
+    return presented.filter((session) => !isCompletedWorkSession(session));
   }
 
   async sendSessionListCard(botId, chatId, page = 0, notice = null) {
@@ -1918,6 +1920,11 @@ function feishuSource(botId, event) {
 
 function pairingHash(code) {
   return createHash("sha256").update(`corptie-feishu:${code}`).digest("hex");
+}
+
+function isCompletedWorkSession(session) {
+  const isWorker = session?.sessionKind === "worker" || Boolean(optionalText(session?.workItemId));
+  return isWorker && completedWorkItemStatuses.has(optionalText(session?.workItemStatus).toLowerCase());
 }
 
 function displayStatus(status) {

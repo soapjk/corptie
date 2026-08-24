@@ -4141,7 +4141,8 @@ function describeGatewaySession(session) {
   const agent = agentId ? store.getAgent(agentId) : null;
   return {
     agentName: agent?.name ?? agentId,
-    workItemTitle: workItem?.title ?? null
+    workItemTitle: workItem?.title ?? null,
+    workItemStatus: workItem?.status ?? null
   };
 }
 
