@@ -450,11 +450,12 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 查某 owner（如 work_item）的记忆：GET /memories?ownerType=&ownerId= → { memories }
-    func memories(ownerType: String, ownerId: String) async -> [MemoryItem]? {
+    func memories(ownerType: String, ownerId: String, includeRevoked: Bool = false) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "ownerType", value: ownerType),
-            URLQueryItem(name: "ownerId", value: ownerId)
+            URLQueryItem(name: "ownerId", value: ownerId),
+            URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false")
         ]
         guard let url = components?.url else { return nil }
         do {
@@ -493,8 +494,47 @@ final class EntityAPIClient: ObservableObject {
         return await mutateMemory(request)
     }
 
+    func createMemory(
+        ownerType: String,
+        ownerId: String,
+        kind: String,
+        content: String,
+        tags: [String],
+        sourceSessionId: String? = nil
+    ) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memories"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "ownerType": ownerType,
+            "ownerId": ownerId,
+            "kind": kind,
+            "content": content,
+            "tags": tags
+        ]
+        if let sourceSessionId { body["sourceSessionId"] = sourceSessionId }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try validateMemoryResponse(response, data: data)
+            errorMessage = nil
+            return try decoder.decode(MemoryItem.self, from: data)
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
     func revokeMemory(memoryId: String, reason: String) async -> MemoryItem? {
         var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)/revoke"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason])
+        return await mutateMemory(request)
+    }
+
+    func restoreMemory(memoryId: String, reason: String) async -> MemoryItem? {
+        var request = URLRequest(url: baseURL.appending(path: "memories/\(memoryId)/restore"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason])

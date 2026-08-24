@@ -79,7 +79,7 @@ export class MemoryOperationService {
     const content = requiredText(args.content, "content");
     const kind = requiredText(args.kind, "kind");
     if (!MEMORY_KINDS.has(kind)) throw operationError("INVALID_MEMORY_KIND", `Unsupported memory kind: ${kind}`);
-    const memoryScope = optionalScope(args.scope) ?? "agent";
+    const memoryScope = optionalScope(args.scope) ?? mostSpecificScope(context);
     const owner = this.#owner(context, memoryScope);
     const id = `memory:${this.idFactory()}`;
     const event = this.#appendEvent(context, "memory/remember", {
@@ -245,6 +245,12 @@ export class MemoryOperationService {
       memories: memories.map(presentMemory)
     };
   }
+}
+
+function mostSpecificScope(context) {
+  if (context.owners.has("work_item")) return "work_item";
+  if (context.owners.has("objective")) return "objective";
+  return "agent";
 }
 
 export function presentMemory(memory) {

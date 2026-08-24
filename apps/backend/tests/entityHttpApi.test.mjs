@@ -1455,6 +1455,18 @@ test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollb
     });
     assert.deepEqual(afterRevokeRecall.body.memories, []);
 
+    const restored = await callApi({
+      method: "POST", pathname: `/memories/${encoded}/restore`, body: { reason: "test enable" }, ...services
+    });
+    assert.equal(restored.statusCode, 200);
+    assert.equal(restored.body.memory.revokedAt, null);
+    const afterRestoreRecall = await callApi({
+      method: "GET", pathname: "/memory-recall",
+      search: "?agentId=assistant&intent=auditable", ...services
+    });
+    assert.deepEqual(afterRestoreRecall.body.memories.map((memory) => memory.id), [memoryId]);
+    assert.ok(services.store.listMemoryAudit({ memoryId }).some((entry) => entry.action === "restore"));
+
     const rollback = await callApi({
       method: "POST", pathname: `/memory-audit/${encodeURIComponent(updateAudit.id)}/rollback`, body: {}, ...services
     });
