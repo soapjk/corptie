@@ -168,7 +168,13 @@ private struct AutomationCard: View {
                 metric(L10n("过期时间"), dateLabel(automation.expiresAt), "calendar.badge.exclamationmark")
             }
 
-            Label(L10nFormat("Times use time zone: %@", automation.timezone), systemImage: "globe")
+            Label(
+                L10nFormat(
+                    "Times use system time zone: %@",
+                    ScheduledSessionManagementTimeFormatting.timeZoneLabel()
+                ),
+                systemImage: "globe"
+            )
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
 
@@ -250,13 +256,10 @@ private struct AutomationCard: View {
     }
 
     private func dateLabel(_ value: String?) -> String {
-        guard let value, let date = ScheduledSessionDateFormatting.date(from: value) else { return L10n("None") }
-        let formatter = DateFormatter()
-        formatter.locale = AppLanguageController.shared.locale
-        formatter.timeZone = TimeZone(identifier: automation.timezone) ?? .current
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .medium
-        return formatter.string(from: date)
+        ScheduledSessionManagementTimeFormatting.string(
+            from: value,
+            locale: AppLanguageController.shared.locale
+        ) ?? L10n("None")
     }
 }
 
