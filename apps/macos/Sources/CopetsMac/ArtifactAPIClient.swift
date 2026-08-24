@@ -16,15 +16,9 @@ final class ArtifactAPIClient: ObservableObject {
     @Published var errorMessage: String?
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
-    private let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
-    }()
-
     func refresh(objectiveId: String) async {
         do {
-            let envelope: ArtifactListEnvelope = try await get("objectives/\(escaped(objectiveId))/artifacts")
+            let envelope: ArtifactListEnvelope = try await get("objectives/\(objectiveId)/artifacts")
             artifactsByObjective[objectiveId] = envelope.artifacts
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
@@ -32,14 +26,14 @@ final class ArtifactAPIClient: ObservableObject {
 
     func refresh(workItemId: String) async {
         do {
-            let envelope: ArtifactListEnvelope = try await get("work-items/\(escaped(workItemId))/artifacts")
+            let envelope: ArtifactListEnvelope = try await get("work-items/\(workItemId)/artifacts")
             artifactsByWorkItem[workItemId] = envelope.artifacts
             errorMessage = nil
         } catch { errorMessage = error.localizedDescription }
     }
 
     func detail(artifactId: String, version: Int? = nil, offset: Int = 0) async -> ArtifactDetailEnvelope? {
-        var components = URLComponents(url: baseURL.appendingPathComponent("artifacts/\(artifactId)"), resolvingAgainstBaseURL: false)!
+        var components = URLComponents(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifactId)"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
             version.map { URLQueryItem(name: "version", value: String($0)) },
             URLQueryItem(name: "offset", value: String(offset)),
@@ -57,47 +51,47 @@ final class ArtifactAPIClient: ObservableObject {
             "title": title, "summary": summary, "content": content, "visibility": visibility.rawValue
         ]
         if let boundWorkItemId { body["boundWorkItemId"] = boundWorkItemId }
-        return await mutate("objectives/\(escaped(objectiveId))/artifacts", method: "POST", body: body)
+        return await mutate("objectives/\(objectiveId)/artifacts", method: "POST", body: body)
     }
 
     func importFile(objectiveId: String, fileURL: URL, visibility: ArtifactVisibility, boundWorkItemId: String?) async -> ArtifactImportEnvelope? {
         var body: [String: Any] = ["importPath": fileURL.path, "title": fileURL.lastPathComponent, "visibility": visibility.rawValue]
         if let boundWorkItemId { body["boundWorkItemId"] = boundWorkItemId }
         let result: ArtifactImportEnvelope? = await mutate(
-            "objectives/\(escaped(objectiveId))/artifacts", method: "POST", body: body)
+            "objectives/\(objectiveId)/artifacts", method: "POST", body: body)
         return result
     }
 
     func publish(artifactId: String, content: String, summary: String) async -> Bool {
-        let result: ArtifactPublicationEnvelope? = await mutate("artifacts/\(escaped(artifactId))/versions", method: "POST", body: ["content": content, "summary": summary, "approvalStatus": "approved"])
+        let result: ArtifactPublicationEnvelope? = await mutate("artifacts/\(artifactId)/versions", method: "POST", body: ["content": content, "summary": summary, "approvalStatus": "approved"])
         return result != nil
     }
 
     func reference(artifactId: String, workItemId: String, relation: String, required: Bool, versionPolicy: String) async -> Bool {
-        let result: ArtifactReference? = await mutate("artifacts/\(escaped(artifactId))/references", method: "POST", body: [
+        let result: ArtifactReference? = await mutate("artifacts/\(artifactId)/references", method: "POST", body: [
             "workItemId": workItemId, "relation": relation, "required": required, "versionPolicy": versionPolicy
         ])
         return result != nil
     }
 
     func markSuperseded(artifactId: String) async -> Bool {
-        let result: ObjectiveArtifact? = await mutate("artifacts/\(escaped(artifactId))", method: "PATCH", body: ["status": "superseded"])
+        let result: ObjectiveArtifact? = await mutate("artifacts/\(artifactId)", method: "PATCH", body: ["status": "superseded"])
         return result != nil
     }
 
     func revoke(referenceId: String, reason: String) async -> Bool {
-        let result: ArtifactReference? = await mutate("artifacts/references/\(escaped(referenceId))/revoke", method: "POST", body: ["reason": reason])
+        let result: ArtifactReference? = await mutate("artifacts/references/\(referenceId)/revoke", method: "POST", body: ["reason": reason])
         return result != nil
     }
 
     func acknowledge(referenceId: String) async -> Bool {
-        let result: ArtifactReference? = await mutate("artifacts/references/\(escaped(referenceId))/acknowledge-update", method: "POST", body: ["confirmed": true])
+        let result: ArtifactReference? = await mutate("artifacts/references/\(referenceId)/acknowledge-update", method: "POST", body: ["confirmed": true])
         return result != nil
     }
 
     func export(artifactId: String, version: Int, destinationURL: URL, confirmRepositoryWrite: Bool, confirmOverwrite: Bool) async -> ArtifactExportOutcome {
         do {
-            var request = URLRequest(url: baseURL.appendingPathComponent("artifacts/\(escaped(artifactId))/export"))
+            var request = URLRequest(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifactId)/export"))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: [
@@ -122,14 +116,14 @@ final class ArtifactAPIClient: ObservableObject {
     }
 
     private func get<T: Decodable & Sendable>(_ path: String) async throws -> T {
-        let (data, response) = try await URLSession.shared.data(from: baseURL.appendingPathComponent(path))
+        let (data, response) = try await URLSession.shared.data(from: Self.endpointURL(baseURL: baseURL, path: path))
         try Self.validate(response: response, data: data)
         return try await decode(T.self, data: data)
     }
 
     private func mutate<T: Decodable & Sendable>(_ path: String, method: String, body: [String: Any]) async -> T? {
         do {
-            var request = URLRequest(url: baseURL.appendingPathComponent(path))
+            var request = URLRequest(url: Self.endpointURL(baseURL: baseURL, path: path))
             request.httpMethod = method
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -156,5 +150,9 @@ final class ArtifactAPIClient: ObservableObject {
         }
     }
 
-    private func escaped(_ value: String) -> String { value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value }
+    nonisolated static func endpointURL(baseURL: URL, path: String) -> URL {
+        path.split(separator: "/").reduce(baseURL) { partial, component in
+            partial.appendingPathComponent(String(component))
+        }
+    }
 }
