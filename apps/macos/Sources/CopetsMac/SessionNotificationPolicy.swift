@@ -196,6 +196,7 @@ struct SessionCompletionSoundTransitionTracker {
 
 struct SessionNotificationReducer {
     private var previousStatusesBySessionID: [String: TaskStatus] = [:]
+    private var previousAttentionBySessionID: [String: Bool] = [:]
     private var previousHadRunningSession: Bool?
 
     mutating func events(
@@ -204,44 +205,51 @@ struct SessionNotificationReducer {
     ) -> [SessionNotificationEvent] {
         let hasRunningSession = sessions.contains { $0.status == .running }
 
-        guard let previousHadRunningSession else {
+        guard previousHadRunningSession != nil else {
             previousStatusesBySessionID = Dictionary(
                 uniqueKeysWithValues: sessions.map { ($0.id, $0.status) }
+            )
+            previousAttentionBySessionID = Dictionary(
+                uniqueKeysWithValues: sessions.map { ($0.id, $0.needsUserAttention) }
             )
             self.previousHadRunningSession = hasRunningSession
             return []
         }
 
-        let terminalTransitions = sessions.filter {
-            previousStatusesBySessionID[$0.id] == .running
-                && ($0.status == .complete || $0.status == .blocked || $0.status == .failed)
+        let terminalTransitions = sessions.filter { session in
+            let previousStatus = previousStatusesBySessionID[session.id]
+            switch session.status {
+            case .complete:
+                // A completed status alone is insufficient: the final model
+                // reply must already be durable and unread before the UI may
+                // show attention or send a completion notification.
+                return session.needsUserAttention
+                    && previousAttentionBySessionID[session.id] != true
+            case .blocked, .failed:
+                return previousStatus == .running
+            case .running, .cancelled:
+                return false
+            }
         }
 
         let currentIDs = Set(sessions.map(\.id))
         previousStatusesBySessionID = previousStatusesBySessionID.filter { currentIDs.contains($0.key) }
+        previousAttentionBySessionID = previousAttentionBySessionID.filter { currentIDs.contains($0.key) }
         for session in sessions {
             previousStatusesBySessionID[session.id] = session.status
+            previousAttentionBySessionID[session.id] = session.needsUserAttention
         }
         self.previousHadRunningSession = hasRunningSession
 
         if configuration.notifyWhenAllSessionsWaiting,
-           previousHadRunningSession,
            !hasRunningSession,
            !terminalTransitions.isEmpty,
            sessions.allSatisfy({ $0.status != .running }) {
-            // The authoritative terminal status can arrive one state revision
-            // before the agent/read message cursors. A freshly finished Session
-            // therefore needs attention even when both projected cursors are
-            // temporarily equal (often 0). Union IDs so a transition whose
-            // unread cursor already advanced is still counted exactly once.
-            let pendingUserAttentionIDs = Set(
-                sessions.filter(\.needsUserAttention).map(\.id)
-            ).union(terminalTransitions.map(\.id))
             let counts = SessionNotificationCounts(
                 completed: sessions.filter { $0.status == .complete }.count,
                 blocked: sessions.filter { $0.status == .blocked }.count,
                 failed: sessions.filter { $0.status == .failed }.count,
-                pendingUserAttention: pendingUserAttentionIDs.count
+                pendingUserAttention: sessions.filter(\.needsUserAttention).count
             )
             if counts.total > 0 {
                 return [SessionNotificationEvent(
@@ -270,8 +278,11 @@ struct SessionNotificationReducer {
                 return nil
             }
             guard isEnabled else { return nil }
+            let identityRevision = session.status == .complete
+                ? String(session.lastAgentMessageSequence)
+                : session.updatedAt
             return SessionNotificationEvent(
-                id: "session:\(session.id):\(session.status.rawValue):\(session.updatedAt)",
+                id: "session:\(session.id):\(session.status.rawValue):\(identityRevision)",
                 kind: kind,
                 session: session,
                 counts: nil
