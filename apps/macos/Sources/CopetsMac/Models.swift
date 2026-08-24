@@ -968,6 +968,22 @@ struct SessionHistoryResponse: Decodable, Sendable {
     let historyItemsCount: Int?
 }
 
+struct SessionTimelineAnchorResolution: Decodable, Sendable {
+    let kind: String
+    let requestedId: String?
+    let resolvedId: String?
+    let status: String
+}
+
+struct SessionTimelineWindowResponse: Decodable, Sendable {
+    let sessionId: String?
+    let logicalSessionId: String?
+    let items: [CodexThreadItem]
+    let anchor: SessionTimelineAnchorResolution
+    let hasEarlier: Bool
+    let hasLater: Bool
+}
+
 struct SessionUsageResponse: Decodable, Equatable {
     let account: CodexAccountUsage
     let context: CodexContextUsage?

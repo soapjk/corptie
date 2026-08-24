@@ -264,6 +264,68 @@ test("stored item window returns the newest records in stable ascending order", 
   }
 });
 
+test("stored timeline anchor window uses bounded keyset queries", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-anchor-window-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "anchor-window", title: "Anchor", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    for (let index = 0; index < 1_000; index += 1) {
+      store.upsertItemSnapshot("anchor-window", {
+        id: `item-${String(index).padStart(4, "0")}`,
+        turnId: index >= 500 && index <= 502 ? "turn-anchor" : `turn-${index}`,
+        type: "agentMessage",
+        text: `message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString()
+      });
+    }
+    const itemWindow = store.getTimelineItemWindow("anchor-window", {
+      anchorId: "item-0500",
+      before: 20,
+      after: 30
+    });
+    assert.equal(itemWindow.items.length, 51);
+    assert.equal(itemWindow.items[0].id, "item-0480");
+    assert.equal(itemWindow.items.at(-1).id, "item-0530");
+    assert.equal(itemWindow.hasEarlier, true);
+    assert.equal(itemWindow.hasLater, true);
+
+    const turnWindow = store.getTimelineItemWindow("anchor-window", {
+      anchorKind: "turn",
+      anchorId: "turn-anchor",
+      before: 1,
+      after: 1
+    });
+    assert.deepEqual(turnWindow.items.map((item) => item.id), [
+      "item-0499", "item-0500", "item-0501", "item-0502", "item-0503"
+    ]);
+    assert.equal(
+      store.selectAll("PRAGMA index_list(session_items)")
+        .some((index) => index.name === "idx_session_items_turn_window"),
+      true
+    );
+    assert.equal(store.getTimelineItemWindow("anchor-window", { anchorId: "deleted" }), null);
+
+    const samples = [];
+    for (let index = 0; index < 50; index += 1) {
+      const startedAt = performance.now();
+      store.getTimelineItemWindow("anchor-window", {
+        anchorId: "item-0500",
+        before: 40,
+        after: 40
+      });
+      samples.push(performance.now() - startedAt);
+    }
+    samples.sort((left, right) => left - right);
+    const p50 = samples[Math.floor(samples.length / 2)];
+    console.log(`[perf] stored timeline anchor window (1k items) p50=${p50.toFixed(2)}ms`);
+    assert.ok(p50 < 50, `anchor lookup p50 ${p50.toFixed(2)}ms exceeded 50ms`);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("identical Provider Session and history projections do not rewrite rows or advance revision", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-projection-noop-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });

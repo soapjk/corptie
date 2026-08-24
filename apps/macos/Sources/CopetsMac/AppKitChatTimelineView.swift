@@ -249,25 +249,35 @@ final class NativeMarkdownTextCache {
 
     static let shared = NativeMarkdownTextCache()
     private var values: [Key: NSAttributedString] = [:]
-    private var order: [Key] = []
+    private var accessByKey: [Key: UInt64] = [:]
+    private var accessSequence: UInt64 = 0
     private let limit = 1_000
     private let byteLimit = 16 * 1_024 * 1_024
     private var estimatedBytes = 0
 
     func value(text: String, style: AppKitChatTimelineRow.NativeStyle) -> NSAttributedString {
         let key = Key(text: text, style: style)
-        if let cached = values[key] { return cached }
+        if let cached = values[key] {
+            touch(key)
+            return cached
+        }
         let attributed = NativeMarkdownAttributedText.make(text: text, style: style)
         values[key] = attributed
-        order.append(key)
+        touch(key)
         estimatedBytes += estimatedByteCount(for: key, value: attributed)
-        while order.count > limit || estimatedBytes > byteLimit, let oldest = order.first {
+        while values.count > limit || estimatedBytes > byteLimit,
+              let oldest = accessByKey.min(by: { $0.value < $1.value })?.key {
             if let removed = values.removeValue(forKey: oldest) {
                 estimatedBytes = max(0, estimatedBytes - estimatedByteCount(for: oldest, value: removed))
             }
-            order.removeFirst()
+            accessByKey[oldest] = nil
         }
         return attributed
+    }
+
+    private func touch(_ key: Key) {
+        accessSequence &+= 1
+        accessByKey[key] = accessSequence
     }
 
     private func estimatedByteCount(for key: Key, value: NSAttributedString) -> Int {
@@ -331,7 +341,8 @@ final class NativeTimelineLayoutCache {
 
     static let shared = NativeTimelineLayoutCache()
     private var values: [Key: Layout] = [:]
-    private var recency: [Key] = []
+    private var accessByKey: [Key: UInt64] = [:]
+    private var accessSequence: UInt64 = 0
     private var estimatedBytes = 0
     private let byteLimit = 64 * 1_024 * 1_024
 
@@ -408,20 +419,21 @@ final class NativeTimelineLayoutCache {
             rowHeight: rowHeight
         )
         values[key] = layout
-        recency.append(key)
+        touch(key)
         estimatedBytes += ((key.text.utf16.count + key.rawStatusText.utf16.count) * 8) + attributed.length * 8 + 192
         evictIfNeeded()
         return layout
     }
 
     private func touch(_ key: Key) {
-        recency.removeAll { $0 == key }
-        recency.append(key)
+        accessSequence &+= 1
+        accessByKey[key] = accessSequence
     }
 
     private func evictIfNeeded() {
-        while estimatedBytes > byteLimit, let oldest = recency.first {
-            recency.removeFirst()
+        while estimatedBytes > byteLimit,
+              let oldest = accessByKey.min(by: { $0.value < $1.value })?.key {
+            accessByKey[oldest] = nil
             guard let removed = values.removeValue(forKey: oldest) else { continue }
             estimatedBytes = max(
                 0,
