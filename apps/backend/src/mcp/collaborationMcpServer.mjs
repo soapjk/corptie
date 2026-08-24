@@ -133,9 +133,9 @@ export function createCollaborationMcpServer(options) {
   });
 
   if (authenticatedSessionId) register(server, "corptie_automations_create", {
-    description: "Create a provider-neutral Corptie Automation. Exactly one of expires_at or expires_after_seconds is required. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
+    description: "Create a provider-neutral Corptie Automation. A concise name and exactly one of expires_at or expires_after_seconds are required. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
     inputSchema: {
-      name: z.string().min(1).max(120).optional(),
+      name: z.string().min(1).max(120),
       logical_session_id: z.string().min(1).optional(),
       schedule_type: z.enum(["at", "after", "interval", "processExit", "condition"]),
       run_at: z.string().min(1).optional().describe("ISO-8601 timestamp for at, or optional first run for interval/condition."),
