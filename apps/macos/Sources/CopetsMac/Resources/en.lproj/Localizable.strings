@@ -792,3 +792,8 @@
 "This branch is already up to date with GitHub and has the correct upstream branch." = "This branch is already up to date with GitHub and has the correct upstream branch.";
 "Push committed branch changes to GitHub. Uncommitted files are not included." = "Push committed branch changes to GitHub. Uncommitted files are not included.";
 "Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "Push this local branch to the configured GitHub repository and set its upstream branch if needed.";
+"Blocking risk details" = "Blocking risk details";
+"Affected Worktree: %@" = "Affected Worktree: %@";
+"Affected Worktree ID: %@" = "Affected Worktree ID: %@";
+"Conflict files: %@" = "Conflict files: %@";
+"The backend did not identify an affected Worktree for this risk." = "The backend did not identify an affected Worktree for this risk.";

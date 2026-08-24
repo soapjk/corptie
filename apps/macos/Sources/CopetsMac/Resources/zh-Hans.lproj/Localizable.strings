@@ -1171,3 +1171,8 @@
 "This branch is already up to date with GitHub and has the correct upstream branch." = "此分支已与 GitHub 同步，并已关联正确的上游分支。";
 "Push committed branch changes to GitHub. Uncommitted files are not included." = "将已提交的分支修改推送到 GitHub；未提交文件不会包含在内。";
 "Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "将此本地分支推送到已配置的 GitHub 仓库，并在需要时设置上游分支。";
+"Blocking risk details" = "阻断风险详情";
+"Affected Worktree: %@" = "受影响的 Worktree：%@";
+"Affected Worktree ID: %@" = "受影响的 Worktree ID：%@";
+"Conflict files: %@" = "冲突文件：%@";
+"The backend did not identify an affected Worktree for this risk." = "后端未标明此风险对应的 Worktree。";

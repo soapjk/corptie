@@ -192,6 +192,13 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("Retry after Manual Resolution"))
         XCTAssertTrue(view.contains("worktree.integrate.retry-manual-conflict"))
         XCTAssertTrue(view.contains("worktree.integrate.blocked-repreflight"))
+        XCTAssertTrue(view.contains("worktree.integrate.blocking-risks"))
+        XCTAssertTrue(view.contains("if !job.plan.blockingRisks.isEmpty"))
+        XCTAssertTrue(view.contains("ForEach(job.plan.blockingRisks.indices"))
+        XCTAssertTrue(view.contains("Affected Worktree: %@"))
+        XCTAssertTrue(view.contains("Affected Worktree ID: %@"))
+        XCTAssertTrue(view.contains("Conflict files: %@"))
+        XCTAssertTrue(view.contains("risk.message != localizedMessage"))
         XCTAssertTrue(view.contains("private func repreflightAndReview()"))
         XCTAssertTrue(view.contains("$0.commitStatus != \"not_needed\" || $0.mergeStatus != \"not_needed\""))
         XCTAssertFalse(view.contains("Toggle(L10n(\"Delete this Worktree\")"))
@@ -384,7 +391,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Let Agent Resolve Conflicts\" = \"让 Agent 一键解决冲突\";",
             "\"View Agent Session\" = \"查看 Agent 会话\";",
             "\"Conflict resolved; continuing automatically\" = \"冲突已解决，正在自动继续\";",
-            "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";"
+            "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";",
+            "\"Blocking risk details\" = \"阻断风险详情\";",
+            "\"Affected Worktree: %@\" = \"受影响的 Worktree：%@\";",
+            "\"Affected Worktree ID: %@\" = \"受影响的 Worktree ID：%@\";",
+            "\"Conflict files: %@\" = \"冲突文件：%@\";"
         ] {
             XCTAssertTrue(localization.contains(expected), "Missing localization: \(expected)")
         }
