@@ -1110,6 +1110,7 @@
 "Clean up %d merged Worktrees?" = "清理 %d 个已合并 Worktree？";
 "Clean Up Worktrees" = "清理 Worktree";
 "Only these Worktrees, whose branches are merged into main and have no WorkItem or Session association, will be removed with their local branches:\n%@" = "仅删除以下已合并到主分支且未关联 WorkItem 或 Session 的 Worktree，并同时删除对应本地分支：\n%@";
+"Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:" = "仅删除以下已合并到主分支、没有未完成 WorkItem 或活跃 Session 关联的 Worktree，并同时删除对应本地分支：";
 "Delete Worktree" = "删除 Worktree";
 "Delete this Worktree?" = "删除此 Worktree？";
 "Delete Worktree and Local Branch" = "删除 Worktree 和本地分支";
