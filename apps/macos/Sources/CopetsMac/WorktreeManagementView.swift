@@ -2,8 +2,12 @@ import AppKit
 import SwiftUI
 
 enum WorktreeAutomaticLoadPolicy {
+    static func shouldLoad(isBackendOnline: Bool, isTabSelected: Bool) -> Bool {
+        isBackendOnline && isTabSelected
+    }
+
     static func shouldLoad(isBackendOnline: Bool, selectedTab: AppTab) -> Bool {
-        isBackendOnline && selectedTab == .worktrees
+        shouldLoad(isBackendOnline: isBackendOnline, isTabSelected: selectedTab == .worktrees)
     }
 }
 
@@ -39,12 +43,12 @@ struct WorktreeManagementView: View {
             }
             guard WorktreeAutomaticLoadPolicy.shouldLoad(
                 isBackendOnline: backendClient.isOnline,
-                selectedTab: router.selectedTab
+                isTabSelected: sidebarState.isSelected
             ) else { return }
             await client.loadRepositories()
         }
         .task(id: router.pendingWorktreeTarget) {
-            guard backendClient.isOnline, router.selectedTab == .worktrees else { return }
+            guard backendClient.isOnline, sidebarState.isSelected else { return }
             guard let target = router.pendingWorktreeTarget else { return }
             if await client.navigate(to: target) {
                 if let worktreeId = client.selection.worktreeId {
@@ -174,7 +178,7 @@ struct WorktreeManagementView: View {
     }
 
     private var worktreeReloadTrigger: String {
-        "\(backendClient.isOnline):\(router.selectedTab == .worktrees)"
+        "\(backendClient.isOnline):\(sidebarState.isSelected)"
     }
 
     private var repositoryColumn: some View {
