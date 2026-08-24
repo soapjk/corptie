@@ -87,6 +87,7 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
 
 test("HTTP contract exposes create, list, detail, update, lifecycle actions, and run now", async () => {
   const calls = [];
+  const performance = [];
   const service = {
     create(input, actor) { calls.push(["create", input, actor]); return { taskId: "task:one" }; },
     list(input, actor) { calls.push(["list", input, actor]); return [{ taskId: "task:one" }]; },
@@ -105,7 +106,8 @@ test("HTTP contract exposes create, list, detail, update, lifecycle actions, and
       url,
       service,
       resolveActor: () => ({ type: "user", id: "user:trusted-runtime" }),
-      resolveCurrentLogicalSessionId: () => "logical:current"
+      resolveCurrentLogicalSessionId: () => "logical:current",
+      observePerformance: (measurement) => performance.push(measurement)
     })) {
       response.writeHead(404).end();
     }
@@ -120,7 +122,15 @@ test("HTTP contract exposes create, list, detail, update, lifecycle actions, and
     });
     assert.equal(create.status, 201);
     assert.equal((await create.json()).task.taskId, "task:one");
-    assert.equal((await fetch(`${base}/scheduled-tasks?logicalSessionId=logical%3Aone`)).status, 200);
+    const enrichedList = await fetch(
+      `${base}/scheduled-tasks?logicalSessionId=logical%3Aone&includeRuns=true`
+    );
+    assert.equal(enrichedList.status, 200);
+    assert.match(enrichedList.headers.get("server-timing"), /service;dur=.*serialize;dur=.*total;dur=/);
+    assert.ok(enrichedList.headers.get("x-corptie-request-id"));
+    assert.equal(calls.at(-1)[1].includeRuns, true);
+    assert.equal(performance.at(-1).includeRuns, true);
+    assert.equal(performance.at(-1).taskCount, 1);
     assert.equal((await fetch(`${base}/scheduled-tasks/task%3Aone`)).status, 200);
     assert.equal((await fetch(`${base}/scheduled-tasks/task%3Aone`, {
       method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ timezone: "UTC" })

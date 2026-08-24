@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { statSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import {
   nextIntervalRun,
@@ -22,6 +23,7 @@ export class ScheduledSessionTaskService {
     this.activate = options.activate ?? (async () => ({ delivered: true }));
     this.notify = options.notify ?? (async () => ({ delivered: true }));
     this.onEvent = options.onEvent ?? null;
+    this.observeListPerformance = options.observeListPerformance ?? null;
     this.inspectProcess = options.inspectProcess ?? inspectProcess;
     this.evaluateCondition = options.evaluateCondition ?? executeConditionScript;
     this.now = options.now ?? (() => new Date());
@@ -81,13 +83,20 @@ export class ScheduledSessionTaskService {
   }
 
   list(options = {}, actor) {
+    const startedAt = performance.now();
+    const phases = {};
+    let phaseStartedAt = performance.now();
     this.#expireDueTasks(this.now());
+    phases.expirationMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+    phaseStartedAt = performance.now();
     const tasks = this.store.listScheduledSessionTasks({
       environment: this.environment,
       logicalSessionId: options.logicalSessionId,
       status: options.status
     });
-    return tasks.filter((task) => {
+    phases.taskQueryMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+    phaseStartedAt = performance.now();
+    const authorizedTasks = tasks.filter((task) => {
       try {
         this.#authorize(actor, task.logicalSessionId, "read", task);
         return true;
@@ -95,6 +104,23 @@ export class ScheduledSessionTaskService {
         return false;
       }
     });
+    phases.authorizationMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+    phaseStartedAt = performance.now();
+    const result = options.includeRuns
+      ? attachRuns(authorizedTasks, this.store.listScheduledSessionRunsForTasks(
+        authorizedTasks.map((task) => task.taskId)
+      ))
+      : authorizedTasks;
+    phases.runQueryMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+    this.observeListPerformance?.({
+      operation: "scheduled-task.list",
+      requestId: options.requestId ?? null,
+      includeRuns: options.includeRuns === true,
+      taskCount: result.length,
+      phases,
+      totalMs: roundedMilliseconds(performance.now() - startedAt)
+    });
+    return result;
   }
 
   update(taskId, input, actor) {
@@ -1058,6 +1084,14 @@ export function processObservationFromPs(output, spec) {
 
 function stableId(prefix, ...parts) {
   return `${prefix}:${createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32)}`;
+}
+
+function attachRuns(tasks, runsByTaskId) {
+  return tasks.map((task) => ({ ...task, runs: runsByTaskId.get(task.taskId) ?? [] }));
+}
+
+function roundedMilliseconds(value) {
+  return Math.round(value * 1000) / 1000;
 }
 
 function operationError(code, message) {

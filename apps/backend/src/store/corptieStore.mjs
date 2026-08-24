@@ -471,6 +471,16 @@ export class CorptieStore {
       ON scheduled_session_runs(status, deadline_at)`);
   }
 
+  migrateScheduledSessionTaskReadIndexes() {
+    // Collection reads are ordered exactly this way by both the Session detail
+    // card and the global Automation view. Keep both filtered and unfiltered
+    // paths index-ordered so a small result never waits on a table scan/sort.
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_scheduled_session_tasks_environment_created
+      ON scheduled_session_tasks(environment, created_at DESC, task_id ASC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_scheduled_session_tasks_environment_session_created
+      ON scheduled_session_tasks(environment, logical_session_id, created_at DESC, task_id ASC)`);
+  }
+
   migrateAutomationExpirationV1() {
     const table = this.selectOne(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_session_tasks'"
@@ -1882,6 +1892,7 @@ export class CorptieStore {
     this.migrateAutomationSchedulerV1();
     this.migrateAutomationExpirationV1();
     this.migrateAutomationCompletedStatusV1();
+    this.migrateScheduledSessionTaskReadIndexes();
 
     // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---
     this.db.run(`
@@ -5304,6 +5315,28 @@ export class CorptieStore {
       "SELECT * FROM scheduled_session_runs WHERE task_id = ? ORDER BY created_at DESC LIMIT ?",
       [taskId, Math.max(1, Math.min(1000, Number(limit) || 100))]
     ).map(scheduledSessionRunFromRow);
+  }
+
+  listScheduledSessionRunsForTasks(taskIds, limitPerTask = 100) {
+    const ids = [...new Set(taskIds)].filter((taskId) => typeof taskId === "string" && taskId.length > 0);
+    if (ids.length === 0) return new Map();
+    const limit = Math.max(1, Math.min(1000, Number(limitPerTask) || 100));
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.selectAll(
+      `SELECT * FROM (
+         SELECT scheduled_session_runs.*,
+           ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY created_at DESC) AS history_rank
+         FROM scheduled_session_runs
+         WHERE task_id IN (${placeholders})
+       ) WHERE history_rank <= ?
+       ORDER BY task_id ASC, created_at DESC`,
+      [...ids, limit]
+    );
+    const runsByTaskId = new Map(ids.map((taskId) => [taskId, []]));
+    for (const row of rows) {
+      runsByTaskId.get(row.task_id)?.push(scheduledSessionRunFromRow(row));
+    }
+    return runsByTaskId;
   }
 
   countActiveScheduledSessionRuns(taskId) {
