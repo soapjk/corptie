@@ -525,6 +525,7 @@ export class WorktreeIntegrationJobService {
           details: {
             ...job.details,
             conflictAutomation: {
+              ...previousAutomation,
               status: "running",
               scopeWorktreeIds: previousAutomation?.scopeWorktreeIds ?? [...job.details.plan.mergeOrder],
               completedWorktreeIds: completedMergeWorktreeIds(job.details.plan.items),
@@ -679,6 +680,16 @@ export class WorktreeIntegrationJobService {
         error: null,
         details: {
           ...job.details,
+          conflictAutomation: {
+            ...job.details.conflictAutomation,
+            workItemId: created.workItemId,
+            sessionId: created.sessionId,
+            sessionName: created.sessionName ?? null,
+            agentId: created.agentId,
+            agentName: created.agentName,
+            workspaceId: workspace.worktreeId,
+            workspacePath: workspace.path
+          },
           conflictResolution: {
             status: "running",
             worktreeId: item.worktreeId,
@@ -699,7 +710,8 @@ export class WorktreeIntegrationJobService {
           branchName: workspace.branchName,
           worktreePath: workspace.path,
           retryCount,
-          failureStage: null
+          failureStage: null,
+          reusedPlanSession: created.reused === true
         }
       }));
     } catch (error) {

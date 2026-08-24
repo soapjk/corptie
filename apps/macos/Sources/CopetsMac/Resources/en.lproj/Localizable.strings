@@ -832,3 +832,8 @@
 "Enable recall" = "Enable recall";
 "recall disabled" = "recall disabled";
 "The Memory will stop participating in recall. Its content and audit history remain available, and it can be enabled again." = "The Memory will stop participating in recall. Its content and audit history remain available, and it can be enabled again.";
+"Blocking risk details" = "Blocking risk details";
+"Affected Worktree: %@" = "Affected Worktree: %@";
+"Affected Worktree ID: %@" = "Affected Worktree ID: %@";
+"Conflict files: %@" = "Conflict files: %@";
+"The backend did not identify an affected Worktree for this risk." = "The backend did not identify an affected Worktree for this risk.";

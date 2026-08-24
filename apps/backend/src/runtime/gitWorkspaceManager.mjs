@@ -564,9 +564,42 @@ export class GitWorkspaceManager {
       const branchName = `integration/${suffix}`;
       const targetPath = resolve(dirname(main.path), `${basename(main.path)}-integration-${suffix}`);
       const byPath = snapshot.worktrees.find((worktree) => resolve(worktree.path) === targetPath);
-      if (byPath?.availability === "available"
-        && byPath.branchName === branchName
-        && byPath.headOid === main.headOid) {
+      if (byPath?.availability === "available" && byPath.branchName === branchName) {
+        const operation = await this.integrationOperationState(byPath.path);
+        const status = (await this.gitOutput(byPath.path, ["status", "--porcelain=v1"])).trim();
+        if (operation || status) {
+          const error = integrationGitError(
+            "INTEGRATION_WORKSPACE_NOT_CLEAN",
+            `The plan-owned Integration Worktree is not clean: ${branchName} (${targetPath}).`
+          );
+          error.recoverable = false;
+          throw error;
+        }
+        if (byPath.headOid !== main.headOid) {
+          const canFastForward = await this.gitSucceeds(main.path, [
+            "merge-base", "--is-ancestor", byPath.headOid, main.headOid
+          ]);
+          if (!canFastForward) {
+            const error = integrationGitError(
+              "INTEGRATION_WORKSPACE_DIVERGED",
+              `The plan-owned Integration branch no longer follows main: ${branchName}.`
+            );
+            error.recoverable = false;
+            throw error;
+          }
+          await this.runGit(byPath.path, ["merge", "--ff-only", main.headOid]);
+          snapshot = await createGitWorkspaceSnapshot(byPath.path);
+          this.store.upsertGitWorkspaceSnapshot(snapshot);
+          main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
+          const advanced = snapshot.worktrees.find((worktree) => resolve(worktree.path) === targetPath);
+          if (!main || !advanced) {
+            throw integrationGitError(
+              "INTEGRATION_WORKSPACE_INVENTORY_STALE",
+              "The plan-owned Integration Worktree was advanced, but inventory could not resolve it."
+            );
+          }
+          return this.#presentIntegrationWorkspace(snapshot, main, advanced, attempt, true);
+        }
         return this.#presentIntegrationWorkspace(snapshot, main, byPath, attempt, true);
       }
       const branchOccupied = snapshot.worktrees.some((worktree) => worktree.branchName === branchName)
