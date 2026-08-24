@@ -21,6 +21,7 @@ import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProv
 import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
+import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import {
   ProjectWorktreeIntegrationService,
@@ -272,6 +273,7 @@ let activeSessionReconciliationInFlight = false;
 const activeSessionReconciledAt = new Map();
 const activeSessionReconciliationPendingIds = new Set();
 let stateSyncService = null;
+const sessionStateDiagnostics = new SessionStateDiagnostics();
 let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
 let workItemStartService = null;
@@ -495,7 +497,7 @@ const codexRuntime = createCodexProviderRuntime({
     CODEX_HOME: corptieCodexRuntimePaths.codexHome
   }),
   onNotification: (message) => {
-    handleCodexAppServerNotification(message);
+    handleCodexAppServerNotificationSafely(message);
   },
   onDynamicToolCall: (params) => toolHostService.execute({
     ...params,
@@ -535,7 +537,7 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
   prepareSessionInput: prepareClaudeProviderSessionInput,
   listModels: loadClaudeModels,
-  onTurnSettled: handleClaudeTurnSettled,
+  onTurnSettled: handleClaudeTurnSettledSafely,
   prepareWorkspaceTransition: switchClaudeProviderWorkspace,
   attachTools: async (attachment) => claudeToolHostAttachment(
     attachment,
@@ -581,73 +583,98 @@ const openClackyManager = new OpenClackyManager({
     };
   },
   onSessionChanged: (change) => {
-    const providerEvent = change.event ?? null;
-    const providerEventType = String(providerEvent?.type ?? "");
     const sessionId = change.session?.id
       ?? (change.sessionId ? `openclacky:${String(change.sessionId).replace(/^openclacky:/, "")}` : null);
-    const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
-    const activeProviderId = logical?.activeBinding?.providerId ?? "openclacky";
-    // A stale socket from a historical Provider binding must never overwrite
-    // the projection owned by the currently active Provider after a switch.
-    if (activeProviderId !== "openclacky") return;
-    const changedSessions = change.session ? [change.session] : (change.sessions ?? []);
-    for (const changedSession of changedSessions) {
-      const changedSessionId = changedSession?.id;
-      if (!changedSessionId) continue;
-      const changedLogical = store.getLogicalSessionByLegacySessionId(changedSessionId);
-      if (changedLogical?.activeBinding?.providerId && changedLogical.activeBinding.providerId !== "openclacky") {
-        continue;
-      }
-      const previous = store.getSession(changedSessionId);
-      store.upsertSession({
-        ...(previous ?? {}),
-        ...changedSession,
-        id: changedSessionId,
-        provider: "openclacky",
-        cwd: changedSession.external?.cwd ?? previous?.external?.cwd,
-        command: "openclacky",
-        agentId: previous?.agentId ?? changedSession.agentId,
-        objectiveId: previous?.objectiveId ?? changedSession.objectiveId,
-        workItemId: previous?.workItemId ?? changedSession.workItemId,
-        sessionKind: previous?.sessionKind ?? changedSession.sessionKind
+    const providerEvent = change.event ?? null;
+    const providerEventType = String(providerEvent?.type ?? "");
+    if (sessionId) {
+      sessionStateDiagnostics.record(sessionId, "providerReceived", {
+        providerId: "openclacky",
+        turnId: providerEvent?.turn_id ?? null,
+        eventName: providerEventType || change.type || "session-changed"
       });
     }
-    if (sessionId && (providerEventType === "assistant_message" || providerEventType === "request_feedback")) {
-      const text = providerEventType === "request_feedback"
-        ? String(providerEvent?.question ?? "")
-        : String(providerEvent?.content ?? "");
-      if (text.trim()) {
+    try {
+      const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
+      const activeProviderId = logical?.activeBinding?.providerId ?? "openclacky";
+      // A stale socket from a historical Provider binding must never overwrite
+      // the projection owned by the currently active Provider after a switch.
+      if (activeProviderId !== "openclacky") return;
+      const changedSessions = change.session ? [change.session] : (change.sessions ?? []);
+      for (const changedSession of changedSessions) {
+        const changedSessionId = changedSession?.id;
+        if (!changedSessionId) continue;
+        const changedLogical = store.getLogicalSessionByLegacySessionId(changedSessionId);
+        if (changedLogical?.activeBinding?.providerId && changedLogical.activeBinding.providerId !== "openclacky") {
+          continue;
+        }
+        const previous = store.getSession(changedSessionId);
+        store.upsertSession({
+          ...(previous ?? {}),
+          ...changedSession,
+          id: changedSessionId,
+          provider: "openclacky",
+          cwd: changedSession.external?.cwd ?? previous?.external?.cwd,
+          command: "openclacky",
+          agentId: previous?.agentId ?? changedSession.agentId,
+          objectiveId: previous?.objectiveId ?? changedSession.objectiveId,
+          workItemId: previous?.workItemId ?? changedSession.workItemId,
+          sessionKind: previous?.sessionKind ?? changedSession.sessionKind
+        });
+      }
+      if (sessionId && (providerEventType === "assistant_message" || providerEventType === "request_feedback")) {
+        const text = providerEventType === "request_feedback"
+          ? String(providerEvent?.question ?? "")
+          : String(providerEvent?.content ?? "");
+        if (text.trim()) {
+          const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
+          emitEvent("assistant/message", {
+            text,
+            itemType: "agentMessage",
+            providerEventId
+          }, {
+            sessionId,
+            source: { type: "openclacky" },
+            eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:assistant-message` : null
+          });
+        }
+      }
+      if (sessionId && providerEventType === "task_finished") {
         const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
-        emitEvent("assistant/message", {
-          text,
-          itemType: "agentMessage",
-          providerEventId
+        emitEvent("AgentTurnCompleted", {
+          session: change.session ?? store.getSession(sessionId),
+          turn: { id: providerEvent?.turn_id ?? null },
+          hasAgentMessage: change.hasAgentMessage === true
         }, {
           sessionId,
           source: { type: "openclacky" },
-          eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:assistant-message` : null
+          eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:turn-completed` : null
         });
       }
-    }
-    if (sessionId && providerEventType === "task_finished") {
-      const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
-      emitEvent("AgentTurnCompleted", {
-        session: change.session ?? store.getSession(sessionId),
-        turn: { id: providerEvent?.turn_id ?? null },
-        hasAgentMessage: change.hasAgentMessage === true
-      }, {
+      emitEvent("ProviderSessionChanged", {
+        provider: "openclacky",
+        type: change.type,
+        eventType: providerEventType || null,
         sessionId,
-        source: { type: "openclacky" },
-        eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:turn-completed` : null
-      });
+        error: change.error?.message ?? null
+      }, { sessionId, source: { type: "openclacky" } });
+      if (sessionId && providerEventType === "task_finished") {
+        sessionStateDiagnostics.record(sessionId, "persisted", {
+          status: store.getSession(sessionId)?.status ?? null,
+          eventName: providerEventType
+        });
+      }
+    } catch (error) {
+      console.error(`[provider-notification] isolated failure provider=openclacky session=${sessionId ?? "unknown"} event=${providerEventType || change.type || "unknown"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
+      if (sessionId) {
+        sessionStateDiagnostics.record(sessionId, "providerError", {
+          eventName: providerEventType || change.type || "unknown",
+          code: error?.code ?? null,
+          error: error?.message ?? String(error)
+        });
+        scheduleSessionProviderProjectionReconciliation(sessionId, "provider-notification-error");
+      }
     }
-    emitEvent("ProviderSessionChanged", {
-      provider: "openclacky",
-      type: change.type,
-      eventType: providerEventType || null,
-      sessionId,
-      error: change.error?.message ?? null
-    }, { sessionId, source: { type: "openclacky" } });
   }
 });
 const openClackyWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
@@ -1991,6 +2018,10 @@ function seedSessions() {
 }
 
 function emitEvent(type, payload, options = {}) {
+  // Provider terminal notifications may be replayed after reconnect. A stable
+  // event id makes the entire product event idempotent, including global SSE,
+  // the durable timeline, unread cursors, and downstream work orchestration.
+  if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;
   const event = {
     id: eventLog.length + 1,
     type,
@@ -2245,6 +2276,12 @@ function publishStateChangesIfNeeded() {
     }
     writeStateSyncFrame(response, delivery.name, delivery.data);
     stateSyncClients.set(response, delivery.data.revision);
+    for (const session of delivery.data?.upserts?.sessions ?? []) {
+      sessionStateDiagnostics.record(session.id, "statePublished", {
+        revision: delivery.data.revision,
+        status: session.status
+      });
+    }
   }
 }
 
@@ -2254,6 +2291,9 @@ function scheduleStateSyncPublish() {
     return;
   }
   if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
+  // Collapse a burst of Provider item/progress events into one revision-aware
+  // delivery. This avoids rebuilding the control-plane projection once per
+  // event while keeping terminal propagation effectively immediate.
   stateSyncPublishTimer = setTimeout(() => {
     stateSyncPublishTimer = null;
     publishStateChangesIfNeeded();
@@ -2262,7 +2302,7 @@ function scheduleStateSyncPublish() {
 }
 
 async function reconcileActiveSessionProviderProjections() {
-  if (activeSessionReconciliationInFlight || stateSyncClients.size === 0) return;
+  if (activeSessionReconciliationInFlight) return;
   activeSessionReconciliationInFlight = true;
   try {
     const persistedSessions = visibleStoredSessionProjections(store, [
@@ -2286,7 +2326,7 @@ async function reconcileActiveSessionProviderProjections() {
     ).filter((session) => !activeSessionReconciliationPendingIds.has(session.id));
     candidates.forEach((session) => activeSessionReconciledAt.set(session.id, checkedAt));
     candidates.forEach((session) => activeSessionReconciliationPendingIds.add(session.id));
-    await reconcileSessionProjectionsIndependently(
+    const results = await reconcileSessionProjectionsIndependently(
       candidates,
       async (session) => {
         try {
@@ -2301,6 +2341,14 @@ async function reconcileActiveSessionProviderProjections() {
       },
       { timeoutMs: 5_000 }
     );
+    for (const result of results) {
+      if (!result.sessionId) continue;
+      sessionStateDiagnostics.record(result.sessionId, "reconciled", {
+        reason: "background",
+        outcome: result.status,
+        status: result.value?.status ?? null
+      });
+    }
     // readSession() persists a corrected Provider projection when a terminal
     // notification was missed. Publish that revision without waiting for an
     // unrelated mutation or for the user to open the conversation.
@@ -2312,24 +2360,29 @@ async function reconcileActiveSessionProviderProjections() {
 
 function updateStateSyncConsistencyTimer() {
   if (stateSyncClients.size > 0 && !stateSyncConsistencyTimer) {
-    stateSyncConsistencyTimer = setInterval(publishStateChangesIfNeeded, 250);
+    // Store mutations normally schedule an immediate coalesced publish. This
+    // low-frequency pass is only a safety net for legacy mutation paths that do
+    // not emit a product event.
+    stateSyncConsistencyTimer = setInterval(publishStateChangesIfNeeded, 2_000);
     stateSyncConsistencyTimer.unref?.();
-    void reconcileActiveSessionProviderProjections();
-    activeSessionReconciliationTimer = setInterval(
-      () => void reconcileActiveSessionProviderProjections(),
-      5_000
-    );
-    activeSessionReconciliationTimer.unref?.();
   } else if (stateSyncClients.size === 0 && stateSyncConsistencyTimer) {
     clearInterval(stateSyncConsistencyTimer);
     stateSyncConsistencyTimer = null;
-    clearInterval(activeSessionReconciliationTimer);
-    activeSessionReconciliationTimer = null;
     if (stateSyncPublishTimer) {
       clearTimeout(stateSyncPublishTimer);
       stateSyncPublishTimer = null;
     }
   }
+}
+
+function startActiveSessionReconciliation() {
+  if (activeSessionReconciliationTimer) return;
+  void reconcileActiveSessionProviderProjections();
+  activeSessionReconciliationTimer = setInterval(
+    () => void reconcileActiveSessionProviderProjections(),
+    5_000
+  );
+  activeSessionReconciliationTimer.unref?.();
 }
 
 function sessionIdFromEventPayload(payload = {}) {
@@ -2635,24 +2688,29 @@ function applyCodexChoiceOptionsToManagedSession(threadId, text, options, genera
 }
 
 function upsertManagedCodexSession(session, preferredAgentId = null) {
-  sessionPresentationCache.set(session.id, session);
   const stored = store.getSession(session.id);
-  const sessionKind = stored?.sessionKind ?? session.sessionKind;
+  // Durable product associations win over a stale Provider callback cache.
+  // Persist before publishing the in-memory projection so a validation
+  // failure cannot leave the cache ahead of SQLite.
+  const managedSession = mergeStoredSessionPresentation(session, stored);
+  const sessionKind = stored?.sessionKind ?? managedSession.sessionKind;
   if (!isProductSessionKind(sessionKind)) {
     if (!reportedUnclassifiedProviderSessionIds.has(session.id)) {
       reportedUnclassifiedProviderSessionIds.add(session.id);
       console.warn(`[session-classification] skipped unclassified Codex projection session=${session.id}`);
     }
-    return;
+    return null;
   }
   store.upsertSession({
-    ...session,
+    ...managedSession,
     sessionKind,
-    provider: session.external?.provider ?? "codex-app-server",
-    cwd: session.external?.cwd,
-    command: session.external?.source ?? "codex-app-server"
+    provider: managedSession.external?.provider ?? "codex-app-server",
+    cwd: managedSession.external?.cwd,
+    command: managedSession.external?.source ?? "codex-app-server"
   });
-  ensureCollaborationAgentForSession(session, preferredAgentId);
+  sessionPresentationCache.set(managedSession.id, managedSession);
+  ensureCollaborationAgentForSession(managedSession, preferredAgentId);
+  return managedSession;
 }
 
 function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
@@ -3096,6 +3154,41 @@ function withPendingCollaborationConfirmations(sessions = []) {
   });
 }
 
+function handleCodexAppServerNotificationSafely(message) {
+  const method = message?.method ?? "unknown";
+  const threadId = message?.params?.threadId ?? null;
+  const logical = threadId ? store.getLogicalSessionByProviderThreadId(threadId) : null;
+  const sessionId = logical?.legacySessionId ?? (threadId ? `codex:${threadId}` : null);
+  if (sessionId) {
+    sessionStateDiagnostics.record(sessionId, "providerReceived", {
+      providerId: "codex-app-server",
+      threadId,
+      turnId: message?.params?.turn?.id ?? message?.params?.turnId ?? null,
+      eventName: method
+    });
+  }
+  try {
+    handleCodexAppServerNotification(message);
+    if (sessionId && ["turn/completed", "error"].includes(method)) {
+      const persisted = store.getSession(sessionId);
+      sessionStateDiagnostics.record(sessionId, "persisted", {
+        status: persisted?.status ?? null,
+        eventName: method
+      });
+    }
+  } catch (error) {
+    console.error(`[provider-notification] isolated failure provider=codex-app-server session=${sessionId ?? "unknown"} thread=${threadId ?? "unknown"} event=${method} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
+    if (sessionId) {
+      sessionStateDiagnostics.record(sessionId, "providerError", {
+        eventName: method,
+        code: error?.code ?? null,
+        error: error?.message ?? String(error)
+      });
+      scheduleSessionProviderProjectionReconciliation(sessionId, "provider-notification-error");
+    }
+  }
+}
+
 function handleCodexAppServerNotification(message) {
   const method = message?.method;
   const params = message?.params ?? {};
@@ -3234,7 +3327,7 @@ function handleCodexAppServerNotification(message) {
     const turn = params.turn ?? {};
       const failed = Boolean(turn.error) || turn.status === "failed";
       const cancelled = turn.status === "interrupted" || turn.status === "cancelled";
-      const nextSession = {
+      let nextSession = {
         ...session,
         status: failed ? "failed" : (cancelled ? "cancelled" : "complete"),
         progress: 1,
@@ -3251,7 +3344,10 @@ function handleCodexAppServerNotification(message) {
           rawStatus: turn.status ?? (failed ? "failed" : (cancelled ? "cancelled" : "complete"))
         }
       };
-      upsertManagedCodexSession(nextSession);
+      nextSession = upsertManagedCodexSession(nextSession);
+      // Unclassified Provider projections are intentionally excluded from the
+      // product Session model; do not publish a terminal product event for one.
+      if (!nextSession) return;
       if (!failed && !cancelled && latestAgentMessage?.text) {
         scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
       }
@@ -3260,6 +3356,12 @@ function handleCodexAppServerNotification(message) {
         threadId,
         turn,
         hasAgentMessage: Boolean(latestAgentMessage?.text)
+      }, {
+        sessionId: nextSession.id,
+        source: { type: "codex-app-server" },
+        eventId: turn.id
+          ? `codex-app-server:${nextSession.id}:${turn.id}:turn-${failed ? "failed" : (cancelled ? "cancelled" : "completed")}`
+          : null
       });
       const completedWork = store.getAgentWorkItemForTurn(nextSession.id, turn.id)
         ?? store.getRunningAgentWorkItemForSession(nextSession.id);
@@ -6029,6 +6131,37 @@ async function commitManagedClaudeWorkspaceRoute(event) {
   }, { sessionId: logical.legacySessionId });
 }
 
+async function handleClaudeTurnSettledSafely(event) {
+  const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
+  const sessionId = logical?.legacySessionId ?? null;
+  if (sessionId) {
+    sessionStateDiagnostics.record(sessionId, "providerReceived", {
+      providerId: "claude-sdk",
+      turnId: event.turnId ?? null,
+      eventName: `turn/${event.status ?? "settled"}`
+    });
+  }
+  try {
+    await handleClaudeTurnSettled(event);
+    if (sessionId) {
+      sessionStateDiagnostics.record(sessionId, "persisted", {
+        status: store.getSession(sessionId)?.status ?? null,
+        eventName: `turn/${event.status ?? "settled"}`
+      });
+    }
+  } catch (error) {
+    console.error(`[provider-notification] isolated failure provider=claude-sdk session=${sessionId ?? "unknown"} event=turn/${event.status ?? "settled"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
+    if (sessionId) {
+      sessionStateDiagnostics.record(sessionId, "providerError", {
+        eventName: `turn/${event.status ?? "settled"}`,
+        code: error?.code ?? null,
+        error: error?.message ?? String(error)
+      });
+      scheduleSessionProviderProjectionReconciliation(sessionId, "provider-notification-error");
+    }
+  }
+}
+
 async function handleClaudeTurnSettled(event) {
   const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
   if (!logical) return;
@@ -8411,12 +8544,21 @@ function route(request, response) {
     const revision = store.stateRevision();
     const oldestRevision = store.oldestStateChangeRevision();
     const consistencyIssues = store.stateConsistencyIssues();
+    const requestedTimelineSessionId = url.searchParams.get("sessionId");
+    const includeTimelines = requestedTimelineSessionId
+      || url.searchParams.get("includeTimelines") === "1";
     sendJson(response, 200, {
       revision,
       oldestRevision,
       replayDepth: Math.max(0, revision - oldestRevision + 1),
       connectedClients: stateSyncClients.size,
       sync: stateSyncService.diagnostics(),
+      activeReconciliationRunning: activeSessionReconciliationTimer !== null,
+      ...(includeTimelines ? {
+        terminalTimelines: requestedTimelineSessionId
+          ? [sessionStateDiagnostics.get(requestedTimelineSessionId)].filter(Boolean)
+          : sessionStateDiagnostics.list()
+      } : {}),
       healthy: consistencyIssues.length === 0,
       consistencyIssues
     });
@@ -8749,6 +8891,10 @@ setInterval(updateMockProgress, 2500).unref();
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
+  // Provider truth must converge into SQLite even when every UI is closed or
+  // backgrounded. State-stream clients consume this projection; they never
+  // drive its lifecycle.
+  startActiveSessionReconciliation();
   // Feishu reconciliation may stop daemons and call remote identity/model
   // services for every configured bot. It is maintenance, not an API
   // readiness dependency, so never hold the loopback server closed for it.
@@ -8788,6 +8934,9 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
+    if (activeSessionReconciliationTimer) clearInterval(activeSessionReconciliationTimer);
+    if (stateSyncConsistencyTimer) clearInterval(stateSyncConsistencyTimer);
+    if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
     scheduledSessionTaskService.stop();
     codexResetForecastMonitor?.stop();
     openClackyManager.stop();
