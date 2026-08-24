@@ -393,6 +393,7 @@ struct ScheduledSessionTaskEnvelope: Decodable, Sendable {
 }
 
 struct ScheduledSessionTaskDraft: Equatable, Sendable {
+    var title: String
     var message: String
     var scheduleType: ScheduledSessionScheduleType
     var runAt: Date
@@ -403,6 +404,7 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
 
     static func fresh(message: String = "", now: Date = Date(), timezone: TimeZone = .current) -> Self {
         Self(
+            title: "",
             message: message,
             scheduleType: .once,
             runAt: now.addingTimeInterval(5 * 60),
@@ -414,6 +416,9 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
     }
 
     func validationError(now: Date = Date()) -> ScheduledSessionValidationError? {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedTitle.isEmpty { return .emptyTitle }
+        if normalizedTitle.count > 120 { return .titleTooLong }
         if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .emptyMessage }
         guard TimeZone(identifier: timezone) != nil else { return .invalidTimezone }
         if expiresAt <= now { return .pastExpiration }
@@ -431,6 +436,7 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
 
     func requestBody() -> [String: Any] {
         var body: [String: Any] = [
+            "name": title.trimmingCharacters(in: .whitespacesAndNewlines),
             "message": ["text": message.trimmingCharacters(in: .whitespacesAndNewlines)],
             "scheduleType": scheduleType.rawValue,
             "timezone": timezone,
@@ -447,6 +453,8 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
 }
 
 enum ScheduledSessionValidationError: String, Error, Equatable, Sendable {
+    case emptyTitle
+    case titleTooLong
     case emptyMessage
     case pastRunAt
     case invalidInterval
@@ -459,6 +467,8 @@ enum ScheduledSessionValidationError: String, Error, Equatable, Sendable {
 extension ScheduledSessionValidationError: LocalizedError {
     var errorDescription: String? {
         switch self {
+        case .emptyTitle: "计划任务标题不能为空。"
+        case .titleTooLong: "计划任务标题不能超过 120 个字符。"
         case .emptyMessage: "定时消息不能为空。"
         case .pastRunAt: "执行时间必须晚于当前时间。"
         case .invalidInterval: "固定间隔必须在 1 分钟到 365 天之间。"
