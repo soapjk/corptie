@@ -479,8 +479,15 @@ export class ScheduledSessionTaskService {
           const message = run.conditionResult?.message
             ? { ...action.message, text: run.conditionResult.message }
             : action.message;
-          workItem = await this.enqueue({
-            workItemId: `scheduled:${run.runId}:${index}`,
+          const deliveryId = stableId(
+            "scheduled_delivery",
+            run.runId,
+            message.type ?? "scheduled_session_message",
+            message.text,
+            JSON.stringify(message.payload ?? null)
+          );
+          const enqueueResult = await this.enqueue({
+            workItemId: `scheduled:${deliveryId}`,
             agentId: route.agentId,
             sessionId: route.sessionId,
             kind: "user",
@@ -496,13 +503,32 @@ export class ScheduledSessionTaskService {
               triggerKind: run.triggerKind,
               triggerReason: run.triggerReason,
               scheduledFor: run.scheduledFor,
+              deliveryId,
               exitStatus: run.exitStatus,
               conditionResult: run.conditionResult
             },
             localVisibility: "normal",
             createdAt: now.toISOString()
           });
-          actionResults.push({ type: action.type, status: "queued", workItemId: workItem.workItemId, completedAt: this.now().toISOString() });
+          workItem = enqueueResult?.workItem ?? enqueueResult;
+          if (!workItem?.workItemId) {
+            operationError("AUTOMATION_DELIVERY_RECEIPT_INVALID", `Delivery ${deliveryId} returned no durable work item.`);
+          }
+          const deduplicated = enqueueResult?.inserted === false;
+          actionResults.push({
+            type: action.type,
+            status: deduplicated ? "deduplicated" : "queued",
+            deliveryId,
+            workItemId: workItem.workItemId,
+            completedAt: this.now().toISOString()
+          });
+          this.#record(
+            deduplicated ? "ScheduledSessionDeliveryDeduplicated" : "ScheduledSessionDeliveryCommitted",
+            task,
+            run,
+            { type: "system", id: this.leaseOwner },
+            { scheduledFor: run.scheduledFor, deliveryId, agentWorkItemId: workItem.workItemId }
+          );
         } else if (action.type === "activateSession") {
           await this.activate({ logicalSessionId: task.logicalSessionId, sessionId: route.sessionId, automationId: task.taskId, runId: run.runId });
           actionResults.push({ type: action.type, status: "requested", completedAt: this.now().toISOString() });
@@ -653,11 +679,44 @@ export class ScheduledSessionTaskService {
       if (!task) continue;
       const error = new Error(`Automation run ${run.runId} exceeded ${task.timeoutSeconds} seconds.`);
       error.code = "AUTOMATION_RUN_TIMEOUT";
-      this.#handleTriggerFailure(task, run, error, now);
+      if (run.status === "claimed") this.#handleTriggerFailure(task, run, error, now);
+      else this.#handleExecutionTimeout(task, run, error, now);
     }
   }
 
+  #handleExecutionTimeout(task, run, error, now) {
+    const currentTask = this.store.getScheduledSessionTask(task.taskId) ?? task;
+    const failedRun = this.store.updateScheduledSessionRun(run.runId, {
+      status: "failed",
+      errorCode: error.code,
+      errorMessage: error.message,
+      completedAt: now.toISOString()
+    });
+    let updatedTask = currentTask;
+    if (currentTask.lastRunId === run.runId) {
+      updatedTask = this.store.updateScheduledSessionTask(task.taskId, {
+        lastRunStatus: "failed",
+        lastRunAt: now.toISOString(),
+        lastErrorCode: error.code,
+        lastErrorMessage: error.message
+      });
+    }
+    this.#record("ScheduledSessionRunFailed", updatedTask, failedRun, {
+      type: "system", id: this.leaseOwner
+    }, {
+      errorCode: error.code,
+      errorMessage: error.message,
+      scheduledFor: run.scheduledFor,
+      deliveryId: run.agentWorkItemId,
+      retryCount: currentTask.retryCount,
+      willRetry: false,
+      retrySuppressed: "delivery_already_committed"
+    });
+    return failedRun;
+  }
+
   #handleTriggerFailure(task, run, error, now = this.now(), options = {}) {
+    task = this.store.getScheduledSessionTask(task.taskId) ?? task;
     const code = error?.code ?? "SCHEDULE_TRIGGER_FAILED";
     const message = error?.message ?? String(error);
     const retryCount = task.retryCount + 1;
@@ -682,6 +741,22 @@ export class ScheduledSessionTaskService {
         status: "claimed",
         createdAt: now.toISOString()
       });
+    }
+    if (TERMINAL_TASK_STATUSES.has(task.status)) {
+      failedRun = failedRun?.runId
+        ? (this.store.getScheduledSessionRun(failedRun.runId) ?? failedRun)
+        : failedRun;
+      this.#record("ScheduledSessionRunFailed", task, failedRun, { type: "system", id: this.leaseOwner }, {
+        errorCode: code,
+        errorMessage: message,
+        scheduledFor: failedRun?.scheduledFor ?? scheduledFor,
+        deliveryId: failedRun?.agentWorkItemId ?? null,
+        retryCount: task.retryCount,
+        willRetry: false,
+        retrySuppressed: `task_${task.status}`
+      });
+      if (options.preserveSchedule) throw error;
+      return failedRun;
     }
     if (failedRun) {
       failedRun = this.store.updateScheduledSessionRun(failedRun.runId, {

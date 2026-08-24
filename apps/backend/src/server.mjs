@@ -3093,7 +3093,15 @@ async function resolveScheduledSessionRoute(logicalSessionId) {
 }
 
 function enqueueScheduledSessionWork(input) {
-  const workItem = store.enqueueAgentWorkItem(input);
+  const { workItem, inserted } = store.enqueueAgentWorkItemWithResult(input);
+  const deliveryId = input.source?.deliveryId ?? input.workItemId;
+  console.info(
+    `[automation-delivery] result=${inserted ? "inserted" : "deduplicated"}`
+    + ` taskId=${input.source?.scheduledTaskId ?? "unknown"}`
+    + ` scheduledFor=${input.source?.scheduledFor ?? "unknown"}`
+    + ` deliveryId=${deliveryId}`
+  );
+  if (!inserted) return { workItem, inserted };
   const queuePosition = store.listQueuedAgentWorkItemsForSession(input.sessionId)
     .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
   emitEvent("AgentWorkQueued", {
@@ -3103,7 +3111,7 @@ function enqueueScheduledSessionWork(input) {
     source: workItem.source
   }, { sessionId: input.sessionId, source: workItem.source });
   scheduleAgentWorkDrain(input.sessionId);
-  return workItem;
+  return { workItem, inserted };
 }
 
 function scheduledSessionHttpActor(request) {
