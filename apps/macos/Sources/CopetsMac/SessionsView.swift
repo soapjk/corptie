@@ -17,7 +17,8 @@ struct SessionsView: View {
     @ObservedObject private var sessionListStore = BackendClient.shared.sessionListStore
     private let entityClient = EntityAPIClient.shared
     @StateObject private var layoutState = PanelLayoutState()
-    @StateObject private var presentationStore = SessionPresentationStore(hostCapacity: 3)
+    @StateObject private var presentationStore = SessionPresentationStore(hostCapacity: 1)
+    @StateObject private var sessionGroupProjectionStore = SessionGroupProjectionStore()
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var detailRenderTask: Task<Void, Never>?
     @State private var visuallySelectedSessionID: String?
@@ -102,6 +103,7 @@ struct SessionsView: View {
             selectedSession = session
             if let session {
                 let category = SessionCategory(session: session)
+                presentationStore.hydratePosition(for: session.id)
                 presentationStore.activateHost(for: session.id)
                 Self.recordSessionId(session.id, category: category)
                 visuallySelectedSessionID = session.id
@@ -140,6 +142,7 @@ struct SessionsView: View {
         guard sidebarState.isSelected else { return }
         selectedSession = backendClient.selectedSession
         if let selectedSession {
+            presentationStore.hydratePosition(for: selectedSession.id)
             presentationStore.activateHost(for: selectedSession.id)
             markOpenedSessionRead(selectedSession)
         }
@@ -327,6 +330,7 @@ struct SessionsView: View {
         // same event turn; provider/network work starts only after the target
         // content identity is already correct.
         selectedSession = session
+        presentationStore.hydratePosition(for: session.id)
         presentationStore.activateHost(for: session.id)
         backendClient.select(session: session)
     }
@@ -530,6 +534,7 @@ struct SessionsView: View {
         pendingSelectionTask = nil
         visuallySelectedSessionID = session.id
         selectedSession = session
+        presentationStore.hydratePosition(for: session.id)
         presentationStore.activateHost(for: session.id)
         backendClient.select(session: session)
     }
@@ -677,16 +682,26 @@ struct SessionsView: View {
 
     /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Objective 分组。
     private var groupedSessions: [SessionGroup] {
-        _ = entityGroupingRevision
-        return makeSessionGroups(
-            rows: searchFilteredRows,
-            agents: entityClient.agents,
-            workItems: entityClient.workItems,
-            objectives: entityClient.objectives,
+        let key = SessionGroupProjectionKey(
+            groupingRevision: sessionListStore.groupingRevision,
+            filterRevision: sessionListStore.filterRevision,
+            entityRevision: entityGroupingRevision,
             category: selectedCategory,
             workerScope: workerSessionScope,
-            workerGroupingMode: workerGroupingMode
+            workerGroupingMode: workerGroupingMode,
+            searchText: searchText
         )
+        return sessionGroupProjectionStore.groups(for: key) {
+            makeSessionGroups(
+                rows: searchFilteredRows,
+                agents: entityClient.agents,
+                workItems: entityClient.workItems,
+                objectives: entityClient.objectives,
+                category: selectedCategory,
+                workerScope: workerSessionScope,
+                workerGroupingMode: workerGroupingMode
+            )
+        }
     }
 
     private func setWorkerArchiveVisible(_ isVisible: Bool) {
@@ -732,27 +747,18 @@ struct SessionsView: View {
            session.hasValidProductClassification,
            SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
-                // Keep a bounded LRU of recent native timelines mounted. This
-                // preserves NSTableView reuse queues, height caches, and exact
-                // viewports for fast A → B → A browsing without retaining an
-                // unbounded number of Session trees.
-                ZStack {
-                    ForEach(presentationStore.hostedSessionIDs, id: \.self) { hostedSessionID in
-                        DetailView(
-                            sessionId: hostedSessionID,
-                            presentationStore: presentationStore,
-                            composerDraftRepository: composerDraftRepository,
-                            initialTimelinePosition: presentationStore.position(for: hostedSessionID),
-                            onTimelinePositionChange: { position in
-                                presentationStore.store(position, for: hostedSessionID)
-                            }
-                        )
-                        .opacity(hostedSessionID == session.id ? 1 : 0)
-                        .allowsHitTesting(hostedSessionID == session.id)
-                        .accessibilityHidden(hostedSessionID != session.id)
-                        .zIndex(hostedSessionID == session.id ? 1 : 0)
+                // One structural Detail/NSScrollView host is rebound in place.
+                // Session-specific model state changes, but native cell reuse
+                // queues and the scroll view itself are never multiplied.
+                DetailView(
+                    sessionId: session.id,
+                    presentationStore: presentationStore,
+                    composerDraftRepository: composerDraftRepository,
+                    initialTimelinePosition: presentationStore.position(for: session.id),
+                    onTimelinePositionChange: { position in
+                        presentationStore.store(position, for: session.id)
                     }
-                }
+                )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 // 右侧竖列详情面板（固定常驻，无收起按钮，模仿 Rudder IssueDetail rail）
@@ -929,6 +935,41 @@ enum SessionCategory: String, CaseIterable, Identifiable {
         case .objective: "scope"
         case .assistant: "sparkles"
         }
+    }
+}
+
+/// The sidebar projection is expensive for large Session collections, but a
+/// selection change does not alter any of its inputs. Keep the immutable
+/// result behind an explicit revision key so SwiftUI may reevaluate
+/// `SessionsView.body` without repeating filtering, sorting, and grouping.
+struct SessionGroupProjectionKey: Equatable {
+    let groupingRevision: UInt64
+    let filterRevision: UInt64
+    let entityRevision: UInt64
+    let category: SessionCategory
+    let workerScope: WorkerSessionScope
+    let workerGroupingMode: WorkerSessionGroupingMode
+    let searchText: String
+}
+
+@MainActor
+final class SessionGroupProjectionStore: ObservableObject {
+    private var cachedKey: SessionGroupProjectionKey?
+    private var cachedGroups: [SessionGroup] = []
+    private(set) var computationCount = 0
+
+    func groups(
+        for key: SessionGroupProjectionKey,
+        make: () -> [SessionGroup]
+    ) -> [SessionGroup] {
+        if cachedKey == key {
+            return cachedGroups
+        }
+        let groups = make()
+        cachedKey = key
+        cachedGroups = groups
+        computationCount += 1
+        return groups
     }
 }
 

@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import CorptieMac
 
@@ -101,6 +102,31 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertEqual(reader.position(for: "session-a"), position)
     }
 
+    func testTerminationPhaseSynchronouslyPersistsFinalCompatibilityPosition() throws {
+        let suiteName = "SessionPresentationStoreTests.termination.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let position = AppKitChatTimelinePosition(
+            rowID: "message:final",
+            offset: 9,
+            absoluteScrollY: 999,
+            followsLatest: false
+        )
+        let writer = SessionPresentationStore(
+            positionDefaults: defaults,
+            positionDefaultsKey: "termination"
+        )
+        writer.store(position, for: "session-final")
+
+        NotificationCenter.default.post(name: .persistSessionTimelinePositions, object: nil)
+
+        let reader = SessionPresentationStore(
+            positionDefaults: defaults,
+            positionDefaultsKey: "termination"
+        )
+        XCTAssertEqual(reader.position(for: "session-final"), position)
+    }
+
     func testPersistedViewportLRUIsBounded() throws {
         let suiteName = "SessionPresentationStoreTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -135,6 +161,26 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertNotNil(store.cache(for: "a"))
         XCTAssertNil(store.cache(for: "b"))
         XCTAssertNotNil(store.cache(for: "c"))
+    }
+
+    func testProjectionPublicationInvalidatesOnlyItsSessionState() {
+        let store = SessionPresentationStore(positionDefaults: nil)
+        let stateA = store.state(for: "a")
+        let stateB = store.state(for: "b")
+        var storeInvalidations = 0
+        var stateAInvalidations = 0
+        var stateBInvalidations = 0
+        var cancellables = Set<AnyCancellable>()
+        store.objectWillChange.sink { storeInvalidations += 1 }.store(in: &cancellables)
+        stateA.objectWillChange.sink { stateAInvalidations += 1 }.store(in: &cancellables)
+        stateB.objectWillChange.sink { stateBInvalidations += 1 }.store(in: &cancellables)
+
+        store.store(cache(sessionID: "a"))
+
+        XCTAssertEqual(storeInvalidations, 0)
+        XCTAssertEqual(stateAInvalidations, 1)
+        XCTAssertEqual(stateBInvalidations, 0)
+        XCTAssertEqual(stateA.cache?.sessionId, "a")
     }
 
     func testCompleteHostPoolKeepsRecentSessionsInLRUOrder() {

@@ -1,6 +1,11 @@
 import Combine
 import Foundation
 
+extension Notification.Name {
+    static let captureSessionTimelinePositions = Notification.Name("captureSessionTimelinePositions")
+    static let persistSessionTimelinePositions = Notification.Name("persistSessionTimelinePositions")
+}
+
 struct SessionDisplayProjectionRequest: Equatable, Sendable {
     let sessionID: String
     let sourceSignature: String
@@ -22,36 +27,62 @@ struct SessionDisplayProjectionRequest: Equatable, Sendable {
 /// One presentation authority per Session surface. It owns reusable display
 /// projections and viewport positions; views only keep transient renderer state.
 @MainActor
+final class SessionPresentationState: ObservableObject {
+    @Published fileprivate(set) var cache: DetailDisplayCache?
+    @Published fileprivate(set) var position: AppKitChatTimelinePosition?
+
+    init(cache: DetailDisplayCache?, position: AppKitChatTimelinePosition?) {
+        self.cache = cache
+        self.position = position
+    }
+}
+
+@MainActor
 final class SessionPresentationStore: ObservableObject {
-    @Published private(set) var cacheRevision = 0
-    @Published private(set) var hostedSessionIDs: [String] = []
+    private(set) var cacheRevision = 0
+    private(set) var hostedSessionIDs: [String] = []
+    private(set) var positionRevision = 0
 
     private let cacheCapacity: Int
     private let hostCapacity: Int
     private let positionCapacity: Int
     private let positionDefaults: UserDefaults?
     private let positionDefaultsKey: String
+    private let positionRepository: SessionTimelinePositionRepository?
     private var cachesBySessionID: [String: DetailDisplayCache] = [:]
     private var cacheRecency: [String] = []
     private var positionsBySessionID: [String: AppKitChatTimelinePosition] = [:]
+    private var statesBySessionID: [String: SessionPresentationState] = [:]
+    private var positionTimestampsBySessionID: [String: Int64] = [:]
     private var positionRecency: [String] = []
     private var positionPersistenceTask: Task<Void, Never>?
+    private var positionLoadTasksBySessionID: [String: Task<Void, Never>] = [:]
     private var preheatTasksBySessionID: [String: Task<Void, Never>] = [:]
     private var preheatTokensBySessionID: [String: UUID] = [:]
+    private var lifecycleCancellables = Set<AnyCancellable>()
 
     init(
         cacheCapacity: Int = 48,
         hostCapacity: Int = 3,
-        positionCapacity: Int = 128,
+        positionCapacity: Int = 256,
         positionDefaults: UserDefaults? = CorptieAppEnvironment.userDefaults,
-        positionDefaultsKey: String = "sessions.timelinePositions.v1"
+        positionDefaultsKey: String = "sessions.timelinePositions.v1",
+        positionRepository: SessionTimelinePositionRepository? = nil
     ) {
         self.cacheCapacity = max(1, cacheCapacity)
         self.hostCapacity = max(1, hostCapacity)
         self.positionCapacity = max(1, positionCapacity)
         self.positionDefaults = positionDefaults
         self.positionDefaultsKey = positionDefaultsKey
+        let usesApplicationPositionStorage = positionDefaults === CorptieAppEnvironment.userDefaults
+            && positionDefaultsKey == "sessions.timelinePositions.v1"
+        self.positionRepository = positionRepository
+            ?? (usesApplicationPositionStorage ? SessionTimelinePositionRepository.shared : nil)
         restorePersistedPositions()
+        migrateLegacyPositionsToRepository()
+        NotificationCenter.default.publisher(for: .persistSessionTimelinePositions)
+            .sink { [weak self] _ in self?.persistPositionsNow() }
+            .store(in: &lifecycleCancellables)
     }
 
     /// Keeps the complete SwiftUI/AppKit timeline subtree alive for the most
@@ -73,6 +104,16 @@ final class SessionPresentationStore: ObservableObject {
         return cache
     }
 
+    func state(for sessionID: String) -> SessionPresentationState {
+        if let state = statesBySessionID[sessionID] { return state }
+        let state = SessionPresentationState(
+            cache: cachesBySessionID[sessionID],
+            position: positionsBySessionID[sessionID]
+        )
+        statesBySessionID[sessionID] = state
+        return state
+    }
+
     func store(_ cache: DetailDisplayCache) {
         if let current = cachesBySessionID[cache.sessionId],
            current.signature == cache.signature,
@@ -81,25 +122,60 @@ final class SessionPresentationStore: ObservableObject {
             return
         }
         cachesBySessionID[cache.sessionId] = cache
+        statesBySessionID[cache.sessionId]?.cache = cache
         touchCache(cache.sessionId)
         while cachesBySessionID.count > cacheCapacity, let oldest = cacheRecency.first {
             cacheRecency.removeFirst()
             cachesBySessionID[oldest] = nil
+            statesBySessionID[oldest]?.cache = nil
         }
         cacheRevision &+= 1
     }
 
     func position(for sessionID: String) -> AppKitChatTimelinePosition? {
-        guard let position = positionsBySessionID[sessionID] else { return nil }
-        touchPosition(sessionID)
-        return position
+        positionsBySessionID[sessionID]
+    }
+
+    /// Hydrates one viewport with an indexed SQLite lookup. Selection never
+    /// waits for this I/O: the reusable timeline host receives the semantic
+    /// anchor as soon as it is available and ignores stale loads by timestamp.
+    func hydratePosition(for sessionID: String) {
+        guard positionsBySessionID[sessionID] == nil,
+              positionLoadTasksBySessionID[sessionID] == nil,
+              let positionRepository else { return }
+        positionLoadTasksBySessionID[sessionID] = Task { @MainActor [weak self] in
+            let record = try? await positionRepository.load(sessionID: sessionID)
+            guard let self else { return }
+            defer { self.positionLoadTasksBySessionID[sessionID] = nil }
+            guard let record,
+                  record.savedAtMilliseconds >= (self.positionTimestampsBySessionID[sessionID] ?? -1) else {
+                return
+            }
+            self.positionsBySessionID[sessionID] = record.position
+            self.statesBySessionID[sessionID]?.position = record.position
+            self.positionTimestampsBySessionID[sessionID] = record.savedAtMilliseconds
+            self.touchPosition(sessionID)
+            self.trimPositionsIfNeeded()
+            self.positionRevision &+= 1
+        }
     }
 
     func store(_ position: AppKitChatTimelinePosition, for sessionID: String) {
         guard positionsBySessionID[sessionID] != position else { return }
+        let savedAtMilliseconds = nextPositionTimestamp(for: sessionID)
         positionsBySessionID[sessionID] = position
+        positionTimestampsBySessionID[sessionID] = savedAtMilliseconds
         touchPosition(sessionID)
         trimPositionsIfNeeded()
+        if let positionRepository {
+            Task {
+                try? await positionRepository.upsert(
+                    position,
+                    for: sessionID,
+                    savedAtMilliseconds: savedAtMilliseconds
+                )
+            }
+        }
         schedulePositionPersistence()
     }
 
@@ -157,6 +233,7 @@ final class SessionPresentationStore: ObservableObject {
         cachesBySessionID = cachesBySessionID.filter { validSessionIDs.contains($0.key) }
         cacheRecency.removeAll { !validSessionIDs.contains($0) }
         hostedSessionIDs.removeAll { !validSessionIDs.contains($0) }
+        statesBySessionID = statesBySessionID.filter { validSessionIDs.contains($0.key) }
         SessionTimelineRepository.shared.pin(Set(hostedSessionIDs))
         if cachesBySessionID.count != previousCount {
             cacheRevision &+= 1
@@ -177,6 +254,7 @@ final class SessionPresentationStore: ObservableObject {
     private struct PersistedPositionRecord: Codable {
         let sessionID: String
         let position: AppKitChatTimelinePosition
+        let savedAtMilliseconds: Int64?
     }
 
     private func touchPosition(_ sessionID: String) {
@@ -188,6 +266,8 @@ final class SessionPresentationStore: ObservableObject {
         while positionsBySessionID.count > positionCapacity, let oldest = positionRecency.first {
             positionRecency.removeFirst()
             positionsBySessionID[oldest] = nil
+            positionTimestampsBySessionID[oldest] = nil
+            statesBySessionID[oldest]?.position = nil
         }
     }
 
@@ -198,8 +278,33 @@ final class SessionPresentationStore: ObservableObject {
         }
         for record in records.suffix(positionCapacity) {
             positionsBySessionID[record.sessionID] = record.position
+            // Legacy records did not carry a timestamp. Zero inserts missing
+            // rows while never overwriting a newer SQLite row; v2 rollback
+            // records carry their final capture timestamp.
+            positionTimestampsBySessionID[record.sessionID] = record.savedAtMilliseconds ?? 0
             touchPosition(record.sessionID)
         }
+    }
+
+    private func migrateLegacyPositionsToRepository() {
+        guard let positionRepository, !positionsBySessionID.isEmpty else { return }
+        let records = positionsBySessionID.map {
+            ($0.key, $0.value, positionTimestampsBySessionID[$0.key] ?? 0)
+        }
+        Task {
+            for (sessionID, position, savedAtMilliseconds) in records {
+                try? await positionRepository.upsert(
+                    position,
+                    for: sessionID,
+                    savedAtMilliseconds: savedAtMilliseconds
+                )
+            }
+        }
+    }
+
+    private func nextPositionTimestamp(for sessionID: String) -> Int64 {
+        let wallClock = Int64(Date().timeIntervalSince1970 * 1_000)
+        return max(wallClock, (positionTimestampsBySessionID[sessionID] ?? -1) + 1)
     }
 
     private func schedulePositionPersistence() {
@@ -219,7 +324,11 @@ final class SessionPresentationStore: ObservableObject {
         guard let positionDefaults else { return }
         let records = positionRecency.compactMap { sessionID in
             positionsBySessionID[sessionID].map {
-                PersistedPositionRecord(sessionID: sessionID, position: $0)
+                PersistedPositionRecord(
+                    sessionID: sessionID,
+                    position: $0,
+                    savedAtMilliseconds: positionTimestampsBySessionID[sessionID]
+                )
             }
         }
         guard let data = try? JSONEncoder().encode(records) else { return }

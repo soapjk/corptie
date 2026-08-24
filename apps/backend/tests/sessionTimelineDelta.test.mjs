@@ -1,16 +1,36 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createTimelineStreamState,
   initialTimelineSnapshot,
   legacyTimelineSnapshotFrame,
   nextTimelineEvent,
-  supportsTimelineDelta
+  resumedTimelineStreamState,
+  supportsTimelineDelta,
+  timelineSnapshotToken
 } from "../src/utils/sessionTimelineDelta.mjs";
 
 test("timeline deltas require an explicit versioned client capability", () => {
   assert.equal(supportsTimelineDelta({}), false);
   assert.equal(supportsTimelineDelta({ "x-corptie-timeline-protocol": "0" }), false);
   assert.equal(supportsTimelineDelta({ "x-corptie-timeline-protocol": "1" }), true);
+  assert.equal(supportsTimelineDelta({ "x-corptie-timeline-protocol": "2" }), true);
+});
+
+test("snapshot resume token is stable for identical content and changes with timeline content", () => {
+  const original = session("codex-app-server");
+  const token = timelineSnapshotToken(original);
+  assert.equal(timelineSnapshotToken(structuredClone(original)), token);
+  const changed = structuredClone(original);
+  changed.items[0].text = "changed";
+  assert.notEqual(timelineSnapshotToken(changed), token);
+  const diagnosticOnly = structuredClone(original);
+  diagnosticOnly.rawStatus = { idleSeconds: 99 };
+  assert.equal(timelineSnapshotToken(diagnosticOnly), token);
+  assert.equal(createTimelineStreamState(original, 42).revision, 42);
+  assert.equal(initialTimelineSnapshot(original, 42).event.data.snapshotToken, token);
+  assert.equal(resumedTimelineStreamState(original, { snapshotToken: token, revision: 42 }).revision, 42);
+  assert.equal(resumedTimelineStreamState(changed, { snapshotToken: token, revision: 42 }), null);
 });
 
 test("legacy snapshots exclude volatile provider diagnostics", () => {
