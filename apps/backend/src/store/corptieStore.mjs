@@ -5336,6 +5336,10 @@ export class CorptieStore {
   }
 
   enqueueAgentWorkItem(item) {
+    return this.enqueueAgentWorkItemWithResult(item).workItem;
+  }
+
+  enqueueAgentWorkItemWithResult(item) {
     const timestamp = createdAtFromOrNow(item.createdAt);
     this.db.run(
       `INSERT OR IGNORE INTO agent_work_items (
@@ -5358,9 +5362,10 @@ export class CorptieStore {
     );
     const inserted = this.db.getRowsModified() > 0;
     if (inserted) this.scheduleSave();
-    return inserted
+    const workItem = inserted
       ? this.getAgentWorkItem(item.workItemId)
       : (item.deliveryId ? this.getAgentWorkItemForDelivery(item.deliveryId) : this.getAgentWorkItem(item.workItemId));
+    return { workItem, inserted };
   }
 
   getAgentWorkItem(workItemId) {

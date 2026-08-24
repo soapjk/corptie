@@ -45,6 +45,7 @@ async function fixture(options = {}) {
     now: () => new Date(current),
     missedGraceMs: options.missedGraceMs ?? 2_000,
     leaseOwner: options.leaseOwner ?? "scheduler:test",
+    leaseMs: options.leaseMs,
     authorize: ({ actor, logicalSessionId }) => {
       if (!authorizationActive || actor.id !== "agent:owner" || logicalSessionId !== "logical:stable") {
         const error = new Error("forbidden");
@@ -67,8 +68,9 @@ async function fixture(options = {}) {
       };
     },
     enqueue: options.enqueue ?? ((work) => {
-      queued.push(work);
-      return store.enqueueAgentWorkItem(work);
+      const result = store.enqueueAgentWorkItemWithResult(work);
+      if (result.inserted) queued.push(work);
+      return result;
     }),
     activate: options.activate,
     notify: options.notify,
@@ -325,14 +327,14 @@ test("missed schedules coalesce once, survive restart, and a lost receipt cannot
   const f = await fixture({ missedGraceMs: 500 });
   let throwsAfterInsert = true;
   f.service.enqueue = (work) => {
-    const inserted = f.store.enqueueAgentWorkItem(work);
+    const result = f.store.enqueueAgentWorkItemWithResult(work);
     if (throwsAfterInsert) {
       throwsAfterInsert = false;
       const error = new Error("receipt lost");
       error.code = "RECEIPT_LOST";
       throw error;
     }
-    return inserted;
+    return result;
   };
   try {
     const task = f.service.create({
@@ -347,7 +349,10 @@ test("missed schedules coalesce once, survive restart, and a lost receipt cannot
     const work = f.store.listAgentWorkItemsForSession("session:stable")
       .filter((item) => item.source.type === "scheduled_session_task");
     assert.equal(work.length, 1);
+    assert.match(work[0].source.deliveryId, /^scheduled_delivery:/);
     assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "completed");
+    assert.equal(f.store.listScheduledSessionEvents(task.taskId)
+      .some((event) => event.type === "ScheduledSessionDeliveryDeduplicated"), true);
 
     const interval = f.service.create({
       logicalSessionId: "logical:stable", message: "recover interval", scheduleType: "interval",
@@ -365,6 +370,145 @@ test("missed schedules coalesce once, survive restart, and a lost receipt cannot
     f.store = reopened;
     assert.equal(reopened.getScheduledSessionTask(task.taskId).status, "completed");
     assert.equal(reopened.listScheduledSessionRuns(task.taskId).length >= 2, true);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("a committed one-time delivery timing out downstream never reactivates or redelivers the task", async () => {
+  const f = await fixture();
+  try {
+    const task = f.service.create({
+      name: "PolyMarket实时套利，小资金实盘跑通 1 equivalent",
+      logicalSessionId: "logical:stable",
+      message: "single-cycle acceptance check",
+      scheduleType: "once",
+      runAt: "2026-08-22T12:00:01Z",
+      timeoutSeconds: 1,
+      timezone: "UTC"
+    }, f.actor);
+    f.advance(1_000);
+    await f.service.tick();
+    let stored = f.store.getScheduledSessionTask(task.taskId);
+    assert.equal(stored.status, "completed");
+    assert.equal(stored.nextRunAt, null);
+    assert.equal(f.queued.length, 1);
+
+    f.advance(1_001);
+    await f.service.tick();
+    stored = f.store.getScheduledSessionTask(task.taskId);
+    assert.equal(stored.status, "completed");
+    assert.equal(stored.nextRunAt, null);
+    assert.equal(stored.retryCount, 0);
+    assert.equal(f.queued.length, 1);
+    assert.equal(f.store.listScheduledSessionRuns(task.taskId).length, 1);
+    const timeoutEvent = f.store.listScheduledSessionEvents(task.taskId)
+      .find((event) => event.payload.retrySuppressed === "delivery_already_committed");
+    assert.ok(timeoutEvent);
+    assert.equal(timeoutEvent.payload.scheduledFor, "2026-08-22T12:00:01.000Z");
+    assert.match(timeoutEvent.payload.deliveryId, /^scheduled:scheduled_delivery:/);
+
+    f.advance(60_000);
+    await f.service.tick();
+    assert.equal(f.queued.length, 1);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("concurrent dispatch after a lease expires commits one delivery and records the duplicate", async () => {
+  const f = await fixture({ leaseMs: 100 });
+  let releaseRoutes;
+  const routeGate = new Promise((resolve) => { releaseRoutes = resolve; });
+  const route = async (logicalSessionId) => {
+    await routeGate;
+    const logical = f.store.getLogicalSession(logicalSessionId);
+    return { sessionId: logical.legacySessionId, agentId: "agent:owner", binding: logical.activeBinding };
+  };
+  let attempts = 0;
+  let committed = 0;
+  const enqueue = (work) => {
+    attempts += 1;
+    const result = f.store.enqueueAgentWorkItemWithResult(work);
+    if (result.inserted) committed += 1;
+    return result;
+  };
+  f.service.resolveRoute = route;
+  f.service.enqueue = enqueue;
+  const second = new ScheduledSessionTaskService({
+    store: f.store,
+    environment: "development",
+    now: f.service.now,
+    leaseOwner: "scheduler:concurrent-second",
+    leaseMs: 100,
+    missedGraceMs: 2_000,
+    authorize: () => ({}),
+    resolveRoute: route,
+    enqueue
+  });
+  try {
+    const task = f.service.create({
+      logicalSessionId: "logical:stable", message: "concurrent once", scheduleType: "once",
+      runAt: "2026-08-22T12:00:01Z", timezone: "UTC"
+    }, f.actor);
+    f.advance(1_000);
+    const firstTick = f.service.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    f.advance(101);
+    const secondTick = second.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseRoutes();
+    await Promise.all([firstTick, secondTick]);
+
+    assert.equal(attempts, 2);
+    assert.equal(committed, 1);
+    const work = f.store.listAgentWorkItemsForSession("session:stable")
+      .filter((item) => item.source.scheduledTaskId === task.taskId);
+    assert.equal(work.length, 1);
+    assert.equal(new Set(work.map((item) => item.source.deliveryId)).size, 1);
+    const events = f.store.listScheduledSessionEvents(task.taskId);
+    assert.equal(events.filter((event) => event.type === "ScheduledSessionDeliveryCommitted").length, 1);
+    assert.equal(events.filter((event) => event.type === "ScheduledSessionDeliveryDeduplicated").length, 1);
+  } finally {
+    second.stop();
+    await cleanup(f);
+  }
+});
+
+test("identical message actions deduplicate within one run while later interval cycles still deliver", async () => {
+  const f = await fixture();
+  try {
+    const duplicate = f.service.create({
+      logicalSessionId: "logical:stable",
+      scheduleType: "once",
+      runAt: "2026-08-22T12:00:01Z",
+      actions: [
+        { type: "queueSessionMessage", message: "same message" },
+        { type: "queueSessionMessage", message: "same message" }
+      ],
+      timezone: "UTC"
+    }, f.actor);
+    const interval = f.service.create({
+      logicalSessionId: "logical:stable", message: "next cycle", scheduleType: "interval",
+      runAt: "2026-08-22T12:00:01Z", intervalSeconds: 10, timezone: "UTC"
+    }, f.actor);
+    f.advance(1_000);
+    await f.service.tick();
+    assert.equal(f.store.listAgentWorkItemsForSession("session:stable")
+      .filter((item) => item.source.scheduledTaskId === duplicate.taskId).length, 1);
+    const duplicateRun = f.store.listScheduledSessionRuns(duplicate.taskId)[0];
+    assert.deepEqual(duplicateRun.actionResults.map((result) => result.status), ["queued", "deduplicated"]);
+
+    const firstCycle = f.store.listAgentWorkItemsForSession("session:stable")
+      .find((item) => item.source.scheduledTaskId === interval.taskId);
+    assert.ok(firstCycle);
+    f.advance(10_000);
+    await f.service.tick();
+    const intervalWork = f.store.listAgentWorkItemsForSession("session:stable")
+      .filter((item) => item.source.scheduledTaskId === interval.taskId);
+    assert.equal(intervalWork.length, 2);
+    assert.notEqual(intervalWork[0].source.deliveryId, intervalWork[1].source.deliveryId);
+    assert.equal(f.store.getScheduledSessionTask(interval.taskId).nextRunAt, "2026-08-22T12:00:21.000Z");
   } finally {
     await cleanup(f);
   }
@@ -901,8 +1045,10 @@ test("concurrency, backpressure, deadlines, and retry state remain explicit", as
     });
     await f.service.tick();
     const expired = f.store.getScheduledSessionRun("scheduled_run:running");
-    assert.equal(expired.status, "retry_wait");
+    assert.equal(expired.status, "failed");
     assert.equal(expired.errorCode, "AUTOMATION_RUN_TIMEOUT");
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "active");
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).nextRunAt, "2026-08-22T12:01:00.000Z");
     assert.equal(f.store.getScheduledSessionTask(task.taskId).lastRunStatus, "retry_wait");
 
     const second = f.service.create({
