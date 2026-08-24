@@ -589,6 +589,15 @@ export class CollaborationCore {
     };
   }
 
+  hasTask(taskId) {
+    const id = typeof taskId === "string" ? taskId.trim() : "";
+    if (!id) return false;
+    return Boolean(this.store.selectOne(
+      "SELECT 1 FROM collaboration_tasks WHERE task_id = ?",
+      [id]
+    ));
+  }
+
   getChannel(taskId) {
     const row = this.store.selectOne(
       "SELECT * FROM collaboration_channels WHERE task_id = ?",

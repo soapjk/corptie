@@ -193,6 +193,10 @@ import {
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
 import { mergeSupplementalTimelineItems } from "./utils/sessionItemTimeline.mjs";
 import {
+  automationTimelineItems,
+  collaborationEnvelopeFailure
+} from "./utils/sessionEventPresentation.mjs";
+import {
   collaborationMcpEnvironment,
   collaborationMcpServerName
 } from "./utils/collaborationRuntime.mjs";
@@ -5051,7 +5055,9 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
       : {};
     return {
       ...item,
-      title: work.kind === "collaboration" && item.type === "userMessage" ? "Agent Collaboration" : item.title,
+      title: presentation.presentationRole === "collaboration"
+        ? "Agent Collaboration"
+        : presentation.presentationRole === "system_event" ? "System Event" : item.title,
       collaborationTaskId: work.source?.taskId ?? null,
       ...presentation
     };
@@ -5082,14 +5088,18 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
         turnId: `work:${item.workItemId}`,
         turnStatus: userMessageStatus,
         type: "userMessage",
-        title: item.kind === "collaboration" ? "Agent Collaboration" : (item.source?.type === "feishu" ? "Feishu" : "User"),
+        title: presentation.presentationRole === "collaboration"
+          ? "Agent Collaboration"
+          : presentation.presentationRole === "system_event"
+            ? "System Event"
+            : (item.source?.type === "feishu" ? "Feishu" : "User"),
         text: item.text,
         status: item.status,
         userMessageStatus,
         queuePosition: queuePositionByWorkItemId.get(item.workItemId) ?? null,
         processingError: item.lastError ?? null,
         createdAt: item.createdAt,
-        sourceType: item.kind,
+        sourceType: presentation.presentationRole === "system_event" ? "system" : item.kind,
         localVisibility: item.localVisibility,
         workItemId: item.workItemId,
         collaborationTaskId: item.source?.taskId ?? null,
@@ -5151,14 +5161,35 @@ function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
       collaborationTaskId: confirmation.taskId
     };
   });
-  return [...mergeSupplementalTimelineItems(annotated, confirmations), ...pending];
+  const automationEvents = automationTimelineItems(store.listSessionAutomationEvents(sessionId), {
+    resolveAutomation: (automationId) => store.getScheduledSessionTask(automationId)
+  });
+  return [...mergeSupplementalTimelineItems(annotated, [...confirmations, ...automationEvents]), ...pending];
 }
 
 function collaborationPresentationForWorkItem(workItem, sessionId = workItem.sessionId) {
   if (workItem.kind !== "collaboration") return {};
+  const taskId = workItem.source?.taskId ?? null;
+  const task = taskId && collaborationCore.hasTask(taskId) ? { taskId } : null;
   const envelope = workItem.deliveryId
     ? collaborationCore.getDeliveryEnvelope(workItem.deliveryId)
     : null;
+  const failure = collaborationEnvelopeFailure({ workItem, task, envelope });
+  if (failure) {
+    return {
+      presentationRole: "system_event",
+      presentationText: "A collaboration-shaped event could not be verified and is not executable.",
+      systemEventKind: "invalid_collaboration_envelope",
+      systemEventReason: failure,
+      systemEventSource: workItem.source?.type ?? "unknown",
+      rawEventEnvelope: JSON.stringify({
+        eventType: "AgentWorkItem",
+        timestamp: workItem.createdAt ?? null,
+        source: workItem.source ?? null,
+        envelope: envelope ?? null
+      })
+    };
+  }
   const route = collaborationMessagePresentationRoute(envelope);
   const sender = route.senderAgentId ? collaborationCore.getAgent(route.senderAgentId) : null;
   const recipient = route.recipientAgentId ? collaborationCore.getAgent(route.recipientAgentId) : null;
@@ -5170,7 +5201,7 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
   const targetObjectiveId = route.targetObjectiveId ?? workItem.source?.targetObjectiveId ?? null;
   return {
     presentationRole: "collaboration",
-    presentationText: envelope?.message.body ?? workItem.source?.presentationText ?? "",
+    presentationText: envelope.message.body,
     collaborationDirection: "inbound",
     collaborationSenderAgentId: route.senderAgentId ?? workItem.source?.senderAgentId ?? null,
     collaborationSenderName: sender?.name ?? envelope?.message.senderAgentName ?? workItem.source?.senderAgentName ?? route.senderAgentId,

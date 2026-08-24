@@ -75,12 +75,17 @@ export function annotateAgentWorkDetailItems(detailItems = [], workItems = []) {
       }
     }
     if (!work) return item;
+    // A queued unit owns the whole Provider turn, but only its authored input
+    // carries the source semantics. Copying `collaboration` onto tool calls,
+    // Automation events, reasoning, and Agent output makes those internal
+    // events look like additional peer messages in presentation clients.
+    const isAuthoredInput = item.type === "userMessage";
     return {
       ...item,
       userMessageStatus: item.type === "userMessage"
         ? userMessageStatusForAgentWork(work.status)
         : item.userMessageStatus,
-      sourceType: work.kind,
+      sourceType: isAuthoredInput ? work.kind : item.sourceType,
       sourceChannel: work.source?.type ?? null,
       localVisibility: work.localVisibility,
       workItemId: work.workItemId,
