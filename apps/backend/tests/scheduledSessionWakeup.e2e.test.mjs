@@ -108,6 +108,7 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
         message: { text: "check and return status", payload: { check: "status" } },
         scheduleType: "once",
         runAt,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
         timezone: "Asia/Shanghai"
       })
     });

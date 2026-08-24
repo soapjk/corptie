@@ -151,11 +151,13 @@ struct MainWindowResizeLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
         for required in [
             "case all", "case running", "case failed", "case history",
-            "Trigger", "Next Run", "Last Result", "Risk", "Run History",
-            "bindingId", "routingVersion", "Run Now", "Pause", "Resume", "Cancel"
+            "Trigger", "创建时间", "上次执行时间", "预计下次执行时间", "过期时间", "Times use time zone: %@",
+            "生效中", "已取消", "已完成", "已过期", "异常", "Last Result", "Risk", "Run History",
+            "bindingId", "routingVersion", "Run Now", "Retry", "Cancel"
         ] {
             #expect(contents.contains(required))
         }
+        #expect(contents.contains("if automation.scheduleType != .condition"))
         let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView("))
         let emptyStateEnd = try #require(contents.range(of: "} else {", range: emptyStateStart.upperBound..<contents.endIndex))
         let emptyState = contents[emptyStateStart.lowerBound..<emptyStateEnd.lowerBound]

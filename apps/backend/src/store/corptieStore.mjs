@@ -471,6 +471,153 @@ export class CorptieStore {
       ON scheduled_session_runs(status, deadline_at)`);
   }
 
+  migrateAutomationExpirationV1() {
+    const table = this.selectOne(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_session_tasks'"
+    );
+    if (table?.sql && /expires_at\s+TEXT\s+NOT\s+NULL/i.test(table.sql)
+      && /status\s+IN\s*\([^)]*'expired'[^)]*'error'/i.test(table.sql)) return;
+
+    this.db.run("PRAGMA foreign_keys = OFF");
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(`
+        CREATE TABLE scheduled_session_tasks_expiration_v1 (
+          task_id TEXT PRIMARY KEY, logical_session_id TEXT NOT NULL, message_json TEXT NOT NULL,
+          schedule_type TEXT NOT NULL CHECK (schedule_type IN ('once', 'interval', 'condition', 'process')),
+          run_at TEXT, next_run_at TEXT, interval_seconds INTEGER, timezone TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed', 'expired', 'error')),
+          missed_policy TEXT NOT NULL DEFAULT 'coalesce_once' CHECK (missed_policy IN ('coalesce_once', 'skip')),
+          condition_spec_json TEXT, condition_state_json TEXT, process_spec_json TEXT, process_state_json TEXT,
+          creator_type TEXT NOT NULL, creator_id TEXT NOT NULL, objective_id TEXT, environment TEXT NOT NULL,
+          pending_scheduled_for TEXT, lease_owner TEXT, lease_expires_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 5, last_run_id TEXT, last_run_status TEXT,
+          last_error_code TEXT, last_error_message TEXT, last_run_at TEXT,
+          resource_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          paused_at TEXT, cancelled_at TEXT, completed_at TEXT, name TEXT, trigger_spec_json TEXT,
+          condition_specs_json TEXT NOT NULL DEFAULT '[]', actions_json TEXT NOT NULL DEFAULT '[]',
+          policy_spec_json TEXT NOT NULL DEFAULT '{}', risk_json TEXT NOT NULL DEFAULT '{}',
+          max_concurrent_runs INTEGER NOT NULL DEFAULT 1, timeout_seconds INTEGER NOT NULL DEFAULT 3600,
+          backpressure_limit INTEGER NOT NULL DEFAULT 100, expires_at TEXT NOT NULL,
+          FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+        )
+      `);
+      this.db.run(`
+        INSERT INTO scheduled_session_tasks_expiration_v1 (
+          task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at, interval_seconds,
+          timezone, status, missed_policy, condition_spec_json, condition_state_json, process_spec_json,
+          process_state_json, creator_type, creator_id, objective_id, environment, pending_scheduled_for,
+          lease_owner, lease_expires_at, retry_count, max_retries, last_run_id, last_run_status,
+          last_error_code, last_error_message, last_run_at, resource_version, created_at, updated_at,
+          paused_at, cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json,
+          actions_json, policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds,
+          backpressure_limit, expires_at
+        )
+        SELECT
+          task_id, logical_session_id, message_json, schedule_type, run_at,
+          CASE WHEN status IN ('completed', 'paused', 'cancelled') THEN NULL ELSE next_run_at END,
+          interval_seconds, timezone,
+          CASE status WHEN 'failed' THEN 'error' WHEN 'cancelled' THEN 'cancelled'
+            WHEN 'paused' THEN 'cancelled' WHEN 'completed' THEN 'completed' ELSE 'active' END,
+          missed_policy, condition_spec_json, condition_state_json, process_spec_json, process_state_json,
+          creator_type, creator_id, objective_id, environment, pending_scheduled_for, lease_owner,
+          lease_expires_at, retry_count, max_retries, last_run_id, last_run_status, last_error_code,
+          last_error_message, last_run_at, resource_version, created_at, updated_at, paused_at,
+          cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json, actions_json,
+          policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds, backpressure_limit,
+          CASE WHEN status = 'completed' THEN COALESCE(completed_at, updated_at)
+            ELSE strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+1 year') END
+        FROM scheduled_session_tasks
+      `);
+      this.db.run("DROP TABLE scheduled_session_tasks");
+      this.db.run("ALTER TABLE scheduled_session_tasks_expiration_v1 RENAME TO scheduled_session_tasks");
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_due
+        ON scheduled_session_tasks(environment, status, next_run_at, lease_expires_at)`);
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_expiration
+        ON scheduled_session_tasks(environment, status, expires_at)`);
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_session
+        ON scheduled_session_tasks(logical_session_id, created_at DESC)`);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    } finally {
+      this.db.run("PRAGMA foreign_keys = ON");
+    }
+  }
+
+  migrateAutomationCompletedStatusV1() {
+    const table = this.selectOne(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_session_tasks'"
+    );
+    if (table?.sql && /status\s+IN\s*\([^)]*'completed'[^)]*'expired'[^)]*'error'/i.test(table.sql)) return;
+
+    // Existing expiration-v1 databases used a four-state CHECK constraint.
+    // SQLite cannot widen it in place, so preserve every persisted field while
+    // rebuilding only the plan table; run and event audit tables remain intact.
+    this.db.run("PRAGMA foreign_keys = OFF");
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run(`
+        CREATE TABLE scheduled_session_tasks_completed_v1 (
+          task_id TEXT PRIMARY KEY, logical_session_id TEXT NOT NULL, message_json TEXT NOT NULL,
+          schedule_type TEXT NOT NULL CHECK (schedule_type IN ('once', 'interval', 'condition', 'process')),
+          run_at TEXT, next_run_at TEXT, interval_seconds INTEGER, timezone TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed', 'expired', 'error')),
+          missed_policy TEXT NOT NULL DEFAULT 'coalesce_once' CHECK (missed_policy IN ('coalesce_once', 'skip')),
+          condition_spec_json TEXT, condition_state_json TEXT, process_spec_json TEXT, process_state_json TEXT,
+          creator_type TEXT NOT NULL, creator_id TEXT NOT NULL, objective_id TEXT, environment TEXT NOT NULL,
+          pending_scheduled_for TEXT, lease_owner TEXT, lease_expires_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0,
+          max_retries INTEGER NOT NULL DEFAULT 5, last_run_id TEXT, last_run_status TEXT,
+          last_error_code TEXT, last_error_message TEXT, last_run_at TEXT,
+          resource_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          paused_at TEXT, cancelled_at TEXT, completed_at TEXT, name TEXT, trigger_spec_json TEXT,
+          condition_specs_json TEXT NOT NULL DEFAULT '[]', actions_json TEXT NOT NULL DEFAULT '[]',
+          policy_spec_json TEXT NOT NULL DEFAULT '{}', risk_json TEXT NOT NULL DEFAULT '{}',
+          max_concurrent_runs INTEGER NOT NULL DEFAULT 1, timeout_seconds INTEGER NOT NULL DEFAULT 3600,
+          backpressure_limit INTEGER NOT NULL DEFAULT 100, expires_at TEXT NOT NULL,
+          FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+        )
+      `);
+      this.db.run(`
+        INSERT INTO scheduled_session_tasks_completed_v1 (
+          task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at, interval_seconds,
+          timezone, status, missed_policy, condition_spec_json, condition_state_json, process_spec_json,
+          process_state_json, creator_type, creator_id, objective_id, environment, pending_scheduled_for,
+          lease_owner, lease_expires_at, retry_count, max_retries, last_run_id, last_run_status,
+          last_error_code, last_error_message, last_run_at, resource_version, created_at, updated_at,
+          paused_at, cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json,
+          actions_json, policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds,
+          backpressure_limit, expires_at
+        )
+        SELECT
+          task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at, interval_seconds,
+          timezone, status, missed_policy, condition_spec_json, condition_state_json, process_spec_json,
+          process_state_json, creator_type, creator_id, objective_id, environment, pending_scheduled_for,
+          lease_owner, lease_expires_at, retry_count, max_retries, last_run_id, last_run_status,
+          last_error_code, last_error_message, last_run_at, resource_version, created_at, updated_at,
+          paused_at, cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json,
+          actions_json, policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds,
+          backpressure_limit, expires_at
+        FROM scheduled_session_tasks
+      `);
+      this.db.run("DROP TABLE scheduled_session_tasks");
+      this.db.run("ALTER TABLE scheduled_session_tasks_completed_v1 RENAME TO scheduled_session_tasks");
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_due
+        ON scheduled_session_tasks(environment, status, next_run_at, lease_expires_at)`);
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_expiration
+        ON scheduled_session_tasks(environment, status, expires_at)`);
+      this.db.run(`CREATE INDEX idx_scheduled_session_tasks_session
+        ON scheduled_session_tasks(logical_session_id, created_at DESC)`);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    } finally {
+      this.db.run("PRAGMA foreign_keys = ON");
+    }
+  }
+
   migrateWorkItemMemoryAssociations() {
     const migrationId = "work-item-memory-association-v1";
     if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
@@ -1731,6 +1878,8 @@ export class CorptieStore {
     this.migrateWorkspaceCreationRequestAuditReferences();
     this.migrateScheduledSessionConditionTasks();
     this.migrateAutomationSchedulerV1();
+    this.migrateAutomationExpirationV1();
+    this.migrateAutomationCompletedStatusV1();
 
     // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---
     this.db.run(`
@@ -4874,9 +5023,9 @@ export class CorptieStore {
         condition_state_json, process_spec_json, process_state_json,
         creator_type, creator_id, objective_id, environment,
         max_retries, name, trigger_spec_json, condition_specs_json, actions_json,
-        policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds, backpressure_limit,
+        policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds, backpressure_limit, expires_at,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.taskId,
         input.logicalSessionId,
@@ -4905,6 +5054,7 @@ export class CorptieStore {
         input.maxConcurrentRuns ?? 1,
         input.timeoutSeconds ?? 3600,
         input.backpressureLimit ?? 100,
+        input.expiresAt,
         timestamp,
         timestamp
       ]
@@ -4955,7 +5105,7 @@ export class CorptieStore {
          pending_scheduled_for = ?, lease_owner = ?, lease_expires_at = ?, retry_count = ?,
          max_retries = ?, last_run_id = ?, last_run_status = ?, last_error_code = ?,
          last_error_message = ?, last_run_at = ?, resource_version = resource_version + 1,
-         max_concurrent_runs = ?, timeout_seconds = ?, backpressure_limit = ?,
+         max_concurrent_runs = ?, timeout_seconds = ?, backpressure_limit = ?, expires_at = ?,
          paused_at = ?, cancelled_at = ?, completed_at = ?, updated_at = ?
        WHERE task_id = ?`,
       [
@@ -4989,6 +5139,7 @@ export class CorptieStore {
         value("maxConcurrentRuns", task.maxConcurrentRuns),
         value("timeoutSeconds", task.timeoutSeconds),
         value("backpressureLimit", task.backpressureLimit),
+        value("expiresAt", task.expiresAt),
         value("pausedAt", task.pausedAt),
         value("cancelledAt", task.cancelledAt),
         value("completedAt", task.completedAt),
@@ -5009,10 +5160,10 @@ export class CorptieStore {
     return this.runInTransaction(() => {
       const rows = this.selectAll(
         `SELECT task_id FROM scheduled_session_tasks
-         WHERE environment = ? AND status = 'active' AND next_run_at IS NOT NULL
+         WHERE environment = ? AND status = 'active' AND expires_at > ? AND next_run_at IS NOT NULL
            AND next_run_at <= ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
          ORDER BY next_run_at ASC, task_id ASC LIMIT ?`,
-        [environment, now, now, limit]
+        [environment, now, now, now, limit]
       );
       const claimed = [];
       for (const row of rows) {
@@ -5026,6 +5177,15 @@ export class CorptieStore {
       }
       return claimed;
     });
+  }
+
+  listExpiredActiveScheduledSessionTasks(environment, now) {
+    return this.selectAll(
+      `SELECT * FROM scheduled_session_tasks
+       WHERE environment = ? AND status IN ('active', 'error') AND expires_at <= ?
+       ORDER BY expires_at ASC, task_id ASC`,
+      [environment, now]
+    ).map(scheduledSessionTaskFromRow);
   }
 
   createScheduledSessionRun(input) {
@@ -8382,6 +8542,7 @@ function scheduledSessionTaskFromRow(row) {
     risk: parseJson(row.risk_json, { level: "minimal", remoteWrite: false, destructive: false }),
     runAt: row.run_at,
     nextRunAt: row.next_run_at,
+    expiresAt: row.expires_at,
     intervalSeconds: row.interval_seconds == null ? null : Number(row.interval_seconds),
     timezone: row.timezone,
     status: row.status,

@@ -41,16 +41,16 @@ struct ScheduledSessionTaskStatus: RawRepresentable, Codable, Hashable, Sendable
     init(rawValue: String) { self.rawValue = rawValue }
 
     static let active = Self(rawValue: "active")
-    static let paused = Self(rawValue: "paused")
-    static let completed = Self(rawValue: "completed")
-    static let failed = Self(rawValue: "failed")
     static let cancelled = Self(rawValue: "cancelled")
+    static let completed = Self(rawValue: "completed")
+    static let expired = Self(rawValue: "expired")
+    static let error = Self(rawValue: "error")
 
-    var permitsEditing: Bool { self == .active || self == .paused || self == .failed }
-    var permitsPause: Bool { self == .active }
-    var permitsResume: Bool { self == .paused || self == .failed }
-    var permitsCancel: Bool { self != .cancelled && self != .completed }
-    var permitsRunNow: Bool { self == .active || self == .paused || self == .failed }
+    var permitsEditing: Bool { self == .active || self == .error }
+    var permitsPause: Bool { false }
+    var permitsResume: Bool { self == .error }
+    var permitsCancel: Bool { self == .active || self == .error }
+    var permitsRunNow: Bool { self == .active }
 }
 
 struct ScheduledSessionRunStatus: RawRepresentable, Codable, Hashable, Sendable {
@@ -94,6 +94,7 @@ enum ScheduledSessionRunPresentation: Equatable, Sendable {
     case failed
     case paused
     case cancelled
+    case expired
     case missed
     case unknown(String)
 }
@@ -230,6 +231,7 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
     let scheduleType: ScheduledSessionScheduleType
     let runAt: String?
     let nextRunAt: String?
+    let expiresAt: String
     let intervalSeconds: Int?
     let timezone: String
     let status: ScheduledSessionTaskStatus
@@ -248,8 +250,10 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
     let runs: [ScheduledSessionRun]
 
     var presentationStatus: ScheduledSessionRunPresentation {
-        if status == .paused { return .paused }
         if status == .cancelled { return .cancelled }
+        if status == .completed { return .completed }
+        if status == .expired { return .expired }
+        if status == .error { return .failed }
         if let lastRunStatus {
             switch lastRunStatus.presentation {
             case .completed where scheduleType == .interval && nextRunAt != nil:
@@ -258,8 +262,6 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
                 return lastRunStatus.presentation
             }
         }
-        if status == .failed { return .failed }
-        if status == .completed { return .completed }
         return .scheduled
     }
 
@@ -272,7 +274,7 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case taskId, logicalSessionId, name, message, trigger, actions, policy, risk
-        case scheduleType, runAt, nextRunAt, intervalSeconds
+        case scheduleType, runAt, nextRunAt, expiresAt, intervalSeconds
         case timezone, status, missedPolicy, lastRunId, lastRunStatus, lastErrorCode
         case lastErrorMessage, lastRunAt, resourceVersion, createdAt, updatedAt, pausedAt
         case cancelledAt, completedAt, runs, runHistory
@@ -296,6 +298,7 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
         scheduleType = try values.decode(ScheduledSessionScheduleType.self, forKey: .scheduleType)
         runAt = try values.decodeIfPresent(String.self, forKey: .runAt)
         nextRunAt = try values.decodeIfPresent(String.self, forKey: .nextRunAt)
+        expiresAt = try values.decode(String.self, forKey: .expiresAt)
         intervalSeconds = try values.decodeIfPresent(Int.self, forKey: .intervalSeconds)
         timezone = try values.decode(String.self, forKey: .timezone)
         status = try values.decode(ScheduledSessionTaskStatus.self, forKey: .status)
@@ -332,6 +335,7 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
         scheduleType: ScheduledSessionScheduleType,
         runAt: String?,
         nextRunAt: String?,
+        expiresAt: String = "2099-12-31T23:59:59.000Z",
         intervalSeconds: Int?,
         timezone: String,
         status: ScheduledSessionTaskStatus,
@@ -360,6 +364,7 @@ struct ScheduledSessionTask: Identifiable, Decodable, Equatable, Sendable {
         self.scheduleType = scheduleType
         self.runAt = runAt
         self.nextRunAt = nextRunAt
+        self.expiresAt = expiresAt
         self.intervalSeconds = intervalSeconds
         self.timezone = timezone
         self.status = status
@@ -394,6 +399,7 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
     var intervalSeconds: Int
     var timezone: String
     var missedPolicy: ScheduledSessionMissedPolicy
+    var expiresAt: Date = .distantFuture
 
     static func fresh(message: String = "", now: Date = Date(), timezone: TimeZone = .current) -> Self {
         Self(
@@ -402,16 +408,19 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
             runAt: now.addingTimeInterval(5 * 60),
             intervalSeconds: 60 * 60,
             timezone: timezone.identifier,
-            missedPolicy: .coalesceOnce
+            missedPolicy: .coalesceOnce,
+            expiresAt: now.addingTimeInterval(30 * 24 * 60 * 60)
         )
     }
 
     func validationError(now: Date = Date()) -> ScheduledSessionValidationError? {
         if message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .emptyMessage }
         guard TimeZone(identifier: timezone) != nil else { return .invalidTimezone }
+        if expiresAt <= now { return .pastExpiration }
         switch scheduleType {
         case .once:
             if runAt <= now { return .pastRunAt }
+            if runAt >= expiresAt { return .expirationBeforeRun }
         case .interval:
             if intervalSeconds < 60 || intervalSeconds > 31_536_000 { return .invalidInterval }
         case .condition, .process:
@@ -425,7 +434,8 @@ struct ScheduledSessionTaskDraft: Equatable, Sendable {
             "message": ["text": message.trimmingCharacters(in: .whitespacesAndNewlines)],
             "scheduleType": scheduleType.rawValue,
             "timezone": timezone,
-            "missedPolicy": missedPolicy.rawValue
+            "missedPolicy": missedPolicy.rawValue,
+            "expiresAt": ScheduledSessionDateFormatting.string(from: expiresAt)
         ]
         switch scheduleType {
         case .once: body["runAt"] = ScheduledSessionDateFormatting.string(from: runAt)
@@ -441,6 +451,8 @@ enum ScheduledSessionValidationError: String, Error, Equatable, Sendable {
     case pastRunAt
     case invalidInterval
     case invalidTimezone
+    case pastExpiration
+    case expirationBeforeRun
     case unsupportedTrigger
 }
 
@@ -451,6 +463,8 @@ extension ScheduledSessionValidationError: LocalizedError {
         case .pastRunAt: "执行时间必须晚于当前时间。"
         case .invalidInterval: "固定间隔必须在 1 分钟到 365 天之间。"
         case .invalidTimezone: "请选择有效的 IANA 时区。"
+        case .pastExpiration: "过期时间必须晚于当前时间。"
+        case .expirationBeforeRun: "过期时间必须晚于首次执行时间。"
         case .unsupportedTrigger: "请在 Automations Tab 中管理该事件触发器。"
         }
     }
@@ -482,6 +496,7 @@ enum ScheduledSessionEventMapping {
         "ScheduledSessionTaskPaused",
         "ScheduledSessionTaskResumed",
         "ScheduledSessionTaskCancelled",
+        "ScheduledSessionTaskExpired",
         "ScheduledSessionRunMissed",
         "ScheduledSessionRunQueued",
         "ScheduledSessionRunStarted",
