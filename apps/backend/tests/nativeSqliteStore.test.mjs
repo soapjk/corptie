@@ -914,6 +914,41 @@ test("Git workspace snapshots persist stable repository and worktree identities"
   }
 });
 
+test("unchanged Git workspace snapshots skip SQLite writes, audit, and dirty notifications", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-git-noop-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const snapshot = workspaceSnapshot();
+    store.upsertGitWorkspaceSnapshot(snapshot);
+    const before = store.selectOne("SELECT total_changes() AS count").count;
+    let dirtyCount = 0;
+    let auditCount = 0;
+    store.setStateDirtyListener(() => { dirtyCount += 1; });
+    store.auditObjectiveWorkItemAssociations = () => { auditCount += 1; };
+    const repeated = {
+      ...snapshot,
+      observedAt: "2099-01-01T00:00:00.000Z",
+      repository: { ...snapshot.repository, lastValidatedAt: "2099-01-01T00:00:00.000Z" },
+      worktrees: snapshot.worktrees.map((worktree) => ({
+        ...worktree,
+        observedAt: "2099-01-01T00:00:00.000Z"
+      }))
+    };
+    store.upsertGitWorkspaceSnapshot(repeated);
+    const after = store.selectOne("SELECT total_changes() AS count").count;
+    assert.equal(after, before);
+    assert.equal(dirtyCount, 0);
+    assert.equal(auditCount, 0);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("logical session route commits switch the active thread and workspace atomically", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-logical-session-"));
   const store = new CorptieStore({

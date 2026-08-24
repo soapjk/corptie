@@ -17,6 +17,19 @@ export class GitWorkspaceManager {
     this.execFile = options.execFile ?? execFileAsync;
     this.inspectionConcurrency = options.inspectionConcurrency ?? 8;
     this.observePerformance = options.observePerformance ?? (() => {});
+    this.inspectionCacheTtlMs = options.inspectionCacheTtlMs ?? 5_000;
+    this.now = options.now ?? (() => Date.now());
+    this.createSnapshot = options.createSnapshot ?? createGitWorkspaceSnapshot;
+    this.inspectionCache = new Map();
+    this.inspectionsInFlight = new Map();
+    this.inspectionMetrics = {
+      requests: 0,
+      scans: 0,
+      cacheHits: 0,
+      singleFlightHits: 0,
+      invalidations: 0,
+      reasons: new Map()
+    };
   }
 
   async createWorktree(input) {
@@ -40,6 +53,7 @@ export class GitWorkspaceManager {
     }
     const args = await this.worktreeAddArguments(input, snapshotBefore, targetPath);
     await mkdir(dirname(targetPath), { recursive: true });
+    this.invalidateInspectionCache(logical.repositoryId, "create_worktree");
     try {
       await this.execFile(
         "git",
@@ -92,6 +106,9 @@ export class GitWorkspaceManager {
 
   async switchWorkspace(input) {
     const logical = this.requireLogicalRoute(input.logicalSessionId);
+    if (logical.repositoryId) {
+      this.invalidateInspectionCache(logical.repositoryId, "switch_workspace");
+    }
     return this.transitions.switchWorkspace({
       ...input,
       logicalSessionId: logical.logicalSessionId
@@ -103,14 +120,60 @@ export class GitWorkspaceManager {
     if (!logical.repositoryId || !logical.activeBinding?.boundCwd) {
       throw new Error("The active session is not attached to a Git repository.");
     }
-    return this.projectStatusForPath(logical.activeBinding.boundCwd, logical.repositoryId);
+    return this.projectStatusForPath(logical.activeBinding.boundCwd, logical.repositoryId, {
+      inspectionLevel: "session",
+      activeWorkspaceId: logical.activeWorkspaceId,
+      reason: "session_detail"
+    });
   }
 
   async projectStatusForPath(workingDirectory, expectedRepositoryId = null, options = {}) {
+    const inspectionLevel = normalizedInspectionLevel(options.inspectionLevel, options.activeWorkspaceId);
+    const repositoryKey = expectedRepositoryId || `path:${absolutePath(workingDirectory)}`;
+    const cacheKey = `${repositoryKey}\0${inspectionLevel}`;
+    const reason = String(options.reason || "unspecified");
+    this.inspectionMetrics.requests += 1;
+    this.inspectionMetrics.reasons.set(reason, (this.inspectionMetrics.reasons.get(reason) ?? 0) + 1);
+    if (options.forceFresh !== true) {
+      const cached = this.inspectionCache.get(cacheKey);
+      if (cached && cached.expiresAt > this.now()) {
+        this.inspectionMetrics.cacheHits += 1;
+        this.#observeInspectionRequest("cache_hit", cached.value, inspectionLevel, reason);
+        return cached.value;
+      }
+      const inFlight = this.inspectionsInFlight.get(cacheKey);
+      if (inFlight) {
+        this.inspectionMetrics.singleFlightHits += 1;
+        const value = await inFlight;
+        this.#observeInspectionRequest("single_flight_hit", value, inspectionLevel, reason);
+        return value;
+      }
+    }
+    const scan = this.#scanProjectStatus(
+      workingDirectory,
+      expectedRepositoryId,
+      { ...options, inspectionLevel, reason }
+    );
+    this.inspectionsInFlight.set(cacheKey, scan);
+    try {
+      const value = await scan;
+      this.inspectionCache.set(cacheKey, {
+        value,
+        expiresAt: this.now() + this.inspectionCacheTtlMs
+      });
+      return value;
+    } finally {
+      if (this.inspectionsInFlight.get(cacheKey) === scan) this.inspectionsInFlight.delete(cacheKey);
+    }
+  }
+
+  async #scanProjectStatus(workingDirectory, expectedRepositoryId, options) {
     const startedAt = performance.now();
     const snapshotStartedAt = performance.now();
-    const snapshot = await createGitWorkspaceSnapshot(absolutePath(workingDirectory), {
-      inspectionConcurrency: this.inspectionConcurrency
+    this.inspectionMetrics.scans += 1;
+    const snapshot = await this.createSnapshot(absolutePath(workingDirectory), {
+      inspectionConcurrency: this.inspectionConcurrency,
+      execFile: this.execFile
     });
     const snapshotMs = performance.now() - snapshotStartedAt;
     if (expectedRepositoryId && snapshot.repository.id !== expectedRepositoryId) {
@@ -121,8 +184,9 @@ export class GitWorkspaceManager {
     if (!main || main.availability !== "available") {
       throw new Error("The repository's main worktree is unavailable.");
     }
+    const selectedWorktrees = selectWorktreesForInspection(snapshot.worktrees, options);
     const worktrees = await mapConcurrentOrdered(
-      snapshot.worktrees,
+      selectedWorktrees,
       this.inspectionConcurrency,
       async (worktree) => {
         const sessions = this.store.listLogicalSessionsByWorkspaceId(worktree.worktreeId)
@@ -210,6 +274,9 @@ export class GitWorkspaceManager {
     this.observePerformance({
       operation: "projectStatusForPath",
       repositoryId: snapshot.repository.id,
+      inspectionLevel: options.inspectionLevel,
+      reason: options.reason,
+      outcome: "scan",
       worktreeCount: worktrees.length,
       snapshotMs: roundedMilliseconds(snapshotMs),
       enrichmentMs: roundedMilliseconds(performance.now() - snapshotStartedAt - snapshotMs),
@@ -218,10 +285,56 @@ export class GitWorkspaceManager {
     return result;
   }
 
+  invalidateInspectionCache(repositoryId, reason = "git_write") {
+    const prefix = `${repositoryId}\0`;
+    let removed = 0;
+    for (const key of this.inspectionCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.inspectionCache.delete(key);
+        removed += 1;
+      }
+    }
+    this.inspectionMetrics.invalidations += 1;
+    this.observePerformance({
+      operation: "projectStatusInspectionCache",
+      repositoryId,
+      reason,
+      outcome: "invalidate",
+      removed
+    });
+  }
+
+  inspectionPerformanceSnapshot() {
+    const metrics = this.inspectionMetrics;
+    return {
+      requests: metrics.requests,
+      scans: metrics.scans,
+      cacheHits: metrics.cacheHits,
+      singleFlightHits: metrics.singleFlightHits,
+      invalidations: metrics.invalidations,
+      hitRate: metrics.requests === 0
+        ? 0
+        : (metrics.cacheHits + metrics.singleFlightHits) / metrics.requests,
+      reasons: Object.fromEntries(metrics.reasons)
+    };
+  }
+
+  #observeInspectionRequest(outcome, value, inspectionLevel, reason) {
+    this.observePerformance({
+      operation: "projectStatusInspectionCache",
+      repositoryId: value.repositoryId,
+      inspectionLevel,
+      reason,
+      outcome
+    });
+  }
+
   async integrationInspectionForProject(workingDirectory, expectedRepositoryId = null) {
     const startedAt = performance.now();
     const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId, {
-      includeDiffStat: false
+      includeDiffStat: false,
+      inspectionLevel: "integration",
+      reason: "integration_preflight"
     });
     const enrichmentStartedAt = performance.now();
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => {
@@ -252,7 +365,9 @@ export class GitWorkspaceManager {
   async managementInspectionForProject(workingDirectory, expectedRepositoryId = null) {
     const startedAt = performance.now();
     const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId, {
-      includeDiffStat: false
+      includeDiffStat: false,
+      inspectionLevel: "management",
+      reason: "worktree_management"
     });
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => ({
       ...worktree,
@@ -464,6 +579,7 @@ export class GitWorkspaceManager {
         continue;
       }
       try {
+        this.invalidateInspectionCache(input.repositoryId, "create_integration_worktree");
         await this.execFile(
           "git",
           ["-C", main.path, "worktree", "add", "-b", branchName, targetPath, main.headOid],
@@ -562,6 +678,7 @@ export class GitWorkspaceManager {
       ? [targetPath, branchName]
       : ["-b", branchName, targetPath, main.headOid];
     try {
+      this.invalidateInspectionCache(input.repositoryId, "create_work_item_worktree");
       await this.execFile(
         "git",
         ["-C", main.path, "worktree", "add", ...args],
@@ -1221,10 +1338,28 @@ export class GitWorkspaceManager {
   }
 
   async runGit(cwd, arguments_) {
-    return this.execFile("git", ["-C", cwd, ...arguments_], {
+    const repositoryId = gitArgumentsMutateWorkspace(arguments_)
+      ? this.#repositoryIdForPath(cwd)
+      : null;
+    if (repositoryId) this.invalidateInspectionCache(repositoryId, `git_${arguments_[0]}`);
+    const result = await this.execFile("git", ["-C", cwd, ...arguments_], {
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024
     });
+    if (repositoryId) this.invalidateInspectionCache(repositoryId, `git_${arguments_[0]}_completed`);
+    return result;
+  }
+
+  #repositoryIdForPath(cwd) {
+    const target = resolve(cwd);
+    for (const repository of this.store.listGitRepositories?.() ?? []) {
+      const worktree = this.store.listGitWorktrees(repository.id).find((candidate) => {
+        return [candidate.path, candidate.canonicalPath].filter(Boolean)
+          .some((path) => resolve(path) === target);
+      });
+      if (worktree) return repository.id;
+    }
+    return null;
   }
 
   async gitOutput(cwd, arguments_) {
@@ -1244,6 +1379,27 @@ export class GitWorkspaceManager {
       return false;
     }
   }
+}
+
+function normalizedInspectionLevel(level, activeWorkspaceId) {
+  const normalized = String(level || "full").trim().toLowerCase();
+  if (normalized === "session") return `session:${String(activeWorkspaceId || "main")}`;
+  if (["full", "management", "integration"].includes(normalized)) return normalized;
+  throw new Error(`Unsupported Git inspection level: ${level}`);
+}
+
+function selectWorktreesForInspection(worktrees, options) {
+  if (!String(options.inspectionLevel).startsWith("session:")) return worktrees;
+  const activeWorkspaceId = options.activeWorkspaceId;
+  return worktrees.filter((worktree) => worktree.isMain || worktree.worktreeId === activeWorkspaceId);
+}
+
+function gitArgumentsMutateWorkspace(arguments_) {
+  const command = arguments_?.[0];
+  if (["add", "commit", "merge", "cherry-pick", "rebase", "reset", "checkout", "switch", "restore", "clean", "branch"].includes(command)) {
+    return true;
+  }
+  return command === "worktree" && ["add", "remove", "move", "prune", "repair"].includes(arguments_?.[1]);
 }
 
 function deletionSafetyError(code, message) {

@@ -3016,6 +3016,23 @@ export class CorptieStore {
       throw new Error("A valid Git repository snapshot is required.");
     }
     const observedAt = snapshot.observedAt || new Date().toISOString();
+    const existingRepo = this.selectOne(
+      "SELECT common_git_dir FROM git_repositories WHERE repository_id = ?",
+      [repository.id]
+    );
+    const existingWorktrees = this.selectAll(
+      `SELECT repository_id, worktree_id, path, canonical_path, git_dir, is_main, availability,
+              head_oid, branch_ref, branch_name, detached, locked, lock_reason,
+              prunable, prune_reason, inventory_version, observed_at
+       FROM git_worktrees WHERE repository_id = ?`,
+      [repository.id]
+    );
+    if (existingRepo?.common_git_dir === repository.commonGitDirCanonicalPath
+      && gitWorkspaceSnapshotPersistenceMatches(snapshot, existingWorktrees)) {
+      return existingWorktrees
+        .sort(compareGitWorktreeRows)
+        .map(presentGitWorktreeRow);
+    }
     this.db.run("BEGIN IMMEDIATE");
     try {
       // Change-detection: the frontend polls workspace status every few seconds,
@@ -3025,10 +3042,6 @@ export class CorptieStore {
       // about the repository changed. Persist the repository row only when it is
       // new or its canonical git dir actually moved; a routine re-validation that
       // changes nothing must stay a silent no-op.
-      const existingRepo = this.selectOne(
-        "SELECT common_git_dir FROM git_repositories WHERE repository_id = ?",
-        [repository.id]
-      );
       if (!existingRepo || existingRepo.common_git_dir !== repository.commonGitDirCanonicalPath) {
         this.db.run(
           `INSERT INTO git_repositories (
@@ -3160,25 +3173,7 @@ export class CorptieStore {
     return this.selectAll(
       "SELECT * FROM git_worktrees WHERE repository_id = ? ORDER BY is_main DESC, path ASC",
       [repositoryId]
-    ).map((row) => ({
-      worktreeId: row.worktree_id,
-      repositoryId: row.repository_id,
-      path: row.path,
-      canonicalPath: row.canonical_path,
-      gitDirCanonicalPath: row.git_dir,
-      isMain: Boolean(row.is_main),
-      availability: row.availability,
-      headOid: row.head_oid,
-      branchRef: row.branch_ref,
-      branchName: row.branch_name,
-      isDetached: Boolean(row.detached),
-      isLocked: Boolean(row.locked),
-      lockReason: row.lock_reason,
-      isPrunable: Boolean(row.prunable),
-      pruneReason: row.prune_reason,
-      inventoryVersion: row.inventory_version,
-      observedAt: row.observed_at
-    }));
+    ).map(presentGitWorktreeRow);
   }
 
   listAllGitWorktrees() {
@@ -9185,6 +9180,60 @@ function sessionEventFromRow(row) {
 function eventHasAgentMessage(event) {
   return (event.type === "CodexThreadCompleted" || event.type === "AgentTurnCompleted")
     && (event.payload?.hasAgentMessage === true || event.payload?.hasAgentMessage === 1);
+}
+
+function gitWorkspaceSnapshotPersistenceMatches(snapshot, rows) {
+  const worktrees = snapshot.worktrees ?? [];
+  if (rows.length !== worktrees.length) return false;
+  const byId = new Map(rows.map((row) => [row.worktree_id, row]));
+  return worktrees.every((worktree) => {
+    const row = byId.get(worktree.worktreeId)
+      ?? (worktree.gitDirCanonicalPath == null
+        ? rows.find((candidate) => candidate.path === worktree.path)
+        : null);
+    if (!row) return false;
+    return row.path === worktree.path
+      && row.canonical_path === (worktree.canonicalPath ?? null)
+      && row.git_dir === (worktree.gitDirCanonicalPath ?? null)
+      && Number(row.is_main) === (worktree.isMain ? 1 : 0)
+      && row.availability === worktree.availability
+      && row.head_oid === (worktree.headOid ?? null)
+      && row.branch_ref === (worktree.branchRef ?? null)
+      && row.branch_name === (worktree.branchName ?? null)
+      && Number(row.detached) === (worktree.isDetached ? 1 : 0)
+      && Number(row.locked) === (worktree.isLocked ? 1 : 0)
+      && row.lock_reason === (worktree.lockReason ?? null)
+      && Number(row.prunable) === (worktree.isPrunable ? 1 : 0)
+      && row.prune_reason === (worktree.pruneReason ?? null)
+      && row.inventory_version === snapshot.inventoryVersion;
+  });
+}
+
+function compareGitWorktreeRows(left, right) {
+  if (Boolean(left.is_main) !== Boolean(right.is_main)) return left.is_main ? -1 : 1;
+  return String(left.path).localeCompare(String(right.path));
+}
+
+function presentGitWorktreeRow(row) {
+  return {
+    worktreeId: row.worktree_id,
+    repositoryId: row.repository_id,
+    path: row.path,
+    canonicalPath: row.canonical_path,
+    gitDirCanonicalPath: row.git_dir,
+    isMain: Boolean(row.is_main),
+    availability: row.availability,
+    headOid: row.head_oid,
+    branchRef: row.branch_ref,
+    branchName: row.branch_name,
+    isDetached: Boolean(row.detached),
+    isLocked: Boolean(row.locked),
+    lockReason: row.lock_reason,
+    isPrunable: Boolean(row.prunable),
+    pruneReason: row.prune_reason,
+    inventoryVersion: row.inventory_version,
+    observedAt: row.observed_at
+  };
 }
 
 // 从 source 元数据提取 producer 标签（source 可能是对象或字符串）。
