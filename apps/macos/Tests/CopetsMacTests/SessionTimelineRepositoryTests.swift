@@ -58,6 +58,14 @@ final class SessionTimelineRepositoryTests: XCTestCase {
         XCTAssertNil(repository.detail(for: "provider-thread"))
     }
 
+    func testTimelineRevisionAdvancesWithPublishedDetail() {
+        let repository = SessionTimelineRepository()
+        repository.publish(detail(id: "provider"), for: "session", timelineRevision: 12)
+
+        XCTAssertEqual(repository.timelineRevision(for: "session"), 12)
+        XCTAssertEqual(repository.state(for: "session").timelineRevision, 12)
+    }
+
     private func detail(id: String) -> CodexThreadDetail {
         CodexThreadDetail(
             id: id,

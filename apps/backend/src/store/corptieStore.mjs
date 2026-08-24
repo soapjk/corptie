@@ -2297,6 +2297,38 @@ export class CorptieStore {
       );
       CREATE INDEX IF NOT EXISTS idx_state_change_log_entity
       ON state_change_log(entity_type, entity_id, revision DESC);
+
+      CREATE TABLE IF NOT EXISTS session_timeline_revisions (
+        session_id TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS session_timeline_change_log (
+        session_id TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        item_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK (operation IN ('upsert', 'delete')),
+        changed_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, revision),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_timeline_change_item
+      ON session_timeline_change_log(session_id, item_id, revision DESC);
+    `);
+
+    // Existing materialized timelines start at one baseline revision. Their
+    // individual historical mutations predate this protocol and are recovered
+    // through the stored snapshot endpoint rather than fabricated change rows.
+    this.db.run(`
+      INSERT OR IGNORE INTO session_timeline_revisions (session_id, revision, updated_at)
+      SELECT sessions.id,
+             CASE WHEN EXISTS (
+               SELECT 1 FROM session_items WHERE session_items.session_id = sessions.id
+             ) THEN 1 ELSE 0 END,
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      FROM sessions
     `);
 
     const tracked = [
@@ -2358,6 +2390,39 @@ export class CorptieStore {
         FROM state_sync_clock WHERE singleton = 1;
       END;
     `);
+    for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+      const suffix = operation.toLowerCase();
+      const row = operation === "DELETE" ? "OLD" : "NEW";
+      const changeOperation = operation === "DELETE" ? "delete" : "upsert";
+      this.db.run(`
+        CREATE TRIGGER IF NOT EXISTS session_timeline_${suffix}
+        AFTER ${operation} ON session_items
+        WHEN EXISTS (SELECT 1 FROM sessions WHERE id = ${row}.session_id)
+        BEGIN
+          INSERT INTO session_timeline_revisions (session_id, revision, updated_at)
+          VALUES (${row}.session_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+          ON CONFLICT(session_id) DO UPDATE SET
+            revision = session_timeline_revisions.revision + 1,
+            updated_at = excluded.updated_at;
+          INSERT INTO session_timeline_change_log (
+            session_id, revision, item_id, operation, changed_at
+          )
+          SELECT ${row}.session_id, revision, ${row}.id, '${changeOperation}', updated_at
+          FROM session_timeline_revisions WHERE session_id = ${row}.session_id;
+          DELETE FROM session_timeline_change_log
+          WHERE session_id = ${row}.session_id
+            AND revision < MAX(0, (
+              SELECT revision FROM session_timeline_revisions
+              WHERE session_id = ${row}.session_id
+            ) - 2000);
+          UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
+          INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+          SELECT revision, 'session', ${row}.session_id, 'upsert',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM state_sync_clock WHERE singleton = 1;
+        END;
+      `);
+    }
     // A bounded durable replay window is sufficient because clients fall back
     // to /state/snapshot when their cursor predates it.
     this.db.run(`
@@ -6027,6 +6092,107 @@ export class CorptieStore {
       lastAgentMessageSequence: Number(row.last_agent_message_sequence ?? 0),
       lastReadMessageSequence: Number(row.last_read_message_sequence ?? 0)
     }]));
+  }
+
+  listSessionTimelineRevisions() {
+    const rows = this.selectAll(`
+      SELECT sessions.id AS session_id,
+             COALESCE(session_timeline_revisions.revision, 0) AS revision
+      FROM sessions
+      LEFT JOIN session_timeline_revisions
+        ON session_timeline_revisions.session_id = sessions.id
+    `);
+    return new Map(rows.map((row) => [row.session_id, Number(row.revision ?? 0)]));
+  }
+
+  sessionTimelineRevision(sessionId) {
+    const row = this.selectOne(
+      "SELECT revision FROM session_timeline_revisions WHERE session_id = ?",
+      [sessionId]
+    );
+    return Number(row?.revision ?? 0);
+  }
+
+  sessionTimelineChangesAfter(sessionId, afterRevision, limit = 200) {
+    if (!this.getSession(sessionId)) {
+      const error = new Error("Session not found.");
+      error.code = "SESSION_NOT_FOUND";
+      throw error;
+    }
+    const after = Number(afterRevision);
+    const currentRevision = this.sessionTimelineRevision(sessionId);
+    if (!Number.isSafeInteger(after) || after < 0 || after > currentRevision) {
+      return { snapshotRequired: true, currentRevision };
+    }
+    if (after === currentRevision) {
+      return {
+        snapshotRequired: false,
+        baseRevision: after,
+        revision: after,
+        currentRevision,
+        hasMore: false,
+        changes: []
+      };
+    }
+    const oldest = this.selectOne(
+      "SELECT MIN(revision) AS revision FROM session_timeline_change_log WHERE session_id = ?",
+      [sessionId]
+    );
+    const oldestRevision = Number(oldest?.revision ?? currentRevision);
+    if (after < oldestRevision - 1) {
+      return { snapshotRequired: true, currentRevision };
+    }
+    const pageLimit = Math.max(1, Math.min(500, Number(limit) || 200));
+    const rows = this.selectAll(
+      `SELECT revision, item_id, operation, changed_at
+       FROM session_timeline_change_log
+       WHERE session_id = ? AND revision > ?
+       ORDER BY revision ASC LIMIT ?`,
+      [sessionId, after, pageLimit]
+    );
+    if (rows.length === 0) {
+      return { snapshotRequired: true, currentRevision };
+    }
+    const revision = Number(rows.at(-1).revision);
+    return {
+      snapshotRequired: false,
+      baseRevision: after,
+      revision,
+      currentRevision,
+      hasMore: revision < currentRevision,
+      changes: rows.map((row) => ({
+        revision: Number(row.revision),
+        itemId: row.item_id,
+        operation: row.operation,
+        item: row.operation === "upsert"
+          ? this.getSessionItem(sessionId, row.item_id)
+          : null,
+        changedAt: row.changed_at
+      }))
+    };
+  }
+
+  getSessionItem(sessionId, itemId) {
+    const row = this.selectOne(
+      `SELECT id, turn_id, turn_status, type, title, text, options_json,
+              raw_metadata_json, status, created_at
+       FROM session_items WHERE session_id = ? AND id = ?`,
+      [sessionId, itemId]
+    );
+    if (!row) return null;
+    const provider = this.getSession(sessionId)?.external?.provider ?? "";
+    return normalizeStoredItem({
+      id: row.id,
+      turnId: row.turn_id,
+      turnStatus: row.turn_status,
+      type: row.type,
+      title: row.title,
+      text: normalizeStoredText(row.text, provider),
+      options: parseJson(row.options_json, null),
+      rawMetadataJSON: row.raw_metadata_json ?? null,
+      status: row.status,
+      createdAt: row.created_at
+    }, provider);
   }
 
   lastAgentMessageSequence(sessionId) {

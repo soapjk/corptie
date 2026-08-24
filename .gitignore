@@ -88,6 +88,7 @@ docs/**
 !docs/automation-scheduler.md
 !docs/popup-background-execution-audit.md
 !docs/copilot-assistant-mcp-skill-coverage.md
+!docs/session-background-sync-architecture.md
 !docs/ipad-client-overall-design.md
 !docs/ipad-client-architecture.md
 !docs/ipad-lan-remote-access-security.md

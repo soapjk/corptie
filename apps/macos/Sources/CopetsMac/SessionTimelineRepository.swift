@@ -8,14 +8,28 @@ import Foundation
 final class SessionTimelineState: ObservableObject {
     let sessionID: String
     @Published private(set) var detail: CodexThreadDetail?
+    private(set) var timelineRevision: Int
 
-    init(sessionID: String, detail: CodexThreadDetail? = nil) {
+    init(sessionID: String, detail: CodexThreadDetail? = nil, timelineRevision: Int = 0) {
         self.sessionID = sessionID
         self.detail = detail
+        self.timelineRevision = max(0, timelineRevision)
     }
 
-    func apply(_ detail: CodexThreadDetail) {
-        guard self.detail != detail else { return }
+    func apply(_ detail: CodexThreadDetail, timelineRevision: Int? = nil) {
+        // Responses can complete out of order when a stored snapshot races an
+        // incremental page. An explicitly older authority must never replace
+        // newer resident items while retaining the newer revision number.
+        if let timelineRevision {
+            if timelineRevision < self.timelineRevision { return }
+            // Equal durable revisions carry no new timeline information. Keep
+            // a richer selected-session live projection that may already
+            // contain token deltas not represented by this stored revision.
+            if timelineRevision == self.timelineRevision, self.detail != nil { return }
+        }
+        let nextRevision = max(self.timelineRevision, timelineRevision ?? self.timelineRevision)
+        guard self.detail != detail || self.timelineRevision != nextRevision else { return }
+        self.timelineRevision = nextRevision
         self.detail = detail
     }
 }
@@ -54,8 +68,12 @@ final class SessionTimelineRepository {
         return state.detail
     }
 
-    func publish(_ detail: CodexThreadDetail, for sessionID: String) {
-        state(for: sessionID).apply(detail)
+    func timelineRevision(for sessionID: String) -> Int {
+        statesBySessionID[sessionID]?.timelineRevision ?? 0
+    }
+
+    func publish(_ detail: CodexThreadDetail, for sessionID: String, timelineRevision: Int? = nil) {
+        state(for: sessionID).apply(detail, timelineRevision: timelineRevision)
         trimIfNeeded()
     }
 

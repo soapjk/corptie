@@ -77,6 +77,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var lastMessageAt: String? = nil
     var lastAgentMessageSequence: Int? = nil
     var lastReadMessageSequence: Int? = nil
+    var timelineRevision: Int? = nil
     let accent: Accent
     let archived: Bool?
     let pinned: Bool?
