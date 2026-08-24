@@ -1006,7 +1006,11 @@ sessionWorkspaceOperations = new SessionWorkspaceOperationService({
 });
 const projectApplicationService = new ProjectApplicationService({
   resolveProject: resolveProjectContext,
-  inspectWorkspaces: (project) => gitWorkspaces.projectStatusForPath(project.mainPath, project.id),
+  inspectWorkspaces: (project, options = {}) => gitWorkspaces.projectStatusForPath(
+    project.mainPath,
+    project.id,
+    options
+  ),
   inspectWorkspacePushStatus: (_project, workspace) => gitHubPushes.status({
     workingDirectory: workspace.path
   }),
@@ -1103,9 +1107,13 @@ workItemStartService = new WorkItemStartService({
 });
 const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
   store,
-  inspectProject: async (projectId) => {
+  inspectProject: async (projectId, options = {}) => {
     const project = await projectApplicationService.requireProject(projectId);
-    return gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
+    return gitWorkspaces.projectStatusForPath(project.mainPath, project.id, {
+      inspectionLevel: "integration",
+      reason: "integration_status",
+      ...options
+    });
   },
   mergeWorktree: ({ projectId, mainPath, worktreeId }) => gitWorkspaces.mergeWorktreeIntoMainForProject({
     repositoryId: projectId,
@@ -5763,7 +5771,11 @@ async function performProjectWorkspaceAction(project, workspaceId, action, input
     error.code = "INVALID_PROJECT_ACTION";
     throw error;
   }
-  const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
+  const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id, {
+    inspectionLevel: "management",
+    forceFresh: true,
+    reason: `workspace_action_${action}_preflight`
+  });
   const workspace = status.worktrees.find((candidate) => candidate.worktreeId === workspaceId);
   if (!workspace || workspace.availability !== "available") {
     const error = new Error("The selected workspace is unavailable or does not belong to this Project.");

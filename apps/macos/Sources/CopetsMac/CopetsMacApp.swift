@@ -581,6 +581,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Task {
             await backendClient.refreshSelectedUsage()
         }
+        backendClient.applicationDidBecomeActive()
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        backendClient.applicationDidResignActive()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
