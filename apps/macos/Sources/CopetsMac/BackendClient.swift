@@ -28,6 +28,10 @@ private struct AutomationClientActionEnvelope: Decodable {
     }
 }
 
+private struct GlobalEventReplayRequiredEnvelope: Decodable {
+    let latestCursor: Int
+}
+
 struct ProjectWorktreeIntegrationLaunchGate: Equatable {
     private(set) var isRunning = false
 
@@ -243,6 +247,10 @@ final class BackendClient: ObservableObject {
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
     private var detailPrefetchTasks: [String: Task<CodexThreadDetail?, Never>] = [:]
+    private var backgroundTimelineSyncTasks: [String: Task<Void, Never>] = [:]
+    private var desiredTimelineRevisionBySessionID: [String: Int] = [:]
+    private let timelineNetworkPermits = SessionTimelineNetworkPermitPool(limit: 4)
+    private var globalEventCursor = 0
     private static let historyPageSize = 200
     private var historyLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
@@ -369,6 +377,9 @@ final class BackendClient: ObservableObject {
         projectStatusEventRefreshTask = nil
         detailPrefetchTasks.values.forEach { $0.cancel() }
         detailPrefetchTasks.removeAll()
+        backgroundTimelineSyncTasks.values.forEach { $0.cancel() }
+        backgroundTimelineSyncTasks.removeAll()
+        desiredTimelineRevisionBySessionID.removeAll()
     }
 
     func reportNavigationError(sessionId: String) {
@@ -381,7 +392,14 @@ final class BackendClient: ObservableObject {
                 return
             }
             while !Task.isCancelled {
-                var request = URLRequest(url: self.baseURL.appending(path: "events"))
+                var components = URLComponents(
+                    url: self.baseURL.appending(path: "events"),
+                    resolvingAgainstBaseURL: false
+                )!
+                components.queryItems = [
+                    URLQueryItem(name: "cursor", value: String(self.globalEventCursor))
+                ]
+                var request = URLRequest(url: components.url!)
                 request.setValue("text/event-stream", forHTTPHeaderField: "accept")
                 do {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
@@ -395,18 +413,35 @@ final class BackendClient: ObservableObject {
                     }
                     var eventName = ""
                     var dataLines: [String] = []
+                    var eventID: Int?
                     for try await line in bytes.lines {
                         if Task.isCancelled {
                             return
                         }
                         if line.isEmpty {
                             await self.handleGlobalEvent(eventName, data: dataLines.joined(separator: "\n"))
+                            if eventName == "EventReplayRequired",
+                               let payload = dataLines.joined(separator: "\n").data(using: .utf8),
+                               let replay = try? JSONDecoder().decode(
+                                   GlobalEventReplayRequiredEnvelope.self,
+                                   from: payload
+                               ) {
+                                self.globalEventCursor = max(0, replay.latestCursor)
+                            } else if let eventID {
+                                // Advance only after the event handler returns. A
+                                // disconnect during handling therefore replays the
+                                // event instead of silently acknowledging it.
+                                self.globalEventCursor = max(self.globalEventCursor, eventID)
+                            }
                             eventName = ""
                             dataLines.removeAll(keepingCapacity: true)
+                            eventID = nil
                         } else if line.hasPrefix("event:") {
                             eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
                         } else if line.hasPrefix("data:") {
                             dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                        } else if line.hasPrefix("id:") {
+                            eventID = Int(String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces))
                         }
                     }
                 } catch {
@@ -485,6 +520,21 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "EventReplayRequired" {
+            // The bounded wake-event buffer cannot cover this cursor. State and
+            // timelines have their own durable authorities, so repair those
+            // directly instead of replaying ambiguous side effects.
+            await AppStateSyncController.shared.refreshSnapshot()
+            await loadAutomations()
+            if let selectedSession {
+                await loadScheduledTasks(for: selectedSession)
+                scheduleBackgroundTimelineSync(
+                    for: selectedSession,
+                    desiredRevision: selectedSession.timelineRevision ?? 0
+                )
+            }
+            return
+        }
         if eventName == "ProjectWorkspaceChanged"
             || eventName == "ProjectWorktreeIntegrationStarted"
             || eventName == "ProjectWorktreeIntegrationCompleted" {
@@ -1144,19 +1194,42 @@ final class BackendClient: ObservableObject {
         guard nextSessions != lastProjectedSessions else { return }
         let previousSessions = lastProjectedSessions
         lastProjectedSessions = nextSessions
+        let activeSessionIDs = Set(nextSessions.map(\.id))
+        let removedPrefetchIDs = detailPrefetchTasks.keys.filter { !activeSessionIDs.contains($0) }
+        for sessionID in removedPrefetchIDs {
+            detailPrefetchTasks[sessionID]?.cancel()
+            detailPrefetchTasks[sessionID] = nil
+        }
+        let removedSyncIDs = backgroundTimelineSyncTasks.keys.filter { !activeSessionIDs.contains($0) }
+        for sessionID in removedSyncIDs {
+            backgroundTimelineSyncTasks[sessionID]?.cancel()
+            backgroundTimelineSyncTasks[sessionID] = nil
+            desiredTimelineRevisionBySessionID[sessionID] = nil
+            SessionTimelineRepository.shared.remove(sessionID)
+        }
 
         let previous = sessionListStore.sessions
         let patch = SessionCollectionDiffer.patch(from: previous, to: nextSessions, revision: UInt64(max(0, appState.revision)))
         sessionListStore.apply(patch, authoritativeSessions: nextSessions)
         archivedSessions = appState.sessions.filter { $0.archived == true }
         sessionsDidChange.send(nextSessions)
-        if let previousSessions {
-            for session in SessionDetailPreloadPolicy.sessionsWithAdvancedAgentMessages(
-                previous: previousSessions,
-                current: nextSessions,
-                excluding: selectedSession?.id
+        let previousByID = Dictionary(uniqueKeysWithValues: (previousSessions ?? []).map { ($0.id, $0) })
+        for session in nextSessions {
+            let desiredRevision = session.timelineRevision ?? 0
+            let localRevision = SessionTimelineRepository.shared.timelineRevision(for: session.id)
+            let resident = SessionTimelineRepository.shared.detail(for: session.id) != nil
+            let unread = (session.lastAgentMessageSequence ?? 0) > (session.lastReadMessageSequence ?? 0)
+            if SessionTimelineBackgroundSyncPolicy.shouldSchedule(
+                previousServerRevision: previousSessions == nil
+                    ? nil
+                    : previousByID[session.id]?.timelineRevision ?? 0,
+                desiredServerRevision: desiredRevision,
+                localRevision: localRevision,
+                isSelected: session.id == selectedSession?.id,
+                hasResidentDetail: resident,
+                isUnread: unread
             ) {
-                prefetchDetail(for: session, forceRefresh: true)
+                scheduleBackgroundTimelineSync(for: session, desiredRevision: desiredRevision)
             }
         }
         syncSelectedSessionFromSessions()
@@ -2737,8 +2810,16 @@ final class BackendClient: ObservableObject {
         SessionTimelineRepository.shared.detail(for: sessionId)
     }
 
-    private func storeCachedDetail(_ detail: CodexThreadDetail, for sessionId: String) {
-        SessionTimelineRepository.shared.publish(detail, for: sessionId)
+    private func storeCachedDetail(
+        _ detail: CodexThreadDetail,
+        for sessionId: String,
+        timelineRevision: Int? = nil
+    ) {
+        SessionTimelineRepository.shared.publish(
+            detail,
+            for: sessionId,
+            timelineRevision: timelineRevision
+        )
     }
 
     private func removeCachedDetail(for sessionId: String) {
@@ -2746,11 +2827,7 @@ final class BackendClient: ObservableObject {
     }
 
     func prefetchDetail(for session: TaskSession) {
-        prefetchDetail(for: session, forceRefresh: false)
-    }
-
-    private func prefetchDetail(for session: TaskSession, forceRefresh: Bool) {
-        guard (forceRefresh || SessionTimelineRepository.shared.detail(for: session.id) == nil),
+        guard SessionTimelineRepository.shared.detail(for: session.id) == nil,
               detailPrefetchTasks[session.id] == nil else {
             return
         }
@@ -2759,10 +2836,14 @@ final class BackendClient: ObservableObject {
             guard let self else {
                 return nil
             }
-            defer {
-                self.detailPrefetchTasks[session.id] = nil
-            }
-            return await self.fetchDetail(for: session, reportsErrors: false)
+            defer { self.detailPrefetchTasks[session.id] = nil }
+            guard let snapshot = await self.fetchStoredDetail(for: session) else { return nil }
+            self.storeCachedDetail(
+                snapshot.detail,
+                for: session.id,
+                timelineRevision: snapshot.timelineRevision
+            )
+            return snapshot.detail
         }
     }
 
@@ -2789,6 +2870,164 @@ final class BackendClient: ObservableObject {
             guard let session = sessionsByID[sessionID] else { continue }
             prefetchDetail(for: session)
         }
+    }
+
+    private func scheduleBackgroundTimelineSync(
+        for session: TaskSession,
+        desiredRevision: Int
+    ) {
+        guard desiredRevision > 0 else { return }
+        desiredTimelineRevisionBySessionID[session.id] = max(
+            desiredTimelineRevisionBySessionID[session.id] ?? 0,
+            desiredRevision
+        )
+        guard backgroundTimelineSyncTasks[session.id] == nil else { return }
+
+        backgroundTimelineSyncTasks[session.id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.backgroundTimelineSyncTasks[session.id] = nil
+                if SessionTimelineRepository.shared.timelineRevision(for: session.id)
+                    >= (self.desiredTimelineRevisionBySessionID[session.id] ?? 0) {
+                    self.desiredTimelineRevisionBySessionID[session.id] = nil
+                }
+            }
+            var failureCount = 0
+            while !Task.isCancelled,
+                  let currentSession = self.sessions.first(where: { $0.id == session.id }),
+                  let desired = self.desiredTimelineRevisionBySessionID[session.id] {
+                let localRevision = SessionTimelineRepository.shared.timelineRevision(for: session.id)
+                if localRevision >= desired,
+                   SessionTimelineRepository.shared.detail(for: session.id) != nil {
+                    return
+                }
+
+                await self.timelineNetworkPermits.acquire()
+                if Task.isCancelled {
+                    await self.timelineNetworkPermits.release()
+                    return
+                }
+                let synchronized = await self.synchronizeStoredTimeline(
+                    for: currentSession,
+                    localRevision: localRevision
+                )
+                await self.timelineNetworkPermits.release()
+
+                if synchronized {
+                    failureCount = 0
+                    continue
+                }
+                failureCount += 1
+                let delay = min(30, 1 << min(failureCount, 4))
+                try? await Task.sleep(for: .seconds(delay))
+            }
+        }
+    }
+
+    private func synchronizeStoredTimeline(
+        for session: TaskSession,
+        localRevision: Int
+    ) async -> Bool {
+        if localRevision > 0,
+           let currentDetail = SessionTimelineRepository.shared.detail(for: session.id),
+           let envelope = await fetchTimelineChanges(for: session, after: localRevision) {
+            switch SessionTimelineChangeMerger.merge(
+                envelope,
+                into: currentDetail,
+                localRevision: localRevision
+            ) {
+            case .applied(let detail, let revision):
+                storeCachedDetail(
+                    Self.applyingSessionMetadata(session, to: detail),
+                    for: session.id,
+                    timelineRevision: revision
+                )
+                return true
+            case .duplicate:
+                return true
+            case .requiresSnapshot:
+                break
+            }
+        }
+        guard let snapshot = await fetchStoredDetail(for: session) else { return false }
+        storeCachedDetail(
+            snapshot.detail,
+            for: session.id,
+            timelineRevision: snapshot.timelineRevision
+        )
+        return true
+    }
+
+    private func fetchTimelineChanges(
+        for session: TaskSession,
+        after revision: Int
+    ) async -> SessionTimelineChangeEnvelope? {
+        do {
+            var components = URLComponents(
+                url: baseURL.appending(path: "sessions/\(session.id)/timeline/changes"),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = [
+                URLQueryItem(name: "after", value: String(revision)),
+                URLQueryItem(name: "limit", value: "200")
+            ]
+            let (data, response) = try await URLSession.shared.data(from: components.url!)
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 200 || http.statusCode == 410 else {
+                return nil
+            }
+            return try JSONDecoder().decode(SessionTimelineChangeEnvelope.self, from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fetchStoredDetail(
+        for session: TaskSession
+    ) async -> (detail: CodexThreadDetail, timelineRevision: Int)? {
+        let threadId = session.external?.threadId ?? session.id
+        do {
+            let url = baseURL.appending(path: "sessions/\(session.id)/stored-snapshot")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                return nil
+            }
+            async let header = Task.detached(priority: .utility) {
+                try JSONDecoder().decode(StoredSessionTimelineSnapshotHeader.self, from: data)
+            }.value
+            async let detail = decodeDetail(data, for: session, threadId: threadId)
+            return try await (detail, header.timelineRevision)
+        } catch {
+            return nil
+        }
+    }
+
+    nonisolated private static func applyingSessionMetadata(
+        _ session: TaskSession,
+        to detail: CodexThreadDetail
+    ) -> CodexThreadDetail {
+        CodexThreadDetail(
+            id: detail.id,
+            title: session.title,
+            status: session.status,
+            source: session.external?.source ?? detail.source,
+            connectionStatus: session.external?.connectionStatus ?? detail.connectionStatus,
+            currentModel: session.external?.currentModel ?? detail.currentModel,
+            currentReasoningLevel: session.external?.currentReasoningLevel ?? detail.currentReasoningLevel,
+            activityStatus: session.activityStatus,
+            cwd: session.external?.cwd ?? detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: session.updatedAt,
+            canSend: session.capabilities?.canSend ?? detail.canSend,
+            sendUnavailableReason: detail.sendUnavailableReason,
+            capabilities: session.capabilities ?? detail.capabilities,
+            turnCount: detail.turnCount,
+            items: detail.items,
+            lastAgentMessageSequence: session.lastAgentMessageSequence,
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: session.actions ?? detail.actions
+        )
     }
 
     func loadSelectedDetail() {
@@ -3043,12 +3282,14 @@ final class BackendClient: ObservableObject {
                 lastMessageAt: existing.lastMessageAt,
                 lastAgentMessageSequence: existing.lastAgentMessageSequence,
                 lastReadMessageSequence: existing.lastReadMessageSequence,
+                timelineRevision: existing.timelineRevision,
                 accent: existing.accent,
                 archived: existing.archived,
                 pinned: existing.pinned,
                 sortOrder: existing.sortOrder,
                 capabilities: existing.capabilities,
                 external: existing.external,
+                actions: existing.actions,
                 pendingCollaborationConfirmation: existing.pendingCollaborationConfirmation
             )
         }
@@ -4615,6 +4856,7 @@ final class BackendClient: ObservableObject {
                 lastMessageAt: session.lastMessageAt,
                 lastAgentMessageSequence: session.lastAgentMessageSequence,
                 lastReadMessageSequence: session.lastReadMessageSequence,
+                timelineRevision: session.timelineRevision,
                 accent: session.accent,
                 archived: session.archived,
                 pinned: session.pinned,
