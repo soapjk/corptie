@@ -250,6 +250,7 @@ final class BackendClient: ObservableObject {
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
     private var automationRefreshCoalescer = AutomationRefreshCoalescer()
     private var projectStatusRefreshTask: Task<Void, Never>?
+    private var projectStatusEventRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
     private var restartActivityClearTasks: [String: Task<Void, Never>] = [:]
 
@@ -364,6 +365,8 @@ final class BackendClient: ObservableObject {
         usageEventRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
+        projectStatusEventRefreshTask?.cancel()
+        projectStatusEventRefreshTask = nil
         detailPrefetchTasks.values.forEach { $0.cancel() }
         detailPrefetchTasks.removeAll()
     }
@@ -482,6 +485,12 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "ProjectWorkspaceChanged"
+            || eventName == "ProjectWorktreeIntegrationStarted"
+            || eventName == "ProjectWorktreeIntegrationCompleted" {
+            scheduleSelectedProjectStatusEventRefresh(data: data)
+            return
+        }
         if eventName == "AutomationSessionActivationRequested" {
             guard let payload = data.data(using: .utf8),
                   let event = try? JSONDecoder().decode(AutomationClientActionEnvelope.self, from: payload) else { return }
@@ -528,6 +537,7 @@ final class BackendClient: ObservableObject {
                 await refresh()
             }
             if let selectedSession { await loadScheduledTasks(for: selectedSession) }
+            scheduleSelectedProjectStatusEventRefresh(data: data)
             return
         }
         if eventName == "SessionWorkspaceSwitchFailed" {
@@ -1662,17 +1672,9 @@ final class BackendClient: ObservableObject {
         projectStatusRequestSequence &+= 1
         workspaceRecoveryStatus = nil
         projectStatusRefreshTask?.cancel()
-        if !suppressBackgroundPolling, projectId(for: session) != nil {
-            projectStatusRefreshTask = Task { [weak self] in
-                while !Task.isCancelled {
-                    await self?.loadProjectWorktreeStatus(for: session)
-                    try? await Task.sleep(for: .seconds(5))
-                    if Task.isCancelled { return }
-                }
-            }
-        } else {
-            projectStatusRefreshTask = nil
-        }
+        projectStatusEventRefreshTask?.cancel()
+        projectStatusEventRefreshTask = nil
+        startProjectStatusFallbackRefresh(for: session, refreshImmediately: true)
         Task {
             await Task.yield()
             guard selectionGeneration == generation,
@@ -1866,6 +1868,8 @@ final class BackendClient: ObservableObject {
         usageEventRefreshTask = nil
         projectStatusRefreshTask?.cancel()
         projectStatusRefreshTask = nil
+        projectStatusEventRefreshTask?.cancel()
+        projectStatusEventRefreshTask = nil
         detailStreamTask?.cancel()
         detailStreamTask = nil
         detailStreamWatchdogTask?.cancel()
@@ -1896,6 +1900,60 @@ final class BackendClient: ObservableObject {
     func refreshSelectedProjectWorktrees() async {
         guard let selectedSession else { return }
         await loadProjectWorktreeStatus(for: selectedSession)
+    }
+
+    func applicationDidBecomeActive() {
+        guard let selectedSession else { return }
+        startProjectStatusFallbackRefresh(for: selectedSession, refreshImmediately: true)
+    }
+
+    func applicationDidResignActive() {
+        projectStatusRefreshTask?.cancel()
+        projectStatusRefreshTask = nil
+        projectStatusEventRefreshTask?.cancel()
+        projectStatusEventRefreshTask = nil
+    }
+
+    private func startProjectStatusFallbackRefresh(
+        for session: TaskSession,
+        refreshImmediately: Bool
+    ) {
+        projectStatusRefreshTask?.cancel()
+        guard !suppressBackgroundPolling, projectId(for: session) != nil else {
+            projectStatusRefreshTask = nil
+            return
+        }
+        projectStatusRefreshTask = Task { [weak self] in
+            if refreshImmediately { await self?.loadProjectWorktreeStatus(for: session) }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                await self?.loadProjectWorktreeStatus(for: session)
+            }
+        }
+    }
+
+    private func scheduleSelectedProjectStatusEventRefresh(data: String) {
+        guard let session = selectedSession else { return }
+        if let eventProjectId = Self.projectId(fromEventData: data),
+           eventProjectId != projectId(for: session) {
+            return
+        }
+        projectStatusEventRefreshTask?.cancel()
+        projectStatusEventRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled, self?.selectedSession?.id == session.id else { return }
+            await self?.loadProjectWorktreeStatus(for: session)
+        }
+    }
+
+    nonisolated private static func projectId(fromEventData data: String) -> String? {
+        guard let bytes = data.data(using: .utf8),
+              let envelope = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              let payload = envelope["payload"] as? [String: Any] else { return nil }
+        return payload["projectId"] as? String
+            ?? payload["repositoryId"] as? String
+            ?? (payload["run"] as? [String: Any])?["repositoryId"] as? String
     }
 
     func prepareGitHubPush() {

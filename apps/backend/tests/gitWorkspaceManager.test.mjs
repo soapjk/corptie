@@ -250,7 +250,8 @@ test("project status distinguishes working, pending, and synchronized worktrees"
   const fixture = await createFixture("project-status", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({
     store: fixture.store,
-    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    inspectionCacheTtlMs: 0
   });
   try {
     let project = await manager.projectStatus("logical:one");
@@ -291,6 +292,149 @@ test("project status can be inspected by repository path without an Agent Sessio
     assert.equal(project.repositoryId, fixture.repositoryId);
     assert.equal(project.mainPath, await realpath(fixture.repository));
     assert.equal(project.worktrees.length, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("project inspection merges 1, 3, and 5 concurrent clients and caches within the TTL", async () => {
+  for (const clientCount of [1, 3, 5]) {
+    const fixture = await createFixture(`single-flight-${clientCount}`, { activeFeatureWorktree: true });
+    let snapshotCount = 0;
+    let releaseSnapshot;
+    const snapshotGate = new Promise((resolve) => { releaseSnapshot = resolve; });
+    const manager = new GitWorkspaceManager({
+      store: fixture.store,
+      transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+      inspectionCacheTtlMs: 1_000,
+      createSnapshot: async (...args) => {
+        snapshotCount += 1;
+        await snapshotGate;
+        return createGitWorkspaceSnapshot(...args);
+      }
+    });
+    try {
+      const requests = Array.from({ length: clientCount }, () => manager.projectStatusForPath(
+        fixture.repository,
+        fixture.repositoryId,
+        { inspectionLevel: "management", reason: "concurrent_test" }
+      ));
+      releaseSnapshot();
+      const results = await Promise.all(requests);
+      assert.equal(snapshotCount, 1, `${clientCount} clients must share one scan`);
+      assert.ok(results.every((result) => result === results[0]));
+      await manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+        inspectionLevel: "management",
+        reason: "ttl_cache_test"
+      });
+      assert.equal(snapshotCount, 1);
+      const metrics = manager.inspectionPerformanceSnapshot();
+      assert.equal(metrics.scans, 1);
+      assert.equal(metrics.singleFlightHits, Math.max(0, clientCount - 1));
+      assert.equal(metrics.cacheHits, 1);
+    } finally {
+      await fixture.close();
+    }
+  }
+});
+
+test("inspection TTL expiry and precise Git-write invalidation force a new scan", async () => {
+  const fixture = await createFixture("inspection-expiry", { activeFeatureWorktree: true });
+  let now = 1_000;
+  let snapshotCount = 0;
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    inspectionCacheTtlMs: 50,
+    now: () => now,
+    createSnapshot: async (...args) => {
+      snapshotCount += 1;
+      return createGitWorkspaceSnapshot(...args);
+    }
+  });
+  try {
+    const inspect = () => manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+      inspectionLevel: "management",
+      reason: "expiry_test"
+    });
+    await inspect();
+    await inspect();
+    assert.equal(snapshotCount, 1);
+    now += 51;
+    await inspect();
+    assert.equal(snapshotCount, 2);
+    manager.invalidateInspectionCache(fixture.repositoryId, "test_git_write");
+    await inspect();
+    assert.equal(snapshotCount, 3);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("commit and workspace switch invalidate only the affected repository inspection cache", async () => {
+  const fixture = await createFixture("operation-invalidation", { activeFeatureWorktree: true });
+  let snapshotCount = 0;
+  let switchCount = 0;
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => { switchCount += 1; return { status: "switched" }; } },
+    inspectionCacheTtlMs: 60_000,
+    createSnapshot: async (...args) => {
+      snapshotCount += 1;
+      return createGitWorkspaceSnapshot(...args);
+    }
+  });
+  const inspect = () => manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+    inspectionLevel: "management",
+    reason: "operation_invalidation_test"
+  });
+  try {
+    const initial = await inspect();
+    const feature = initial.worktrees.find((worktree) => !worktree.isMain);
+    await inspect();
+    assert.equal(snapshotCount, 1);
+    await writeFile(join(fixture.activeWorktree, "invalidate.txt"), "changed\n");
+    await manager.commitWorktreeChangesForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      sourceWorktreeId: feature.worktreeId,
+      commitMessage: "Invalidate cached inspection"
+    });
+    await inspect();
+    assert.equal(snapshotCount, 2);
+    await manager.switchWorkspace({
+      logicalSessionId: "logical:one",
+      targetWorktreeId: feature.worktreeId
+    });
+    await inspect();
+    assert.equal(snapshotCount, 3);
+    assert.equal(switchCount, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("session inspection probes status only for main and the active Worktree", async () => {
+  const fixture = await createFixture("session-level", { activeFeatureWorktree: true });
+  const calls = [];
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    execFile: async (file, args, options) => {
+      if (["status", "rev-list", "diff"].includes(args[2])) calls.push([args[1], ...args.slice(2)]);
+      return execFileAsync(file, args, options);
+    }
+  });
+  try {
+    const active = await inspectGitWorkspace(fixture.activeWorktree);
+    const result = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId, {
+      inspectionLevel: "session",
+      activeWorkspaceId: active.worktreeId,
+      reason: "session_detail_test"
+    });
+    assert.equal(result.worktrees.length, 2);
+    assert.deepEqual(new Set(calls.filter((call) => call[1] === "status").map((call) => call[0])),
+      new Set([await realpath(fixture.repository), await realpath(fixture.activeWorktree)]));
   } finally {
     await fixture.close();
   }
@@ -338,10 +482,14 @@ test("management inspection preserves list fields while avoiding deep per-Worktr
       sessions: worktree.sessions
     }));
     assert.deepEqual(listFields(summary), listFields(deep));
-    assert.deepEqual(summaryCalls.map((args) => args[0]).sort(), ["rev-list", "status", "status"]);
+    assert.deepEqual(
+      summaryCalls.filter((args) => ["rev-list", "status"].includes(args[0])).map((args) => args[0]).sort(),
+      ["rev-list", "status", "status"]
+    );
     assert.equal(summaryCalls.some((args) => args[0] === "diff"), false);
     assert.equal(summaryCalls.some((args) => args[0] === "merge-base"), false);
-    assert.equal(summaryCalls.some((args) => args[0] === "rev-parse"), false);
+    assert.equal(summaryCalls.filter((args) => args[0] === "rev-parse").length, 3);
+    assert.equal(summaryCalls.filter((args) => args[0] === "worktree").length, 1);
     assert.ok(calls.length >= summaryCalls.length + summary.worktrees.length * 2);
   } finally {
     await fixture.close();
