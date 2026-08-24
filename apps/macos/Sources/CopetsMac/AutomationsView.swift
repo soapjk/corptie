@@ -30,6 +30,7 @@ struct AutomationsView: View {
     @EnvironmentObject private var sidebarState: TabSidebarState
     @StateObject private var backendClient = BackendClient.shared
     @State private var category: AutomationCategory? = .all
+    @State private var editingAutomation: ScheduledSessionTask?
 
     private var visibleAutomations: [ScheduledSessionTask] {
         switch category ?? .all {
@@ -57,6 +58,16 @@ struct AutomationsView: View {
             }
         }
         .task { await backendClient.loadAutomations() }
+        .sheet(item: $editingAutomation) { automation in
+            if let session = targetSession(for: automation) {
+                ScheduledTaskEditorSheet(
+                    session: session,
+                    existingTask: automation,
+                    onSaved: { Task { await backendClient.loadAutomations() } }
+                )
+                .environmentObject(backendClient)
+            }
+        }
     }
 
     private var header: some View {
@@ -99,6 +110,7 @@ struct AutomationsView: View {
                             targetName: targetName(for: automation),
                             isMutating: backendClient.scheduledTaskMutationIds.contains(automation.id),
                             openTarget: { openTarget(automation) },
+                            edit: { edit(automation) },
                             perform: { action in
                                 Task { await backendClient.performAutomationAction(action, task: automation) }
                             }
@@ -121,9 +133,21 @@ struct AutomationsView: View {
     }
 
     private func targetName(for automation: ScheduledSessionTask) -> String {
+        targetSession(for: automation)?.title ?? automation.logicalSessionId
+    }
+
+    private func targetSession(for automation: ScheduledSessionTask) -> TaskSession? {
         backendClient.sessions.first {
             ($0.external?.logicalSessionId ?? $0.id) == automation.logicalSessionId
-        }?.title ?? automation.logicalSessionId
+        }
+    }
+
+    private func edit(_ automation: ScheduledSessionTask) {
+        guard targetSession(for: automation) != nil else {
+            router.navigationError = L10n("The target Logical Session is unavailable.")
+            return
+        }
+        editingAutomation = automation
     }
 
     private func openTarget(_ automation: ScheduledSessionTask) {
@@ -142,6 +166,7 @@ private struct AutomationCard: View {
     let targetName: String
     let isMutating: Bool
     let openTarget: () -> Void
+    let edit: () -> Void
     let perform: (ScheduledSessionTaskAction) -> Void
 
     var body: some View {
@@ -178,6 +203,12 @@ private struct AutomationCard: View {
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
 
+            Text(automation.message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .textSelection(.enabled)
+
             HStack(spacing: 18) {
                 metric(L10n("Trigger"), triggerLabel, "bolt.badge.clock")
                 metric(L10n("Last Result"), automation.lastRunStatus?.rawValue ?? L10n("Not run"), "checklist")
@@ -211,6 +242,9 @@ private struct AutomationCard: View {
             }
 
             HStack {
+                Button(L10n("Edit"), action: edit)
+                    .disabled(!automation.status.permitsEditing
+                        || ![ScheduledSessionScheduleType.once, .interval].contains(automation.scheduleType))
                 if automation.status.permitsResume {
                     Button(L10n("Retry")) { perform(.retry) }
                 }

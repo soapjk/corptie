@@ -33,6 +33,8 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
   const maxCatchUpRuns = integer(input.maxCatchUpRuns ?? 10, "maxCatchUpRuns", 1, 100);
   const timeoutSeconds = integer(input.timeoutSeconds ?? 3600, "timeoutSeconds", 1, 86_400);
   const backpressureLimit = integer(input.backpressureLimit ?? 100, "backpressureLimit", 1, 10_000);
+  const name = requiredText(input.name, "name");
+  if (name.length > 120) invalid("name", "must contain at most 120 characters");
 
   let runAt = null;
   let nextRunAt = null;
@@ -68,7 +70,7 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
 
   return Object.freeze({
     logicalSessionId,
-    name: optionalText(input.name) ?? message.text.slice(0, 120),
+    name,
     message,
     scheduleType,
     triggerSpec: triggerSpec(triggerType, { runAt, delaySeconds, intervalSeconds, conditionSpec, processSpec, input: triggerInput }),

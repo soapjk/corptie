@@ -75,7 +75,11 @@ async function fixture(options = {}) {
     evaluateCondition: options.evaluateCondition,
     inspectProcess: options.inspectProcess
   });
-  const createWithoutExpirationDefault = service.create.bind(service);
+  const createWithoutDefaults = service.create.bind(service);
+  const createWithoutExpirationDefault = (input, actor) => createWithoutDefaults({
+    ...input,
+    name: input.name ?? "Test automation"
+  }, actor);
   service.create = (input, actor) => createWithoutExpirationDefault(
     input.expiresAt != null || input.expiresAfterSeconds != null
       ? input
@@ -88,7 +92,8 @@ async function fixture(options = {}) {
     setNow(value) { current = new Date(value); },
     advance(ms) { current = new Date(current.getTime() + ms); },
     revokeAuthorization() { authorizationActive = false; },
-    createWithoutExpirationDefault
+    createWithoutExpirationDefault,
+    createWithoutDefaults
   };
 }
 
@@ -156,6 +161,12 @@ test("requires an expiration, supports timestamp and countdown inputs, and defau
       logicalSessionId: "logical:stable", message: "missing", scheduleType: "after", delaySeconds: 10
     }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK"
       && error.field === "expiresAt" && /requires exactly one/.test(error.message));
+
+    assert.throws(() => f.createWithoutDefaults({
+      logicalSessionId: "logical:stable", message: "missing title", scheduleType: "after",
+      delaySeconds: 10, expiresAfterSeconds: 60
+    }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK"
+      && error.field === "name" && /required/.test(error.message));
 
     const absolute = f.createWithoutExpirationDefault({
       logicalSessionId: "logical:stable", message: "absolute", scheduleType: "after", delaySeconds: 10,
