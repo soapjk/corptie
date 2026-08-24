@@ -690,6 +690,7 @@ enum LiveResizeWidthPolicy {
 }
 
 struct AppKitChatTimelineView: NSViewRepresentable {
+    let sessionID: String
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
     @Binding var followsLatest: Bool
@@ -709,6 +710,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(
+            sessionID: sessionID,
             followsLatest: $followsLatest,
             onToggleExpansion: onToggleExpansion,
             onAction: onAction,
@@ -781,11 +783,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.switchSessionIfNeeded(
+            to: sessionID,
+            initialPosition: initialPosition
+        )
         context.coordinator.onToggleExpansion = onToggleExpansion
         context.coordinator.onAction = onAction
         context.coordinator.onNearTop = onNearTop
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
+        if let initialPosition {
+            context.coordinator.restoreIfNeeded(position: initialPosition)
+        }
         if context.coordinator.lastScrollToBottomRevision != scrollToBottomRevision {
             context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
             context.coordinator.scrollToBottom()
@@ -806,11 +815,14 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         var onAction: (AppKitChatTimelineRow.Action) -> Void
         var onNearTop: () -> Void
         var onPositionChange: (AppKitChatTimelinePosition) -> Void
+        private var representedSessionID: String
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
         private var rows: [AppKitChatTimelineRow] = []
         private var revisionsByID: [String: Int] = [:]
         private var heightCache: [HeightCacheKey: CGFloat] = [:]
+        private var cellsByKey: [CellCacheKey: AppKitChatNativeTextCell] = [:]
+        private var cellRecency: [CellCacheKey] = []
         private var lastMeasuredWidth: CGFloat = 0
         private var scrollCommandGeneration = 0
         private var nearTopSuppressionGeneration = 0
@@ -822,8 +834,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var positionPublishWorkItem: DispatchWorkItem?
         private var lastPublishedPosition: AppKitChatTimelinePosition?
         private var pendingRestorePosition: AppKitChatTimelinePosition?
+        private var lastRequestedRestorePosition: AppKitChatTimelinePosition?
         private var pendingInitialScrollToBottom = false
         private var isRestoringInitialViewport = false
+        private var isAwaitingSessionRows = false
         private var needsExactWidthReflow = false
         private var lastReflowMeasurementWidth: CGFloat?
 
@@ -837,24 +851,69 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         )
 
         private struct HeightCacheKey: Hashable {
+            let sessionID: String
             let id: String
             let revision: Int
             let widthBucket: Int
             let isLiveResizeApproximation: Bool
         }
 
+        private struct CellCacheKey: Hashable {
+            let sessionID: String
+            let rowID: String
+            let revision: Int
+        }
+
         init(
+            sessionID: String = "test-session",
             followsLatest: Binding<Bool>,
             onToggleExpansion: @escaping (String) -> Void,
             onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
             onNearTop: @escaping () -> Void = {},
             onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
         ) {
+            self.representedSessionID = sessionID
             self.followsLatestBinding = followsLatest
             self.onToggleExpansion = onToggleExpansion
             self.onAction = onAction
             self.onNearTop = onNearTop
             self.onPositionChange = onPositionChange
+        }
+
+        /// Rebinds the existing NSTableView to another Session. The old
+        /// semantic viewport is published through the old callback before the
+        /// callback and row model change; native cells and the reuse queue stay
+        /// alive, while Session-specific height/revision state is discarded.
+        func switchSessionIfNeeded(
+            to sessionID: String,
+            initialPosition: AppKitChatTimelinePosition?
+        ) {
+            guard representedSessionID != sessionID else { return }
+            publishPositionImmediately()
+            positionPublishWorkItem?.cancel()
+            positionPublishWorkItem = nil
+            scrollCommandGeneration &+= 1
+            nearTopSuppressionGeneration &+= 1
+            representedSessionID = sessionID
+            rows.removeAll(keepingCapacity: true)
+            revisionsByID.removeAll(keepingCapacity: true)
+            lastPublishedPosition = nil
+            lastRequestedRestorePosition = nil
+            pendingRestorePosition = nil
+            pendingInitialScrollToBottom = false
+            nearTopTriggered = false
+            isAwaitingSessionRows = true
+            tableView?.reloadData()
+            if let initialPosition, !initialPosition.followsLatest {
+                prepareInitialPosition(initialPosition)
+            } else {
+                prepareInitialScrollToBottom()
+            }
+        }
+
+        func restoreIfNeeded(position: AppKitChatTimelinePosition) {
+            guard position != lastRequestedRestorePosition else { return }
+            restore(position: position)
         }
 
         deinit {
@@ -892,6 +951,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 name: NSWindow.didEndLiveResizeNotification,
                 object: nil
             )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(capturePositionForTermination(_:)),
+                name: .captureSessionTimelinePositions,
+                object: nil
+            )
             synchronizeTableWidth()
         }
 
@@ -909,6 +974,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 isLiveResize: isLiveResize
             )
             let key = HeightCacheKey(
+                sessionID: representedSessionID,
                 id: item.id,
                 revision: item.contentRevision,
                 widthBucket: Int((measurementWidth * 2).rounded()),
@@ -920,6 +986,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 for: item,
                 columnWidth: measurementWidth
             ).rowHeight
+            if heightCache.count >= 20_000 {
+                heightCache.removeAll(keepingCapacity: true)
+            }
             heightCache[key] = height
             return height
         }
@@ -927,19 +996,51 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard rows.indices.contains(row) else { return nil }
+            let rowModel = rows[row]
+            let cacheKey = CellCacheKey(
+                sessionID: representedSessionID,
+                rowID: rowModel.id,
+                revision: rowModel.contentRevision
+            )
+            let availableWidth = tableView.tableColumns.first?.width ?? tableView.bounds.width
+            if let cachedCell = cellsByKey[cacheKey] {
+                touchCell(cacheKey)
+                cachedCell.updateCallbacks(
+                    onToggleExpansion: onToggleExpansion,
+                    onAction: onAction
+                )
+                _ = cachedCell.updateLayoutIfContentUnchanged(
+                    rowModel,
+                    availableWidth: availableWidth
+                )
+                return cachedCell
+            }
             let cell = (tableView.makeView(withIdentifier: Self.nativeCellIdentifier, owner: nil) as? AppKitChatNativeTextCell)
                 ?? {
                     ChatPerformanceRecorder.shared.increment(.appKitCellsCreated)
                     return AppKitChatNativeTextCell(identifier: Self.nativeCellIdentifier)
                 }()
+            cellsByKey = cellsByKey.filter { $0.value !== cell }
+            cellRecency.removeAll { cellsByKey[$0] == nil }
             ChatPerformanceRecorder.shared.increment(.appKitRowsConfigured)
             cell.setContent(
-                rows[row],
-                availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width,
+                rowModel,
+                availableWidth: availableWidth,
                 onToggleExpansion: onToggleExpansion,
                 onAction: onAction
             )
+            cellsByKey[cacheKey] = cell
+            touchCell(cacheKey)
+            while cellRecency.count > 96, let oldest = cellRecency.first {
+                cellRecency.removeFirst()
+                cellsByKey[oldest] = nil
+            }
             return cell
+        }
+
+        private func touchCell(_ key: CellCacheKey) {
+            cellRecency.removeAll { $0 == key }
+            cellRecency.append(key)
         }
 
         func apply(rows nextRows: [AppKitChatTimelineRow], animated: Bool = false) {
@@ -978,6 +1079,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             rows = nextRows
             revisionsByID = Dictionary(uniqueKeysWithValues: nextRows.map { ($0.id, $0.contentRevision) })
 
+            if isAwaitingSessionRows {
+                isAwaitingSessionRows = false
+                tableView.reloadData()
+                synchronizeDocumentHeight(in: tableView)
+                restoreInitialViewportSynchronouslyIfNeeded()
+                schedulePendingInitialViewportRestoreIfNeeded()
+                return
+            }
+
             guard oldIDs == newIDs else {
                 applyStructuralDifference(
                     from: oldIDs,
@@ -1005,7 +1115,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             })
             guard !changed.isEmpty else { return }
             heightCache = heightCache.filter { key, _ in
-                !changed.contains { index in nextRows[index].id == key.id }
+                key.sessionID != representedSessionID
+                    || !changed.contains { index in nextRows[index].id == key.id }
             }
             for row in changed {
                 let currentCell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false)
@@ -1156,6 +1267,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         @objc private func containerFrameDidChange(_ notification: Notification) {
             synchronizeTableWidth()
+        }
+
+        @objc private func capturePositionForTermination(_ notification: Notification) {
+            publishPositionImmediately()
         }
 
         @objc private func windowDidEndLiveResize(_ notification: Notification) {
@@ -1317,6 +1432,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func prepareInitialPosition(_ position: AppKitChatTimelinePosition) {
+            lastRequestedRestorePosition = position
             pendingRestorePosition = position
             pendingInitialScrollToBottom = false
             followsLatest = position.followsLatest
@@ -1326,6 +1442,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func prepareInitialScrollToBottom() {
+            lastRequestedRestorePosition = nil
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = true
             followsLatest = true
@@ -1709,6 +1826,14 @@ final class AppKitChatNativeTextCell: NSTableCellView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func updateCallbacks(
+        onToggleExpansion: @escaping (String) -> Void,
+        onAction: @escaping (AppKitChatTimelineRow.Action) -> Void
+    ) {
+        self.onToggleExpansion = onToggleExpansion
+        self.onAction = onAction
     }
 
     func setContent(

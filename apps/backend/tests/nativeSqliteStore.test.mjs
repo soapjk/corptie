@@ -326,6 +326,33 @@ test("stored timeline anchor window uses bounded keyset queries", async () => {
   }
 });
 
+test("stored latest timeline window is bounded and reports earlier history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-latest-window-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "latest-window", title: "Latest", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    for (let index = 0; index < 500; index += 1) {
+      store.upsertItemSnapshot("latest-window", {
+        id: `item-${String(index).padStart(4, "0")}`,
+        type: "agentMessage",
+        text: `message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString()
+      });
+    }
+
+    const window = store.getLatestTimelineItemWindow("latest-window", { limit: 80 });
+    assert.equal(window.items.length, 80);
+    assert.equal(window.items[0].id, "item-0420");
+    assert.equal(window.items.at(-1).id, "item-0499");
+    assert.equal(window.hasEarlier, true);
+    assert.equal(window.hasLater, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("identical Provider Session and history projections do not rewrite rows or advance revision", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-projection-noop-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });

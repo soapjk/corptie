@@ -193,6 +193,47 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         XCTAssertLessThan(p50, 50, "classification filtering and grouping 2000 sessions should stay under 50 ms p50")
     }
 
+    func testSelectionOnlyInvalidationReusesSidebarProjection() {
+        let store = SessionGroupProjectionStore()
+        let key = SessionGroupProjectionKey(
+            groupingRevision: 12,
+            filterRevision: 7,
+            entityRevision: 3,
+            category: .assistant,
+            workerScope: .active,
+            workerGroupingMode: .objective,
+            searchText: ""
+        )
+        var builds = 0
+
+        for _ in 0..<100 {
+            _ = store.groups(for: key) {
+                builds += 1
+                return []
+            }
+        }
+
+        XCTAssertEqual(builds, 1)
+        XCTAssertEqual(store.computationCount, 1)
+
+        let changedSearchKey = SessionGroupProjectionKey(
+            groupingRevision: key.groupingRevision,
+            filterRevision: key.filterRevision,
+            entityRevision: key.entityRevision,
+            category: key.category,
+            workerScope: key.workerScope,
+            workerGroupingMode: key.workerGroupingMode,
+            searchText: "changed"
+        )
+        _ = store.groups(for: changedSearchKey) {
+            builds += 1
+            return []
+        }
+
+        XCTAssertEqual(builds, 2)
+        XCTAssertEqual(store.computationCount, 2)
+    }
+
     private let sessionPrecedesProxy: (TaskSession, TaskSession) -> Bool = { left, right in
         if (left.pinned == true) != (right.pinned == true) { return left.pinned == true }
         let leftOrder = left.sortOrder ?? .greatestFiniteMagnitude

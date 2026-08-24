@@ -686,6 +686,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Two synchronous phases ensure every native timeline samples its
+        // final semantic anchor before presentation stores encode the rollback
+        // copy. SQLite writes are already committed continuously in WAL mode.
+        NotificationCenter.default.post(name: .captureSessionTimelinePositions, object: nil)
+        NotificationCenter.default.post(name: .persistSessionTimelinePositions, object: nil)
+        CorptieAppEnvironment.userDefaults.synchronize()
         agentOrbManager?.closeAll()
         completionSoundManager?.stop()
         resetNotificationManager?.stop()

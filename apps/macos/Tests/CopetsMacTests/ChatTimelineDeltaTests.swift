@@ -11,10 +11,18 @@ final class ChatTimelineDeltaTests: XCTestCase {
         XCTAssertNil(legacy.revision)
 
         let versioned = try await ChatTimelineDeltaDecoder.snapshotHeader(
-            from: Data(#"{"protocolVersion":1,"revision":12,"session":{}}"#.utf8)
+            from: Data(#"{"protocolVersion":1,"revision":12,"snapshotToken":"token-12","session":{}}"#.utf8)
         )
         XCTAssertEqual(versioned.protocolVersion, 1)
         XCTAssertEqual(versioned.revision, 12)
+        XCTAssertEqual(versioned.snapshotToken, "token-12")
+
+        let ready = try JSONDecoder().decode(
+            ChatTimelineReadyEnvelope.self,
+            from: Data(#"{"protocolVersion":2,"revision":12,"resumed":true}"#.utf8)
+        )
+        XCTAssertEqual(ready.revision, 12)
+        XCTAssertTrue(ready.resumed)
     }
 
     func testAppendUpdateAndMetadataUseStrictRevisionChain() throws {
