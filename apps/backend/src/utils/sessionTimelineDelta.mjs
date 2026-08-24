@@ -1,7 +1,25 @@
+import { createHash } from "node:crypto";
+
 const protocolVersion = 1;
 
 export function supportsTimelineDelta(headers = {}) {
-  return String(headers["x-corptie-timeline-protocol"] ?? "") === String(protocolVersion);
+  return ["1", "2"].includes(String(headers["x-corptie-timeline-protocol"] ?? ""));
+}
+
+export function timelineSnapshotToken(session) {
+  const { rawStatus: _rawStatus, ...canonicalSession } = session ?? {};
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalSession))
+    .digest("base64url");
+}
+
+export function resumedTimelineStreamState(session, { snapshotToken, revision } = {}) {
+  if (typeof snapshotToken !== "string" || snapshotToken.length === 0
+      || !Number.isSafeInteger(revision) || revision < 0
+      || timelineSnapshotToken(session) !== snapshotToken) {
+    return null;
+  }
+  return createTimelineStreamState(session, revision);
 }
 
 export function createTimelineStreamState(session, revision = 1) {
@@ -15,12 +33,13 @@ export function createTimelineStreamState(session, revision = 1) {
 
 export function initialTimelineSnapshot(session, revision = 1) {
   const state = createTimelineStreamState(session, revision);
+  const snapshotToken = timelineSnapshotToken(session);
   return {
     state,
     event: {
       name: "snapshot",
       revision,
-      data: { protocolVersion, revision, session }
+      data: { protocolVersion, revision, snapshotToken, session }
     }
   };
 }
