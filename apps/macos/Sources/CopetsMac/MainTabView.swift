@@ -56,22 +56,53 @@ enum AppTab: String, CaseIterable, Identifiable {
     }
 }
 
-/// Retains each tab's hosting view and SwiftUI state, while attaching and sizing
-/// only the selected page. Inactive pages therefore do not receive every main
-/// window resize proposal. A normal tab switch reattaches the cached host at the
-/// current exact bounds; no page bitmap or geometry transform is involved.
+enum MainTabSlideDirection: Equatable {
+    case forward
+    case backward
+
+    var unitOffset: CGFloat {
+        switch self {
+        case .forward: 1
+        case .backward: -1
+        }
+    }
+}
+
+struct MainTabTransition: Equatable {
+    let from: AppTab
+    let to: AppTab
+    let direction: MainTabSlideDirection
+}
+
+/// Retains every visited tab's attached hosting view and SwiftUI state. During a
+/// switch, only the old and new hosts are unhidden. Both keep an exact, stationary
+/// frame equal to `bounds`; Core Animation translates their backing layers instead
+/// of changing SwiftUI layout geometry on every animation frame. Cached inactive
+/// hosts stay hidden and keep their previous frame, so resize cannot re-propose all
+/// six heavyweight page layouts.
 @MainActor
 final class MainTabPageContainer: NSView {
+    static let defaultAnimationDuration: TimeInterval = 0.22
+
     private let pageProvider: (AppTab) -> NSView
+    private let animationDuration: TimeInterval
     private var pages: [AppTab: NSView] = [:]
+    private var transitionGeneration: UInt = 0
     private(set) var selectedTab: AppTab?
+    private(set) var transition: MainTabTransition?
+    private(set) var pendingTab: AppTab?
     private(set) var activePageLayoutCount = 0
 
-    init(pageProvider: @escaping (AppTab) -> NSView) {
+    init(
+        animationDuration: TimeInterval = MainTabPageContainer.defaultAnimationDuration,
+        pageProvider: @escaping (AppTab) -> NSView
+    ) {
+        self.animationDuration = animationDuration
         self.pageProvider = pageProvider
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        layer?.masksToBounds = true
     }
 
     @available(*, unavailable)
@@ -86,37 +117,209 @@ final class MainTabPageContainer: NSView {
 
     override func layout() {
         super.layout()
-        guard let selectedTab, let page = pages[selectedTab], page.frame != bounds else { return }
-        page.frame = bounds
-        activePageLayoutCount += 1
+        for tab in participatingTabs {
+            guard let page = pages[tab], page.frame != bounds else { continue }
+            page.frame = bounds
+            activePageLayoutCount += 1
+        }
     }
 
-    func select(_ tab: AppTab) {
+    func select(_ tab: AppTab, animated: Bool = true) {
+        if transition != nil {
+            if animated {
+                // Keep the in-flight pair continuous and coalesce rapid clicks
+                // to the latest destination. Interrupting a composited slide by
+                // snapping either layer to its model value causes a visible jump.
+                pendingTab = tab == selectedTab ? nil : tab
+            } else {
+                pendingTab = nil
+                finishTransition(generation: transitionGeneration, startsPendingTransition: false)
+                select(tab, animated: false)
+            }
+            return
+        }
         guard selectedTab != tab else {
             needsLayout = true
             return
         }
 
-        if let selectedTab {
-            pages[selectedTab]?.removeFromSuperview()
+        guard let previousTab = selectedTab else {
+            let page = page(for: tab)
+            selectedTab = tab
+            attach(page, for: tab)
+            resetLayer(of: page)
+            updateVisibilityAndAccessibility()
+            return
         }
-        let page = pages[tab] ?? {
-            let created = pageProvider(tab)
-            created.autoresizingMask = []
-            pages[tab] = created
-            return created
-        }()
+
+        let oldPage = page(for: previousTab)
+        let newPage = page(for: tab)
+        let direction: MainTabSlideDirection = tab.index > previousTab.index ? .forward : .backward
+        let nextTransition = MainTabTransition(from: previousTab, to: tab, direction: direction)
+
         selectedTab = tab
-        page.frame = bounds
-        addSubview(page)
-        activePageLayoutCount += 1
+        transition = nextTransition
+        transitionGeneration &+= 1
+        let generation = transitionGeneration
+
+        attach(oldPage, for: previousTab)
+        attach(newPage, for: tab)
+        addSubview(newPage, positioned: .above, relativeTo: oldPage)
+        updateVisibilityAndAccessibility()
+
+        guard animated, animationDuration > 0, bounds.width > 0 else {
+            finishTransition(generation: generation)
+            return
+        }
+        animate(nextTransition, oldPage: oldPage, newPage: newPage, generation: generation)
     }
 
     var cachedPageCount: Int { pages.count }
     var attachedPageCount: Int { subviews.count }
+    var attachedTabs: [AppTab] {
+        pages.compactMap { tab, page in page.superview === self ? tab : nil }
+            .sorted { $0.index < $1.index }
+    }
+    var visibleTabs: [AppTab] {
+        pages.compactMap { tab, page in
+            page.superview === self && !page.isHidden ? tab : nil
+        }
+        .sorted { $0.index < $1.index }
+    }
 
     func cachedPage(for tab: AppTab) -> NSView? {
         pages[tab]
+    }
+
+    /// Deterministic completion hook used by reduced-motion updates and tests.
+    func finishActiveTransition() {
+        guard transition != nil else { return }
+        finishTransition(generation: transitionGeneration)
+    }
+
+    private func page(for tab: AppTab) -> NSView {
+        if let page = pages[tab] { return page }
+        let created = pageProvider(tab)
+        created.autoresizingMask = []
+        created.wantsLayer = true
+        pages[tab] = created
+        return created
+    }
+
+    private func attach(_ page: NSView, for tab: AppTab) {
+        if page.superview !== self {
+            addSubview(page)
+        }
+        if page.frame != bounds {
+            page.frame = bounds
+            activePageLayoutCount += 1
+        }
+        page.isHidden = false
+    }
+
+    private func animate(
+        _ transition: MainTabTransition,
+        oldPage: NSView,
+        newPage: NSView,
+        generation: UInt
+    ) {
+        let travel = max(1, bounds.width) * transition.direction.unitOffset
+        resetLayer(of: oldPage)
+        resetLayer(of: newPage)
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.finishTransition(generation: generation)
+            }
+        }
+        addCompositeAnimation(
+            to: oldPage,
+            fromX: 0,
+            toX: -travel,
+            fromOpacity: 1,
+            toOpacity: 0.92
+        )
+        addCompositeAnimation(
+            to: newPage,
+            fromX: travel,
+            toX: 0,
+            fromOpacity: 0.92,
+            toOpacity: 1
+        )
+        CATransaction.commit()
+    }
+
+    private func addCompositeAnimation(
+        to page: NSView,
+        fromX: CGFloat,
+        toX: CGFloat,
+        fromOpacity: Float,
+        toOpacity: Float
+    ) {
+        guard let layer = page.layer else { return }
+        layer.setValue(toX, forKeyPath: "transform.translation.x")
+        layer.opacity = toOpacity
+
+        let translation = CABasicAnimation(keyPath: "transform.translation.x")
+        translation.fromValue = fromX
+        translation.toValue = toX
+        translation.duration = animationDuration
+        translation.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 0.9, 0.24, 1)
+
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = fromOpacity
+        opacity.toValue = toOpacity
+        opacity.duration = animationDuration
+        opacity.timingFunction = translation.timingFunction
+
+        layer.add(translation, forKey: "main-tab-translation")
+        layer.add(opacity, forKey: "main-tab-opacity")
+    }
+
+    private func finishTransition(
+        generation: UInt,
+        startsPendingTransition: Bool = true
+    ) {
+        guard generation == transitionGeneration, transition != nil else { return }
+        let nextTab = startsPendingTransition ? pendingTab : nil
+        pendingTab = nil
+        for page in pages.values {
+            page.layer?.removeAllAnimations()
+            resetLayer(of: page)
+        }
+        transition = nil
+        updateVisibilityAndAccessibility()
+        if let nextTab, nextTab != selectedTab {
+            select(nextTab, animated: true)
+        }
+    }
+
+    private func updateVisibilityAndAccessibility() {
+        for (tab, page) in pages {
+            let participates = participatingTabs.contains(tab)
+            page.isHidden = !participates
+            // The destination owns interaction and accessibility immediately;
+            // the outgoing page is visual transition material only.
+            page.setAccessibilityHidden(tab != selectedTab)
+        }
+    }
+
+    private var participatingTabs: Set<AppTab> {
+        if let transition {
+            return [transition.from, transition.to]
+        }
+        if let selectedTab {
+            return [selectedTab]
+        }
+        return []
+    }
+
+    private func resetLayer(of page: NSView) {
+        guard let layer = page.layer else { return }
+        layer.setValue(CGFloat.zero, forKeyPath: "transform.translation.x")
+        layer.opacity = 1
     }
 }
 
@@ -124,6 +327,7 @@ private struct MainTabPageHost: NSViewRepresentable {
     let selection: AppTab
     let router: AppTabRouter
     let resizeState: MainWindowResizeState
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     func makeNSView(context: Context) -> MainTabPageContainer {
         let container = MainTabPageContainer { tab in
@@ -152,12 +356,12 @@ private struct MainTabPageHost: NSViewRepresentable {
             hostingView.layerContentsRedrawPolicy = .duringViewResize
             return hostingView
         }
-        container.select(selection)
+        container.select(selection, animated: false)
         return container
     }
 
     func updateNSView(_ container: MainTabPageContainer, context: Context) {
-        container.select(selection)
+        container.select(selection, animated: !accessibilityReduceMotion && !resizeState.isLiveResize)
     }
 }
 
@@ -241,6 +445,8 @@ private struct UnderlineTabButton: View {
         }
         .buttonStyle(.plain)
         .help(tab.title)
+        .accessibilityIdentifier("main-tab.\(tab.rawValue)")
+        .accessibilityValue(isSelected ? "selected" : "not-selected")
         .animation(.easeInOut(duration: 0.15), value: isSelected)
     }
 }
@@ -250,13 +456,14 @@ private struct UnderlineTabButton: View {
 // 主窗口顶层容器：顶部中间 Tab 切换器（控制台 / Sessions / Agents / 设置）+ 对应内容。
 struct MainTabView: View {
     @StateObject private var router = AppTabRouter.shared
+    @StateObject private var selectionState = AppTabRouter.shared.selectionState
     @EnvironmentObject private var resizeState: MainWindowResizeState
 
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
                 MainWindowChromeControls(
-                    sidebarState: router.sidebarState(for: router.selectedTab),
+                    sidebarState: router.sidebarState(for: selectionState.selectedTab),
                     openSettings: openSettings
                 )
                 .frame(width: 220, alignment: .leading)
@@ -264,7 +471,7 @@ struct MainTabView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 UnderlineTabBar(selection: Binding(
-                    get: { router.selectedTab },
+                    get: { selectionState.selectedTab },
                     set: { router.selectTab($0) }
                 ))
                 .offset(y: -12)
@@ -272,7 +479,7 @@ struct MainTabView: View {
             .padding(.horizontal, 12)
 
             MainTabPageHost(
-                selection: router.selectedTab,
+                selection: selectionState.selectedTab,
                 router: router,
                 resizeState: resizeState
             )
@@ -402,9 +609,8 @@ private struct MainWindowBackgroundTaskOverlay: View {
 final class AppTabRouter: ObservableObject {
     static let shared = AppTabRouter()
 
-    @Published private(set) var selectedTab: AppTab = .console
-    // 必须先于 selectedTab 更新，确保 SwiftUI 创建 transition 时读到本次切换的方向。
-    @Published private(set) var slideForward = true
+    let selectionState = AppTabSelectionState()
+    var selectedTab: AppTab { selectionState.selectedTab }
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
     @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
@@ -427,9 +633,10 @@ final class AppTabRouter: ObservableObject {
 
     func selectTab(_ tab: AppTab) {
         guard tab != selectedTab else { return }
-        slideForward = tab.index > selectedTab.index
+        sidebarState(for: selectedTab).setSelected(false)
+        sidebarState(for: tab).setSelected(true)
         PerfStopwatch.event("Tab切换", value: 1)
-        selectedTab = tab
+        selectionState.selectedTab = tab
     }
 
     func openSession(_ sessionId: String) {
@@ -459,19 +666,31 @@ final class AppTabRouter: ObservableObject {
 }
 
 @MainActor
+final class AppTabSelectionState: ObservableObject {
+    @Published fileprivate(set) var selectedTab: AppTab = .console
+}
+
+@MainActor
 final class TabSidebarState: ObservableObject {
     let tab: AppTab
     @Published var visibility: NavigationSplitViewVisibility
+    @Published private(set) var isSelected: Bool
 
     init(tab: AppTab, visibility: NavigationSplitViewVisibility = .all) {
         self.tab = tab
         self.visibility = visibility
+        isSelected = tab == .console
     }
 
     var isVisible: Bool { visibility != .detailOnly }
 
     func toggle() {
         visibility = isVisible ? .detailOnly : .all
+    }
+
+    fileprivate func setSelected(_ selected: Bool) {
+        guard isSelected != selected else { return }
+        isSelected = selected
     }
 }
 

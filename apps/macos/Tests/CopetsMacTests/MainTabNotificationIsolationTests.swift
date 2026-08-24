@@ -49,21 +49,27 @@ struct MainTabNotificationIsolationTests {
     }
 
     @Test
-    func tabSelectionAndDirectionRemainIndependentOfNotificationState() {
+    func tabSelectionPublishesOnlyThroughSelectionAndPerTabActivationState() {
         let router = AppTabRouter()
 
         #expect(router.selectedTab == .console)
+        #expect(router.sidebarState(for: .console).isSelected)
         router.selectTab(.agents)
         #expect(router.selectedTab == .agents)
-        #expect(router.slideForward)
+        #expect(!router.sidebarState(for: .console).isSelected)
+        #expect(router.sidebarState(for: .agents).isSelected)
 
         router.selectTab(.sessions)
         #expect(router.selectedTab == .sessions)
-        #expect(!router.slideForward)
+        #expect(!router.sidebarState(for: .agents).isSelected)
+        #expect(router.sidebarState(for: .sessions).isSelected)
 
         router.selectTab(.sessions)
         #expect(router.selectedTab == .sessions)
-        #expect(!router.slideForward)
+        #expect(router.sidebarState(for: .sessions).isSelected)
+        for tab in AppTab.allCases where tab != .sessions {
+            #expect(!router.sidebarState(for: tab).isSelected)
+        }
     }
 
     private func mainTabSource() throws -> String {
