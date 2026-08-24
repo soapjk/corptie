@@ -2,7 +2,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
   Object.freeze({
     type: "function",
     name: "corptie_scheduled_tasks_manage",
-    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
+    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Create requires exactly one of expires_at or expires_after_seconds. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
     deferLoading: false,
     inputSchema: {
       type: "object",
@@ -32,6 +32,8 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
         delay_seconds: { type: "integer", minimum: 1, maximum: 31536000 },
         interval_seconds: { type: "integer", minimum: 1, description: "Fixed interval in seconds for interval tasks." },
         timezone: { type: "string" },
+        expires_at: { type: "string", description: "ISO-8601 expiration timestamp. For create, specify exactly one of expires_at or expires_after_seconds." },
+        expires_after_seconds: { type: "integer", minimum: 1, maximum: 315360000, description: "Countdown from creation to expiration in seconds. For create, specify exactly one expiration field." },
         missed_policy: { type: "string", enum: ["skip", "fireOnce", "catchUp", "coalesce_once"] },
         actions: {
           type: "array", minItems: 1, maxItems: 16,
@@ -72,9 +74,18 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
         timeout_seconds: { type: "integer", minimum: 1, maximum: 86400 },
         backpressure_limit: { type: "integer", minimum: 1, maximum: 10000 },
         resource_version: { type: "integer", minimum: 1 },
-        status: { type: "string", enum: ["active", "paused", "completed", "failed", "cancelled"] }
+        status: { type: "string", enum: ["active", "cancelled", "completed", "expired", "error"] }
       },
-      required: ["action"]
+      required: ["action"],
+      allOf: [{
+        if: { properties: { action: { const: "create" } }, required: ["action"] },
+        then: {
+          oneOf: [
+            { required: ["expires_at"], not: { required: ["expires_after_seconds"] } },
+            { required: ["expires_after_seconds"], not: { required: ["expires_at"] } }
+          ]
+        }
+      }]
     }
   })
 ]);
@@ -100,6 +111,7 @@ export async function callScheduledSessionTaskDynamicTool(service, input = {}) {
 }
 
 function toTaskInput(args) {
+  requireExpiration(args);
   return {
     name: args.name,
     logicalSessionId: args.logical_session_id,
@@ -109,6 +121,8 @@ function toTaskInput(args) {
     delaySeconds: args.delay_seconds,
     intervalSeconds: args.interval_seconds,
     timezone: args.timezone,
+    expiresAt: args.expires_at,
+    expiresAfterSeconds: args.expires_after_seconds,
     missedPolicy: args.missed_policy,
     actions: args.actions,
     process: toProcess(args.process),
@@ -137,6 +151,8 @@ function toTaskPatch(args) {
     run_at: "runAt",
     interval_seconds: "intervalSeconds",
     timezone: "timezone",
+    expires_at: "expiresAt",
+    expires_after_seconds: "expiresAfterSeconds",
     missed_policy: "missedPolicy",
     condition: "condition",
     max_retries: "maxRetries",
@@ -151,6 +167,15 @@ function toTaskPatch(args) {
     .map(([source, target]) => [target, args[source]]));
   if (Object.hasOwn(patch, "condition")) patch.condition = toCondition(patch.condition);
   return patch;
+}
+
+function requireExpiration(args) {
+  const count = Number(args.expires_at != null) + Number(args.expires_after_seconds != null);
+  if (count === 1) return;
+  const error = new TypeError("Create requires exactly one of expires_at or expires_after_seconds.");
+  error.code = "INVALID_INPUT";
+  error.field = "expires_at";
+  throw error;
 }
 
 function toCondition(condition) {

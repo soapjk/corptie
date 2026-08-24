@@ -75,12 +75,20 @@ async function fixture(options = {}) {
     evaluateCondition: options.evaluateCondition,
     inspectProcess: options.inspectProcess
   });
+  const createWithoutExpirationDefault = service.create.bind(service);
+  service.create = (input, actor) => createWithoutExpirationDefault(
+    input.expiresAt != null || input.expiresAfterSeconds != null
+      ? input
+      : { ...input, expiresAfterSeconds: 86_400 },
+    actor
+  );
   return {
     directory, dbPath, store, core, service, queued,
     actor: { type: "agent", id: "agent:owner" },
     setNow(value) { current = new Date(value); },
     advance(ms) { current = new Date(current.getTime() + ms); },
-    revokeAuthorization() { authorizationActive = false; }
+    revokeAuthorization() { authorizationActive = false; },
+    createWithoutExpirationDefault
   };
 }
 
@@ -119,25 +127,86 @@ test("validates time zones, schedule fields, authorization, and full lifecycle o
     assert.equal(created.environment, "development");
     assert.equal(f.service.list({}, f.actor).length, 1);
 
-    const paused = f.service.pause(created.taskId, f.actor);
-    assert.equal(paused.status, "paused");
-    const resumed = f.service.resume(created.taskId, f.actor);
-    assert.equal(resumed.status, "active");
+    assert.throws(() => f.service.pause(created.taskId, f.actor),
+      (error) => error.code === "TASK_PAUSE_UNSUPPORTED");
     const updated = f.service.update(created.taskId, {
       intervalSeconds: 120,
-      resourceVersion: resumed.resourceVersion
+      resourceVersion: created.resourceVersion
     }, f.actor);
     assert.equal(updated.intervalSeconds, 120);
     assert.throws(() => f.service.update(created.taskId, {
       intervalSeconds: 180,
-      resourceVersion: resumed.resourceVersion
+      resourceVersion: created.resourceVersion
     }, f.actor), (error) => error.code === "RESOURCE_VERSION_CONFLICT");
     const immediate = await f.service.runNow(created.taskId, f.actor);
     assert.equal(immediate.status, "queued");
     assert.equal(f.store.getScheduledSessionTask(created.taskId).status, "active");
     const cancelled = f.service.cancel(created.taskId, f.actor);
     assert.equal(cancelled.status, "cancelled");
-    assert.ok(f.service.get(created.taskId, f.actor).events.length >= 5);
+    assert.ok(f.service.get(created.taskId, f.actor).events.length >= 3);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("requires an expiration, supports timestamp and countdown inputs, and defaults to the system time zone", async () => {
+  const f = await fixture();
+  try {
+    assert.throws(() => f.createWithoutExpirationDefault({
+      logicalSessionId: "logical:stable", message: "missing", scheduleType: "after", delaySeconds: 10
+    }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK"
+      && error.field === "expiresAt" && /requires exactly one/.test(error.message));
+
+    const absolute = f.createWithoutExpirationDefault({
+      logicalSessionId: "logical:stable", message: "absolute", scheduleType: "after", delaySeconds: 10,
+      expiresAt: "2026-08-22T13:00:00+00:00"
+    }, f.actor);
+    assert.equal(absolute.expiresAt, "2026-08-22T13:00:00.000Z");
+    assert.equal(absolute.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+
+    const countdown = f.createWithoutExpirationDefault({
+      logicalSessionId: "logical:stable", message: "countdown", scheduleType: "after", delaySeconds: 10,
+      expiresAfterSeconds: 3600, timezone: "Asia/Shanghai"
+    }, f.actor);
+    assert.equal(countdown.expiresAt, "2026-08-22T13:00:00.000Z");
+    assert.equal(countdown.createdAt, "2026-08-22T12:00:00.000Z");
+    assert.equal(new Date(countdown.expiresAt) - new Date(countdown.createdAt), 3_600_000);
+    assert.equal(f.store.getScheduledSessionTask(countdown.taskId).expiresAt, countdown.expiresAt);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("expiration is persisted, transitions before trigger evaluation, and permits five task states", async () => {
+  let observations = 0;
+  const f = await fixture({ evaluateCondition: async () => {
+    observations += 1;
+    return { state: "matched", exitCode: 0, stdout: "", stderr: "" };
+  } });
+  try {
+    const task = f.createWithoutExpirationDefault({
+      logicalSessionId: "logical:stable", message: "do not run", scheduleType: "condition",
+      condition: { script: "true" }, expiresAfterSeconds: 10
+    }, f.actor);
+    f.advance(10_000);
+    await f.service.tick();
+    const expired = f.store.getScheduledSessionTask(task.taskId);
+    assert.equal(expired.status, "expired");
+    assert.equal(expired.nextRunAt, null);
+    assert.equal(observations, 0);
+    assert.equal(f.queued.length, 0);
+    assert.equal(f.service.get(task.taskId, f.actor).status, "expired");
+    const schema = f.store.selectOne(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_session_tasks'"
+    ).sql;
+    assert.match(schema, /status IN \('active', 'cancelled', 'completed', 'expired', 'error'\)/);
+
+    await f.store.close();
+    const reopened = new CorptieStore({ dbPath: f.dbPath, configPath: join(f.directory, "reopened.json") });
+    await reopened.initialize();
+    f.store = reopened;
+    assert.equal(reopened.getScheduledSessionTask(task.taskId).status, "expired");
+    assert.equal(reopened.getScheduledSessionTask(task.taskId).expiresAt, "2026-08-22T12:00:10.000Z");
   } finally {
     await cleanup(f);
   }
@@ -158,6 +227,8 @@ test("one-time and interval due runs enqueue stable work without interrupting a 
     f.advance(1_000);
     await f.service.tick();
     assert.equal(f.store.getScheduledSessionTask(once.taskId).status, "completed");
+    assert.throws(() => f.service.cancel(once.taskId, f.actor),
+      (error) => error.code === "TASK_NOT_MUTABLE");
     assert.equal(f.queued.length, 1);
     assert.equal(f.store.getAgentWorkItem(f.queued[0].workItemId).status, "queued");
     assert.equal(f.store.getRunningAgentWorkItemForSession("session:stable").workItemId, "busy");
@@ -169,6 +240,7 @@ test("one-time and interval due runs enqueue stable work without interrupting a 
     f.advance(1_000);
     await f.service.tick();
     assert.equal(f.store.getScheduledSessionTask(interval.taskId).nextRunAt, "2026-08-22T12:00:12.000Z");
+    assert.equal(f.store.getScheduledSessionTask(once.taskId).status, "completed");
   } finally {
     await cleanup(f);
   }
@@ -327,7 +399,7 @@ test("atomic leases prevent concurrent ticks and cancellation wins the pre-deliv
       taskId: "scheduled_task:lease", logicalSessionId: "logical:stable", message: { text: "lease" },
       scheduleType: "once", runAt: f.service.now().toISOString(), nextRunAt: f.service.now().toISOString(),
       timezone: "UTC", missedPolicy: "coalesce_once", creatorType: "agent", creatorId: "agent:owner",
-      environment: "development"
+      environment: "development", expiresAt: "2026-08-23T12:00:00.000Z"
     });
     const claimAt = f.service.now().toISOString();
     const [firstClaim, secondClaim] = await Promise.all([
@@ -389,6 +461,7 @@ test("process monitor restores polling, wakes once on termination, and records d
     const normalRun = f.store.listScheduledSessionRuns(normal.taskId)[0];
     assert.equal(normalRun.triggerReason, "process_normal_exit");
     assert.equal(normalRun.exitStatus.code, 0);
+    assert.equal(f.store.getScheduledSessionTask(normal.taskId).status, "completed");
   } finally {
     await cleanup(f);
   }
@@ -411,6 +484,7 @@ test("condition tasks poll scripts until exit zero, then wake exactly once with 
         timeoutSeconds: 10,
         workingDirectory: f.directory
       },
+      expiresAfterSeconds: 5,
       timezone: "UTC"
     }, f.actor);
     await f.service.tick();
@@ -456,6 +530,7 @@ test("condition tasks poll scripts until exit zero, then wake exactly once with 
     f.advance(3_000);
     await f.service.tick();
     assert.equal(f.queued.length, 1);
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "completed");
   } finally {
     await cleanup(f);
   }
@@ -503,7 +578,7 @@ test("condition scripts never execute after creator authorization is revoked", a
     f.revokeAuthorization();
     await f.service.tick();
     assert.equal(executions, 0);
-    assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "failed");
+    assert.equal(f.store.getScheduledSessionTask(task.taskId).status, "error");
     assert.equal(f.store.getScheduledSessionTask(task.taskId).lastErrorCode, "AUTHORIZATION_REVOKED");
     assert.equal(f.queued.length, 0);
   } finally {
@@ -541,7 +616,7 @@ test("creator authorization is rechecked before delivery and revocation fails wi
     f.advance(1_000);
     await f.service.tick();
     const failed = f.store.getScheduledSessionTask(task.taskId);
-    assert.equal(failed.status, "failed");
+    assert.equal(failed.status, "error");
     assert.equal(failed.lastErrorCode, "AUTHORIZATION_REVOKED");
     assert.equal(f.queued.length, 0);
   } finally {
@@ -560,7 +635,7 @@ test("deleted logical Session keeps its schedule audit and records a diagnostic 
     f.advance(1_000);
     await f.service.tick();
     const failed = f.store.getScheduledSessionTask(task.taskId);
-    assert.equal(failed.status, "failed");
+    assert.equal(failed.status, "error");
     assert.equal(failed.lastErrorCode, "SESSION_NOT_FOUND");
     assert.equal(f.store.listScheduledSessionEvents(task.taskId).at(-1).type, "ScheduledSessionRunFailed");
     assert.equal(f.queued.length, 0);
@@ -730,10 +805,14 @@ test("misfire policies support skip, fireOnce, and bounded catchUp", async () =>
 
     const skipped = f.service.create({
       logicalSessionId: "logical:stable", message: "skip", scheduleType: "once",
-      runAt: "2026-08-22T11:00:00Z", misfirePolicy: "skip"
+      runAt: "2026-08-22T11:00:00Z", misfirePolicy: "skip", expiresAfterSeconds: 1
     }, f.actor);
     await f.service.tick();
     assert.equal(f.store.getScheduledSessionTask(skipped.taskId).lastRunStatus, "missed");
+    assert.equal(f.store.getScheduledSessionTask(skipped.taskId).status, "active");
+    f.advance(1_000);
+    await f.service.tick();
+    assert.equal(f.store.getScheduledSessionTask(skipped.taskId).status, "expired");
 
     const fireOnce = f.service.create({
       logicalSessionId: "logical:stable", message: "one", scheduleType: "once",
@@ -741,6 +820,7 @@ test("misfire policies support skip, fireOnce, and bounded catchUp", async () =>
     }, f.actor);
     await f.service.tick();
     assert.equal(f.store.listScheduledSessionRuns(fireOnce.taskId).filter((run) => run.status === "queued").length, 1);
+    assert.equal(f.store.getScheduledSessionTask(fireOnce.taskId).status, "completed");
   } finally {
     await cleanup(f);
   }
