@@ -175,7 +175,7 @@ test("authenticated Session MCP exposes and maps the complete Automation lifecyc
 
     const missingExpiration = await client.callTool({
       name: "corptie_automations_create",
-      arguments: { schedule_type: "after", delay_seconds: 60, message: "Missing expiration" }
+      arguments: { name: "Missing expiration", schedule_type: "after", delay_seconds: 60, message: "Missing expiration" }
     });
     assert.equal(missingExpiration.isError, true);
     assert.match(missingExpiration.content[0].text, /requires exactly one of expires_at or expires_after_seconds/);

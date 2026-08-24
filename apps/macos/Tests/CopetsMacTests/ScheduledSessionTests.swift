@@ -59,13 +59,15 @@ struct ScheduledSessionModelTests {
 
     @Test func validatesEveryClientSideBoundary() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        #expect(ScheduledSessionTaskDraft.fresh(message: "   ", now: now).validationError(now: now) == .emptyMessage)
+        #expect(ScheduledSessionTaskDraft.fresh(message: "检查", now: now).validationError(now: now) == .emptyTitle)
 
         var once = ScheduledSessionTaskDraft.fresh(message: "检查", now: now)
+        once.title = "检查任务"
         once.runAt = now
         #expect(once.validationError(now: now) == .pastRunAt)
 
         var interval = ScheduledSessionTaskDraft.fresh(message: "检查", now: now)
+        interval.title = "周期检查"
         interval.scheduleType = .interval
         interval.intervalSeconds = 59
         #expect(interval.validationError(now: now) == .invalidInterval)
@@ -77,6 +79,7 @@ struct ScheduledSessionModelTests {
     @Test func createBodyUsesStructuredBackendContractAndTimeZone() throws {
         let runAt = Date(timeIntervalSince1970: 1_800_000_600)
         let draft = ScheduledSessionTaskDraft(
+            title: "检查状态",
             message: "  检查状态  ",
             scheduleType: .once,
             runAt: runAt,
@@ -90,6 +93,7 @@ struct ScheduledSessionModelTests {
         let message = body["message"] as? [String: String]
 
         #expect(message?["text"] == "检查状态")
+        #expect(body["name"] as? String == "检查状态")
         #expect(body["scheduleType"] as? String == "once")
         #expect(body["timezone"] as? String == "Asia/Shanghai")
         #expect(body["missedPolicy"] as? String == "skip")
@@ -99,6 +103,7 @@ struct ScheduledSessionModelTests {
 
     @Test func timeZoneSummaryDisplaysTheChosenZoneAndNextRun() {
         let draft = ScheduledSessionTaskDraft(
+            title: "检查计划",
             message: "检查",
             scheduleType: .once,
             runAt: Date(timeIntervalSince1970: 1_800_000_600),
@@ -316,6 +321,7 @@ final class ScheduledSessionUITests: XCTestCase {
         )
         XCTAssertEqual(ScheduledSessionAccessibilityID.composerEntry, "scheduled-session.composer.entry")
         XCTAssertEqual(ScheduledSessionAccessibilityID.detailSection, "scheduled-session.detail.section")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorTitle, "scheduled-session.editor.title")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorMessage, "scheduled-session.editor.message")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorScheduleType, "scheduled-session.editor.schedule-type")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorRunAt, "scheduled-session.editor.run-at")
@@ -327,14 +333,26 @@ final class ScheduledSessionUITests: XCTestCase {
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorSave, "scheduled-session.editor.save")
     }
 
-    func testManagementControlsExposeStableAutomationIdentifiersAndStateGates() {
-        XCTAssertEqual(ScheduledSessionAccessibilityID.cardEdit, "scheduled-session.card.edit")
-        XCTAssertEqual(ScheduledSessionAccessibilityID.cardPauseResume, "scheduled-session.card.pause-resume")
-        XCTAssertEqual(ScheduledSessionAccessibilityID.cardRunNow, "scheduled-session.card.run-now")
-        XCTAssertEqual(ScheduledSessionAccessibilityID.cardCancel, "scheduled-session.card.cancel")
+    func testOnlyTheMainAutomationTabExposesManagementControls() throws {
         XCTAssertFalse(ScheduledSessionTaskStatus.active.permitsPause)
         XCTAssertTrue(ScheduledSessionTaskStatus.error.permitsResume)
         XCTAssertFalse(ScheduledSessionTaskStatus.cancelled.permitsRunNow)
+
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/ScheduledSessionViews.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        XCTAssertFalse(contents.contains("ScheduledSessionManagerView"))
+        XCTAssertFalse(contents.contains("isShowingManager"))
+        XCTAssertTrue(contents.contains("filter { $0.status == .active }"))
+        XCTAssertTrue(contents.contains("Array(tasks.prefix(2))"))
+        XCTAssertTrue(contents.contains("isExpanded.toggle()"))
+        XCTAssertTrue(contents.contains("Text(task.name)"))
+        for field in ["创建时间", "上次执行时间", "预计下次执行时间", "过期时间"] {
+            XCTAssertTrue(contents.contains(field))
+        }
     }
 
     func testSessionAutomationSummaryLivesInTheDetailCardNotAboveTheComposer() throws {
@@ -353,13 +371,19 @@ final class ScheduledSessionUITests: XCTestCase {
         )
 
         let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private var sessionCard: some View"))
-        let automationSummary = try XCTUnwrap(
+        let statusRange = try XCTUnwrap(
             sessionsView.range(
-                of: "ScheduledSessionStrip(session: session)",
+                of: "statusCard",
                 range: detailCardStart.lowerBound..<sessionsView.endIndex
             )
         )
-        XCTAssertGreaterThan(automationSummary.lowerBound, detailCardStart.lowerBound)
+        let scheduleRange = try XCTUnwrap(
+            sessionsView.range(
+                of: "ScheduledSessionStrip(session: session)",
+                range: statusRange.lowerBound..<sessionsView.endIndex
+            )
+        )
+        XCTAssertLessThan(statusRange.lowerBound, scheduleRange.lowerBound)
         XCTAssertFalse(conversationView.contains("ScheduledSessionStrip(session: session)"))
     }
 }

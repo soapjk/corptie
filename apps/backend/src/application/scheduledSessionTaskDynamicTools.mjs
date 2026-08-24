@@ -2,7 +2,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
   Object.freeze({
     type: "function",
     name: "corptie_scheduled_tasks_manage",
-    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Create requires exactly one of expires_at or expires_after_seconds. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
+    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Create requires a concise name plus exactly one of expires_at or expires_after_seconds. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
     deferLoading: false,
     inputSchema: {
       type: "object",
@@ -80,6 +80,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
       allOf: [{
         if: { properties: { action: { const: "create" } }, required: ["action"] },
         then: {
+          required: ["name"],
           oneOf: [
             { required: ["expires_at"], not: { required: ["expires_after_seconds"] } },
             { required: ["expires_after_seconds"], not: { required: ["expires_at"] } }
@@ -111,6 +112,7 @@ export async function callScheduledSessionTaskDynamicTool(service, input = {}) {
 }
 
 function toTaskInput(args) {
+  required(args.name, "name");
   requireExpiration(args);
   return {
     name: args.name,
