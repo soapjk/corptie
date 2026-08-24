@@ -322,7 +322,6 @@ struct ScheduledSessionManagerView: View {
             }
         }
         .frame(width: 680, height: 620)
-        .task(id: session.id) { await backendClient.loadScheduledTasks(for: session) }
         .sheet(item: $editingTask) { task in
             ScheduledTaskEditorSheet(session: session, existingTask: task)
                 .environmentObject(backendClient)
