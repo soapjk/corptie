@@ -388,6 +388,9 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
 const scheduledSessionTaskService = new ScheduledSessionTaskService({
   store,
   environment: environmentName,
+  observeListPerformance: (measurement) => {
+    console.info(`[scheduled-task-performance] ${JSON.stringify({ stage: "service", ...measurement })}`);
+  },
   authorize: authorizeScheduledSessionTask,
   resolveRoute: resolveScheduledSessionRoute,
   resolveActorLogicalSessionId: (actor) => actor?.type === "agent"
@@ -7280,7 +7283,10 @@ function route(request, response) {
     url,
     service: scheduledSessionTaskService,
     resolveActor: scheduledSessionHttpActor,
-    resolveCurrentLogicalSessionId: scheduledSessionHttpLogicalSessionId
+    resolveCurrentLogicalSessionId: scheduledSessionHttpLogicalSessionId,
+    observePerformance: (measurement) => {
+      console.info(`[scheduled-task-performance] ${JSON.stringify({ stage: "http", ...measurement })}`);
+    }
   })) {
     return;
   }

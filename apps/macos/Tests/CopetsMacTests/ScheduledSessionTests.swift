@@ -137,6 +137,17 @@ struct ScheduledSessionModelTests {
 
 @MainActor
 struct ScheduledSessionBackendClientTests {
+    @Test func listRequestLoadsRunHistoryInOneCollectionRequest() throws {
+        let url = try #require(BackendClient.scheduledTaskListURL(
+            baseURL: URL(string: "http://127.0.0.1:47322")!,
+            logicalSessionId: "logical:one"
+        ))
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(url.path == "/scheduled-session-tasks")
+        #expect(components.queryItems?.contains(URLQueryItem(name: "includeRuns", value: "true")) == true)
+        #expect(components.queryItems?.contains(URLQueryItem(name: "logicalSessionId", value: "logical:one")) == true)
+    }
+
     @Test func automationRefreshCoalescesEventsArrivingDuringAnActiveLoad() {
         var refresh = AutomationRefreshCoalescer()
 

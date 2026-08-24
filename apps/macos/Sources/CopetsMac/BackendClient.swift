@@ -71,6 +71,11 @@ struct AutomationRefreshCoalescer: Equatable {
     }
 }
 
+enum ScheduledTaskListLoadOutcome: Sendable {
+    case success([ScheduledSessionTask])
+    case failure(String)
+}
+
 enum SessionDetailPreloadPolicy {
     // Warm a small navigation neighborhood. Projection now runs off-main and
     // Provider reads are single-flight on the backend, so four nearby rows no
@@ -249,6 +254,7 @@ final class BackendClient: ObservableObject {
     private var usageEventRefreshTask: Task<Void, Never>?
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
     private var automationRefreshCoalescer = AutomationRefreshCoalescer()
+    private var scheduledTaskLoadTasks: [String: Task<ScheduledTaskListLoadOutcome, Never>] = [:]
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusEventRefreshTask: Task<Void, Never>?
     private var projectStatusRequestSequence = 0
@@ -389,9 +395,12 @@ final class BackendClient: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     self.markBackendConnectedFromSessionStream()
-                    await self.loadAutomations()
                     if let selectedSession = self.selectedSession {
-                        await self.loadScheduledTasks(for: selectedSession)
+                        async let automationLoad: Void = self.loadAutomations()
+                        async let scheduledTaskLoad: Void = self.loadScheduledTasks(for: selectedSession)
+                        _ = await (automationLoad, scheduledTaskLoad)
+                    } else {
+                        await self.loadAutomations()
                     }
                     var eventName = ""
                     var dataLines: [String] = []
@@ -513,13 +522,18 @@ final class BackendClient: ObservableObject {
             return
         }
         if ScheduledSessionEventMapping.authoritativeEventNames.contains(eventName) {
-            await loadAutomations()
-            guard let payload = data.data(using: .utf8) else { return }
-            guard let selectedSession else { return }
+            guard let payload = data.data(using: .utf8), let selectedSession else {
+                await loadAutomations()
+                return
+            }
             let eventSessionId = ScheduledSessionEventMapping.sessionId(from: payload)
             let selectedLogicalSessionId = selectedSession.external?.logicalSessionId ?? selectedSession.id
             if eventSessionId == nil || eventSessionId == selectedLogicalSessionId || eventSessionId == selectedSession.id {
-                await loadScheduledTasks(for: selectedSession)
+                async let automationLoad: Void = loadAutomations()
+                async let scheduledTaskLoad: Void = loadScheduledTasks(for: selectedSession)
+                _ = await (automationLoad, scheduledTaskLoad)
+            } else {
+                await loadAutomations()
             }
             if eventName == "ScheduledSessionRunQueued"
                 || eventName == "ScheduledSessionRunStarted"
@@ -3805,54 +3819,70 @@ final class BackendClient: ObservableObject {
         defer {
             if selectedSession?.id == session.id { isLoadingScheduledTasks = false }
         }
-        do {
-            let logicalSessionId = session.external?.logicalSessionId ?? session.id
-            var components = URLComponents(
-                url: baseURL.appending(path: ScheduledSessionAPIContract.collectionPath),
-                resolvingAgainstBaseURL: false
-            )
-            components?.queryItems = [URLQueryItem(name: "logicalSessionId", value: logicalSessionId)]
-            guard let listURL = components?.url else { throw URLError(.badURL) }
-            let (data, response) = try await URLSession.shared.data(from: listURL)
-            try Self.requireScheduledTaskSuccess(response, data: data)
-            let summaries: [ScheduledSessionTask]
-            if let envelope = try? JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data) {
-                summaries = envelope.tasks
-            } else {
-                summaries = try JSONDecoder().decode([ScheduledSessionTask].self, from: data)
-            }
-            var tasks: [ScheduledSessionTask] = []
-            var detailFailures: [String] = []
-            tasks.reserveCapacity(summaries.count)
+        let logicalSessionId = session.external?.logicalSessionId ?? session.id
+        let outcome: ScheduledTaskListLoadOutcome
+        if let inFlight = scheduledTaskLoadTasks[logicalSessionId] {
+            PerfStopwatch.event("计划任务.合并重复请求", value: 1)
+            outcome = await inFlight.value
+        } else {
             let endpointBaseURL = baseURL
-            await withTaskGroup(of: (ScheduledSessionTask, String?).self) { group in
-                for summary in summaries {
-                    group.addTask {
-                        let detailURL = endpointBaseURL.appending(
-                            path: ScheduledSessionAPIContract.itemPath(taskId: summary.id)
-                        )
-                        do {
-                            let (detailData, detailResponse) = try await URLSession.shared.data(from: detailURL)
-                            try Self.requireScheduledTaskSuccess(detailResponse, data: detailData)
-                            return (try JSONDecoder().decode(ScheduledSessionTask.self, from: detailData), nil)
-                        } catch {
-                            // Keep the authoritative list row visible if one history read races a mutation.
-                            return (summary, "\(summary.id): \(error.localizedDescription)")
-                        }
-                    }
-                }
-                for await (task, error) in group {
-                    tasks.append(task)
-                    if let error { detailFailures.append(error) }
-                }
+            let loadTask = Task {
+                await Self.fetchScheduledTaskList(baseURL: endpointBaseURL, logicalSessionId: logicalSessionId)
             }
+            scheduledTaskLoadTasks[logicalSessionId] = loadTask
+            outcome = await loadTask.value
+            scheduledTaskLoadTasks[logicalSessionId] = nil
+        }
+        switch outcome {
+        case .success(let tasks):
             guard selectedSession?.id == session.id,
                   expectedSelectionGeneration == nil || expectedSelectionGeneration == selectionGeneration else { return }
-            selectedScheduledTasks = Self.reconciledScheduledTasks(tasks, for: session)
-            scheduledTaskError = detailFailures.first
-        } catch {
+            PerfStopwatch.measure("计划任务.前端发布渲染状态") {
+                selectedScheduledTasks = Self.reconciledScheduledTasks(tasks, for: session)
+                scheduledTaskError = nil
+            }
+            PerfStopwatch.event("计划任务.展示条数", value: selectedScheduledTasks.count)
+        case .failure(let message):
             guard selectedSession?.id == session.id else { return }
-            scheduledTaskError = error.localizedDescription
+            scheduledTaskError = message
+        }
+    }
+
+    nonisolated static func scheduledTaskListURL(
+        baseURL: URL,
+        logicalSessionId: String? = nil
+    ) -> URL? {
+        var components = URLComponents(
+            url: baseURL.appending(path: ScheduledSessionAPIContract.collectionPath),
+            resolvingAgainstBaseURL: false
+        )
+        var queryItems = [URLQueryItem(name: "includeRuns", value: "true")]
+        if let logicalSessionId { queryItems.append(URLQueryItem(name: "logicalSessionId", value: logicalSessionId)) }
+        components?.queryItems = queryItems
+        return components?.url
+    }
+
+    private static func fetchScheduledTaskList(
+        baseURL: URL,
+        logicalSessionId: String
+    ) async -> ScheduledTaskListLoadOutcome {
+        do {
+            guard let listURL = scheduledTaskListURL(baseURL: baseURL, logicalSessionId: logicalSessionId) else {
+                throw URLError(.badURL)
+            }
+            let (data, response) = try await PerfStopwatch.measure("计划任务.前端HTTP") {
+                try await URLSession.shared.data(from: listURL)
+            }
+            try requireScheduledTaskSuccess(response, data: data)
+            let tasks = try PerfStopwatch.measure("计划任务.前端解码") {
+                if let envelope = try? JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data) {
+                    return envelope.tasks
+                }
+                return try JSONDecoder().decode([ScheduledSessionTask].self, from: data)
+            }
+            return .success(tasks)
+        } catch {
+            return .failure(error.localizedDescription)
         }
     }
 
@@ -3871,22 +3901,13 @@ final class BackendClient: ObservableObject {
 
     private func loadAutomationsPass() async {
         do {
-            let listURL = baseURL.appending(path: "automations")
-            let (data, response) = try await URLSession.shared.data(from: listURL)
+            guard let listURL = Self.scheduledTaskListURL(baseURL: baseURL) else { throw URLError(.badURL) }
+            let (data, response) = try await PerfStopwatch.measure("计划任务总览.前端HTTP") {
+                try await URLSession.shared.data(from: listURL)
+            }
             try Self.requireScheduledTaskSuccess(response, data: data)
-            let summaries = try JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data).tasks
-            let endpointBaseURL = baseURL
-            var details: [ScheduledSessionTask] = []
-            try await withThrowingTaskGroup(of: ScheduledSessionTask.self) { group in
-                for summary in summaries {
-                    group.addTask {
-                        let url = endpointBaseURL.appending(path: "automations/\(summary.id)")
-                        let (detailData, detailResponse) = try await URLSession.shared.data(from: url)
-                        try Self.requireScheduledTaskSuccess(detailResponse, data: detailData)
-                        return try JSONDecoder().decode(ScheduledSessionTask.self, from: detailData)
-                    }
-                }
-                for try await detail in group { details.append(detail) }
+            let details = try PerfStopwatch.measure("计划任务总览.前端解码") {
+                try JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data).tasks
             }
             automations = details.sorted {
                 let left = ScheduledSessionDateFormatting.date(from: $0.nextRunAt) ?? .distantFuture

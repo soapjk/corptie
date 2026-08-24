@@ -100,6 +100,36 @@ async function cleanup(value) {
   await rm(value.directory, { recursive: true, force: true });
 }
 
+test("collection and run-history queries use their covering sort indexes", async () => {
+  const f = await fixture();
+  try {
+    const taskPlan = f.store.selectAll(
+      `EXPLAIN QUERY PLAN SELECT * FROM scheduled_session_tasks
+       WHERE environment = ? AND logical_session_id = ?
+       ORDER BY created_at DESC, task_id ASC`,
+      ["development", "logical:stable"]
+    ).map((row) => row.detail).join("\n");
+    const allTasksPlan = f.store.selectAll(
+      `EXPLAIN QUERY PLAN SELECT * FROM scheduled_session_tasks
+       WHERE environment = ? ORDER BY created_at DESC, task_id ASC`,
+      ["development"]
+    ).map((row) => row.detail).join("\n");
+    const runPlan = f.store.selectAll(
+      `EXPLAIN QUERY PLAN SELECT * FROM scheduled_session_runs
+       WHERE task_id = ? ORDER BY created_at DESC LIMIT ?`,
+      ["scheduled_task:none", 100]
+    ).map((row) => row.detail).join("\n");
+    assert.match(taskPlan, /idx_scheduled_session_tasks_environment_session_created/);
+    assert.doesNotMatch(taskPlan, /SCAN scheduled_session_tasks|USE TEMP B-TREE/);
+    assert.match(allTasksPlan, /idx_scheduled_session_tasks_environment_created/);
+    assert.doesNotMatch(allTasksPlan, /SCAN scheduled_session_tasks|USE TEMP B-TREE/);
+    assert.match(runPlan, /idx_scheduled_session_runs_task/);
+    assert.doesNotMatch(runPlan, /SCAN scheduled_session_runs|USE TEMP B-TREE/);
+  } finally {
+    await cleanup(f);
+  }
+});
+
 test("validates time zones, schedule fields, authorization, and full lifecycle operations", async () => {
   const f = await fixture();
   try {
@@ -143,6 +173,15 @@ test("validates time zones, schedule fields, authorization, and full lifecycle o
     const immediate = await f.service.runNow(created.taskId, f.actor);
     assert.equal(immediate.status, "queued");
     assert.equal(f.store.getScheduledSessionTask(created.taskId).status, "active");
+    const performance = [];
+    f.service.observeListPerformance = (measurement) => performance.push(measurement);
+    const [enriched] = f.service.list({ includeRuns: true, requestId: "request:test" }, f.actor);
+    assert.deepEqual(enriched.runs, f.store.listScheduledSessionRuns(created.taskId));
+    assert.equal(enriched.runs.length, 1);
+    assert.equal(performance[0].requestId, "request:test");
+    assert.equal(performance[0].includeRuns, true);
+    assert.equal(performance[0].phases.taskQueryMs >= 0, true);
+    assert.equal(performance[0].phases.runQueryMs >= 0, true);
     const cancelled = f.service.cancel(created.taskId, f.actor);
     assert.equal(cancelled.status, "cancelled");
     assert.ok(f.service.get(created.taskId, f.actor).events.length >= 3);
