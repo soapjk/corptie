@@ -170,6 +170,27 @@ test("durable work lifecycle maps to provider-neutral user message status", () =
   assert.equal(consumed.userMessageStatus, "consumed");
 });
 
+test("collaboration provenance stays on the authored input instead of leaking across its Provider turn", () => {
+  const items = annotateAgentWorkDetailItems([
+    { id: "input", turnId: "turn-collaboration", type: "userMessage", text: "peer envelope" },
+    { id: "automation", turnId: "turn-collaboration", type: "mcpToolCall", text: "create automation" },
+    { id: "answer", turnId: "turn-collaboration", type: "agentMessage", text: "done", presentationRole: "final_answer" }
+  ], [{
+    workItemId: "delivery:one",
+    kind: "collaboration",
+    status: "completed",
+    targetTurnId: "turn-collaboration",
+    text: "peer envelope",
+    source: { type: "collaboration", taskId: "task:one" },
+    localVisibility: "status_only"
+  }]);
+
+  assert.equal(items[0].sourceType, "collaboration");
+  assert.equal(items[1].sourceType, undefined);
+  assert.equal(items[2].sourceType, undefined);
+  assert.equal(items[1].sourceChannel, "collaboration");
+});
+
 test("user instructions are selected before older collaboration work", async () => {
   const { directory, store } = await fixture();
   try {

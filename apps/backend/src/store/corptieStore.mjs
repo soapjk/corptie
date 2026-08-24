@@ -5719,6 +5719,23 @@ export class CorptieStore {
     return rows.map(sessionEventFromRow);
   }
 
+  listSessionAutomationEvents(sessionId, limit = 200) {
+    const rows = this.selectAll(
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM (
+         SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+                source_event_seqs_json, call_id, source_json, payload_json, created_at
+         FROM session_events
+         WHERE session_id = ?
+           AND (type LIKE 'ScheduledSession%' OR type LIKE 'Automation%')
+         ORDER BY sequence DESC LIMIT ?
+       ) ORDER BY sequence ASC`,
+      [sessionId, Math.max(1, Math.min(500, Number(limit) || 200))]
+    );
+    return rows.map(sessionEventFromRow);
+  }
+
   listSessionEventPage(sessionId, { beforeSequence = null, limit = 200 } = {}) {
     const pageLimit = Math.max(1, Math.min(500, Number(limit) || 200));
     const before = Number(beforeSequence);

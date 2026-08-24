@@ -128,6 +128,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         )
         collaboration.sourceType = "collaboration"
         collaboration.presentationRole = "collaboration"
+        collaboration.collaborationTaskId = "task:review"
         collaboration.presentationText = "Please review the API contract."
         collaboration.collaborationSenderName = "Platform Agent"
         collaboration.collaborationSenderAgentId = "agent:platform"
@@ -168,18 +169,19 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testInboundCollaborationFallsBackToCurrentSessionTitle() throws {
+    func testIncompleteCollaborationEnvelopeDoesNotRenderAsCollaboration() throws {
         var collaboration = item(id: "collaboration", type: "userMessage", text: "Need context")
         collaboration.sourceType = "collaboration"
+        collaboration.presentationRole = "collaboration"
         collaboration.collaborationSenderName = "Peer Agent"
         collaboration.collaborationRecipientName = "Current Agent"
 
-        let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
+        let presentation = nativeCollaborationCardPresentation(
             for: collaboration,
             currentSessionTitle: "Current Work Session"
-        ))
+        )
 
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Current Work Session"))
+        XCTAssertNil(presentation)
     }
 
     @MainActor
@@ -191,6 +193,8 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         )
         collaboration.sourceType = "collaboration"
         collaboration.presentationRole = "collaboration"
+        collaboration.presentationText = "Repair the historical route."
+        collaboration.collaborationTaskId = "task:c4471174"
         collaboration.collaborationSenderAgentId = "agent:initiator"
         collaboration.collaborationRecipientAgentId = "agent:recipient"
         collaboration.collaborationInitiatorSessionId = "session:historical-initiator"
@@ -212,6 +216,52 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertTrue(presentation.bodyMarkdown.contains("objective:target"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Historical Initiator Session · session:historical-initiator"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Recipient Worker Session · session:recipient-current"))
+    }
+
+    @MainActor
+    func testCollaborationTurnAgentOutputAndAutomationToolDoNotBecomeUnknownAgentCards() {
+        var final = item(id: "final", type: "agentMessage", text: "Created two Automations.")
+        final.sourceType = "collaboration"
+        final.presentationRole = "final_answer"
+        XCTAssertNil(nativeCollaborationCardPresentation(for: final, currentSessionTitle: "Session"))
+
+        var tool = item(id: "tool", type: "mcpToolCall", text: "corptie_automations_create")
+        tool.sourceType = "collaboration"
+        XCTAssertNil(nativeCollaborationCardPresentation(for: tool, currentSessionTitle: "Session"))
+    }
+
+    @MainActor
+    func testAutomationCardShowsVerifiableIdentityTriggerAndSource() throws {
+        var automation = item(id: "automation", type: "automationEvent", text: "Inspect the process")
+        automation.presentationRole = "automation"
+        automation.automationId = "scheduled_task:b2cb2ad1-9048-40c6-a18b-b79ec6df8b43"
+        automation.automationName = "Shadow exit monitor"
+        automation.automationTriggerType = "processExit"
+        automation.automationEventType = "ScheduledSessionTaskCreated"
+        automation.automationEventSource = "scheduled_session_task"
+
+        let presentation = try XCTUnwrap(nativeAutomationCardPresentation(for: automation))
+        XCTAssertTrue(presentation.title.contains("Automation"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("scheduled_task:b2cb2ad1-9048-40c6-a18b-b79ec6df8b43"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Shadow exit monitor"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("processExit"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("scheduled_session_task"))
+    }
+
+    @MainActor
+    func testUnqueryableCollaborationUsesNonExecutableSystemEventPresentation() throws {
+        var anomaly = item(id: "anomaly", type: "userMessage", text: "raw")
+        anomaly.presentationRole = "system_event"
+        anomaly.collaborationTaskId = "task:missing"
+        anomaly.systemEventKind = "invalid_collaboration_envelope"
+        anomaly.systemEventReason = "task_not_found"
+        anomaly.systemEventSource = "collaboration"
+
+        XCTAssertNil(nativeCollaborationCardPresentation(for: anomaly, currentSessionTitle: "Session"))
+        let presentation = try XCTUnwrap(nativeSystemEventCardPresentation(for: anomaly))
+        XCTAssertTrue(presentation.title.contains("System Event"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("task:missing"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("not an executable"))
     }
 
     @MainActor

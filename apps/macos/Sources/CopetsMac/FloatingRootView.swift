@@ -3676,20 +3676,22 @@ struct DetailView: View {
                 for: item,
                 currentSessionTitle: displayedDetail?.title ?? backendClient.selectedSession?.title
             )
-            style = collaboration == nil && item.type == "userMessage" ? .user : .agent
-            copyText = collaboration?.messageText ?? nativeTimelineText(for: item)
+            let specialEvent = nativeAutomationCardPresentation(for: item)
+                ?? nativeSystemEventCardPresentation(for: item)
+            style = collaboration == nil && specialEvent == nil && item.type == "userMessage" ? .user : .agent
+            copyText = collaboration?.messageText ?? specialEvent?.messageText ?? nativeTimelineText(for: item)
             let supplementalText = nativeTimelineSupplementalText(for: item)
-            let presentedText = collaboration?.bodyMarkdown ?? (supplementalText.isEmpty
+            let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
                 ? copyText
                 : "\(copyText)\n\n\(supplementalText)")
             text = ClickableMessageText.markdown(
                 from: presentedText,
                 baseDirectory: displayedDetail?.cwd
             )
-            let isOrdinaryMessage = collaboration == nil
+            let isOrdinaryMessage = collaboration == nil && specialEvent == nil
                 && (item.type == "userMessage" || item.type == "agentMessage")
-            title = collaboration?.title ?? (isOrdinaryMessage ? "" : item.title)
-            metadata = collaboration?.metadata ?? (isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item))
+            title = collaboration?.title ?? specialEvent?.title ?? (isOrdinaryMessage ? "" : item.title)
+            metadata = collaboration?.metadata ?? specialEvent?.metadata ?? (isOrdinaryMessage ? "" : nativeTimelineMetadata(for: item))
             showsHeader = !isOrdinaryMessage
             hoverTimestamp = isOrdinaryMessage ? nativeTimelineMetadata(for: item) : ""
             expandableTurnId = nil
@@ -4671,6 +4673,14 @@ private func makeDetailSourceSignature(
             item.collaborationRelation ?? "",
             item.collaborationRouteStatus ?? "",
             item.collaborationRoutingVersion.map(String.init) ?? "",
+            item.automationId ?? "",
+            item.automationName ?? "",
+            item.automationTriggerType ?? "",
+            item.automationEventType ?? "",
+            item.automationEventSource ?? "",
+            item.automationRunId ?? "",
+            item.systemEventKind ?? "",
+            item.systemEventReason ?? "",
             "\(item.text.count)",
             "\(item.presentationText?.count ?? 0)",
             fileChangesSignature(item)
@@ -4995,6 +5005,13 @@ struct NativeCollaborationCardPresentation: Equatable {
     let messageText: String
 }
 
+struct NativeSpecialEventCardPresentation: Equatable {
+    let title: String
+    let metadata: String
+    let bodyMarkdown: String
+    let messageText: String
+}
+
 @MainActor
 func nativeCollaborationCardPresentation(
     for item: CodexThreadItem,
@@ -5002,8 +5019,7 @@ func nativeCollaborationCardPresentation(
 ) -> NativeCollaborationCardPresentation? {
     let isConfirmation = item.presentationRole == "collaboration_confirmation"
         || item.type == "collaborationConfirmation"
-    let isMessage = item.presentationRole == "collaboration"
-        || item.sourceType == "collaboration"
+    let isMessage = item.type == "userMessage" && item.presentationRole == "collaboration"
     guard isConfirmation || isMessage else { return nil }
 
     func nonEmpty(_ source: String?) -> String? {
@@ -5031,6 +5047,17 @@ func nativeCollaborationCardPresentation(
         let context = [nonEmpty(kind), nonEmpty(workItemId)].compactMap { $0 }
         if !context.isEmpty { result += " · " + context.joined(separator: " · ") }
         return result
+    }
+
+    if isMessage {
+        guard nonEmpty(item.collaborationTaskId) != nil,
+              nonEmpty(item.collaborationSenderAgentId) != nil,
+              nonEmpty(item.collaborationRecipientAgentId) != nil,
+              nonEmpty(item.collaborationSourceObjectiveId) != nil,
+              nonEmpty(item.collaborationTargetObjectiveId) != nil,
+              nonEmpty(item.presentationText) != nil else {
+            return nil
+        }
     }
 
     let kind: String = switch item.collaborationMessageKind?.lowercased() {
@@ -5126,6 +5153,80 @@ func nativeCollaborationCardPresentation(
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: message
     )
+}
+
+@MainActor
+func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
+    guard item.type == "automationEvent", item.presentationRole == "automation",
+          let automationID = nonEmptyPresentationValue(item.automationId),
+          let name = nonEmptyPresentationValue(item.automationName),
+          let trigger = nonEmptyPresentationValue(item.automationTriggerType),
+          let source = nonEmptyPresentationValue(item.automationEventSource),
+          let eventType = nonEmptyPresentationValue(item.automationEventType) else { return nil }
+    let message = nonEmptyPresentationValue(item.presentationText) ?? nonEmptyPresentationValue(item.text) ?? ""
+    var lines = [
+        "**Automation ID**  \(automationID)",
+        "**\(L10n("名称"))**  \(name)",
+        "**\(L10n("触发类型"))**  \(trigger)",
+        "**\(L10n("事件来源"))**  \(source)",
+        "**\(L10n("事件类型"))**  \(eventType)"
+    ]
+    if let runID = nonEmptyPresentationValue(item.automationRunId) {
+        lines.append("**Run ID**  \(runID)")
+    }
+    if !message.isEmpty {
+        lines.append(contentsOf: ["", "**\(L10n("消息"))**", message])
+    }
+    return NativeSpecialEventCardPresentation(
+        title: "Automation · \(automationEventLabel(eventType))",
+        metadata: nativeEventTimestamp(item.createdAt),
+        bodyMarkdown: lines.joined(separator: "\n"),
+        messageText: message
+    )
+}
+
+@MainActor
+func nativeSystemEventCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
+    guard item.presentationRole == "system_event",
+          let reason = nonEmptyPresentationValue(item.systemEventReason) else { return nil }
+    let source = nonEmptyPresentationValue(item.systemEventSource) ?? L10n("未知")
+    let taskID = nonEmptyPresentationValue(item.collaborationTaskId)
+    var lines = [
+        "**\(L10n("事件类型"))**  \(item.systemEventKind ?? "system_event")",
+        "**\(L10n("事件来源"))**  \(source)",
+        "**Reason**  \(reason)"
+    ]
+    if let taskID { lines.append("**Task ID**  \(taskID)") }
+    lines.append("\nThis event is not an executable collaboration request.")
+    return NativeSpecialEventCardPresentation(
+        title: "System Event · Invalid collaboration envelope",
+        metadata: nativeEventTimestamp(item.createdAt),
+        bodyMarkdown: lines.joined(separator: "\n"),
+        messageText: item.presentationText ?? item.text
+    )
+}
+
+private func nonEmptyPresentationValue(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+    return value
+}
+
+private func nativeEventTimestamp(_ value: String?) -> String {
+    value.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
+        .map { $0.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute()) } ?? ""
+}
+
+@MainActor
+private func automationEventLabel(_ type: String) -> String {
+    switch type {
+    case "ScheduledSessionTaskCreated": L10n("已创建")
+    case "ScheduledSessionTaskDue": L10n("已触发")
+    case "ScheduledSessionRunQueued": L10n("已排队")
+    case "ScheduledSessionRunStarted": L10n("运行中")
+    case "ScheduledSessionRunCompleted": L10n("已完成")
+    case "ScheduledSessionRunFailed": L10n("失败")
+    default: type
+    }
 }
 
 @MainActor
@@ -8547,7 +8648,7 @@ struct ThreadItemView: View {
 
     private var isCollaborationItem: Bool {
         item.type == "userMessage"
-            && (item.presentationRole == "collaboration" || item.sourceType == "collaboration")
+            && item.presentationRole == "collaboration"
     }
 
     private var collaborationPresentationText: String {
