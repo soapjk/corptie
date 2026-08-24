@@ -33,7 +33,7 @@ export class ProjectApplicationService {
 
   async readProject(projectId) {
     const project = await this.requireProject(projectId);
-    const workspaces = await this.inspectWorkspaces(project);
+    const workspaces = await this.inspectWorkspaces(project, { inspectionLevel: "management", reason: "project_read" });
     return {
       project: {
         id: project.id,
@@ -49,7 +49,11 @@ export class ProjectApplicationService {
   async listWorkspaces(projectId, options = {}) {
     const project = await this.requireProject(projectId);
     const [status, development] = await Promise.all([
-      this.inspectWorkspaces(project),
+      this.inspectWorkspaces(project, {
+        inspectionLevel: options.activeWorkspaceId ? "session" : "management",
+        activeWorkspaceId: options.activeWorkspaceId,
+        reason: options.activeWorkspaceId ? "session_detail" : "worktree_management"
+      }),
       this.inspectDevelopmentService(project)
     ]);
     const pushWorkspaceIds = new Set([
@@ -87,7 +91,11 @@ export class ProjectApplicationService {
       workspaceId: normalizedWorkspaceId,
       action,
       result,
-      project: await this.inspectWorkspaces(project)
+      project: await this.inspectWorkspaces(project, {
+        inspectionLevel: "management",
+        forceFresh: true,
+        reason: `workspace_action_${action}_completed`
+      })
     };
   }
 
