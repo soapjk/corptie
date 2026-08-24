@@ -31,6 +31,19 @@ struct AgentDetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 22, height: 22)
+                        .background(Color.secondary.opacity(0.16), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .help(L10n("Close"))
+                .accessibilityLabel(L10n("Close"))
+                Spacer()
+            }
             header
             Picker("", selection: $selectedPage) {
                 Text(L10n("Profile")).tag("profile")

@@ -60,4 +60,34 @@ struct WorkItemMemoryPresentationTests {
         #expect(recall.mode == "lightweight")
         #expect(recall.selectedIds.count == 1)
     }
+
+    @MainActor
+    @Test func layeredInspectorDistinguishesUserAgentSystemAndInactiveMemory() throws {
+        #expect(MemoryOriginLayer.classify(try memory(source: "user", trust: "trusted", status: "active")) == .userKept)
+        #expect(MemoryOriginLayer.classify(try memory(source: "extracted", trust: "untrusted", status: "candidate")) == .agentCandidate)
+        #expect(MemoryOriginLayer.classify(try memory(source: "promoted", trust: "trusted", status: "active")) == .agentDurable)
+        #expect(MemoryOriginLayer.classify(try memory(source: "pre_compaction", trust: "trusted", status: "active")) == .systemManaged)
+        #expect(MemoryOriginLayer.classify(try memory(source: "user", trust: "trusted", status: "active", revokedAt: "2026-08-24T00:00:00Z")) == .inactive)
+        #expect(MemoryScopeLayer.allCases.map(\.rawValue) == ["work_item", "objective", "agent"])
+    }
+
+    private func memory(
+        source: String,
+        trust: String,
+        status: String,
+        revokedAt: String? = nil
+    ) throws -> MemoryItem {
+        let revoked = revokedAt.map { "\"\($0)\"" } ?? "null"
+        let data = Data("""
+        {
+          "id":"memory:layer","ownerType":"agent","ownerId":"agent:one",
+          "kind":"fact","content":"Layered memory","sourceType":"\(source)",
+          "promotionStatus":"\(status)","trustLevel":"\(trust)","revokedAt":\(revoked),
+          "createdAt":"2026-08-23T00:00:00Z"
+        }
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(MemoryItem.self, from: data)
+    }
 }

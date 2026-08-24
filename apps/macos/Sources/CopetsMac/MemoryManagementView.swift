@@ -1,5 +1,68 @@
 import SwiftUI
 
+@MainActor
+enum MemoryScopeLayer: String, CaseIterable {
+    case workItem = "work_item"
+    case objective
+    case agent
+
+    var title: String {
+        switch self {
+        case .workItem: L10n("WorkItem Memory")
+        case .objective: L10n("Objective Memory")
+        case .agent: L10n("Agent Long-term Memory")
+        }
+    }
+    var icon: String {
+        switch self {
+        case .workItem: "checklist"
+        case .objective: "target"
+        case .agent: "person.crop.circle.badge.checkmark"
+        }
+    }
+}
+
+@MainActor
+enum MemoryOriginLayer: Int, CaseIterable {
+    case userKept
+    case agentCandidate
+    case agentDurable
+    case systemManaged
+    case inactive
+    private static let timestampFormatter = ISO8601DateFormatter()
+
+    var title: String {
+        switch self {
+        case .userKept: L10n("Kept by me")
+        case .agentCandidate: L10n("Suggested by Agent")
+        case .agentDurable: L10n("Confirmed Agent Memory")
+        case .systemManaged: L10n("System checkpoints and consolidation")
+        case .inactive: L10n("Disabled, replaced or expired")
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .userKept: L10n("Memories explicitly kept or manually added by you.")
+        case .agentCandidate: L10n("Untrusted candidates learned from Session activity; they are not recalled automatically.")
+        case .agentDurable: L10n("Trusted durable knowledge available within this scope.")
+        case .systemManaged: L10n("Recoverable pre-compaction checkpoints and audited consolidation results.")
+        case .inactive: L10n("Preserved for audit but excluded from normal recall.")
+        }
+    }
+
+    static func classify(_ memory: MemoryItem, now: Date = Date()) -> Self {
+        let inactiveStatuses = ["superseded", "archived", "rolled_back"]
+        let expired = memory.expiresAt.flatMap(timestampFormatter.date(from:)).map { $0 <= now } ?? false
+        if memory.revokedAt != nil || expired || inactiveStatuses.contains(memory.promotionStatus ?? "") { return .inactive }
+        if memory.sourceType == "user" { return .userKept }
+        if memory.promotionStatus == "candidate" || memory.trustLevel == "untrusted" || memory.sourceType == "extracted" {
+            return .agentCandidate
+        }
+        if ["system", "consolidated", "pre_compaction"].contains(memory.sourceType) { return .systemManaged }
+        return .agentDurable
+    }
+}
+
 struct MemoryManagementView: View {
     enum Scope: Equatable {
         case owner(type: String, id: String)
@@ -17,9 +80,11 @@ struct MemoryManagementView: View {
     @State private var editingMemory: MemoryItem?
     @State private var revokingMemory: MemoryItem?
     @State private var historyMemory: MemoryItem?
+    @State private var isAddingMemory = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            scopeExplanation
             controls
             if isLoading && memories.isEmpty {
                 Spacer()
@@ -32,14 +97,10 @@ struct MemoryManagementView: View {
                     description: Text(L10n("No Memory matches the current scope and filters."))
                 )
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(filteredMemories) { memory in
-                            memoryRow(memory)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
+                layeredList
+            }
+            if let error = client.errorMessage, !error.isEmpty {
+                Text(error).font(.caption).foregroundStyle(.red)
             }
         }
         .task(id: reloadKey) { await load() }
@@ -50,11 +111,16 @@ struct MemoryManagementView: View {
                 }
             }
         }
-        .alert(L10n("Revoke Memory"), isPresented: Binding(
+        .sheet(isPresented: $isAddingMemory) {
+            MemoryCreationSheet(scope: scope) { memory in
+                memories.insert(memory, at: 0)
+            }
+        }
+        .alert(L10n("Disable Memory recall?"), isPresented: Binding(
             get: { revokingMemory != nil },
             set: { if !$0 { revokingMemory = nil } }
         )) {
-            Button(L10n("Revoke"), role: .destructive) {
+            Button(L10n("Disable recall"), role: .destructive) {
                 guard let memory = revokingMemory else { return }
                 Task {
                     if let updated = await client.revokeMemory(memoryId: memory.id, reason: "Revoked from Memory Inspector") {
@@ -65,7 +131,7 @@ struct MemoryManagementView: View {
             }
             Button(L10n("Cancel"), role: .cancel) { revokingMemory = nil }
         } message: {
-            Text(L10n("Revocation preserves the audit trail and prevents future recall. Physical deletion is not available."))
+            Text(L10n("The Memory will stop participating in recall. Its content and audit history remain available, and it can be enabled again."))
         }
         .sheet(item: $historyMemory) { memory in
             MemoryAuditSheet(memory: memory) { updated in replace(updated) }
@@ -93,8 +159,78 @@ struct MemoryManagementView: View {
             .labelsHidden()
             .frame(width: 150)
             Toggle(L10n("Revoked"), isOn: $includeRevoked).toggleStyle(.checkbox)
+            Button { isAddingMemory = true } label: {
+                Label(L10n("Add Memory"), systemImage: "plus")
+            }
+            .buttonStyle(.borderedProminent)
             Button { Task { await load() } } label: { Image(systemName: "arrow.clockwise") }
                 .buttonStyle(.borderless)
+        }
+    }
+
+    private var scopeExplanation: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "square.3.layers.3d")
+                .foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(scopeTitle).font(.headline)
+                Text(scopeSubtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(10)
+        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var scopeTitle: String {
+        switch scope {
+        case .global: L10n("Layered Memory Inspector")
+        case let .owner(type, _): MemoryScopeLayer(rawValue: type)?.title ?? L10n("Structured Memory")
+        }
+    }
+
+    private var scopeSubtitle: String {
+        switch scope {
+        case .global:
+            L10n("WorkItem → Objective → Agent is the recall priority. Memories are grouped by both scope and origin.")
+        case .owner(type: "agent", id: _):
+            L10n("Only this Agent's structured long-term layer is managed here. Objective, WorkItem, and runtime file memories remain separate.")
+        case .owner(type: "objective", id: _):
+            L10n("Shared Objective context. WorkItem-local and Agent long-term memories are managed separately.")
+        case .owner(type: "work_item", id: _):
+            L10n("The most specific task-local layer and the first layer considered during recall.")
+        case .owner:
+            L10n("Structured Memory for the selected owner.")
+        }
+    }
+
+    private var layeredList: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 16) {
+                ForEach(scopeLayersWithContent, id: \.self) { layer in
+                    if scope == .global {
+                        Label("\(layer.title) · \(memories(in: layer).count)", systemImage: layer.icon)
+                            .font(.title3.bold())
+                            .padding(.top, 4)
+                    }
+                    ForEach(MemoryOriginLayer.allCases, id: \.self) { origin in
+                        let rows = memories(in: layer, origin: origin)
+                        if !rows.isEmpty {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text(origin.title).font(.subheadline.bold())
+                                    Text("\(rows.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                    Spacer()
+                                }
+                                Text(origin.explanation).font(.caption2).foregroundStyle(.tertiary)
+                                ForEach(rows) { memory in memoryRow(memory) }
+                            }
+                        }
+                    }
+                    if scope == .global { Divider() }
+                }
+            }
+            .padding(.vertical, 2)
         }
     }
 
@@ -108,7 +244,7 @@ struct MemoryManagementView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Text(memory.ownerId).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1)
                 Spacer()
-                Text(memory.revokedAt == nil ? (memory.promotionStatus ?? "active") : "revoked")
+                Text(memory.revokedAt == nil ? (memory.promotionStatus ?? "active") : L10n("recall disabled"))
                     .font(.caption.bold())
                     .foregroundStyle(memory.revokedAt == nil ? Color.secondary : Color.red)
             }
@@ -136,8 +272,17 @@ struct MemoryManagementView: View {
                 Button(L10n("Edit tags")) { editingMemory = memory }.buttonStyle(.link)
                     .disabled(memory.revokedAt != nil)
                 Button(L10n("History")) { historyMemory = memory }.buttonStyle(.link)
-                Button(L10n("Revoke"), role: .destructive) { revokingMemory = memory }.buttonStyle(.link)
-                    .disabled(memory.revokedAt != nil)
+                if memory.revokedAt == nil {
+                    Button(L10n("Disable recall"), role: .destructive) { revokingMemory = memory }.buttonStyle(.link)
+                } else {
+                    Button(L10n("Enable recall")) {
+                        Task {
+                            if let restored = await client.restoreMemory(memoryId: memory.id, reason: "Enabled from Memory Inspector") {
+                                replace(restored)
+                            }
+                        }
+                    }.buttonStyle(.link)
+                }
             }
         }
         .padding(10)
@@ -159,6 +304,23 @@ struct MemoryManagementView: View {
         }
     }
 
+    private var scopeLayersWithContent: [MemoryScopeLayer] {
+        let requested: [MemoryScopeLayer]
+        switch scope {
+        case .global: requested = MemoryScopeLayer.allCases
+        case let .owner(type, _): requested = MemoryScopeLayer(rawValue: type).map { [$0] } ?? []
+        }
+        return requested.filter { !memories(in: $0).isEmpty }
+    }
+
+    private func memories(in layer: MemoryScopeLayer) -> [MemoryItem] {
+        filteredMemories.filter { $0.ownerType == layer.rawValue }
+    }
+
+    private func memories(in layer: MemoryScopeLayer, origin: MemoryOriginLayer) -> [MemoryItem] {
+        memories(in: layer).filter { MemoryOriginLayer.classify($0) == origin }
+    }
+
     private var reloadKey: String {
         switch scope {
         case .global: return "global:\(includeRevoked)"
@@ -173,13 +335,148 @@ struct MemoryManagementView: View {
         case .global:
             memories = await client.allMemories(includeRevoked: includeRevoked) ?? memories
         case let .owner(type, id):
-            memories = await client.memories(ownerType: type, ownerId: id) ?? memories
+            memories = await client.memories(ownerType: type, ownerId: id, includeRevoked: includeRevoked) ?? memories
         }
     }
 
     private func replace(_ updated: MemoryItem) {
         if let index = memories.firstIndex(where: { $0.id == updated.id }) { memories[index] = updated }
     }
+}
+
+private struct MemoryCreationSheet: View {
+    let scope: MemoryManagementView.Scope
+    let onCreate: (MemoryItem) -> Void
+    @ObservedObject private var client = EntityAPIClient.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var ownerType: String
+    @State private var ownerId: String
+    @State private var kind = "fact"
+    @State private var content = ""
+    @State private var tags = ""
+    @State private var isSaving = false
+
+    init(scope: MemoryManagementView.Scope, onCreate: @escaping (MemoryItem) -> Void) {
+        self.scope = scope
+        self.onCreate = onCreate
+        switch scope {
+        case .global:
+            _ownerType = State(initialValue: "agent")
+            _ownerId = State(initialValue: "")
+        case let .owner(type, id):
+            _ownerType = State(initialValue: type)
+            _ownerId = State(initialValue: id)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(L10n("Add structured Memory")).font(.headline)
+            Text(L10n("Choose the narrowest scope that should be affected. WorkItem is local, Objective is shared by the objective, and Agent is long-term."))
+                .font(.caption).foregroundStyle(.secondary)
+
+            Form {
+                Picker(L10n("Memory layer"), selection: $ownerType) {
+                    ForEach(MemoryScopeLayer.allCases, id: \.self) { layer in Text(layer.title).tag(layer.rawValue) }
+                }
+                .disabled(isFixedScope)
+
+                if isFixedScope {
+                    LabeledContent(L10n("Owner"), value: ownerLabel)
+                } else {
+                    Picker(L10n("Owner"), selection: $ownerId) {
+                        ForEach(ownerOptions) { option in Text(option.label).tag(option.id) }
+                    }
+                }
+
+                Picker(L10n("Kind"), selection: $kind) {
+                    ForEach(["fact", "preference", "procedure", "skill", "dev_experience", "lesson", "feedback", "episodic"], id: \.self) {
+                        Text($0).tag($0)
+                    }
+                }
+                TextEditor(text: $content).frame(minHeight: 110)
+                TextField(L10n("Comma-separated tags"), text: $tags)
+            }
+
+            HStack {
+                Spacer()
+                Button(L10n("Cancel")) { dismiss() }
+                Button(L10n("Keep Memory")) { Task { await create() } }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isValid || isSaving)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .task { selectFirstOwnerIfNeeded() }
+        .onChange(of: ownerType) { _, _ in
+            ownerId = ""
+            selectFirstOwnerIfNeeded()
+        }
+    }
+
+    private var isFixedScope: Bool {
+        if case .owner = scope { return true }
+        return false
+    }
+
+    private var ownerOptions: [MemoryOwnerOption] {
+        let options: [MemoryOwnerOption]
+        switch ownerType {
+        case "work_item": options = client.workItems.compactMap {
+            guard $0.currentSessionId != nil else { return nil }
+            return MemoryOwnerOption(id: $0.id, label: $0.title)
+        }
+        case "objective": options = client.objectives.map { MemoryOwnerOption(id: $0.id, label: $0.name) }
+        default: options = client.agents.map { MemoryOwnerOption(id: $0.agentId, label: $0.name) }
+        }
+        return options.sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+    }
+
+    private var ownerLabel: String {
+        ownerOptions.first(where: { $0.id == ownerId })?.label ?? ownerId
+    }
+
+    private var isValid: Bool {
+        !ownerId.isEmpty
+            && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (ownerType != "work_item" || sourceSessionId != nil)
+    }
+
+    private var sourceSessionId: String? {
+        guard ownerType == "work_item" else { return nil }
+        return client.workItems.first(where: { $0.id == ownerId })?.currentSessionId
+    }
+
+    private func selectFirstOwnerIfNeeded() {
+        guard ownerId.isEmpty else { return }
+        ownerId = ownerOptions.first?.id ?? ""
+    }
+
+    private func create() async {
+        isSaving = true
+        defer { isSaving = false }
+        let parsedTags = tags.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if let created = await client.createMemory(
+            ownerType: ownerType,
+            ownerId: ownerId,
+            kind: kind,
+            content: content.trimmingCharacters(in: .whitespacesAndNewlines),
+            tags: parsedTags,
+            sourceSessionId: sourceSessionId
+        ) {
+            onCreate(created)
+            dismiss()
+        }
+    }
+}
+
+private struct MemoryOwnerOption: Identifiable {
+    let id: String
+    let label: String
 }
 
 private struct MemoryAuditSheet: View {
