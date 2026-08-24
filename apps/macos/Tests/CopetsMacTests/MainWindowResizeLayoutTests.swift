@@ -63,9 +63,9 @@ struct MainWindowResizeLayoutTests {
 
     @MainActor
     @Test
-    func inactiveTabHostsRetainStateWithoutReceivingResizeFrames() throws {
+    func inactiveTabHostsStayHiddenAndRetainStateWithoutReceivingResizeFrames() throws {
         var created: [AppTab: NSView] = [:]
-        let container = MainTabPageContainer { tab in
+        let container = MainTabPageContainer(animationDuration: 0) { tab in
             let page = NSView(frame: .zero)
             created[tab] = page
             return page
@@ -81,10 +81,12 @@ struct MainWindowResizeLayoutTests {
         container.layoutSubtreeIfNeeded()
 
         #expect(container.cachedPageCount == 2)
-        #expect(container.attachedPageCount == 1)
+        #expect(container.attachedPageCount == 2)
+        #expect(container.visibleTabs == [.sessions])
         #expect(created[.console]?.frame == detachedConsoleFrame)
         #expect(created[.sessions]?.frame == container.bounds)
-        #expect(created[.console]?.superview == nil)
+        #expect(created[.console]?.superview === container)
+        #expect(created[.console]?.isHidden == true)
         #expect(created[.sessions]?.superview === container)
     }
 
@@ -122,7 +124,7 @@ struct MainWindowResizeLayoutTests {
     }
 
     @Test
-    func mainTabLayoutContractRetainsButDetachesInactivePages() throws {
+    func mainTabLayoutContractRetainsButHidesInactivePages() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -131,10 +133,13 @@ struct MainWindowResizeLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("private var pages: [AppTab: NSView] = [:]"))
-        #expect(contents.contains("pages[selectedTab]?.removeFromSuperview()"))
+        #expect(contents.contains("private var participatingTabs: Set<AppTab>"))
         #expect(contents.contains("pages[tab] = created"))
         #expect(contents.contains("page.frame = bounds"))
         #expect(contents.contains("addSubview(page)"))
+        #expect(contents.contains("page.isHidden = !participates"))
+        #expect(contents.contains("transform.translation.x"))
+        #expect(contents.contains("page.setAccessibilityHidden(tab != selectedTab)"))
         #expect(!contents.contains("MainTabPageLayout"))
         #expect(AppTab.allCases.contains(.automations))
         #expect(contents.contains("case .automations:"))

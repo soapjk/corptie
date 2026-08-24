@@ -73,10 +73,10 @@ struct SessionsView: View {
         .onDisappear {
             deactivateSessions()
         }
-        .onChange(of: router.selectedTab) { _, newTab in
+        .onChange(of: sidebarState.isSelected) { _, isSelected in
             // 常驻子树后 onAppear/onDisappear 不再随 Tab 切换触发，改用
-            // selectedTab 显式驱动进入/离开语义，保持轮询抑制与任务清理正确。
-            if newTab == .sessions {
+            // 每 Tab 独立激活状态驱动进入/离开语义，避免让其他四页失效。
+            if isSelected {
                 activateSessions()
             } else {
                 deactivateSessions()
@@ -137,7 +137,7 @@ struct SessionsView: View {
     private func activateSessions() {
         // 常驻子树后 onAppear 会在启动时（selectedTab 仍为 console）就触发，
         // 只有真正处于 Sessions Tab 时才执行激活逻辑。
-        guard router.selectedTab == .sessions else { return }
+        guard sidebarState.isSelected else { return }
         selectedSession = backendClient.selectedSession
         if let selectedSession {
             presentationStore.activateHost(for: selectedSession.id)
@@ -171,7 +171,7 @@ struct SessionsView: View {
             // This keeps the tab click responsive without adding a visible
             // loading delay on a normal display refresh.
             try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled, router.selectedTab == .sessions else { return }
+            guard !Task.isCancelled, sidebarState.isSelected else { return }
             layoutState.canRenderDetailMessages = true
             PerfStopwatch.event("会话切换.scheduleDetailRendering=true", value: 1)
         }
@@ -698,7 +698,7 @@ struct SessionsView: View {
     }
 
     private func markOpenedSessionRead(_ session: TaskSession?) {
-        guard router.selectedTab == .sessions,
+        guard sidebarState.isSelected,
               NSApp.isActive,
               let session,
               let sequence = SessionReadAcknowledgementPolicy.sequenceForOpenedSession(
