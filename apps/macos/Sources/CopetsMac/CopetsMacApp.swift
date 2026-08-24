@@ -730,7 +730,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
+            contentRect: NSRect(origin: .zero, size: SettingsWindowLayout.contentSize),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -1035,13 +1035,41 @@ enum CorptiePermissionManager {
     }
 }
 
-private enum SettingsTab: Hashable {
+enum SettingsWindowLayout {
+    // Keep enough room for six equal tab targets, including the longest
+    // supported localized labels, without truncation or an overflow control.
+    static let contentSize = NSSize(width: 860, height: 680)
+}
+
+enum SettingsTab: Hashable, CaseIterable {
     case general
-    case memory
     case notifications
+    case memory
     case proxy
     case gateway
     case archivedSessions
+
+    var titleKey: String {
+        switch self {
+        case .general: "General"
+        case .notifications: "Notifications"
+        case .memory: "Memory Inspector"
+        case .proxy: "Proxy"
+        case .gateway: "Gateway"
+        case .archivedSessions: "Archived Sessions"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .general: "gearshape"
+        case .notifications: "bell"
+        case .memory: "brain.head.profile"
+        case .proxy: "network"
+        case .gateway: "message.badge.filled.fill"
+        case .archivedSessions: "archivebox"
+        }
+    }
 }
 
 struct SettingsView: View {
@@ -1071,43 +1099,9 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            TabView(selection: $selectedTab) {
-                generalSettingsTab
-                    .tabItem {
-                        Label(L10n("General"), systemImage: "gearshape")
-                    }
-                    .tag(SettingsTab.general)
+            settingsTabBar
 
-                NotificationSettingsView()
-                    .tabItem {
-                        Label(L10n("Notifications"), systemImage: "bell")
-                    }
-                    .tag(SettingsTab.notifications)
-
-                MemoryManagementView(scope: .global)
-                    .tabItem {
-                        Label(L10n("Memory Inspector"), systemImage: "brain.head.profile")
-                    }
-                    .tag(SettingsTab.memory)
-
-                proxySettingsTab
-                    .tabItem {
-                        Label(L10n("Proxy"), systemImage: "network")
-                    }
-                    .tag(SettingsTab.proxy)
-
-                feishuSettingsTab
-                    .tabItem {
-                        Label(L10n("Gateway"), systemImage: "message.badge.filled.fill")
-                    }
-                    .tag(SettingsTab.gateway)
-
-                archivedSessionsTab
-                    .tabItem {
-                        Label(L10n("Archived Sessions"), systemImage: "archivebox")
-                    }
-                    .tag(SettingsTab.archivedSessions)
-            }
+            selectedSettingsTab
 
             Divider()
 
@@ -1135,7 +1129,10 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: selectedTab == .memory ? 860 : 560, height: selectedTab == .memory ? 680 : 580)
+        .frame(
+            width: SettingsWindowLayout.contentSize.width,
+            height: SettingsWindowLayout.contentSize.height
+        )
         .task {
             await backendClient.loadSettings()
             await backendClient.loadFeishuBots()
@@ -1198,6 +1195,54 @@ struct SettingsView: View {
             Text(L10n("This action cannot be undone."))
         }
         .environment(\.locale, appLanguage.locale)
+    }
+
+    private var settingsTabBar: some View {
+        HStack(spacing: 8) {
+            ForEach(SettingsTab.allCases, id: \.self) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 18))
+                        Text(L10n(tab.titleKey))
+                            .font(.caption)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .contentShape(Rectangle())
+                    .background {
+                        if selectedTab == tab {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.accentColor.opacity(0.12))
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings.tab.\(tab)")
+                .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selectedSettingsTab: some View {
+        switch selectedTab {
+        case .general:
+            generalSettingsTab
+        case .notifications:
+            NotificationSettingsView()
+        case .memory:
+            MemoryManagementView(scope: .global)
+        case .proxy:
+            proxySettingsTab
+        case .gateway:
+            feishuSettingsTab
+        case .archivedSessions:
+            archivedSessionsTab
+        }
     }
 
     private var generalSettingsTab: some View {
