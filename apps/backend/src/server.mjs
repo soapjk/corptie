@@ -132,7 +132,8 @@ import {
 } from "./dsh-adapter/dshWebSocket.mjs";
 import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
-import { persistableSessionItems, storedSessionDetail } from "./application/storedSessionDetail.mjs";
+import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
+import { SessionTimelineProjection } from "./application/sessionTimelineProjection.mjs";
 import {
   buildHistoricalSessionContext,
   composeLogicalSessionTimeline
@@ -243,7 +244,9 @@ import {
 } from "./utils/sessionTimelineRefreshPolicy.mjs";
 import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
 import { SingleFlight } from "./utils/singleFlight.mjs";
+import { ReplayEventLog } from "./utils/replayEventLog.mjs";
 import { StateSyncService } from "./application/stateSyncService.mjs";
+import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
 import {
   MAX_SESSION_HISTORY_PAGE,
   normalizeSessionHistoryLimit,
@@ -265,7 +268,13 @@ const historicalSessionBindingDetailCache = new Map();
 // in-flight read so a row click never asks the Provider to reconstruct the
 // same logical timeline two or three times concurrently.
 const unifiedSessionSnapshotLoads = new SingleFlight();
-const eventLog = [];
+// The global product-event stream is only a wake-up/side-effect transport; the
+// revisioned state stream and durable Session event log remain authoritative.
+// Keep enough events for ordinary reconnects without retaining every event for
+// the lifetime of the backend process.
+const eventLog = new ReplayEventLog({
+  capacity: Number(process.env.CORPTIE_GLOBAL_EVENT_REPLAY_CAPACITY ?? 4096)
+});
 const sseClients = new Set();
 // Each state-stream client owns its own delivered revision. A shared cursor
 // lets a newly connected client advance past a change before existing clients
@@ -295,6 +304,7 @@ const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
+const sessionTimelineProjection = new SessionTimelineProjection({ store });
 const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
@@ -565,7 +575,14 @@ const openClackyManager = new OpenClackyManager({
     workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
   },
   onToolCall: (input) => toolHostService.execute(input),
-  onDetailChanged: (detail) => persistSessionDetailSnapshot(detail?.id, detail),
+  onDetailChanged: (detail) => persistSessionDetailSnapshot(
+    resolveStableSessionIdForProviderDetail({
+      store,
+      providerId: "openclacky",
+      physicalSessionId: detail?.id
+    }),
+    detail
+  ),
   resolveSessionBootstrap: async (input) => {
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
@@ -2106,13 +2123,11 @@ function emitEvent(type, payload, options = {}) {
   // event id makes the entire product event idempotent, including global SSE,
   // the durable timeline, unread cursors, and downstream work orchestration.
   if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;
-  const event = {
-    id: eventLog.length + 1,
+  const event = eventLog.append({
     type,
     payload,
     createdAt: now()
-  };
-  eventLog.push(event);
+  });
 
   const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
   for (const response of sseClients) {
@@ -2309,11 +2324,13 @@ function controlPlaneSnapshot() {
   }
   const latestMessageTimes = store.listLatestSessionMessageTimes();
   const messageCursors = store.listSessionMessageCursors();
+  const timelineRevisions = store.listSessionTimelineRevisions();
   const sessionsById = new Map(Array.from(liveById, ([id, session]) => [
     id,
     withSessionMessageCursors(
       withLastMessageTimestamp(session, latestMessageTimes.get(id)),
-      messageCursors.get(id)
+      messageCursors.get(id),
+      timelineRevisions.get(id)
     )
   ]));
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
@@ -3204,11 +3221,12 @@ function withLastMessageTimestamp(session, persistedMessageAt = null) {
   return { ...session, lastMessageAt };
 }
 
-function withSessionMessageCursors(session, cursors = null) {
+function withSessionMessageCursors(session, cursors = null, timelineRevision = 0) {
   return {
     ...session,
     lastAgentMessageSequence: Number(cursors?.lastAgentMessageSequence ?? 0),
-    lastReadMessageSequence: Number(cursors?.lastReadMessageSequence ?? 0)
+    lastReadMessageSequence: Number(cursors?.lastReadMessageSequence ?? 0),
+    timelineRevision: Number(timelineRevision ?? 0)
   };
 }
 
@@ -3345,6 +3363,15 @@ function handleCodexAppServerNotification(message) {
   const liveItems = codexRuntime.liveItemsForThread(threadId);
   const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
   const nowIso = now();
+
+  // Provider notifications own materialization. A client snapshot read must
+  // never be what first makes a background message durable in Corptie.
+  sessionTimelineProjection.persistChangedItem({
+    sessionId,
+    eventName: method,
+    itemId: params.item?.id,
+    liveItems
+  });
 
   if (method === "corptie/codexApprovalRequested") {
     const approvalItem = liveItems.slice().reverse().find((item) => item.type === "approval" && Array.isArray(item.options) && item.options.length > 0);
@@ -4697,6 +4724,40 @@ async function getUnifiedSessionSnapshot(sessionId) {
   );
 }
 
+async function getStoredSessionSnapshot(sessionId) {
+  const reference = requireSessionReference(sessionId);
+  const summary = reference.metadata.session;
+  const stored = store.getDetail(reference.sessionId) ?? {};
+  const detail = {
+    ...stored,
+    ...summary,
+    id: reference.sessionId,
+    title: preferredSessionTitle(summary, stored),
+    status: summary.status,
+    activityStatus: summary.activityStatus ?? null,
+    cwd: preferredSessionCwd(summary, stored),
+    source: summary.external?.provider ?? stored.source ?? null,
+    connectionStatus: summary.external?.connectionStatus ?? stored.connectionStatus ?? null,
+    canSend: summary.capabilities?.canSend ?? stored.canSend ?? false,
+    capabilities: summary.capabilities ?? stored.capabilities,
+    items: stored.items ?? []
+  };
+  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, detail.items);
+  const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(allItems);
+  return {
+    ...detail,
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    publicSessionId: reference.logicalSessionId ?? reference.sessionId,
+    items,
+    hasMoreHistory,
+    historyItemsCount,
+    lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
+    lastAgentMessageSequence: store.lastAgentMessageSequence(reference.sessionId),
+    timelineRevision: store.sessionTimelineRevision(reference.sessionId)
+  };
+}
+
 async function readUnifiedSessionSnapshot(sessionId) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
@@ -4795,10 +4856,7 @@ async function readSessionDetailWithStoredFallback(reference) {
 }
 
 function persistSessionDetailSnapshot(sessionId, detail) {
-  if (!sessionId) return;
-  for (const item of persistableSessionItems(detail)) {
-    store.upsertItemSnapshot(sessionId, item);
-  }
+  return sessionTimelineProjection.persistDetail(sessionId, detail);
 }
 
 async function logicalSessionTimelineItems(reference, activeDetail) {
@@ -7624,6 +7682,38 @@ function route(request, response) {
     return;
   }
 
+  const storedSessionSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/stored-snapshot$/);
+  if (request.method === "GET" && storedSessionSnapshotMatch) {
+    const sessionId = decodeURIComponent(storedSessionSnapshotMatch[1]);
+    getStoredSessionSnapshot(sessionId)
+      .then((snapshot) => sendJson(response, 200, {
+        timelineRevision: snapshot.timelineRevision,
+        session: snapshot
+      }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
+  const sessionTimelineChangesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/timeline\/changes$/);
+  if (request.method === "GET" && sessionTimelineChangesMatch) {
+    const sessionId = decodeURIComponent(sessionTimelineChangesMatch[1]);
+    sessionApplicationService.referenceFor(sessionId)
+      .then((reference) => store.sessionTimelineChangesAfter(
+        reference.sessionId,
+        Number(url.searchParams.get("after") ?? 0),
+        Number(url.searchParams.get("limit") ?? 200)
+      ))
+      .then((result) => sendJson(response, result.snapshotRequired ? 410 : 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionUsageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
   if (request.method === "GET" && sessionUsageMatch) {
     const sessionId = decodeURIComponent(sessionUsageMatch[1]);
@@ -8155,10 +8245,12 @@ function route(request, response) {
     const mockSessions = includeMock ? Array.from(sessions.values()) : [];
     const latestMessageTimes = store.listLatestSessionMessageTimes();
     const messageCursors = store.listSessionMessageCursors();
+    const timelineRevisions = store.listSessionTimelineRevisions();
     const providerSessions = listGatewaySessions({ archived }).map((session) =>
       withSessionMessageCursors(
         withLastMessageTimestamp(session, latestMessageTimes.get(session.id)),
-        messageCursors.get(session.id)
+        messageCursors.get(session.id),
+        timelineRevisions.get(session.id)
       )
     );
     const providerCounts = providerSessions.reduce((counts, session) => {
@@ -8701,12 +8793,28 @@ function route(request, response) {
     });
 
     const cursor = Number(url.searchParams.get("cursor") ?? 0);
-    for (const event of eventLog.filter((entry) => entry.id > cursor)) {
+    const replay = eventLog.replayAfter(cursor);
+    if (replay.gap) {
+      response.write(`event: EventReplayRequired\ndata: ${JSON.stringify({
+        requestedCursor: cursor,
+        oldestAvailableCursor: replay.oldestId,
+        latestCursor: replay.latestId
+      })}\n\n`);
+    }
+    // A gap means this connection cannot reconstruct a causally complete event
+    // sequence. Do not mix an explicit repair request with a partial tail: some
+    // product events are side effects and replaying only the suffix could apply
+    // them out of context. The client repairs from the durable state/timeline
+    // authorities and resumes from latestCursor on its next connection.
+    for (const event of replay.gap ? [] : replay.entries) {
       response.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     }
 
     sseClients.add(response);
+    const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
+    heartbeat.unref?.();
     request.on("close", () => {
+      clearInterval(heartbeat);
       sseClients.delete(response);
     });
     return;

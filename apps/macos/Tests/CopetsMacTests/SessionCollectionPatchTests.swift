@@ -450,6 +450,16 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func timelineRevisionWakesBackgroundSyncWithoutReorderingTheList() {
+        let previous = makeSession(id: "timeline", timelineRevision: 7)
+        let current = makeSession(id: "timeline", timelineRevision: 8)
+        let patch = SessionCollectionDiffer.patch(from: [previous], to: [current], revision: 10)
+
+        #expect(patch.updated.first?.changedFields == [.metadata])
+        #expect(patch.moved.isEmpty)
+    }
+
+    @Test
     func readReceiptResponseClearsUnreadImmediatelyWithoutClearingConcurrentMessages() {
         let unread = makeSession(
             id: "logical-session",
@@ -675,6 +685,7 @@ private func makeSession(
     lastMessageAt: String? = nil,
     lastAgentMessageSequence: Int? = nil,
     lastReadMessageSequence: Int? = nil,
+    timelineRevision: Int? = nil,
     archived: Bool = false
 ) -> TaskSession {
     TaskSession(
@@ -695,6 +706,7 @@ private func makeSession(
         lastMessageAt: lastMessageAt,
         lastAgentMessageSequence: lastAgentMessageSequence,
         lastReadMessageSequence: lastReadMessageSequence,
+        timelineRevision: timelineRevision,
         accent: .cyan,
         archived: archived,
         pinned: false,

@@ -137,7 +137,8 @@ enum SessionCollectionDiffer {
             || previous.objectiveId != next.objectiveId
             || previous.workItemId != next.workItemId
             || previous.lastAgentMessageSequence != next.lastAgentMessageSequence
-            || previous.lastReadMessageSequence != next.lastReadMessageSequence {
+            || previous.lastReadMessageSequence != next.lastReadMessageSequence
+            || previous.timelineRevision != next.timelineRevision {
             fields.insert(.metadata)
         }
         return fields
