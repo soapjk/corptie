@@ -618,6 +618,27 @@ export class CorptieStore {
     }
   }
 
+  migrateAutomationTitlesV1() {
+    const migrationId = "automation-titles-v1";
+    if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) return;
+    const appliedAt = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      this.db.run(`
+        UPDATE scheduled_session_tasks
+        SET name = CASE
+          WHEN length(trim(COALESCE(json_extract(message_json, '$.text'), ''))) <= 48
+            THEN trim(COALESCE(json_extract(message_json, '$.text'), task_id))
+          ELSE substr(trim(COALESCE(json_extract(message_json, '$.text'), task_id)), 1, 47) || '…'
+        END
+        WHERE name IS NULL OR trim(name) = ''
+      `);
+      this.db.run(
+        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+        [migrationId, appliedAt]
+      );
+    });
+  }
+
   migrateWorkItemMemoryAssociations() {
     const migrationId = "work-item-memory-association-v1";
     if (this.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
@@ -1880,6 +1901,7 @@ export class CorptieStore {
     this.migrateAutomationSchedulerV1();
     this.migrateAutomationExpirationV1();
     this.migrateAutomationCompletedStatusV1();
+    this.migrateAutomationTitlesV1();
 
     // --- 统一检索 hub（12：去抖缓存 + Session 活跃工具集） ---
     this.db.run(`

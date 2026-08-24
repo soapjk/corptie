@@ -105,6 +105,7 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         logicalSessionId: "logical:e2e",
+        name: "Check status",
         message: { text: "check and return status", payload: { check: "status" } },
         scheduleType: "once",
         runAt,

@@ -671,6 +671,13 @@
 "过期时间" = "Expires";
 "Times use time zone: %@" = "Times use time zone: %@";
 "Times use system time zone: %@" = "Times use system time zone: %@";
+"计划任务标题" = "Automation title";
+"例如：检查构建结果" = "For example: Check build results";
+"Show %lld more" = "Show %lld more";
+"一次性定时任务" = "One-time scheduled task";
+"周期定时任务" = "Recurring scheduled task";
+"条件任务" = "Condition task";
+"进程退出任务" = "Process-exit task";
 "等待确认" = "Awaiting Confirmation";
 "等待处理" = "Awaiting Processing";
 "未知 Agent" = "Unknown Agent";
