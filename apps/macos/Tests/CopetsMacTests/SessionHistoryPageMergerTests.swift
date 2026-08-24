@@ -2,6 +2,26 @@ import XCTest
 @testable import CorptieMac
 
 final class SessionHistoryPageMergerTests: XCTestCase {
+    func testRapidSessionSwitchRejectsOldAndABAHistoryResults() {
+        XCTAssertFalse(BackendClient.historyPageRequestIsCurrent(
+            sessionID: "session-a",
+            expectedSelectionGeneration: 10,
+            currentSessionID: "session-c",
+            currentSelectionGeneration: 12
+        ))
+        XCTAssertFalse(BackendClient.historyPageRequestIsCurrent(
+            sessionID: "session-a",
+            expectedSelectionGeneration: 10,
+            currentSessionID: "session-a",
+            currentSelectionGeneration: 13
+        ))
+        XCTAssertTrue(BackendClient.historyPageRequestIsCurrent(
+            sessionID: "session-a",
+            expectedSelectionGeneration: 13,
+            currentSessionID: "session-a",
+            currentSelectionGeneration: 13
+        ))
+    }
     func testPrependsAUniquePageInProviderOrder() throws {
         let current = [item("current-1"), item("current-2")]
         let merged = try XCTUnwrap(SessionHistoryPageMerger.prepend(

@@ -60,8 +60,8 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertEqual(store.cacheRevision, 1, "An identical projection must not invalidate the Session surface")
     }
 
-    func testViewportAndProjectionShareSessionScopedLifetime() {
-        let store = SessionPresentationStore()
+    func testViewportSurvivesActiveListPruningWhileProjectionIsReleased() {
+        let store = SessionPresentationStore(positionDefaults: nil)
         let position = AppKitChatTimelinePosition(
             rowID: "message-42",
             offset: 8,
@@ -72,8 +72,57 @@ final class SessionPresentationStoreTests: XCTestCase {
 
         XCTAssertEqual(store.position(for: "session-a"), position)
         store.prune(to: ["session-b"])
-        XCTAssertNil(store.position(for: "session-a"))
+        XCTAssertEqual(store.position(for: "session-a"), position)
         XCTAssertNil(store.cache(for: "session-a"))
+    }
+
+    func testViewportPersistsAcrossPresentationStoreRecreation() throws {
+        let suiteName = "SessionPresentationStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let position = AppKitChatTimelinePosition(
+            rowID: "message:persisted-42",
+            offset: 7,
+            absoluteScrollY: 912,
+            followsLatest: false
+        )
+
+        let writer = SessionPresentationStore(
+            positionDefaults: defaults,
+            positionDefaultsKey: "positions"
+        )
+        writer.store(position, for: "session-a")
+        writer.persistPositionsNow()
+
+        let reader = SessionPresentationStore(
+            positionDefaults: defaults,
+            positionDefaultsKey: "positions"
+        )
+        XCTAssertEqual(reader.position(for: "session-a"), position)
+    }
+
+    func testPersistedViewportLRUIsBounded() throws {
+        let suiteName = "SessionPresentationStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = SessionPresentationStore(
+            positionCapacity: 2,
+            positionDefaults: defaults,
+            positionDefaultsKey: "bounded"
+        )
+        for id in ["a", "b", "c"] {
+            store.store(.init(rowID: "message:\(id)", offset: 0, absoluteScrollY: 0, followsLatest: false), for: id)
+        }
+        store.persistPositionsNow()
+
+        let restored = SessionPresentationStore(
+            positionCapacity: 2,
+            positionDefaults: defaults,
+            positionDefaultsKey: "bounded"
+        )
+        XCTAssertNil(restored.position(for: "a"))
+        XCTAssertNotNil(restored.position(for: "b"))
+        XCTAssertNotNil(restored.position(for: "c"))
     }
 
     func testProjectionCacheUsesBoundedLRUEviction() {
