@@ -237,6 +237,7 @@ import {
   initialTimelineSnapshot,
   legacyTimelineSnapshotFrame,
   nextTimelineEvent,
+  resumedTimelineStreamState,
   supportsTimelineDelta
 } from "./utils/sessionTimelineDelta.mjs";
 import {
@@ -248,6 +249,7 @@ import { ReplayEventLog } from "./utils/replayEventLog.mjs";
 import { StateSyncService } from "./application/stateSyncService.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
 import {
+  DEFAULT_SESSION_HISTORY_WINDOW,
   MAX_SESSION_HISTORY_PAGE,
   normalizeSessionHistoryLimit,
   pageSessionItems,
@@ -2525,6 +2527,9 @@ function streamCanonicalSessionSnapshots(request, response, requestedSessionId, 
   let refreshScheduler = null;
   let publishGate = null;
   const usesTimelineDelta = supportsTimelineDelta(request.headers);
+  const usesTimelineResume = String(request.headers["x-corptie-timeline-protocol"] ?? "") === "2";
+  const resumeToken = String(request.headers["x-corptie-timeline-snapshot-token"] ?? "").slice(0, 256);
+  const requestedResumeRevision = Number(request.headers["x-corptie-timeline-revision"] ?? 0);
 
   const readAndPublish = async ({ fullConsistency = true } = {}) => {
     try {
@@ -2535,9 +2540,27 @@ function streamCanonicalSessionSnapshots(request, response, requestedSessionId, 
       const session = await getUnifiedSessionSnapshot(requestedSessionId);
       lastSession = session;
       if (usesTimelineDelta) {
+        const resumedState = !streamState && usesTimelineResume
+          ? resumedTimelineStreamState(session, {
+            snapshotToken: resumeToken,
+            revision: requestedResumeRevision
+          })
+          : null;
+        if (resumedState) {
+          streamState = resumedState;
+          response.write(`id: ${requestedResumeRevision}\nevent: ready\ndata: ${JSON.stringify({
+            protocolVersion: 2,
+            revision: requestedResumeRevision,
+            resumed: true
+          })}\n\n`);
+          return;
+        }
         const result = streamState
           ? nextTimelineEvent(streamState, session, { fullConsistency })
-          : initialTimelineSnapshot(session);
+          : initialTimelineSnapshot(
+            session,
+            Math.max(1, store.lastSessionEventSequence(eventSessionId))
+          );
         streamState = result.state;
         if (result.event) {
           response.write(`id: ${result.event.revision}\nevent: ${result.event.name}\ndata: ${JSON.stringify(result.event.data)}\n\n`);
@@ -4812,32 +4835,60 @@ async function readSessionHistory(sessionId, beforeId, limit) {
 
 async function readSessionTimelineWindow(sessionId, options) {
   const reference = requireSessionReference(sessionId);
-  const storedWindow = typeof store.getTimelineItemWindow === "function"
+  const provider = reference.metadata?.session?.external?.provider ?? "";
+  const storedWindow = options.anchorId && typeof store.getTimelineItemWindow === "function"
     ? store.getTimelineItemWindow(reference.sessionId, {
       ...options,
-      provider: reference.metadata?.session?.external?.provider ?? ""
+      provider
     })
-    : null;
+    : !options.anchorId && typeof store.getLatestTimelineItemWindow === "function"
+      ? store.getLatestTimelineItemWindow(reference.sessionId, {
+        limit: options.limit,
+        provider
+      })
+      : null;
   if (storedWindow) {
     return {
+      protocolVersion: 2,
+      revision: store.lastSessionEventSequence(reference.sessionId),
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId,
       ...storedWindow,
-      anchor: {
-        kind: options.anchorKind,
-        requestedId: options.anchorId,
-        resolvedId: options.anchorId,
-        status: "found"
-      }
+      anchor: options.anchorId
+        ? {
+          kind: options.anchorKind,
+          requestedId: options.anchorId,
+          resolvedId: options.anchorId,
+          status: "found"
+        }
+        : { kind: "latest", requestedId: null, resolvedId: storedWindow.items.at(-1)?.id ?? null, status: "latest" }
     };
   }
   const detail = await readSessionDetailWithStoredFallback(reference);
   const timelineItems = await logicalSessionTimelineItems(reference, detail);
   const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
+  const window = options.anchorId
+    ? windowSessionItemsAroundAnchor(allItems, options)
+    : (() => {
+      const latest = windowSessionItems(allItems, options.limit);
+      return {
+        ...latest,
+        hasEarlier: latest.hasMoreHistory,
+        hasLater: false,
+        anchor: {
+          kind: "latest",
+          requestedId: null,
+          resolvedId: latest.items.at(-1)?.id ?? null,
+          status: "latest"
+        }
+      };
+    })();
   return {
+    protocolVersion: 2,
+    revision: store.lastSessionEventSequence(reference.sessionId),
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
-    ...windowSessionItemsAroundAnchor(allItems, options)
+    ...window
   };
 }
 
@@ -7823,10 +7874,6 @@ function route(request, response) {
     const sessionId = decodeURIComponent(sessionTimelineWindowMatch[1]);
     const anchorKind = url.searchParams.get("anchorKind") === "turn" ? "turn" : "item";
     const anchorId = url.searchParams.get("anchor") || null;
-    if (!anchorId) {
-      sendJson(response, 400, { error: "Timeline anchor is required.", code: "INVALID_TIMELINE_ANCHOR" });
-      return;
-    }
     const before = normalizeSessionHistoryLimit(
       url.searchParams.get("before") ?? 40,
       MAX_SESSION_HISTORY_PAGE
@@ -7835,7 +7882,11 @@ function route(request, response) {
       url.searchParams.get("after") ?? 40,
       MAX_SESSION_HISTORY_PAGE
     );
-    readSessionTimelineWindow(sessionId, { anchorKind, anchorId, before, after })
+    const limit = normalizeSessionHistoryLimit(
+      url.searchParams.get("limit") ?? DEFAULT_SESSION_HISTORY_WINDOW,
+      DEFAULT_SESSION_HISTORY_WINDOW
+    );
+    readSessionTimelineWindow(sessionId, { anchorKind, anchorId, before, after, limit })
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;

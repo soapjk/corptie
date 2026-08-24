@@ -70,10 +70,15 @@ struct FloatingRootView: View {
                     DetailView(
                         sessionId: selectedSession.id,
                         presentationStore: presentationStore,
-                        composerDraftRepository: composerDraftRepository
+                        composerDraftRepository: composerDraftRepository,
+                        initialTimelinePosition: presentationStore.position(for: selectedSession.id),
+                        onTimelinePositionChange: { position in
+                            presentationStore.store(position, for: selectedSession.id)
+                        }
                     )
-                        .id(selectedSession.id)
-                        .transition(.opacity)
+                    .onAppear {
+                        presentationStore.hydratePosition(for: selectedSession.id)
+                    }
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         if backendClient.isOnline {
@@ -3366,6 +3371,7 @@ struct DetailView: View {
     @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
     @ObservedObject var presentationStore: SessionPresentationStore
+    @ObservedObject private var presentationState: SessionPresentationState
     @State private var expandedProcessTurnIds: Set<String> = []
     @State private var isFollowingLatest = true
     @State private var hasNewMessagesBelow = false
@@ -3399,6 +3405,8 @@ struct DetailView: View {
         self.backendClient = backendClient
         self.initialTimelinePosition = initialTimelinePosition
         self.onTimelinePositionChange = onTimelinePositionChange
+        let presentationState = presentationStore.state(for: sessionId)
+        _presentationState = ObservedObject(wrappedValue: presentationState)
         let timelineState = SessionTimelineRepository.shared.state(for: sessionId)
         if timelineState.detail == nil,
            backendClient.selectedSession?.id == sessionId,
@@ -3407,7 +3415,8 @@ struct DetailView: View {
             SessionTimelineRepository.shared.publish(selectedDetail, for: sessionId)
         }
         _timelineState = ObservedObject(wrappedValue: timelineState)
-        let initialCache = presentationStore.cache(for: sessionId)
+        let initialCache = presentationState.cache
+        let initialPosition = initialTimelinePosition ?? presentationState.position
         _visibleMessageLimit = State(
             initialValue: initialCache?.visibleMessageLimit
                 ?? ChatTimelineFeatureFlags.current.initialDisplayWeight
@@ -3422,8 +3431,8 @@ struct DetailView: View {
         _cachedDetailSourceSignature = State(initialValue: initialCache?.sourceSignature ?? "")
         _cachedSessionId = State(initialValue: initialCache?.sessionId ?? "")
         _requestedRestorationAnchorRowID = State(
-            initialValue: initialTimelinePosition?.followsLatest == false
-                ? initialTimelinePosition?.rowID
+            initialValue: initialPosition?.followsLatest == false
+                ? initialPosition?.rowID
                 : nil
         )
         _displaysLoadingDetail = State(
@@ -3434,7 +3443,11 @@ struct DetailView: View {
     }
 
     private var preheatedDisplayCache: DetailDisplayCache? {
-        presentationStore.cache(for: sessionId)
+        presentationState.cache
+    }
+
+    private var restorationTimelinePosition: AppKitChatTimelinePosition? {
+        initialTimelinePosition ?? presentationState.position
     }
 
     private var displayedDetail: CodexThreadDetail? {
@@ -3558,14 +3571,19 @@ struct DetailView: View {
             pendingProjectionSourceSignature = nil
             historyAnchorRestoreTask?.cancel()
             historyAnchorRestoreTask = nil
-            requestedRestorationAnchorRowID = initialTimelinePosition?.followsLatest == false
-                ? initialTimelinePosition?.rowID
+            requestedRestorationAnchorRowID = restorationTimelinePosition?.followsLatest == false
+                ? restorationTimelinePosition?.rowID
                 : nil
             isFollowingLatest = true
             hasNewMessagesBelow = false
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
             expandedProcessTurnIds.removeAll()
             restoreDisplayCacheForCurrentSession()
+        }
+        .onChange(of: restorationTimelinePosition) { _, position in
+            guard let position, !position.followsLatest else { return }
+            requestedRestorationAnchorRowID = position.rowID
+            restoreMissingHistoryAnchorIfNeeded()
         }
         .onDisappear {
             displayProjectionTask?.cancel()
@@ -3604,17 +3622,25 @@ struct DetailView: View {
     }
 
     private func appKitCachedDetailMessages() -> some View {
-        return appKitDetailMessages(displayEntries: cachedDisplayEntries)
+        appKitDetailMessages(displayEntries: currentSessionDisplayEntries)
+    }
+
+    private var currentSessionDisplayEntries: [ChatDisplayEntry] {
+        guard cachedSessionId == sessionId else {
+            return preheatedDisplayCache?.displayEntries ?? []
+        }
+        return cachedDisplayEntries
     }
 
     private func appKitDetailMessages(
         displayEntries: [ChatDisplayEntry]
     ) -> some View {
-        let rows = cachedAppKitRows.count == displayEntries.count
+        let rows = cachedSessionId == sessionId && cachedAppKitRows.count == displayEntries.count
             ? cachedAppKitRows
             : displayEntries.map { appKitRow($0) }
         return VStack(alignment: .leading, spacing: 6) {
             AppKitChatTimelineView(
+                sessionID: sessionId,
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
                 followsLatest: $isFollowingLatest,
@@ -3675,12 +3701,12 @@ struct DetailView: View {
     }
 
     private var effectiveInitialTimelinePosition: AppKitChatTimelinePosition? {
-        guard let initialTimelinePosition,
-              !initialTimelinePosition.followsLatest,
-              cachedDisplayEntries.contains(where: { $0.id == initialTimelinePosition.rowID }) else {
+        guard let restorationTimelinePosition,
+              !restorationTimelinePosition.followsLatest,
+              currentSessionDisplayEntries.contains(where: { $0.id == restorationTimelinePosition.rowID }) else {
             return nil
         }
-        return initialTimelinePosition
+        return restorationTimelinePosition
     }
 
     /// Only tail mutations represent content arriving below the reader. A
@@ -4368,7 +4394,7 @@ struct DetailView: View {
     }
 
     private func restoreDisplayCacheForCurrentSession() {
-        if let cache = presentationStore.cache(for: sessionId) {
+        if let cache = presentationState.cache {
             cachedSessionId = sessionId
             updateCachedSourceTail(from: cache.displayItems)
             cachedDisplayEntries = cache.displayEntries

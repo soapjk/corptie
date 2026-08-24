@@ -5788,6 +5788,43 @@ export class CorptieStore {
     };
   }
 
+  getLatestTimelineItemWindow(sessionId, { limit = 200, provider = "" } = {}) {
+    const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
+    const columns = `id, turn_id, turn_status, type, title, text, options_json,
+                     raw_metadata_json, status, created_at`;
+    const rows = this.selectAll(
+      `SELECT ${columns} FROM (
+         SELECT ${columns} FROM session_items
+         WHERE session_id = ?
+         ORDER BY created_at DESC, id DESC LIMIT ?
+       ) ORDER BY created_at ASC, id ASC`,
+      [sessionId, pageLimit]
+    );
+    if (rows.length === 0) return null;
+    const first = rows[0];
+    const hasEarlier = Boolean(this.selectOne(
+      `SELECT 1 FROM session_items WHERE session_id = ?
+       AND (created_at < ? OR (created_at = ? AND id < ?)) LIMIT 1`,
+      [sessionId, first.created_at, first.created_at, first.id]
+    ));
+    return {
+      items: rows.map((row) => normalizeStoredItem({
+        id: row.id,
+        turnId: row.turn_id,
+        turnStatus: row.turn_status,
+        type: row.type,
+        title: row.title,
+        text: normalizeStoredText(row.text, provider),
+        options: parseJson(row.options_json, null),
+        rawMetadataJSON: row.raw_metadata_json ?? null,
+        status: row.status,
+        createdAt: row.created_at
+      }, provider)),
+      hasEarlier,
+      hasLater: false
+    };
+  }
+
   listStoredTimelineEvents(sessionId, { beforeSequence = null, limit = 400 } = {}) {
     const pageLimit = Math.max(1, Math.min(500, Number(limit) || 400));
     const before = Number(beforeSequence);

@@ -891,44 +891,60 @@ final class AppKitChatTimelineControlTests: XCTestCase {
     }
 
     func testWarmSessionHostSwitchStaysWithinOneFrame() async {
-        let rows = (0..<120).map { index in
-            row(id: "switch-row-\(index)", text: String(repeating: "Message \(index) ", count: 8))
+        let rowsBySession = (0..<3).map { sessionIndex in
+            (0..<40).map { index in
+                row(
+                    id: "switch-\(sessionIndex)-row-\(index)",
+                    text: String(repeating: "Message \(sessionIndex)-\(index) ", count: 8)
+                )
+            }
         }
         var coldSamples: [Double] = []
         for _ in 0..<8 {
             let start = DispatchTime.now().uptimeNanoseconds
             let harness = makeHarness(followsLatest: false, height: 360)
             harness.coordinator.prepareInitialPosition(.init(
-                rowID: "switch-row-72",
+                rowID: "switch-0-row-24",
                 offset: 4,
                 absoluteScrollY: 0,
                 followsLatest: false
             ))
-            harness.coordinator.apply(rows: rows)
+            harness.coordinator.apply(rows: rowsBySession[0])
             harness.window.layoutIfNeeded()
             harness.scrollView.layoutSubtreeIfNeeded()
             coldSamples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
         }
 
-        let warmHosts = (0..<3).map { _ in
-            let harness = makeHarness(followsLatest: false, height: 360)
-            harness.coordinator.prepareInitialPosition(.init(
-                rowID: "switch-row-72",
-                offset: 4,
-                absoluteScrollY: 0,
-                followsLatest: false
-            ))
-            harness.coordinator.apply(rows: rows)
-            harness.window.layoutIfNeeded()
-            harness.scrollView.layoutSubtreeIfNeeded()
-            return harness
+        let host = makeHarness(followsLatest: false, height: 360)
+        let stableScrollView = host.scrollView
+        for sessionIndex in rowsBySession.indices {
+            host.coordinator.switchSessionIfNeeded(
+                to: "session-\(sessionIndex)",
+                initialPosition: .init(
+                    rowID: "switch-\(sessionIndex)-row-24",
+                    offset: 4,
+                    absoluteScrollY: 0,
+                    followsLatest: false
+                )
+            )
+            host.coordinator.apply(rows: rowsBySession[sessionIndex])
+            host.window.layoutIfNeeded()
+            host.scrollView.layoutSubtreeIfNeeded()
         }
-        let store = SessionPresentationStore(hostCapacity: 3, positionDefaults: nil)
         var warmSamples: [Double] = []
         for index in 0..<60 {
+            let sessionIndex = index % rowsBySession.count
             let start = DispatchTime.now().uptimeNanoseconds
-            store.activateHost(for: "session-\(index % 3)")
-            let host = warmHosts[index % warmHosts.count]
+            host.coordinator.switchSessionIfNeeded(
+                to: "session-\(sessionIndex)",
+                initialPosition: .init(
+                    rowID: "switch-\(sessionIndex)-row-24",
+                    offset: 4,
+                    absoluteScrollY: 0,
+                    followsLatest: false
+                )
+            )
+            host.coordinator.apply(rows: rowsBySession[sessionIndex])
             host.window.layoutIfNeeded()
             host.scrollView.layoutSubtreeIfNeeded()
             warmSamples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
@@ -944,6 +960,41 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertLessThan(warmP95, 16.67)
         XCTAssertEqual(warmHitches, 0)
         XCTAssertLessThan(warmP50, coldP50)
+        XCTAssertTrue(host.scrollView === stableScrollView)
+    }
+
+    func testSessionRebindPublishesOldViewportBeforeInstallingNewCallback() async throws {
+        var oldPosition: AppKitChatTimelinePosition?
+        var newPosition: AppKitChatTimelinePosition?
+        let harness = makeHarness(
+            followsLatest: false,
+            height: 180,
+            onPositionChange: { oldPosition = $0 }
+        )
+        let oldRows = (0..<30).map { row(id: "old-\($0)", text: "Old \($0)") }
+        let newRows = (0..<30).map { row(id: "new-\($0)", text: "New \($0)") }
+        harness.coordinator.apply(rows: oldRows)
+        harness.tableView.scrollRowToVisible(12)
+        await settleMainQueue()
+
+        harness.coordinator.switchSessionIfNeeded(
+            to: "new-session",
+            initialPosition: .init(
+                rowID: "new-8",
+                offset: 5,
+                absoluteScrollY: 0,
+                followsLatest: false
+            )
+        )
+        harness.coordinator.onPositionChange = { newPosition = $0 }
+        harness.coordinator.apply(rows: newRows)
+        await settleMainQueue()
+
+        XCTAssertTrue(try XCTUnwrap(oldPosition).rowID.hasPrefix("old-"))
+        XCTAssertTrue(newPosition.map { $0.rowID.hasPrefix("new-") } ?? true)
+        let anchor = visibleAnchor(in: harness.tableView, rows: newRows)
+        XCTAssertEqual(anchor.id, "new-8")
+        XCTAssertEqual(anchor.offset, 5, accuracy: 4)
     }
 
     func testSemanticPositionRestorationSucceedsAcrossOneHundredSwitches() async {

@@ -144,6 +144,7 @@ final class BackendClient: ObservableObject {
     static let shared = BackendClient()
 
     private let appState = AppStateStore.shared
+    private let timelinePersistenceRepository = SessionTimelinePositionRepository.shared
     var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
     let sessionListStore = SessionListStore()
 
@@ -4000,6 +4001,12 @@ final class BackendClient: ObservableObject {
             let decoded = try await PerfStopwatch.measure("fetchDetail.全量解码") {
                 try await decodeDetail(data, for: session, threadId: threadId)
             }
+            let snapshotHeader = try? await ChatTimelineDeltaDecoder.snapshotHeader(from: data)
+            try? await timelinePersistenceRepository.storeTimelineWindow(
+                data,
+                sessionID: session.id,
+                revision: Int64(snapshotHeader?.revision ?? 0)
+            )
             PerfStopwatch.event("fetchDetail.items数量", value: decoded.items.count)
             let detail = decoded
             let mergedDetail = applyingHandledChoices(to: stableDetailReplacingEmptyItems(detailByMergingPendingMessages(detail)))
@@ -4549,6 +4556,35 @@ final class BackendClient: ObservableObject {
             guard let self else {
                 return
             }
+            let persistedWindow = try? await self.timelinePersistenceRepository
+                .loadTimelineWindow(sessionID: session.id)
+            let resumeHeader: ChatTimelineSnapshotHeader? = if let persistedWindow {
+                try? await ChatTimelineDeltaDecoder.snapshotHeader(from: persistedWindow.payload)
+            } else {
+                nil
+            }
+            if let persistedWindow,
+               let resumeHeader,
+               resumeHeader.protocolVersion == 1,
+               let revision = resumeHeader.revision,
+               let canonicalDetail = try? await self.decodeDetail(
+                   persistedWindow.payload,
+                   for: session,
+                   threadId: threadId
+               ),
+               self.detailStreamGeneration == generation,
+               self.selectedSession?.id == session.id {
+                // This exact canonical snapshot is also the resume token's
+                // base. Installing both together lets the first delta merge
+                // without a redundant recovery snapshot.
+                self.detailStreamCanonicalDetail = canonicalDetail
+                self.detailTimelineRevision = revision
+                if self.selectedDetail == nil {
+                    self.publishSelectedDetailIfSafe(self.presentationDetail(from: canonicalDetail))
+                    self.isLoadingDetail = false
+                }
+                PerfStopwatch.event("会话切换.SQLite窗口命中", value: persistedWindow.payload.count)
+            }
             var failureCount = 0
             while !Task.isCancelled {
                 guard self.detailStreamGeneration == generation,
@@ -4556,7 +4592,13 @@ final class BackendClient: ObservableObject {
                 var request = URLRequest(url: self.baseURL.appending(path: "sessions/\(session.id)/events"))
                 request.setValue("text/event-stream", forHTTPHeaderField: "accept")
                 request.setValue("identity", forHTTPHeaderField: "accept-encoding")
-                request.setValue("1", forHTTPHeaderField: "x-corptie-timeline-protocol")
+                request.setValue("2", forHTTPHeaderField: "x-corptie-timeline-protocol")
+                if let snapshotToken = resumeHeader?.snapshotToken,
+                   !snapshotToken.isEmpty,
+                   let revision = resumeHeader?.revision {
+                    request.setValue(snapshotToken, forHTTPHeaderField: "x-corptie-timeline-snapshot-token")
+                    request.setValue(String(revision), forHTTPHeaderField: "x-corptie-timeline-revision")
+                }
                 request.cachePolicy = .reloadIgnoringLocalCacheData
                 self.detailStreamLastDiagnostic = "generation=\(generation) requesting"
 
@@ -4647,6 +4689,15 @@ final class BackendClient: ObservableObject {
             )
             return
         }
+        if eventName == "ready",
+           let ready = try? JSONDecoder().decode(ChatTimelineReadyEnvelope.self, from: payload),
+           ready.protocolVersion == 2,
+           ready.resumed,
+           ready.revision == detailTimelineRevision,
+           detailStreamCanonicalDetail != nil {
+            markDetailStreamHealthy(for: expectedSession)
+            return
+        }
         guard let kind = ChatTimelineDeltaKind(rawValue: eventName) else { return }
         await handleDetailStreamDelta(
             kind,
@@ -4680,6 +4731,11 @@ final class BackendClient: ObservableObject {
                   selectedSession?.id == expectedSession.id else { return }
             detailStreamCanonicalDetail = canonicalDetail
             detailTimelineRevision = decodedHeader.protocolVersion == 1 ? decodedHeader.revision : nil
+            try? await timelinePersistenceRepository.storeTimelineWindow(
+                payload,
+                sessionID: expectedSession.id,
+                revision: Int64(decodedHeader.revision ?? 0)
+            )
             let mergedDetail = presentationDetail(from: canonicalDetail)
             markDetailStreamHealthy(for: expectedSession)
             publishSelectedDetailIfSafe(mergedDetail)

@@ -32,7 +32,8 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("WebKit"),
-                .linkedFramework("UserNotifications")
+                .linkedFramework("UserNotifications"),
+                .linkedLibrary("sqlite3")
             ]
         ),
         .testTarget(

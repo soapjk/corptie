@@ -3,6 +3,13 @@ import Foundation
 struct ChatTimelineSnapshotHeader: Decodable, Sendable {
     let protocolVersion: Int?
     let revision: Int?
+    let snapshotToken: String?
+}
+
+struct ChatTimelineReadyEnvelope: Decodable, Sendable {
+    let protocolVersion: Int
+    let revision: Int
+    let resumed: Bool
 }
 
 struct ChatTimelineDeltaEnvelope: Decodable, Sendable {

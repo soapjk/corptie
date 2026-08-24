@@ -977,6 +977,8 @@ struct SessionTimelineAnchorResolution: Decodable, Sendable {
 }
 
 struct SessionTimelineWindowResponse: Decodable, Sendable {
+    let protocolVersion: Int?
+    let revision: Int?
     let sessionId: String?
     let logicalSessionId: String?
     let items: [CodexThreadItem]
