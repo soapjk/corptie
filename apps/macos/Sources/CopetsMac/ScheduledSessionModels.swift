@@ -488,6 +488,38 @@ enum ScheduledSessionDateFormatting {
     }
 }
 
+enum ScheduledSessionManagementTimeFormatting {
+    static func string(
+        from value: String?,
+        timeZone: TimeZone = .autoupdatingCurrent,
+        locale: Locale = .current
+    ) -> String? {
+        guard let date = ScheduledSessionDateFormatting.date(from: value) else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
+
+    static func timeZoneLabel(
+        _ timeZone: TimeZone = .autoupdatingCurrent,
+        at date: Date = Date()
+    ) -> String {
+        let offset = timeZone.secondsFromGMT(for: date)
+        let sign = offset >= 0 ? "+" : "-"
+        let absolute = abs(offset)
+        return String(
+            format: "%@ (UTC%@%02d:%02d)",
+            timeZone.identifier,
+            sign,
+            absolute / 3_600,
+            (absolute % 3_600) / 60
+        )
+    }
+}
+
 enum ScheduledSessionEventMapping {
     static let authoritativeEventNames: Set<String> = [
         "ScheduledSessionTaskCreated",

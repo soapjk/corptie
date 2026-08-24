@@ -113,6 +113,22 @@ struct ScheduledSessionModelTests {
         #expect(draft.summaryText.contains("过期"))
     }
 
+    @Test func managementTimesUseTheSystemZoneInsteadOfTheTaskZone() throws {
+        let shanghai = try #require(TimeZone(identifier: "Asia/Shanghai"))
+        let instant = "2026-08-23T04:10:39.000Z"
+        let displayed = try #require(ScheduledSessionManagementTimeFormatting.string(
+            from: instant,
+            timeZone: shanghai,
+            locale: Locale(identifier: "en_US_POSIX")
+        ))
+
+        #expect(displayed.contains("12:10:39"))
+        #expect(ScheduledSessionManagementTimeFormatting.timeZoneLabel(
+            shanghai,
+            at: try #require(ScheduledSessionDateFormatting.date(from: instant))
+        ) == "Asia/Shanghai (UTC+08:00)")
+    }
+
     @Test func taskLifecycleExposesTheFivePersistedStates() {
         #expect([ScheduledSessionTaskStatus.active, .cancelled, .completed, .expired, .error].map(\.rawValue)
             == ["active", "cancelled", "completed", "expired", "error"])

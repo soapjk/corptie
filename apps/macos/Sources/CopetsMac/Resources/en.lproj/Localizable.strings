@@ -670,6 +670,7 @@
 "预计下次执行时间" = "Estimated Next Run";
 "过期时间" = "Expires";
 "Times use time zone: %@" = "Times use time zone: %@";
+"Times use system time zone: %@" = "Times use system time zone: %@";
 "等待确认" = "Awaiting Confirmation";
 "等待处理" = "Awaiting Processing";
 "未知 Agent" = "Unknown Agent";
