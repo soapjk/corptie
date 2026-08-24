@@ -5628,6 +5628,15 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  hasSessionEvent(eventId) {
+    const normalizedEventId = String(eventId || "").trim();
+    if (!normalizedEventId) return false;
+    return Boolean(this.selectOne(
+      "SELECT 1 FROM session_events WHERE event_id = ?",
+      [normalizedEventId]
+    ));
+  }
+
   appendSessionEvent(event) {
     const sessionId = String(event.sessionId || "").trim();
     if (!sessionId) {
