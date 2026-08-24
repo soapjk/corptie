@@ -7,6 +7,7 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
   rejectUnknown(input, new Set([
     "taskId", "automationId", "name", "logicalSessionId", "message", "scheduleType", "trigger",
     "runAt", "delaySeconds", "intervalSeconds", "timezone", "missedPolicy", "misfirePolicy",
+    "expiresAt", "expiresAfterSeconds",
     "condition", "conditions", "process", "actions", "maxRetries", "maxConcurrentRuns",
     "maxCatchUpRuns", "timeoutSeconds", "backpressureLimit", "risk"
   ]));
@@ -20,7 +21,8 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
   const actions = normalizeActions(input.actions, input.message);
   const messageAction = actions.find((action) => action.type === "queueSessionMessage");
   const message = messageAction?.message ?? normalizeMessage(input.message ?? { text: "Automation triggered" });
-  const timezone = normalizeTimezone(input.timezone ?? "UTC");
+  const timezone = normalizeTimezone(input.timezone ?? systemTimezone());
+  const expiresAt = normalizeExpiration(input, now);
   const misfirePolicy = input.misfirePolicy ?? input.missedPolicy ?? "fireOnce";
   if (!MISFIRE_POLICIES.has(misfirePolicy)) invalid("misfirePolicy", "must be skip, fireOnce, or catchUp");
   const canonicalMisfirePolicy = misfirePolicy === "coalesce_once" ? "fireOnce" : misfirePolicy;
@@ -60,6 +62,9 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
     nextRunAt = input.runAt == null ? now.toISOString() : timestamp(input.runAt, "runAt");
     runAt = nextRunAt;
   }
+  if (nextRunAt != null && new Date(nextRunAt).getTime() >= new Date(expiresAt).getTime()) {
+    invalid("expiresAt", "must be later than the first execution time");
+  }
 
   return Object.freeze({
     logicalSessionId,
@@ -79,6 +84,7 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
     risk: normalizeRisk(input.risk, actions, conditionSpec),
     runAt,
     nextRunAt,
+    expiresAt,
     intervalSeconds,
     timezone,
     missedPolicy,
@@ -95,6 +101,7 @@ export function validateScheduledSessionTaskInput(input = {}, options = {}) {
 
 export function validateScheduledSessionTaskPatch(input = {}, task, options = {}) {
   const mutable = ["name", "message", "runAt", "delaySeconds", "intervalSeconds", "timezone", "missedPolicy",
+    "expiresAt", "expiresAfterSeconds",
     "misfirePolicy", "condition", "conditions", "process", "actions", "maxRetries", "maxConcurrentRuns",
     "maxCatchUpRuns", "timeoutSeconds", "backpressureLimit", "risk"];
   const unknown = Object.keys(input).filter((key) => !mutable.includes(key) && key !== "resourceVersion");
@@ -105,6 +112,10 @@ export function validateScheduledSessionTaskPatch(input = {}, task, options = {}
     name: Object.hasOwn(input, "name") ? input.name : task.name,
     message: Object.hasOwn(input, "message") ? input.message : task.message,
     runAt: Object.hasOwn(input, "runAt") ? input.runAt : task.runAt,
+    expiresAt: Object.hasOwn(input, "expiresAfterSeconds")
+      ? undefined
+      : (Object.hasOwn(input, "expiresAt") ? input.expiresAt : task.expiresAt),
+    expiresAfterSeconds: Object.hasOwn(input, "expiresAfterSeconds") ? input.expiresAfterSeconds : undefined,
     intervalSeconds: Object.hasOwn(input, "intervalSeconds") ? input.intervalSeconds : task.intervalSeconds,
     timezone: Object.hasOwn(input, "timezone") ? input.timezone : task.timezone,
     missedPolicy: Object.hasOwn(input, "missedPolicy") ? input.missedPolicy : task.missedPolicy,
@@ -283,6 +294,23 @@ function normalizeTimezone(value) {
     invalid("timezone", "is not a valid IANA time zone");
   }
   return timezone;
+}
+
+function systemTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function normalizeExpiration(input, now) {
+  const hasTimestamp = input.expiresAt != null;
+  const hasDuration = input.expiresAfterSeconds != null;
+  if (hasTimestamp === hasDuration) {
+    invalid("expiresAt", "requires exactly one of expiresAt or expiresAfterSeconds");
+  }
+  const expiresAt = hasTimestamp
+    ? timestamp(input.expiresAt, "expiresAt")
+    : new Date(now.getTime() + integer(input.expiresAfterSeconds, "expiresAfterSeconds", 1, 315_360_000) * 1000).toISOString();
+  if (new Date(expiresAt).getTime() <= now.getTime()) invalid("expiresAt", "must be later than the creation time");
+  return expiresAt;
 }
 
 function timestamp(value, field) {

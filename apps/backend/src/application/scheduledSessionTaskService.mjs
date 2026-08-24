@@ -9,7 +9,7 @@ import {
 } from "../domain/scheduledSessionTask.mjs";
 
 const execFileAsync = promisify(execFile);
-const TERMINAL_TASK_STATUSES = new Set(["completed", "cancelled"]);
+const TERMINAL_TASK_STATUSES = new Set(["cancelled", "completed", "expired"]);
 
 export class ScheduledSessionTaskService {
   constructor(options = {}) {
@@ -56,7 +56,8 @@ export class ScheduledSessionTaskService {
         ? this.resolveActorLogicalSessionId(actor)
         : null);
     const resolvedInput = logicalSessionId ? { ...taskInput, logicalSessionId } : taskInput;
-    const normalized = validateScheduledSessionTaskInput(resolvedInput, { now: this.now() });
+    const now = this.now();
+    const normalized = validateScheduledSessionTaskInput(resolvedInput, { now });
     const scope = this.#authorize(actor, normalized.logicalSessionId, "create");
     validateConditionResources(normalized.conditionSpec);
     const task = this.store.createScheduledSessionTask({
@@ -65,19 +66,22 @@ export class ScheduledSessionTaskService {
       creatorType: actor.type,
       creatorId: actor.id,
       objectiveId: scope.objectiveId ?? null,
-      environment: this.environment
+      environment: this.environment,
+      createdAt: now.toISOString()
     });
     this.#record("ScheduledSessionTaskCreated", task, null, actor, { task });
     return task;
   }
 
   get(taskId, actor) {
+    this.#expireDueTasks(this.now());
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "read", task);
     return { ...task, runs: this.store.listScheduledSessionRuns(taskId), events: this.store.listScheduledSessionEvents(taskId) };
   }
 
   list(options = {}, actor) {
+    this.#expireDueTasks(this.now());
     const tasks = this.store.listScheduledSessionTasks({
       environment: this.environment,
       logicalSessionId: options.logicalSessionId,
@@ -94,6 +98,7 @@ export class ScheduledSessionTaskService {
   }
 
   update(taskId, input, actor) {
+    this.#expireDueTasks(this.now());
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "update", task);
     if (TERMINAL_TASK_STATUSES.has(task.status)) operationError("TASK_NOT_MUTABLE", `Task ${taskId} is ${task.status}.`);
@@ -109,6 +114,7 @@ export class ScheduledSessionTaskService {
       risk: normalized.risk,
       runAt: normalized.runAt,
       nextRunAt: normalized.nextRunAt,
+      expiresAt: normalized.expiresAt,
       intervalSeconds: normalized.intervalSeconds,
       timezone: normalized.timezone,
       missedPolicy: normalized.missedPolicy,
@@ -120,6 +126,7 @@ export class ScheduledSessionTaskService {
       maxConcurrentRuns: normalized.maxConcurrentRuns,
       timeoutSeconds: normalized.timeoutSeconds,
       backpressureLimit: normalized.backpressureLimit,
+      status: task.status === "error" ? "active" : task.status,
       retryCount: 0,
       lastErrorCode: null,
       lastErrorMessage: null,
@@ -134,19 +141,14 @@ export class ScheduledSessionTaskService {
   pause(taskId, actor) {
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "pause", task);
-    if (TERMINAL_TASK_STATUSES.has(task.status)) operationError("TASK_NOT_MUTABLE", `Task ${taskId} is ${task.status}.`);
-    if (task.status === "paused") return task;
-    const updated = this.store.updateScheduledSessionTask(taskId, {
-      status: "paused", pausedAt: this.now().toISOString(), leaseOwner: null, leaseExpiresAt: null
-    });
-    this.#record("ScheduledSessionTaskPaused", updated, null, actor, {});
-    return updated;
+    operationError("TASK_PAUSE_UNSUPPORTED", "Automations no longer have a paused state; cancel the Automation instead.");
   }
 
   resume(taskId, actor) {
+    this.#expireDueTasks(this.now());
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "resume", task);
-    if (!["paused", "failed"].includes(task.status)) operationError("TASK_NOT_RESUMABLE", `Task ${taskId} is ${task.status}.`);
+    if (task.status !== "error") operationError("TASK_NOT_RESUMABLE", `Task ${taskId} is ${task.status}.`);
     const now = this.now();
     const nextRunAt = task.nextRunAt ?? task.pendingScheduledFor ?? (task.scheduleType === "interval"
       ? new Date(now.getTime() + task.intervalSeconds * 1000).toISOString()
@@ -161,9 +163,13 @@ export class ScheduledSessionTaskService {
   }
 
   cancel(taskId, actor) {
+    this.#expireDueTasks(this.now());
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "cancel", task);
     if (task.status === "cancelled") return task;
+    if (TERMINAL_TASK_STATUSES.has(task.status)) {
+      operationError("TASK_NOT_MUTABLE", `Task ${taskId} is ${task.status}.`);
+    }
     const timestamp = this.now().toISOString();
     const updated = this.store.updateScheduledSessionTask(taskId, {
       status: "cancelled", cancelledAt: timestamp, nextRunAt: null,
@@ -174,9 +180,10 @@ export class ScheduledSessionTaskService {
   }
 
   async runNow(taskId, actor) {
+    this.#expireDueTasks(this.now());
     const task = this.#task(taskId);
     this.#authorize(actor, task.logicalSessionId, "run", task);
-    if (task.status === "cancelled") operationError("TASK_CANCELLED", `Task ${taskId} is cancelled.`);
+    if (task.status !== "active") operationError("TASK_NOT_ACTIVE", `Task ${taskId} is ${task.status}.`);
     const timestamp = this.now().toISOString();
     const nonce = randomUUID();
     const run = this.store.createScheduledSessionRun({
@@ -200,6 +207,7 @@ export class ScheduledSessionTaskService {
     this.ticking = true;
     try {
       const now = this.now();
+      this.#expireDueTasks(now);
       this.#recoverExpiredRuns(now);
       const tasks = this.store.claimDueScheduledSessionTasks({
         environment: this.environment,
@@ -445,12 +453,13 @@ export class ScheduledSessionTaskService {
           routingVersion: route.binding.routingVersion
         }))
       });
-      const currentTask = this.store.getScheduledSessionTask(task.taskId);
-      if (currentTask?.status === "cancelled") {
+      let currentTask = this.store.getScheduledSessionTask(task.taskId);
+      if (currentTask?.status !== "active" || new Date(currentTask.expiresAt).getTime() <= now.getTime()) {
+        if (currentTask?.status === "active") currentTask = this.#expireTask(currentTask, now);
         const cancelledRun = this.store.updateScheduledSessionRun(run.runId, {
           status: "cancelled",
-          errorCode: "TASK_CANCELLED",
-          errorMessage: "The task was cancelled before queue delivery.",
+          errorCode: currentTask?.status === "cancelled" ? "TASK_CANCELLED" : "TASK_EXPIRED",
+          errorMessage: "The task became inactive before queue delivery.",
           completedAt: now.toISOString()
         });
         this.#record("ScheduledSessionRunCancelled", currentTask, cancelledRun, {
@@ -554,9 +563,10 @@ export class ScheduledSessionTaskService {
 
   #successTaskPatch(task, run, now) {
     if (task.scheduleType === "interval") {
+      const nextRunAt = nextIntervalRun(run.scheduledFor, task.intervalSeconds, now);
       return {
         status: "active",
-        nextRunAt: nextIntervalRun(run.scheduledFor, task.intervalSeconds, now),
+        nextRunAt: this.#beforeExpiration(nextRunAt, task.expiresAt),
         lastRunId: run.runId,
         lastRunStatus: run.status,
         lastRunAt: now.toISOString(),
@@ -578,8 +588,10 @@ export class ScheduledSessionTaskService {
 
   #advanceWithoutDispatch(task, now, reason) {
     const patch = task.scheduleType === "interval"
-      ? { status: "active", nextRunAt: nextIntervalRun(task.nextRunAt, task.intervalSeconds, now) }
-      : { status: "completed", nextRunAt: null, completedAt: now.toISOString() };
+      ? { status: "active", nextRunAt: this.#beforeExpiration(
+        nextIntervalRun(task.nextRunAt, task.intervalSeconds, now), task.expiresAt
+      ) }
+      : { status: "active", nextRunAt: null };
     const updated = this.store.updateScheduledSessionTask(task.taskId, {
       ...patch,
       leaseOwner: null,
@@ -619,7 +631,9 @@ export class ScheduledSessionTaskService {
       });
       lastRun = await this.#dispatch(task, run, { preserveSchedule: true });
     }
-    const nextRunAt = nextIntervalRun(slots.at(-1) ?? firstScheduledFor, task.intervalSeconds, now);
+    const nextRunAt = this.#beforeExpiration(
+      nextIntervalRun(slots.at(-1) ?? firstScheduledFor, task.intervalSeconds, now), task.expiresAt
+    );
     this.store.updateScheduledSessionTask(task.taskId, {
       status: "active",
       nextRunAt,
@@ -652,7 +666,7 @@ export class ScheduledSessionTaskService {
       "AUTHORIZATION_REVOKED", "ENVIRONMENT_MISMATCH", "PROCESS_IDENTITY_MISMATCH"
     ].includes(code);
     const exhausted = retryCount > task.maxRetries;
-    const status = permanent || exhausted ? "failed" : "active";
+    const status = permanent || exhausted ? "error" : "active";
     const delayMs = Math.min(60_000, 1_000 * (2 ** Math.min(retryCount - 1, 6)));
     const scheduledFor = task.pendingScheduledFor ?? task.nextRunAt ?? now.toISOString();
     let failedRun = run;
@@ -671,22 +685,22 @@ export class ScheduledSessionTaskService {
     }
     if (failedRun) {
       failedRun = this.store.updateScheduledSessionRun(failedRun.runId, {
-        status: status === "failed" ? "failed" : "retry_wait",
+        status: status === "error" ? "failed" : "retry_wait",
         attemptCount: retryCount,
         errorCode: code,
         errorMessage: message,
-        completedAt: status === "failed" ? now.toISOString() : null
+        completedAt: status === "error" ? now.toISOString() : null
       });
     }
     const updated = this.store.updateScheduledSessionTask(task.taskId, {
       status,
       nextRunAt: status === "active" && !options.preserveSchedule
-        ? new Date(now.getTime() + delayMs).toISOString()
+        ? this.#beforeExpiration(new Date(now.getTime() + delayMs).toISOString(), task.expiresAt)
         : task.nextRunAt,
       pendingScheduledFor: status === "active" && !options.preserveSchedule ? scheduledFor : task.pendingScheduledFor,
       retryCount,
       lastRunId: failedRun?.runId ?? task.lastRunId,
-      lastRunStatus: status === "failed" ? "failed" : "retry_wait",
+      lastRunStatus: status === "error" ? "failed" : "retry_wait",
       lastRunAt: now.toISOString(),
       lastErrorCode: code,
       lastErrorMessage: message,
@@ -701,6 +715,31 @@ export class ScheduledSessionTaskService {
     });
     if (options.preserveSchedule) throw error;
     return failedRun;
+  }
+
+  #expireDueTasks(now) {
+    for (const task of this.store.listExpiredActiveScheduledSessionTasks(this.environment, now.toISOString())) {
+      this.#expireTask(task, now);
+    }
+  }
+
+  #beforeExpiration(candidate, expiresAt) {
+    return new Date(candidate).getTime() < new Date(expiresAt).getTime() ? candidate : null;
+  }
+
+  #expireTask(task, now) {
+    const updated = this.store.updateScheduledSessionTask(task.taskId, {
+      status: "expired",
+      nextRunAt: null,
+      pendingScheduledFor: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      completedAt: now.toISOString()
+    });
+    this.#record("ScheduledSessionTaskExpired", updated, null, { type: "system", id: this.leaseOwner }, {
+      expiresAt: updated.expiresAt
+    });
+    return updated;
   }
 
   #task(taskId) {

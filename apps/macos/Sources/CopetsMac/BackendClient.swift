@@ -3888,6 +3888,7 @@ final class BackendClient: ObservableObject {
             return false
         }
         var body = draft.requestBody()
+        body.removeValue(forKey: "scheduleType")
         body["resourceVersion"] = task.resourceVersion
         return await performScheduledTaskMutation(
             session: session,

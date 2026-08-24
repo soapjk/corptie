@@ -29,6 +29,7 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
     "at", "after", "interval", "processExit", "condition", "once"
   ]);
   assert.equal(definition.inputSchema.additionalProperties, false);
+  assert.equal(definition.inputSchema.allOf[0].then.oneOf.length, 2);
   assert.equal(Object.hasOwn(definition.inputSchema.properties, "actor_id"), false);
 
   await catalog.execute({
@@ -40,7 +41,8 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
       logical_session_id: "logical:target",
       message: "wake",
       schedule_type: "once",
-      run_at: "2026-08-22T12:00:00Z"
+      run_at: "2026-08-22T12:00:00Z",
+      expires_at: "2026-08-23T12:00:00Z"
     }
   });
   assert.deepEqual(calls[0].actor, { type: "agent", id: "agent:runtime" });
@@ -54,6 +56,7 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
       logical_session_id: "logical:target",
       message: "wake when ready",
       schedule_type: "condition",
+      expires_after_seconds: 3600,
       condition: {
         script: "test -f ready.flag",
         check_interval_seconds: 7,
@@ -68,6 +71,12 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
     timeoutSeconds: 9,
     workingDirectory: "/tmp"
   });
+  await assert.rejects(() => catalog.execute({
+    actorId: "agent:runtime",
+    metadata: { sessionId: "session:runtime" },
+    tool: definition.name,
+    arguments: { action: "create", schedule_type: "after", delay_seconds: 10, message: "missing expiration" }
+  }), (error) => error.code === "INVALID_INPUT" && /requires exactly one/.test(error.message));
   await assert.rejects(() => catalog.execute({
     actorId: "agent:forged",
     metadata: { sessionId: "session:runtime" },

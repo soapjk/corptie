@@ -10,6 +10,7 @@ enum ScheduledSessionAccessibilityID {
     static let editorRunAt = "scheduled-session.editor.run-at"
     static let editorInterval = "scheduled-session.editor.interval"
     static let editorTimezone = "scheduled-session.editor.timezone"
+    static let editorExpiresAt = "scheduled-session.editor.expires-at"
     static let editorMissedPolicy = "scheduled-session.editor.missed-policy"
     static let editorSummary = "scheduled-session.editor.summary"
     static let editorSave = "scheduled-session.editor.save"
@@ -188,6 +189,14 @@ struct ScheduledTaskEditorSheet: View {
                 }
             }
             .accessibilityIdentifier(ScheduledSessionAccessibilityID.editorTimezone)
+
+            DatePicker(
+                L10n("过期时间"),
+                selection: $draft.expiresAt,
+                displayedComponents: [.date, .hourAndMinute]
+            )
+            .environment(\.timeZone, TimeZone(identifier: draft.timezone) ?? .current)
+            .accessibilityIdentifier(ScheduledSessionAccessibilityID.editorExpiresAt)
 
             Picker(L10n("错过时间策略"), selection: $draft.missedPolicy) {
                 Text(L10n("恢复后补执行一次")).tag(ScheduledSessionMissedPolicy.coalesceOnce)
@@ -376,9 +385,9 @@ struct ScheduledSessionTaskCard: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 12)
-                Label(task.presentationStatus.label, systemImage: task.presentationStatus.symbolName)
+                Text(task.status.lifecycleLabel)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(task.presentationStatus.color)
+                    .foregroundStyle(task.status.lifecycleColor)
             }
 
             if let error = task.lastErrorMessage {
@@ -416,8 +425,8 @@ struct ScheduledSessionTaskCard: View {
                         .disabled(task.operationsDisabledReason != nil)
                         .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardPauseResume)
                 } else if task.status.permitsResume {
-                    Button(task.status == .failed ? L10n("重试") : L10n("恢复")) {
-                        onAction(task.status == .failed ? .retry : .resume, task)
+                    Button(L10n("重试")) {
+                        onAction(.retry, task)
                     }
                     .disabled(task.operationsDisabledReason != nil)
                     .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardPauseResume)
@@ -503,7 +512,8 @@ extension ScheduledSessionTaskDraft {
                 ?? Date().addingTimeInterval(300),
             intervalSeconds: task.intervalSeconds ?? 3600,
             timezone: task.timezone,
-            missedPolicy: task.missedPolicy
+            missedPolicy: task.missedPolicy,
+            expiresAt: ScheduledSessionDateFormatting.date(from: task.expiresAt) ?? .distantFuture
         )
     }
 
@@ -512,10 +522,10 @@ extension ScheduledSessionTaskDraft {
         let policy = missedPolicy == .coalesceOnce ? L10n("错过后补执行一次") : L10n("错过后跳过")
         switch scheduleType {
         case .once:
-            return L10n("下一次：\(Self.display(runAt, timezone: timezone)) · 一次性 · \(policy)")
+            return L10n("下一次：\(Self.display(runAt, timezone: timezone)) · 过期：\(Self.display(expiresAt, timezone: timezone)) · 一次性 · \(policy)")
         case .interval:
             let estimatedNext = Date().addingTimeInterval(TimeInterval(max(0, intervalSeconds)))
-            return L10n("下一次（预计）：\(Self.display(estimatedNext, timezone: timezone)) · 每 \(Self.intervalText(intervalSeconds)) · \(policy)")
+            return L10n("下一次（预计）：\(Self.display(estimatedNext, timezone: timezone)) · 过期：\(Self.display(expiresAt, timezone: timezone)) · 每 \(Self.intervalText(intervalSeconds)) · \(policy)")
         case .condition:
             return L10n("条件轮询 · \(policy)")
         case .process:
@@ -584,6 +594,7 @@ private extension ScheduledSessionRunPresentation {
         case .failed: L10n("失败")
         case .paused: L10n("已暂停")
         case .cancelled: L10n("已取消")
+        case .expired: L10n("已过期")
         case .missed: L10n("已错过")
         case .unknown(let raw): L10n("未知状态：\(raw)")
         }
@@ -599,6 +610,7 @@ private extension ScheduledSessionRunPresentation {
         case .failed: "exclamationmark.triangle.fill"
         case .paused: "pause.circle.fill"
         case .cancelled: "xmark.circle.fill"
+        case .expired: "clock.badge.exclamationmark"
         case .missed: "calendar.badge.exclamationmark"
         case .unknown: "questionmark.circle.fill"
         }
@@ -612,7 +624,32 @@ private extension ScheduledSessionRunPresentation {
         case .completed: .green
         case .failed: .red
         case .paused: .yellow
+        case .expired: .orange
         case .cancelled, .missed, .unknown: .secondary
+        }
+    }
+}
+
+private extension ScheduledSessionTaskStatus {
+    @MainActor var lifecycleLabel: String {
+        switch self {
+        case .active: L10n("生效中")
+        case .cancelled: L10n("已取消")
+        case .completed: L10n("已完成")
+        case .expired: L10n("已过期")
+        case .error: L10n("异常")
+        default: L10n("异常")
+        }
+    }
+
+    var lifecycleColor: Color {
+        switch self {
+        case .active: .blue
+        case .cancelled: .secondary
+        case .completed: .green
+        case .expired: .orange
+        case .error: .red
+        default: .red
         }
     }
 }

@@ -16,12 +16,14 @@ struct ScheduledSessionModelTests {
               "scheduleType":"interval",
               "runAt":"2026-08-23T00:00:00.000Z",
               "nextRunAt":"2026-08-23T01:00:00.000Z",
+              "expiresAt":"2026-09-23T01:00:00.000Z",
               "intervalSeconds":3600,
               "timezone":"Asia/Shanghai",
               "status":"active",
               "missedPolicy":"coalesce_once",
               "lastRunId":"scheduled_run:1",
               "lastRunStatus":"queued",
+              "lastRunAt":"2026-08-23T00:30:00.000Z",
               "resourceVersion":3,
               "createdAt":"2026-08-22T12:00:00.000Z",
               "updatedAt":"2026-08-22T12:01:00.000Z",
@@ -48,6 +50,11 @@ struct ScheduledSessionModelTests {
         #expect(task.presentationStatus == .queued)
         #expect(task.runs.first?.agentWorkItemId == "agent_work:1")
         #expect(task.runs.first?.status.presentation == .queued)
+        #expect(task.createdAt == "2026-08-22T12:00:00.000Z")
+        #expect(task.lastRunAt == "2026-08-23T00:30:00.000Z")
+        #expect(task.nextRunAt == "2026-08-23T01:00:00.000Z")
+        #expect(task.expiresAt == "2026-09-23T01:00:00.000Z")
+        #expect(task.timezone == "Asia/Shanghai")
     }
 
     @Test func validatesEveryClientSideBoundary() {
@@ -75,7 +82,8 @@ struct ScheduledSessionModelTests {
             runAt: runAt,
             intervalSeconds: 3600,
             timezone: "Asia/Shanghai",
-            missedPolicy: .skip
+            missedPolicy: .skip,
+            expiresAt: Date(timeIntervalSince1970: 1_800_086_400)
         )
 
         let body = draft.requestBody()
@@ -86,6 +94,7 @@ struct ScheduledSessionModelTests {
         #expect(body["timezone"] as? String == "Asia/Shanghai")
         #expect(body["missedPolicy"] as? String == "skip")
         #expect(body["runAt"] as? String == "2027-01-15T08:10:00.000Z")
+        #expect(body["expiresAt"] as? String == "2027-01-16T08:00:00.000Z")
     }
 
     @Test func timeZoneSummaryDisplaysTheChosenZoneAndNextRun() {
@@ -95,11 +104,18 @@ struct ScheduledSessionModelTests {
             runAt: Date(timeIntervalSince1970: 1_800_000_600),
             intervalSeconds: 3600,
             timezone: "Asia/Shanghai",
-            missedPolicy: .coalesceOnce
+            missedPolicy: .coalesceOnce,
+            expiresAt: Date(timeIntervalSince1970: 1_800_086_400)
         )
 
         #expect(draft.summaryText.contains("Asia/Shanghai"))
         #expect(draft.summaryText.contains("下一次"))
+        #expect(draft.summaryText.contains("过期"))
+    }
+
+    @Test func taskLifecycleExposesTheFivePersistedStates() {
+        #expect([ScheduledSessionTaskStatus.active, .cancelled, .completed, .expired, .error].map(\.rawValue)
+            == ["active", "cancelled", "completed", "expired", "error"])
     }
 }
 
@@ -172,7 +188,7 @@ struct ScheduledSessionBackendClientTests {
             nextRunAt: nil,
             intervalSeconds: nil,
             timezone: "UTC",
-            status: .failed,
+            status: .error,
             missedPolicy: .coalesceOnce,
             lastErrorCode: "ROUTE_UNAVAILABLE",
             lastErrorMessage: "No active binding",
@@ -278,6 +294,7 @@ final class ScheduledSessionUITests: XCTestCase {
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorRunAt, "scheduled-session.editor.run-at")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorInterval, "scheduled-session.editor.interval")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorTimezone, "scheduled-session.editor.timezone")
+        XCTAssertEqual(ScheduledSessionAccessibilityID.editorExpiresAt, "scheduled-session.editor.expires-at")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorMissedPolicy, "scheduled-session.editor.missed-policy")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorSummary, "scheduled-session.editor.summary")
         XCTAssertEqual(ScheduledSessionAccessibilityID.editorSave, "scheduled-session.editor.save")
@@ -288,8 +305,8 @@ final class ScheduledSessionUITests: XCTestCase {
         XCTAssertEqual(ScheduledSessionAccessibilityID.cardPauseResume, "scheduled-session.card.pause-resume")
         XCTAssertEqual(ScheduledSessionAccessibilityID.cardRunNow, "scheduled-session.card.run-now")
         XCTAssertEqual(ScheduledSessionAccessibilityID.cardCancel, "scheduled-session.card.cancel")
-        XCTAssertTrue(ScheduledSessionTaskStatus.active.permitsPause)
-        XCTAssertTrue(ScheduledSessionTaskStatus.paused.permitsResume)
+        XCTAssertFalse(ScheduledSessionTaskStatus.active.permitsPause)
+        XCTAssertTrue(ScheduledSessionTaskStatus.error.permitsResume)
         XCTAssertFalse(ScheduledSessionTaskStatus.cancelled.permitsRunNow)
     }
 
