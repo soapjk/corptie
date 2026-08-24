@@ -908,6 +908,22 @@ export function handleEntityHttpRequest({
         });
         return sendJson(response, 200, { memory: presentMemory(updated), alreadyRevoked: false });
       }
+      const restoreMatch = path.match(/^\/memories\/([^/]+)\/restore$/);
+      if (request.method === "POST" && restoreMatch) {
+        const memory = hubService.store.getMemory(decodeURIComponent(restoreMatch[1]));
+        if (!memory) throw apiError("MEMORY_NOT_FOUND", "Memory not found.", 404);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["reason"]));
+        if (!memory.revoked_at) return sendJson(response, 200, { memory: presentMemory(memory), alreadyActive: true });
+        const updated = hubService.store.updateMemory(memory.id, {
+          revokedAt: null, version: Number(memory.version ?? 1) + 1
+        });
+        hubService.store.createMemoryAudit({
+          memoryId: memory.id, action: "restore", actorType: "user", actorId: "user:local-macos",
+          reason: input.reason ?? null, before: memory, after: updated
+        });
+        return sendJson(response, 200, { memory: presentMemory(updated), alreadyActive: false });
+      }
       if (request.method === "GET" && path === "/memory-audit") {
         return sendJson(response, 200, {
           audit: hubService.store.listMemoryAudit({ memoryId: url.searchParams.get("memoryId") })

@@ -63,7 +63,7 @@ function call(service, actorId, tool, arguments_, metadata = {}) {
   });
 }
 
-test("manual remember is current-Session scoped and preserves user + Session/event provenance", async () => {
+test("manual remember defaults to the most-specific current WorkItem and preserves provenance", async () => {
   const f = await fixture();
   try {
     const remembered = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
@@ -71,8 +71,8 @@ test("manual remember is current-Session scoped and preserves user + Session/eve
       kind: "preference",
       tags: ["style"]
     });
-    assert.equal(remembered.memory.ownerType, "agent");
-    assert.equal(remembered.memory.ownerId, f.agent.agentId);
+    assert.equal(remembered.memory.ownerType, "work_item");
+    assert.equal(remembered.memory.ownerId, "work_item:bound");
     assert.equal(remembered.memory.sourceType, "user");
     assert.equal(remembered.memory.sourceSessionId, "session:current");
     assert.deepEqual(remembered.memory.sourceEventSeqs, [1]);
@@ -81,13 +81,18 @@ test("manual remember is current-Session scoped and preserves user + Session/eve
     assert.equal(event.payload.memoryId, remembered.memory.id);
 
     const nextSessionRecall = await f.hubService.retrieveMemory("summarize changes", {
-      agentId: f.agent.agentId
+      agentId: f.agent.agentId,
+      objectiveId: "objective:bound",
+      workItemId: "work_item:bound"
     }, { touch: false });
     assert.equal(nextSessionRecall[0].id, remembered.memory.id);
     const startupContext = await new AgentContextService({
       store: f.store,
       hubService: f.hubService
-    }).buildAgentContext(f.agent.agentId, { intent: "" });
+    }).buildAgentContext(f.agent.agentId, {
+      intent: "",
+      scope: { objectiveId: "objective:bound", workItemId: "work_item:bound" }
+    });
     assert.match(startupContext.instructions, /Always summarize changes concisely/);
   } finally {
     await f.store.close();
@@ -144,7 +149,8 @@ test("update/revoke preserve ownership and source; revoke remains auditable but 
   try {
     const created = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
       content: "Use the old convention",
-      kind: "preference"
+      kind: "preference",
+      scope: "agent"
     });
     const updated = await call(f.service, f.agent.agentId, "corptie_memory_update", {
       memory_id: created.memory.id,
