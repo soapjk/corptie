@@ -325,7 +325,14 @@ final class ScheduledSessionUITests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(sessionsView.contains("statusCard\n\n                    ScheduledSessionStrip(session: session)"))
+        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private var sessionCard: some View"))
+        let automationSummary = try XCTUnwrap(
+            sessionsView.range(
+                of: "ScheduledSessionStrip(session: session)",
+                range: detailCardStart.lowerBound..<sessionsView.endIndex
+            )
+        )
+        XCTAssertGreaterThan(automationSummary.lowerBound, detailCardStart.lowerBound)
         XCTAssertFalse(conversationView.contains("ScheduledSessionStrip(session: session)"))
     }
 }
