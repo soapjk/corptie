@@ -1211,3 +1211,8 @@
 "Enable recall" = "重新启用";
 "recall disabled" = "召回已停用";
 "The Memory will stop participating in recall. Its content and audit history remain available, and it can be enabled again." = "这条 Memory 将停止参与召回；内容和审计历史仍会保留，并可稍后重新启用。";
+"Blocking risk details" = "阻断风险详情";
+"Affected Worktree: %@" = "受影响的 Worktree：%@";
+"Affected Worktree ID: %@" = "受影响的 Worktree ID：%@";
+"Conflict files: %@" = "冲突文件：%@";
+"The backend did not identify an affected Worktree for this risk." = "后端未标明此风险对应的 Worktree。";

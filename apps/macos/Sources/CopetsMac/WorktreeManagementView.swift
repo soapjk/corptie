@@ -569,6 +569,11 @@ struct WorktreeManagementView: View {
                         manualConflictRetryButton()
                     }
                 } else if job.hasMergeConflict {
+                    if let sessionId = job.conflictAutomation?.sessionId {
+                        Button(L10n("View Agent Session")) { router.openSession(sessionId) }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("worktree.integrate.open-plan-conflict-agent")
+                    }
                     Button(L10n(job.conflictAutomation?.status == "blocked"
                         ? "Retry Agent for Remaining Worktrees"
                         : "Let Agent Resolve Conflicts")) {
@@ -1253,6 +1258,9 @@ private struct WorktreeIntegrationPlanReview: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     preflightStatus
+                    if !job.plan.blockingRisks.isEmpty {
+                        blockingRiskDetails
+                    }
                     if reviewItems.isEmpty {
                         ContentUnavailableView(
                             L10n("No Worktree changes require integration."),
@@ -1268,9 +1276,6 @@ private struct WorktreeIntegrationPlanReview: View {
                                 Text(L10nFormat("Merge order #%d: %@", item.ordinal, localizedIntegrationStatus(item.mergeStatus)))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                            }
-                            ForEach(item.risks, id: \.code) { risk in
-                                Label(localizedIntegrationRisk(risk), systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                             }
                             ForEach(item.associations.filter(\.active), id: \.logicalSessionId) { association in
                                 Label(
@@ -1408,6 +1413,64 @@ private struct WorktreeIntegrationPlanReview: View {
         }
         .padding(10)
         .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var blockingRiskDetails: some View {
+        let itemsByWorktreeId = job.plan.items.reduce(into: [String: WorktreeIntegrationItem]()) {
+            $0[$1.worktreeId] = $1
+        }
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(L10n("Blocking risk details"), systemImage: "exclamationmark.octagon.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            ForEach(job.plan.blockingRisks.indices, id: \.self) { index in
+                let risk = job.plan.blockingRisks[index]
+                blockingRiskRow(risk, item: risk.worktreeId.flatMap { itemsByWorktreeId[$0] })
+            }
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("worktree.integrate.blocking-risks")
+    }
+
+    private func blockingRiskRow(
+        _ risk: WorktreeIntegrationRisk,
+        item: WorktreeIntegrationItem?
+    ) -> some View {
+        let localizedMessage = localizedIntegrationRisk(risk)
+        return VStack(alignment: .leading, spacing: 3) {
+            Label(localizedMessage, systemImage: "exclamationmark.triangle.fill")
+                .fontWeight(.semibold)
+            if let item {
+                Text(L10nFormat("Affected Worktree: %@", item.isMain ? "main" : (item.branchName ?? item.path)))
+                    .font(.caption.weight(.semibold))
+                Text(item.path)
+                    .font(.caption2.monospaced())
+                    .textSelection(.enabled)
+                if !item.conflictFiles.isEmpty {
+                    Text(L10nFormat("Conflict files: %@", item.conflictFiles.joined(separator: ", ")))
+                        .font(.caption2)
+                        .textSelection(.enabled)
+                }
+                Button(L10n("Show in Finder")) { reveal(item.path) }
+                    .buttonStyle(.link)
+            } else if let worktreeId = risk.worktreeId {
+                Text(L10nFormat("Affected Worktree ID: %@", worktreeId))
+                    .font(.caption2.monospaced())
+                    .textSelection(.enabled)
+            } else {
+                Text(L10n("The backend did not identify an affected Worktree for this risk."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if !risk.message.isEmpty, risk.message != localizedMessage {
+                Text(risk.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.vertical, 3)
     }
 
     private var conflictedTaskItems: [WorktreeIntegrationItem] {

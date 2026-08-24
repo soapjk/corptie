@@ -191,7 +191,15 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("item.associations.filter(\\.active)"))
         XCTAssertTrue(view.contains("Retry after Manual Resolution"))
         XCTAssertTrue(view.contains("worktree.integrate.retry-manual-conflict"))
+        XCTAssertTrue(view.contains("worktree.integrate.open-plan-conflict-agent"))
         XCTAssertTrue(view.contains("worktree.integrate.blocked-repreflight"))
+        XCTAssertTrue(view.contains("worktree.integrate.blocking-risks"))
+        XCTAssertTrue(view.contains("if !job.plan.blockingRisks.isEmpty"))
+        XCTAssertTrue(view.contains("ForEach(job.plan.blockingRisks.indices"))
+        XCTAssertTrue(view.contains("Affected Worktree: %@"))
+        XCTAssertTrue(view.contains("Affected Worktree ID: %@"))
+        XCTAssertTrue(view.contains("Conflict files: %@"))
+        XCTAssertTrue(view.contains("risk.message != localizedMessage"))
         XCTAssertTrue(view.contains("private func repreflightAndReview()"))
         XCTAssertTrue(view.contains("$0.commitStatus != \"not_needed\" || $0.mergeStatus != \"not_needed\""))
         XCTAssertFalse(view.contains("Toggle(L10n(\"Delete this Worktree\")"))
@@ -384,7 +392,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Let Agent Resolve Conflicts\" = \"让 Agent 一键解决冲突\";",
             "\"View Agent Session\" = \"查看 Agent 会话\";",
             "\"Conflict resolved; continuing automatically\" = \"冲突已解决，正在自动继续\";",
-            "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";"
+            "\"Agent resolved the conflicts; validating and continuing automatically…\" = \"Agent 已解决冲突，正在验证并自动继续…\";",
+            "\"Blocking risk details\" = \"阻断风险详情\";",
+            "\"Affected Worktree: %@\" = \"受影响的 Worktree：%@\";",
+            "\"Affected Worktree ID: %@\" = \"受影响的 Worktree ID：%@\";",
+            "\"Conflict files: %@\" = \"冲突文件：%@\";"
         ] {
             XCTAssertTrue(localization.contains(expected), "Missing localization: \(expected)")
         }
@@ -422,7 +434,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
           "updatedAt":"2026-08-19T00:01:00Z","confirmedAt":"2026-08-19T00:00:30Z","completedAt":null,
           "currentWorktreeId":"wt:feature","progress":{"completed":2,"total":3,"fraction":0.666},
           "conflictResolution":{"status":"running","worktreeId":"wt:feature","conflictKey":"conflict:1","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"workItemId":"work_item:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
-          "conflictAutomation":{"status":"blocked","scopeWorktreeIds":["wt:feature","wt:next"],"completedWorktreeIds":[],"currentWorktreeId":"wt:feature","blockedWorktreeId":"wt:feature","conflictFiles":["shared.swift"],"failureCode":"CONFLICT_AGENT_STOPPED","failureReason":"Agent stopped","startedAt":"2026-08-19T00:00:45Z","completedAt":null},
+          "conflictAutomation":{"status":"blocked","scopeWorktreeIds":["wt:feature","wt:next"],"completedWorktreeIds":[],"workItemId":"work_item:plan-conflicts","sessionId":"session:plan-conflicts","sessionName":"Resolve all plan conflicts","agentId":"agent:one","agentName":"Conflict Agent","workspaceId":"wt:integration","workspacePath":"/integration","currentWorktreeId":"wt:feature","blockedWorktreeId":"wt:feature","conflictFiles":["shared.swift"],"failureCode":"CONFLICT_AGENT_STOPPED","failureReason":"Agent stopped","startedAt":"2026-08-19T00:00:45Z","completedAt":null},
           "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"MERGE_CONFLICT"}],
           "plan":{"repositoryId":"repository:1","mainWorktreeId":"wt:main","mainPath":"/repo",
             "mainHeadBefore":"main:1","inventoryVersion":"inventory:1","mergeOrder":["wt:feature"],
@@ -446,6 +458,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(job.conflictResolution?.workspace.path, "/integration")
         XCTAssertEqual(job.currentConflictResolution?.sessionId, "session:conflict")
         XCTAssertEqual(job.conflictAutomation?.scopeWorktreeIds, ["wt:feature", "wt:next"])
+        XCTAssertEqual(job.conflictAutomation?.workItemId, "work_item:plan-conflicts")
+        XCTAssertEqual(job.conflictAutomation?.sessionId, "session:plan-conflicts")
+        XCTAssertEqual(job.conflictAutomation?.workspacePath, "/integration")
         XCTAssertEqual(job.conflictAutomation?.blockedWorktreeId, "wt:feature")
         XCTAssertEqual(job.conflictAutomation?.conflictFiles, ["shared.swift"])
         XCTAssertEqual(job.conflictAutomation?.failureReason, "Agent stopped")

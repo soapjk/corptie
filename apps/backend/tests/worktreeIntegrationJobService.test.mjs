@@ -191,12 +191,25 @@ function memoryFixture({
       calls.push(`launch-agent:${input.item.worktreeId}`);
       const launchError = launchConflictErrors.shift();
       if (launchError) throw launchError;
+      const existing = input.job.conflictAutomation;
+      if (existing?.workItemId && existing?.sessionId) {
+        calls.push(`continue-session:${existing.sessionId}`);
+        return {
+          workItemId: existing.workItemId,
+          sessionId: existing.sessionId,
+          sessionName: existing.sessionName,
+          agentId: existing.agentId,
+          agentName: existing.agentName,
+          reused: true
+        };
+      }
       launchedSession += 1;
+      calls.push("create-plan-work-item");
       return {
         workItemId: `work_item:conflict:${launchedSession}`,
         sessionId: launchedSession === 1 ? "session:conflict" : `session:conflict:${launchedSession}`,
         sessionName: launchedSession === 1 ? "Resolve conflicts" : `Resolve conflicts ${launchedSession}`,
-        agentId: "agent:one", agentName: "Conflict Agent"
+        agentId: "agent:one", agentName: "Conflict Agent", reused: false
       };
     },
     removeWorktree: async (input) => {
@@ -548,9 +561,10 @@ test("a paused merge conflict launches an Agent and resumes automatically when i
   assert.equal(delegated.conflictResolution.worktreeId, "wt:feature");
   assert.ok(delegated.conflictResolution.conflictKey);
   assert.equal(delegated.conflictResolution.agentName, "Conflict Agent");
-  assert.deepEqual(calls.slice(-2), [
+  assert.deepEqual(calls.slice(-3), [
     "prepare-conflict:feature:1:commit",
-    "launch-agent:wt:feature"
+    "launch-agent:wt:feature",
+    "create-plan-work-item"
   ]);
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_workspace_created"));
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_agent_started"));
@@ -706,6 +720,10 @@ test("one Agent trigger resolves successive conflicting Worktrees across the com
   assert.equal(completed.conflictAutomation.status, "completed");
   assert.deepEqual(completed.conflictAutomation.completedWorktreeIds, ["wt:feature", "wt:feature-two"]);
   assert.equal(calls.filter((call) => call.startsWith("launch-agent:")).length, 2);
+  assert.equal(calls.filter((call) => call === "create-plan-work-item").length, 1);
+  assert.deepEqual(calls.filter((call) => call.startsWith("continue-session:")), ["continue-session:session:conflict"]);
+  assert.equal(completed.conflictAutomation.workItemId, "work_item:conflict:1");
+  assert.equal(completed.conflictAutomation.sessionId, "session:conflict");
   assert.equal(completed.plan.items.find((item) => item.worktreeId === "wt:feature-two").mergeStatus, "recovered");
   assert.equal(completed.audit.filter((entry) => entry.event === "conflict_resolution_verified").length, 2);
   assert.equal(completed.audit.filter((entry) =>
@@ -744,6 +762,8 @@ test("a later automatic conflict blocker is explicit and retry skips already mer
   assert.equal(completed.conflictAutomation.status, "completed");
   assert.equal(calls.filter((call) => call === "merge:integration:feature:1").length, 1);
   assert.equal(calls.filter((call) => call === "launch-agent:wt:feature-two").length, 2);
+  assert.equal(calls.filter((call) => call === "create-plan-work-item").length, 1);
+  assert.equal(calls.filter((call) => call === "continue-session:session:conflict").length, 1);
 });
 
 test("an invalid Agent result stays paused and is never promoted into main", async () => {
@@ -1035,6 +1055,7 @@ test("integration job, per-item state, and audit survive Store restart", async (
         plan: { items: [{ worktreeId: "wt:2", mergeStatus: "conflict" }] },
         conflictAutomation: {
           status: "running", scopeWorktreeIds: ["wt:2"], completedWorktreeIds: [],
+          workItemId: "work_item:plan-conflicts", sessionId: "session:plan-conflicts",
           currentWorktreeId: "wt:2", blockedWorktreeId: null,
           conflictFiles: ["shared.swift"], failureCode: null, failureReason: null
         },
@@ -1055,6 +1076,8 @@ test("integration job, per-item state, and audit survive Store restart", async (
     assert.deepEqual(recoveredQueued.details.audit, [{ event: "paused" }]);
     assert.equal(recoveredStopping.details.replanAfterCancel, true);
     assert.equal(recoveredAutomatic.details.conflictAutomation.status, "running");
+    assert.equal(recoveredAutomatic.details.conflictAutomation.workItemId, "work_item:plan-conflicts");
+    assert.equal(recoveredAutomatic.details.conflictAutomation.sessionId, "session:plan-conflicts");
     assert.deepEqual(recoveredAutomatic.details.conflictAutomation.conflictFiles, ["shared.swift"]);
   } finally {
     await store.close();
