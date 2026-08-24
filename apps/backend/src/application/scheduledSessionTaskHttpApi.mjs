@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
+
 export function handleScheduledSessionTaskHttpRequest({
-  request, response, url, service, resolveActor, resolveCurrentLogicalSessionId = null
+  request, response, url, service, resolveActor, resolveCurrentLogicalSessionId = null,
+  observePerformance = null
 }) {
   const path = url.pathname;
   const basePath = path === "/automations" || path.startsWith("/automations/")
@@ -14,16 +18,41 @@ export function handleScheduledSessionTaskHttpRequest({
   Promise.resolve().then(async () => {
     const actor = resolveActor(request);
     if (request.method === "GET" && path === basePath) {
+      const requestId = randomUUID();
+      const startedAt = performance.now();
       const requestedLogicalSessionId = url.searchParams.get("logicalSessionId") ?? undefined;
       const currentLogicalSessionId = !requestedLogicalSessionId && url.searchParams.get("currentSession") === "true"
         ? resolveCurrentLogicalSessionId?.(request, actor) ?? undefined
         : undefined;
-      return sendJson(response, 200, {
-        tasks: service.list({
-          logicalSessionId: requestedLogicalSessionId ?? currentLogicalSessionId,
-          status: url.searchParams.get("status") ?? undefined
-        }, actor)
+      const includeRuns = url.searchParams.get("includeRuns") === "true";
+      const serviceStartedAt = performance.now();
+      const tasks = service.list({
+        logicalSessionId: requestedLogicalSessionId ?? currentLogicalSessionId,
+        status: url.searchParams.get("status") ?? undefined,
+        includeRuns,
+        requestId
+      }, actor);
+      const serviceMs = roundedMilliseconds(performance.now() - serviceStartedAt);
+      const serializationStartedAt = performance.now();
+      const body = JSON.stringify({ tasks });
+      const serializationMs = roundedMilliseconds(performance.now() - serializationStartedAt);
+      const totalMs = roundedMilliseconds(performance.now() - startedAt);
+      response.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "server-timing": `service;dur=${serviceMs}, serialize;dur=${serializationMs}, total;dur=${totalMs}`,
+        "x-corptie-request-id": requestId
       });
+      response.end(body);
+      observePerformance?.({
+        operation: "scheduled-task.http-list",
+        requestId,
+        includeRuns,
+        taskCount: tasks.length,
+        responseBytes: Buffer.byteLength(body),
+        phases: { serviceMs, serializationMs },
+        totalMs
+      });
+      return;
     }
     if (request.method === "POST" && path === basePath) {
       const input = await readJson(request);
@@ -100,4 +129,8 @@ function sendJson(response, status, body) {
   if (response.headersSent) return;
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(body));
+}
+
+function roundedMilliseconds(value) {
+  return Math.round(value * 1000) / 1000;
 }
