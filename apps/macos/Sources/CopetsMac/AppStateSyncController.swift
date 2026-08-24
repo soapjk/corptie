@@ -45,6 +45,7 @@ final class AppStateSyncController {
     private var streamGeneration: UInt64 = 0
     private var streamLastActivityAt = Date()
     private var snapshotRequestGeneration: UInt64 = 0
+    private var backgroundActivity: NSObjectProtocol?
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -54,7 +55,30 @@ final class AppStateSyncController {
     private init() {}
 
     func start() {
+        guard streamTask == nil else { return }
+        beginBackgroundActivityIfNeeded()
         snapshotRequestGeneration &+= 1
+        restartStream(refreshSnapshotFirst: true)
+    }
+
+    /// Foreground activation is a liveness hint, not a correctness trigger.
+    /// Preserve a healthy stream so clicking the window cannot be what makes a
+    /// backend Session reach terminal state. Only a missing/stale stream gets a
+    /// snapshot-backed recovery.
+    func recoverAfterActivation(now: Date = Date()) {
+        guard streamTask != nil else {
+            start()
+            return
+        }
+        guard StateStreamLivenessPolicy.hasExpired(
+            lastActivityAt: streamLastActivityAt,
+            now: now
+        ) else { return }
+        restartStream(refreshSnapshotFirst: true)
+    }
+
+    func recoverAfterWake() {
+        beginBackgroundActivityIfNeeded()
         restartStream(refreshSnapshotFirst: true)
     }
 
@@ -65,6 +89,10 @@ final class AppStateSyncController {
         streamWatchdogTask = nil
         streamGeneration &+= 1
         snapshotRequestGeneration &+= 1
+        if let backgroundActivity {
+            ProcessInfo.processInfo.endActivity(backgroundActivity)
+            self.backgroundActivity = nil
+        }
     }
 
     func refreshSnapshot() async {
@@ -91,6 +119,7 @@ final class AppStateSyncController {
     }
 
     private func restartStream(refreshSnapshotFirst: Bool) {
+        beginBackgroundActivityIfNeeded()
         streamTask?.cancel()
         streamWatchdogTask?.cancel()
         streamGeneration &+= 1
@@ -118,6 +147,14 @@ final class AppStateSyncController {
                 return
             }
         }
+    }
+
+    private func beginBackgroundActivityIfNeeded() {
+        guard backgroundActivity == nil else { return }
+        backgroundActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.background],
+            reason: "Keep Corptie Session state and completion notifications current"
+        )
     }
 
     private func consumeStream(generation: UInt64) async {

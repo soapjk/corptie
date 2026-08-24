@@ -290,7 +290,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 // A suspended TCP connection can look healthy after wake while
                 // no longer delivering SSE frames. Recreate the canonical state
                 // stream instead of waiting for the user to open a Session.
-                AppStateSyncController.shared.start()
+                AppStateSyncController.shared.recoverAfterWake()
             }
             .store(in: &cancellables)
         let connectionStatus = BackendConnectionStatusOperation(
@@ -441,7 +441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidBecomeActive(_ notification: Notification) {
         // Reconcile list state on foregrounding and replace any stream that was
         // silently stalled while the app was inactive.
-        AppStateSyncController.shared.start()
+        AppStateSyncController.shared.recoverAfterActivation()
         Task {
             await backendClient.refreshSelectedUsage()
         }

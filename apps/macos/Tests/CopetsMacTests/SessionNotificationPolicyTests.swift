@@ -41,7 +41,7 @@ final class SessionNotificationPolicyTests: XCTestCase {
             completed: 1,
             blocked: 1,
             failed: 0,
-            pendingUserAttention: 0
+            pendingUserAttention: 1
         ))
     }
 
@@ -75,8 +75,12 @@ final class SessionNotificationPolicyTests: XCTestCase {
 
             let events = reducer.events(for: terminalSessions, configuration: aggregateOnly)
 
-            XCTAssertEqual(events.count, 1)
-            XCTAssertEqual(events.first?.counts?.pendingUserAttention, expectedCount)
+            if expectedCount == 0 {
+                XCTAssertEqual(events, [])
+            } else {
+                XCTAssertEqual(events.count, 1)
+                XCTAssertEqual(events.first?.counts?.pendingUserAttention, expectedCount)
+            }
         }
     }
 
@@ -100,7 +104,7 @@ final class SessionNotificationPolicyTests: XCTestCase {
         let terminalSessions = [
             snapshot("completed-unread", .complete, lastAgentMessageSequence: 2, lastReadMessageSequence: 1),
             snapshot("completed-read", .complete, lastAgentMessageSequence: 2, lastReadMessageSequence: 2),
-            snapshot("completed-without-message", .complete),
+            snapshot("completed-without-message", .complete, lastAgentMessageSequence: 0),
             snapshot("blocked-unread", .blocked, lastAgentMessageSequence: 4, lastReadMessageSequence: 1),
             snapshot("failed-unread", .failed, lastAgentMessageSequence: 4, lastReadMessageSequence: 1)
         ]
@@ -214,6 +218,45 @@ final class SessionNotificationPolicyTests: XCTestCase {
         }
     }
 
+    func testCompletedStatusWithoutDurableFinalReplyDoesNotNotify() {
+        var reducer = SessionNotificationReducer()
+        let configuration = SessionNotificationConfiguration(
+            notifyOnComplete: true,
+            notifyOnBlocked: false,
+            notifyOnFailed: false,
+            notifyWhenAllSessionsWaiting: false
+        )
+        _ = reducer.events(for: [snapshot("one", .running)], configuration: configuration)
+
+        XCTAssertEqual(
+            reducer.events(
+                for: [snapshot("one", .complete, lastAgentMessageSequence: 0)],
+                configuration: configuration
+            ),
+            []
+        )
+    }
+
+    func testLateFinalReplyCursorNotifiesAfterCompletedStatusWasAlreadyObserved() {
+        var reducer = SessionNotificationReducer()
+        let configuration = SessionNotificationConfiguration(
+            notifyOnComplete: true,
+            notifyOnBlocked: false,
+            notifyOnFailed: false,
+            notifyWhenAllSessionsWaiting: false
+        )
+        _ = reducer.events(for: [snapshot("one", .running)], configuration: configuration)
+        XCTAssertEqual(reducer.events(
+            for: [snapshot("one", .complete, lastAgentMessageSequence: 0)],
+            configuration: configuration
+        ), [])
+
+        XCTAssertEqual(reducer.events(
+            for: [snapshot("one", .complete, lastAgentMessageSequence: 4)],
+            configuration: configuration
+        ).map(\.kind), [.completed])
+    }
+
     func testRepeatedTerminalSnapshotDoesNotNotifyAgain() {
         var reducer = SessionNotificationReducer()
         _ = reducer.events(for: [snapshot("one", .running)], configuration: aggregateOnly)
@@ -256,9 +299,15 @@ final class SessionNotificationPolicyTests: XCTestCase {
     func testAResumedSessionCanProduceANewCompletionEvent() {
         var reducer = SessionNotificationReducer()
         _ = reducer.events(for: [snapshot("one", .running, updatedAt: "1")], configuration: aggregateOnly)
-        let first = reducer.events(for: [snapshot("one", .complete, updatedAt: "2")], configuration: aggregateOnly)
-        _ = reducer.events(for: [snapshot("one", .running, updatedAt: "3")], configuration: aggregateOnly)
-        let second = reducer.events(for: [snapshot("one", .complete, updatedAt: "4")], configuration: aggregateOnly)
+        let first = reducer.events(for: [
+            snapshot("one", .complete, updatedAt: "2", lastAgentMessageSequence: 1)
+        ], configuration: aggregateOnly)
+        _ = reducer.events(for: [
+            snapshot("one", .running, updatedAt: "3", lastAgentMessageSequence: 1)
+        ], configuration: aggregateOnly)
+        let second = reducer.events(for: [
+            snapshot("one", .complete, updatedAt: "4", lastAgentMessageSequence: 2)
+        ], configuration: aggregateOnly)
 
         XCTAssertEqual(first.count, 1)
         XCTAssertEqual(second.count, 1)
@@ -293,7 +342,7 @@ final class SessionNotificationPolicyTests: XCTestCase {
         _ id: String,
         _ status: TaskStatus,
         updatedAt: String = "2026-08-20T00:00:00Z",
-        lastAgentMessageSequence: Int = 0,
+        lastAgentMessageSequence: Int? = nil,
         lastReadMessageSequence: Int = 0
     ) -> SessionNotificationSnapshot {
         SessionNotificationSnapshot(
@@ -303,7 +352,7 @@ final class SessionNotificationPolicyTests: XCTestCase {
             status: status,
             summary: "Summary",
             updatedAt: updatedAt,
-            lastAgentMessageSequence: lastAgentMessageSequence,
+            lastAgentMessageSequence: lastAgentMessageSequence ?? (status == .complete ? 1 : 0),
             lastReadMessageSequence: lastReadMessageSequence
         )
     }
