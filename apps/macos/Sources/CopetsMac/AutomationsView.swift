@@ -37,7 +37,7 @@ struct AutomationsView: View {
         case .running: backendClient.automations.filter {
             $0.lastRunStatus == .claimed || $0.lastRunStatus == .queued || $0.lastRunStatus == .running
         }
-        case .failed: backendClient.automations.filter { $0.status == .failed || $0.lastRunStatus == .failed }
+        case .failed: backendClient.automations.filter { $0.status == .error || $0.lastRunStatus == .failed }
         case .history: backendClient.automations.filter { !$0.runs.isEmpty }
         }
     }
@@ -159,9 +159,21 @@ private struct AutomationCard: View {
                 statusBadge
             }
 
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 12) {
+                metric(L10n("创建时间"), dateLabel(automation.createdAt), "calendar.badge.plus")
+                metric(L10n("上次执行时间"), dateLabel(automation.lastRunAt), "clock.arrow.circlepath")
+                if automation.scheduleType != .condition {
+                    metric(L10n("预计下次执行时间"), dateLabel(automation.nextRunAt), "calendar")
+                }
+                metric(L10n("过期时间"), dateLabel(automation.expiresAt), "calendar.badge.exclamationmark")
+            }
+
+            Label(L10nFormat("Times use time zone: %@", automation.timezone), systemImage: "globe")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+
             HStack(spacing: 18) {
                 metric(L10n("Trigger"), triggerLabel, "bolt.badge.clock")
-                metric(L10n("Next Run"), dateLabel(automation.nextRunAt), "calendar")
                 metric(L10n("Last Result"), automation.lastRunStatus?.rawValue ?? L10n("Not run"), "checklist")
                 metric(L10n("Risk"), automation.risk?.level ?? "minimal", "shield")
             }
@@ -193,12 +205,8 @@ private struct AutomationCard: View {
             }
 
             HStack {
-                if automation.status.permitsPause {
-                    Button(L10n("Pause")) { perform(.pause) }
-                } else if automation.status.permitsResume {
-                    Button(automation.status == .failed ? L10n("Retry") : L10n("Resume")) {
-                        perform(automation.status == .failed ? .retry : .resume)
-                    }
+                if automation.status.permitsResume {
+                    Button(L10n("Retry")) { perform(.retry) }
                 }
                 Button(L10n("Run Now")) { perform(.runNow) }
                     .disabled(!automation.status.permitsRunNow)
@@ -243,7 +251,12 @@ private struct AutomationCard: View {
 
     private func dateLabel(_ value: String?) -> String {
         guard let value, let date = ScheduledSessionDateFormatting.date(from: value) else { return L10n("None") }
-        return date.formatted(.dateTime.month().day().hour().minute().second())
+        let formatter = DateFormatter()
+        formatter.locale = AppLanguageController.shared.locale
+        formatter.timeZone = TimeZone(identifier: automation.timezone) ?? .current
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
     }
 }
 
@@ -283,20 +296,24 @@ private struct AutomationRunRow: View {
 
 private extension ScheduledSessionTask {
     @MainActor var presentationStatusText: String {
-        if status == .paused { return L10n("Paused") }
-        if status == .failed { return L10n("Failed") }
-        if status == .cancelled { return L10n("Cancelled") }
-        if lastRunStatus == .running { return L10n("Running") }
-        if lastRunStatus == .queued { return L10n("Queued") }
-        if status == .completed { return L10n("Completed") }
-        return L10n("Scheduled")
+        switch status {
+        case .active: L10n("生效中")
+        case .cancelled: L10n("已取消")
+        case .completed: L10n("已完成")
+        case .expired: L10n("已过期")
+        case .error: L10n("异常")
+        default: L10n("异常")
+        }
     }
 
     var statusTint: Color {
-        if status == .failed || lastRunStatus == .failed { return .red }
-        if lastRunStatus == .running { return .indigo }
-        if lastRunStatus == .queued { return .orange }
-        if status == .completed { return .green }
-        return .blue
+        switch status {
+        case .active: .blue
+        case .cancelled: .secondary
+        case .completed: .green
+        case .expired: .orange
+        case .error: .red
+        default: .red
+        }
     }
 }

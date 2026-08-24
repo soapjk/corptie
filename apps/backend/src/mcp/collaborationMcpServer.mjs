@@ -133,7 +133,7 @@ export function createCollaborationMcpServer(options) {
   });
 
   if (authenticatedSessionId) register(server, "corptie_automations_create", {
-    description: "Create a provider-neutral Corptie Automation. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
+    description: "Create a provider-neutral Corptie Automation. Exactly one of expires_at or expires_after_seconds is required. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
     inputSchema: {
       name: z.string().min(1).max(120).optional(),
       logical_session_id: z.string().min(1).optional(),
@@ -142,6 +142,8 @@ export function createCollaborationMcpServer(options) {
       delay_seconds: z.number().int().min(1).max(31_536_000).optional(),
       interval_seconds: z.number().int().min(1).max(31_536_000).optional(),
       timezone: z.string().min(1).optional(),
+      expires_at: z.string().min(1).optional().describe("ISO-8601 expiration timestamp; specify exactly one expiration field."),
+      expires_after_seconds: z.number().int().min(1).max(315_360_000).optional().describe("Countdown from creation to expiration in seconds; specify exactly one expiration field."),
       message: automationMessageSchema.optional(),
       actions: z.array(automationActionSchema).min(1).max(16).optional(),
       condition: automationConditionSchema.optional(),
@@ -153,14 +155,14 @@ export function createCollaborationMcpServer(options) {
       timeout_seconds: z.number().int().min(1).max(86_400).optional(),
       backpressure_limit: z.number().int().min(1).max(10_000).optional()
     },
-    handler: (input) => client.post("/automations", automationCreateBody(input))
+    handler: (input) => client.post("/automations", automationCreateBody(requireAutomationExpiration(input)))
   });
 
   if (authenticatedSessionId) register(server, "corptie_automations_list", {
     description: "List Automations for this authenticated logical Session by default. Optionally target another authorized logical Session or filter by status.",
     inputSchema: {
       logical_session_id: z.string().min(1).optional(),
-      status: z.enum(["active", "paused", "completed", "failed", "cancelled"]).optional()
+      status: z.enum(["active", "cancelled", "completed", "expired", "error"]).optional()
     },
     readOnly: true,
     handler: ({ logical_session_id, status }) => client.get("/automations", {
@@ -186,6 +188,8 @@ export function createCollaborationMcpServer(options) {
       run_at: z.string().min(1).optional(),
       interval_seconds: z.number().int().min(1).max(31_536_000).optional(),
       timezone: z.string().min(1).optional(),
+      expires_at: z.string().min(1).optional(),
+      expires_after_seconds: z.number().int().min(1).max(315_360_000).optional(),
       message: automationMessageSchema.optional(),
       actions: z.array(automationActionSchema).min(1).max(16).optional(),
       condition: automationConditionSchema.optional(),
@@ -610,6 +614,8 @@ function automationCreateBody(input) {
     delaySeconds: input.delay_seconds,
     intervalSeconds: input.interval_seconds,
     timezone: input.timezone,
+    expiresAt: input.expires_at,
+    expiresAfterSeconds: input.expires_after_seconds,
     message: input.message,
     actions: input.actions,
     condition: automationConditionBody(input.condition),
@@ -630,6 +636,8 @@ function automationPatchBody(input) {
     runAt: input.run_at,
     intervalSeconds: input.interval_seconds,
     timezone: input.timezone,
+    expiresAt: input.expires_at,
+    expiresAfterSeconds: input.expires_after_seconds,
     message: input.message,
     actions: input.actions,
     condition: automationConditionBody(input.condition),
@@ -641,6 +649,15 @@ function automationPatchBody(input) {
     timeoutSeconds: input.timeout_seconds,
     backpressureLimit: input.backpressure_limit
   });
+}
+
+function requireAutomationExpiration(input) {
+  const count = Number(input.expires_at != null) + Number(input.expires_after_seconds != null);
+  if (count === 1) return input;
+  const error = new TypeError("Create requires exactly one of expires_at or expires_after_seconds.");
+  error.code = "INVALID_INPUT";
+  error.field = "expires_at";
+  throw error;
 }
 
 function automationConditionBody(value) {

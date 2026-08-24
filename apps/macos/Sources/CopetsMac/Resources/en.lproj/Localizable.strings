@@ -662,6 +662,14 @@
 "处理中" = "Processing";
 "处理失败" = "Processing Failed";
 "已取消" = "Cancelled";
+"生效中" = "Active";
+"已过期" = "Expired";
+"异常" = "Error";
+"创建时间" = "Created";
+"上次执行时间" = "Last Run";
+"预计下次执行时间" = "Estimated Next Run";
+"过期时间" = "Expires";
+"Times use time zone: %@" = "Times use time zone: %@";
 "等待确认" = "Awaiting Confirmation";
 "等待处理" = "Awaiting Processing";
 "未知 Agent" = "Unknown Agent";
