@@ -25,6 +25,10 @@ struct WarRoomView: View {
     @State private var workItemsReloadToken = 0
     @State private var isCreatingObjective = false
     @State private var objectivePendingEdit: Objective?
+    @State private var deletionPresentation: WorkItemDeletionPresentation?
+    @State private var deletionNotice: WorkItemDeletionNotice?
+    @State private var inspectingDeletionIds = Set<String>()
+    @State private var deletingWorkItemIds = Set<String>()
     /// 记录用户最后选中的 Objective，跨窗口/重启恢复，避免有 Objective 时看板空白。
     private static let lastSelectedObjectiveKey = "warRoom.lastSelectedObjectiveId"
     /// 记录用户最后选中的 WorkItem；与 Objective 一起恢复，重启后直接展示其详情。
@@ -109,6 +113,31 @@ struct WarRoomView: View {
         .sheet(item: $objectivePendingEdit) { objective in
             ObjectiveDetailView(objective: objective)
         }
+        .sheet(item: $deletionPresentation) { presentation in
+            WorkItemDeletionConfirmationView(
+                workItem: presentation.workItem,
+                plan: presentation.plan,
+                onCancel: { deletionPresentation = nil },
+                onMergeFirst: {
+                    deletionPresentation = nil
+                    deletionNotice = WorkItemDeletionNotice(
+                        phase: .guidance,
+                        message: L10nFormat(
+                            "WorkItem 未删除。请先在项目 Worktree 管理中将分支 %@ 合并到目标主分支，确认无待提交文件后再重试删除。",
+                            presentation.plan.worktree?.branchName ?? ""
+                        ),
+                        retryItem: presentation.workItem
+                    )
+                },
+                onDelete: { force, branch in
+                    enqueueDeletion(
+                        presentation.workItem,
+                        force: force,
+                        confirmedBranchName: branch
+                    )
+                }
+            )
+        }
     }
 
     // MARK: - 右侧 WorkItem 详情卡片
@@ -121,6 +150,15 @@ struct WarRoomView: View {
             workItemDetailCard
         }
         .padding(.trailing, TwoPaneLayoutMetrics.contentPadding)
+        .overlay(alignment: .bottomTrailing) {
+            if let deletionNotice {
+                deletionNoticeView(deletionNotice)
+                    .padding(.trailing, TwoPaneLayoutMetrics.contentPadding)
+                    .padding(.bottom, TwoPaneLayoutMetrics.contentPadding + 4)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: deletionNotice?.id)
     }
 
     private var workItemDetailCard: some View {
@@ -237,6 +275,8 @@ struct WarRoomView: View {
                 objective: nil,
                 items: workItems,
                 selectedWorkItemId: $selectedWorkItemId,
+                pendingDeletionIds: pendingDeletionIds,
+                onRequestDeletion: { item in Task { await prepareDeletion(item) } },
                 onRequestReload: { workItemsReloadToken &+= 1 }
             )
         } else if let objective = client.objectives.first(where: { $0.id == selectedObjectiveId }) {
@@ -244,6 +284,8 @@ struct WarRoomView: View {
                 objective: objective,
                 items: workItems,
                 selectedWorkItemId: $selectedWorkItemId,
+                pendingDeletionIds: pendingDeletionIds,
+                onRequestDeletion: { item in Task { await prepareDeletion(item) } },
                 onRequestReload: { workItemsReloadToken &+= 1 }
             )
         } else {
@@ -261,6 +303,8 @@ struct WarRoomView: View {
                 workItem: workItem,
                 workspaceIds: owningObjective?.workspaceIds ?? [],
                 contributorAgentIds: owningObjective?.contributorAgentIds ?? [],
+                isDeletionPending: pendingDeletionIds.contains(workItem.id),
+                onRequestDeletion: { Task { await prepareDeletion(workItem) } },
                 onRequestReload: { workItemsReloadToken &+= 1 }
             )
         } else {
@@ -327,6 +371,147 @@ struct WarRoomView: View {
     private static func restoredWorkItemId() -> String? {
         CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedWorkItemKey)
     }
+
+    private var pendingDeletionIds: Set<String> {
+        inspectingDeletionIds.union(deletingWorkItemIds)
+    }
+
+    private func prepareDeletion(_ workItem: WorkItem) async {
+        guard !pendingDeletionIds.contains(workItem.id) else { return }
+        inspectingDeletionIds.insert(workItem.id)
+        deletionNotice = WorkItemDeletionNotice(
+            phase: .checking,
+            message: L10nFormat("正在检查 WorkItem“%@”的关联资源…", workItem.title)
+        )
+        defer { inspectingDeletionIds.remove(workItem.id) }
+
+        guard let plan = await client.inspectWorkItemDeletion(workItemId: workItem.id) else {
+            deletionNotice = WorkItemDeletionNotice(
+                phase: .failure,
+                message: client.errorMessage ?? L10n("无法检查 WorkItem 的关联资源。"),
+                retryItem: workItem
+            )
+            return
+        }
+        deletionNotice = nil
+        deletionPresentation = WorkItemDeletionPresentation(workItem: workItem, plan: plan)
+    }
+
+    private func enqueueDeletion(
+        _ workItem: WorkItem,
+        force: Bool,
+        confirmedBranchName: String?
+    ) {
+        guard !deletingWorkItemIds.contains(workItem.id) else { return }
+
+        // 用户确认后立即收起模态窗口。清理在后台 Task 中继续，控制台仅展示非阻塞状态。
+        deletionPresentation = nil
+        deletingWorkItemIds.insert(workItem.id)
+        deletionNotice = WorkItemDeletionNotice(
+            phase: .deleting,
+            message: L10nFormat("正在后台删除 WorkItem“%@”…", workItem.title)
+        )
+
+        Task {
+            let deleted = await client.deleteWorkItem(
+                workItemId: workItem.id,
+                force: force,
+                confirmedBranchName: confirmedBranchName
+            )
+            deletingWorkItemIds.remove(workItem.id)
+
+            if deleted {
+                workItems.removeAll { $0.id == workItem.id }
+                if selectedWorkItemId == workItem.id { selectedWorkItemId = nil }
+                workItemsReloadToken &+= 1
+                deletionNotice = WorkItemDeletionNotice(
+                    phase: .success,
+                    message: L10nFormat("WorkItem“%@”已删除。", workItem.title)
+                )
+            } else {
+                deletionNotice = WorkItemDeletionNotice(
+                    phase: .failure,
+                    message: client.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。"),
+                    retryItem: workItem
+                )
+            }
+        }
+    }
+
+    private func deletionNoticeView(_ notice: WorkItemDeletionNotice) -> some View {
+        HStack(spacing: 10) {
+            if notice.phase.isInProgress {
+                ProgressView().controlSize(.small)
+            } else {
+                Image(systemName: notice.phase.systemImage)
+                    .foregroundStyle(notice.phase.color)
+            }
+            Text(notice.message)
+                .font(.callout)
+                .lineLimit(3)
+                .frame(maxWidth: 360, alignment: .leading)
+            if let retryItem = notice.retryItem, notice.phase != .guidance {
+                Button(L10n("重试")) {
+                    Task { await prepareDeletion(retryItem) }
+                }
+                .buttonStyle(.borderless)
+            }
+            Button {
+                deletionNotice = nil
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help(L10n("关闭"))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.45), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+    }
+}
+
+private struct WorkItemDeletionPresentation: Identifiable {
+    let id = UUID()
+    let workItem: WorkItem
+    let plan: WorkItemDeletionPlan
+}
+
+private struct WorkItemDeletionNotice: Identifiable {
+    enum Phase: Equatable {
+        case checking
+        case deleting
+        case success
+        case failure
+        case guidance
+
+        var isInProgress: Bool { self == .checking || self == .deleting }
+        var systemImage: String {
+            switch self {
+            case .checking, .deleting: "hourglass"
+            case .success: "checkmark.circle.fill"
+            case .failure: "exclamationmark.triangle.fill"
+            case .guidance: "arrow.triangle.merge"
+            }
+        }
+        var color: Color {
+            switch self {
+            case .success: .green
+            case .failure: .red
+            case .guidance: .orange
+            case .checking, .deleting: .secondary
+            }
+        }
+    }
+
+    let id = UUID()
+    let phase: Phase
+    let message: String
+    var retryItem: WorkItem?
 }
 
 // MARK: - WorkItem 混合看板
@@ -448,6 +633,8 @@ struct WorkItemBoardView: View {
     let objective: Objective?
     let items: [WorkItem]
     @Binding var selectedWorkItemId: String?
+    let pendingDeletionIds: Set<String>
+    let onRequestDeletion: (WorkItem) -> Void
     var onRequestReload: () -> Void = {}
     @State private var boardItems: [WorkItem] = []
     @State private var isCreating = false
@@ -480,6 +667,8 @@ struct WorkItemBoardView: View {
                         items: boardItems.filter { WorkItemColumn.column(for: $0.status) == column },
                         sessions: backendClient.sessions,
                         selectedWorkItemId: $selectedWorkItemId,
+                        pendingDeletionIds: pendingDeletionIds,
+                        onRequestDeletion: onRequestDeletion,
                         isCollapsed: Binding(
                             get: { collapsedColumns.contains(column) },
                             set: { isCollapsed in
@@ -538,6 +727,8 @@ struct WorkItemColumnView: View {
     let items: [WorkItem]
     let sessions: [TaskSession]
     @Binding var selectedWorkItemId: String?
+    let pendingDeletionIds: Set<String>
+    let onRequestDeletion: (WorkItem) -> Void
     @Binding var isCollapsed: Bool
 
     var body: some View {
@@ -576,9 +767,18 @@ struct WorkItemColumnView: View {
                             WorkItemCard(
                                 item: item,
                                 sessions: sessions,
-                                isSelected: selectedWorkItemId == item.id
+                                isSelected: selectedWorkItemId == item.id,
+                                isDeletionPending: pendingDeletionIds.contains(item.id)
                             )
                                 .onTapGesture { selectedWorkItemId = item.id }
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        onRequestDeletion(item)
+                                    } label: {
+                                        Label(L10n("删除 WorkItem"), systemImage: "trash")
+                                    }
+                                    .disabled(pendingDeletionIds.contains(item.id))
+                                }
 
                             if index < items.count - 1 {
                                 Divider()
@@ -600,6 +800,7 @@ struct WorkItemCard: View {
     let item: WorkItem
     let sessions: [TaskSession]
     let isSelected: Bool
+    let isDeletionPending: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -623,7 +824,16 @@ struct WorkItemCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-                sessionStatusPill
+                if isDeletionPending {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini)
+                        Text(L10n("后台处理中"))
+                    }
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                } else {
+                    sessionStatusPill
+                }
             }
         }
         .padding(.horizontal, 8)
@@ -760,6 +970,8 @@ struct WorkItemDetailView: View {
     let workItem: WorkItem
     let workspaceIds: [String]
     let contributorAgentIds: [String]
+    var isDeletionPending = false
+    var onRequestDeletion: (() -> Void)?
     var onRequestReload: () -> Void = {}
 
     @State private var currentSession: WorkItemSessionSummary?
@@ -778,11 +990,6 @@ struct WorkItemDetailView: View {
     @State private var isLoadingWorktree = false
     @State private var isReclaimingWorktree = false
     @State private var showReclaimConfirmation = false
-    @State private var deletionPlan: WorkItemDeletionPlan?
-    @State private var showDeletion = false
-    @State private var isInspectingDeletion = false
-    @State private var isDeletingWorkItem = false
-    @State private var deletionFeedback: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -923,34 +1130,6 @@ struct WorkItemDetailView: View {
         } message: {
             Text(L10n("The merged Worktree and its local branch will be removed. Session history will be archived and preserved."))
         }
-        .sheet(isPresented: $showDeletion) {
-            if let deletionPlan {
-                WorkItemDeletionConfirmationView(
-                    workItem: workItem,
-                    plan: deletionPlan,
-                    isDeleting: isDeletingWorkItem,
-                    onCancel: { showDeletion = false },
-                    onMergeFirst: {
-                        showDeletion = false
-                        deletionFeedback = L10nFormat(
-                            "WorkItem 未删除。请先在项目 Worktree 管理中将分支 %@ 合并到目标主分支，确认无待提交文件后再重试删除。",
-                            deletionPlan.worktree?.branchName ?? ""
-                        )
-                    },
-                    onDelete: { force, branch in
-                        Task { await deleteWorkItem(force: force, branch: branch) }
-                    }
-                )
-            }
-        }
-        .alert(L10n("WorkItem 删除"), isPresented: Binding(
-            get: { deletionFeedback != nil },
-            set: { if !$0 { deletionFeedback = nil } }
-        )) {
-            Button(L10n("好"), role: .cancel) { deletionFeedback = nil }
-        } message: {
-            Text(deletionFeedback ?? "")
-        }
     }
 
     private var detailHeader: some View {
@@ -971,20 +1150,22 @@ struct WorkItemDetailView: View {
             }
             .buttonStyle(.plain)
             .help(L10n("编辑工作项"))
-            Button(role: .destructive) {
-                Task { await prepareDeletion() }
-            } label: {
-                if isInspectingDeletion {
-                    ProgressView().controlSize(.small).frame(width: 24, height: 24)
-                } else {
-                    Image(systemName: "trash")
-                        .font(.system(size: 12, weight: .medium))
-                        .frame(width: 24, height: 24)
+            if let onRequestDeletion {
+                Button(role: .destructive) {
+                    onRequestDeletion()
+                } label: {
+                    if isDeletionPending {
+                        ProgressView().controlSize(.small).frame(width: 24, height: 24)
+                    } else {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12, weight: .medium))
+                            .frame(width: 24, height: 24)
+                    }
                 }
+                .buttonStyle(.plain)
+                .disabled(isDeletionPending)
+                .help(L10n("删除 WorkItem"))
             }
-            .buttonStyle(.plain)
-            .disabled(isInspectingDeletion || isDeletingWorkItem)
-            .help(L10n("删除 WorkItem"))
         }
         .padding(.leading, 14)
         .padding(.trailing, 10)
@@ -1327,32 +1508,6 @@ struct WorkItemDetailView: View {
         }
     }
 
-    private func prepareDeletion() async {
-        guard !isInspectingDeletion else { return }
-        isInspectingDeletion = true
-        defer { isInspectingDeletion = false }
-        guard let plan = await client.inspectWorkItemDeletion(workItemId: workItem.id) else {
-            deletionFeedback = client.errorMessage ?? L10n("无法检查 WorkItem 的关联资源。")
-            return
-        }
-        deletionPlan = plan
-        showDeletion = true
-    }
-
-    private func deleteWorkItem(force: Bool, branch: String?) async {
-        guard !isDeletingWorkItem else { return }
-        isDeletingWorkItem = true
-        defer { isDeletingWorkItem = false }
-        if await client.deleteWorkItem(workItemId: workItem.id, force: force, confirmedBranchName: branch) {
-            showDeletion = false
-            onRequestReload()
-            deletionFeedback = L10nFormat("WorkItem“%@”已删除。", workItem.title)
-        } else {
-            deletionFeedback = client.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。")
-            deletionPlan = await client.inspectWorkItemDeletion(workItemId: workItem.id) ?? deletionPlan
-        }
-    }
-
     // 执行/终止/确认完成控制按钮：圆形、仅图标。
     // - 已完成 → 不显示控制按钮，完成状态由概览区的状态徽标表达。
     // - 待确认完成（review）→ 绿色对勾按钮，点击弹确认框，确认后变已完成。
@@ -1568,7 +1723,6 @@ struct WorkItemDetailView: View {
 private struct WorkItemDeletionConfirmationView: View {
     let workItem: WorkItem
     let plan: WorkItemDeletionPlan
-    let isDeleting: Bool
     let onCancel: () -> Void
     let onMergeFirst: () -> Void
     let onDelete: (_ force: Bool, _ branch: String?) -> Void
@@ -1617,19 +1771,18 @@ private struct WorkItemDeletionConfirmationView: View {
             }
 
             HStack {
-                if isDeleting { ProgressView().controlSize(.small) }
                 Spacer()
-                Button(L10n("取消"), role: .cancel, action: onCancel).disabled(isDeleting)
+                Button(L10n("取消"), role: .cancel, action: onCancel)
                 if !showForceConfirmation, !plan.risks.isEmpty, plan.blockers.isEmpty {
-                    Button(L10n("先合并"), action: onMergeFirst).disabled(isDeleting)
-                    Button(L10n("强制删除"), role: .destructive) { showForceConfirmation = true }.disabled(isDeleting)
+                    Button(L10n("先合并"), action: onMergeFirst)
+                    Button(L10n("强制删除"), role: .destructive) { showForceConfirmation = true }
                 } else if showForceConfirmation {
                     Button(L10n("确认强制删除"), role: .destructive) {
                         onDelete(true, confirmedBranch)
                     }
-                    .disabled(isDeleting || !acknowledgesDataLoss || confirmedBranch != plan.worktree?.branchName)
+                    .disabled(!acknowledgesDataLoss || confirmedBranch != plan.worktree?.branchName)
                 } else if plan.blockers.isEmpty {
-                    Button(L10n("确认删除"), role: .destructive) { onDelete(false, nil) }.disabled(isDeleting)
+                    Button(L10n("确认删除"), role: .destructive) { onDelete(false, nil) }
                 }
             }
         }
