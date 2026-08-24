@@ -5,6 +5,7 @@ enum ScheduledSessionAccessibilityID {
     static let composerSymbol = "calendar.badge.clock"
     static let composerEntry = "scheduled-session.composer.entry"
     static let detailSection = "scheduled-session.detail.section"
+    static let editorTitle = "scheduled-session.editor.title"
     static let editorMessage = "scheduled-session.editor.message"
     static let editorScheduleType = "scheduled-session.editor.schedule-type"
     static let editorRunAt = "scheduled-session.editor.run-at"
@@ -14,19 +15,20 @@ enum ScheduledSessionAccessibilityID {
     static let editorMissedPolicy = "scheduled-session.editor.missed-policy"
     static let editorSummary = "scheduled-session.editor.summary"
     static let editorSave = "scheduled-session.editor.save"
-    static let cardEdit = "scheduled-session.card.edit"
-    static let cardPauseResume = "scheduled-session.card.pause-resume"
-    static let cardRunNow = "scheduled-session.card.run-now"
-    static let cardCancel = "scheduled-session.card.cancel"
 }
 
 struct ScheduledSessionStrip: View {
     @EnvironmentObject private var backendClient: BackendClient
     let session: TaskSession
-    @State private var isShowingManager = false
+    @State private var isExpanded = false
+
+    private var activeTasks: [ScheduledSessionTask] {
+        backendClient.selectedScheduledTasks.filter { $0.status == .active }
+    }
 
     private var visibleTasks: [ScheduledSessionTask] {
-        backendClient.selectedScheduledTasks.filter { $0.status != .cancelled }.prefix(2).map { $0 }
+        let tasks = activeTasks
+        return isExpanded ? tasks : Array(tasks.prefix(2))
     }
 
     var body: some View {
@@ -38,19 +40,32 @@ struct ScheduledSessionStrip: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        } else if !backendClient.selectedScheduledTasks.isEmpty || backendClient.scheduledTaskError != nil {
+        } else if !activeTasks.isEmpty || backendClient.scheduledTaskError != nil {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Label(L10n("定时任务"), systemImage: "clock.badge")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button(L10n("管理 \(backendClient.selectedScheduledTasks.count)")) {
-                        isShowingManager = true
+                    if activeTasks.count > 2 {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.16)) { isExpanded.toggle() }
+                        } label: {
+                            Label(
+                                isExpanded
+                                    ? L10n("Collapse")
+                                    : L10nFormat(
+                                        "Show %lld more",
+                                        Int64(activeTasks.count - 2)
+                                    ),
+                                systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                            )
+                        }
+                        .accessibilityIdentifier("scheduled-session.detail.expand")
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
                 }
 
                 ForEach(visibleTasks) { task in
@@ -63,13 +78,17 @@ struct ScheduledSessionStrip: View {
                         .foregroundStyle(.red)
                         .lineLimit(2)
                 }
+
+                Label(
+                    ScheduledSessionManagementTimeFormatting.timeZoneLabel(),
+                    systemImage: "globe"
+                )
+                .font(.system(size: 8))
+                .foregroundStyle(.tertiary)
             }
             .padding(8)
             .background(Color.accentColor.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
-            .sheet(isPresented: $isShowingManager) {
-                ScheduledSessionManagerView(session: session)
-                    .environmentObject(backendClient)
-            }
+            .onChange(of: session.id) { _, _ in isExpanded = false }
             .accessibilityIdentifier(ScheduledSessionAccessibilityID.detailSection)
         }
     }
@@ -79,29 +98,52 @@ private struct ScheduledSessionCompactCard: View {
     let task: ScheduledSessionTask
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: task.presentationStatus.symbolName)
-                .foregroundStyle(task.presentationStatus.color)
-                .frame(width: 16)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.message)
-                    .font(.system(size: 10, weight: .medium))
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: task.presentationStatus.symbolName)
+                    .foregroundStyle(task.presentationStatus.color)
+                    .frame(width: 16)
+                Text(task.name)
+                    .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
-                Text(task.compactScheduleText)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Text(task.presentationStatus.label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(task.presentationStatus.color)
             }
-            Spacer(minLength: 4)
-            Text(task.presentationStatus.label)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(task.presentationStatus.color)
+
+            Label(task.typeLabel, systemImage: "bolt.badge.clock")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2),
+                alignment: .leading,
+                spacing: 6
+            ) {
+                timestamp(L10n("创建时间"), task.createdAt)
+                timestamp(L10n("上次执行时间"), task.lastRunAt)
+                timestamp(L10n("预计下次执行时间"), task.nextRunAt)
+                timestamp(L10n("过期时间"), task.expiresAt)
+            }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(task.presentationStatus.label)，\(task.message)，\(task.compactScheduleText)")
+        .accessibilityLabel("\(task.presentationStatus.label)，\(task.name)，\(task.typeLabel)")
+    }
+
+    private func timestamp(_ label: String, _ value: String?) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 8)).foregroundStyle(.tertiary)
+            Text(ScheduledSessionManagementTimeFormatting.string(
+                from: value,
+                locale: AppLanguageController.shared.locale
+            ) ?? L10n("None"))
+                .font(.system(size: 9, weight: .medium))
+                .lineLimit(1)
+        }
     }
 }
 
@@ -142,6 +184,14 @@ struct ScheduledTaskEditorSheet: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L10n("计划任务标题"))
+                    .font(.system(size: 11, weight: .semibold))
+                TextField(L10n("例如：检查构建结果"), text: $draft.title)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.editorTitle)
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -264,247 +314,10 @@ struct ScheduledTaskEditorSheet: View {
     }
 }
 
-struct ScheduledSessionManagerView: View {
-    @EnvironmentObject private var backendClient: BackendClient
-    @Environment(\.dismiss) private var dismiss
-    let session: TaskSession
-    @State private var editingTask: ScheduledSessionTask?
-    @State private var confirmation: ScheduledTaskConfirmation?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label(L10n("定时任务"), systemImage: "clock.badge")
-                    .font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Button { Task { await backendClient.loadScheduledTasks(for: session) } } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help(L10n("从后端刷新"))
-                Button(L10n("完成")) { dismiss() }
-            }
-            .padding(16)
-
-            Divider()
-
-            if backendClient.isLoadingScheduledTasks && backendClient.selectedScheduledTasks.isEmpty {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if backendClient.selectedScheduledTasks.isEmpty {
-                ContentUnavailableView(
-                    L10n("没有定时任务"),
-                    systemImage: "clock",
-                    description: Text(L10n("可从消息输入区域创建一次性或固定间隔计划。"))
-                )
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(backendClient.selectedScheduledTasks) { task in
-                            ScheduledSessionTaskCard(
-                                task: task,
-                                isMutating: backendClient.scheduledTaskMutationIds.contains(task.id),
-                                onEdit: { editingTask = task },
-                                onAction: requestAction,
-                                onLocateTurn: locateTurn
-                            )
-                        }
-                    }
-                    .padding(16)
-                }
-            }
-
-            if let error = backendClient.scheduledTaskError {
-                Divider()
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.red)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .frame(width: 680, height: 620)
-        .sheet(item: $editingTask) { task in
-            ScheduledTaskEditorSheet(session: session, existingTask: task)
-                .environmentObject(backendClient)
-        }
-        .alert(item: $confirmation) { confirmation in
-            Alert(
-                title: Text(confirmation.title),
-                message: Text(confirmation.message),
-                primaryButton: .destructive(Text(confirmation.confirmLabel)) {
-                    Task {
-                        await backendClient.performScheduledTaskAction(
-                            confirmation.action,
-                            task: confirmation.task,
-                            for: session
-                        )
-                    }
-                },
-                secondaryButton: .cancel()
-            )
-        }
-    }
-
-    private func requestAction(_ action: ScheduledSessionTaskAction, task: ScheduledSessionTask) {
-        if action == .cancel || action == .runNow {
-            confirmation = ScheduledTaskConfirmation(action: action, task: task)
-        } else {
-            Task { await backendClient.performScheduledTaskAction(action, task: task, for: session) }
-        }
-    }
-
-    private func locateTurn(_ turnID: String) {
-        dismiss()
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(
-                name: .scrollSessionTimelineToTurn,
-                object: nil,
-                userInfo: ["sessionId": session.id, "turnId": turnID]
-            )
-        }
-    }
-}
-
-struct ScheduledSessionTaskCard: View {
-    let task: ScheduledSessionTask
-    let isMutating: Bool
-    let onEdit: () -> Void
-    let onAction: (ScheduledSessionTaskAction, ScheduledSessionTask) -> Void
-    let onLocateTurn: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(task.message)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-                    Text(task.compactScheduleText)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 12)
-                Text(task.status.lifecycleLabel)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(task.status.lifecycleColor)
-            }
-
-            if let error = task.lastErrorMessage {
-                Label([task.lastErrorCode, error].compactMap { $0 }.joined(separator: " · "), systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
-
-            if let disabledReason = task.operationsDisabledReason {
-                Label(L10n("该计划当前不可操作：\(disabledReason)"), systemImage: "lock.trianglebadge.exclamationmark")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            }
-
-            if !task.runs.isEmpty {
-                DisclosureGroup(L10n("运行历史（\(task.runs.count)）")) {
-                    VStack(spacing: 7) {
-                        ForEach(task.runs) { run in
-                            ScheduledSessionRunRow(run: run, onLocateTurn: onLocateTurn)
-                        }
-                    }
-                    .padding(.top, 7)
-                }
-                .font(.system(size: 10, weight: .semibold))
-            }
-
-            HStack(spacing: 10) {
-                Button(L10n("编辑"), action: onEdit)
-                    .disabled(!task.status.permitsEditing || isMutating || task.operationsDisabledReason != nil)
-                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardEdit)
-                if task.status.permitsPause {
-                    Button(L10n("暂停")) { onAction(.pause, task) }
-                        .disabled(task.operationsDisabledReason != nil)
-                        .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardPauseResume)
-                } else if task.status.permitsResume {
-                    Button(L10n("重试")) {
-                        onAction(.retry, task)
-                    }
-                    .disabled(task.operationsDisabledReason != nil)
-                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardPauseResume)
-                }
-                Button(L10n("立即执行")) { onAction(.runNow, task) }
-                    .disabled(!task.status.permitsRunNow || isMutating || task.operationsDisabledReason != nil)
-                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardRunNow)
-                Spacer()
-                Button(L10n("取消计划"), role: .destructive) { onAction(.cancel, task) }
-                    .disabled(!task.status.permitsCancel || isMutating || task.operationsDisabledReason != nil)
-                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.cardCancel)
-                if isMutating { ProgressView().controlSize(.mini) }
-            }
-            .font(.system(size: 10))
-        }
-        .padding(12)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor).opacity(0.55)))
-    }
-}
-
-private struct ScheduledSessionRunRow: View {
-    let run: ScheduledSessionRun
-    let onLocateTurn: (String) -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: run.status.presentation.symbolName)
-                .foregroundStyle(run.status.presentation.color)
-                .frame(width: 15)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(run.status.presentation.label)
-                    .font(.system(size: 10, weight: .semibold))
-                Text(run.actualTimeText)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                if let error = run.errorMessage {
-                    Text([run.errorCode, error].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 9))
-                        .foregroundStyle(.red)
-                        .textSelection(.enabled)
-                }
-                if run.agentWorkItemId != nil || run.targetTurnId != nil {
-                    Text([run.agentWorkItemId, run.targetTurnId].compactMap { $0 }.joined(separator: " · "))
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(Color.accentColor)
-                        .textSelection(.enabled)
-                        .help(L10n("关联的 agentWorkItemId 与 targetTurnId"))
-                    if let targetTurnId = run.targetTurnId {
-                        Button(L10n("在时间线中查看")) { onLocateTurn(targetTurnId) }
-                            .buttonStyle(.link)
-                            .font(.system(size: 9, weight: .semibold))
-                    }
-                }
-            }
-            Spacer()
-        }
-        .padding(7)
-        .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 7))
-    }
-}
-
-private struct ScheduledTaskConfirmation: Identifiable {
-    var id: String { "\(task.id):\(action.rawValue)" }
-    let action: ScheduledSessionTaskAction
-    let task: ScheduledSessionTask
-
-    var title: String { action == .cancel ? "取消这个计划？" : "立即执行这个计划？" }
-    var message: String {
-        action == .cancel
-            ? "取消后该计划不会再次触发；已产生的运行历史会保留。"
-            : "后端会立即创建一次运行；如果 Session 正忙，任务将进入队列等待。"
-    }
-    var confirmLabel: String { action == .cancel ? "取消计划" : "立即执行" }
-}
-
 extension ScheduledSessionTaskDraft {
     init(task: ScheduledSessionTask) {
         self.init(
+            title: task.name,
             message: task.message,
             scheduleType: task.scheduleType,
             runAt: ScheduledSessionDateFormatting.date(from: task.runAt ?? task.nextRunAt)
@@ -553,31 +366,13 @@ extension ScheduledSessionTaskDraft {
 
 private extension ScheduledSessionTask {
     @MainActor
-    var compactScheduleText: String {
-        let next = ScheduledSessionDateFormatting.date(from: nextRunAt).map { date in
-            let formatter = DateFormatter()
-            formatter.locale = AppLanguageController.shared.locale
-            formatter.timeZone = TimeZone(identifier: timezone)
-            formatter.dateStyle = .short
-            formatter.timeStyle = .short
-            return formatter.string(from: date)
-        } ?? L10n("无下次执行时间")
-        let recurrence: String = switch scheduleType {
-        case .once: L10n("一次性")
-        case .interval: L10n("每 \(ScheduledSessionTaskDraft.intervalText(intervalSeconds ?? 0))")
-        case .condition: L10n("条件轮询")
-        case .process: L10n("进程退出")
+    var typeLabel: String {
+        switch scheduleType {
+        case .once: L10n("一次性定时任务")
+        case .interval: L10n("周期定时任务")
+        case .condition: L10n("条件任务")
+        case .process: L10n("进程退出任务")
         }
-        return "\(next) · \(recurrence) · \(timezone)"
-    }
-}
-
-private extension ScheduledSessionRun {
-    @MainActor
-    var actualTimeText: String {
-        let actual = completedAt ?? startedAt ?? queuedAt ?? claimedAt ?? scheduledFor
-        guard let date = ScheduledSessionDateFormatting.date(from: actual) else { return actual }
-        return date.formatted(.dateTime.month().day().hour().minute().second())
     }
 }
 
@@ -625,30 +420,6 @@ private extension ScheduledSessionRunPresentation {
         case .paused: .yellow
         case .expired: .orange
         case .cancelled, .missed, .unknown: .secondary
-        }
-    }
-}
-
-private extension ScheduledSessionTaskStatus {
-    @MainActor var lifecycleLabel: String {
-        switch self {
-        case .active: L10n("生效中")
-        case .cancelled: L10n("已取消")
-        case .completed: L10n("已完成")
-        case .expired: L10n("已过期")
-        case .error: L10n("异常")
-        default: L10n("异常")
-        }
-    }
-
-    var lifecycleColor: Color {
-        switch self {
-        case .active: .blue
-        case .cancelled: .secondary
-        case .completed: .green
-        case .expired: .orange
-        case .error: .red
-        default: .red
         }
     }
 }
