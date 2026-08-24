@@ -451,32 +451,22 @@ private struct UnderlineTabButton: View {
     }
 }
 
-// MARK: - 主窗口顶层容器
+// MARK: - 主窗口独立渲染表面
 
-// 主窗口顶层容器：顶部中间 Tab 切换器（控制台 / Sessions / Agents / 设置）+ 对应内容。
-struct MainTabView: View {
+/// The heavyweight page surface. A transparent 30-point layout reservation
+/// preserves the existing page origin while title-bar controls render in
+/// independent, constant-size hosting surfaces owned by AppKit.
+struct MainWindowContentView: View {
     @StateObject private var router = AppTabRouter.shared
     @StateObject private var selectionState = AppTabRouter.shared.selectionState
     @EnvironmentObject private var resizeState: MainWindowResizeState
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                MainWindowChromeControls(
-                    sidebarState: router.sidebarState(for: selectionState.selectedTab),
-                    openSettings: openSettings
-                )
-                .frame(width: 220, alignment: .leading)
-                .offset(x: 64, y: -32)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                UnderlineTabBar(selection: Binding(
-                    get: { selectionState.selectedTab },
-                    set: { router.selectTab($0) }
-                ))
-                .offset(y: -12)
-            }
-            .padding(.horizontal, 12)
+            Color.clear
+                .frame(height: 30)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
 
             MainTabPageHost(
                 selection: selectionState.selectedTab,
@@ -492,21 +482,44 @@ struct MainTabView: View {
                 transaction.disablesAnimations = true
             }
         }
-        // The notification owns its subscriptions in a separate overlay subtree.
-        // Overlay sizing never participates in the tab header's ZStack layout, so
-        // task insertion, mutation, removal, and intrinsic-width changes cannot
-        // move or resize the tab controls.
-        .overlay(alignment: .topTrailing) {
-            MainWindowBackgroundTaskOverlay()
-                .frame(width: 220, alignment: .trailing)
-                .padding(.top, 8)
-                .padding(.trailing, 12)
-                .offset(y: -32)
-        }
     }
+}
 
-    private func openSettings() {
-        AppDelegate.shared?.openSettings()
+/// A separately composited, constant-size title-bar surface. Keeping these
+/// edge-anchored controls outside the coalesced main content prevents their
+/// glyphs and frames from stretching and snapping at root layout commits.
+struct MainWindowFixedChromeView: View {
+    @StateObject private var router = AppTabRouter.shared
+    @StateObject private var selectionState = AppTabRouter.shared.selectionState
+
+    var body: some View {
+        MainWindowChromeControls(
+            sidebarState: router.sidebarState(for: selectionState.selectedTab),
+            openSettings: { AppDelegate.shared?.openSettings() }
+        )
+    }
+}
+
+/// The center tab bar keeps its original fixed 42-point item geometry. AppKit
+/// moves this surface to the current window center without resizing the host.
+struct MainWindowTabBarSurfaceView: View {
+    @StateObject private var router = AppTabRouter.shared
+    @StateObject private var selectionState = AppTabRouter.shared.selectionState
+
+    var body: some View {
+        UnderlineTabBar(selection: Binding(
+            get: { selectionState.selectedTab },
+            set: { router.selectTab($0) }
+        ))
+    }
+}
+
+/// The trailing status surface owns the same leaf renderer previously attached
+/// as a root overlay. Its publications cannot invalidate content or tab layout.
+struct MainWindowTaskSurfaceView: View {
+    var body: some View {
+        MainWindowBackgroundTaskOverlay()
+            .frame(width: 220, alignment: .trailing)
     }
 }
 
@@ -531,6 +544,7 @@ private struct MainWindowChromeControls: View {
             .help(L10n(windowState.isPinned ? "Disable Always on Top" : "Enable Always on Top"))
             .accessibilityLabel(L10n("Always on Top"))
             .accessibilityValue(L10n(windowState.isPinned ? "On" : "Off"))
+            .accessibilityIdentifier("main-window.pin")
 
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) {
@@ -543,12 +557,14 @@ private struct MainWindowChromeControls: View {
             .help(L10n(sidebarState.isVisible ? "Hide Sidebar" : "Show Sidebar"))
             .accessibilityLabel(L10n("Sidebar"))
             .accessibilityValue(L10n(sidebarState.isVisible ? "Expanded" : "Collapsed"))
+            .accessibilityIdentifier("main-window.sidebar")
 
             Button(action: openSettings) {
                 chromeIcon(systemName: "gearshape", isActive: false)
             }
             .buttonStyle(.plain)
             .help(L10n("设置"))
+            .accessibilityIdentifier("main-window.settings")
         }
     }
 

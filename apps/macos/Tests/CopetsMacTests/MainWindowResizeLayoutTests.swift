@@ -19,6 +19,7 @@ struct MainWindowResizeLayoutTests {
 
         view.viewWillStartLiveResize()
         #expect(resizeState.isLiveResize)
+        var observedCoalescedLayout = false
         for index in 0..<180 {
             let direction: CGFloat = index.isMultiple(of: 2) ? 1 : -1
             view.frame.size = NSSize(
@@ -26,7 +27,15 @@ struct MainWindowResizeLayoutTests {
                 height: 700 + direction * CGFloat(index % 50)
             )
             view.layoutSubtreeIfNeeded()
+            #expect(abs(view.presentedContentFrame.minX - view.bounds.minX) < 0.01)
+            #expect(abs(view.presentedContentFrame.minY - view.bounds.minY) < 0.01)
+            #expect(view.presentedContentFrame.size == view.renderedContentSize)
+            if view.renderedContentSize != view.bounds.size {
+                observedCoalescedLayout = true
+                #expect(view.contentUsesIdentityTransform)
+            }
         }
+        #expect(observedCoalescedLayout)
         view.viewDidEndLiveResize()
 
         #expect(view.layoutStatistics.sizeChangeEvents - eventsBeforeResize == 180)
@@ -40,7 +49,7 @@ struct MainWindowResizeLayoutTests {
 
     @MainActor
     @Test
-    func resizeStabilityDebouncePerformsExactLayoutBeforeDragEnds() async throws {
+    func programmaticResizeStabilityDebouncePerformsExactLayout() async throws {
         let resizeState = MainWindowResizeState()
         let view = LiveResizeHostingView(
             rootView: Image(systemName: "rectangle"),
@@ -48,16 +57,95 @@ struct MainWindowResizeLayoutTests {
         )
         view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
         view.layoutSubtreeIfNeeded()
-        view.viewWillStartLiveResize()
         view.frame.size = NSSize(width: 1_240, height: 760)
         view.layoutSubtreeIfNeeded()
         let exactLayoutsBeforeStability = view.layoutStatistics.exactLayouts
 
-        try await Task.sleep(for: .milliseconds(180))
+        try await Task.sleep(for: .milliseconds(350))
 
         #expect(view.layoutStatistics.exactLayouts == exactLayoutsBeforeStability + 1)
         #expect(view.renderedContentSize == view.bounds.size)
         #expect(view.contentUsesIdentityTransform)
+    }
+
+    @MainActor
+    @Test
+    func nativeLiveResizeDefersExactLayoutUntilDragEnds() async throws {
+        let resizeState = MainWindowResizeState()
+        let view = LiveResizeHostingView(
+            rootView: Text("Latest size only"),
+            resizeState: resizeState
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
+        view.layoutSubtreeIfNeeded()
+
+        view.viewWillStartLiveResize()
+        view.frame.size = NSSize(width: 1_240, height: 760)
+        view.layoutSubtreeIfNeeded()
+        let exactLayoutsDuringResize = view.layoutStatistics.exactLayouts
+
+        try await Task.sleep(for: .milliseconds(180))
+
+        #expect(view.layoutStatistics.exactLayouts == exactLayoutsDuringResize)
+        view.viewDidEndLiveResize()
+        #expect(view.layoutStatistics.exactLayouts == exactLayoutsDuringResize + 1)
+        #expect(view.renderedContentSize == view.bounds.size)
+        #expect(!resizeState.isLiveResize)
+    }
+
+    @MainActor
+    @Test
+    func chromeSurfacesKeepSizeAndAnchorsDuringCoalescedResize() {
+        let resizeState = MainWindowResizeState()
+        let leadingChrome = NSView(frame: .zero)
+        let centerChrome = NSView(frame: .zero)
+        let trailingChrome = NSView(frame: .zero)
+        let view = LiveResizeHostingView(
+            rootView: Text("Coalesced content"),
+            resizeState: resizeState,
+            chromeSurfaces: MainWindowChromeSurfaces(
+                leading: leadingChrome,
+                center: centerChrome,
+                trailing: trailingChrome
+            )
+        )
+        view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
+        view.layoutSubtreeIfNeeded()
+        let initialLeadingTopOffset = leadingChrome.frame.maxY
+            - (view.bounds.maxY - view.safeAreaInsets.top)
+        let initialCenterTopOffset = centerChrome.frame.maxY
+            - (view.bounds.maxY - view.safeAreaInsets.top)
+        let initialTrailingTopOffset = trailingChrome.frame.maxY
+            - (view.bounds.maxY - view.safeAreaInsets.top)
+
+        view.viewWillStartLiveResize()
+        view.frame.size = NSSize(width: 1_420, height: 900)
+        view.layoutSubtreeIfNeeded()
+        let resizedLeadingTopOffset = leadingChrome.frame.maxY
+            - (view.bounds.maxY - view.safeAreaInsets.top)
+        let resizedCenterTopOffset = centerChrome.frame.maxY
+            - (view.bounds.maxY - view.safeAreaInsets.top)
+        let resizedTrailingTopOffset = trailingChrome.frame.maxY
+            - (view.bounds.maxY - view.safeAreaInsets.top)
+
+        #expect(leadingChrome.frame.size == NSSize(width: 88, height: 22))
+        #expect(leadingChrome.frame.minX == 76)
+        #expect(abs(initialLeadingTopOffset - 28) < 0.01)
+        #expect(abs(resizedLeadingTopOffset - initialLeadingTopOffset) < 0.01)
+
+        #expect(centerChrome.frame.size == NSSize(width: 252, height: 30))
+        #expect(abs(centerChrome.frame.midX - view.bounds.midX) < 0.01)
+        #expect(abs(initialCenterTopOffset - 12) < 0.01)
+        #expect(abs(resizedCenterTopOffset - initialCenterTopOffset) < 0.01)
+
+        #expect(trailingChrome.frame.size == NSSize(width: 220, height: 22))
+        #expect(abs(view.bounds.maxX - trailingChrome.frame.maxX - 12) < 0.01)
+        #expect(abs(initialTrailingTopOffset - 24) < 0.01)
+        #expect(abs(resizedTrailingTopOffset - initialTrailingTopOffset) < 0.01)
+
+        #expect(leadingChrome.superview === view)
+        #expect(centerChrome.superview === view)
+        #expect(trailingChrome.superview === view)
         view.viewDidEndLiveResize()
     }
 
