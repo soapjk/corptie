@@ -24,4 +24,25 @@ enum SessionHistoryPageMerger {
         }
         return merged
     }
+
+    /// An anchor window can be separated from the currently loaded tail by an
+    /// intentional gap. Keep the bounded anchor neighborhood first, retain the
+    /// cached tail for an immediate "jump to latest", and remove overlap by
+    /// stable item identity without manufacturing intermediate history.
+    static func mergeAnchorWindow(
+        _ windowItems: [CodexThreadItem],
+        with currentItems: [CodexThreadItem]
+    ) -> [CodexThreadItem] {
+        var seen = Set<String>()
+        seen.reserveCapacity(windowItems.count + currentItems.count)
+        var merged: [CodexThreadItem] = []
+        merged.reserveCapacity(windowItems.count + currentItems.count)
+        for item in windowItems where seen.insert(item.id).inserted {
+            merged.append(item)
+        }
+        for item in currentItems where seen.insert(item.id).inserted {
+            merged.append(item)
+        }
+        return merged
+    }
 }

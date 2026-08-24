@@ -59,6 +59,15 @@ final class SessionHistoryPageMergerTests: XCTestCase {
         XCTAssertEqual(merged.map(\.id), ["older", "current-1", "current-2"])
     }
 
+    func testAnchorWindowMergesBeforeCachedTailAndRemovesOverlap() {
+        let merged = SessionHistoryPageMerger.mergeAnchorWindow(
+            [item("anchor"), item("overlap")],
+            with: [item("overlap"), item("latest")]
+        )
+
+        XCTAssertEqual(merged.map(\.id), ["anchor", "overlap", "latest"])
+    }
+
     private func item(_ id: String) -> CodexThreadItem {
         CodexThreadItem(
             id: id,
