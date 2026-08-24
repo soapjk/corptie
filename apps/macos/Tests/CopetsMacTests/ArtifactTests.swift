@@ -2,6 +2,15 @@ import XCTest
 @testable import CorptieMac
 
 final class ArtifactTests: XCTestCase {
+    func testArtifactEndpointEncodesCanonicalIdentifiersExactlyOnce() {
+        let url = ArtifactAPIClient.endpointURL(
+            baseURL: URL(string: "http://127.0.0.1:47321/")!,
+            path: "objectives/objective:196ee12b/artifacts"
+        )
+        XCTAssertEqual(url.absoluteString, "http://127.0.0.1:47321/objectives/objective:196ee12b/artifacts")
+        XCTAssertFalse(url.absoluteString.contains("%253A"))
+    }
+
     func testLargeContentPagingRemainsBoundedAndReplacesPages() {
         XCTAssertEqual(ArtifactContentPagingPolicy.pageBytes, 65_536)
         XCTAssertNil(ArtifactContentPagingPolicy.previousOffset(currentOffset: 0))
