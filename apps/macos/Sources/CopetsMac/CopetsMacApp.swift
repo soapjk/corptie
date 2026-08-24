@@ -1,5 +1,7 @@
 import AppKit
 import Combine
+import os
+import QuartzCore
 import SwiftUI
 import UserNotifications
 
@@ -121,17 +123,59 @@ struct LiveResizeLayoutStatistics: Equatable {
 }
 
 @MainActor
+struct MainWindowChromeSurfaces {
+    let leading: NSView
+    let center: NSView
+    let trailing: NSView
+}
+
+enum MainWindowResizeTrace {
+    private static let log = OSLog(
+        subsystem: "com.corptie.mac",
+        category: "MainWindowResizePerformance"
+    )
+
+    static func beginSession(_ reason: String) -> OSSignpostID {
+        let id = OSSignpostID(log: log)
+        os_signpost(.begin, log: log, name: "ResizeSession", signpostID: id, "%{public}@", reason)
+        return id
+    }
+
+    static func endSession(_ id: OSSignpostID) {
+        os_signpost(.end, log: log, name: "ResizeSession", signpostID: id)
+    }
+
+    static func sizeChanged(width: CGFloat, height: CGFloat) {
+        os_signpost(
+            .event,
+            log: log,
+            name: "ResizeSizeChanged",
+            "%{public}.0fx%{public}.0f",
+            Double(width),
+            Double(height)
+        )
+    }
+
+    static func measure<T>(_ name: StaticString, operation: () throws -> T) rethrows -> T {
+        os_signpost(.begin, log: log, name: name)
+        defer { os_signpost(.end, log: log, name: name) }
+        return try operation()
+    }
+}
+
+@MainActor
 final class MainWindowResizeState: ObservableObject {
     @Published fileprivate(set) var isLiveResize = false
 }
 
-/// Coalesces native, real-size layout during window transitions. The opaque
-/// background follows every AppKit bounds change immediately; the SwiftUI host
-/// consumes only the latest size at a bounded cadence. No snapshot or layer
-/// transform is used, so text, icons, images, and hit-testing remain in the same
-/// coordinate system. Transition completion always forces one exact layout.
+/// AppKit-owned main-window surface hierarchy. The three title-bar surfaces keep
+/// fixed intrinsic sizes and move with native window geometry, independently of
+/// the coalesced SwiftUI content surface. A display-link consumes only the latest
+/// pending content size; completion always restores exact geometry. The content
+/// surface is never scaled: fixed-width columns therefore cannot stretch past
+/// their target and snap backward at the next real layout commit.
 @MainActor
-final class LiveResizeHostingView<Content: View>: NSView {
+final class MainWindowSurfaceContainer<Content: View>: NSView {
     private enum ResizeReason: Hashable {
         case liveResize
         case fullScreenTransition
@@ -142,38 +186,92 @@ final class LiveResizeHostingView<Content: View>: NSView {
     static var stabilityDelay: TimeInterval { 0.12 }
 
     private let backgroundView = NSView()
+    private let contentContainer = NSView()
     private let hostingView: NSHostingView<Content>
+    private let chromeSurfaces: MainWindowChromeSurfaces?
     private let resizeState: MainWindowResizeState
     private var resizeReasons = Set<ResizeReason>()
     private var windowNotificationTokens: [NSObjectProtocol] = []
-    private var layoutTimer: Timer?
+    private var resizeDisplayLink: CADisplayLink?
+    private var hasPendingLayoutCommit = false
     private var exactLayoutTimer: Timer?
     private var lastLayoutTime: TimeInterval = -.infinity
     private var lastSizeChangeTime: TimeInterval = -.infinity
     private var lastObservedSize = NSSize.zero
+    private var resizeTraceID: OSSignpostID?
     private(set) var layoutStatistics = LiveResizeLayoutStatistics()
     var renderedContentSize: NSSize { hostingView.frame.size }
+    var presentedContentFrame: NSRect {
+        contentContainer.layer?.frame ?? contentContainer.frame
+    }
     var contentUsesIdentityTransform: Bool {
-        hostingView.layer?.affineTransform() == .identity
+        contentContainer.layer?.affineTransform() == .identity
     }
 
-    init(rootView: Content, resizeState: MainWindowResizeState) {
+    init(
+        rootView: Content,
+        resizeState: MainWindowResizeState,
+        chromeSurfaces: MainWindowChromeSurfaces? = nil
+    ) {
         hostingView = NSHostingView(rootView: rootView)
         self.resizeState = resizeState
+        self.chromeSurfaces = chromeSurfaces
         super.init(frame: .zero)
 
         wantsLayer = true
         layer?.masksToBounds = true
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
         backgroundView.wantsLayer = true
         backgroundView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         backgroundView.autoresizingMask = []
         addSubview(backgroundView)
 
+        contentContainer.wantsLayer = true
+        contentContainer.layer?.masksToBounds = true
+        contentContainer.autoresizingMask = []
+        addSubview(contentContainer)
+
         hostingView.sizingOptions = []
         hostingView.autoresizingMask = []
         hostingView.layerContentsRedrawPolicy = .duringViewResize
-        addSubview(hostingView)
+        contentContainer.addSubview(hostingView)
+
+        if let chromeSurfaces {
+            for surface in [chromeSurfaces.leading, chromeSurfaces.center, chromeSurfaces.trailing] {
+                surface.translatesAutoresizingMaskIntoConstraints = false
+                surface.setContentHuggingPriority(.required, for: .horizontal)
+                surface.setContentHuggingPriority(.required, for: .vertical)
+                addSubview(surface)
+            }
+            NSLayoutConstraint.activate([
+                chromeSurfaces.leading.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 76),
+                chromeSurfaces.leading.topAnchor.constraint(
+                    equalTo: safeAreaLayoutGuide.topAnchor,
+                    constant: -28
+                ),
+                chromeSurfaces.leading.widthAnchor.constraint(equalToConstant: 88),
+                chromeSurfaces.leading.heightAnchor.constraint(equalToConstant: 22),
+
+                chromeSurfaces.center.centerXAnchor.constraint(equalTo: centerXAnchor),
+                chromeSurfaces.center.topAnchor.constraint(
+                    equalTo: safeAreaLayoutGuide.topAnchor,
+                    constant: -12
+                ),
+                chromeSurfaces.center.widthAnchor.constraint(
+                    equalToConstant: CGFloat(AppTab.allCases.count) * 42
+                ),
+                chromeSurfaces.center.heightAnchor.constraint(equalToConstant: 30),
+
+                chromeSurfaces.trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+                chromeSurfaces.trailing.topAnchor.constraint(
+                    equalTo: safeAreaLayoutGuide.topAnchor,
+                    constant: -24
+                ),
+                chromeSurfaces.trailing.widthAnchor.constraint(equalToConstant: 220),
+                chromeSurfaces.trailing.heightAnchor.constraint(equalToConstant: 22)
+            ])
+        }
     }
 
     @available(*, unavailable)
@@ -185,6 +283,7 @@ final class LiveResizeHostingView<Content: View>: NSView {
         super.viewDidMoveToWindow()
         removeWindowObservers()
         guard let window else { return }
+        installDisplayLink()
 
         let center = NotificationCenter.default
         windowNotificationTokens = [
@@ -229,6 +328,7 @@ final class LiveResizeHostingView<Content: View>: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         backgroundView.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
     }
 
@@ -249,13 +349,20 @@ final class LiveResizeHostingView<Content: View>: NSView {
         lastObservedSize = bounds.size
         lastSizeChangeTime = ProcessInfo.processInfo.systemUptime
         layoutStatistics.sizeChangeEvents += 1
+        MainWindowResizeTrace.sizeChanged(width: bounds.width, height: bounds.height)
 
         if hostingView.frame.size == .zero {
             applyExactLayout()
             return
         }
 
-        scheduleExactLayoutAfterStability()
+        // Native live/full-screen transitions have a definitive end callback.
+        // Running the stability fallback during those transitions can mistake a
+        // delayed main-thread event for completion and force an expensive exact
+        // layout while the pointer is still moving.
+        if resizeReasons.isEmpty {
+            scheduleExactLayoutAfterStability()
+        }
         scheduleLayoutIfNeeded()
     }
 
@@ -263,8 +370,13 @@ final class LiveResizeHostingView<Content: View>: NSView {
         let wasResizing = !resizeReasons.isEmpty
         resizeReasons.insert(reason)
         guard !wasResizing else { return }
+        exactLayoutTimer?.invalidate()
+        exactLayoutTimer = nil
         resizeState.isLiveResize = true
         lastLayoutTime = ProcessInfo.processInfo.systemUptime
+        resizeTraceID = MainWindowResizeTrace.beginSession(
+            reason == .liveResize ? "liveResize" : "fullScreenTransition"
+        )
     }
 
     private func endResize(for reason: ResizeReason) {
@@ -273,32 +385,47 @@ final class LiveResizeHostingView<Content: View>: NSView {
         resizeState.isLiveResize = false
         invalidateLayoutTimers()
         applyExactLayout()
+        if let resizeTraceID {
+            MainWindowResizeTrace.endSession(resizeTraceID)
+            self.resizeTraceID = nil
+        }
     }
 
     private func scheduleLayoutIfNeeded() {
-        guard layoutTimer == nil else {
+        guard !hasPendingLayoutCommit else {
             layoutStatistics.coalescedEvents += 1
             return
         }
-        let now = ProcessInfo.processInfo.systemUptime
+        hasPendingLayoutCommit = true
+        resizeDisplayLink?.isPaused = false
+    }
+
+    private func installDisplayLink() {
+        resizeDisplayLink?.invalidate()
+        let link = displayLink(
+            target: self,
+            selector: #selector(handleDisplayLink(_:))
+        )
+        link.isPaused = true
+        link.add(to: .main, forMode: .common)
+        resizeDisplayLink = link
+    }
+
+    @objc private func handleDisplayLink(_ displayLink: CADisplayLink) {
+        guard hasPendingLayoutCommit else {
+            displayLink.isPaused = true
+            return
+        }
         let interval = resizeReasons.isEmpty
             ? Self.animatedLayoutInterval
             : Self.liveLayoutInterval
-        let delay = max(0, interval - (now - lastLayoutTime))
-        guard delay > 0 else {
-            applyLayoutCommit()
-            return
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastLayoutTime >= interval else { return }
+        hasPendingLayoutCommit = false
+        applyLayoutCommit()
+        if !hasPendingLayoutCommit {
+            displayLink.isPaused = true
         }
-
-        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.layoutTimer = nil
-                self.applyLayoutCommit()
-            }
-        }
-        layoutTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func scheduleExactLayoutAfterStability() {
@@ -316,8 +443,8 @@ final class LiveResizeHostingView<Content: View>: NSView {
                     self.scheduleStabilityTimer(after: Self.stabilityDelay - elapsed)
                     return
                 }
-                self.layoutTimer?.invalidate()
-                self.layoutTimer = nil
+                self.hasPendingLayoutCommit = false
+                self.resizeDisplayLink?.isPaused = true
                 self.applyExactLayout()
             }
         }
@@ -327,10 +454,17 @@ final class LiveResizeHostingView<Content: View>: NSView {
 
     private func applyLayoutCommit() {
         let startedAt = ProcessInfo.processInfo.systemUptime
-        hostingView.frame = bounds
-        hostingView.layoutSubtreeIfNeeded()
-        hostingView.needsDisplay = true
-        hostingView.displayIfNeeded()
+        MainWindowResizeTrace.measure("ResizeLayoutCommit") {
+            // Assign only the newest size. AppKit and Core Animation perform the
+            // resulting child layout/draw in their normal transaction instead of
+            // synchronously blocking this resize callback. Intermediate sizes
+            // coalesced by the frame coordinator are intentionally discarded.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            contentContainer.frame = bounds
+            hostingView.frame = contentContainer.bounds
+            CATransaction.commit()
+        }
         let finishedAt = ProcessInfo.processInfo.systemUptime
         lastLayoutTime = finishedAt
         layoutStatistics.layoutCommits += 1
@@ -342,11 +476,18 @@ final class LiveResizeHostingView<Content: View>: NSView {
 
     private func applyExactLayout() {
         let startedAt = ProcessInfo.processInfo.systemUptime
-        hostingView.frame = bounds
-        hostingView.needsLayout = true
-        hostingView.layoutSubtreeIfNeeded()
-        hostingView.needsDisplay = true
-        hostingView.displayIfNeeded()
+        MainWindowResizeTrace.measure("ResizeExactLayout") {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            contentContainer.frame = bounds
+            hostingView.frame = contentContainer.bounds
+            CATransaction.commit()
+            hostingView.needsLayout = true
+            hostingView.layoutSubtreeIfNeeded()
+            // Drawing remains transaction-driven. The synchronous layout makes
+            // geometry and hit-testing exact without waiting for rasterization.
+            hostingView.needsDisplay = true
+        }
         let finishedAt = ProcessInfo.processInfo.systemUptime
         lastLayoutTime = finishedAt
         layoutStatistics.exactLayouts += 1
@@ -357,19 +498,23 @@ final class LiveResizeHostingView<Content: View>: NSView {
     }
 
     private func invalidateLayoutTimers() {
-        layoutTimer?.invalidate()
-        layoutTimer = nil
+        hasPendingLayoutCommit = false
+        resizeDisplayLink?.isPaused = true
         exactLayoutTimer?.invalidate()
         exactLayoutTimer = nil
     }
 
     private func removeWindowObservers() {
         invalidateLayoutTimers()
+        resizeDisplayLink?.invalidate()
+        resizeDisplayLink = nil
         let center = NotificationCenter.default
         windowNotificationTokens.forEach(center.removeObserver)
         windowNotificationTokens.removeAll()
     }
 }
+
+typealias LiveResizeHostingView<Content: View> = MainWindowSurfaceContainer<Content>
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -802,9 +947,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.center()
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
-        let hostingView = LiveResizeHostingView(
-            rootView: MainTabView().environmentObject(resizeState),
-            resizeState: resizeState
+        let leadingChrome = NSHostingView(rootView: MainWindowFixedChromeView())
+        let centerChrome = NSHostingView(rootView: MainWindowTabBarSurfaceView())
+        let trailingChrome = NSHostingView(rootView: MainWindowTaskSurfaceView())
+        leadingChrome.sizingOptions = []
+        centerChrome.sizingOptions = []
+        trailingChrome.sizingOptions = []
+        for surface in [leadingChrome, centerChrome, trailingChrome] {
+            surface.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        }
+        let hostingView = MainWindowSurfaceContainer(
+            rootView: MainWindowContentView().environmentObject(resizeState),
+            resizeState: resizeState,
+            chromeSurfaces: MainWindowChromeSurfaces(
+                leading: leadingChrome,
+                center: centerChrome,
+                trailing: trailingChrome
+            )
         )
         // This is a user-resizable AppKit-owned window. The SwiftUI root must
         // follow its bounds, not feed its ideal size back into NSWindow. The
