@@ -759,6 +759,8 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_session_items_session_id ON session_items(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_session_items_latest
       ON session_items(session_id, created_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_session_items_turn_window
+      ON session_items(session_id, turn_id, created_at, id);
 
       CREATE TABLE IF NOT EXISTS session_context_references (
         reference_id TEXT PRIMARY KEY,
@@ -5590,6 +5592,75 @@ export class CorptieStore {
       .map((item) => normalizeStoredItem(item, provider))
       .filter((item, index, items) => !isAdjacentDuplicateUserMessage(item, items[index - 1]));
     return items;
+  }
+
+  getTimelineItemWindow(
+    sessionId,
+    { anchorKind = "item", anchorId, before = 40, after = 40, provider = "" } = {}
+  ) {
+    const beforeLimit = Math.floor(Math.max(1, Math.min(200, Number(before) || 40)));
+    const afterLimit = Math.floor(Math.max(1, Math.min(200, Number(after) || 40)));
+    const columns = `id, turn_id, turn_status, type, title, text, options_json,
+                     raw_metadata_json, status, created_at`;
+    const anchorRows = anchorKind === "turn"
+      ? this.selectAll(
+        `SELECT ${columns} FROM session_items
+         WHERE session_id = ? AND turn_id = ?
+         ORDER BY created_at ASC, id ASC LIMIT 200`,
+        [sessionId, anchorId]
+      )
+      : this.selectAll(
+        `SELECT ${columns} FROM session_items
+         WHERE session_id = ? AND id = ? LIMIT 1`,
+        [sessionId, anchorId]
+      );
+    if (anchorRows.length === 0) return null;
+
+    const firstAnchor = anchorRows[0];
+    const lastAnchor = anchorRows.at(-1);
+    const beforeRows = this.selectAll(
+      `SELECT ${columns} FROM session_items
+       WHERE session_id = ?
+         AND (created_at < ? OR (created_at = ? AND id < ?))
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      [sessionId, firstAnchor.created_at, firstAnchor.created_at, firstAnchor.id, beforeLimit]
+    ).reverse();
+    const afterRows = this.selectAll(
+      `SELECT ${columns} FROM session_items
+       WHERE session_id = ?
+         AND (created_at > ? OR (created_at = ? AND id > ?))
+       ORDER BY created_at ASC, id ASC LIMIT ?`,
+      [sessionId, lastAnchor.created_at, lastAnchor.created_at, lastAnchor.id, afterLimit]
+    );
+    const rows = [...beforeRows, ...anchorRows, ...afterRows];
+    const first = rows[0];
+    const last = rows.at(-1);
+    const hasEarlier = Boolean(this.selectOne(
+      `SELECT 1 FROM session_items WHERE session_id = ?
+       AND (created_at < ? OR (created_at = ? AND id < ?)) LIMIT 1`,
+      [sessionId, first.created_at, first.created_at, first.id]
+    ));
+    const hasLater = Boolean(this.selectOne(
+      `SELECT 1 FROM session_items WHERE session_id = ?
+       AND (created_at > ? OR (created_at = ? AND id > ?)) LIMIT 1`,
+      [sessionId, last.created_at, last.created_at, last.id]
+    ));
+    return {
+      items: rows.map((row) => normalizeStoredItem({
+        id: row.id,
+        turnId: row.turn_id,
+        turnStatus: row.turn_status,
+        type: row.type,
+        title: row.title,
+        text: normalizeStoredText(row.text, provider),
+        options: parseJson(row.options_json, null),
+        rawMetadataJSON: row.raw_metadata_json ?? null,
+        status: row.status,
+        createdAt: row.created_at
+      }, provider)),
+      hasEarlier,
+      hasLater
+    };
   }
 
   listStoredTimelineEvents(sessionId, { beforeSequence = null, limit = 400 } = {}) {
