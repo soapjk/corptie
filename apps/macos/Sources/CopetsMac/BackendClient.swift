@@ -4073,6 +4073,107 @@ final class BackendClient: ObservableObject {
                 || expectedSelectionGeneration == currentSelectionGeneration)
     }
 
+    enum TimelineAnchorWindowLoadResult: Equatable {
+        case found
+        case missing
+        case stale
+        case unavailable
+    }
+
+    func loadTimelineWindow(
+        for session: TaskSession,
+        anchorRowID: String,
+        expectedSelectionGeneration: Int
+    ) async -> TimelineAnchorWindowLoadResult {
+        let anchorKind: String
+        let anchorID: String
+        if anchorRowID.hasPrefix("message:") {
+            anchorKind = "item"
+            anchorID = String(anchorRowID.dropFirst("message:".count))
+        } else if anchorRowID.hasPrefix("process:") {
+            anchorKind = "turn"
+            anchorID = String(anchorRowID.dropFirst("process:".count))
+        } else {
+            return .missing
+        }
+        guard !anchorID.isEmpty,
+              Self.historyPageRequestIsCurrent(
+                  sessionID: session.id,
+                  expectedSelectionGeneration: expectedSelectionGeneration,
+                  currentSessionID: selectedSession?.id,
+                  currentSelectionGeneration: selectionGeneration
+              ),
+              let current = selectedDetail,
+              historyLoadSessionIDs.insert(session.id).inserted else {
+            return .stale
+        }
+        let threadID = current.id
+        defer { historyLoadSessionIDs.remove(session.id) }
+
+        do {
+            var components = URLComponents(
+                url: baseURL.appending(path: "sessions/\(session.id)/timeline/window"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "anchorKind", value: anchorKind),
+                URLQueryItem(name: "anchor", value: anchorID),
+                URLQueryItem(name: "before", value: "40"),
+                URLQueryItem(name: "after", value: "40")
+            ]
+            guard let url = components?.url else { return .unavailable }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else { return .unavailable }
+            let window = try await Task.detached(priority: .userInitiated) {
+                try JSONDecoder().decode(SessionTimelineWindowResponse.self, from: data)
+            }.value
+            guard Self.historyPageRequestIsCurrent(
+                      sessionID: session.id,
+                      expectedSelectionGeneration: expectedSelectionGeneration,
+                      currentSessionID: selectedSession?.id,
+                      currentSelectionGeneration: selectionGeneration
+                  ),
+                  let latest = selectedDetail,
+                  latest.id == threadID else {
+                return .stale
+            }
+            guard window.anchor.status == "found" else { return .missing }
+            let mergedItems = SessionHistoryPageMerger.mergeAnchorWindow(
+                window.items,
+                with: latest.items
+            )
+            let merged = CodexThreadDetail(
+                id: latest.id,
+                title: latest.title,
+                status: latest.status,
+                source: latest.source,
+                connectionStatus: latest.connectionStatus,
+                currentModel: latest.currentModel,
+                currentReasoningLevel: latest.currentReasoningLevel,
+                activityStatus: latest.activityStatus,
+                cwd: latest.cwd,
+                createdAt: latest.createdAt,
+                updatedAt: latest.updatedAt,
+                canSend: latest.canSend,
+                sendUnavailableReason: latest.sendUnavailableReason,
+                capabilities: latest.capabilities,
+                turnCount: latest.turnCount,
+                items: mergedItems,
+                lastAgentMessageSequence: latest.lastAgentMessageSequence,
+                hasMoreHistory: window.hasEarlier,
+                historyItemsCount: latest.historyItemsCount,
+                actions: latest.actions
+            )
+            publishSelectedDetailIfSafe(merged)
+            return .found
+        } catch is CancellationError {
+            return .stale
+        } catch {
+            return .unavailable
+        }
+    }
+
     func loadEarlierMessages(
         for session: TaskSession,
         expectedSelectionGeneration: Int? = nil

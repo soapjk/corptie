@@ -4055,27 +4055,16 @@ struct DetailView: View {
 
         historyAnchorRestoreTask = Task { @MainActor in
             defer { historyAnchorRestoreTask = nil }
-            var remainingPages = 50
-            let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
-            while !Task.isCancelled,
-                  remainingPages > 0,
-                  backendClient.selectedSession?.id == sessionId,
-                  let current = displayedDetail,
-                  !timelineContains(rowID: anchorRowID, in: current.items),
-                  current.hasMoreHistory == true {
-                let previousCount = current.items.count
-                await backendClient.loadEarlierMessages(
-                    for: session,
-                    expectedSelectionGeneration: selectionGeneration
-                )
-                guard let next = displayedDetail,
-                      next.items.count > previousCount else { break }
-                remainingPages -= 1
-            }
+            guard let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId) else { return }
+            let result = await backendClient.loadTimelineWindow(
+                for: session,
+                anchorRowID: anchorRowID,
+                expectedSelectionGeneration: selectionGeneration
+            )
             guard !Task.isCancelled,
                   backendClient.selectedSession?.id == sessionId,
                   let current = displayedDetail else { return }
-            if !timelineContains(rowID: anchorRowID, in: current.items) {
+            if result != .found || !timelineContains(rowID: anchorRowID, in: current.items) {
                 requestedRestorationAnchorRowID = nil
             }
             updateCachedDisplayEntries(for: current)
@@ -4196,7 +4185,17 @@ struct DetailView: View {
         previousRows: [AppKitChatTimelineRow],
         nextEntries: [ChatDisplayEntry]
     ) -> [AppKitChatTimelineRow] {
-        guard previousEntries.count == previousRows.count,
+        guard previousEntries.count == previousRows.count else {
+            return nextEntries.map { appKitRow($0) }
+        }
+        let commonPrefixCount = zip(previousEntries, nextEntries)
+            .prefix { previous, next in previous.id == next.id }
+            .count
+        if commonPrefixCount == previousEntries.count,
+           nextEntries.count >= previousEntries.count {
+            return previousRows + nextEntries.dropFirst(commonPrefixCount).map { appKitRow($0) }
+        }
+        guard
               let nextTailTurnId = nextEntries.last.map(chatDisplayEntryTurnId),
               let nextTailStart = nextEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
               let previousTailStart = previousEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
@@ -4212,22 +4211,48 @@ struct DetailView: View {
     private func makeIncrementalTailDisplay(
         for detail: CodexThreadDetail
     ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
+        let nextDisplayItems = detail.items.filter { !isLowSignalDetailProcessItem($0) }
         guard requestedRestorationAnchorRowID == nil,
               cachedSessionId == sessionId,
               DetailTimelineIncrementalEligibility.canReuseCachedWindow(
                 cachedVisibleMessageLimit: cachedVisibleMessageLimit,
                 requestedVisibleMessageLimit: visibleMessageLimit
               ),
-              detail.items.count == cachedSourceItemCount,
-              let nextLast = detail.items.last,
+              cachedSourceItemCount > 0,
+              nextDisplayItems.count >= cachedSourceItemCount,
               let cachedLast = cachedSourceTailItem,
-              nextLast.id == cachedLast.id,
-              nextLast.turnId == cachedLast.turnId,
-              detail.items.dropLast().last?.id == cachedSourcePenultimateItemId else {
+              nextDisplayItems[cachedSourceItemCount - 1].id == cachedLast.id,
+              nextDisplayItems[cachedSourceItemCount - 1].turnId == cachedLast.turnId,
+              (cachedSourceItemCount < 2
+                || nextDisplayItems[cachedSourceItemCount - 2].id == cachedSourcePenultimateItemId) else {
             return nil
         }
 
-        let tailItems = detail.items.reversed().prefix { $0.turnId == nextLast.turnId }.reversed()
+        let appendedItems = nextDisplayItems.dropFirst(cachedSourceItemCount)
+        if let firstAppended = appendedItems.first,
+           firstAppended.turnId != cachedLast.turnId {
+            // A new source turn is independent from the cached tail. Project
+            // only the appended delta; the bounded visible window may discard
+            // old rows without revisiting the rest of the Session history.
+            guard appendedItems.allSatisfy({ $0.turnId != cachedLast.turnId }) else { return nil }
+            let appendedEntries = makeChatDisplayEntries(from: Array(appendedItems))
+            let combined = cachedDisplayEntries + appendedEntries
+            return (
+                displayItems: nextDisplayItems,
+                visibleEntries: visibleDetailEntries(from: combined, limit: visibleMessageLimit),
+                totalCount: cachedTotalDisplayEntryCount
+                    + appendedEntries.reduce(0) { $0 + $1.displayWeight },
+                signature: incrementalDisplaySignature(
+                    previousSignature: cachedItemsSignature,
+                    tailEntries: appendedEntries
+                ),
+                sourceSignature: detailSourceSignature(for: detail)
+            )
+        }
+
+        guard let nextLast = nextDisplayItems.last,
+              nextLast.turnId == cachedLast.turnId else { return nil }
+        let tailItems = nextDisplayItems.reversed().prefix { $0.turnId == nextLast.turnId }.reversed()
         // Reused or missing provider turn IDs need the full ordered projection
         // so user-message boundaries can be recovered. The tail-only fast path
         // would otherwise collapse those recovered turns back into one group.
@@ -4253,7 +4278,7 @@ struct DetailView: View {
         let visibleEntries = visibleDetailEntries(from: combined, limit: visibleMessageLimit)
         let totalCount = max(0, cachedTotalDisplayEntryCount - oldTailWeight + nextTailWeight)
         return (
-            displayItems: detail.items,
+            displayItems: nextDisplayItems,
             visibleEntries: visibleEntries,
             totalCount: totalCount,
             signature: incrementalDisplaySignature(

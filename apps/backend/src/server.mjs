@@ -248,7 +248,8 @@ import {
   MAX_SESSION_HISTORY_PAGE,
   normalizeSessionHistoryLimit,
   pageSessionItems,
-  windowSessionItems
+  windowSessionItems,
+  windowSessionItemsAroundAnchor
 } from "./application/sessionHistoryWindow.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -4736,6 +4737,37 @@ async function readSessionHistory(sessionId, beforeId, limit) {
   };
 }
 
+async function readSessionTimelineWindow(sessionId, options) {
+  const reference = requireSessionReference(sessionId);
+  const storedWindow = typeof store.getTimelineItemWindow === "function"
+    ? store.getTimelineItemWindow(reference.sessionId, {
+      ...options,
+      provider: reference.metadata?.session?.external?.provider ?? ""
+    })
+    : null;
+  if (storedWindow) {
+    return {
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId,
+      ...storedWindow,
+      anchor: {
+        kind: options.anchorKind,
+        requestedId: options.anchorId,
+        resolvedId: options.anchorId,
+        status: "found"
+      }
+    };
+  }
+  const detail = await readSessionDetailWithStoredFallback(reference);
+  const timelineItems = await logicalSessionTimelineItems(reference, detail);
+  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
+  return {
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    ...windowSessionItemsAroundAnchor(allItems, options)
+  };
+}
+
 async function readSessionDetailWithStoredFallback(reference) {
   try {
     const detail = await sessionApplicationService.readSession(reference.sessionId);
@@ -7676,6 +7708,29 @@ function route(request, response) {
       MAX_SESSION_HISTORY_PAGE
     );
     readSessionHistory(sessionId, before, limit)
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+    return;
+  }
+
+  const sessionTimelineWindowMatch = url.pathname.match(/^\/sessions\/([^/]+)\/timeline\/window$/);
+  if (request.method === "GET" && sessionTimelineWindowMatch) {
+    const sessionId = decodeURIComponent(sessionTimelineWindowMatch[1]);
+    const anchorKind = url.searchParams.get("anchorKind") === "turn" ? "turn" : "item";
+    const anchorId = url.searchParams.get("anchor") || null;
+    if (!anchorId) {
+      sendJson(response, 400, { error: "Timeline anchor is required.", code: "INVALID_TIMELINE_ANCHOR" });
+      return;
+    }
+    const before = normalizeSessionHistoryLimit(
+      url.searchParams.get("before") ?? 40,
+      MAX_SESSION_HISTORY_PAGE
+    );
+    const after = normalizeSessionHistoryLimit(
+      url.searchParams.get("after") ?? 40,
+      MAX_SESSION_HISTORY_PAGE
+    );
+    readSessionTimelineWindow(sessionId, { anchorKind, anchorId, before, after })
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
