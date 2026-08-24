@@ -26,6 +26,41 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
     }
 
+    func testLiveResizeMeasurementWidthUsesStableBucketsAndExactWidthAfterResize() {
+        XCTAssertEqual(
+            LiveResizeWidthPolicy.measurementWidth(403, isLiveResize: true),
+            400
+        )
+        XCTAssertEqual(
+            LiveResizeWidthPolicy.measurementWidth(404, isLiveResize: true),
+            408
+        )
+        XCTAssertEqual(
+            LiveResizeWidthPolicy.measurementWidth(403.25, isLiveResize: false),
+            403.25
+        )
+        XCTAssertFalse(LiveResizeWidthPolicy.requiresReflow(previous: 400, next: 400))
+        XCTAssertTrue(LiveResizeWidthPolicy.requiresReflow(previous: 400, next: 408))
+        XCTAssertTrue(LiveResizeWidthPolicy.requiresReflow(previous: nil, next: 400))
+    }
+
+    func testWidthOnlyCellUpdateDoesNotRepeatContentConfiguration() {
+        let cell = AppKitChatNativeTextCell(
+            identifier: NSUserInterfaceItemIdentifier("width-update-test")
+        )
+        let original = row(id: "row", revision: 1, text: "A wrapped timeline message")
+        cell.setContent(original, availableWidth: 400, onToggleExpansion: { _ in })
+
+        XCTAssertEqual(cell.contentConfigurationCount, 1)
+        XCTAssertTrue(cell.updateLayoutIfContentUnchanged(original, availableWidth: 408))
+        XCTAssertEqual(cell.contentConfigurationCount, 1)
+        XCTAssertEqual(cell.widthLayoutUpdateCount, 1)
+
+        let revised = row(id: "row", revision: 2, text: "Changed")
+        XCTAssertFalse(cell.updateLayoutIfContentUnchanged(revised, availableWidth: 408))
+        XCTAssertEqual(cell.contentConfigurationCount, 1)
+    }
+
     func testDuplicateRowsAreCollapsedBeforeBuildingRevisionIndex() {
         let rows = [
             row(id: "same", revision: 1, text: "old"),

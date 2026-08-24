@@ -674,6 +674,21 @@ enum LiveResizeRowReflowPolicy {
     }
 }
 
+enum LiveResizeWidthPolicy {
+    static let bucketSize: CGFloat = 8
+
+    static func measurementWidth(_ width: CGFloat, isLiveResize: Bool) -> CGFloat {
+        let normalized = max(120, width)
+        guard isLiveResize else { return normalized }
+        return max(bucketSize, (normalized / bucketSize).rounded() * bucketSize)
+    }
+
+    static func requiresReflow(previous: CGFloat?, next: CGFloat) -> Bool {
+        guard let previous else { return true }
+        return abs(previous - next) >= 0.5
+    }
+}
+
 struct AppKitChatTimelineView: NSViewRepresentable {
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
@@ -810,6 +825,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var pendingInitialScrollToBottom = false
         private var isRestoringInitialViewport = false
         private var needsExactWidthReflow = false
+        private var lastReflowMeasurementWidth: CGFloat?
 
         /// The timeline width is a parent-owned layout input. Reserving a
         /// legacy scroller gutter unconditionally prevents the feedback loop
@@ -887,26 +903,22 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             guard rows.indices.contains(row) else { return tableView.rowHeight }
             let item = rows[row]
             let columnWidth = max(120, tableView.tableColumns.first?.width ?? tableView.bounds.width)
-            let availableWidth = max(
-                20,
-                ChatBubbleWidthPolicy.cardWidth(for: item, availableWidth: columnWidth)
-                    - ChatBubbleWidthPolicy.horizontalPadding
-            )
             let isLiveResize = tableView.window?.inLiveResize == true
-            let widthBucket = isLiveResize
-                ? Int((availableWidth / 8).rounded()) * 8
-                : Int(availableWidth.rounded(.down))
+            let measurementWidth = LiveResizeWidthPolicy.measurementWidth(
+                columnWidth,
+                isLiveResize: isLiveResize
+            )
             let key = HeightCacheKey(
                 id: item.id,
                 revision: item.contentRevision,
-                widthBucket: widthBucket,
+                widthBucket: Int((measurementWidth * 2).rounded()),
                 isLiveResizeApproximation: isLiveResize
             )
             if let cached = heightCache[key] { return cached }
 
             let height = NativeTimelineLayoutCache.shared.layout(
                 for: item,
-                columnWidth: columnWidth
+                columnWidth: measurementWidth
             ).rowHeight
             heightCache[key] = height
             return height
@@ -1165,12 +1177,20 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             if !rows.isEmpty {
                 let visible = tableView.rows(in: tableView.visibleRect)
                 let isLiveResize = scrollView.window?.inLiveResize == true
+                let measurementWidth = LiveResizeWidthPolicy.measurementWidth(
+                    width,
+                    isLiveResize: isLiveResize
+                )
+                let requiresReflow = LiveResizeWidthPolicy.requiresReflow(
+                    previous: lastReflowMeasurementWidth,
+                    next: measurementWidth
+                )
                 let rowsToReflow = LiveResizeRowReflowPolicy.indexes(
                     rowCount: rows.count,
                     visibleRows: visible,
                     isLiveResize: isLiveResize
                 )
-                if visible.location != NSNotFound {
+                if requiresReflow, visible.location != NSNotFound {
                     let upperBound = min(rows.count, visible.location + visible.length)
                     for row in visible.location..<upperBound {
                         if let nativeCell = tableView.view(
@@ -1178,12 +1198,17 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                             row: row,
                             makeIfNecessary: false
                         ) as? AppKitChatNativeTextCell {
-                            nativeCell.setContent(
+                            if !nativeCell.updateLayoutIfContentUnchanged(
                                 rows[row],
-                                availableWidth: width,
-                                onToggleExpansion: onToggleExpansion,
-                                onAction: onAction
-                            )
+                                availableWidth: measurementWidth
+                            ) {
+                                nativeCell.setContent(
+                                    rows[row],
+                                    availableWidth: measurementWidth,
+                                    onToggleExpansion: onToggleExpansion,
+                                    onAction: onAction
+                                )
+                            }
                         }
                     }
                 }
@@ -1192,14 +1217,17 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                     // interact with, but do not synchronously ask NSTableView
                     // to remeasure every offscreen message for every drag tick.
                     needsExactWidthReflow = true
-                    if !rowsToReflow.isEmpty {
+                    if requiresReflow, !rowsToReflow.isEmpty {
                         tableView.noteHeightOfRows(withIndexesChanged: rowsToReflow)
                     }
-                } else {
+                } else if requiresReflow {
                     tableView.noteHeightOfRows(withIndexesChanged: rowsToReflow)
                     synchronizeDocumentHeight(in: tableView)
                 }
-                if let anchor { _ = restore(anchor: anchor, in: tableView) }
+                if requiresReflow {
+                    lastReflowMeasurementWidth = measurementWidth
+                    if let anchor { _ = restore(anchor: anchor, in: tableView) }
+                }
             }
         }
 
@@ -1209,6 +1237,31 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             heightCache = heightCache.filter { !$0.key.isLiveResizeApproximation }
             guard !rows.isEmpty else { return }
             let anchor = visibleAnchor(in: tableView)
+            let exactWidth = tableView.tableColumns.first?.width ?? tableView.bounds.width
+            let visible = tableView.rows(in: tableView.visibleRect)
+            if visible.location != NSNotFound {
+                let upperBound = min(rows.count, visible.location + visible.length)
+                for row in visible.location..<upperBound {
+                    if let nativeCell = tableView.view(
+                        atColumn: 0,
+                        row: row,
+                        makeIfNecessary: false
+                    ) as? AppKitChatNativeTextCell {
+                        if !nativeCell.updateLayoutIfContentUnchanged(
+                            rows[row],
+                            availableWidth: exactWidth
+                        ) {
+                            nativeCell.setContent(
+                                rows[row],
+                                availableWidth: exactWidth,
+                                onToggleExpansion: onToggleExpansion,
+                                onAction: onAction
+                            )
+                        }
+                    }
+                }
+            }
+            lastReflowMeasurementWidth = exactWidth
             tableView.noteHeightOfRows(
                 withIndexesChanged: IndexSet(integersIn: 0..<rows.count)
             )
@@ -1485,6 +1538,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var timelineActions: [AppKitChatTimelineRow.Action] = []
     private var onAction: ((AppKitChatTimelineRow.Action) -> Void)?
     private var copiedText = ""
+    private var representedRowID: String?
+    private var representedContentRevision: Int?
+    private(set) var contentConfigurationCount = 0
+    private(set) var widthLayoutUpdateCount = 0
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
@@ -1661,11 +1718,12 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) {
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        representedRowID = row.id
+        representedContentRevision = row.contentRevision
+        contentConfigurationCount += 1
         label.textStorage?.setAttributedString(layout.attributedText)
-        labelHeightConstraint.constant = layout.textHeight
         rawStatusTextView.string = row.rawStatusText
-        rawStatusHeightConstraint.constant = layout.rawStatusHeight
-        rawStatusScrollView.isHidden = layout.rawStatusHeight == 0
+        apply(layout: layout)
         titleLabel.stringValue = row.title
         titleLabel.font = .systemFont(ofSize: 11, weight: .bold)
         metadataLabel.stringValue = row.metadata
@@ -1705,7 +1763,6 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         }
         messageActionBar.isHidden = !showsMessageActions
         messageActionBar.alphaValue = 0
-        cardWidthConstraint.constant = layout.cardWidth
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
@@ -1794,6 +1851,32 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         }
         if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
         processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
+        needsLayout = true
+    }
+
+    /// Width-only resize updates keep the existing attributed content, action
+    /// buttons, and constraint topology. TextKit still receives the quantized
+    /// width-derived height, while expensive content configuration is reserved
+    /// for an actual row/revision change.
+    @discardableResult
+    func updateLayoutIfContentUnchanged(
+        _ row: AppKitChatTimelineRow,
+        availableWidth: CGFloat
+    ) -> Bool {
+        guard representedRowID == row.id,
+              representedContentRevision == row.contentRevision else { return false }
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
+        apply(layout: layout)
+        widthLayoutUpdateCount += 1
+        ChatPerformanceRecorder.shared.increment(.appKitRowWidthUpdates)
+        return true
+    }
+
+    private func apply(layout: NativeTimelineLayoutCache.Layout) {
+        labelHeightConstraint.constant = layout.textHeight
+        rawStatusHeightConstraint.constant = layout.rawStatusHeight
+        rawStatusScrollView.isHidden = layout.rawStatusHeight == 0
+        cardWidthConstraint.constant = layout.cardWidth
         needsLayout = true
     }
 
