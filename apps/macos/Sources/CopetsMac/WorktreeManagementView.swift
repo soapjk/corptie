@@ -211,10 +211,10 @@ struct WorktreeManagementView: View {
                 Task { await client.refreshSelected() }
             }
             if let project = client.detail?.project {
-                integrationAction(project)
-                cleanupAction(project)
-                if let job = client.job { jobProgress(job) }
                 if project.worktrees.isEmpty {
+                    integrationAction(project)
+                    cleanupAction(project)
+                    if let job = client.job { jobProgress(job) }
                     ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
                 } else {
                     ScrollViewReader { proxy in
@@ -222,6 +222,17 @@ struct WorktreeManagementView: View {
                             get: { client.selection.worktreeId },
                             set: { client.selection.worktreeId = $0 }
                         )) {
+                            integrationAction(project)
+                                .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
+                            cleanupAction(project)
+                                .listRowInsets(EdgeInsets())
+                                .listRowSeparator(.hidden)
+                            if let job = client.job {
+                                jobProgress(job)
+                                    .listRowInsets(EdgeInsets())
+                                    .listRowSeparator(.hidden)
+                            }
                             ForEach(project.worktrees) { worktree in
                                 worktreeRow(worktree)
                                     .id(worktree.worktreeId)
@@ -251,6 +262,7 @@ struct WorktreeManagementView: View {
                             guard !Task.isCancelled else { return }
                             proxy.scrollTo(request.worktreeId, anchor: .center)
                         }
+                        .accessibilityIdentifier("worktree.scroll-region")
                     }
                 }
             } else if client.isLoading {

@@ -126,7 +126,31 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("ScrollViewReader { proxy in"))
         XCTAssertTrue(contents.contains(".task(id: worktreeScrollRequest)"))
         XCTAssertTrue(contents.contains("proxy.scrollTo(request.worktreeId, anchor: .center)"))
+        XCTAssertTrue(contents.contains("worktree.scroll-region"))
         XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
+    }
+
+    func testWorktreeActionsAndRowsShareVirtualizedVerticalScrollRegion() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let columnStart = try XCTUnwrap(contents.range(of: "private var worktreeColumn: some View"))
+        let columnEnd = try XCTUnwrap(
+            contents.range(of: "private var detailColumn: some View", range: columnStart.upperBound..<contents.endIndex)
+        )
+        let column = String(contents[columnStart.lowerBound..<columnEnd.lowerBound])
+
+        let list = try XCTUnwrap(column.range(of: "List(selection:"))
+        let integration = try XCTUnwrap(column.range(of: "integrationAction(project)", range: list.upperBound..<column.endIndex))
+        let cleanup = try XCTUnwrap(column.range(of: "cleanupAction(project)", range: integration.upperBound..<column.endIndex))
+        _ = try XCTUnwrap(column.range(of: "ForEach(project.worktrees)", range: cleanup.upperBound..<column.endIndex))
+
+        XCTAssertTrue(column.contains(".accessibilityIdentifier(\"worktree.scroll-region\")"))
+        XCTAssertTrue(column.contains(".listRowInsets(EdgeInsets())"))
+        XCTAssertTrue(column.contains(".listRowSeparator(.hidden)"))
     }
 
     func testWorktreeTabPushActionCoversLoadingFeedbackAndDisabledReasons() throws {
