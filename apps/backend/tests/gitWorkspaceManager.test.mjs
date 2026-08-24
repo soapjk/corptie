@@ -773,6 +773,39 @@ test("retry reuses an intact Integration Worktree while concurrent distinct task
   }
 });
 
+test("one plan advances and reuses the same clean Integration Worktree for later conflicts", async () => {
+  const fixture = await createFixture("integration-worktree-plan-reuse");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const first = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:whole-plan"
+    });
+    await writeFile(join(fixture.repository, "main-advanced.txt"), "next merge\n");
+    await git(["add", "main-advanced.txt"], fixture.repository);
+    await git(["commit", "-m", "Advance main after first resolved conflict"], fixture.repository);
+    const mainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+
+    const reused = await manager.createIntegrationWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      runId: "integration:whole-plan"
+    });
+
+    assert.equal(reused.worktreeId, first.worktreeId);
+    assert.equal(reused.path, first.path);
+    assert.equal(reused.branchName, first.branchName);
+    assert.equal(reused.headOid, mainHead);
+    assert.equal(reused.reused, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("ensures one deterministic WorkItem Worktree and reuses it on retry", async () => {
   const fixture = await createFixture("workitem-worktree");
   const manager = new GitWorkspaceManager({

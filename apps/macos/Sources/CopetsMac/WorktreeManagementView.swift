@@ -565,6 +565,11 @@ struct WorktreeManagementView: View {
                         manualConflictRetryButton()
                     }
                 } else if job.hasMergeConflict {
+                    if let sessionId = job.conflictAutomation?.sessionId {
+                        Button(L10n("View Agent Session")) { router.openSession(sessionId) }
+                            .controlSize(.small)
+                            .accessibilityIdentifier("worktree.integrate.open-plan-conflict-agent")
+                    }
                     Button(L10n(job.conflictAutomation?.status == "blocked"
                         ? "Retry Agent for Remaining Worktrees"
                         : "Let Agent Resolve Conflicts")) {

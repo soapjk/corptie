@@ -1207,44 +1207,114 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   }),
   inspectConflictResolution: (input) => gitWorkspaces.inspectIntegrationConflictResolutionForProject(input),
   launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
-    const context = resolveConflictResolutionAgentContext(item, store);
-    if (!context) {
+    const planIdentity = job.id.replace(/^worktree_integration:/, "");
+    const planLabel = planIdentity.slice(0, 8);
+    const planWorkItemId = `work_item:integration_conflicts:${planIdentity}`;
+    const existingAutomation = job.conflictAutomation ?? null;
+    const legacyPlanWorkItem = existingAutomation?.workItemId ? null : store.listWorkItems()
+      .filter((candidate) => String(candidate.description ?? "").includes(job.id))
+      .sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")))[0] ?? null;
+    const existingWorkItem = existingAutomation?.workItemId
+      ? store.getWorkItem(existingAutomation.workItemId)
+      : legacyPlanWorkItem;
+    const existingSessionId = existingAutomation?.sessionId ?? existingWorkItem?.current_session_id ?? null;
+    const existingSession = existingSessionId ? store.getSession(existingSessionId) : null;
+    const existingAgent = existingAutomation?.agentId
+      ? store.getAgent(existingAutomation.agentId)
+      : (existingWorkItem?.main_agent_id ? store.getAgent(existingWorkItem.main_agent_id) : null);
+    const hasRecordedPlanSession = Boolean(existingAutomation?.workItemId
+      || existingAutomation?.sessionId || legacyPlanWorkItem);
+    const hasExistingPlanSession = Boolean(existingWorkItem && existingSession
+      && existingAgent?.role === "independentContributor");
+    if (hasRecordedPlanSession && !hasExistingPlanSession) {
       const error = new Error(
-        "No Independent Contributor Agent could be recovered from the conflicted Worktree's current or historical Sessions. Open the Worktree detail and bind an Agent-backed WorkItem, then retry."
+        "The integration plan's conflict WorkItem or Session is no longer available. Restore that plan Session or generate a fresh plan; Corptie will not create a duplicate WorkItem."
+      );
+      error.code = "CONFLICT_PLAN_SESSION_UNAVAILABLE";
+      throw error;
+    }
+    const context = hasExistingPlanSession
+      ? null
+      : [item, ...(job.plan.items ?? []).filter((candidate) => candidate.worktreeId !== item.worktreeId)]
+        .map((candidate) => resolveConflictResolutionAgentContext(candidate, store))
+        .find(Boolean);
+    if (!hasExistingPlanSession && !context) {
+      const error = new Error(
+        "No Independent Contributor Agent could be recovered from any Worktree in this integration plan. Bind one Agent-backed WorkItem to the plan, then retry."
       );
       error.code = "CONFLICT_AGENT_UNAVAILABLE";
       throw error;
     }
-    const { sourceWorkItem, objective, agent } = context;
+    const sourceWorkItem = existingWorkItem ?? context.sourceWorkItem;
+    const objective = hasExistingPlanSession
+      ? store.getObjective(existingWorkItem.objective_id)
+      : context.objective;
+    const agent = existingAgent ?? context.agent;
     const branchLabel = item.branchName ?? item.worktreeId;
-    const title = `处理 ${branchLabel} 的 Worktree 集成冲突`;
+    const title = `解决 Worktree 合并计划 ${planLabel} 的全部冲突`;
     const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
     const description = [
-      `处理 Worktree Integration Job ${job.id} 在合并 ${branchLabel} 时产生的冲突。`,
-      `来源 WorkItem：${sourceWorkItem.title}`,
-      `冲突文件：${conflictFiles}`,
-      `专用 Integration Worktree：${workspace.path}`
+      `持续处理 Worktree Integration Job ${job.id} 计划内的全部合并冲突。`,
+      `Agent 上下文来源 WorkItem：${sourceWorkItem.title}`,
+      `计划级专用 Integration Worktree：${workspace.path}`
     ].join("\n");
     const acceptanceCriteria = [
-      "- 来源分支的有效修改已完整进入 Integration 分支",
-      "- 所有冲突均按双方语义解决，且不存在未合并文件或冲突标记",
+      "- 合并计划内所有来源分支的有效修改均已完整进入 main",
+      "- 计划内所有冲突均按双方语义逐个解决，且不存在未合并文件或冲突标记",
       "- 相关测试通过，Development App 与后端重建及健康检查成功",
-      "- Integration Worktree 中的解决结果已提交且工作区干净",
+      "- 每轮解决结果均已提交，计划级 Integration Worktree 保持干净",
       "- 未直接修改 main，未推送远端，未删除任何来源分支或 Worktree"
     ].join("\n");
     const prompt = [
-      description,
+      `继续处理合并计划 ${job.id} 的下一个冲突。`,
+      `当前来源 Worktree：${branchLabel}`,
+      `当前来源提交：${sourceHead}`,
+      `当前 main 基线：${expectedMainHead}`,
+      `冲突文件：${conflictFiles}`,
+      `计划级专用 Integration Worktree：${workspace.path}`,
       "",
       "固定执行流程：",
-      `1. 确认当前目录是专用 Integration Worktree，基线 HEAD 应为 ${expectedMainHead}。`,
+      `1. 确认仍在本计划的专用 Integration Worktree，基线 HEAD 应为 ${expectedMainHead}。`,
       `2. 在当前 Integration 分支合并来源提交 ${sourceHead}，逐文件分析并解决冲突；不得简单全选 ours 或 theirs。`,
       "3. 确认没有冲突标记或未合并文件后创建清晰的本地提交。",
       "4. 运行相关测试，并按 AGENTS.md 重建、启动 Development App 与后端并检查健康状态。",
       `5. 验证来源提交 ${sourceHead} 已成为当前 Integration HEAD 的祖先，并确认 Integration Worktree 干净。`,
       "6. 不得切换、提交、清理或合并 main；不得推送远端，不得删除来源分支或 Worktree。",
-      "7. 完成后在最终消息中明确说明“冲突已解决并已提交”，然后正常结束当前执行；Corptie 会以 Session 完成状态为信号，自动校验结果并继续原集成任务，无需用户点击重试。"
+      "7. 完成本轮后正常结束当前执行；Corptie 会校验结果并在同一个 WorkItem 和 Session 中投递下一个冲突，直至整个计划完成。"
     ].join("\n");
+    if (hasExistingPlanSession) {
+      const sessionCwd = existingSession.external?.cwd ?? existingSession.cwd ?? null;
+      if (sessionCwd && resolve(sessionCwd) !== resolve(workspace.path)) {
+        const error = new Error(
+          `The plan Session is bound to ${sessionCwd}, but the Integration Worktree is ${workspace.path}.`
+        );
+        error.code = "CONFLICT_PLAN_SESSION_WORKSPACE_CHANGED";
+        throw error;
+      }
+      objectiveService.updateWorkItem(existingWorkItem.id, {
+        title,
+        description,
+        acceptanceCriteria,
+        status: "in_progress",
+        mainAgentId: agent.agentId
+      });
+      await sendUnifiedSessionMessage(
+        existingSession.id,
+        prompt,
+        { type: "worktree-integration", localVisibility: "normal" },
+        { fromAgentWorkQueue: true }
+      );
+      return {
+        workItemId: existingWorkItem.id,
+        sessionId: existingSession.id,
+        sessionName: existingSession.title,
+        agentId: agent.agentId,
+        agentName: agent.name,
+        reused: true
+      };
+    }
     const workItem = objectiveService.createWorkItem({
+      id: planWorkItemId,
       objectiveId: objective.id,
       title,
       description,
@@ -1277,7 +1347,8 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       sessionId: session.id,
       sessionName: session.title,
       agentId: agent.agentId,
-      agentName: agent.name
+      agentName: agent.name,
+      reused: false
     };
   },
   removeWorktree: ({ repositoryId, mainPath, worktreeId, ignoreLogicalSessionIds }) => gitWorkspaces.removeWorktreeForProject({
