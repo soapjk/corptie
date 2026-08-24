@@ -22,7 +22,7 @@ struct WorktreeManagementView: View {
     @State private var pendingOperation: ManagedWorktree?
     @State private var pendingDeletion: ManagedWorktree?
     @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
-    @State private var pendingCleanup: [ManagedWorktree]?
+    @State private var pendingCleanup: WorktreeCleanupRequest?
     @State private var worktreeScrollRequest: WorktreeListScrollRequest?
 
     var body: some View {
@@ -127,25 +127,15 @@ struct WorktreeManagementView: View {
                 worktree.path
             ))
         }
-        .confirmationDialog(
-            L10nFormat("Clean up %d merged Worktrees?", pendingCleanup?.count ?? 0),
-            isPresented: Binding(
-                get: { pendingCleanup != nil },
-                set: { if !$0 { pendingCleanup = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(L10n("Clean Up Worktrees"), role: .destructive) {
-                let worktrees = pendingCleanup ?? []
-                pendingCleanup = nil
-                Task { await client.cleanupMergedWorktrees(worktrees) }
-            }
-            Button(L10n("Cancel"), role: .cancel) { pendingCleanup = nil }
-        } message: {
-            Text(L10nFormat(
-                "Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:\n%@",
-                (pendingCleanup ?? []).map { "\($0.branchName ?? L10n("Detached HEAD")) — \($0.path)" }.joined(separator: "\n")
-            ))
+        .sheet(item: $pendingCleanup) { request in
+            WorktreeCleanupConfirmationView(
+                worktrees: request.worktrees,
+                onConfirm: {
+                    pendingCleanup = nil
+                    Task { await client.cleanupMergedWorktrees(request.worktrees) }
+                },
+                onCancel: { pendingCleanup = nil }
+            )
         }
         .alert(item: $deletionBlocker) { presentation in
             Alert(
@@ -211,10 +201,10 @@ struct WorktreeManagementView: View {
                 Task { await client.refreshSelected() }
             }
             if let project = client.detail?.project {
+                integrationAction(project)
+                cleanupAction(project)
+                if let job = client.job { jobProgress(job) }
                 if project.worktrees.isEmpty {
-                    integrationAction(project)
-                    cleanupAction(project)
-                    if let job = client.job { jobProgress(job) }
                     ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
                 } else {
                     ScrollViewReader { proxy in
@@ -222,17 +212,6 @@ struct WorktreeManagementView: View {
                             get: { client.selection.worktreeId },
                             set: { client.selection.worktreeId = $0 }
                         )) {
-                            integrationAction(project)
-                                .listRowInsets(EdgeInsets())
-                                .listRowSeparator(.hidden)
-                            cleanupAction(project)
-                                .listRowInsets(EdgeInsets())
-                                .listRowSeparator(.hidden)
-                            if let job = client.job {
-                                jobProgress(job)
-                                    .listRowInsets(EdgeInsets())
-                                    .listRowSeparator(.hidden)
-                            }
                             ForEach(project.worktrees) { worktree in
                                 worktreeRow(worktree)
                                     .id(worktree.worktreeId)
@@ -262,7 +241,6 @@ struct WorktreeManagementView: View {
                             guard !Task.isCancelled else { return }
                             proxy.scrollTo(request.worktreeId, anchor: .center)
                         }
-                        .accessibilityIdentifier("worktree.scroll-region")
                     }
                 }
             } else if client.isLoading {
@@ -474,7 +452,7 @@ struct WorktreeManagementView: View {
                 }
                 Spacer()
                 Button {
-                    pendingCleanup = eligible
+                    pendingCleanup = WorktreeCleanupRequest(worktrees: eligible)
                 } label: {
                     Label(L10nFormat("Clean Up (%d)", eligible.count), systemImage: "trash")
                 }
@@ -1111,6 +1089,68 @@ private struct WorktreeDeletionBlockerPresentation: Identifiable {
     let id = UUID()
     let worktree: ManagedWorktree
     let blocker: ManagedWorktreeDeletionBlocker
+}
+
+private struct WorktreeCleanupRequest: Identifiable {
+    let id = UUID()
+    let worktrees: [ManagedWorktree]
+}
+
+enum WorktreeCleanupConfirmationLayout {
+    static func preferredHeight(for worktreeCount: Int) -> CGFloat {
+        min(560, max(340, 210 + CGFloat(worktreeCount) * 58))
+    }
+}
+
+struct WorktreeCleanupConfirmationView: View {
+    let worktrees: [ManagedWorktree]
+    let onConfirm: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(L10nFormat("Clean up %d merged Worktrees?", worktrees.count))
+                .font(.title2.weight(.semibold))
+            Text(L10n("Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(worktrees) { worktree in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(worktree.branchName ?? L10n("Detached HEAD"))
+                                .fontWeight(.medium)
+                            Text(worktree.path)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 9)
+                        Divider()
+                    }
+                }
+            }
+            .accessibilityIdentifier("worktree.cleanup.confirmation.list")
+            .scrollIndicators(.automatic)
+
+            HStack {
+                Spacer()
+                Button(L10n("Cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(L10n("Clean Up Worktrees"), role: .destructive, action: onConfirm)
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("worktree.cleanup.confirmation.confirm")
+            }
+        }
+        .padding(24)
+        .frame(
+            width: 640,
+            height: WorktreeCleanupConfirmationLayout.preferredHeight(for: worktrees.count)
+        )
+        .accessibilityIdentifier("worktree.cleanup.confirmation")
+    }
 }
 
 private struct WorktreeCleanupResultView: View {
