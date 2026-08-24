@@ -1317,6 +1317,16 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationConfirmationId: String? = nil
     var collaborationConfirmationStatus: String? = nil
     var collaborationAcceptanceCriteria: [String]? = nil
+    var automationId: String? = nil
+    var automationName: String? = nil
+    var automationTriggerType: String? = nil
+    var automationEventType: String? = nil
+    var automationEventSource: String? = nil
+    var automationRunId: String? = nil
+    var systemEventKind: String? = nil
+    var systemEventReason: String? = nil
+    var systemEventSource: String? = nil
+    var rawEventEnvelope: String? = nil
     var fileChanges: [CodexFileChange]? = nil
     var turnDiff: String? = nil
 

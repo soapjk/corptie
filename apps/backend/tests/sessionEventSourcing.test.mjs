@@ -33,6 +33,47 @@ test("appendSessionEvent：sequence 单调递增且真实落库", async () => {
   }
 });
 
+test("Automation Session 事件按原始 envelope、类型和时间戳可检索", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    const envelope = {
+      task: {
+        taskId: "scheduled_task:b2",
+        name: "Shadow exit monitor",
+        trigger: { type: "processExit" },
+        lastRunId: null,
+        lastRunStatus: null
+      },
+      run: null
+    };
+    store.appendSessionEvent({
+      eventId: "automation-created",
+      sessionId: "s1",
+      type: "ScheduledSessionTaskCreated",
+      source: { type: "scheduled_session_task", taskId: "scheduled_task:b2" },
+      payload: envelope,
+      createdAt: "2026-08-24T00:56:04.649Z"
+    });
+    store.appendSessionEvent({
+      eventId: "ordinary-message",
+      sessionId: "s1",
+      type: "user/message",
+      payload: { text: "not automation" },
+      createdAt: "2026-08-24T00:56:05.000Z"
+    });
+
+    const [event] = store.listSessionAutomationEvents("s1");
+    assert.equal(event.type, "ScheduledSessionTaskCreated");
+    assert.equal(event.createdAt, "2026-08-24T00:56:04.649Z");
+    assert.deepEqual(event.payload, envelope);
+    assert.deepEqual(event.source, { type: "scheduled_session_task", taskId: "scheduled_task:b2" });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("appendSessionEvent：event_id 冲突时显式抛错，不返回虚假 sequence", async () => {
   const { store, directory } = await createStore();
   try {

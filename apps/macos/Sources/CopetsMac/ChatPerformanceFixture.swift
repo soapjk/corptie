@@ -164,6 +164,16 @@ struct ChatPerformanceFixture: Sendable {
             collaborationConfirmationId: previous.collaborationConfirmationId,
             collaborationConfirmationStatus: previous.collaborationConfirmationStatus,
             collaborationAcceptanceCriteria: previous.collaborationAcceptanceCriteria,
+            automationId: previous.automationId,
+            automationName: previous.automationName,
+            automationTriggerType: previous.automationTriggerType,
+            automationEventType: previous.automationEventType,
+            automationEventSource: previous.automationEventSource,
+            automationRunId: previous.automationRunId,
+            systemEventKind: previous.systemEventKind,
+            systemEventReason: previous.systemEventReason,
+            systemEventSource: previous.systemEventSource,
+            rawEventEnvelope: previous.rawEventEnvelope,
             fileChanges: previous.fileChanges,
             turnDiff: previous.turnDiff
         )
