@@ -805,8 +805,8 @@ export class FeishuGatewayManager {
   }
 
   async presentedSessions() {
-    const sessions = await this.listSessions();
-    return Promise.all(sessions.map(async (session) => ({
+    const sessions = await this.listSessions({ archived: false });
+    return Promise.all(sessions.filter((session) => session.archived !== true).map(async (session) => ({
       ...session,
       ...(await this.describeSession(session) ?? {})
     })));

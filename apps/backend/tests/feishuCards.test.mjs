@@ -189,6 +189,87 @@ test("session list resolves Agent and optional WorkItem presentation before rend
   assert.doesNotMatch(content, /private-project|Users\/example/);
 });
 
+test("the Feishu /sessions command requests and displays only unarchived sessions", async () => {
+  const listOptions = [];
+  const describedSessionIds = [];
+  const sentCards = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      listFeishuAssignments: () => [],
+      getFeishuAssignmentForBot: () => null
+    },
+    listSessions: async (options) => {
+      listOptions.push(options);
+      return [
+        { id: "session-active-a", title: "Active A", status: "idle", archived: false },
+        { id: "session-archived-a", title: "Archived A", status: "complete", archived: true },
+        { id: "session-active-b", title: "Active B", status: "running" },
+        { id: "session-archived-b", title: "Archived B", status: "complete", archived: true },
+        { id: "session-active-c", title: "Active C", status: "blocked", archived: false }
+      ];
+    },
+    describeSession: (session) => {
+      describedSessionIds.push(session.id);
+      return { agentName: `Agent for ${session.title}` };
+    }
+  });
+  manager.sendCard = async (_botId, _chatId, card) => sentCards.push(card);
+
+  await manager.handleCommand("bot-a", { id: "binding-a" }, {
+    text: "/sessions",
+    chatId: "chat-a"
+  });
+  const card = sentCards[0];
+  const text = await manager.sessionListText("bot-a");
+  const cardContent = JSON.stringify(card);
+
+  assert.deepEqual(listOptions, [{ archived: false }, { archived: false }]);
+  assert.deepEqual(describedSessionIds, [
+    "session-active-a", "session-active-b", "session-active-c",
+    "session-active-a", "session-active-b", "session-active-c"
+  ]);
+  assert.deepEqual(
+    cardButtons(card)
+      .filter((button) => button.behaviors?.[0]?.value?.corptie_action === "select_session")
+      .map((button) => button.behaviors[0].value.session_id),
+    ["session-active-a", "session-active-b", "session-active-c"]
+  );
+  assert.match(cardContent, /Active A/);
+  assert.match(cardContent, /Active B/);
+  assert.match(cardContent, /Active C/);
+  assert.doesNotMatch(cardContent, /Archived A|Archived B/);
+  assert.match(text, /Active A/);
+  assert.match(text, /Active B/);
+  assert.match(text, /Active C/);
+  assert.doesNotMatch(text, /Archived A|Archived B/);
+});
+
+test("Feishu session lists preserve the existing empty state when every session is archived", async () => {
+  const manager = new FeishuGatewayManager({
+    store: {
+      listFeishuAssignments: () => [],
+      getFeishuAssignmentForBot: () => null
+    },
+    listSessions: async () => [
+      { id: "session-archived", title: "Archived Only", status: "complete", archived: true }
+    ],
+    describeSession: () => {
+      throw new Error("Archived sessions must not be presented.");
+    }
+  });
+
+  const card = await manager.buildSessionListCard("bot-a");
+  const text = await manager.sessionListText("bot-a");
+  const cardContent = JSON.stringify(card);
+
+  assert.equal(cardButtons(card).some((button) =>
+    button.behaviors?.[0]?.value?.corptie_action === "select_session"
+  ), false);
+  assert.match(cardContent, /暂时没有可用会话/);
+  assert.doesNotMatch(cardContent, /Archived Only/);
+  assert.equal(text, "这台电脑上暂时没有可用会话。");
+});
+
 test("session card paginates long lists", () => {
   const sessions = Array.from({ length: 7 }, (_, index) => ({
     id: `session-${index}`,
