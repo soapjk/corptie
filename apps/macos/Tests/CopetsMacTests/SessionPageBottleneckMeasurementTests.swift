@@ -117,6 +117,38 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         XCTAssertLessThan(p50, 150, "full visible display pipeline should stay under 150 ms p50")
     }
 
+    func testDeepSavedAnchorCreatesBoundedRestorationWindow() throws {
+        let fixture = standardFixture()
+        let allEntries = makeChatDisplayEntries(from: fixture.detail.items)
+        let anchor = try XCTUnwrap(allEntries.dropFirst(100).first?.id)
+
+        let cache = makeDetailDisplayCache(
+            for: fixture.detail,
+            sessionId: fixture.session.id,
+            visibleMessageLimit: 7,
+            restorationAnchorRowID: anchor
+        )
+
+        XCTAssertEqual(cache.restorationAnchorRowID, anchor)
+        XCTAssertTrue(cache.displayEntries.contains(where: { $0.id == anchor }))
+        XCTAssertLessThanOrEqual(cache.displayEntries.count, 19)
+        XCTAssertLessThan(cache.displayEntries.count, allEntries.count)
+    }
+
+    func testDeletedSavedAnchorFallsBackToLatestWindowWithoutFalseMatch() {
+        let fixture = standardFixture()
+        let cache = makeDetailDisplayCache(
+            for: fixture.detail,
+            sessionId: fixture.session.id,
+            visibleMessageLimit: 7,
+            restorationAnchorRowID: "message:deleted"
+        )
+        let allEntries = makeChatDisplayEntries(from: fixture.detail.items)
+
+        XCTAssertNil(cache.restorationAnchorRowID)
+        XCTAssertEqual(cache.displayEntries.map(\.id), visibleDetailEntries(from: allEntries, limit: 7).map(\.id))
+    }
+
     // MARK: - 3. Session list sort (AppStateStore.sessions computed property)
 
     func testSessionListSortScalesWithCount() {

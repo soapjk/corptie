@@ -855,6 +855,88 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(receivedActionID, "approval:approve")
     }
 
+    func testWarmSessionHostSwitchStaysWithinOneFrame() async {
+        let rows = (0..<120).map { index in
+            row(id: "switch-row-\(index)", text: String(repeating: "Message \(index) ", count: 8))
+        }
+        var coldSamples: [Double] = []
+        for _ in 0..<8 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            let harness = makeHarness(followsLatest: false, height: 360)
+            harness.coordinator.prepareInitialPosition(.init(
+                rowID: "switch-row-72",
+                offset: 4,
+                absoluteScrollY: 0,
+                followsLatest: false
+            ))
+            harness.coordinator.apply(rows: rows)
+            harness.window.layoutIfNeeded()
+            harness.scrollView.layoutSubtreeIfNeeded()
+            coldSamples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+        }
+
+        let warmHosts = (0..<3).map { _ in
+            let harness = makeHarness(followsLatest: false, height: 360)
+            harness.coordinator.prepareInitialPosition(.init(
+                rowID: "switch-row-72",
+                offset: 4,
+                absoluteScrollY: 0,
+                followsLatest: false
+            ))
+            harness.coordinator.apply(rows: rows)
+            harness.window.layoutIfNeeded()
+            harness.scrollView.layoutSubtreeIfNeeded()
+            return harness
+        }
+        let store = SessionPresentationStore(hostCapacity: 3, positionDefaults: nil)
+        var warmSamples: [Double] = []
+        for index in 0..<60 {
+            let start = DispatchTime.now().uptimeNanoseconds
+            store.activateHost(for: "session-\(index % 3)")
+            let host = warmHosts[index % warmHosts.count]
+            host.window.layoutIfNeeded()
+            host.scrollView.layoutSubtreeIfNeeded()
+            warmSamples.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
+        }
+        coldSamples.sort()
+        warmSamples.sort()
+        let coldP50 = coldSamples[coldSamples.count / 2]
+        let warmP50 = warmSamples[warmSamples.count / 2]
+        let warmP95 = warmSamples[Int(Double(warmSamples.count - 1) * 0.95)]
+        let warmHitches = warmSamples.filter { $0 > 16.67 }.count
+        print("[perf] session switch cold-p50=\(String(format: "%.2f", coldP50))ms warm-p50=\(String(format: "%.2f", warmP50))ms warm-p95=\(String(format: "%.2f", warmP95))ms warm-hitches=\(warmHitches)/\(warmSamples.count)")
+
+        XCTAssertLessThan(warmP95, 16.67)
+        XCTAssertEqual(warmHitches, 0)
+        XCTAssertLessThan(warmP50, coldP50)
+    }
+
+    func testSemanticPositionRestorationSucceedsAcrossOneHundredSwitches() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<160).map { row(id: "accuracy-row-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.tableView.layoutSubtreeIfNeeded()
+        var successes = 0
+
+        for iteration in 0..<100 {
+            let targetIndex = 10 + (iteration * 37) % 130
+            let targetID = "accuracy-row-\(targetIndex)"
+            harness.coordinator.restore(position: .init(
+                rowID: targetID,
+                offset: 5,
+                absoluteScrollY: 0,
+                followsLatest: false
+            ))
+            await settleMainQueue()
+            let anchor = visibleAnchor(in: harness.tableView, rows: rows)
+            if anchor.id == targetID, abs(anchor.offset - 5) <= 4 {
+                successes += 1
+            }
+        }
+        print("[perf] semantic position restoration success=\(successes)/100")
+        XCTAssertEqual(successes, 100)
+    }
+
     private func makeHarness(
         followsLatest: Bool,
         height: CGFloat = 320,
