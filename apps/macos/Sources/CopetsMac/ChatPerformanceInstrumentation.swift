@@ -19,6 +19,7 @@ enum ChatPerformanceMetric: String, CaseIterable, Sendable {
     case fixtureStreamingUpdates
     case appKitCellsCreated
     case appKitRowsConfigured
+    case appKitRowWidthUpdates
 }
 
 struct ChatPerformanceSnapshot: Equatable, Sendable {

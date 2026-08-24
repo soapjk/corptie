@@ -5,12 +5,17 @@ import Testing
 @MainActor
 struct MainTabNotificationIsolationTests {
     @Test
-    func notificationRendererIsAnOverlayWithLeafOwnedState() throws {
+    func notificationRendererUsesAnIndependentSurfaceWithLeafOwnedState() throws {
         let source = try mainTabSource()
-        let mainTab = try sourceSlice(
+        let contentSurface = try sourceSlice(
             source,
-            from: "struct MainTabView: View {",
-            through: "private struct MainWindowBackgroundTaskOverlay: View {"
+            from: "struct MainWindowContentView: View {",
+            through: "struct MainWindowFixedChromeView: View {"
+        )
+        let taskSurface = try sourceSlice(
+            source,
+            from: "struct MainWindowTaskSurfaceView: View {",
+            through: "private struct MainWindowChromeControls: View {"
         )
         let notification = try sourceSlice(
             source,
@@ -18,11 +23,11 @@ struct MainTabNotificationIsolationTests {
             through: "// 跨 Tab 导航路由器"
         )
 
-        #expect(mainTab.contains(".overlay(alignment: .topTrailing)"))
-        #expect(mainTab.contains("MainWindowBackgroundTaskOverlay()"))
-        #expect(!mainTab.contains("@StateObject private var backgroundTasks"))
-        #expect(!mainTab.contains("@StateObject private var backendClient"))
-        #expect(!mainTab.contains("@StateObject private var entityClient"))
+        #expect(!contentSurface.contains("MainWindowBackgroundTaskOverlay()"))
+        #expect(taskSurface.contains("MainWindowBackgroundTaskOverlay()"))
+        #expect(!contentSurface.contains("@StateObject private var backgroundTasks"))
+        #expect(!contentSurface.contains("@StateObject private var backendClient"))
+        #expect(!contentSurface.contains("@StateObject private var entityClient"))
         #expect(notification.contains("@StateObject private var backgroundTasks"))
         #expect(notification.contains("@StateObject private var backendClient"))
         #expect(notification.contains("@StateObject private var entityClient"))
@@ -31,21 +36,16 @@ struct MainTabNotificationIsolationTests {
     @Test
     func tabHeaderContainerDoesNotContainNotificationRendering() throws {
         let source = try mainTabSource()
-        let mainTab = try sourceSlice(
+        let tabSurface = try sourceSlice(
             source,
-            from: "struct MainTabView: View {",
-            through: "private struct MainWindowBackgroundTaskOverlay: View {"
-        )
-        let body = try sourceSlice(
-            String(mainTab),
-            from: "var body: some View {",
-            through: ".overlay(alignment: .topTrailing)"
+            from: "struct MainWindowTabBarSurfaceView: View {",
+            through: "struct MainWindowTaskSurfaceView: View {"
         )
 
-        #expect(body.contains("UnderlineTabBar(selection:"))
-        #expect(!body.contains("BackgroundTaskStatusBar"))
-        #expect(!body.contains("backgroundTasks.records"))
-        #expect(!body.contains("Connecting to the server…"))
+        #expect(tabSurface.contains("UnderlineTabBar(selection:"))
+        #expect(!tabSurface.contains("BackgroundTaskStatusBar"))
+        #expect(!tabSurface.contains("backgroundTasks.records"))
+        #expect(!tabSurface.contains("Connecting to the server…"))
     }
 
     @Test
