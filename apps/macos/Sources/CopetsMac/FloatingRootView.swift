@@ -3373,6 +3373,8 @@ struct DetailView: View {
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
+    @State private var requestedRestorationAnchorRowID: String?
+    @State private var historyAnchorRestoreTask: Task<Void, Never>?
     @ObservedObject private var timelineState: SessionTimelineState
     @State private var displaysLoadingDetail: Bool
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
@@ -3419,6 +3421,11 @@ struct DetailView: View {
         _cachedItemsSignature = State(initialValue: initialCache?.signature ?? "")
         _cachedDetailSourceSignature = State(initialValue: initialCache?.sourceSignature ?? "")
         _cachedSessionId = State(initialValue: initialCache?.sessionId ?? "")
+        _requestedRestorationAnchorRowID = State(
+            initialValue: initialTimelinePosition?.followsLatest == false
+                ? initialTimelinePosition?.rowID
+                : nil
+        )
         _displaysLoadingDetail = State(
             initialValue: backendClient.selectedSession?.id == sessionId && backendClient.isLoadingDetail
         )
@@ -3487,7 +3494,11 @@ struct DetailView: View {
                         activityStatus: session.activityStatus
                     )
                 }
-                appKitCachedDetailMessages()
+                if shouldRenderDetailMessages {
+                    appKitCachedDetailMessages()
+                } else {
+                    DetailMessagesPlaceholder()
+                }
             case .loading:
                 VStack(spacing: 10) {
                     ProgressView()
@@ -3534,15 +3545,22 @@ struct DetailView: View {
         )
         .onAppear {
             restorePreheatedDisplayCacheIfNeeded()
+            restoreMissingHistoryAnchorIfNeeded()
         }
         .onChange(of: preheatedDisplayCache?.signature) { _, _ in
             restorePreheatedDisplayCacheIfNeeded()
+            restoreMissingHistoryAnchorIfNeeded()
         }
         .onChange(of: sessionId) { _, _ in
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
             displayProjectionGeneration &+= 1
             pendingProjectionSourceSignature = nil
+            historyAnchorRestoreTask?.cancel()
+            historyAnchorRestoreTask = nil
+            requestedRestorationAnchorRowID = initialTimelinePosition?.followsLatest == false
+                ? initialTimelinePosition?.rowID
+                : nil
             isFollowingLatest = true
             hasNewMessagesBelow = false
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
@@ -3552,12 +3570,29 @@ struct DetailView: View {
         .onDisappear {
             displayProjectionTask?.cancel()
             displayProjectionTask = nil
+            historyAnchorRestoreTask?.cancel()
+            historyAnchorRestoreTask = nil
+        }
+        .onChange(of: appKitDetailRevision) { _, _ in
+            if let detail = displayedDetail {
+                updateCachedDisplayEntries(for: detail)
+            }
+            restoreMissingHistoryAnchorIfNeeded()
+        }
+        .onReceive(backendClient.$selectedSession) { session in
+            guard session?.id == sessionId else {
+                historyAnchorRestoreTask?.cancel()
+                historyAnchorRestoreTask = nil
+                return
+            }
+            restoreMissingHistoryAnchorIfNeeded()
         }
         .onReceive(backendClient.$isLoadingDetail) { isLoading in
             guard backendClient.selectedSession?.id == sessionId else { return }
             displaysLoadingDetail = isLoading
         }
         .onReceive(backendClient.$workspaceRecoveryStatus) { status in
+            guard backendClient.selectedSession?.id == sessionId else { return }
             displayedWorkspaceRecoveryStatus = status
         }
         .onReceive(NotificationCenter.default.publisher(for: .scrollSessionTimelineToTurn)) { notification in
@@ -3586,7 +3621,7 @@ struct DetailView: View {
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,
                 onNearTop: loadEarlierMessagesIfNeeded,
-                initialPosition: initialTimelinePosition,
+                initialPosition: effectiveInitialTimelinePosition,
                 onPositionChange: onTimelinePositionChange,
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision
@@ -3614,8 +3649,12 @@ struct DetailView: View {
             .overlay(alignment: .bottomTrailing) {
                 if !isFollowingLatest {
                     Button {
+                        requestedRestorationAnchorRowID = nil
                         isFollowingLatest = true
                         hasNewMessagesBelow = false
+                        if let currentDetail = displayedDetail {
+                            updateCachedDisplayEntries(for: currentDetail)
+                        }
                         appKitScrollToBottomRevision &+= 1
                     } label: {
                         Image(systemName: "arrow.down")
@@ -3633,6 +3672,15 @@ struct DetailView: View {
     private var appKitDetailRevision: String {
         guard let detail = displayedDetail else { return "none" }
         return detailSourceSignature(for: detail)
+    }
+
+    private var effectiveInitialTimelinePosition: AppKitChatTimelinePosition? {
+        guard let initialTimelinePosition,
+              !initialTimelinePosition.followsLatest,
+              cachedDisplayEntries.contains(where: { $0.id == initialTimelinePosition.rowID }) else {
+            return nil
+        }
+        return initialTimelinePosition
     }
 
     /// Only tail mutations represent content arriving below the reader. A
@@ -3984,6 +4032,68 @@ struct DetailView: View {
         }
     }
 
+    private func restoreMissingHistoryAnchorIfNeeded() {
+        guard historyAnchorRestoreTask == nil,
+              backendClient.selectedSession?.id == sessionId,
+              let anchorRowID = requestedRestorationAnchorRowID,
+              !cachedDisplayEntries.contains(where: { $0.id == anchorRowID }),
+              let detail = displayedDetail else { return }
+
+        if timelineContains(rowID: anchorRowID, in: detail.items) {
+            updateCachedDisplayEntries(for: detail)
+            return
+        }
+        guard detail.hasMoreHistory == true,
+              let session = backendClient.selectedSession else {
+            // A deleted/invalid anchor degrades directly to latest. Reusing
+            // the old absolute Y against a different row set is what caused
+            // the visible jump to unrelated historical content.
+            requestedRestorationAnchorRowID = nil
+            updateCachedDisplayEntries(for: detail)
+            return
+        }
+
+        historyAnchorRestoreTask = Task { @MainActor in
+            defer { historyAnchorRestoreTask = nil }
+            var remainingPages = 50
+            let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
+            while !Task.isCancelled,
+                  remainingPages > 0,
+                  backendClient.selectedSession?.id == sessionId,
+                  let current = displayedDetail,
+                  !timelineContains(rowID: anchorRowID, in: current.items),
+                  current.hasMoreHistory == true {
+                let previousCount = current.items.count
+                await backendClient.loadEarlierMessages(
+                    for: session,
+                    expectedSelectionGeneration: selectionGeneration
+                )
+                guard let next = displayedDetail,
+                      next.items.count > previousCount else { break }
+                remainingPages -= 1
+            }
+            guard !Task.isCancelled,
+                  backendClient.selectedSession?.id == sessionId,
+                  let current = displayedDetail else { return }
+            if !timelineContains(rowID: anchorRowID, in: current.items) {
+                requestedRestorationAnchorRowID = nil
+            }
+            updateCachedDisplayEntries(for: current)
+        }
+    }
+
+    private func timelineContains(rowID: String, in items: [CodexThreadItem]) -> Bool {
+        if rowID.hasPrefix("message:") {
+            let itemID = String(rowID.dropFirst("message:".count))
+            return items.contains { $0.id == itemID }
+        }
+        if rowID.hasPrefix("process:") {
+            let turnID = String(rowID.dropFirst("process:".count))
+            return items.contains { $0.turnId == turnID }
+        }
+        return false
+    }
+
     private func updateCachedDisplayEntries(for detail: CodexThreadDetail) {
         let sourceSignature = detailSourceSignature(for: detail)
         guard cachedSessionId != sessionId || sourceSignature != cachedDetailSourceSignature else {
@@ -4021,6 +4131,7 @@ struct DetailView: View {
         displayProjectionGeneration &+= 1
         let requestedSessionID = sessionId
         let requestedLimit = visibleMessageLimit
+        let requestedAnchorRowID = requestedRestorationAnchorRowID
         pendingProjectionSourceSignature = sourceSignature
         let request = SessionDisplayProjectionRequest(
             sessionID: requestedSessionID,
@@ -4035,7 +4146,8 @@ struct DetailView: View {
                     makeDetailDisplayCache(
                         for: detail,
                         sessionId: requestedSessionID,
-                        visibleMessageLimit: requestedLimit
+                        visibleMessageLimit: requestedLimit,
+                        restorationAnchorRowID: requestedAnchorRowID
                     )
                 }
             }.value
@@ -4100,7 +4212,8 @@ struct DetailView: View {
     private func makeIncrementalTailDisplay(
         for detail: CodexThreadDetail
     ) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String)? {
-        guard cachedSessionId == sessionId,
+        guard requestedRestorationAnchorRowID == nil,
+              cachedSessionId == sessionId,
               DetailTimelineIncrementalEligibility.canReuseCachedWindow(
                 cachedVisibleMessageLimit: cachedVisibleMessageLimit,
                 requestedVisibleMessageLimit: visibleMessageLimit
@@ -4172,6 +4285,10 @@ struct DetailView: View {
     }
 
     private var shouldRenderDetailMessages: Bool {
+        if let anchorRowID = requestedRestorationAnchorRowID,
+           !cachedDisplayEntries.contains(where: { $0.id == anchorRowID }) {
+            return false
+        }
         if hasPreparedDisplayCacheForCurrentSession {
             return true
         }
@@ -4271,7 +4388,8 @@ struct DetailView: View {
     private func detailSourceSignature(for detail: CodexThreadDetail) -> String {
         makeDetailSourceSignature(
             for: detail,
-            visibleMessageLimit: visibleMessageLimit
+            visibleMessageLimit: visibleMessageLimit,
+            restorationAnchorRowID: requestedRestorationAnchorRowID
         )
     }
 
@@ -4595,6 +4713,29 @@ struct DetailDisplayCache: Sendable {
     let visibleMessageLimit: Int
     let signature: String
     let sourceSignature: String
+    /// Non-nil only when the requested semantic viewport anchor was present
+    /// in this bounded projection window.
+    let restorationAnchorRowID: String?
+
+    init(
+        sessionId: String,
+        displayItems: [CodexThreadItem],
+        displayEntries: [ChatDisplayEntry],
+        totalDisplayEntryCount: Int,
+        visibleMessageLimit: Int,
+        signature: String,
+        sourceSignature: String,
+        restorationAnchorRowID: String? = nil
+    ) {
+        self.sessionId = sessionId
+        self.displayItems = displayItems
+        self.displayEntries = displayEntries
+        self.totalDisplayEntryCount = totalDisplayEntryCount
+        self.visibleMessageLimit = visibleMessageLimit
+        self.signature = signature
+        self.sourceSignature = sourceSignature
+        self.restorationAnchorRowID = restorationAnchorRowID
+    }
 }
 
 private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
@@ -4607,11 +4748,13 @@ private func chatDisplayEntryTurnId(_ entry: ChatDisplayEntry) -> String {
 func makeDetailDisplayCache(
     for detail: CodexThreadDetail,
     sessionId: String,
-    visibleMessageLimit: Int
+    visibleMessageLimit: Int,
+    restorationAnchorRowID: String? = nil
 ) -> DetailDisplayCache {
     let preparedDisplay = makeVisibleDetailDisplay(
         for: detail,
-        visibleMessageLimit: visibleMessageLimit
+        visibleMessageLimit: visibleMessageLimit,
+        restorationAnchorRowID: restorationAnchorRowID
     )
     return DetailDisplayCache(
         sessionId: sessionId,
@@ -4620,20 +4763,30 @@ func makeDetailDisplayCache(
         totalDisplayEntryCount: preparedDisplay.totalCount,
         visibleMessageLimit: visibleMessageLimit,
         signature: preparedDisplay.signature,
-        sourceSignature: preparedDisplay.sourceSignature
+        sourceSignature: preparedDisplay.sourceSignature,
+        restorationAnchorRowID: preparedDisplay.resolvedRestorationAnchorRowID
     )
 }
 
 private func makeVisibleDetailDisplay(
     for detail: CodexThreadDetail,
-    visibleMessageLimit: Int
-) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String) {
+    visibleMessageLimit: Int,
+    restorationAnchorRowID: String?
+) -> (displayItems: [CodexThreadItem], visibleEntries: [ChatDisplayEntry], totalCount: Int, signature: String, sourceSignature: String, resolvedRestorationAnchorRowID: String?) {
     let displayItems = detail.items
         .filter { !isLowSignalDetailProcessItem($0) }
     let displayEntries = PerfStopwatch.measure("timeline.makeChatDisplayEntries") {
         makeChatDisplayEntries(from: displayItems)
     }
-    let visibleEntries = visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
+    let anchoredWindow = restorationAnchorRowID.flatMap { anchorRowID in
+        restorationDetailEntries(
+            from: displayEntries,
+            anchorRowID: anchorRowID,
+            historyLimit: visibleMessageLimit
+        )
+    }
+    let visibleEntries = anchoredWindow
+        ?? visibleDetailEntries(from: displayEntries, limit: visibleMessageLimit)
     return (
         displayItems: displayItems,
         visibleEntries: visibleEntries,
@@ -4641,14 +4794,17 @@ private func makeVisibleDetailDisplay(
         signature: detailDisplaySignature(for: visibleEntries, visibleMessageLimit: visibleMessageLimit),
         sourceSignature: makeDetailSourceSignature(
             for: detail,
-            visibleMessageLimit: visibleMessageLimit
-        )
+            visibleMessageLimit: visibleMessageLimit,
+            restorationAnchorRowID: restorationAnchorRowID
+        ),
+        resolvedRestorationAnchorRowID: anchoredWindow == nil ? nil : restorationAnchorRowID
     )
 }
 
 private func makeDetailSourceSignature(
     for detail: CodexThreadDetail,
-    visibleMessageLimit: Int
+    visibleMessageLimit: Int,
+    restorationAnchorRowID: String? = nil
 ) -> String {
     let signatureItemLimit = 2
     let items = detail.items.suffix(signatureItemLimit)
@@ -4686,7 +4842,24 @@ private func makeDetailSourceSignature(
             fileChangesSignature(item)
         ].joined(separator: ":")
     }.joined(separator: "|")
-    return "\(visibleMessageLimit)|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
+    return "\(visibleMessageLimit)|\(restorationAnchorRowID ?? "latest")|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
+}
+
+/// Builds a bounded semantic window around a saved row identity. Keeping a
+/// small look-ahead makes the restored first frame useful while avoiding the
+/// cost of materializing every row between a deep-history anchor and latest.
+func restorationDetailEntries(
+    from displayEntries: [ChatDisplayEntry],
+    anchorRowID: String,
+    historyLimit: Int,
+    lookAhead: Int = 12
+) -> [ChatDisplayEntry]? {
+    guard let anchorIndex = displayEntries.firstIndex(where: { $0.id == anchorRowID }) else {
+        return nil
+    }
+    let lowerBound = max(displayEntries.startIndex, anchorIndex - max(0, historyLimit - 1))
+    let upperBound = min(displayEntries.index(before: displayEntries.endIndex), anchorIndex + max(0, lookAhead))
+    return Array(displayEntries[lowerBound...upperBound])
 }
 
 func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -> [ChatDisplayEntry] {

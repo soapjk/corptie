@@ -17,7 +17,7 @@ struct SessionsView: View {
     @ObservedObject private var sessionListStore = BackendClient.shared.sessionListStore
     private let entityClient = EntityAPIClient.shared
     @StateObject private var layoutState = PanelLayoutState()
-    @StateObject private var presentationStore = SessionPresentationStore(hostCapacity: 1)
+    @StateObject private var presentationStore = SessionPresentationStore(hostCapacity: 3)
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var detailRenderTask: Task<Void, Never>?
     @State private var visuallySelectedSessionID: String?
@@ -157,6 +157,7 @@ struct SessionsView: View {
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
         presentationStore.cancelPreheats()
+        presentationStore.persistPositionsNow()
         layoutState.canRenderDetailMessages = false
         backendClient.suppressBackgroundPolling = false
     }
@@ -319,15 +320,15 @@ struct SessionsView: View {
 
     private func selectSessionAfterHighlight(_ session: TaskSession) {
         pendingSelectionTask?.cancel()
+        pendingSelectionTask = nil
         visuallySelectedSessionID = session.id
-        pendingSelectionTask = Task { @MainActor in
-            // Give AppKit one display frame to paint the row selection before
-            // SwiftUI reconciles the conversation subtree.
-            try? await Task.sleep(for: .milliseconds(16))
-            guard !Task.isCancelled else { return }
-            backendClient.select(session: session)
-            pendingSelectionTask = nil
-        }
+        // Commit the lightweight local selection synchronously. The native
+        // row highlight and a warm timeline host can therefore paint in the
+        // same event turn; provider/network work starts only after the target
+        // content identity is already correct.
+        selectedSession = session
+        presentationStore.activateHost(for: session.id)
+        backendClient.select(session: session)
     }
 
     // MARK: - 左：会话列表（原生 sidebar）
@@ -731,10 +732,10 @@ struct SessionsView: View {
            session.hasValidProductClassification,
            SessionCategory(session: session) == selectedCategory {
             HStack(spacing: 8) {
-                // Keep only the selected timeline mounted. Display projections
-                // and viewport positions remain cached by presentationStore,
-                // without retaining hidden AppKit/SwiftUI chat trees that react
-                // to every live BackendClient publication.
+                // Keep a bounded LRU of recent native timelines mounted. This
+                // preserves NSTableView reuse queues, height caches, and exact
+                // viewports for fast A → B → A browsing without retaining an
+                // unbounded number of Session trees.
                 ZStack {
                     ForEach(presentationStore.hostedSessionIDs, id: \.self) { hostedSessionID in
                         DetailView(

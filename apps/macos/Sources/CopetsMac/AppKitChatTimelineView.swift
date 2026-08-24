@@ -640,7 +640,7 @@ enum ChatBubbleWidthPolicy {
     }
 }
 
-struct AppKitChatTimelinePosition: Equatable, Sendable {
+struct AppKitChatTimelinePosition: Codable, Equatable, Sendable {
     let rowID: String
     let offset: Double
     let absoluteScrollY: Double

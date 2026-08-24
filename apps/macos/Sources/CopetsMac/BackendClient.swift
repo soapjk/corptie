@@ -4058,9 +4058,33 @@ final class BackendClient: ObservableObject {
 
     /// 补拉更早的历史消息，prepend 到当前选中会话的 detail.items 头部。
     /// 只在用户滚动到顶时触发（低频），因此直接请求后端切片端点即可。
-    func loadEarlierMessages(for session: TaskSession) async {
+    func selectionGenerationToken(for sessionID: String) -> Int? {
+        selectedSession?.id == sessionID ? selectionGeneration : nil
+    }
+
+    nonisolated static func historyPageRequestIsCurrent(
+        sessionID: String,
+        expectedSelectionGeneration: Int?,
+        currentSessionID: String?,
+        currentSelectionGeneration: Int
+    ) -> Bool {
+        currentSessionID == sessionID
+            && (expectedSelectionGeneration == nil
+                || expectedSelectionGeneration == currentSelectionGeneration)
+    }
+
+    func loadEarlierMessages(
+        for session: TaskSession,
+        expectedSelectionGeneration: Int? = nil
+    ) async {
         let threadId = session.external?.threadId ?? session.id
-        guard let current = selectedDetail,
+        guard Self.historyPageRequestIsCurrent(
+                  sessionID: session.id,
+                  expectedSelectionGeneration: expectedSelectionGeneration,
+                  currentSessionID: selectedSession?.id,
+                  currentSelectionGeneration: selectionGeneration
+              ),
+              let current = selectedDetail,
               current.id == threadId,
               let oldest = current.items.first,
               current.hasMoreHistory == true,
@@ -4089,7 +4113,13 @@ final class BackendClient: ObservableObject {
                 try JSONDecoder().decode(SessionHistoryResponse.self, from: data)
             }.value
 
-            guard let current = selectedDetail,
+            guard Self.historyPageRequestIsCurrent(
+                      sessionID: session.id,
+                      expectedSelectionGeneration: expectedSelectionGeneration,
+                      currentSessionID: selectedSession?.id,
+                      currentSelectionGeneration: selectionGeneration
+                  ),
+                  let current = selectedDetail,
                   current.id == threadId,
                   selectedSession?.id == session.id else {
                 return
