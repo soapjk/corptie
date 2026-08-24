@@ -310,6 +310,13 @@ struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {
     let status: String
     let scopeWorktreeIds: [String]
     let completedWorktreeIds: [String]
+    let workItemId: String?
+    let sessionId: String?
+    let sessionName: String?
+    let agentId: String?
+    let agentName: String?
+    let workspaceId: String?
+    let workspacePath: String?
     let currentWorktreeId: String?
     let blockedWorktreeId: String?
     let conflictFiles: [String]
