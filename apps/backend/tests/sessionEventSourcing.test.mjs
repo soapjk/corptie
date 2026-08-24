@@ -37,7 +37,9 @@ test("appendSessionEvent：event_id 冲突时显式抛错，不返回虚假 sequ
   const { store, directory } = await createStore();
   try {
     store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    assert.equal(store.hasSessionEvent("dup"), false);
     store.appendSessionEvent({ eventId: "dup", sessionId: "s1", type: "message", payload: {} });
+    assert.equal(store.hasSessionEvent("dup"), true);
     assert.throws(
       () => store.appendSessionEvent({ eventId: "dup", sessionId: "s1", type: "message", payload: {} }),
       /Duplicate event_id/
