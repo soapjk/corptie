@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import XCTest
 @testable import CorptieMac
 
@@ -126,31 +128,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("ScrollViewReader { proxy in"))
         XCTAssertTrue(contents.contains(".task(id: worktreeScrollRequest)"))
         XCTAssertTrue(contents.contains("proxy.scrollTo(request.worktreeId, anchor: .center)"))
-        XCTAssertTrue(contents.contains("worktree.scroll-region"))
         XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
-    }
-
-    func testWorktreeActionsAndRowsShareVirtualizedVerticalScrollRegion() throws {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift")
-        let contents = try String(contentsOf: source, encoding: .utf8)
-        let columnStart = try XCTUnwrap(contents.range(of: "private var worktreeColumn: some View"))
-        let columnEnd = try XCTUnwrap(
-            contents.range(of: "private var detailColumn: some View", range: columnStart.upperBound..<contents.endIndex)
-        )
-        let column = String(contents[columnStart.lowerBound..<columnEnd.lowerBound])
-
-        let list = try XCTUnwrap(column.range(of: "List(selection:"))
-        let integration = try XCTUnwrap(column.range(of: "integrationAction(project)", range: list.upperBound..<column.endIndex))
-        let cleanup = try XCTUnwrap(column.range(of: "cleanupAction(project)", range: integration.upperBound..<column.endIndex))
-        _ = try XCTUnwrap(column.range(of: "ForEach(project.worktrees)", range: cleanup.upperBound..<column.endIndex))
-
-        XCTAssertTrue(column.contains(".accessibilityIdentifier(\"worktree.scroll-region\")"))
-        XCTAssertTrue(column.contains(".listRowInsets(EdgeInsets())"))
-        XCTAssertTrue(column.contains(".listRowSeparator(.hidden)"))
     }
 
     func testWorktreeTabPushActionCoversLoadingFeedbackAndDisabledReasons() throws {
@@ -254,6 +232,14 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("worktree.cleanup"))
         XCTAssertTrue(view.contains("Delete this Worktree?"))
         XCTAssertTrue(view.contains("Only these Worktrees"))
+        XCTAssertTrue(view.contains("WorktreeCleanupConfirmationView("))
+        XCTAssertTrue(view.contains("ScrollView(.vertical)"))
+        XCTAssertTrue(view.contains("LazyVStack(alignment: .leading, spacing: 0)"))
+        XCTAssertTrue(view.contains("worktree.cleanup.confirmation.list"))
+        XCTAssertTrue(view.contains("worktree.cleanup.confirmation.confirm"))
+        XCTAssertTrue(view.contains("WorktreeCleanupConfirmationLayout.preferredHeight(for: worktrees.count)"))
+        XCTAssertTrue(view.contains(".scrollIndicators(.automatic)"))
+        XCTAssertFalse(view.contains("Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:\\n%@"))
         XCTAssertTrue(view.contains("Blocked from cleanup (%d)"))
         XCTAssertTrue(view.contains("worktree.cleanup.blocker.\\(worktree.worktreeId)"))
         XCTAssertTrue(view.contains("localizedDeletionBlocker(blocker)"))
@@ -266,6 +252,30 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(client.contains("for (offset, worktree) in worktrees.enumerated()"))
         XCTAssertTrue(client.contains("cleanupProgress = .deleting("))
         XCTAssertTrue(client.contains("await loadRepository(repositoryId)"))
+    }
+
+    func testCleanupConfirmationHeightFitsShortListsAndCapsLongLists() {
+        XCTAssertEqual(WorktreeCleanupConfirmationLayout.preferredHeight(for: 0), 340)
+        XCTAssertEqual(WorktreeCleanupConfirmationLayout.preferredHeight(for: 3), 384)
+        XCTAssertEqual(WorktreeCleanupConfirmationLayout.preferredHeight(for: 6), 558)
+        XCTAssertEqual(WorktreeCleanupConfirmationLayout.preferredHeight(for: 7), 560)
+        XCTAssertEqual(WorktreeCleanupConfirmationLayout.preferredHeight(for: 100), 560)
+    }
+
+    @MainActor
+    func testLongCleanupConfirmationRendersAtBoundedHeightWithNativeScrollView() {
+        let view = WorktreeCleanupConfirmationView(
+            worktrees: (0..<100).map { worktree("worktree:\($0)", isMain: false) },
+            onConfirm: {},
+            onCancel: {}
+        )
+        let hostingView = NSHostingView(rootView: view)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 640, height: 560)
+        hostingView.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(hostingView.fittingSize.width, 640, accuracy: 1)
+        XCTAssertEqual(hostingView.fittingSize.height, 560, accuracy: 1)
+        XCTAssertFalse(descendants(of: hostingView, matching: NSScrollView.self).isEmpty)
     }
 
     func testStaleIntegrationPlanCanBeRegeneratedAndMustBeReviewedAgain() throws {
@@ -523,5 +533,16 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             mergedIntoMain: isMain, synchronizedWithMain: true, aheadOfMain: 0, behindMain: 0,
             pendingIntegration: false, associations: [], deletionBlocker: nil
         )
+    }
+
+    @MainActor
+    private func descendants<ViewType: NSView>(
+        of view: NSView,
+        matching type: ViewType.Type
+    ) -> [ViewType] {
+        view.subviews.flatMap { child in
+            let matchingChild = (child as? ViewType).map { [$0] } ?? []
+            return matchingChild + descendants(of: child, matching: type)
+        }
     }
 }

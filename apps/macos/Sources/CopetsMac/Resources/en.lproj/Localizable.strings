@@ -731,6 +731,7 @@
 "Clean up %d merged Worktrees?" = "Clean up %d merged Worktrees?";
 "Clean Up Worktrees" = "Clean Up Worktrees";
 "Only these Worktrees, whose branches are merged into main and have no WorkItem or Session association, will be removed with their local branches:\n%@" = "Only these Worktrees, whose branches are merged into main and have no WorkItem or Session association, will be removed with their local branches:\n%@";
+"Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:" = "Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:";
 "Delete Worktree" = "Delete Worktree";
 "Delete this Worktree?" = "Delete this Worktree?";
 "Delete Worktree and Local Branch" = "Delete Worktree and Local Branch";
