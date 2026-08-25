@@ -49,6 +49,7 @@ export class CorptieStore {
     this.db = null;
     this.config = {};
     this.stateDirtyListener = null;
+    this.timelineDirtyListener = null;
     this.performanceMigrationBackupPath = null;
   }
 
@@ -305,6 +306,72 @@ export class CorptieStore {
     } catch (error) {
       this.db.run("ROLLBACK");
       throw error;
+    }
+  }
+
+  // Provider item ids are scoped to one Provider Session. Codex histories in
+  // particular commonly contain ids such as `item-1`; a database-wide primary
+  // key makes background hydration move those rows between unrelated Sessions.
+  migrateSessionItemIdentity() {
+    const columns = this.selectAll("PRAGMA table_info(session_items)");
+    const primaryKey = columns
+      .filter((column) => Number(column.pk) > 0)
+      .sort((left, right) => Number(left.pk) - Number(right.pk))
+      .map((column) => column.name);
+    if (primaryKey.length === 2
+      && primaryKey[0] === "session_id"
+      && primaryKey[1] === "id") {
+      // A temporary compatibility index may be present when a migrated
+      // database was still served by an older process using ON CONFLICT(id).
+      // The composite-aware process must remove it before accepting writes so
+      // unrelated Sessions can finally retain the same Provider item id.
+      this.db.run("DROP INDEX IF EXISTS idx_session_items_legacy_global_id_compat");
+      return;
+    }
+
+    for (const suffix of ["insert", "update", "delete"]) {
+      this.db.run(`DROP TRIGGER IF EXISTS session_timeline_${suffix}`);
+    }
+    this.db.run("PRAGMA foreign_keys = OFF");
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      this.db.run("ALTER TABLE session_items RENAME TO session_items_global_id_legacy");
+      this.db.run(`
+        CREATE TABLE session_items (
+          id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          turn_status TEXT NOT NULL,
+          type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          text TEXT NOT NULL,
+          options_json TEXT,
+          raw_metadata_json TEXT,
+          status TEXT,
+          created_at TEXT NOT NULL,
+          PRIMARY KEY (session_id, id),
+          FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        )
+      `);
+      this.db.run(`
+        INSERT INTO session_items (
+          id, session_id, turn_id, turn_status, type, title, text,
+          options_json, raw_metadata_json, status, created_at
+        )
+        SELECT id, session_id, turn_id, turn_status, type, title, text,
+               options_json, raw_metadata_json, status, created_at
+        FROM session_items_global_id_legacy
+      `);
+      this.db.run("DROP TABLE session_items_global_id_legacy");
+      this.db.run("CREATE INDEX idx_session_items_session_id ON session_items(session_id, created_at)");
+      this.db.run("CREATE INDEX idx_session_items_latest ON session_items(session_id, created_at DESC, id DESC)");
+      this.db.run("CREATE INDEX idx_session_items_turn_window ON session_items(session_id, turn_id, created_at, id)");
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    } finally {
+      this.db.run("PRAGMA foreign_keys = ON");
     }
   }
 
@@ -2164,6 +2231,7 @@ export class CorptieStore {
     this.ensureColumn("workspace_transitions", "target_provider_id", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("session_items", "raw_metadata_json", "TEXT");
+    this.migrateSessionItemIdentity();
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
     this.ensureColumn("feishu_bots", "brand", "TEXT NOT NULL DEFAULT 'feishu'");
@@ -2448,11 +2516,6 @@ export class CorptieStore {
               SELECT revision FROM session_timeline_revisions
               WHERE session_id = ${row}.session_id
             ) - 2000);
-          UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
-          INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
-          SELECT revision, 'session', ${row}.session_id, 'upsert',
-                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-          FROM state_sync_clock WHERE singleton = 1;
         END;
       `);
     }
@@ -3238,6 +3301,18 @@ export class CorptieStore {
 
   setStateDirtyListener(listener) {
     this.stateDirtyListener = typeof listener === "function" ? listener : null;
+  }
+
+  setTimelineDirtyListener(listener) {
+    this.timelineDirtyListener = typeof listener === "function" ? listener : null;
+  }
+
+  notifyTimelineDirty(sessionId) {
+    if (!sessionId) return;
+    this.timelineDirtyListener?.({
+      sessionId,
+      revision: this.sessionTimelineRevision(sessionId)
+    });
   }
 
   runInTransaction(operation) {
@@ -4993,9 +5068,28 @@ export class CorptieStore {
       [sessionId, item.id]
     );
     this.db.run(
-      `INSERT OR REPLACE INTO session_items (
+      `INSERT INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, id) DO UPDATE SET
+        turn_id=excluded.turn_id,
+        turn_status=excluded.turn_status,
+        type=excluded.type,
+        title=excluded.title,
+        text=excluded.text,
+        options_json=excluded.options_json,
+        raw_metadata_json=excluded.raw_metadata_json,
+        status=excluded.status,
+        created_at=excluded.created_at
+      WHERE session_items.turn_id IS NOT excluded.turn_id
+         OR session_items.turn_status IS NOT excluded.turn_status
+         OR session_items.type IS NOT excluded.type
+         OR session_items.title IS NOT excluded.title
+         OR session_items.text IS NOT excluded.text
+         OR session_items.options_json IS NOT excluded.options_json
+         OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
+         OR session_items.status IS NOT excluded.status
+         OR session_items.created_at IS NOT excluded.created_at`,
       [
         item.id,
         sessionId,
@@ -5031,7 +5125,10 @@ export class CorptieStore {
         }
       }
     }
-    this.scheduleSave();
+    if (this.db.getRowsModified() > 0) {
+      this.scheduleSave();
+      this.notifyTimelineDirty(sessionId);
+    }
   }
 
   // Provider history snapshots are a materialized read model, not new chat
@@ -5043,8 +5140,7 @@ export class CorptieStore {
       `INSERT INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        session_id=excluded.session_id,
+      ON CONFLICT(session_id, id) DO UPDATE SET
         turn_id=excluded.turn_id,
         turn_status=excluded.turn_status,
         type=excluded.type,
@@ -5054,8 +5150,7 @@ export class CorptieStore {
         raw_metadata_json=excluded.raw_metadata_json,
         status=excluded.status,
         created_at=excluded.created_at
-      WHERE session_items.session_id IS NOT excluded.session_id
-         OR session_items.turn_id IS NOT excluded.turn_id
+      WHERE session_items.turn_id IS NOT excluded.turn_id
          OR session_items.turn_status IS NOT excluded.turn_status
          OR session_items.type IS NOT excluded.type
          OR session_items.title IS NOT excluded.title
@@ -5078,17 +5173,26 @@ export class CorptieStore {
         createdAt
       ]
     );
-    if (this.db.getRowsModified() > 0) this.scheduleSave();
+    if (this.db.getRowsModified() > 0) {
+      this.scheduleSave();
+      this.notifyTimelineDirty(sessionId);
+    }
   }
 
   removeItem(sessionId, itemId) {
     this.db.run("DELETE FROM session_items WHERE session_id = ? AND id = ?", [sessionId, itemId]);
-    this.scheduleSave();
+    if (this.db.getRowsModified() > 0) {
+      this.scheduleSave();
+      this.notifyTimelineDirty(sessionId);
+    }
   }
 
   clearItems(sessionId) {
     this.db.run("DELETE FROM session_items WHERE session_id = ?", [sessionId]);
-    this.scheduleSave();
+    if (this.db.getRowsModified() > 0) {
+      this.scheduleSave();
+      this.notifyTimelineDirty(sessionId);
+    }
   }
 
   getQueuedItems(sessionId) {

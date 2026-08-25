@@ -26,6 +26,8 @@ test("timeline item mutations expose ordered replayable revisions", async () => 
   const { store, directory } = await fixture();
   try {
     const stateRevision = store.stateRevision();
+    const timelineNotifications = [];
+    store.setTimelineDirtyListener((change) => timelineNotifications.push(change));
     store.upsertItemSnapshot("session:timeline", {
       id: "message:1",
       turnId: "turn:1",
@@ -48,7 +50,8 @@ test("timeline item mutations expose ordered replayable revisions", async () => 
     });
 
     assert.equal(store.sessionTimelineRevision("session:timeline"), 2);
-    assert.ok(store.stateRevision() > stateRevision, "timeline changes wake the revisioned Session stream");
+    assert.equal(store.stateRevision(), stateRevision, "timeline data must not dirty control-plane state");
+    assert.deepEqual(timelineNotifications.map((change) => change.revision), [1, 2]);
     const first = store.sessionTimelineChangesAfter("session:timeline", 0, 1);
     assert.equal(first.snapshotRequired, false);
     assert.equal(first.revision, 1);
@@ -64,6 +67,135 @@ test("timeline item mutations expose ordered replayable revisions", async () => 
     assert.equal(second.revision, 2);
     assert.equal(second.hasMore, false);
     assert.equal(second.changes[0].item.text, "final");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Provider item identity is scoped to its Session", async () => {
+  const { store, directory } = await fixture();
+  try {
+    store.upsertSession({
+      id: "session:other",
+      title: "Other",
+      agent: "Agent",
+      provider: "codex-app-server",
+      status: "running"
+    });
+    const sharedProviderId = "item-1";
+    store.upsertItemSnapshot("session:timeline", {
+      id: sharedProviderId,
+      type: "agentMessage",
+      text: "first Session",
+      createdAt: "2026-08-24T01:00:00.000Z"
+    });
+    store.upsertItemSnapshot("session:other", {
+      id: sharedProviderId,
+      type: "agentMessage",
+      text: "second Session",
+      createdAt: "2026-08-24T01:00:01.000Z"
+    });
+
+    assert.equal(store.getSessionItem("session:timeline", sharedProviderId).text, "first Session");
+    assert.equal(store.getSessionItem("session:other", sharedProviderId).text, "second Session");
+    assert.equal(store.selectOne(
+      "SELECT COUNT(*) AS count FROM session_items WHERE id = ?",
+      [sharedProviderId]
+    ).count, 2);
+    assert.deepEqual(
+      store.selectAll("PRAGMA table_info(session_items)")
+        .filter((column) => column.pk > 0)
+        .sort((left, right) => left.pk - right.pk)
+        .map((column) => column.name),
+      ["session_id", "id"]
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("legacy global item primary key migrates without losing rows", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-timeline-identity-migration-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  let store = new CorptieStore({ dbPath, configPath });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "session:legacy",
+      title: "Legacy",
+      agent: "Agent",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    store.upsertItemSnapshot("session:legacy", {
+      id: "item-1",
+      type: "agentMessage",
+      text: "preserved",
+      createdAt: "2026-08-24T01:00:00.000Z"
+    });
+
+    for (const suffix of ["insert", "update", "delete"]) {
+      store.db.run(`DROP TRIGGER IF EXISTS session_timeline_${suffix}`);
+    }
+    store.db.run("PRAGMA foreign_keys = OFF");
+    store.db.run("BEGIN IMMEDIATE");
+    store.db.run("ALTER TABLE session_items RENAME TO session_items_composite_test");
+    store.db.run(`
+      CREATE TABLE session_items (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        turn_status TEXT NOT NULL,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        text TEXT NOT NULL,
+        options_json TEXT,
+        raw_metadata_json TEXT,
+        status TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      )
+    `);
+    store.db.run(`
+      INSERT INTO session_items
+      SELECT * FROM session_items_composite_test
+    `);
+    store.db.run("DROP TABLE session_items_composite_test");
+    store.db.run("COMMIT");
+    store.db.run("PRAGMA foreign_keys = ON");
+    await store.close();
+
+    store = new CorptieStore({ dbPath, configPath });
+    await store.initialize();
+    assert.equal(store.getSessionItem("session:legacy", "item-1").text, "preserved");
+    assert.deepEqual(
+      store.selectAll("PRAGMA table_info(session_items)")
+        .filter((column) => column.pk > 0)
+        .sort((left, right) => left.pk - right.pk)
+        .map((column) => column.name),
+      ["session_id", "id"]
+    );
+
+    store.upsertSession({
+      id: "session:new",
+      title: "New",
+      agent: "Agent",
+      provider: "codex-app-server",
+      status: "running"
+    });
+    store.upsertItemSnapshot("session:new", {
+      id: "item-1",
+      type: "agentMessage",
+      text: "same Provider id, different Session",
+      createdAt: "2026-08-24T01:00:01.000Z"
+    });
+    assert.equal(store.selectOne(
+      "SELECT COUNT(*) AS count FROM session_items WHERE id = 'item-1'"
+    ).count, 2);
+    assert.equal(store.selectOne("PRAGMA quick_check").quick_check, "ok");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
