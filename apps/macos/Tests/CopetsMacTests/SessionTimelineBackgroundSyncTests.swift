@@ -186,10 +186,11 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
             longMessageCharacters: 8
         ))
         var revisions: [String: Int] = [:]
+        var deliveredRevision = 3
         let engine = ActiveTimelineSyncEngine(
             localRevision: { revisions[$0] ?? 0 },
             synchronize: { session, _ in
-                revisions[session.id] = 3
+                revisions[session.id] = deliveredRevision
                 return true
             }
         )
@@ -202,6 +203,12 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         engine.schedule(fixture.session, desiredRevision: 4)
         engine.retainActiveSessions([])
         XCTAssertEqual(engine.scheduledSessionCount, 0, "Archived Sessions must release their scheduler immediately")
+
+        deliveredRevision = 4
+        engine.schedule(fixture.session, desiredRevision: 4)
+        for _ in 0..<20 where engine.scheduledSessionCount != 0 { await Task.yield() }
+        XCTAssertEqual(revisions[fixture.session.id], 4, "A restored Session must rejoin active Timeline sync")
+        XCTAssertEqual(engine.scheduledSessionCount, 0)
     }
 
     private func decodeEnvelope(_ json: String) throws -> SessionTimelineChangeEnvelope {

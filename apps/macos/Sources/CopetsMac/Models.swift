@@ -68,6 +68,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var objectiveId: String? = nil
     var workItemId: String? = nil
     let status: TaskStatus
+    var executionStatus: String? = nil
+    var deliveryStatus: String? = nil
+    var providerConnectionStatus: String? = nil
+    var syncHealth: String? = nil
     let progress: Double
     let summary: String
     let suggestedOptions: [CodexApprovalOption]?
@@ -89,9 +93,20 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
 
     var isConnected: Bool {
         SessionConnectionPresentation.isConnected(
-            status: external?.connectionStatus,
+            status: providerConnectionStatus ?? external?.connectionStatus,
             usesManualConnection: usesManualConnection
         )
+    }
+
+    var executionTaskStatus: TaskStatus {
+        switch executionStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "running": .running
+        case "blocked": .blocked
+        case "completed", "complete", "idle": .complete
+        case "failed": .failed
+        case "cancelled", "canceled": .cancelled
+        default: status
+        }
     }
 
     var resolvedSessionKind: SessionKind {

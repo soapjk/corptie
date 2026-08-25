@@ -6,9 +6,14 @@ function stableSessionFields(previous, next) {
     || previous.agent !== next.agent
     || previous.accent !== next.accent) fields.push("identity");
   if (previous.summary !== next.summary) fields.push("summary");
-  if (previous.status !== next.status || previous.progress !== next.progress) fields.push("status");
+  if (previous.status !== next.status
+    || previous.executionStatus !== next.executionStatus
+    || previous.deliveryStatus !== next.deliveryStatus
+    || previous.progress !== next.progress) fields.push("status");
   if (previous.activityStatus !== next.activityStatus || previous.updatedAt !== next.updatedAt) fields.push("activity");
-  if (JSON.stringify(previous.external?.connectionStatus) !== JSON.stringify(next.external?.connectionStatus)
+  if (previous.providerConnectionStatus !== next.providerConnectionStatus
+    || previous.syncHealth !== next.syncHealth
+    || JSON.stringify(previous.external?.connectionStatus) !== JSON.stringify(next.external?.connectionStatus)
     || previous.external?.agentSessionId !== next.external?.agentSessionId) fields.push("connection");
   if (JSON.stringify(previous.capabilities) !== JSON.stringify(next.capabilities)
     || JSON.stringify(previous.actions) !== JSON.stringify(next.actions)) fields.push("capabilities");

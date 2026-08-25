@@ -154,6 +154,9 @@ test("legacy global item primary key migrates without losing rows", async () => 
         text TEXT NOT NULL,
         options_json TEXT,
         raw_metadata_json TEXT,
+        binding_id TEXT,
+        presentation_role TEXT,
+        presentation_text TEXT,
         status TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE

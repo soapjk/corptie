@@ -207,24 +207,6 @@ export class SessionApplicationService {
       : providerSession;
   }
 
-  async readSession(sessionId) {
-    const reference = await this.referenceFor(sessionId);
-    const session = await this.registry.get(reference.providerId).readSession(reference);
-    return this.registry.decorateSession(reference.providerId, session);
-  }
-
-  async readSessionBinding(sessionId, bindingId) {
-    if (!this.resolveSessionBinding) {
-      throw new SessionNotFoundError(sessionId);
-    }
-    const reference = await this.resolveSessionBinding(sessionId, bindingId);
-    if (!reference?.providerId || !reference?.providerSessionId) {
-      throw new SessionNotFoundError(sessionId);
-    }
-    const session = await this.registry.get(reference.providerId).readSession(reference);
-    return this.registry.decorateSession(reference.providerId, session);
-  }
-
   async sendMessage(sessionId, message, context = {}) {
     const reference = await this.referenceFor(sessionId);
     const sessionContext = this.resolveMessageContext

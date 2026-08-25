@@ -26,6 +26,15 @@ struct ProjectStatusRefreshLifecycleTests {
         #expect(resign.contains("projectStatusEventRefreshTask?.cancel()"))
     }
 
+    @Test
+    func selectionAndOpeningNeverPrepareProviderExecution() throws {
+        let source = try backendClientSource()
+        let selection = functionBody(named: "func select(session: TaskSession)", in: source)
+        #expect(!source.contains("scheduleExecutionPreparation"))
+        #expect(!source.contains("prepare-execution"))
+        #expect(!selection.contains("sessionApplicationService"))
+    }
+
     private func backendClientSource() throws -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let root = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
