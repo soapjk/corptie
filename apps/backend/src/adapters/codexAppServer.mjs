@@ -802,18 +802,27 @@ export class CodexAppServerClient {
 
     if (method === "turn/completed") {
       const turn = params.turn ?? {};
+      const completedTurnId = turn.id ?? turnId ?? null;
+      const terminalStatus = turn.status
+        ?? (turn.error ? "failed" : "completed");
+      if (completedTurnId) {
+        for (const [itemId, item] of items) {
+          if (item.turnId !== completedTurnId) continue;
+          items.set(itemId, { ...item, turnStatus: terminalStatus });
+        }
+      }
       if (!turn.error) {
         return;
       }
       const index = items.size + 1;
       items.set(`${threadId}:turn-completed:${turn.id ?? index}`, {
         id: `${threadId}:turn-completed:${turn.id ?? index}`,
-        turnId: turn.id ?? turnId ?? threadId,
-        turnStatus: turn.status ?? "completed",
+        turnId: completedTurnId ?? threadId,
+        turnStatus: terminalStatus,
         type: "taskComplete",
         title: turn.error ? "Turn failed" : "Turn completed",
         text: turn.error?.message ?? "",
-        status: turn.status ?? "completed"
+        status: terminalStatus
       });
     }
   }

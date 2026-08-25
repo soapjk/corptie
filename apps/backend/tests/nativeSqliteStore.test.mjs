@@ -232,9 +232,24 @@ test("stored Session detail reads its complete local timeline without Provider a
       text: "Available offline"
     });
 
+    const rowsModifiedBeforeRead = store.db.getRowsModified();
+    const stateRevisionBeforeRead = store.stateRevision();
+    const timelineRevisionBeforeRead = store.sessionTimelineRevision("offline-session");
     const detail = store.getDetail("offline-session");
     assert.equal(detail.connectionStatus, "disconnected");
     assert.deepEqual(detail.items.map((item) => item.id), ["stored-message"]);
+    assert.deepEqual(store.getLatestTimelineItemWindow("offline-session", { limit: 50 }).items.map((item) => item.id), ["stored-message"]);
+    assert.deepEqual(
+      store.listSessionEvents("offline-session").map((event) => event.eventId),
+      ["item:stored-message"]
+    );
+    assert.equal(store.db.getRowsModified(), rowsModifiedBeforeRead, "product reads must execute zero SQLite writes");
+    assert.equal(store.stateRevision(), stateRevisionBeforeRead, "product reads must not advance state revision");
+    assert.equal(
+      store.sessionTimelineRevision("offline-session"),
+      timelineRevisionBeforeRead,
+      "product reads must not emit Timeline changes"
+    );
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -444,6 +459,74 @@ test("user message Provider aliases collapse to one durable item and emit a dele
     assert.deepEqual(changes.changes.map(({ itemId, operation }) => ({ itemId, operation })), [
       { itemId: "provider-native-id", operation: "delete" }
     ]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Timeline presentation semantics survive SQLite round-trip and raw metadata is backfilled locally", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-presentation-roundtrip-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "presentation-session", title: "Presentation", agent: "Codex", provider: "codex-app-server", status: "running" });
+    store.upsertItemSnapshot("presentation-session", {
+      id: "final", turnId: "turn-one", turnStatus: "completed", type: "agentMessage",
+      title: "Codex", text: "Final answer", status: "completed",
+      presentationRole: "final_answer", presentationText: "Presented final answer"
+    });
+
+    const stored = store.getSessionItem("presentation-session", "final");
+    assert.equal(stored.presentationRole, "final_answer");
+    assert.equal(stored.presentationText, "Presented final answer");
+
+    store.db.run(
+      "UPDATE session_items SET presentation_role = NULL WHERE session_id = ? AND id = ?",
+      ["presentation-session", "final"]
+    );
+    store.db.run(
+      "UPDATE session_items SET raw_metadata_json = ? WHERE session_id = ? AND id = ?",
+      [JSON.stringify({ payload: { phase: "final_answer" } }), "presentation-session", "final"]
+    );
+    // Model a database created before the presentation migration existed. A
+    // current database never creates rows without presentation semantics, so
+    // the one-time migration must not be turned back into a startup scan just
+    // to support this deliberately legacy fixture.
+    store.db.run(
+      "DELETE FROM data_migrations WHERE migration_id = ?",
+      ["session-item-presentation-v1"]
+    );
+    store.backfillSessionItemPresentation();
+    assert.equal(
+      store.getSessionItem("presentation-session", "final").presentationRole,
+      "final_answer"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("persisted running Session state survives backend store restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-running-restart-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  let store = new CorptieStore({ dbPath, configPath });
+  await store.initialize();
+  try {
+    store.upsertSession({
+      id: "running-session",
+      title: "Running",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "running"
+    });
+    await store.close();
+
+    store = new CorptieStore({ dbPath, configPath });
+    await store.initialize();
+    assert.equal(store.getSession("running-session")?.status, "running");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

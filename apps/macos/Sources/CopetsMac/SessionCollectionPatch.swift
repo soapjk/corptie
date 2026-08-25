@@ -103,11 +103,18 @@ enum SessionCollectionDiffer {
             fields.insert(.identity)
         }
         if previous.summary != next.summary { fields.insert(.summary) }
-        if previous.status != next.status || previous.progress != next.progress { fields.insert(.status) }
+        if previous.status != next.status
+            || previous.executionStatus != next.executionStatus
+            || previous.deliveryStatus != next.deliveryStatus
+            || previous.progress != next.progress {
+            fields.insert(.status)
+        }
         if previous.activityStatus != next.activityStatus || previous.updatedAt != next.updatedAt {
             fields.insert(.activity)
         }
-        if previous.external?.connectionStatus != next.external?.connectionStatus
+        if previous.providerConnectionStatus != next.providerConnectionStatus
+            || previous.syncHealth != next.syncHealth
+            || previous.external?.connectionStatus != next.external?.connectionStatus
             || previous.external?.agentSessionId != next.external?.agentSessionId {
             fields.insert(.connection)
         }

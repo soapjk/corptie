@@ -241,6 +241,7 @@ actor SessionTimelineNetworkPermitPool {
 @MainActor
 final class ActiveTimelineSyncEngine {
     private struct Job {
+        let generation: UUID
         var session: TaskSession
         var desiredRevision: Int
         var task: Task<Void, Never>?
@@ -270,15 +271,21 @@ final class ActiveTimelineSyncEngine {
 
     func schedule(_ session: TaskSession, desiredRevision: Int) {
         guard desiredRevision > localRevision(session.id) else { return }
-        var job = jobs[session.id] ?? Job(session: session, desiredRevision: desiredRevision, task: nil)
+        var job = jobs[session.id] ?? Job(
+            generation: UUID(),
+            session: session,
+            desiredRevision: desiredRevision,
+            task: nil
+        )
         job.session = session
         job.desiredRevision = max(job.desiredRevision, desiredRevision)
         guard job.task == nil else {
             jobs[session.id] = job
             return
         }
+        let generation = job.generation
         job.task = Task { @MainActor [weak self] in
-            await self?.run(sessionID: session.id)
+            await self?.run(sessionID: session.id, generation: generation)
         }
         jobs[session.id] = job
     }
@@ -290,10 +297,16 @@ final class ActiveTimelineSyncEngine {
 
     var scheduledSessionCount: Int { jobs.count }
 
-    private func run(sessionID: String) async {
-        defer { jobs[sessionID] = nil }
+    private func run(sessionID: String, generation: UUID) async {
+        defer {
+            if jobs[sessionID]?.generation == generation {
+                jobs[sessionID] = nil
+            }
+        }
         var failureCount = 0
-        while !Task.isCancelled, let job = jobs[sessionID] {
+        while !Task.isCancelled,
+              let job = jobs[sessionID],
+              job.generation == generation {
             let revision = localRevision(sessionID)
             if revision >= job.desiredRevision { return }
             await permits.acquire()

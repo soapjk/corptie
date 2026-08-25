@@ -54,7 +54,9 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, {
       ...(context.source && typeof context.source === "object" ? context.source : {}),
-      contextPrompt: context.sessionContext?.prompt ?? null
+      contextPrompt: context.sessionContext?.prompt ?? null,
+      turnId: context.idempotencyKey ?? null,
+      localVisibility: "status_only"
     }),
     clearConversation: (reference) => manager.clear(reference.providerSessionId),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),

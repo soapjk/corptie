@@ -485,6 +485,38 @@ test("a completed item does not prematurely complete its active turn", () => {
   }]);
 });
 
+test("turn completion settles every live item in that turn without touching another turn", () => {
+  const client = new CodexAppServerClient();
+  for (const [turnId, id, phase] of [
+    ["turn-a", "commentary-a", "commentary"],
+    ["turn-a", "answer-a", "final_answer"],
+    ["turn-b", "commentary-b", "commentary"]
+  ]) {
+    client.captureLiveItem({
+      method: "item/completed",
+      params: {
+        threadId: "thread-a",
+        turnId,
+        item: { id, type: "agentMessage", text: id, phase }
+      }
+    });
+  }
+
+  client.captureLiveItem({
+    method: "turn/completed",
+    params: {
+      threadId: "thread-a",
+      turn: { id: "turn-a", status: "completed" }
+    }
+  });
+
+  const byId = new Map(client.liveItemsForThread("thread-a").map((item) => [item.id, item]));
+  assert.equal(byId.get("commentary-a").turnStatus, "completed");
+  assert.equal(byId.get("answer-a").turnStatus, "completed");
+  assert.equal(byId.get("answer-a").presentationRole, "final_answer");
+  assert.equal(byId.get("commentary-b").turnStatus, "inProgress");
+});
+
 test("thread detail preserves the Codex message phase for presentation", () => {
   const detail = mapCodexThreadToDetail({
     id: "thread-a",

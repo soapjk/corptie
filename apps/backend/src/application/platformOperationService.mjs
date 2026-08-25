@@ -166,7 +166,7 @@ export class PlatformOperationService {
         const byId = new Map([...active, ...archived].map((session) => [session.id, session]));
         return [...byId.values()];
       }
-      case "get": return this.sessionService.readSession(required(args.session_id, "session_id"));
+      case "get": return this.#storedSession(required(args.session_id, "session_id"));
       case "create": return this.createSession({
         agentId: required(args.agent_id, "agent_id"),
         providerId: required(args.provider_id, "provider_id"),
@@ -194,8 +194,8 @@ export class PlatformOperationService {
         context
       );
       case "list_models": return this.sessionService.listModelsForSession(required(args.session_id, "session_id"), context);
-      case "read_account_usage": return this.sessionService.readAccountUsage(required(args.session_id, "session_id"), context);
-      case "read_session_usage": return this.sessionService.readSessionUsage(required(args.session_id, "session_id"), context);
+      case "read_account_usage": return this.#storedUsage(required(args.session_id, "session_id")).account;
+      case "read_session_usage": return this.#storedUsage(required(args.session_id, "session_id")).context;
       case "switch_model": return this.sessionService.switchModel(
         required(args.session_id, "session_id"), required(args.model_id, "model_id"), context
       );
@@ -207,6 +207,30 @@ export class PlatformOperationService {
       );
       default: throw unsupported("Session", args.action);
     }
+  }
+
+  #storedSession(sessionId) {
+    const summary = found(this.store.getSession(sessionId), "SESSION_NOT_FOUND");
+    const detail = this.store.getDetail?.(sessionId) ?? {};
+    return {
+      ...detail,
+      ...summary,
+      id: sessionId,
+      items: detail.items ?? this.store.getItems?.(sessionId) ?? []
+    };
+  }
+
+  #storedUsage(sessionId) {
+    const session = found(this.store.getSession(sessionId), "SESSION_NOT_FOUND");
+    const usage = this.store.getSessionUsageSnapshot?.(sessionId);
+    return {
+      account: usage?.account ?? {
+        available: false,
+        provider: session.external?.provider ?? "unknown",
+        model: usage?.model ?? session.external?.currentModel ?? null
+      },
+      context: usage?.context ?? null
+    };
   }
 }
 
