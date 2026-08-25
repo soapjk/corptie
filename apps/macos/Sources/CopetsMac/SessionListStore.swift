@@ -19,8 +19,10 @@ final class SessionRowModel: ObservableObject, Identifiable {
     }
 }
 
+/// Authoritative, row-granular projection of the global Session state stream.
+/// Selection, timeline, supplementary panels, and commands never write here.
 @MainActor
-final class SessionListStore: ObservableObject {
+final class SessionIndexStore: ObservableObject {
     @Published private(set) var orderedIDs: [String] = []
     @Published private(set) var groupingRevision: UInt64 = 0
     @Published private(set) var filterRevision: UInt64 = 0

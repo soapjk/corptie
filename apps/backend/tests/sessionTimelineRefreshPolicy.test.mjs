@@ -17,7 +17,7 @@ test("active sessions retain bounded tail sampling while idle sessions use consi
   assert.equal(timelineRefreshInterval({ status: "complete" }), timelineRefreshIntervals.consistencyMilliseconds);
 });
 
-test("scheduler debounces matching events, adapts polling, and releases every timer", () => {
+test("scheduler is event-driven, debounces matching events, and releases every timer", () => {
   const clock = fakeClock();
   const refreshes = [];
   const scheduler = new SessionTimelineRefreshScheduler({
@@ -29,22 +29,22 @@ test("scheduler debounces matching events, adapts polling, and releases every ti
   });
 
   scheduler.schedule({ status: "running" });
-  assert.deepEqual(clock.delays().sort((a, b) => a - b), [750, 30_000]);
+  assert.deepEqual(clock.delays(), []);
   assert.equal(scheduler.wake({ sessionId: "codex:two" }), false);
   assert.equal(scheduler.wake({ sessionId: "codex:one" }), true);
   assert.equal(scheduler.wake({ sessionId: "codex:one" }), true);
-  assert.deepEqual(clock.delays().sort((a, b) => a - b), [50, 750, 30_000]);
+  assert.deepEqual(clock.delays(), [50]);
   clock.fireDelay(50);
   assert.deepEqual(refreshes, [{ fullConsistency: true }]);
 
   scheduler.schedule({ status: "complete" });
-  assert.deepEqual(clock.delays(), [30_000]);
+  assert.deepEqual(clock.delays(), []);
   scheduler.close();
   assert.deepEqual(clock.delays(), []);
   assert.equal(scheduler.wake({ sessionId: "codex:one" }), false);
 });
 
-test("legacy scheduler retains the compatibility polling cadence", () => {
+test("legacy stream also avoids polling and wakes from matching durable events", () => {
   const clock = fakeClock();
   const scheduler = new SessionTimelineRefreshScheduler({
     sessionId: "codex:one",
@@ -54,8 +54,9 @@ test("legacy scheduler retains the compatibility polling cadence", () => {
     clearTimer: clock.clearTimer
   });
   scheduler.schedule({ status: "complete" });
-  assert.deepEqual(clock.delays(), [400]);
-  assert.equal(scheduler.wake({ sessionId: "codex:one" }), false);
+  assert.deepEqual(clock.delays(), []);
+  assert.equal(scheduler.wake({ sessionId: "codex:one" }), true);
+  assert.deepEqual(clock.delays(), [50]);
 });
 
 function fakeClock() {

@@ -95,3 +95,34 @@ test("multiple unopened Sessions publish independent timeline cursors without di
     await cleanup(f);
   }
 });
+
+test("persisting an unchanged Session order performs no writes or revisions", async () => {
+  const f = await fixture(24);
+  try {
+    const ids = f.store.listSessions({ archived: false }).map((session) => session.id);
+    f.store.reorderSessions(ids);
+    const revisionAfterFirstOrder = f.store.stateRevision();
+    const changesAfterFirstOrder = f.store.stateChangesAfter(revisionAfterFirstOrder);
+
+    f.store.reorderSessions(ids);
+
+    assert.equal(f.store.stateRevision(), revisionAfterFirstOrder);
+    assert.deepEqual(f.store.stateChangesAfter(revisionAfterFirstOrder), changesAfterFirstOrder);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("re-running Store migrations is revision-idempotent for Session and Agent projections", async () => {
+  const f = await fixture(24);
+  try {
+    const revision = f.store.stateRevision();
+
+    f.store.migrate();
+
+    assert.equal(f.store.stateRevision(), revision);
+    assert.deepEqual(f.store.stateChangesAfter(revision), []);
+  } finally {
+    await cleanup(f);
+  }
+});

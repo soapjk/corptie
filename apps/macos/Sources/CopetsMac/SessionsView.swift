@@ -14,14 +14,15 @@ import SwiftUI
 //   - 窄列固定像素宽度，主工作区吃掉剩余空间。
 struct SessionsView: View {
     private let backendClient = BackendClient.shared
-    @ObservedObject private var sessionListStore = BackendClient.shared.sessionListStore
+    @ObservedObject private var sessionIndexStore = BackendClient.shared.sessionIndexStore
     private let entityClient = EntityAPIClient.shared
     @StateObject private var layoutState = PanelLayoutState()
-    @StateObject private var presentationStore = SessionPresentationStore(hostCapacity: 1)
+    @ObservedObject private var presentationCache = SessionPresentationCache.shared
+    @ObservedObject private var viewportController = SessionViewportController.shared
+    @StateObject private var selectionController = SessionSelectionController()
     @StateObject private var sessionGroupProjectionStore = SessionGroupProjectionStore()
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var detailRenderTask: Task<Void, Never>?
-    @State private var visuallySelectedSessionID: String?
     @State private var selectedSession: TaskSession?
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
@@ -85,13 +86,12 @@ struct SessionsView: View {
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
             let activeSessionIDs = Set(sessions.map(\.id))
-            presentationStore.prune(to: activeSessionIDs)
+            presentationCache.prune(to: activeSessionIDs)
             SessionTimelineRepository.shared.prune(to: activeSessionIDs)
             attemptPendingSelection(sessions)
             if !recoverSelectionIfNeeded(from: sessions) {
                 restoreSelection(for: selectedCategory)
             }
-            preloadSessionMessages(sessions)
             if let selectedSessionID = selectedSession?.id {
                 markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
             }
@@ -103,10 +103,9 @@ struct SessionsView: View {
             selectedSession = session
             if let session {
                 let category = SessionCategory(session: session)
-                presentationStore.hydratePosition(for: session.id)
-                presentationStore.activateHost(for: session.id)
+                viewportController.hydrate(session.id)
                 Self.recordSessionId(session.id, category: category)
-                visuallySelectedSessionID = session.id
+                selectionController.select(session.id)
                 selectedCategory = category
                 if selectedCategory == .worker {
                     isShowingWorkerArchive = isArchivedWorkerSession(
@@ -116,7 +115,6 @@ struct SessionsView: View {
                 }
                 markOpenedSessionRead(session)
             }
-            preloadSessionMessages(backendClient.sessions)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             markOpenedSessionRead(selectedSession)
@@ -142,15 +140,13 @@ struct SessionsView: View {
         guard sidebarState.isSelected else { return }
         selectedSession = backendClient.selectedSession
         if let selectedSession {
-            presentationStore.hydratePosition(for: selectedSession.id)
-            presentationStore.activateHost(for: selectedSession.id)
+            viewportController.hydrate(selectedSession.id)
             markOpenedSessionRead(selectedSession)
         }
         scheduleDetailRendering()
         backendClient.suppressBackgroundPolling = true
         attemptPendingSelection(backendClient.sessions)
         restoreLastSelectedSession(backendClient.sessions)
-        preloadSessionMessages(backendClient.sessions)
         Task { await entityClient.refreshAgents() }
     }
 
@@ -159,8 +155,7 @@ struct SessionsView: View {
         detailRenderTask = nil
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
-        presentationStore.cancelPreheats()
-        presentationStore.persistPositionsNow()
+        viewportController.persistNow()
         layoutState.canRenderDetailMessages = false
         backendClient.suppressBackgroundPolling = false
     }
@@ -259,14 +254,14 @@ struct SessionsView: View {
             excluding: current.id
         ), let target = sessions.first(where: { $0.id == targetId }) else {
             selectedSession = nil
-            visuallySelectedSessionID = nil
+            selectionController.clear()
             return true
         }
 
         pendingSelectionTask?.cancel()
         let category = SessionCategory(session: target)
         selectedSession = target
-        visuallySelectedSessionID = target.id
+        selectionController.select(target.id)
         selectedCategory = category
         isShowingWorkerArchive = false
         Self.recordSessionId(target.id, category: category)
@@ -279,7 +274,7 @@ struct SessionsView: View {
     private func restoreSelection(for category: SessionCategory) {
         let targetId = resolvedSessionSelection(
             category: category,
-            rows: sessionListStore.rows,
+            rows: sessionIndexStore.rows,
             selectedSessionId: selectedSession?.id,
             lastSelectedId: Self.restoredSessionId(for: category),
             workItems: entityClient.workItems,
@@ -288,7 +283,7 @@ struct SessionsView: View {
         guard let targetId else {
             if let selectedSession, SessionCategory(session: selectedSession) == category {
                 self.selectedSession = nil
-                visuallySelectedSessionID = nil
+                selectionController.clear()
             }
             return
         }
@@ -298,40 +293,16 @@ struct SessionsView: View {
         }
     }
 
-    private func preloadSessionMessages(_ sessions: [TaskSession]) {
-        PerfStopwatch.measure("预加载·preloadSessionMessages(\(sessions.count)会话)") {
-            backendClient.preloadSessionDetails(
-                sessions,
-                centeredOn: selectedSession?.id
-            )
-            presentationStore.prune(to: Set(sessions.map(\.id)))
-            let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-            let prioritizedIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
-                sessions.map(\.id),
-                selectedSessionID: selectedSession?.id
-            )
-            for sessionID in prioritizedIDs {
-                guard let session = sessionsByID[sessionID] else { continue }
-                presentationStore.preheat(
-                    session: session,
-                    backendClient: backendClient,
-                    visibleMessageLimit: DetailView.initialVisibleMessageLimit
-                )
-            }
-        }
-    }
-
     private func selectSessionAfterHighlight(_ session: TaskSession) {
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
-        visuallySelectedSessionID = session.id
+        selectionController.select(session.id)
         // Commit the lightweight local selection synchronously. The native
         // row highlight and a warm timeline host can therefore paint in the
         // same event turn; provider/network work starts only after the target
         // content identity is already correct.
         selectedSession = session
-        presentationStore.hydratePosition(for: session.id)
-        presentationStore.activateHost(for: session.id)
+        viewportController.hydrate(session.id)
         backendClient.select(session: session)
     }
 
@@ -467,7 +438,7 @@ struct SessionsView: View {
 
     private var sessionCategoryPicker: some View {
         let unreadCounts = unreadSessionCounts(
-            in: sessionListStore.rows.map(\.session),
+            in: sessionIndexStore.rows.map(\.session),
             workItems: entityClient.workItems
         )
         return HStack(spacing: 2) {
@@ -514,7 +485,7 @@ struct SessionsView: View {
         }
         let targetId = resolvedSessionSelection(
             category: category,
-            rows: sessionListStore.rows,
+            rows: sessionIndexStore.rows,
             selectedSessionId: selectedSession?.id,
             lastSelectedId: Self.restoredSessionId(for: category),
             workItems: entityClient.workItems,
@@ -532,10 +503,9 @@ struct SessionsView: View {
         }
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
-        visuallySelectedSessionID = session.id
+        selectionController.select(session.id)
         selectedSession = session
-        presentationStore.hydratePosition(for: session.id)
-        presentationStore.activateHost(for: session.id)
+        viewportController.hydrate(session.id)
         backendClient.select(session: session)
     }
 
@@ -611,11 +581,10 @@ struct SessionsView: View {
     }
 
     private func sessionRow(_ row: SessionRowModel) -> some View {
-        let isSelected = (visuallySelectedSessionID ?? selectedSession?.id) == row.session.id
+        let isSelected = (selectionController.selectedSessionID ?? selectedSession?.id) == row.session.id
         return SessionsSidebarRow(
             row: row,
-            selectionRequested: selectSessionAfterHighlight,
-            preheatRequested: backendClient.prefetchDetail
+            selectionRequested: selectSessionAfterHighlight
         )
             .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 8))
             .listRowSeparator(.hidden)
@@ -683,8 +652,8 @@ struct SessionsView: View {
     /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Objective 分组。
     private var groupedSessions: [SessionGroup] {
         let key = SessionGroupProjectionKey(
-            groupingRevision: sessionListStore.groupingRevision,
-            filterRevision: sessionListStore.filterRevision,
+            groupingRevision: sessionIndexStore.groupingRevision,
+            filterRevision: sessionIndexStore.filterRevision,
             entityRevision: entityGroupingRevision,
             category: selectedCategory,
             workerScope: workerSessionScope,
@@ -736,7 +705,7 @@ struct SessionsView: View {
 
     // 按搜索词筛选当前 Tab 下的会话（匹配标题/摘要/Agent/工作目录）。
     private var searchFilteredRows: [SessionRowModel] {
-        filteredSessionRows(sessionListStore.rows, query: searchText)
+        filteredSessionRows(sessionIndexStore.rows, query: searchText)
     }
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
@@ -752,11 +721,11 @@ struct SessionsView: View {
                 // queues and the scroll view itself are never multiplied.
                 DetailView(
                     sessionId: session.id,
-                    presentationStore: presentationStore,
+                    presentationCache: presentationCache,
                     composerDraftRepository: composerDraftRepository,
-                    initialTimelinePosition: presentationStore.position(for: session.id),
+                    initialTimelinePosition: viewportController.position(for: session.id),
                     onTimelinePositionChange: { position in
-                        presentationStore.store(position, for: session.id)
+                        viewportController.store(position, for: session.id)
                     }
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -807,13 +776,11 @@ private struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
 private struct SessionsSidebarRow: View {
     @ObservedObject var row: SessionRowModel
     let selectionRequested: (TaskSession) -> Void
-    let preheatRequested: (TaskSession) -> Void
 
     var body: some View {
         CompactSessionRow(
             session: row.session,
             isUnread: isSessionUnread(row.session),
-            preheatRequested: preheatRequested,
             selectionRequested: selectionRequested
         )
     }
@@ -983,14 +950,20 @@ func makeSessionGroups(
     workerScope: WorkerSessionScope = .active,
     workerGroupingMode: WorkerSessionGroupingMode = .objective
 ) -> [SessionGroup] {
-    let rows = rows.lazy.filter {
-        $0.session.hasValidProductClassification
-            && SessionCategory(session: $0.session) == category
-    }.sorted { left, right in
-        let leftTimestamp = left.session.lastMessageAt ?? left.session.updatedAt
-        let rightTimestamp = right.session.lastMessageAt ?? right.session.updatedAt
-        if leftTimestamp != rightTimestamp { return leftTimestamp > rightTimestamp }
-        return left.id < right.id
+    // Read each observable row exactly once. Repeated @Published property
+    // access inside lazy filter + sort comparators dominated the 2,000-row
+    // path even though the actual sort is cheap.
+    var candidates: [(row: SessionRowModel, session: TaskSession, timestamp: String)] = []
+    candidates.reserveCapacity(rows.count)
+    for row in rows {
+        let session = row.session
+        guard session.hasValidProductClassification,
+              SessionCategory(session: session) == category else { continue }
+        candidates.append((row, session, session.lastMessageAt ?? session.updatedAt))
+    }
+    candidates.sort { left, right in
+        if left.timestamp != right.timestamp { return left.timestamp > right.timestamp }
+        return left.row.id < right.row.id
     }
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
     let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
@@ -1015,21 +988,23 @@ func makeSessionGroups(
         return key
     }
 
-    for row in rows {
-        switch row.session.resolvedSessionKind {
+    for candidate in candidates {
+        let row = candidate.row
+        let session = candidate.session
+        switch session.resolvedSessionKind {
         case .assistantChat:
-            let key = row.session.agentId ?? "__assistant_unbound__"
+            let key = session.agentId ?? "__assistant_unbound__"
             if assistantRows[key] == nil { assistantOrder.append(key) }
             assistantRows[key, default: []].append(row)
         case .objectiveChat:
-            let objectiveKey = registerObjective(row.session.objectiveId)
+            let objectiveKey = registerObjective(session.objectiveId)
             objectiveRows[objectiveKey, default: []].append(row)
         case .worker:
-            let workItem = row.session.workItemId.flatMap { workItemsByID[$0] }
+            let workItem = session.workItemId.flatMap { workItemsByID[$0] }
             let isArchived = workItem.map { WorkItemColumn.column(for: $0.status) == .done } == true
             guard (workerScope == .archived) == isArchived else { continue }
             visibleWorkerRows.append(row)
-            let objectiveKey = registerObjective(workItem?.objectiveId ?? row.session.objectiveId)
+            let objectiveKey = registerObjective(workItem?.objectiveId ?? session.objectiveId)
             workerRows[objectiveKey, default: []].append(row)
         case .legacy:
             continue
@@ -1218,10 +1193,10 @@ struct SessionDetailPanel: View {
         .task(id: session.id) {
             await loadProviderCatalogIfNeeded()
         }
-        .onReceive(backendClient.$selectedContextReferences) { references in
+        .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
             contextReferences = references
         }
-        .onReceive(backendClient.$isLoadingContextReferences) { isLoading in
+        .onReceive(backendClient.supplementaryDataController.$isLoadingContextReferences) { isLoading in
             isLoadingContextReferences = isLoading
         }
         .onReceive(backendClient.$agentProviders) { _ in

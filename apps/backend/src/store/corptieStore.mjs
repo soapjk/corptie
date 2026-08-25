@@ -2441,14 +2441,37 @@ export class CorptieStore {
       ["git_repositories", "repository", "repository_id"],
       ["project_integration_runs", "integrationRun", "id"]
     ];
+    const noOpUpdateGuards = {
+      sessions: [
+        "id", "title", "agent", "provider", "command", "args_json", "cwd", "status",
+        "progress", "summary", "accent", "created_at", "updated_at", "archived", "pinned",
+        "sort_order", "active_choice_json", "raw_json", "objective_id", "work_item_id",
+        "session_kind", "agent_id"
+      ],
+      agents: [
+        "agent_id", "name", "description", "status", "capabilities_json", "current_session_id",
+        "created_at", "updated_at", "role", "system_prompt", "work_dir", "avatar_path", "agent_kind"
+      ]
+    };
     for (const [table, entityType, idColumn] of tracked) {
       for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
         const suffix = operation.toLowerCase();
         const row = operation === "DELETE" ? "OLD" : "NEW";
         const changeOperation = operation === "DELETE" ? "delete" : "upsert";
+        const guardedColumns = operation === "UPDATE" ? noOpUpdateGuards[table] : null;
+        if (guardedColumns) {
+          // Trigger definitions predate IF-NOT-EXISTS migrations. Recreate the
+          // two high-frequency projection triggers so existing databases gain
+          // the no-op guard as well as newly created stores.
+          this.db.run(`DROP TRIGGER IF EXISTS state_sync_${table}_${suffix}`);
+        }
+        const when = guardedColumns
+          ? `WHEN ${guardedColumns.map((column) => `OLD.${column} IS NOT NEW.${column}`).join(" OR ")}`
+          : "";
         this.db.run(`
           CREATE TRIGGER IF NOT EXISTS state_sync_${table}_${suffix}
           AFTER ${operation} ON ${table}
+          ${when}
           BEGIN
             UPDATE state_sync_clock SET revision = revision + 1 WHERE singleton = 1;
             INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
@@ -3235,11 +3258,16 @@ export class CorptieStore {
       this.db.run(
         `UPDATE logical_sessions
          SET session_name = ?, session_name_key = ?, title = ?
-         WHERE logical_session_id = ?`,
-        [sessionName, sessionNameKey, sessionName, row.logical_session_id]
+         WHERE logical_session_id = ?
+           AND (session_name IS NOT ? OR session_name_key IS NOT ? OR title IS NOT ?)`,
+        [sessionName, sessionNameKey, sessionName, row.logical_session_id,
+          sessionName, sessionNameKey, sessionName]
       );
       if (row.legacy_session_id) {
-        this.db.run("UPDATE sessions SET title = ? WHERE id = ?", [sessionName, row.legacy_session_id]);
+        this.db.run(
+          "UPDATE sessions SET title = ? WHERE id = ? AND title IS NOT ?",
+          [sessionName, row.legacy_session_id, sessionName]
+        );
       }
     }
   }
@@ -6022,7 +6050,10 @@ export class CorptieStore {
   reorderSessions(sessionIds = []) {
     const ids = sessionIds.map((id) => String(id)).filter(Boolean);
     ids.forEach((id, index) => {
-      this.db.run("UPDATE sessions SET sort_order = ? WHERE id = ?", [index, id]);
+      this.db.run(
+        "UPDATE sessions SET sort_order = ? WHERE id = ? AND sort_order IS NOT ?",
+        [index, id, index]
+      );
     });
     this.scheduleSave();
     return this.listSessions({ archived: false });
@@ -6714,7 +6745,10 @@ export class CorptieStore {
         `UPDATE agents SET
            agent_kind = ?, description = ?, role = ?, status = 'available',
            capabilities_json = ?, system_prompt = ?, work_dir = ?
-         WHERE agent_id = ?`,
+         WHERE agent_id = ?
+           AND (agent_kind IS NOT ? OR description IS NOT ? OR role IS NOT ?
+             OR status IS NOT 'available' OR capabilities_json IS NOT ?
+             OR system_prompt IS NOT ? OR work_dir IS NOT ?)`,
         [
           AGENT_KIND.PLATFORM_ASSISTANT,
           PLATFORM_ASSISTANT_MANIFEST.description,
@@ -6722,7 +6756,13 @@ export class CorptieStore {
           JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
           PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
           defaultDir,
-          PLATFORM_ASSISTANT_ID
+          PLATFORM_ASSISTANT_ID,
+          AGENT_KIND.PLATFORM_ASSISTANT,
+          PLATFORM_ASSISTANT_MANIFEST.description,
+          PLATFORM_ASSISTANT_MANIFEST.role,
+          JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
+          PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
+          defaultDir
         ]
       );
       this.db.run("DELETE FROM agent_skill_links WHERE agent_id = ?", [PLATFORM_ASSISTANT_ID]);

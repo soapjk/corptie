@@ -146,16 +146,13 @@ import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
 import { isProductSessionKind } from "./utils/sessionKinds.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
-  activeSessionsDueForProjectionReconciliation,
   applyWorkspaceContinuationPresentation,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
-  reconcileSessionProjectionsIndependently,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
   sessionNeedsAuthoritativeProjectionRecovery,
-  sessionProjectionRecoveryCandidates,
   workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
@@ -288,10 +285,7 @@ const stateSyncClients = new Map();
 let stateSyncConsistencyTimer = null;
 let stateSyncPublishTimer = null;
 let timelineChangePublisher = null;
-let activeSessionReconciliationTimer = null;
-let activeSessionReconciliationInFlight = false;
-const activeSessionReconciledAt = new Map();
-const activeSessionReconciliationPendingIds = new Set();
+let mockProgressTimer = null;
 let stateSyncService = null;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
 let workItemExecutionOrchestrator = null;
@@ -2324,35 +2318,23 @@ function dshRunningStatusForEvent(type) {
 }
 
 function controlPlaneSnapshot() {
-  // The persisted `sessions` table is the authoritative inventory. Provider
-  // in-memory session lists are refilled asynchronously and can be momentarily
-  // incomplete (e.g. an OpenClacky session dropped while its file is being
-  // rewritten), so building the snapshot purely from `listGatewaySessions`
-  // would publish a full snapshot that silently deletes idle sessions from every
-  // client. Start from the database and prefer the provider-memory copy only for
-  // the fields it owns live (status), while backfilling anything the provider is
-  // currently missing.
-  const live = listGatewaySessions({ archived: false });
-  const archived = listGatewaySessions({ archived: true });
-  const liveById = new Map([...live, ...archived].map((session) => [session.id, session]));
+  // Strictly read the durable projection. Provider callbacks own writes before
+  // publishing wake events; a client snapshot/detail read is never a repair
+  // hook. In particular, listLiveGatewaySessions() can classify and persist an
+  // unknown Provider object, so it must not be reachable from this path.
   const persisted = visibleStoredSessionProjections(store, [
     ...store.listSessions({ archived: false }),
     ...store.listSessions({ archived: true })
   ]);
-  for (const stored of persisted) {
-    if (!liveById.has(stored.id)) {
-      liveById.set(stored.id, stored);
-    }
-  }
   const latestMessageTimes = store.listLatestSessionMessageTimes();
   const messageCursors = store.listSessionMessageCursors();
   const timelineRevisions = store.listSessionTimelineRevisions();
-  const sessionsById = new Map(Array.from(liveById, ([id, session]) => [
-    id,
+  const sessionsById = new Map(persisted.map((session) => [
+    session.id,
     withSessionMessageCursors(
-      withLastMessageTimestamp(session, latestMessageTimes.get(id)),
-      messageCursors.get(id),
-      timelineRevisions.get(id)
+      withLastMessageTimestamp(session, latestMessageTimes.get(session.id)),
+      messageCursors.get(session.id),
+      timelineRevisions.get(session.id)
     )
   ]));
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
@@ -2428,63 +2410,6 @@ function scheduleTimelineChangePublish(change = {}) {
   timelineChangePublisher?.schedule(change);
 }
 
-async function reconcileActiveSessionProviderProjections() {
-  if (activeSessionReconciliationInFlight) return;
-  activeSessionReconciliationInFlight = true;
-  try {
-    const persistedSessions = visibleStoredSessionProjections(store, [
-      ...store.listSessions({ archived: false }),
-      ...store.listSessions({ archived: true })
-    ]);
-    const liveSessions = [
-      ...listLiveGatewaySessions({ archived: false }),
-      ...listLiveGatewaySessions({ archived: true })
-    ];
-    const activeSessions = sessionProjectionRecoveryCandidates(persistedSessions, liveSessions);
-    const activeIds = new Set(activeSessions.map((session) => session.id));
-    for (const sessionId of activeSessionReconciledAt.keys()) {
-      if (!activeIds.has(sessionId)) activeSessionReconciledAt.delete(sessionId);
-    }
-    const checkedAt = Date.now();
-    const candidates = activeSessionsDueForProjectionReconciliation(
-      activeSessions,
-      activeSessionReconciledAt,
-      { now: checkedAt }
-    ).filter((session) => !activeSessionReconciliationPendingIds.has(session.id));
-    candidates.forEach((session) => activeSessionReconciledAt.set(session.id, checkedAt));
-    candidates.forEach((session) => activeSessionReconciliationPendingIds.add(session.id));
-    const results = await reconcileSessionProjectionsIndependently(
-      candidates,
-      async (session) => {
-        try {
-          return await reconcileSessionProviderProjection(
-            session.id,
-            "active-state-stream-recovery",
-            { emitReconciledEvent: false, logFailure: false }
-          );
-        } finally {
-          activeSessionReconciliationPendingIds.delete(session.id);
-        }
-      },
-      { timeoutMs: 5_000 }
-    );
-    for (const result of results) {
-      if (!result.sessionId) continue;
-      sessionStateDiagnostics.record(result.sessionId, "reconciled", {
-        reason: "background",
-        outcome: result.status,
-        status: result.value?.status ?? null
-      });
-    }
-    // readSession() persists a corrected Provider projection when a terminal
-    // notification was missed. Publish that revision without waiting for an
-    // unrelated mutation or for the user to open the conversation.
-    publishStateChangesIfNeeded();
-  } finally {
-    activeSessionReconciliationInFlight = false;
-  }
-}
-
 function updateStateSyncConsistencyTimer() {
   if (stateSyncClients.size > 0 && !stateSyncConsistencyTimer) {
     // Store mutations normally schedule an immediate coalesced publish. This
@@ -2500,16 +2425,6 @@ function updateStateSyncConsistencyTimer() {
       stateSyncPublishTimer = null;
     }
   }
-}
-
-function startActiveSessionReconciliation() {
-  if (activeSessionReconciliationTimer) return;
-  void reconcileActiveSessionProviderProjections();
-  activeSessionReconciliationTimer = setInterval(
-    () => void reconcileActiveSessionProviderProjections(),
-    5_000
-  );
-  activeSessionReconciliationTimer.unref?.();
 }
 
 function sessionIdFromEventPayload(payload = {}) {
@@ -4796,7 +4711,9 @@ async function renameCodexProviderSession(reference, title) {
 async function getUnifiedSessionSnapshot(sessionId) {
   return unifiedSessionSnapshotLoads.run(
     sessionId,
-    () => readUnifiedSessionSnapshot(sessionId)
+    // Snapshot reads are strictly local and read-only. Provider callbacks
+    // materialize state before publishing wake events.
+    () => getStoredSessionSnapshot(sessionId)
   );
 }
 
@@ -4831,36 +4748,6 @@ async function getStoredSessionSnapshot(sessionId) {
     lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
     lastAgentMessageSequence: store.lastAgentMessageSequence(reference.sessionId),
     timelineRevision: store.sessionTimelineRevision(reference.sessionId)
-  };
-}
-
-async function readUnifiedSessionSnapshot(sessionId) {
-  const reference = requireSessionReference(sessionId);
-  const summary = reference.metadata.session;
-
-  const detail = await readSessionDetailWithStoredFallback(reference);
-  const publicSessionId = reference.logicalSessionId ?? reference.sessionId;
-
-  const timelineItems = await logicalSessionTimelineItems(reference, detail);
-  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
-  const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(allItems);
-
-  return {
-    ...summary,
-    ...(detail ?? {}),
-    id: reference.sessionId,
-    sessionId: reference.sessionId,
-    logicalSessionId: reference.logicalSessionId,
-    publicSessionId,
-    title: preferredSessionTitle(summary, detail),
-    cwd: preferredSessionCwd(summary, detail),
-    status: detail?.status || summary.status,
-    activityStatus: detail?.activityStatus ?? summary.activityStatus ?? null,
-    items,
-    hasMoreHistory,
-    historyItemsCount,
-    lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
-    lastAgentMessageSequence: store.lastAgentMessageSequence(reference.sessionId)
   };
 }
 
@@ -8966,7 +8853,7 @@ function route(request, response) {
       replayDepth: Math.max(0, revision - oldestRevision + 1),
       connectedClients: stateSyncClients.size,
       sync: stateSyncService.diagnostics(),
-      activeReconciliationRunning: activeSessionReconciliationTimer !== null,
+      activeReconciliationRunning: false,
       ...(includeTimelines ? {
         terminalTimelines: requestedTimelineSessionId
           ? [sessionStateDiagnostics.get(requestedTimelineSessionId)].filter(Boolean)
@@ -9309,15 +9196,16 @@ agentWorkQueueInterval.unref?.();
 tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
 scheduledSessionTaskService.start();
 
-seedSessions();
-setInterval(updateMockProgress, 2500).unref();
+if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
+  seedSessions();
+  mockProgressTimer = setInterval(updateMockProgress, 2500);
+  mockProgressTimer.unref?.();
+}
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
-  // Provider truth must converge into SQLite even when every UI is closed or
-  // backgrounded. State-stream clients consume this projection; they never
-  // drive its lifecycle.
-  startActiveSessionReconciliation();
+  // Provider callbacks converge truth into SQLite before wake publication.
+  // There is intentionally no periodic read/repair loop here.
   // Feishu reconciliation may stop daemons and call remote identity/model
   // services for every configured bot. It is maintenance, not an API
   // readiness dependency, so never hold the loopback server closed for it.
@@ -9357,7 +9245,7 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
-    if (activeSessionReconciliationTimer) clearInterval(activeSessionReconciliationTimer);
+    if (mockProgressTimer) clearInterval(mockProgressTimer);
     if (stateSyncConsistencyTimer) clearInterval(stateSyncConsistencyTimer);
     if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
     timelineChangePublisher?.close();
