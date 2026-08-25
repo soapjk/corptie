@@ -354,6 +354,102 @@ test("stored latest timeline window is bounded and reports earlier history", asy
   }
 });
 
+test("stored latest window preserves conversation boundaries for a process-heavy turn", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-process-boundaries-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "process-boundaries", title: "Long turn", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    store.upsertItemSnapshot("process-boundaries", {
+      id: "prompt", turnId: "turn-long", type: "userMessage", text: "Original request", createdAt: "2026-01-01T00:00:00.000Z"
+    });
+    for (let index = 0; index < 260; index += 1) {
+      store.upsertItemSnapshot("process-boundaries", {
+        id: `process-${String(index).padStart(3, "0")}`,
+        turnId: "turn-long",
+        type: "commandExecution",
+        text: `command ${index}`,
+        createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString()
+      });
+    }
+    store.upsertItemSnapshot("process-boundaries", {
+      id: "final", turnId: "turn-long", type: "agentMessage", text: "Final answer", createdAt: "2026-01-01T00:00:01.000Z"
+    });
+
+    const window = store.getLatestTimelineItemWindow("process-boundaries", { limit: 200 });
+    assert.equal(window.items[0].id, "prompt");
+    assert.equal(window.items.at(-1).id, "final");
+    assert.equal(window.items.filter((item) => item.type === "commandExecution").length, 200);
+    const detailItems = store.getDetail("process-boundaries").items;
+    assert.equal(detailItems[0].id, "prompt");
+    assert.equal(detailItems.at(-1).id, "final");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("item snapshot updates never move the original creation time", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-item-created-at-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "stable-item-time", title: "Stable", agent: "Codex", provider: "codex-app-server", status: "running" });
+    store.upsertItemSnapshot("stable-item-time", {
+      id: "process", turnId: "turn", type: "commandExecution", text: "running", createdAt: "2026-01-01T00:00:00.000Z"
+    });
+    store.upsertItemSnapshot("stable-item-time", {
+      id: "process", turnId: "turn", type: "commandExecution", text: "completed", createdAt: "2026-08-25T00:00:00.000Z"
+    });
+
+    const row = store.selectOne(
+      "SELECT text, created_at FROM session_items WHERE session_id = ? AND id = ?",
+      ["stable-item-time", "process"]
+    );
+    assert.equal(row.text, "completed");
+    assert.equal(row.created_at, "2026-01-01T00:00:00.000Z");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("user message Provider aliases collapse to one durable item and emit a delete delta", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-user-message-alias-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "alias-session", title: "Alias", agent: "Codex", provider: "codex-app-server", status: "running" });
+    const prompt = {
+      turnId: "turn-one", type: "userMessage", title: "User", text: "Sent only once",
+      turnStatus: "completed", createdAt: "2026-08-25T15:42:34.000Z"
+    };
+    store.upsertItemSnapshot("alias-session", { ...prompt, id: "item-47" });
+    // Simulate an older build having accepted an alias before the repair runs.
+    store.db.run(
+      `INSERT INTO session_items (
+         id, session_id, turn_id, turn_status, type, title, text, status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["provider-native-id", "alias-session", "turn-one", "completed", "userMessage", "User", "Sent only once", "completed", "2026-08-25T15:55:20.000Z"]
+    );
+    const revisionBeforeRepair = store.sessionTimelineRevision("alias-session");
+
+    assert.equal(store.upsertItemSnapshot("alias-session", { ...prompt, id: "item-47" }), true);
+    assert.deepEqual(
+      store.getItems("alias-session").filter((item) => item.type === "userMessage").map((item) => item.id),
+      ["item-47"]
+    );
+    const changes = store.sessionTimelineChangesAfter("alias-session", revisionBeforeRepair);
+    assert.equal(changes.snapshotRequired, false);
+    assert.deepEqual(changes.changes.map(({ itemId, operation }) => ({ itemId, operation })), [
+      { itemId: "provider-native-id", operation: "delete" }
+    ]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("identical Provider Session and history projections do not rewrite rows or advance revision", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-projection-noop-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });

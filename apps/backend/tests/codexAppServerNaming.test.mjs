@@ -508,3 +508,25 @@ test("thread detail preserves the Codex message phase for presentation", () => {
   assert.equal(raw.payload.id, "message-a");
   assert.equal(raw.payload.phase, "final_answer");
 });
+
+test("thread detail collapses a replayed user prompt whose Provider id changed", () => {
+  const text = "Only sent once";
+  const detail = mapCodexThreadToDetail({
+    id: "thread-a",
+    status: { type: "idle" },
+    turns: [{
+      id: "turn-a",
+      status: "completed",
+      items: [
+        { id: "item-47", type: "userMessage", content: [{ type: "text", text }] },
+        { id: "provider-native-id", type: "userMessage", content: [{ type: "text", text }] },
+        { id: "answer", type: "agentMessage", text: "Done" }
+      ]
+    }]
+  });
+
+  assert.deepEqual(
+    detail.items.filter((item) => item.type === "userMessage").map((item) => item.id),
+    ["item-47"]
+  );
+});

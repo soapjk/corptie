@@ -245,7 +245,7 @@ import {
 import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
 import { SingleFlight } from "./utils/singleFlight.mjs";
 import { ReplayEventLog } from "./utils/replayEventLog.mjs";
-import { StateSyncService } from "./application/stateSyncService.mjs";
+import { deliveredStateRevision, StateSyncService } from "./application/stateSyncService.mjs";
 import { SessionTimelineChangePublisher } from "./application/sessionTimelineChangePublisher.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
 import {
@@ -2367,26 +2367,34 @@ function writeStateSyncFrame(response, name, data) {
 
 function publishStateChangesIfNeeded() {
   if (!stateSyncService) return;
-  const current = store.stateRevision();
-  const deliveryByRevision = new Map();
-  for (const [response, deliveredRevision] of stateSyncClients) {
-    if (deliveredRevision === current) continue;
-    let delivery = deliveryByRevision.get(deliveredRevision);
-    if (!delivery) {
-      const changes = stateSyncService.changesAfter(deliveredRevision);
-      delivery = changes.snapshotRequired
-        ? { name: "state-snapshot", data: stateSyncService.snapshot() }
-        : { name: "state-change-set", data: changes };
-      deliveryByRevision.set(deliveredRevision, delivery);
+  try {
+    const current = store.stateRevision();
+    const deliveryByRevision = new Map();
+    for (const [response, deliveredRevision] of stateSyncClients) {
+      if (deliveredRevision === current) continue;
+      let delivery = deliveryByRevision.get(deliveredRevision);
+      if (!delivery) {
+        const changes = stateSyncService.changesAfter(deliveredRevision);
+        delivery = changes.snapshotRequired
+          ? { name: "state-snapshot", data: stateSyncService.snapshot() }
+          : { name: "state-change-set", data: changes };
+        deliveryByRevision.set(deliveredRevision, delivery);
+      }
+      writeStateSyncFrame(response, delivery.name, delivery.data);
+      stateSyncClients.set(response, delivery.data.revision);
+      for (const session of delivery.data?.upserts?.sessions ?? []) {
+        sessionStateDiagnostics.record(session.id, "statePublished", {
+          revision: delivery.data.revision,
+          status: session.status
+        });
+      }
     }
-    writeStateSyncFrame(response, delivery.name, delivery.data);
-    stateSyncClients.set(response, delivery.data.revision);
-    for (const session of delivery.data?.upserts?.sessions ?? []) {
-      sessionStateDiagnostics.record(session.id, "statePublished", {
-        revision: delivery.data.revision,
-        status: session.status
-      });
-    }
+  } catch (error) {
+    // A hot mutation boundary can prevent a stable read for this pass. Keep
+    // every client cursor unchanged and retry; never acknowledge a revision
+    // with an inconsistent payload or crash the backend timer callback.
+    console.warn(`[state-sync] publish deferred code=${error.code ?? "unknown"} error=${error.message}`);
+    scheduleStateSyncPublish();
   }
 }
 
@@ -8836,7 +8844,11 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/state/snapshot") {
-    sendJson(response, 200, stateSyncService.snapshot());
+    try {
+      sendJson(response, 200, stateSyncService.snapshot());
+    } catch (error) {
+      sendJson(response, 503, { error: error.message, code: error.code ?? "STATE_SNAPSHOT_FAILED" });
+    }
     return;
   }
 
@@ -8872,28 +8884,38 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/state/changes") {
-    const changes = stateSyncService.changesAfter(Number(url.searchParams.get("after")));
-    sendJson(response, changes.snapshotRequired ? 410 : 200, changes);
+    try {
+      const changes = stateSyncService.changesAfter(Number(url.searchParams.get("after")));
+      sendJson(response, changes.snapshotRequired ? 410 : 200, changes);
+    } catch (error) {
+      sendJson(response, 503, { error: error.message, code: error.code ?? "STATE_SNAPSHOT_FAILED" });
+    }
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/state/events") {
+    const requestedRevision = Number(url.searchParams.get("after"));
+    let changes;
+    let snapshot = null;
+    try {
+      changes = stateSyncService.changesAfter(requestedRevision);
+      if (changes.snapshotRequired) snapshot = stateSyncService.snapshot();
+    } catch (error) {
+      sendJson(response, 503, { error: error.message, code: error.code ?? "STATE_SNAPSHOT_FAILED" });
+      return;
+    }
     response.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive"
     });
     response.flushHeaders?.();
-    const requestedRevision = Number(url.searchParams.get("after"));
-    const changes = stateSyncService.changesAfter(requestedRevision);
     if (changes.snapshotRequired) {
-      writeStateSyncFrame(response, "state-snapshot", stateSyncService.snapshot());
+      writeStateSyncFrame(response, "state-snapshot", snapshot);
     } else if (changes.revision > changes.baseRevision) {
       writeStateSyncFrame(response, "state-change-set", changes);
     }
-    stateSyncClients.set(response, changes.snapshotRequired
-      ? store.stateRevision()
-      : changes.revision);
+    stateSyncClients.set(response, deliveredStateRevision(changes, snapshot));
     updateStateSyncConsistencyTimer();
     const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
     heartbeat.unref?.();

@@ -27,6 +27,24 @@ test("small session snapshot remains complete", () => {
   });
 });
 
+test("numeric tail preserves the prompt and final reply around a process-heavy turn", () => {
+  const source = [
+    { id: "prompt", type: "userMessage", turnId: "turn-long" },
+    ...Array.from({ length: 260 }, (_, index) => ({
+      id: `process-${index}`,
+      type: "commandExecution",
+      turnId: "turn-long"
+    })),
+    { id: "final", type: "agentMessage", turnId: "turn-long" }
+  ];
+  const result = windowSessionItems(source, 200);
+
+  assert.equal(result.items[0].id, "prompt");
+  assert.equal(result.items.at(-1).id, "final");
+  assert.equal(result.items.filter((item) => item.type === "commandExecution").length, 199);
+  assert.equal(result.hasMoreHistory, true);
+});
+
 test("cursor pages are contiguous, ordered, and non-overlapping", () => {
   const source = items(450);
   const first = pageSessionItems(source, { beforeId: "item-250", limit: 200 });

@@ -33,21 +33,25 @@ export class StateSyncService {
   }
 
   snapshot() {
-    const currentRevision = this.store.stateRevision();
-    if (this.optimized && this.cachedSnapshot?.revision === currentRevision) {
+    const requestedRevision = this.store.stateRevision();
+    if (this.optimized && this.cachedSnapshot?.revision === requestedRevision) {
       return this.cachedSnapshot;
     }
-    // A snapshot is a read model, never a repair hook. Build it exactly once:
-    // no revision retry can re-enter Provider projection or amplify a write.
-    // The native SQLite layer may commit unrelated background work during this
-    // synchronous projection. Stamp that concurrent revision but do not cache
-    // the potentially cross-revision view; the revision stream will reconcile
-    // the client without crashing the HTTP process.
-    const revision = currentRevision;
-    const state = normalizeSnapshot(this.snapshotProvider());
-    const completedRevision = this.store.stateRevision();
-    if (completedRevision !== revision) return { revision: completedRevision, state };
-    return this.cacheSnapshot({ revision, state });
+    // A revision names one immutable wire payload. Never stamp a projection
+    // built across revisions with the newer revision: clients correctly reject
+    // a later equal-revision payload, so that mismatch can strand a Session in
+    // `running` after its terminal row was already committed. Projection is
+    // strictly read-only; retry the read on the rare crossed-revision boundary.
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const revision = this.store.stateRevision();
+      const state = normalizeSnapshot(this.snapshotProvider());
+      if (this.store.stateRevision() === revision) {
+        return this.cacheSnapshot({ revision, state });
+      }
+    }
+    const error = new Error("State snapshot could not obtain a stable revision.");
+    error.code = "STATE_SNAPSHOT_UNSTABLE";
+    throw error;
   }
 
   changesAfter(requestedRevision) {
@@ -128,6 +132,19 @@ export class StateSyncService {
     if (this.optimized) this.cachedSnapshot = snapshot;
     return snapshot;
   }
+}
+
+/// An SSE cursor acknowledges exactly the frame written to the socket. Reading
+/// the live Store revision again after serialization can skip a change that
+/// committed between the write and cursor registration.
+export function deliveredStateRevision(changes, snapshot = null) {
+  const revision = changes?.snapshotRequired ? snapshot?.revision : changes?.revision;
+  if (!Number.isSafeInteger(Number(revision)) || Number(revision) < 0) {
+    const error = new Error("State delivery has no valid revision.");
+    error.code = "STATE_DELIVERY_REVISION_INVALID";
+    throw error;
+  }
+  return Number(revision);
 }
 
 function normalizeSnapshot(input = {}) {

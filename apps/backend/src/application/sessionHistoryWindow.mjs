@@ -13,11 +13,58 @@ export function windowSessionItems(items, windowSize = DEFAULT_SESSION_HISTORY_W
     return { items, hasMoreHistory: false, historyItemsCount: 0 };
   }
   const omitted = items.length - windowSize;
+  const window = withTurnConversationBoundaries(items, items.slice(omitted));
   return {
-    items: items.slice(omitted),
+    items: window,
     hasMoreHistory: true,
     historyItemsCount: omitted
   };
+}
+
+/// Raw tool/process streams can contain hundreds of items in one turn while
+/// presenting as one UI card. A numeric tail cut must not leave that card
+/// without the user prompt or terminal Agent reply that gives it meaning.
+export function withTurnConversationBoundaries(source, window) {
+  const allItems = Array.isArray(source) ? source : [];
+  const baseItems = Array.isArray(window) ? window : [];
+  if (baseItems.length === 0) return baseItems;
+  const representedTurns = [...new Set(baseItems.map((item) => item?.turnId).filter(Boolean))];
+  if (representedTurns.length === 0) return baseItems;
+
+  const boundaryByTurn = new Map();
+  for (const turnId of representedTurns) {
+    const turnItems = allItems.filter((item) => item?.turnId === turnId);
+    boundaryByTurn.set(turnId, {
+      user: turnItems.find((item) => item?.type === "userMessage") ?? null,
+      agent: turnItems.findLast((item) => item?.type === "agentMessage") ?? null
+    });
+  }
+
+  const result = [];
+  const emitted = new Set();
+  const lastIndexByTurn = new Map();
+  baseItems.forEach((item, index) => {
+    if (item?.turnId) lastIndexByTurn.set(item.turnId, index);
+  });
+  for (let index = 0; index < baseItems.length; index += 1) {
+    const item = baseItems[index];
+    const turnId = item?.turnId;
+    const boundary = turnId ? boundaryByTurn.get(turnId) : null;
+    if (boundary?.user && !emitted.has(boundary.user.id)) {
+      result.push(boundary.user);
+      emitted.add(boundary.user.id);
+    }
+    if (!emitted.has(item?.id)) {
+      result.push(item);
+      if (item?.id) emitted.add(item.id);
+    }
+    if (turnId && lastIndexByTurn.get(turnId) === index
+      && boundary?.agent && !emitted.has(boundary.agent.id)) {
+      result.push(boundary.agent);
+      emitted.add(boundary.agent.id);
+    }
+  }
+  return result;
 }
 
 export function pageSessionItems(items, { beforeId = null, limit = MAX_SESSION_HISTORY_PAGE } = {}) {
