@@ -46,10 +46,10 @@ if ! [[ "${HEALTH_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 find_node() {
-  local login_node candidate
-  login_node="$(/bin/zsh -lic 'command -v node' 2>/dev/null || true)"
+  local candidate
+  # This script may be called while the user's interactive shell setup is
+  # broken, so resolve known Node installations without starting that shell.
   for candidate in \
-    "${login_node}" \
     "${HOME}"/.nvm/versions/node/*/bin/node \
     "${HOME}"/.fnm/node-versions/*/installation/bin/node \
     "${HOME}/.asdf/shims/node" \

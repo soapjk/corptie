@@ -114,9 +114,9 @@ if [ -n "${NODE_BIN}" ] && ! supports_native_sqlite "${NODE_BIN}"; then
 fi
 
 if [ -z "${NODE_BIN}" ]; then
-  LOGIN_NODE="$(/bin/zsh -lic 'command -v node' 2>/dev/null || true)"
+  # Never source the user's interactive shell configuration from launchd. A
+  # shell startup hook may block or recurse before the backend can start.
   for candidate in \
-    "${LOGIN_NODE}" \
     "${HOME}"/.nvm/versions/node/*/bin/node \
     "${HOME}"/.fnm/node-versions/*/installation/bin/node \
     "${HOME}/.asdf/shims/node" \
