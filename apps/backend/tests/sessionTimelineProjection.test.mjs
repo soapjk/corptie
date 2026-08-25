@@ -72,10 +72,11 @@ test("a completed Session stored snapshot exposes the final reply on first load"
       liveItems: [
         {
           id: "process:1", turnId: "turn:1", type: "commandExecution", text: "tests running",
-          createdAt: "2026-08-24T12:00:00.000Z"
+          turnStatus: "completed", createdAt: "2026-08-24T12:00:00.000Z"
         },
         {
           id: "answer:1", turnId: "turn:1", type: "agentMessage", text: "Final answer",
+          turnStatus: "completed", presentationRole: "final_answer",
           createdAt: "2026-08-24T12:00:01.000Z"
         }
       ]
@@ -84,6 +85,8 @@ test("a completed Session stored snapshot exposes the final reply on first load"
     const stored = store.getDetail("session:completed");
     assert.equal(stored.items.at(-1).type, "agentMessage");
     assert.equal(stored.items.at(-1).text, "Final answer");
+    assert.equal(stored.items.at(-1).presentationRole, "final_answer");
+    assert.equal(stored.items.at(-1).turnStatus, "completed");
     assert.equal(store.sessionTimelineRevision("session:completed"), 2);
   } finally {
     await store.close();

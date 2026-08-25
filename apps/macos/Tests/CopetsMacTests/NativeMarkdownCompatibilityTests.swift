@@ -113,6 +113,26 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertEqual(executionProcessDurationText(for: processItems), "12s")
     }
 
+    func testStoredTimelineJSONKeepsCommentaryInsideProcessAndFinalAnswerSeparate() throws {
+        let data = Data(#"""
+        [
+          {"id":"user","turnId":"turn","turnStatus":"completed","type":"userMessage","title":"User","text":"Do it","options":null,"status":"completed","createdAt":"2026-08-25T00:00:00Z"},
+          {"id":"commentary","turnId":"turn","turnStatus":"completed","type":"agentMessage","title":"Agent","text":"Working","options":null,"status":"completed","createdAt":"2026-08-25T00:00:01Z","presentationRole":"commentary"},
+          {"id":"tool","turnId":"turn","turnStatus":"completed","type":"commandExecution","title":"Tool","text":"swift test","options":null,"status":"completed","createdAt":"2026-08-25T00:00:02Z"},
+          {"id":"final","turnId":"turn","turnStatus":"completed","type":"agentMessage","title":"Agent","text":"Done","options":null,"status":"completed","createdAt":"2026-08-25T00:00:03Z","presentationRole":"final_answer"}
+        ]
+        """#.utf8)
+        let items = try JSONDecoder().decode([CodexThreadItem].self, from: data)
+
+        let entries = makeChatDisplayEntriesForTurn(items)
+
+        XCTAssertEqual(entries.map(\.id), ["message:user", "process:turn", "message:final"])
+        guard case .process(_, let processItems) = entries[1].kind else {
+            return XCTFail("Expected commentary and tool output inside the process card")
+        }
+        XCTAssertEqual(processItems.map(\.id), ["commentary", "tool"])
+    }
+
     func testSingleTimestampDoesNotInventSubsecondExecutionDuration() {
         let command = item(id: "command", type: "commandExecution", text: "swift test")
 

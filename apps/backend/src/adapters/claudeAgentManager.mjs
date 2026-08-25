@@ -215,7 +215,8 @@ export class ClaudeAgentManager {
     session.status = "running";
     session.phase = "input_sent";
     session.turnState = "running";
-    session.currentTurnId = `${session.id}:turn:${session.nextTurnSeq++}`;
+    session.currentTurnId = options.turnId ?? `${session.id}:turn:${session.nextTurnSeq++}`;
+    if (options.turnId) session.nextTurnSeq += 1;
     session.lastInputAt = new Date().toISOString();
     session.updatedAt = session.lastInputAt;
     if (options.localVisibility !== "status_only") {

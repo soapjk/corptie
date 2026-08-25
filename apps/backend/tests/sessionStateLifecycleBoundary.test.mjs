@@ -17,19 +17,24 @@ test("authoritative Session projection is callback-owned and never snapshot-read
   assert.notEqual(snapshotEnd, -1);
   assert.match(snapshotBody, /getStoredSessionSnapshot/);
   assert.doesNotMatch(snapshotBody, /readSessionDetailWithStoredFallback/);
+  assert.doesNotMatch(snapshotBody, /sessionApplicationService\.readSession/);
 });
 
 test("every supported streaming Provider isolates lifecycle callback failures", async () => {
   const source = await readFile(sourceURL, "utf8");
   assert.match(source, /onNotification:\s*\(message\)[\s\S]*handleCodexAppServerNotificationSafely/);
   assert.match(source, /onTurnSettled:\s*handleClaudeTurnSettledSafely/);
-  assert.match(source, /provider=openclacky[\s\S]*provider-notification-error/);
+  assert.match(source, /provider=openclacky[\s\S]*markProviderBindingCursorDegraded/);
+  assert.match(source, /provider=codex-app-server[\s\S]*markProviderBindingCursorDegraded/);
+  assert.match(source, /provider=claude-sdk[\s\S]*markProviderBindingCursorDegraded/);
+  assert.equal(source.includes("scheduleSessionProviderProjectionReconciliation"), false);
 });
 
-test("state publication coalesces event bursts and uses a low-frequency safety pass", async () => {
+test("state publication is mutation-driven and subscriptions own no polling scheduler", async () => {
   const source = await readFile(sourceURL, "utf8");
   assert.match(source, /stateSyncPublishTimer = setTimeout\([\s\S]*?\}, 20\)/);
-  assert.match(source, /stateSyncConsistencyTimer = setInterval\(publishStateChangesIfNeeded, 2_000\)/);
+  assert.equal(source.includes("stateSyncConsistencyTimer"), false);
+  assert.doesNotMatch(source, /setInterval\(publishStateChangesIfNeeded/);
 });
 
 test("synthetic Session progress is opt-in and its scheduler is released", async () => {

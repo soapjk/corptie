@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  activeSessionsDueForProjectionReconciliation,
-  reconcileSessionProjectionsIndependently,
   applyWorkspaceContinuationPresentation,
   composeStoredSessionList,
   mergeAuthoritativeStoredSessionPresentation,
@@ -11,8 +9,6 @@ import {
   preferredSessionTitle,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
-  sessionNeedsAuthoritativeProjectionRecovery,
-  sessionProjectionRecoveryCandidates,
   workspaceContinuationKeepsSessionActive
 } from "../src/utils/sessionPresentation.mjs";
 
@@ -48,21 +44,6 @@ test("a queued continuation presentation does not block its own Provider turn", 
       activeTurnId: null,
       workspace: { continuationState: "running" }
     }
-  }), false);
-});
-
-test("startup projection recovery covers stale active rows and switched routes", () => {
-  assert.equal(sessionNeedsAuthoritativeProjectionRecovery({
-    status: "running",
-    external: { activeTurnId: "turn:stale", routingVersion: 1 }
-  }), true);
-  assert.equal(sessionNeedsAuthoritativeProjectionRecovery({
-    status: "complete",
-    external: { activeTurnId: null, routingVersion: 2 }
-  }), true);
-  assert.equal(sessionNeedsAuthoritativeProjectionRecovery({
-    status: "complete",
-    external: { activeTurnId: null, routingVersion: 1 }
   }), false);
 });
 
@@ -422,64 +403,4 @@ test("an authoritative running status preserves the active turn", () => {
   };
 
   assert.equal(reconcileAuthoritativeRunState(session, "running"), session);
-});
-
-test("active projection recovery runs promptly but throttles repeated Provider reads", () => {
-  const sessions = [
-    { id: "running:new", status: "running" },
-    { id: "running:recent", status: "running" },
-    { id: "blocked:stale", status: "blocked" },
-    { id: "complete", status: "complete" }
-  ];
-  const reconciledAt = new Map([
-    ["running:recent", 99_000],
-    ["blocked:stale", 80_000]
-  ]);
-
-  assert.deepEqual(
-    activeSessionsDueForProjectionReconciliation(sessions, reconciledAt, {
-      now: 100_000,
-      minimumIntervalMs: 15_000
-    }).map((session) => session.id),
-    ["running:new", "blocked:stale"]
-  );
-});
-
-test("projection recovery observes active state from either durable or live authority", () => {
-  const candidates = sessionProjectionRecoveryCandidates(
-    [
-      { id: "durable-active", status: "running" },
-      { id: "live-stale", status: "complete" },
-      { id: "idle", status: "complete" }
-    ],
-    [
-      { id: "durable-active", status: "complete" },
-      { id: "live-stale", status: "running", external: { activeTurnId: "turn:stale" } },
-      { id: "idle", status: "complete" }
-    ]
-  );
-
-  assert.deepEqual(candidates.map((session) => session.id).sort(), [
-    "durable-active",
-    "live-stale"
-  ]);
-  assert.equal(candidates.find((session) => session.id === "live-stale").status, "running");
-});
-
-test("active projection recovery isolates a Provider read that never settles", async () => {
-  const sessions = [{ id: "hung" }, { id: "healthy" }];
-  const results = await reconcileSessionProjectionsIndependently(
-    sessions,
-    async (session) => {
-      if (session.id === "hung") return new Promise(() => {});
-      return `${session.id}:complete`;
-    },
-    { timeoutMs: 10 }
-  );
-
-  assert.deepEqual(results.map(({ sessionId, status }) => ({ sessionId, status })), [
-    { sessionId: "hung", status: "timedOut" },
-    { sessionId: "healthy", status: "fulfilled" }
-  ]);
-  assert.equal(results[1].value, "healthy:complete");
 });

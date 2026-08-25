@@ -958,7 +958,7 @@ struct CompactSessionRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            SessionStatusLight(status: session.status, diameter: 9)
+            SessionStatusLight(status: session.executionTaskStatus, diameter: 9)
             Text(session.title)
                 .font(.system(size: 12.5, weight: .semibold))
                 .lineLimit(1)

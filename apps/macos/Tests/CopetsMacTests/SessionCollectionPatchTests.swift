@@ -4,6 +4,17 @@ import Testing
 
 @MainActor
 struct SessionCollectionPatchTests {
+    @Test func authoritativeExecutionCompletionInvalidatesOnlyTheChangedStatusRow() {
+        let previous = makeSession(id: "status", status: .running)
+        var completed = previous
+        completed.executionStatus = "completed"
+
+        let patch = SessionCollectionDiffer.patch(from: [previous], to: [completed], revision: 1)
+
+        #expect(patch.updated.count == 1)
+        #expect(patch.updated.first?.changedFields == [.status])
+    }
+
     @Test
     func contentUpdatePreservesStableRowAndDoesNotPublishStructure() {
         let original = makeSession(id: "one", summary: "Before")

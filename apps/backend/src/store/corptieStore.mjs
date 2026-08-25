@@ -50,6 +50,9 @@ export class CorptieStore {
     this.config = {};
     this.stateDirtyListener = null;
     this.timelineDirtyListener = null;
+    this.transactionDepth = 0;
+    this.pendingStateDirty = false;
+    this.pendingTimelineDirty = new Set();
     this.performanceMigrationBackupPath = null;
   }
 
@@ -309,6 +312,60 @@ export class CorptieStore {
     }
   }
 
+  // Presentation semantics are part of the product Timeline contract. Older
+  // rows retained the Provider phase only inside audited raw metadata; perform
+  // a one-time Corptie-local reprojection without consulting Provider history.
+  backfillSessionItemPresentation() {
+    this.runDataMigrationOnce("session-item-presentation-v1", () => {
+      this.db.run(`
+        UPDATE session_items
+        SET presentation_role = COALESCE(
+          json_extract(raw_metadata_json, '$.payload.phase'),
+          json_extract(raw_metadata_json, '$.payload.presentationRole')
+        )
+        WHERE presentation_role IS NULL
+          AND raw_metadata_json IS NOT NULL
+          AND json_valid(raw_metadata_json) = 1
+          AND COALESCE(
+            json_extract(raw_metadata_json, '$.payload.phase'),
+            json_extract(raw_metadata_json, '$.payload.presentationRole')
+          ) IS NOT NULL
+      `);
+    });
+  }
+
+  backfillSessionItemBindings() {
+    this.runDataMigrationOnce("session-item-binding-v1", () => {
+      this.db.run(`
+        UPDATE session_items
+        SET binding_id = (
+          SELECT bindings.binding_id
+          FROM logical_sessions logical
+          JOIN provider_thread_bindings bindings
+            ON bindings.provider_thread_id = logical.active_thread_id
+          WHERE logical.legacy_session_id = session_items.session_id
+          LIMIT 1
+        )
+        WHERE binding_id IS NULL
+      `);
+    });
+  }
+
+  runDataMigrationOnce(migrationId, operation) {
+    if (this.selectOne(
+      "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
+      [migrationId]
+    )) return false;
+    this.runInTransaction(() => {
+      operation();
+      this.db.run(
+        "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+        [migrationId, createdAtFromOrNow()]
+      );
+    });
+    return true;
+  }
+
   // Provider item ids are scoped to one Provider Session. Codex histories in
   // particular commonly contain ids such as `item-1`; a database-wide primary
   // key makes background hydration move those rows between unrelated Sessions.
@@ -347,6 +404,9 @@ export class CorptieStore {
           text TEXT NOT NULL,
           options_json TEXT,
           raw_metadata_json TEXT,
+          binding_id TEXT,
+          presentation_role TEXT,
+          presentation_text TEXT,
           status TEXT,
           created_at TEXT NOT NULL,
           PRIMARY KEY (session_id, id),
@@ -356,10 +416,12 @@ export class CorptieStore {
       this.db.run(`
         INSERT INTO session_items (
           id, session_id, turn_id, turn_status, type, title, text,
-          options_json, raw_metadata_json, status, created_at
+          options_json, raw_metadata_json, binding_id, presentation_role, presentation_text,
+          status, created_at
         )
         SELECT id, session_id, turn_id, turn_status, type, title, text,
-               options_json, raw_metadata_json, status, created_at
+               options_json, raw_metadata_json, binding_id, presentation_role, presentation_text,
+               status, created_at
         FROM session_items_global_id_legacy
       `);
       this.db.run("DROP TABLE session_items_global_id_legacy");
@@ -848,6 +910,9 @@ export class CorptieStore {
         text TEXT NOT NULL,
         options_json TEXT,
         raw_metadata_json TEXT,
+        binding_id TEXT,
+        presentation_role TEXT,
+        presentation_text TEXT,
         status TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -2231,6 +2296,11 @@ export class CorptieStore {
     this.ensureColumn("workspace_transitions", "target_provider_id", "TEXT");
     this.ensureColumn("session_items", "options_json", "TEXT");
     this.ensureColumn("session_items", "raw_metadata_json", "TEXT");
+    this.ensureColumn("session_items", "binding_id", "TEXT");
+    this.ensureColumn("session_items", "presentation_role", "TEXT");
+    this.ensureColumn("session_items", "presentation_text", "TEXT");
+    this.backfillSessionItemPresentation();
+    this.backfillSessionItemBindings();
     this.migrateSessionItemIdentity();
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
@@ -2256,12 +2326,14 @@ export class CorptieStore {
       WHERE surface = 1
          OR type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
     `);
-    this.db.run("DROP INDEX IF EXISTS idx_session_events_agent_message");
-    this.db.run(`
-      CREATE INDEX IF NOT EXISTS idx_session_events_agent_message
-      ON session_events(session_id, sequence DESC)
-      WHERE has_agent_message = 1
-    `);
+    this.runDataMigrationOnce("session-events-agent-message-index-v1", () => {
+      this.db.run("DROP INDEX IF EXISTS idx_session_events_agent_message");
+      this.db.run(`
+        CREATE INDEX idx_session_events_agent_message
+        ON session_events(session_id, sequence DESC)
+        WHERE has_agent_message = 1
+      `);
+    });
     // 回填：为每个已有 session 建立 1:1 的 session_log；并让既有事件指向该 log。
     this.db.run(`
       INSERT INTO session_logs (id, session_id, created_at)
@@ -2269,11 +2341,13 @@ export class CorptieStore {
       FROM sessions
       WHERE NOT EXISTS (SELECT 1 FROM session_logs WHERE session_logs.session_id = sessions.id)
     `);
-    this.db.run(`
-      UPDATE session_events
-      SET log_id = 'log:' || session_id
-      WHERE log_id IS NULL
-    `);
+    this.runDataMigrationOnce("session-events-log-id-backfill-v1", () => {
+      this.db.run(`
+        UPDATE session_events
+        SET log_id = 'log:' || session_id
+        WHERE log_id IS NULL
+      `);
+    });
     // Introducing server-side receipts must not make every historical Session
     // unread at once. Bootstrap only when the table is first created; future
     // Sessions deliberately have no receipt until the user opens their detail.
@@ -2304,6 +2378,7 @@ export class CorptieStore {
     this.migrateAgentAvailability();
     this.ensureSkillTables();
     this.ensureStateSyncTables();
+    this.ensureProviderEventPipelineTables();
     this.dropColumnIfExists("agents", "provider");
     this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
@@ -2321,15 +2396,10 @@ export class CorptieStore {
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_session_next
       ON agent_work_items(session_id, status, priority DESC, created_at ASC)`);
 
-    this.db.run(
-      `UPDATE sessions
-       SET status = 'cancelled',
-           summary = CASE
-             WHEN summary = '' THEN 'Terminal process is no longer attached.'
-             ELSE summary
-           END
-       WHERE status = 'running'`
-    );
+    // Session execution state is a durable Corptie projection. A backend
+    // restart is a transport interruption, not a terminal turn event; retain
+    // running state until the resumed Provider stream commits an authoritative
+    // completion/failure/cancellation event.
     const restartTimestamp = new Date().toISOString();
     this.db.run(
       `UPDATE agent_work_items
@@ -2567,6 +2637,136 @@ export class CorptieStore {
         END;
       `);
     }
+  }
+
+  ensureProviderEventPipelineTables() {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS provider_event_inbox (
+        provider_id TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        provider_event_id TEXT NOT NULL,
+        binding_id TEXT NOT NULL,
+        logical_session_id TEXT,
+        session_id TEXT,
+        routing_version INTEGER NOT NULL,
+        provider_sequence INTEGER,
+        turn_id TEXT,
+        item_id TEXT,
+        event_type TEXT NOT NULL,
+        occurred_at TEXT,
+        received_at TEXT NOT NULL,
+        raw_payload_json TEXT NOT NULL,
+        normalized_event_json TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('received', 'applied', 'quarantined', 'failed')),
+        failure_code TEXT,
+        failure_message TEXT,
+        applied_at TEXT,
+        PRIMARY KEY (provider_id, provider_session_id, provider_event_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_binding_sequence
+      ON provider_event_inbox(binding_id, provider_sequence);
+      CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_status
+      ON provider_event_inbox(status, received_at);
+
+      CREATE TABLE IF NOT EXISTS provider_binding_cursors (
+        binding_id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        routing_version INTEGER NOT NULL,
+        last_provider_sequence INTEGER,
+        last_provider_event_id TEXT,
+        resume_token TEXT,
+        connection_status TEXT NOT NULL DEFAULT 'disconnected'
+          CHECK (connection_status IN ('connected', 'reconnecting', 'disconnected')),
+        sync_health TEXT NOT NULL DEFAULT 'healthy'
+          CHECK (sync_health IN ('healthy', 'gap', 'degraded')),
+        gap_expected_sequence INTEGER,
+        gap_received_sequence INTEGER,
+        last_connected_at TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS session_turns (
+        session_id TEXT NOT NULL,
+        binding_id TEXT NOT NULL,
+        routing_version INTEGER NOT NULL,
+        turn_id TEXT NOT NULL,
+        execution_status TEXT NOT NULL
+          CHECK (execution_status IN ('idle', 'running', 'blocked', 'completed', 'failed', 'cancelled')),
+        final_item_id TEXT,
+        started_at TEXT,
+        ended_at TEXT,
+        last_provider_sequence INTEGER,
+        failure_json TEXT,
+        sync_health TEXT NOT NULL DEFAULT 'healthy'
+          CHECK (sync_health IN ('healthy', 'gap', 'degraded')),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, binding_id, turn_id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_turns_active
+      ON session_turns(session_id, execution_status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS event_outbox (
+        outbox_id TEXT PRIMARY KEY,
+        topic TEXT NOT NULL,
+        session_id TEXT,
+        revision INTEGER,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'published', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        published_at TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_event_outbox_pending
+      ON event_outbox(status, created_at);
+
+      CREATE TABLE IF NOT EXISTS message_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        binding_id TEXT NOT NULL,
+        routing_version INTEGER NOT NULL,
+        provider_id TEXT NOT NULL,
+        provider_session_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN (
+          'queued', 'dispatching', 'accepted', 'processing', 'completed',
+          'failed', 'cancelled', 'delivery_unknown'
+        )),
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        provider_turn_id TEXT,
+        last_attempt_at TEXT,
+        provider_acknowledged_at TEXT,
+        last_error TEXT,
+        source_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_deliveries_dispatch
+      ON message_deliveries(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_message_deliveries_session
+      ON message_deliveries(session_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS session_usage_snapshots (
+        session_id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        model TEXT,
+        context_json TEXT,
+        account_json TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+    `);
+    this.ensureColumn(
+      "provider_binding_cursors",
+      "connection_status",
+      "TEXT NOT NULL DEFAULT 'disconnected' CHECK (connection_status IN ('connected', 'reconnecting', 'disconnected'))"
+    );
   }
 
   migrateSessionEventAgentMessageFlag() {
@@ -3324,6 +3524,10 @@ export class CorptieStore {
     // Native SQLite commits each statement directly to the WAL. This method is
     // kept as a compatibility hook for callers that previously scheduled a
     // full in-memory database export.
+    if (this.transactionDepth > 0) {
+      this.pendingStateDirty = true;
+      return;
+    }
     this.stateDirtyListener?.();
   }
 
@@ -3337,6 +3541,10 @@ export class CorptieStore {
 
   notifyTimelineDirty(sessionId) {
     if (!sessionId) return;
+    if (this.transactionDepth > 0) {
+      this.pendingTimelineDirty.add(sessionId);
+      return;
+    }
     this.timelineDirtyListener?.({
       sessionId,
       revision: this.sessionTimelineRevision(sessionId)
@@ -3344,14 +3552,45 @@ export class CorptieStore {
   }
 
   runInTransaction(operation) {
+    if (this.transactionDepth > 0) {
+      this.transactionDepth += 1;
+      try {
+        return operation();
+      } finally {
+        this.transactionDepth -= 1;
+      }
+    }
     this.db.run("BEGIN IMMEDIATE");
+    this.transactionDepth = 1;
+    let result;
     try {
-      const result = operation();
+      result = operation();
       this.db.run("COMMIT");
-      return result;
     } catch (error) {
       this.db.run("ROLLBACK");
+      this.transactionDepth = 0;
+      this.pendingStateDirty = false;
+      this.pendingTimelineDirty.clear();
       throw error;
+    }
+    this.transactionDepth = 0;
+    // Listener failures happen after SQLite has committed and must never be
+    // mistaken for a transactional failure (or trigger a second ROLLBACK).
+    this.flushCommittedDirtyNotifications();
+    return result;
+  }
+
+  flushCommittedDirtyNotifications() {
+    const stateDirty = this.pendingStateDirty;
+    const timelineSessionIds = [...this.pendingTimelineDirty];
+    this.pendingStateDirty = false;
+    this.pendingTimelineDirty.clear();
+    if (stateDirty) notifyCommittedListener(this.stateDirtyListener);
+    for (const sessionId of timelineSessionIds) {
+      notifyCommittedListener(this.timelineDirtyListener, {
+        sessionId,
+        revision: this.sessionTimelineRevision(sessionId)
+      });
     }
   }
 
@@ -5097,8 +5336,9 @@ export class CorptieStore {
     );
     this.db.run(
       `INSERT INTO session_items (
-        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json,
+        binding_id, presentation_role, presentation_text, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, id) DO UPDATE SET
         turn_id=excluded.turn_id,
         turn_status=excluded.turn_status,
@@ -5107,6 +5347,9 @@ export class CorptieStore {
         text=excluded.text,
         options_json=excluded.options_json,
         raw_metadata_json=excluded.raw_metadata_json,
+        binding_id=COALESCE(excluded.binding_id, session_items.binding_id),
+        presentation_role=excluded.presentation_role,
+        presentation_text=excluded.presentation_text,
         status=excluded.status
       WHERE session_items.turn_id IS NOT excluded.turn_id
          OR session_items.turn_status IS NOT excluded.turn_status
@@ -5115,6 +5358,9 @@ export class CorptieStore {
          OR session_items.text IS NOT excluded.text
          OR session_items.options_json IS NOT excluded.options_json
          OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
+         OR (excluded.binding_id IS NOT NULL AND session_items.binding_id IS NOT excluded.binding_id)
+         OR session_items.presentation_role IS NOT excluded.presentation_role
+         OR session_items.presentation_text IS NOT excluded.presentation_text
          OR session_items.status IS NOT excluded.status`,
       [
         item.id,
@@ -5126,6 +5372,9 @@ export class CorptieStore {
         item.text || "",
         Array.isArray(item.options) ? JSON.stringify(item.options) : null,
         typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null,
+        item.bindingId || null,
+        item.presentationRole || null,
+        item.presentationText || null,
         item.status || null,
         createdAt
       ]
@@ -5180,8 +5429,9 @@ export class CorptieStore {
     }
     this.db.run(
       `INSERT INTO session_items (
-        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json,
+        binding_id, presentation_role, presentation_text, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, id) DO UPDATE SET
         turn_id=excluded.turn_id,
         turn_status=excluded.turn_status,
@@ -5190,6 +5440,9 @@ export class CorptieStore {
         text=excluded.text,
         options_json=excluded.options_json,
         raw_metadata_json=excluded.raw_metadata_json,
+        binding_id=COALESCE(excluded.binding_id, session_items.binding_id),
+        presentation_role=excluded.presentation_role,
+        presentation_text=excluded.presentation_text,
         status=excluded.status
       WHERE session_items.turn_id IS NOT excluded.turn_id
          OR session_items.turn_status IS NOT excluded.turn_status
@@ -5198,6 +5451,9 @@ export class CorptieStore {
          OR session_items.text IS NOT excluded.text
          OR session_items.options_json IS NOT excluded.options_json
          OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
+         OR (excluded.binding_id IS NOT NULL AND session_items.binding_id IS NOT excluded.binding_id)
+         OR session_items.presentation_role IS NOT excluded.presentation_role
+         OR session_items.presentation_text IS NOT excluded.presentation_text
          OR session_items.status IS NOT excluded.status`,
       [
         targetId,
@@ -5209,6 +5465,9 @@ export class CorptieStore {
         item.text || "",
         Array.isArray(item.options) ? JSON.stringify(item.options) : null,
         rawMetadataJSON,
+        item.bindingId || null,
+        item.presentationRole || null,
+        item.presentationText || null,
         item.status || null,
         createdAt
       ]
@@ -5868,6 +6127,9 @@ export class CorptieStore {
         text: normalizeStoredText(row.text, provider),
         options: parseJson(row.options_json, null),
         rawMetadataJSON: row.raw_metadata_json ?? null,
+        bindingId: row.binding_id ?? null,
+        presentationRole: row.presentation_role ?? null,
+        presentationText: row.presentation_text ?? null,
         status: row.status,
         createdAt: row.created_at
       }))
@@ -5880,13 +6142,16 @@ export class CorptieStore {
 
   latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit) {
     const columns = `id, turn_id, turn_status, type, title, text, options_json,
-                     raw_metadata_json, status, created_at`;
+                     raw_metadata_json, binding_id, presentation_role, presentation_text,
+                     status, created_at`;
     const baseRows = this.selectAll(
       `SELECT id, turn_id, turn_status, type, title, text, options_json,
-              raw_metadata_json, status, created_at
+              raw_metadata_json, binding_id, presentation_role, presentation_text,
+              status, created_at
        FROM (
          SELECT id, turn_id, turn_status, type, title, text, options_json,
-                raw_metadata_json, status, created_at
+                raw_metadata_json, binding_id, presentation_role, presentation_text,
+                status, created_at
          FROM session_items
          WHERE session_id = ?
          ORDER BY created_at DESC, id DESC
@@ -5947,7 +6212,8 @@ export class CorptieStore {
     const beforeLimit = Math.floor(Math.max(1, Math.min(200, Number(before) || 40)));
     const afterLimit = Math.floor(Math.max(1, Math.min(200, Number(after) || 40)));
     const columns = `id, turn_id, turn_status, type, title, text, options_json,
-                     raw_metadata_json, status, created_at`;
+                     raw_metadata_json, binding_id, presentation_role, presentation_text,
+                     status, created_at`;
     const anchorRows = anchorKind === "turn"
       ? this.selectAll(
         `SELECT ${columns} FROM session_items
@@ -6001,6 +6267,9 @@ export class CorptieStore {
         text: normalizeStoredText(row.text, provider),
         options: parseJson(row.options_json, null),
         rawMetadataJSON: row.raw_metadata_json ?? null,
+        bindingId: row.binding_id ?? null,
+        presentationRole: row.presentation_role ?? null,
+        presentationText: row.presentation_text ?? null,
         status: row.status,
         createdAt: row.created_at
       }, provider)),
@@ -6012,7 +6281,8 @@ export class CorptieStore {
   getLatestTimelineItemWindow(sessionId, { limit = 200, provider = "" } = {}) {
     const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
     const columns = `id, turn_id, turn_status, type, title, text, options_json,
-                     raw_metadata_json, status, created_at`;
+                     raw_metadata_json, binding_id, presentation_role, presentation_text,
+                     status, created_at`;
     const rows = this.latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit);
     if (rows.length === 0) return null;
     const first = rows[0];
@@ -6031,6 +6301,9 @@ export class CorptieStore {
         text: normalizeStoredText(row.text, provider),
         options: parseJson(row.options_json, null),
         rawMetadataJSON: row.raw_metadata_json ?? null,
+        bindingId: row.binding_id ?? null,
+        presentationRole: row.presentation_role ?? null,
+        presentationText: row.presentation_text ?? null,
         status: row.status,
         createdAt: row.created_at
       }, provider)),
@@ -6242,14 +6515,440 @@ export class CorptieStore {
     ));
   }
 
+  providerInboxEvent(providerId, providerSessionId, providerEventId) {
+    return this.selectOne(
+      `SELECT * FROM provider_event_inbox
+       WHERE provider_id = ? AND provider_session_id = ? AND provider_event_id = ?`,
+      [providerId, providerSessionId, providerEventId]
+    );
+  }
+
+  insertProviderInboxEvent(event, sessionId = null) {
+    this.db.run(
+      `INSERT OR IGNORE INTO provider_event_inbox (
+        provider_id, provider_session_id, provider_event_id, binding_id,
+        logical_session_id, session_id, routing_version, provider_sequence,
+        turn_id, item_id, event_type, occurred_at, received_at,
+        raw_payload_json, normalized_event_json, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received')`,
+      [
+        event.providerId,
+        event.providerSessionId,
+        event.providerEventId,
+        event.bindingId,
+        event.logicalSessionId ?? null,
+        sessionId,
+        event.routingVersion,
+        event.providerSequence ?? null,
+        event.turnId ?? null,
+        event.itemId ?? null,
+        event.type,
+        event.occurredAt ?? null,
+        event.receivedAt,
+        JSON.stringify(event.rawPayload ?? event.payload ?? {}),
+        JSON.stringify(event),
+      ]
+    );
+    return this.db.getRowsModified() > 0;
+  }
+
+  markProviderInboxEvent(providerId, providerSessionId, providerEventId, {
+    status,
+    failureCode = null,
+    failureMessage = null,
+    appliedAt = null
+  }) {
+    this.db.run(
+      `UPDATE provider_event_inbox
+       SET status = ?, failure_code = ?, failure_message = ?, applied_at = ?
+       WHERE provider_id = ? AND provider_session_id = ? AND provider_event_id = ?`,
+      [status, failureCode, failureMessage, appliedAt, providerId, providerSessionId, providerEventId]
+    );
+  }
+
+  providerBindingCursor(bindingId) {
+    return this.selectOne(
+      "SELECT * FROM provider_binding_cursors WHERE binding_id = ?",
+      [bindingId]
+    );
+  }
+
+  markProviderBindingCursorDegraded(binding, updatedAt = createdAtFromOrNow()) {
+    this.db.run(
+      `INSERT INTO provider_binding_cursors (
+        binding_id, provider_id, provider_session_id, routing_version,
+        sync_health, updated_at
+      ) VALUES (?, ?, ?, ?, 'degraded', ?)
+      ON CONFLICT(binding_id) DO UPDATE SET
+        sync_health='degraded', updated_at=excluded.updated_at`,
+      [
+        binding.bindingId,
+        binding.providerId,
+        binding.providerSessionId,
+        binding.routingVersion,
+        updatedAt
+      ]
+    );
+  }
+
+  upsertProviderBindingCursor(event, {
+    syncHealth = "healthy",
+    connectionStatus = "connected",
+    gapExpectedSequence = null,
+    gapReceivedSequence = null,
+    resumeToken = null,
+    cursorSequence = event.providerSequence ?? null,
+    cursorEventId = event.providerEventId
+  } = {}) {
+    const timestamp = event.receivedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO provider_binding_cursors (
+        binding_id, provider_id, provider_session_id, routing_version,
+        last_provider_sequence, last_provider_event_id, resume_token,
+        connection_status, sync_health, gap_expected_sequence, gap_received_sequence,
+        last_connected_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(binding_id) DO UPDATE SET
+        provider_id=excluded.provider_id,
+        provider_session_id=excluded.provider_session_id,
+        routing_version=excluded.routing_version,
+        last_provider_sequence=COALESCE(excluded.last_provider_sequence, provider_binding_cursors.last_provider_sequence),
+        last_provider_event_id=COALESCE(excluded.last_provider_event_id, provider_binding_cursors.last_provider_event_id),
+        resume_token=COALESCE(excluded.resume_token, provider_binding_cursors.resume_token),
+        connection_status=excluded.connection_status,
+        sync_health=excluded.sync_health,
+        gap_expected_sequence=excluded.gap_expected_sequence,
+        gap_received_sequence=excluded.gap_received_sequence,
+        last_connected_at=excluded.last_connected_at,
+        updated_at=excluded.updated_at`,
+      [
+        event.bindingId,
+        event.providerId,
+        event.providerSessionId,
+        event.routingVersion,
+        cursorSequence,
+        cursorEventId,
+        resumeToken,
+        connectionStatus,
+        syncHealth,
+        gapExpectedSequence,
+        gapReceivedSequence,
+        timestamp,
+        timestamp
+      ]
+    );
+  }
+
+  upsertSessionTurn({
+    sessionId,
+    bindingId,
+    routingVersion,
+    turnId,
+    executionStatus,
+    finalItemId = null,
+    startedAt = null,
+    endedAt = null,
+    providerSequence = null,
+    failure = null,
+    syncHealth = "healthy",
+    updatedAt = null
+  }) {
+    const timestamp = updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO session_turns (
+        session_id, binding_id, routing_version, turn_id, execution_status,
+        final_item_id, started_at, ended_at, last_provider_sequence,
+        failure_json, sync_health, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id, binding_id, turn_id) DO UPDATE SET
+        routing_version=excluded.routing_version,
+        execution_status=excluded.execution_status,
+        final_item_id=COALESCE(excluded.final_item_id, session_turns.final_item_id),
+        started_at=COALESCE(session_turns.started_at, excluded.started_at),
+        ended_at=COALESCE(excluded.ended_at, session_turns.ended_at),
+        last_provider_sequence=COALESCE(excluded.last_provider_sequence, session_turns.last_provider_sequence),
+        failure_json=excluded.failure_json,
+        sync_health=excluded.sync_health,
+        updated_at=excluded.updated_at`,
+      [
+        sessionId,
+        bindingId,
+        routingVersion,
+        turnId,
+        executionStatus,
+        finalItemId,
+        startedAt,
+        endedAt,
+        providerSequence,
+        failure == null ? null : JSON.stringify(failure),
+        syncHealth,
+        timestamp
+      ]
+    );
+  }
+
+  getSessionTurn(sessionId, bindingId, turnId) {
+    return this.selectOne(
+      `SELECT * FROM session_turns
+       WHERE session_id = ? AND binding_id = ? AND turn_id = ?`,
+      [sessionId, bindingId, turnId]
+    );
+  }
+
+  upsertSessionUsageSnapshot({
+    sessionId,
+    providerId,
+    model = null,
+    context = null,
+    account = null,
+    updatedAt = null
+  }) {
+    const timestamp = updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO session_usage_snapshots (
+        session_id, provider_id, model, context_json, account_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        provider_id=excluded.provider_id,
+        model=COALESCE(excluded.model, session_usage_snapshots.model),
+        context_json=COALESCE(excluded.context_json, session_usage_snapshots.context_json),
+        account_json=COALESCE(excluded.account_json, session_usage_snapshots.account_json),
+        updated_at=excluded.updated_at`,
+      [
+        sessionId,
+        providerId,
+        model,
+        context == null ? null : JSON.stringify(context),
+        account == null ? null : JSON.stringify(account),
+        timestamp
+      ]
+    );
+    return this.getSessionUsageSnapshot(sessionId);
+  }
+
+  getSessionUsageSnapshot(sessionId) {
+    const row = this.selectOne(
+      "SELECT * FROM session_usage_snapshots WHERE session_id = ?",
+      [sessionId]
+    );
+    if (!row) return null;
+    return {
+      sessionId: row.session_id,
+      providerId: row.provider_id,
+      model: row.model ?? null,
+      context: parseJson(row.context_json, null),
+      account: parseJson(row.account_json, null),
+      updatedAt: row.updated_at
+    };
+  }
+
+  listUnsettledSessionTurns(sessionId) {
+    return this.selectAll(
+      `SELECT * FROM session_turns
+       WHERE session_id = ? AND execution_status IN ('running', 'blocked')
+       ORDER BY updated_at ASC, binding_id ASC, turn_id ASC`,
+      [sessionId]
+    );
+  }
+
+  enqueueEventOutbox({ outboxId, topic, sessionId = null, revision = null, eventType, payload, createdAt }) {
+    this.db.run(
+      `INSERT INTO event_outbox (
+        outbox_id, topic, session_id, revision, event_type, payload_json, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      [outboxId, topic, sessionId, revision, eventType, JSON.stringify(payload ?? {}), createdAt]
+    );
+    return this.selectOne("SELECT * FROM event_outbox WHERE outbox_id = ?", [outboxId]);
+  }
+
+  listPendingEventOutbox(limit = 200) {
+    const pageLimit = Math.max(1, Math.min(500, Number(limit) || 200));
+    return this.selectAll(
+      `SELECT * FROM event_outbox WHERE status = 'pending'
+       ORDER BY created_at ASC, outbox_id ASC LIMIT ?`,
+      [pageLimit]
+    );
+  }
+
+  markEventOutboxPublished(outboxId, publishedAt = createdAtFromOrNow()) {
+    this.db.run(
+      `UPDATE event_outbox
+       SET status = 'published', published_at = ?, attempt_count = attempt_count + 1, last_error = NULL
+       WHERE outbox_id = ? AND status = 'pending'`,
+      [publishedAt, outboxId]
+    );
+  }
+
+  getMessageDelivery(deliveryId) {
+    const row = this.selectOne("SELECT * FROM message_deliveries WHERE delivery_id = ?", [deliveryId]);
+    return row ? messageDeliveryFromRow(row) : null;
+  }
+
+  getMessageDeliveryForMessage(messageId) {
+    const row = this.selectOne("SELECT * FROM message_deliveries WHERE message_id = ?", [messageId]);
+    return row ? messageDeliveryFromRow(row) : null;
+  }
+
+  getMessageDeliveryForProviderTurn(sessionId, bindingId, providerTurnId) {
+    if (!providerTurnId) return null;
+    const row = this.selectOne(
+      `SELECT * FROM message_deliveries
+       WHERE session_id = ? AND binding_id = ? AND provider_turn_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [sessionId, bindingId, providerTurnId]
+    );
+    return row ? messageDeliveryFromRow(row) : null;
+  }
+
+  createUserMessageDelivery({
+    deliveryId,
+    messageId,
+    sessionId,
+    binding,
+    agentId,
+    text,
+    title = "User",
+    source = {},
+    priority = 100,
+    createdAt = createdAtFromOrNow()
+  }) {
+    return this.runInTransaction(() => {
+      this.db.run(
+        `INSERT OR IGNORE INTO message_deliveries (
+          delivery_id, message_id, session_id, binding_id, routing_version,
+          provider_id, provider_session_id, status, source_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+        [
+          deliveryId,
+          messageId,
+          sessionId,
+          binding.bindingId,
+          binding.routingVersion,
+          binding.providerId,
+          binding.providerSessionId,
+          JSON.stringify(source),
+          createdAt,
+          createdAt
+        ]
+      );
+      const inserted = this.db.getRowsModified() > 0;
+      const existing = this.getMessageDelivery(deliveryId)
+        ?? this.getMessageDeliveryForMessage(messageId);
+      if (!existing) throw new Error("Message Delivery could not be persisted.");
+      if (!inserted && (existing.sessionId !== sessionId || existing.messageId !== messageId)) {
+        const error = new Error("Message Delivery idempotency key conflicts with another message.");
+        error.code = "MESSAGE_DELIVERY_CONFLICT";
+        throw error;
+      }
+      let outbox = null;
+      if (inserted) {
+        this.upsertItemSnapshot(sessionId, {
+          id: messageId,
+          bindingId: binding.bindingId,
+          turnId: `delivery:${deliveryId}`,
+          turnStatus: "inProgress",
+          type: "userMessage",
+          title,
+          text,
+          status: "queued",
+          createdAt
+        });
+        this.appendSessionEvent({
+          eventId: `user-message:${messageId}`,
+          sessionId,
+          type: "SessionUserMessageCreated",
+          producer: "user",
+          surface: true,
+          source,
+          payload: {
+            sessionId,
+            message: { id: messageId, type: "userMessage", title, text, createdAt },
+            deliveryId,
+            bindingId: binding.bindingId,
+            routingVersion: binding.routingVersion
+          },
+          createdAt
+        });
+        outbox = this.enqueueEventOutbox({
+          outboxId: `message-delivery:${deliveryId}:queued`,
+          topic: "provider-commands",
+          sessionId,
+          eventType: "MessageDeliveryQueued",
+          payload: { deliveryId, messageId, sessionId },
+          createdAt
+        });
+      }
+      const work = this.enqueueAgentWorkItemWithResult({
+        workItemId: messageId,
+        agentId,
+        sessionId,
+        kind: "user",
+        priority,
+        text,
+        source: { ...source, messageId, deliveryId },
+        localVisibility: "normal",
+        createdAt
+      }).workItem;
+      return {
+        inserted,
+        delivery: existing,
+        message: this.getSessionItem(sessionId, messageId),
+        workItem: work,
+        outbox: outbox ?? null
+      };
+    });
+  }
+
+  updateMessageDelivery(deliveryId, patch = {}) {
+    return this.runInTransaction(() => {
+      const current = this.getMessageDelivery(deliveryId);
+      if (!current) return null;
+      const value = (key, fallback) => Object.hasOwn(patch, key) ? patch[key] : fallback;
+      const status = value("status", current.status);
+      const updatedAt = value("updatedAt", createdAtFromOrNow());
+      this.db.run(
+        `UPDATE message_deliveries SET
+          status = ?, attempt_count = ?, provider_turn_id = ?, last_attempt_at = ?,
+          provider_acknowledged_at = ?, last_error = ?, updated_at = ?
+         WHERE delivery_id = ?`,
+        [
+          status,
+          value("attemptCount", current.attemptCount),
+          value("providerTurnId", current.providerTurnId),
+          value("lastAttemptAt", current.lastAttemptAt),
+          value("providerAcknowledgedAt", current.providerAcknowledgedAt),
+          value("lastError", current.lastError),
+          updatedAt,
+          deliveryId
+        ]
+      );
+      const messageStatus = status === "delivery_unknown" ? "unknown" : status;
+      this.db.run(
+        `UPDATE session_items SET
+           status = ?,
+           turn_id = COALESCE(?, turn_id)
+         WHERE session_id = ? AND id = ?
+           AND (status IS NOT ? OR (? IS NOT NULL AND turn_id IS NOT ?))`,
+        [
+          messageStatus,
+          value("providerTurnId", current.providerTurnId),
+          current.sessionId,
+          current.messageId,
+          messageStatus,
+          value("providerTurnId", current.providerTurnId),
+          value("providerTurnId", current.providerTurnId)
+        ]
+      );
+      if (this.db.getRowsModified() > 0) this.notifyTimelineDirty(current.sessionId);
+      return this.getMessageDelivery(deliveryId);
+    });
+  }
+
   appendSessionEvent(event) {
     const sessionId = String(event.sessionId || "").trim();
     if (!sessionId) {
       return null;
     }
-    // 确保 session_log 存在（新 session 未经 migrate 回填时兜底建立 1:1 log）
-    this.ensureSessionLog(sessionId);
-
     const surface = event.surface == null
       ? surfaceForEventType(event.type)
       : (event.surface ? 1 : 0);
@@ -6257,10 +6956,10 @@ export class CorptieStore {
     const callId = event.callId ?? null;
     const producer = event.producer ?? producerFromSource(event.source);
 
-    // 原子分配 sequence：BEGIN IMMEDIATE 取写锁，消除并发 seq 竞态。
-    // event_id 冲突时显式抛错，绝不静默丢弃或返回虚假 sequence。
-    this.db.run("BEGIN IMMEDIATE");
-    try {
+    // The outer Provider ingestion transaction, when present, owns commit and
+    // rollback. Standalone callers still receive one BEGIN IMMEDIATE here.
+    const appended = this.runInTransaction(() => {
+      this.ensureSessionLog(sessionId);
       const existing = this.selectOne(
         "SELECT 1 FROM session_events WHERE event_id = ?",
         [event.eventId]
@@ -6294,7 +6993,6 @@ export class CorptieStore {
           event.createdAt || new Date().toISOString()
         ]
       );
-      this.db.run("COMMIT");
       this.scheduleSave();
       return {
         ...event,
@@ -6306,10 +7004,8 @@ export class CorptieStore {
         sourceEventSeqs,
         callId
       };
-    } catch (error) {
-      this.db.run("ROLLBACK");
-      throw error;
-    }
+    });
+    return appended;
   }
 
   ensureSessionLog(sessionId) {
@@ -6484,7 +7180,8 @@ export class CorptieStore {
   getSessionItem(sessionId, itemId) {
     const row = this.selectOne(
       `SELECT id, turn_id, turn_status, type, title, text, options_json,
-              raw_metadata_json, status, created_at
+              raw_metadata_json, binding_id, presentation_role, presentation_text,
+              status, created_at
        FROM session_items WHERE session_id = ? AND id = ?`,
       [sessionId, itemId]
     );
@@ -6499,9 +7196,40 @@ export class CorptieStore {
       text: normalizeStoredText(row.text, provider),
       options: parseJson(row.options_json, null),
       rawMetadataJSON: row.raw_metadata_json ?? null,
+      bindingId: row.binding_id ?? null,
+      presentationRole: row.presentation_role ?? null,
+      presentationText: row.presentation_text ?? null,
       status: row.status,
       createdAt: row.created_at
     }, provider);
+  }
+
+  getItemsForBinding(sessionId, bindingId, limit = 20_000) {
+    const pageLimit = Math.max(1, Math.min(20_000, Number(limit) || 20_000));
+    const provider = this.getSession(sessionId)?.external?.provider ?? "";
+    return this.selectAll(
+      `SELECT id, turn_id, turn_status, type, title, text, options_json,
+              raw_metadata_json, binding_id, presentation_role, presentation_text,
+              status, created_at
+       FROM session_items
+       WHERE session_id = ? AND binding_id = ?
+       ORDER BY created_at ASC, id ASC LIMIT ?`,
+      [sessionId, bindingId, pageLimit]
+    ).map((row) => normalizeStoredItem({
+      id: row.id,
+      turnId: row.turn_id,
+      turnStatus: row.turn_status,
+      type: row.type,
+      title: row.title,
+      text: normalizeStoredText(row.text, provider),
+      options: parseJson(row.options_json, null),
+      rawMetadataJSON: row.raw_metadata_json ?? null,
+      bindingId: row.binding_id ?? null,
+      presentationRole: row.presentation_role ?? null,
+      presentationText: row.presentation_text ?? null,
+      status: row.status,
+      createdAt: row.created_at
+    }, provider));
   }
 
   lastAgentMessageSequence(sessionId) {
@@ -8857,6 +9585,12 @@ export class CorptieStore {
     const threadId = rawStatus.threadId
       ?? (isCodexAppServer ? String(row.id).replace(/^codex:/, "") : row.id);
     const displayStatus = status;
+    const executionStatus = row.projection_execution_status
+      ?? normalizedExecutionStatus(displayStatus);
+    const deliveryStatus = row.projection_delivery_status ?? null;
+    const providerConnectionStatus = row.projection_provider_connection_status
+      ?? normalizedProviderConnectionStatus(rawStatus.connectionStatus);
+    const syncHealth = row.projection_sync_health ?? "healthy";
     const activeChoicePrompt = parseActiveChoicePrompt(row.active_choice_json);
     const suggestedOptions = activeChoicePrompt?.options ?? null;
     const logicalIdentity = Object.hasOwn(row, "projection_logical_session_id")
@@ -8895,6 +9629,10 @@ export class CorptieStore {
         agentRole: agentIdentity?.role
       }),
       status: displayStatus,
+      executionStatus,
+      deliveryStatus,
+      providerConnectionStatus,
+      syncHealth,
       progress: displayStatus === "running" || displayStatus === "blocked" ? Number(row.progress) : 1,
       summary: row.summary,
       activityStatus: rawStatus.activityStatus ?? null,
@@ -8923,7 +9661,7 @@ export class CorptieStore {
         workspace: rawStatus.workspace ?? null,
         routingVersion: Number(rawStatus.routingVersion ?? 0),
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
-        connectionStatus: isCodexAppServer ? null : "disconnected",
+        connectionStatus: providerConnectionStatus,
         currentModel: rawStatus.currentModel ?? rawStatus.resume?.currentModel ?? modelFromArgs(args),
         currentReasoningLevel: rawStatus.currentReasoningLevel ?? rawStatus.resume?.currentReasoningLevel ?? reasoningFromArgs(args),
         cwd: row.cwd,
@@ -8933,6 +9671,17 @@ export class CorptieStore {
     };
   }
 
+}
+
+function notifyCommittedListener(listener, payload) {
+  if (typeof listener !== "function") return;
+  try {
+    listener(payload);
+  } catch (error) {
+    // Persistence has already committed. A scheduling/listener failure must
+    // not report the write as rolled back or invite an unsafe Provider retry.
+    console.error("Committed Store notification failed:", error);
+  }
 }
 
 class NativeDatabase {
@@ -9073,6 +9822,27 @@ function providerThreadBindingFromRow(row) {
   };
 }
 
+function messageDeliveryFromRow(row) {
+  return {
+    deliveryId: row.delivery_id,
+    messageId: row.message_id,
+    sessionId: row.session_id,
+    bindingId: row.binding_id,
+    routingVersion: Number(row.routing_version),
+    providerId: row.provider_id,
+    providerSessionId: row.provider_session_id,
+    status: row.status,
+    attemptCount: Number(row.attempt_count ?? 0),
+    providerTurnId: row.provider_turn_id ?? null,
+    lastAttemptAt: row.last_attempt_at ?? null,
+    providerAcknowledgedAt: row.provider_acknowledged_at ?? null,
+    lastError: row.last_error ?? null,
+    source: parseJson(row.source_json, {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function sessionProjectionSelectSQL() {
   return `SELECT sessions.*,
     (SELECT logical_session_id FROM logical_sessions
@@ -9085,8 +9855,44 @@ function sessionProjectionSelectSQL() {
     (SELECT agents.role FROM agent_sessions bindings
      LEFT JOIN agents ON agents.agent_id = bindings.agent_id
      WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
-     LIMIT 1) AS projection_agent_role
+     LIMIT 1) AS projection_agent_role,
+    CASE sessions.status
+      WHEN 'complete' THEN 'completed'
+      ELSE sessions.status
+    END AS projection_execution_status,
+    (SELECT deliveries.status FROM message_deliveries deliveries
+     WHERE deliveries.session_id = sessions.id
+     ORDER BY deliveries.created_at DESC, deliveries.delivery_id DESC
+     LIMIT 1) AS projection_delivery_status,
+    (SELECT cursors.connection_status
+     FROM logical_sessions logical
+     JOIN provider_thread_bindings bindings
+       ON bindings.provider_thread_id = logical.active_thread_id
+     LEFT JOIN provider_binding_cursors cursors
+       ON cursors.binding_id = bindings.binding_id
+     WHERE logical.legacy_session_id = sessions.id
+     LIMIT 1) AS projection_provider_connection_status,
+    (SELECT cursors.sync_health
+     FROM logical_sessions logical
+     JOIN provider_thread_bindings bindings
+       ON bindings.provider_thread_id = logical.active_thread_id
+     LEFT JOIN provider_binding_cursors cursors
+       ON cursors.binding_id = bindings.binding_id
+     WHERE logical.legacy_session_id = sessions.id
+     LIMIT 1) AS projection_sync_health
     FROM sessions`;
+}
+
+function normalizedExecutionStatus(value) {
+  return value === "complete" ? "completed" : value;
+}
+
+function normalizedProviderConnectionStatus(value) {
+  const normalized = String(value ?? "").toLowerCase();
+  if (normalized.includes("reconnect") || normalized.includes("connect")) {
+    return normalized.includes("disconnect") ? "disconnected" : "connected";
+  }
+  return "disconnected";
 }
 
 function scheduledSessionTaskFromRow(row) {

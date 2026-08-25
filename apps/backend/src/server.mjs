@@ -42,9 +42,6 @@ import {
   ensureProviderSessionProjection,
   isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
-  purgeObsoleteUnclassifiedProviderProjections,
-  repairStableSessionFromActiveProviderCache,
-  repairStableSessionFromBoundPhysicalProjection,
   resolveRoutedProviderSessionProjection,
   visibleStoredSessionProjections
 } from "./application/providerSessionProjection.mjs";
@@ -58,7 +55,6 @@ import {
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { resolveConflictResolutionAgentContext } from "./application/conflictResolutionAgentContext.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
-import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { SessionWorkspaceOperationService } from "./application/sessionWorkspaceOperationService.mjs";
 import {
@@ -135,9 +131,15 @@ import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from
 import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
 import { SessionTimelineProjection } from "./application/sessionTimelineProjection.mjs";
+import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
+import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
+import {
+  mapClaudeTurnSettled,
+  mapCodexProviderNotification,
+  mapOpenClackyProviderChange
+} from "./application/providerEventEnvelope.mjs";
 import { providerLifecycleMetadataDecision } from "./application/providerLifecycleOrdering.mjs";
 import {
-  buildHistoricalSessionContext,
   composeLogicalSessionTimeline
 } from "./application/logicalSessionTimeline.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
@@ -152,7 +154,6 @@ import {
   preferredSessionTitle,
   reconcileAuthoritativeRunState,
   sessionHasActiveRun,
-  sessionNeedsAuthoritativeProjectionRecovery,
   workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
 import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePaths.mjs";
@@ -264,7 +265,6 @@ const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "de
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
 const sessionPresentationCache = new Map();
-const historicalSessionBindingDetailCache = new Map();
 // HTTP prefetch, the selected Session's SSE subscription, and the HTTP
 // recovery timer can converge on the same Provider snapshot. Share that
 // in-flight read so a row click never asks the Provider to reconstruct the
@@ -282,7 +282,6 @@ const sseClients = new Set();
 // lets a newly connected client advance past a change before existing clients
 // receive it, leaving their Session list stale until another mutation occurs.
 const stateSyncClients = new Map();
-let stateSyncConsistencyTimer = null;
 let stateSyncPublishTimer = null;
 let timelineChangePublisher = null;
 let mockProgressTimer = null;
@@ -305,6 +304,13 @@ const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
 const sessionTimelineProjection = new SessionTimelineProjection({ store });
+const providerEventProjector = new ProviderEventProjector({ store });
+const providerEventIngestion = new ProviderEventIngestionService({
+  store,
+  resolveBinding: resolveProviderEventBinding,
+  project: (context) => providerEventProjector.project(context),
+  onCommitted: publishProviderEventOutbox
+});
 const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
@@ -591,14 +597,9 @@ const openClackyManager = new OpenClackyManager({
     workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
   },
   onToolCall: (input) => toolHostService.execute(input),
-  onDetailChanged: (detail) => persistSessionDetailSnapshot(
-    resolveStableSessionIdForProviderDetail({
-      store,
-      providerId: "openclacky",
-      physicalSessionId: detail?.id
-    }),
-    detail
-  ),
+  // Provider reads and local detail-cache changes are not persistence hooks.
+  // Only the real-time event callback below may mutate Corptie projections.
+  onDetailChanged: () => {},
   resolveSessionBootstrap: async (input) => {
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
@@ -634,10 +635,36 @@ const openClackyManager = new OpenClackyManager({
     }
     try {
       const logical = sessionId ? store.getLogicalSessionByLegacySessionId(sessionId) : null;
+      const physicalSessionId = String(providerEvent?.session_id ?? change.sessionId ?? sessionId ?? "")
+        .replace(/^openclacky:/, "");
+      const providerBinding = physicalSessionId
+        ? store.getAgentSessionBindingByProviderSession("openclacky", physicalSessionId)
+        : null;
+      if (providerEvent && providerBinding) {
+        const envelope = mapOpenClackyProviderChange({
+          change,
+          binding: providerBinding,
+          receivedAt: now()
+        });
+        if (envelope) {
+          const ingestion = providerEventIngestion.ingest(envelope);
+          if (ingestion.status === "applied" && ingestion.projection?.session) {
+            sessionPresentationCache.set(sessionId, ingestion.projection.session);
+          }
+          if (sessionId && providerEventType === "task_finished") {
+            sessionStateDiagnostics.record(sessionId, "persisted", {
+              status: store.getSession(sessionId)?.status ?? null,
+              eventName: providerEventType
+            });
+          }
+          return;
+        }
+      }
+
+      // Non-event lifecycle callbacks (for example local creation) may seed a
+      // registered current route, but historical Provider snapshots never do.
       const activeProviderId = logical?.activeBinding?.providerId ?? "openclacky";
-      // A stale socket from a historical Provider binding must never overwrite
-      // the projection owned by the currently active Provider after a switch.
-      if (activeProviderId !== "openclacky") return;
+      if (providerEvent || activeProviderId !== "openclacky") return;
       const changedSessions = change.session ? [change.session] : (change.sessions ?? []);
       for (const changedSession of changedSessions) {
         const changedSessionId = changedSession?.id;
@@ -660,35 +687,6 @@ const openClackyManager = new OpenClackyManager({
           sessionKind: previous?.sessionKind ?? changedSession.sessionKind
         });
       }
-      if (sessionId && (providerEventType === "assistant_message" || providerEventType === "request_feedback")) {
-        const text = providerEventType === "request_feedback"
-          ? String(providerEvent?.question ?? "")
-          : String(providerEvent?.content ?? "");
-        if (text.trim()) {
-          const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
-          emitEvent("assistant/message", {
-            text,
-            itemType: "agentMessage",
-            providerEventId
-          }, {
-            sessionId,
-            source: { type: "openclacky" },
-            eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:assistant-message` : null
-          });
-        }
-      }
-      if (sessionId && providerEventType === "task_finished") {
-        const providerEventId = providerEvent?.id ?? providerEvent?.event_id ?? null;
-        emitEvent("AgentTurnCompleted", {
-          session: change.session ?? store.getSession(sessionId),
-          turn: { id: providerEvent?.turn_id ?? null },
-          hasAgentMessage: change.hasAgentMessage === true
-        }, {
-          sessionId,
-          source: { type: "openclacky" },
-          eventId: providerEventId ? `openclacky:${sessionId}:${providerEventId}:turn-completed` : null
-        });
-      }
       emitEvent("ProviderSessionChanged", {
         provider: "openclacky",
         type: change.type,
@@ -696,12 +694,6 @@ const openClackyManager = new OpenClackyManager({
         sessionId,
         error: change.error?.message ?? null
       }, { sessionId, source: { type: "openclacky" } });
-      if (sessionId && providerEventType === "task_finished") {
-        sessionStateDiagnostics.record(sessionId, "persisted", {
-          status: store.getSession(sessionId)?.status ?? null,
-          eventName: providerEventType
-        });
-      }
     } catch (error) {
       console.error(`[provider-notification] isolated failure provider=openclacky session=${sessionId ?? "unknown"} event=${providerEventType || change.type || "unknown"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
       if (sessionId) {
@@ -710,7 +702,10 @@ const openClackyManager = new OpenClackyManager({
           code: error?.code ?? null,
           error: error?.message ?? String(error)
         });
-        scheduleSessionProviderProjectionReconciliation(sessionId, "provider-notification-error");
+        const physicalSessionId = String(providerEvent?.session_id ?? change.sessionId ?? sessionId)
+          .replace(/^openclacky:/, "");
+        const binding = store.getAgentSessionBindingByProviderSession("openclacky", physicalSessionId);
+        if (binding) store.markProviderBindingCursorDegraded(binding, now());
       }
     }
   }
@@ -893,14 +888,15 @@ const sessionApplicationService = new SessionApplicationService({
         };
       }
     }
-    const historicalContext = await historicalProviderMessageContext(reference);
-    const contexts = [historicalContext, memoryContext, baseContext].filter((item) => item?.prompt);
+    // Provider-native thread context remains Provider-owned. Ordinary sends
+    // contain only this turn's Corptie product context and never replay chat
+    // history from either Provider or session_items.
+    const contexts = [memoryContext, baseContext].filter((item) => item?.prompt);
     if (contexts.length === 0) return null;
     if (contexts.length === 1) return contexts[0];
     return {
       ...baseContext,
       prompt: contexts.map((item) => item.prompt).join("\n\n"),
-      providerHandoffMessageCount: historicalContext?.messageCount ?? 0,
       memoryRecall: memoryContext?.memoryRecall ?? null
     };
   },
@@ -969,7 +965,7 @@ platformOperationService = new PlatformOperationService({
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
   store,
-  readSessionDetail: (sessionId) => sessionApplicationService.readSession(sessionId)
+  readSessionDetail: (sessionId) => readStoredSessionDetail(requireSessionReference(sessionId))
 });
 const backgroundAgentService = new BackgroundAgentService({
   registry: agentProviderRegistry,
@@ -1032,19 +1028,7 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
   },
   onTransitionEvent: (type, payload) => {
     if (type === "ProviderSwitched") {
-      // The stable Session id may still be cached with the source Provider's
-      // runtime configuration. The active target projection is authoritative
-      // after the route commit.
       sessionPresentationCache.delete(payload.sessionId);
-      const repaired = repairStableSessionFromActiveProviderCache(
-        store,
-        payload.logicalSessionId,
-        [...sessionPresentationCache.values()]
-      );
-      if (repaired) {
-        sessionPresentationCache.set(repaired.id, repaired);
-      }
-      scheduleSessionProviderProjectionReconciliation(payload.sessionId, "provider-switch");
     }
     emitEvent(type, payload, { sessionId: payload.sessionId });
   }
@@ -2138,45 +2122,64 @@ function emitEvent(type, payload, options = {}) {
   // Provider terminal notifications may be replayed after reconnect. A stable
   // event id makes the entire product event idempotent, including global SSE,
   // the durable timeline, unread cursors, and downstream work orchestration.
+  const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
+  const createdAt = now();
+  const durableEventId = options.eventId || randomUUID();
   if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;
-  const event = eventLog.append({
-    type,
-    payload,
-    createdAt: now()
-  });
 
+  let sessionEvent = null;
+  let outbox = null;
+  if (store.db) {
+    // Persistence and the broadcast intent are one commit. No client can see
+    // an event that is absent from Corptie's durable authority.
+    store.runInTransaction(() => {
+      if (sessionId && options.recordSessionEvent !== false) {
+        sessionEvent = store.appendSessionEvent({
+          eventId: durableEventId,
+          sessionId,
+          type,
+          source: options.source || payload?.source || null,
+          payload,
+          createdAt
+        });
+      }
+      outbox = store.enqueueEventOutbox({
+        outboxId: `product-event:${durableEventId}`,
+        topic: "product-events",
+        sessionId,
+        eventType: type,
+        payload: { type, payload, createdAt },
+        createdAt
+      });
+    });
+  }
+
+  const event = eventLog.append({ type, payload, createdAt });
   const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
   for (const response of sseClients) {
-    response.write(frame);
+    try {
+      response.write(frame);
+    } catch (error) {
+      console.warn(`[events] client write failed type=${type}: ${error.message}`);
+    }
   }
+  if (outbox) store.markEventOutboxPublished(outbox.outbox_id, now());
   scheduleStateSyncPublish();
 
-  const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
-  if (sessionId && store.db && options.recordSessionEvent !== false) {
-    try {
-      const sessionEvent = store.appendSessionEvent({
-        eventId: options.eventId || randomUUID(),
-        sessionId,
-        type,
-        source: options.source || payload?.source || null,
-        payload,
-        createdAt: event.createdAt
-      });
-      if (sessionEvent) {
-        for (const listener of sessionEventListeners) {
-          listener(sessionEvent);
-        }
-        for (const dshEvent of dshLiveEvents(sessionEvent)) {
-          broadcastDshMuxFrame({ type: "session/event", sessionId, event: dshEvent });
-        }
-        const running = dshRunningStatusForEvent(type);
-        if (running !== null) {
-          broadcastDshHostFrame({ type: "host/session-status", sessionId, running });
-        }
+  if (sessionEvent) {
+    for (const listener of sessionEventListeners) {
+      try {
+        listener(sessionEvent);
+      } catch (error) {
+        console.warn(`[session-events] listener failed type=${type} session=${sessionId}: ${error.message}`);
       }
-    } catch (error) {
-      // 事件落库失败不得阻断 SSE 广播；记录告警供后续对账。
-      console.error(`[session-events] append failed for type=${type} session=${sessionId}: ${error.message}`);
+    }
+    for (const dshEvent of dshLiveEvents(sessionEvent)) {
+      broadcastDshMuxFrame({ type: "session/event", sessionId, event: dshEvent });
+    }
+    const running = dshRunningStatusForEvent(type);
+    if (running !== null) {
+      broadcastDshHostFrame({ type: "host/session-status", sessionId, running });
     }
   }
   if (["AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
@@ -2195,29 +2198,80 @@ function emitEvent(type, payload, options = {}) {
       }
     });
   }
+  return event;
 }
 
-function scheduleSessionProviderProjectionReconciliation(sessionId, reason) {
-  setImmediate(() => void reconcileSessionProviderProjection(sessionId, reason));
+function resolveProviderEventBinding(event) {
+  const binding = store.getAgentSessionBinding(event.bindingId);
+  if (!binding) return null;
+  const logical = store.getLogicalSession(binding.logicalSessionId);
+  if (!logical?.legacySessionId) return null;
+  return {
+    ...binding,
+    sessionId: logical.legacySessionId,
+    isCurrentRoute: logical.activeBinding?.bindingId === binding.bindingId
+  };
 }
 
-async function reconcileSessionProviderProjection(sessionId, reason, {
-  emitReconciledEvent = true,
-  logFailure = true
-} = {}) {
-  try {
-    await sessionApplicationService.readSession(sessionId);
-    const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-    if (!session) return null;
-    if (emitReconciledEvent) {
-      emitEvent("SessionProviderProjectionReconciled", { session, reason }, { sessionId });
+function publishProviderEventOutbox(rows = []) {
+  for (const row of rows) {
+    try {
+      const envelope = JSON.parse(row.payload_json);
+      if (row.topic === "timeline") {
+        scheduleTimelineChangePublish(envelope);
+      } else if (row.topic === "state") {
+        scheduleStateSyncPublish();
+      } else if (row.topic === "provider-commands") {
+        scheduleAgentWorkDrain(envelope.sessionId);
+      } else if (row.topic === "provider-events") {
+        publishCommittedProviderWake(envelope?.event ?? null, row.created_at);
+      }
+      store.markEventOutboxPublished(row.outbox_id, now());
+    } catch (error) {
+      console.warn(`[provider-outbox] publish deferred id=${row.outbox_id} error=${error.message}`);
     }
-    return session;
-  } catch (error) {
-    if (logFailure) {
-      console.warn(`[session-projection] authoritative reconciliation deferred session=${sessionId} reason=${reason} error=${error.message}`);
+  }
+}
+
+function publishCommittedProviderWake(providerEvent, createdAt) {
+  if (!providerEvent) return;
+  const event = eventLog.append({
+    type: "ProviderEventCommitted",
+    payload: {
+      sessionId: resolveProviderEventBinding(providerEvent)?.sessionId ?? null,
+      providerId: providerEvent.providerId,
+      bindingId: providerEvent.bindingId,
+      turnId: providerEvent.turnId ?? null,
+      itemId: providerEvent.itemId ?? null,
+      eventType: providerEvent.type
+    },
+    createdAt: createdAt ?? providerEvent.receivedAt ?? now()
+  });
+  const frame = `id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+  for (const response of sseClients) {
+    try {
+      response.write(frame);
+    } catch (error) {
+      console.warn(`[provider-outbox] client write failed event=${providerEvent.type}: ${error.message}`);
     }
-    return null;
+  }
+  if (providerEvent.type === "usage.updated") {
+    const sessionId = resolveProviderEventBinding(providerEvent)?.sessionId ?? null;
+    const usage = sessionId ? store.getSessionUsageSnapshot(sessionId) : null;
+    if (usage?.context) {
+      const usageEvent = eventLog.append({
+        type: "SessionUsageUpdated",
+        payload: { sessionId, context: usage.context },
+        createdAt: createdAt ?? providerEvent.receivedAt ?? now()
+      });
+      const usageFrame = `id: ${usageEvent.id}\nevent: ${usageEvent.type}\ndata: ${JSON.stringify(usageEvent)}\n\n`;
+      for (const response of sseClients) {
+        try { response.write(usageFrame); }
+        catch (error) {
+          console.warn(`[provider-outbox] client write failed event=usage.updated: ${error.message}`);
+        }
+      }
+    }
   }
 }
 
@@ -2416,23 +2470,6 @@ function scheduleStateSyncPublish() {
 
 function scheduleTimelineChangePublish(change = {}) {
   timelineChangePublisher?.schedule(change);
-}
-
-function updateStateSyncConsistencyTimer() {
-  if (stateSyncClients.size > 0 && !stateSyncConsistencyTimer) {
-    // Store mutations normally schedule an immediate coalesced publish. This
-    // low-frequency pass is only a safety net for legacy mutation paths that do
-    // not emit a product event.
-    stateSyncConsistencyTimer = setInterval(publishStateChangesIfNeeded, 2_000);
-    stateSyncConsistencyTimer.unref?.();
-  } else if (stateSyncClients.size === 0 && stateSyncConsistencyTimer) {
-    clearInterval(stateSyncConsistencyTimer);
-    stateSyncConsistencyTimer = null;
-    if (stateSyncPublishTimer) {
-      clearTimeout(stateSyncPublishTimer);
-      stateSyncPublishTimer = null;
-    }
-  }
 }
 
 function sessionIdFromEventPayload(payload = {}) {
@@ -3264,7 +3301,10 @@ function handleCodexAppServerNotificationSafely(message) {
         code: error?.code ?? null,
         error: error?.message ?? String(error)
       });
-      scheduleSessionProviderProjectionReconciliation(sessionId, "provider-notification-error");
+      const binding = threadId
+        ? store.getAgentSessionBindingByProviderSession("codex-app-server", threadId)
+        : null;
+      if (binding) store.markProviderBindingCursorDegraded(binding, now());
     }
   }
 }
@@ -3278,15 +3318,6 @@ function handleCodexAppServerNotification(message) {
   }
   const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
   const sessionId = logicalRoute?.legacySessionId ?? `codex:${threadId}`;
-  if (logicalRoute && logicalRoute.activeThreadId !== threadId) {
-    emitEvent("CodexHistoricalThreadNotification", {
-      logicalSessionId: logicalRoute.logicalSessionId,
-      sessionId,
-      threadId,
-      method
-    }, { sessionId, source: { type: "codex-app-server" } });
-    return;
-  }
   const managedSession = sessionPresentationCache.get(sessionId);
   if (method === "thread/name/updated") {
     const title = typeof params.threadName === "string" ? params.threadName.trim() : "";
@@ -3312,6 +3343,28 @@ function handleCodexAppServerNotification(message) {
   // notification (especially turn/completed) to be dropped.
   const session = managedSession ?? store.getSession(sessionId);
   if (!session) {
+    return;
+  }
+
+  const providerBinding = store.getAgentSessionBindingByProviderSession("codex-app-server", threadId);
+  const providerEnvelope = providerBinding
+    ? mapCodexProviderNotification({
+        message,
+        binding: providerBinding,
+        liveItems: codexRuntime.liveItemsForThread(threadId),
+        receivedAt: now()
+      })
+    : null;
+  if (providerEnvelope) {
+    const ingestion = providerEventIngestion.ingest(providerEnvelope);
+    if (ingestion.status === "applied") {
+      handleCommittedCodexProviderEvent({
+        event: ingestion.event,
+        projection: ingestion.projection,
+        logicalRoute,
+        threadId
+      });
+    }
     return;
   }
 
@@ -3526,6 +3579,53 @@ function handleCodexAppServerNotification(message) {
   }
 }
 
+function handleCommittedCodexProviderEvent({ event, projection, logicalRoute, threadId }) {
+  const nextSession = projection?.session;
+  if (!nextSession) return;
+  sessionPresentationCache.set(nextSession.id, nextSession);
+
+  const terminal = ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type);
+  if (!terminal) return;
+  const failed = event.type === "turn.failed";
+  const cancelled = event.type === "turn.cancelled";
+  const latestAgentMessage = [...(event.payload?.items ?? [])].reverse().find((item) =>
+    item?.type === "agentMessage"
+    && item?.presentationRole === "final_answer"
+    && typeof item.text === "string"
+    && item.text.trim()
+  );
+  if (!failed && !cancelled && latestAgentMessage?.text) {
+    scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
+  }
+
+  const completedWork = store.getAgentWorkItemForTurn(nextSession.id, event.turnId)
+    ?? store.getRunningAgentWorkItemForSession(nextSession.id);
+  if (completedWork?.status === "running") {
+    const updatedWork = store.updateAgentWorkItem(completedWork.workItemId, {
+      status: failed ? "failed" : (cancelled ? "cancelled" : "completed"),
+      lastError: event.payload?.error?.message ?? null
+    });
+    emitEvent("AgentWorkCompleted", { sessionId: nextSession.id, workItem: updatedWork }, {
+      sessionId: nextSession.id,
+      source: completedWork.source
+    });
+    workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
+  }
+  settleEntityWorkItemFromSession(nextSession);
+  const agent = collaborationCore.getAgentForSession(nextSession.id);
+  if (!failed && !cancelled) {
+    refreshWorkspaceInventoryAfterTurn(logicalRoute);
+    const continuation = continuePendingWorkspaceTransition(logicalRoute, event.turnId);
+    const providerSwitch = continuePendingProviderSwitch(logicalRoute);
+    resumeWorkAfterTransition(continuation, () => {
+      scheduleAgentWorkDrain(nextSession.id);
+    });
+    if (providerSwitch) providerSwitch.then(() => scheduleAgentWorkDrain(nextSession.id));
+  } else if (agent) {
+    scheduleAgentWorkDrain(nextSession.id);
+  }
+}
+
 function readableCodexActivity(value = "") {
   const text = String(value || "");
   switch (text) {
@@ -3595,13 +3695,11 @@ async function findCodexRolloutBySessionId(sessionId) {
  *   对话消息数组；找不到 rollout 或读取失败时返回空数组（由调用方决定降级）。
  */
 async function readCodexSessionConversation(sessionId) {
-  const threadId = String(sessionId ?? "").replace(/^codex:/, "");
-  if (!threadId) return [];
-  const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
-  if (!rollout?.path) return [];
-  const text = await readFile(rollout.path, "utf8").catch(() => "");
-  if (!text) return [];
-  return parseCodexRolloutConversation(text);
+  return store.getItems(sessionId, 500).flatMap((item) => {
+    if (item.type === "userMessage") return [{ role: "user", text: item.text }];
+    if (item.type === "agentMessage") return [{ role: "assistant", text: item.text }];
+    return [];
+  });
 }
 
 /**
@@ -3610,13 +3708,7 @@ async function readCodexSessionConversation(sessionId) {
  * 定位逻辑，只是用 parseCodexRolloutTimeline 保留工具调用/结果条目。
  */
 async function readCodexSessionTimeline(sessionId) {
-  const threadId = String(sessionId ?? "").replace(/^codex:/, "");
-  if (!threadId) return [];
-  const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
-  if (!rollout?.path) return [];
-  const text = await readFile(rollout.path, "utf8").catch(() => "");
-  if (!text) return [];
-  return parseCodexRolloutTimeline(text);
+  return store.getItems(sessionId, 500);
 }
 
 async function ensureCodexSessionPermissions(session) {
@@ -4077,52 +4169,11 @@ async function assertDirectory(path) {
   }
 }
 
-function listLiveGatewaySessions(options = {}) {
-  const sessions = agentProviderRegistry.listSessionsSync({ archived: options.archived === true }).flatMap((session) => {
-    const routed = resolveRoutedProviderSessionProjection(store, session);
-    if (routed.disposition === "historical") return [];
-    if (routed.disposition === "active") {
-      return [sessionWithLogicalWorkspace(routed.session, routed.logical)];
-    }
-    const projection = ensureProviderSessionProjection({
-      store,
-      session,
-      resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId),
-      bindAgentToSession: (binding) => collaborationCore.bindSession(binding)
-    });
-    if (projection.visible === false) {
-      if (!reportedUnclassifiedProviderSessionIds.has(session.id)) {
-        reportedUnclassifiedProviderSessionIds.add(session.id);
-        console.warn(`[session-classification] hidden provider session=${session.id} reason=${projection.reason}`);
-      }
-      return [];
-    }
-    if (projection.repaired) {
-      console.log(`[session-projection] repaired provider session=${session.id}`);
-    }
-    const logical = store.getLogicalSessionByLegacySessionId(session.id);
-    return [logical ? sessionWithLogicalWorkspace(session, logical) : session];
-  });
-  const uniqueSessions = Array.from(sessions.reduce((byId, session) => {
-    const previous = byId.get(session.id);
-    if (!previous || Date.parse(session.updatedAt ?? 0) >= Date.parse(previous.updatedAt ?? 0)) {
-      byId.set(session.id, session);
-    }
-    return byId;
-  }, new Map()).values());
-  return uniqueSessions.map((session) => ({
-    ...session,
-    sessionKind: session.sessionKind ?? "legacy"
-  }));
-}
-
 function listGatewaySessions(options = {}) {
-  const uniqueSessions = listLiveGatewaySessions(options);
-  // Corptie owns list presentation order. A Provider may keep an active
-  // session object in memory with runtime state it had before another writer or
-  // a missed notification committed a terminal projection. Always merge the
-  // durable list projection back at this boundary.
-  return applyPersistedSessionOrder(uniqueSessions, (id) => store.getSession(id)).map((session) => ({
+  return visibleStoredSessionProjections(
+    store,
+    store.listSessions({ archived: options.archived === true })
+  ).map((session) => ({
     ...session,
     sessionKind: session.sessionKind ?? "legacy"
   }));
@@ -4766,7 +4817,7 @@ async function getStoredSessionSnapshot(sessionId) {
 // 传输开销远小于首屏，故可接受。切片逻辑 provider-neutral，不触碰 provider 边界。
 async function readSessionHistory(sessionId, beforeId, limit) {
   const reference = requireSessionReference(sessionId);
-  const detail = await readSessionDetailWithStoredFallback(reference);
+  const detail = await readStoredSessionDetail(reference);
   const timelineItems = await logicalSessionTimelineItems(reference, detail);
   const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
   const page = pageSessionItems(allItems, { beforeId, limit });
@@ -4808,7 +4859,7 @@ async function readSessionTimelineWindow(sessionId, options) {
         : { kind: "latest", requestedId: null, resolvedId: storedWindow.items.at(-1)?.id ?? null, status: "latest" }
     };
   }
-  const detail = await readSessionDetailWithStoredFallback(reference);
+  const detail = await readStoredSessionDetail(reference);
   const timelineItems = await logicalSessionTimelineItems(reference, detail);
   const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
   const window = options.anchorId
@@ -4836,22 +4887,18 @@ async function readSessionTimelineWindow(sessionId, options) {
   };
 }
 
-async function readSessionDetailWithStoredFallback(reference) {
-  try {
-    const detail = await sessionApplicationService.readSession(reference.sessionId);
-    persistSessionDetailSnapshot(reference.sessionId, detail);
-    return detail;
-  } catch (error) {
-    if (reference.metadata?.historical) throw error;
-    const summary = reference.metadata?.session ?? store.getSession(reference.sessionId);
-    if (!summary) throw error;
-    console.warn(`[session-history] Provider unavailable; using stored detail session=${reference.sessionId} error=${error.message}`);
-    return storedSessionDetail({
-      summary,
-      storedDetail: store.getDetail(reference.sessionId),
-      eventItems: storedTimelineItemsForSession(reference.sessionId)
-    });
+async function readStoredSessionDetail(reference) {
+  const summary = reference.metadata?.session ?? store.getSession(reference.sessionId);
+  if (!summary) {
+    const error = new Error("Session not found.");
+    error.code = "SESSION_NOT_FOUND";
+    throw error;
   }
+  return storedSessionDetail({
+    summary,
+    storedDetail: store.getDetail(reference.sessionId),
+    eventItems: storedTimelineItemsForSession(reference.sessionId)
+  });
 }
 
 function persistSessionDetailSnapshot(sessionId, detail) {
@@ -4864,33 +4911,12 @@ async function logicalSessionTimelineItems(reference, activeDetail) {
   return composeLogicalSessionTimeline({
     bindings,
     activeDetail,
-    readHistoricalBinding: (binding) => readCachedHistoricalSessionBinding(reference.sessionId, binding)
+    readHistoricalBinding: (binding) => readStoredHistoricalSessionBinding(reference.sessionId, binding)
   });
 }
 
-async function historicalProviderMessageContext(reference) {
-  if (!reference.logicalSessionId) return null;
-  const bindings = store.listProviderThreadBindings(reference.logicalSessionId);
-  if (!bindings.some((binding) => binding.state === "superseded")) return null;
-  return buildHistoricalSessionContext({
-    bindings,
-    readHistoricalBinding: (binding) => readCachedHistoricalSessionBinding(reference.sessionId, binding)
-  });
-}
-
-async function readCachedHistoricalSessionBinding(sessionId, binding) {
-  const cacheKey = binding.bindingId;
-  if (historicalSessionBindingDetailCache.has(cacheKey)) {
-    return historicalSessionBindingDetailCache.get(cacheKey);
-  }
-  const loading = sessionApplicationService.readSessionBinding(sessionId, binding.bindingId)
-    .catch((error) => {
-      historicalSessionBindingDetailCache.delete(cacheKey);
-      console.warn(`[session-history] historical binding unavailable binding=${binding.bindingId} error=${error.message}`);
-      return { items: [] };
-    });
-  historicalSessionBindingDetailCache.set(cacheKey, loading);
-  return loading;
+function readStoredHistoricalSessionBinding(sessionId, binding) {
+  return { items: store.getItemsForBinding(sessionId, binding.bindingId) };
 }
 
 function requireSessionReference(sessionId) {
@@ -5417,8 +5443,15 @@ function collaborationSessionPresentation(sessionId) {
 }
 
 async function getGatewayUsage(sessionId = null) {
-  if (sessionId) return sessionApplicationService.readAccountUsage(sessionId);
-  return readCodexProviderAccountUsage(null);
+  if (!sessionId) return { available: false, provider: "codex", model: null };
+  const session = store.getSession(sessionId);
+  if (!session) return { available: false, provider: "unknown", model: null };
+  const usage = store.getSessionUsageSnapshot(sessionId);
+  return usage?.account ?? {
+    available: false,
+    provider: session.external?.provider ?? "unknown",
+    model: usage?.model ?? session.external?.currentModel ?? null
+  };
 }
 
 async function readCodexProviderAccountUsage(reference = null) {
@@ -5492,25 +5525,65 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     };
   }
 
-  if (routedSessionId.startsWith("codex:") && options.fromAgentWorkQueue !== true) {
-    return enqueueUserAgentWork(before, value, source, latencyTrace);
+  if (options.fromAgentWorkQueue !== true) {
+    return enqueueUserAgentWork(before, value, source, latencyTrace, reference);
   }
-  if (routedSessionId.startsWith("codex:") && sessionHasActiveRun(before)) {
+  if (sessionHasActiveRun(before) || store.listUnsettledSessionTurns(routedSessionId).length > 0) {
     const error = new Error("Target Session became busy before queued work started.");
     error.code = "SESSION_BUSY";
     throw error;
   }
 
+  const deliveryId = source.deliveryId ?? options.agentWorkItem?.source?.deliveryId ?? null;
+  const delivery = deliveryId ? store.getMessageDelivery(deliveryId) : null;
+  if (delivery) {
+    store.updateMessageDelivery(deliveryId, {
+      status: "dispatching",
+      attemptCount: delivery.attemptCount + 1,
+      lastAttemptAt: now(),
+      lastError: null
+    });
+  }
   logSessionMessageLatency(latencyTrace, "provider_dispatch_started", {
     providerId: reference.providerId
   });
-  const result = await sessionApplicationService.sendMessage(sessionId, value, {
-    before,
-    latencyTrace,
-    options,
-    source,
-    submit: options.submit
-  });
+  let result;
+  try {
+    result = await sessionApplicationService.sendMessage(sessionId, value, {
+      before,
+      latencyTrace,
+      options,
+      source,
+      submit: options.submit,
+      idempotencyKey: deliveryId
+    });
+  } catch (error) {
+    if (delivery) {
+      const status = providerDeliveryFailureStatus(error);
+      store.updateMessageDelivery(deliveryId, {
+        status,
+        lastError: error.message
+      });
+      error.deliveryStatus = status;
+    }
+    throw error;
+  }
+  if (delivery) {
+    const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
+    const alreadySettledTurn = providerTurnId
+      ? store.getSessionTurn(routedSessionId, delivery.bindingId, providerTurnId)
+      : null;
+    const acknowledgedStatus = alreadySettledTurn
+      ? ({ completed: "completed", failed: "failed", cancelled: "cancelled" }[alreadySettledTurn.execution_status]
+        ?? "accepted")
+      : "accepted";
+    store.updateMessageDelivery(deliveryId, {
+      status: acknowledgedStatus,
+      providerTurnId,
+      providerAcknowledgedAt: now(),
+      lastError: null
+    });
+  }
   logSessionMessageLatency(latencyTrace, "provider_dispatch_completed", {
     providerId: reference.providerId,
     turnId: result?.turn?.id ?? null
@@ -5520,20 +5593,6 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     turnId: result?.turn?.id ?? null
   });
 
-  if (source.localVisibility !== "status_only") {
-    emitEvent("SessionUserMessageCreated", {
-      sessionId: routedSessionId,
-      logicalSessionId: reference.logicalSessionId,
-      message: {
-        id: source.messageId || randomUUID(),
-        type: "userMessage",
-        title: source.type === "feishu" ? "Feishu" : (source.type === "collaboration" ? "Agent Collaboration" : "User"),
-        text: value,
-        createdAt: now()
-      },
-      source
-    }, { sessionId: routedSessionId, source });
-  }
   emitEvent("SessionRunStarted", {
     sessionId: routedSessionId,
     logicalSessionId: reference.logicalSessionId,
@@ -5546,6 +5605,20 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     legacySessionId: routedSessionId,
     result
   };
+}
+
+function providerDeliveryFailureStatus(error) {
+  if (error?.code === "SESSION_BUSY") return "queued";
+  if ([
+    "INVALID_MESSAGE",
+    "SESSION_NOT_FOUND",
+    "SESSION_BINDING_NOT_FOUND",
+    "PROVIDER_CAPABILITY_UNSUPPORTED",
+    "PROVIDER_NOT_FOUND"
+  ].includes(error?.code)) return "failed";
+  // Once dispatch begins, a transport failure may have occurred after the
+  // Provider accepted the command. Never retry an ambiguous execution.
+  return "delivery_unknown";
 }
 
 function collaborationConfirmationReply(value) {
@@ -5633,7 +5706,7 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   }
 }
 
-function enqueueUserAgentWork(session, text, source, latencyTrace = null) {
+function enqueueUserAgentWork(session, text, source, latencyTrace = null, reference = null) {
   const agent = collaborationCore.getAgentForSession(session.id) ?? ensureCollaborationAgentForSession(session);
   if (!agent) {
     const error = new Error("Session does not have an Agent identity.");
@@ -5642,18 +5715,35 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null) {
   }
   const activeRun = sessionHasActiveRun(session);
   const hasRunningWorkItem = Boolean(store.getRunningAgentWorkItemForSession(session.id));
-  const persistedSource = latencyTrace ? { ...source, latencyTrace } : source;
-  const workItem = store.enqueueAgentWorkItem({
-    workItemId: source.messageId || randomUUID(),
-    agentId: agent.agentId,
+  const logical = reference?.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(session.id);
+  const binding = logical?.activeBinding;
+  if (!binding) {
+    const error = new Error("Session does not have an active Provider Binding.");
+    error.code = "SESSION_BINDING_NOT_FOUND";
+    throw error;
+  }
+  const messageId = source.messageId || randomUUID();
+  const deliveryId = source.deliveryId || `delivery:${messageId}`;
+  const persistedSource = {
+    ...source,
+    messageId,
+    deliveryId,
+    ...(latencyTrace ? { latencyTrace } : {})
+  };
+  const created = store.createUserMessageDelivery({
+    deliveryId,
+    messageId,
     sessionId: session.id,
-    kind: "user",
-    priority: 100,
+    binding,
+    agentId: agent.agentId,
     text,
+    title: source.type === "feishu" ? "Feishu" : "User",
     source: persistedSource,
-    localVisibility: "normal",
     createdAt: now()
   });
+  const workItem = created.workItem;
   const queuePosition = store.listQueuedAgentWorkItemsForSession(session.id)
     .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
   const reportAsQueued = shouldReportAgentWorkQueued({
@@ -5662,8 +5752,9 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null) {
     queuedWorkItemsAhead: Math.max(0, queuePosition - 1)
   });
   logSessionMessageLatency(latencyTrace, "task_enqueued", { queuePosition });
+  if (created.outbox) publishProviderEventOutbox([created.outbox]);
   emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source: persistedSource }, { sessionId: session.id, source: persistedSource });
-  scheduleAgentWorkDrain(session.id, latencyTrace);
+  if (!created.outbox) scheduleAgentWorkDrain(session.id, latencyTrace);
   return {
     accepted: true,
     queued: reportAsQueued,
@@ -5957,14 +6048,9 @@ async function tickAgentWorkQueue() {
 }
 
 async function inspectCollaborationSession(sessionId) {
-  let session = listGatewaySessions().find((item) => item.id === sessionId)
-    ?? store.getSession(sessionId);
-  try {
-    session = await sessionApplicationService.readSession(sessionId);
-  } catch {
-    if (!session) return "missing";
-  }
-  if (sessionHasActiveRun(session)) return "running";
+  const session = store.getSession(sessionId);
+  if (!session) return "missing";
+  if (store.listUnsettledSessionTurns(sessionId).length > 0) return "running";
   return ["failed", "cancelled"].includes(session.status) ? "stopped" : "idle";
 }
 
@@ -6379,7 +6465,8 @@ async function handleClaudeTurnSettledSafely(event) {
         code: error?.code ?? null,
         error: error?.message ?? String(error)
       });
-      scheduleSessionProviderProjectionReconciliation(sessionId, "provider-notification-error");
+      const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
+      if (binding) store.markProviderBindingCursorDegraded(binding, now());
     }
   }
 }
@@ -6388,16 +6475,13 @@ async function handleClaudeTurnSettled(event) {
   const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
   if (!logical) return;
   const sessionId = logical.legacySessionId;
-  if (event.status === "completed") {
-    emitEvent("AgentTurnCompleted", {
-      session: event.session ?? store.getSession(sessionId),
-      turn: { id: event.turnId ?? null },
-      hasAgentMessage: event.hasAgentMessage === true
-    }, {
-      sessionId,
-      source: { type: "claude-sdk" },
-      eventId: event.turnId ? `claude-sdk:${sessionId}:${event.turnId}:turn-completed` : null
-    });
+  const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
+  if (!binding) return;
+  const envelope = mapClaudeTurnSettled({ event, binding, receivedAt: now() });
+  const ingestion = providerEventIngestion.ingest(envelope);
+  if (ingestion.status !== "applied") return;
+  if (ingestion.projection?.session) {
+    sessionPresentationCache.set(sessionId, ingestion.projection.session);
   }
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   if (runningWork) {
@@ -6495,7 +6579,7 @@ async function switchSessionProvider(sessionId, providerId, transitionId = undef
 
 async function generateSessionCommitMessage(sessionId, plan) {
   const reference = await sessionApplicationService.referenceFor(sessionId);
-  const session = await sessionApplicationService.readSession(sessionId);
+  const session = store.getSession(reference.sessionId);
   const logical = (reference.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
@@ -7748,16 +7832,16 @@ function route(request, response) {
     const provider = session.external?.provider === "codex-app-server"
       ? "codex"
       : session.external?.provider ?? "unknown";
-    loadSessionUsageSnapshot({
-      loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
-      loadContext: () => sessionApplicationService.readSessionUsage(sessionId),
-      fallbackAccount: { available: false, provider, model: session.external?.currentModel ?? null },
-      resetForecast: session.external?.provider === "codex-app-server"
-        ? codexResetForecastMonitor?.snapshot() ?? null
-        : null
-    })
-      .then((usage) => sendJson(response, 200, usage))
-      .catch((error) => sendJson(response, 503, { error: error.message }));
+    const storedUsage = store.getSessionUsageSnapshot(sessionId);
+    sendJson(response, 200, {
+      account: storedUsage?.account ?? {
+        available: false,
+        provider,
+        model: storedUsage?.model ?? session.external?.currentModel ?? null
+      },
+      context: storedUsage?.context ?? null,
+      resetForecast: null
+    });
     return;
   }
 
@@ -8679,12 +8763,24 @@ function route(request, response) {
   if (request.method === "GET" && sessionBindingSnapshotMatch) {
     const sessionId = decodeURIComponent(sessionBindingSnapshotMatch[1]);
     const bindingId = decodeURIComponent(sessionBindingSnapshotMatch[2]);
-    sessionApplicationService.readSessionBinding(sessionId, bindingId)
-      .then((session) => sendJson(response, 200, { session }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code ?? null
-      }));
+    try {
+      const reference = requireSessionReference(sessionId);
+      const binding = store.getAgentSessionBinding(bindingId);
+      if (!binding || binding.logicalSessionId !== reference.logicalSessionId) {
+        const error = new Error("Session Binding not found.");
+        error.code = "SESSION_BINDING_NOT_FOUND";
+        throw error;
+      }
+      const summary = store.getSession(reference.sessionId);
+      const session = storedSessionDetail({
+        summary,
+        storedDetail: null,
+        eventItems: store.getItemsForBinding(reference.sessionId, bindingId)
+      });
+      sendJson(response, 200, { session });
+    } catch (error) {
+      sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code ?? null });
+    }
     return;
   }
 
@@ -8916,13 +9012,11 @@ function route(request, response) {
       writeStateSyncFrame(response, "state-change-set", changes);
     }
     stateSyncClients.set(response, deliveredStateRevision(changes, snapshot));
-    updateStateSyncConsistencyTimer();
     const heartbeat = setInterval(() => response.write(": keepalive\n\n"), 15_000);
     heartbeat.unref?.();
     request.on("close", () => {
       clearInterval(heartbeat);
       stateSyncClients.delete(response);
-      updateStateSyncConsistencyTimer();
     });
     return;
   }
@@ -9018,13 +9112,6 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
-const invalidProjectionCleanup = purgeObsoleteUnclassifiedProviderProjections(store);
-for (const entry of invalidProjectionCleanup.purged) {
-  console.log(`[session-classification] purged obsolete projection ${JSON.stringify(entry)}`);
-}
-for (const entry of invalidProjectionCleanup.retained) {
-  console.warn(`[session-classification] retained hidden projection ${JSON.stringify(entry)}`);
-}
 const recoveredArtifactContentOperations = await artifactService.initialize();
 if (recoveredArtifactContentOperations.length > 0) {
   console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
@@ -9076,18 +9163,9 @@ const initiallyStoredSessions = [
   ...store.listSessions({ archived: false }),
   ...store.listSessions({ archived: true })
 ];
-let repairedStableProjectionCount = 0;
-for (const session of initiallyStoredSessions) {
-  if (repairStableSessionFromBoundPhysicalProjection(store, session)) {
-    repairedStableProjectionCount += 1;
-  }
-}
-if (repairedStableProjectionCount > 0) {
-  console.log(`[session-projection] repaired ${repairedStableProjectionCount} stable Session projection(s) from active Provider bindings`);
-}
-const allStoredSessionsAtStartup = repairedStableProjectionCount > 0
-  ? [...store.listSessions({ archived: false }), ...store.listSessions({ archived: true })]
-  : initiallyStoredSessions;
+// Stable product Sessions are already authoritative. Physical Provider rows
+// may remain for route audit but never repair product state at startup.
+const allStoredSessionsAtStartup = initiallyStoredSessions;
 let storedSessionsAtStartup = visibleStoredSessionProjections(store, allStoredSessionsAtStartup);
 const hiddenPhysicalSessionCount = allStoredSessionsAtStartup.length - storedSessionsAtStartup.length;
 if (hiddenPhysicalSessionCount > 0) {
@@ -9151,30 +9229,12 @@ if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
   console.log(`[codex-runtime] migrated rollouts=${corptieCodexRuntime.threadMigration.rolloutCount} indexed=${rebuiltCount}`);
 }
 for (const storedSession of storedSessionsAtStartup) {
-  let session = storedSession.external?.provider === "codex-app-server"
-    ? await ensureCodexSessionPermissions(storedSession)
-    : storedSession;
-  if (session.external?.provider === "codex-app-server") {
-    try {
-      const logical = await ensureLogicalRouteForCodexSession(session);
-      session = sessionWithLogicalWorkspace(session, logical);
-      upsertManagedCodexSession(session);
-    } catch (error) {
-      console.warn(`[workspace-route] migration deferred session=${session.id} error=${error.message}`);
-      ensureCollaborationAgentForSession(session);
-    }
-  } else {
-    ensureCollaborationAgentForSession(session);
-  }
+  ensureCollaborationAgentForSession(storedSession);
+  if (!storedSession.archived) sessionPresentationCache.set(storedSession.id, storedSession);
 }
-// A process can stop after the Provider reached a terminal state but before its
-// completion notification updated Corptie's durable list projection. Re-read
-// every projection that still looks active, plus switched routes covered by
-// the older recovery rule, through the shared Provider contract. Awaiting this
-// bounded set prevents the health endpoint from exposing stale running rows.
-await Promise.all(storedSessionsAtStartup
-  .filter(sessionNeedsAuthoritativeProjectionRecovery)
-  .map((session) => reconcileSessionProviderProjection(session.id, "startup-authoritative-recovery")));
+// Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
+// product state by reading Provider history or a Provider Session snapshot.
+publishProviderEventOutbox(store.listPendingEventOutbox(500));
 for (const transition of store.listPendingWorkspaceTransitions()) {
   const logical = store.getLogicalSession(transition.logicalSessionId);
   try {
@@ -9203,7 +9263,6 @@ for (const storedSession of storedSessionsAtStartup) {
 await reconcileMovedWorkspaceRoutes([...knownActiveWorktrees.values()], {
   verifyProviderIdle: true
 });
-migrateLegacyQueuedSessionItems();
 sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
 configureChoiceParserRuntime({
   ...(store.settings().choiceParser ?? {}),
@@ -9268,7 +9327,6 @@ function shutdown() {
   shutdownPromise = (async () => {
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
     if (mockProgressTimer) clearInterval(mockProgressTimer);
-    if (stateSyncConsistencyTimer) clearInterval(stateSyncConsistencyTimer);
     if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
     timelineChangePublisher?.close();
     scheduledSessionTaskService.stop();
@@ -9299,27 +9357,6 @@ function activateStoredBackendLogging() {
     );
     configureBackendLogging(fallbackDirectory, options);
     console.error(`[backend-logging] configured directory unavailable (${configuredDirectory}); using ${fallbackDirectory}: ${error.message}`);
-  }
-}
-
-function migrateLegacyQueuedSessionItems() {
-  for (const session of store.listSessions({ archived: false })) {
-    const agent = collaborationCore.getAgentForSession(session.id);
-    if (!agent) continue;
-    for (const item of store.getQueuedItems(session.id)) {
-      store.enqueueAgentWorkItem({
-        workItemId: item.id,
-        agentId: agent.agentId,
-        sessionId: session.id,
-        kind: "user",
-        priority: 100,
-        text: item.text,
-        source: { type: item.title === "Feishu" ? "feishu" : "desktop", messageId: item.id, migrated: true },
-        localVisibility: "normal",
-        createdAt: item.createdAt
-      });
-      store.removeItem(session.id, item.id);
-    }
   }
 }
 
