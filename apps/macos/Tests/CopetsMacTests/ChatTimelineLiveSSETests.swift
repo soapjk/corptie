@@ -103,7 +103,9 @@ final class ChatTimelineLiveSSETests: XCTestCase {
         }
         let session = try XCTUnwrap(client.sessions.first)
         client.select(session: session)
-        try await eventually(stage: { "initial healthy stream before backend restart" }, timeout: .seconds(8)) {
+        try await eventually(stage: {
+            "initial healthy stream before backend restart: health=\(client.detailStreamHealth), diagnostic=\(client.detailStreamLastDiagnostic), error=\(client.lastError ?? "nil")"
+        }, timeout: .seconds(8)) {
             client.detailStreamHealth == .healthy(sessionId: session.id)
         }
         let detailIDBeforeRestart = client.selectedDetail?.id

@@ -403,11 +403,6 @@ test("Session application service routes account and context usage through the a
 
 test("Session application service exposes the same operations for every Provider", async () => {
   const { calls, service } = fixture();
-  const detail = await service.readSession("logical-a");
-  assert.equal(detail.id, "legacy-a");
-  assert.equal(detail.source, "fake.provider");
-  assert.equal(detail.actions.send.available, true);
-  assert.equal(detail.actions.interrupt.reason, "NO_ACTIVE_TURN");
   await service.interrupt("logical-a", { source: "desktop" });
   assert.deepEqual(await service.clearConversation("logical-a", { source: "desktop" }), {
     id: "legacy-a",
@@ -444,13 +439,6 @@ test("Session application service exposes the same operations for every Provider
   ]);
 });
 
-test("Session application service reads historical bindings through their recorded Provider", async () => {
-  const { service } = fixture();
-  const detail = await service.readSessionBinding("logical-a", "binding-old");
-  assert.equal(detail.id, "legacy-a");
-  assert.equal(detail.source, "fake.provider");
-});
-
 test("Session application service preserves structured unsupported-capability errors", async () => {
   const { service } = fixture([AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]);
   await assert.rejects(
@@ -463,7 +451,7 @@ test("Session application service preserves structured unsupported-capability er
 test("Session application service rejects unresolved logical Sessions", async () => {
   const { service } = fixture();
   await assert.rejects(
-    () => service.readSession("missing"),
+    () => service.interrupt("missing"),
     (error) => error instanceof SessionNotFoundError && error.code === "SESSION_NOT_FOUND"
   );
 });

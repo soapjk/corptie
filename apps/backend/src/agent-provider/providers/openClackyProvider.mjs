@@ -53,7 +53,10 @@ export function createOpenClackyProvider(manager, options = {}) {
     }),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
-    send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, context),
+    send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, {
+      ...context,
+      turnId: context.turnId ?? context.idempotencyKey ?? null
+    }),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToApproval(reference.providerSessionId, approval),
     listModels: () => manager.listModels(),

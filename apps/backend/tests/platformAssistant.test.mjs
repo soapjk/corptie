@@ -99,12 +99,13 @@ test("platform operations are denied to user Agents and use product services for
     const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
     const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
     const sessionCalls = [];
+    let providerReadCount = 0;
     const service = new PlatformOperationService({
       store,
       objectiveService,
       sessionService: {
         listSessions: () => [],
-        readSession: async () => null,
+        readSession: async () => { providerReadCount += 1; return null; },
         sendMessage: async (...args) => sessionCalls.push(args)
       },
       createSession: async (input) => ({ id: "session-1", ...input }),
@@ -167,6 +168,21 @@ test("platform operations are denied to user Agents and use product services for
       entityEvents.map((event) => event.type),
       ["AgentChanged", "ObjectiveChanged", "WorkItemChanged"]
     );
+
+    store.upsertSession({
+      id: "session:stored",
+      title: "Stored",
+      agent: "Corptie",
+      provider: "provider:test",
+      status: "complete"
+    });
+    const storedSession = await service.execute({
+      actorId: "assistant",
+      tool: "corptie_platform_sessions_manage",
+      arguments: { action: "get", session_id: "session:stored" }
+    });
+    assert.equal(storedSession.result.id, "session:stored");
+    assert.equal(providerReadCount, 0, "product Session reads must never call a Provider");
 
     await assert.rejects(
       service.execute({
