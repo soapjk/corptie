@@ -5,67 +5,11 @@ import Testing
 @MainActor
 struct SessionCollectionPatchTests {
     @Test
-    func detailPreloadWarmsTheFirstVisiblePageWithoutASelection() {
-        let ids = (0..<12).map { "session-\($0)" }
-
-        let prioritized = SessionDetailPreloadPolicy.prioritizedSessionIDs(ids, selectedSessionID: nil)
-
-        #expect(prioritized == Array(ids.prefix(SessionDetailPreloadPolicy.batchLimit)))
-    }
-
-    @Test
-    func detailPreloadPrioritizesNeighborsAndExcludesTheSelection() {
-        let prioritized = SessionDetailPreloadPolicy.prioritizedSessionIDs(
-            ["one", "two", "three", "four", "five"],
-            selectedSessionID: "three",
-            limit: 4
-        )
-
-        #expect(prioritized == ["four", "two", "five", "one"])
-        #expect(!prioritized.contains("three"))
-    }
-
-    @Test
-    func detailPreloadDeduplicatesSessionIdentifiers() {
-        let prioritized = SessionDetailPreloadPolicy.prioritizedSessionIDs(
-            ["one", "one", "two", "three"],
-            selectedSessionID: nil,
-            limit: 8
-        )
-
-        #expect(prioritized == ["one", "two", "three"])
-    }
-
-    @Test
-    func agentMessageCursorAdvanceRefreshesOnlyBackgroundSessionDetails() {
-        let previous = [
-            makeSession(id: "selected", lastAgentMessageSequence: 3),
-            makeSession(id: "completed", lastAgentMessageSequence: 4),
-            makeSession(id: "status-only", lastAgentMessageSequence: 2)
-        ]
-        let current = [
-            makeSession(id: "selected", lastAgentMessageSequence: 5),
-            makeSession(id: "completed", lastAgentMessageSequence: 5),
-            makeSession(id: "status-only", lastAgentMessageSequence: 2),
-            makeSession(id: "new-with-message", lastAgentMessageSequence: 1),
-            makeSession(id: "new-without-message")
-        ]
-
-        let refreshes = SessionDetailPreloadPolicy.sessionsWithAdvancedAgentMessages(
-            previous: previous,
-            current: current,
-            excluding: "selected"
-        )
-
-        #expect(refreshes.map(\.id) == ["completed", "new-with-message"])
-    }
-
-    @Test
     func contentUpdatePreservesStableRowAndDoesNotPublishStructure() {
         let original = makeSession(id: "one", summary: "Before")
         let updated = makeSession(id: "one", summary: "After")
         let patch = SessionCollectionDiffer.patch(from: [original], to: [updated], revision: 1)
-        let store = SessionListStore()
+        let store = SessionIndexStore()
         store.apply(
             SessionCollectionDiffer.patch(from: [], to: [original], revision: 0),
             authoritativeSessions: [original]
@@ -621,7 +565,7 @@ struct SessionCollectionPatchTests {
         let legacy = makeSession(id: "one")
         let assistant = makeSession(id: "one", agentId: "assistant", sessionKind: .assistantChat)
         let patch = SessionCollectionDiffer.patch(from: [legacy], to: [assistant], revision: 2)
-        let store = SessionListStore()
+        let store = SessionIndexStore()
         store.apply(
             SessionCollectionDiffer.patch(from: [], to: [legacy], revision: 1),
             authoritativeSessions: [legacy]

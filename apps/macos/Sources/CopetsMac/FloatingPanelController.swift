@@ -115,7 +115,7 @@ final class FloatingPanelController: NSObject {
 
         let rootView = FloatingRootView()
             .environmentObject(client)
-            .environmentObject(client.sessionListStore)
+            .environmentObject(client.sessionIndexStore)
             .environmentObject(focusState)
             .environmentObject(layoutState)
 
@@ -136,7 +136,7 @@ final class FloatingPanelController: NSObject {
         hostingView.layer?.masksToBounds = false
         panel.contentView = hostingView
 
-        client.sessionListStore.$orderedIDs
+        client.sessionIndexStore.$orderedIDs
             .map(\.count)
             .removeDuplicates()
             .receive(on: RunLoop.main)

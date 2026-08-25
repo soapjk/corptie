@@ -17,7 +17,7 @@ extension EnvironmentValues {
 
 struct FloatingRootView: View {
     @EnvironmentObject private var backendClient: BackendClient
-    @EnvironmentObject private var sessionListStore: SessionListStore
+    @EnvironmentObject private var sessionIndexStore: SessionIndexStore
     @ObservedObject private var appLanguage = AppLanguageController.shared
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @EnvironmentObject private var panelFocusState: PanelFocusState
@@ -43,7 +43,8 @@ struct FloatingRootView: View {
     @State private var hoverPreviewSessionId: String?
     @State private var isHoveringReplyPreviewBubble = false
     @State private var hoverPreviewCloseTask: Task<Void, Never>?
-    @StateObject private var presentationStore = SessionPresentationStore()
+    @ObservedObject private var presentationCache = SessionPresentationCache.shared
+    @ObservedObject private var viewportController = SessionViewportController.shared
     @State private var composerDraftRepository = ComposerDraftRepository()
     @State private var listHeightMeasurements: [ListHeightMetric: CGFloat] = [:]
     @State private var isSearching = false
@@ -69,15 +70,15 @@ struct FloatingRootView: View {
                 if let selectedSession = backendClient.selectedSession {
                     DetailView(
                         sessionId: selectedSession.id,
-                        presentationStore: presentationStore,
+                        presentationCache: presentationCache,
                         composerDraftRepository: composerDraftRepository,
-                        initialTimelinePosition: presentationStore.position(for: selectedSession.id),
+                        initialTimelinePosition: viewportController.position(for: selectedSession.id),
                         onTimelinePositionChange: { position in
-                            presentationStore.store(position, for: selectedSession.id)
+                            viewportController.store(position, for: selectedSession.id)
                         }
                     )
                     .onAppear {
-                        presentationStore.hydratePosition(for: selectedSession.id)
+                        viewportController.hydrate(selectedSession.id)
                     }
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
@@ -276,7 +277,7 @@ struct FloatingRootView: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
 
-            if sessionListStore.orderedIDs.isEmpty {
+            if sessionIndexStore.orderedIDs.isEmpty {
                 ReadyEmptyView()
                     .measureListHeight(.cards)
             } else if filteredSessions.isEmpty {
@@ -378,15 +379,13 @@ struct FloatingRootView: View {
     private func detailSessionRail(height: CGFloat) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 6) {
-                ForEach(sessionListStore.rows) { row in
+                ForEach(sessionIndexStore.rows) { row in
                     DetailSessionRailRow(
                         row: row,
                         selectedSessionID: backendClient.selectedSession?.id,
                         select: { session in
-                            preheatDetail(for: session)
                             backendClient.select(session: session)
-                        },
-                        preheat: preheatDetail
+                        }
                     )
                 }
             }
@@ -467,7 +466,7 @@ struct FloatingRootView: View {
 
     private var filteredSessionRows: [SessionRowModel] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matchingRows = query.isEmpty ? sessionListStore.rows : sessionListStore.rows.filter { row in
+        let matchingRows = query.isEmpty ? sessionIndexStore.rows : sessionIndexStore.rows.filter { row in
             let session = row.session
             return [session.title, session.summary, session.agent, session.external?.cwd ?? ""]
                 .contains { $0.localizedCaseInsensitiveContains(query) }
@@ -542,10 +541,6 @@ struct FloatingRootView: View {
             hoverPreviewChanged: { sessionId, isVisible in
                 guard draggedSessionId == nil else { return }
                 updateHoverPreview(sessionId: sessionId, isVisible: isVisible)
-            },
-            preheatRequested: { session in
-                guard draggedSessionId == nil else { return }
-                preheatDetail(for: session)
             }
         )
         .environmentObject(backendClient)
@@ -561,8 +556,7 @@ struct FloatingRootView: View {
                 if displayMode == .compact {
                     CompactSessionRow(
                         session: session,
-                        showsProjectName: !groupsSessionsByProject,
-                        preheatRequested: { _ in }
+                        showsProjectName: !groupsSessionsByProject
                     )
                         .environmentObject(backendClient)
                 } else {
@@ -635,15 +629,6 @@ struct FloatingRootView: View {
                 }
             }
         }
-    }
-
-    private func preheatDetail(for session: TaskSession) {
-        presentationStore.preheat(
-            session: session,
-            backendClient: backendClient,
-            visibleMessageLimit: DetailView.initialVisibleMessageLimit,
-            delay: .milliseconds(120)
-        )
     }
 
     private func clampedHoverBubbleX(for anchorFrame: CGRect) -> CGFloat {
@@ -878,22 +863,19 @@ struct SessionListRowContent: View {
     let showsProjectName: Bool
     let isHiddenForReorder: Bool
     let hoverPreviewChanged: (String, Bool) -> Void
-    let preheatRequested: (TaskSession) -> Void
 
     var body: some View {
         Group {
             if displayMode == .compact {
                 CompactSessionRow(
                     session: row.session,
-                    showsProjectName: showsProjectName,
-                    preheatRequested: preheatRequested
+                    showsProjectName: showsProjectName
                 )
             } else {
                 TaskCardView(
                     session: row.session,
                     showsProjectName: showsProjectName,
-                    hoverPreviewChanged: hoverPreviewChanged,
-                    preheatRequested: preheatRequested
+                    hoverPreviewChanged: hoverPreviewChanged
                 )
             }
         }
@@ -905,7 +887,6 @@ struct DetailSessionRailRow: View {
     @ObservedObject var row: SessionRowModel
     let selectedSessionID: String?
     let select: (TaskSession) -> Void
-    let preheat: (TaskSession) -> Void
 
     private var session: TaskSession { row.session }
     private var isSelected: Bool { selectedSessionID == row.id }
@@ -936,9 +917,6 @@ struct DetailSessionRailRow: View {
         }
         .buttonStyle(.plain)
         .help("\(session.title)\n\(session.status.label)")
-        .onHover { hovering in
-            if hovering { preheat(session) }
-        }
     }
 }
 
@@ -976,7 +954,6 @@ struct CompactSessionRow: View {
     let session: TaskSession
     var isUnread = false
     var showsProjectName = true
-    var preheatRequested: (TaskSession) -> Void = { _ in }
     var selectionRequested: ((TaskSession) -> Void)? = nil
 
     var body: some View {
@@ -1000,7 +977,6 @@ struct CompactSessionRow: View {
         .frame(height: 46)
         .standardSessionCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onHover { if $0 { preheatRequested(session) } }
         .onTapGesture {
             if let selectionRequested {
                 selectionRequested(session)
@@ -2743,7 +2719,6 @@ struct TaskCardView: View {
     let session: TaskSession
     var showsProjectName = true
     var hoverPreviewChanged: (String, Bool) -> Void = { _, _ in }
-    var preheatRequested: (TaskSession) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2858,11 +2833,6 @@ struct TaskCardView: View {
         .fixedSize(horizontal: false, vertical: true)
         .standardSessionCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onHover { hovering in
-            if hovering {
-                preheatRequested(session)
-            }
-        }
         .onTapGesture {
             if Date().timeIntervalSince(lastQuickReplyInteractionAt) > 0.25 {
                 backendClient.select(session: session)
@@ -3370,7 +3340,7 @@ struct DetailView: View {
     @State private var cachedItemsSignature = ""
     @State private var cachedDetailSourceSignature = ""
     @State private var cachedSessionId = ""
-    @ObservedObject var presentationStore: SessionPresentationStore
+    @ObservedObject var presentationCache: SessionPresentationCache
     @ObservedObject private var presentationState: SessionPresentationState
     @State private var expandedProcessTurnIds: Set<String> = []
     @State private var isFollowingLatest = true
@@ -3393,19 +3363,19 @@ struct DetailView: View {
 
     init(
         sessionId: String,
-        presentationStore: SessionPresentationStore,
+        presentationCache: SessionPresentationCache,
         composerDraftRepository: ComposerDraftRepository,
         backendClient: BackendClient = .shared,
         initialTimelinePosition: AppKitChatTimelinePosition? = nil,
         onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
     ) {
         self.sessionId = sessionId
-        self.presentationStore = presentationStore
+        self.presentationCache = presentationCache
         self.composerDraftRepository = composerDraftRepository
         self.backendClient = backendClient
         self.initialTimelinePosition = initialTimelinePosition
         self.onTimelinePositionChange = onTimelinePositionChange
-        let presentationState = presentationStore.state(for: sessionId)
+        let presentationState = presentationCache.state(for: sessionId)
         _presentationState = ObservedObject(wrappedValue: presentationState)
         let timelineState = SessionTimelineRepository.shared.state(for: sessionId)
         if timelineState.detail == nil,
@@ -3416,7 +3386,7 @@ struct DetailView: View {
         }
         _timelineState = ObservedObject(wrappedValue: timelineState)
         let initialCache = presentationState.cache
-        let initialPosition = initialTimelinePosition ?? presentationState.position
+        let initialPosition = initialTimelinePosition
         _visibleMessageLimit = State(
             initialValue: initialCache?.visibleMessageLimit
                 ?? ChatTimelineFeatureFlags.current.initialDisplayWeight
@@ -3442,12 +3412,12 @@ struct DetailView: View {
         PerfStopwatch.event("会话切换.DetailView.init", value: 1)
     }
 
-    private var preheatedDisplayCache: DetailDisplayCache? {
+    private var cachedDisplayProjection: DetailDisplayCache? {
         presentationState.cache
     }
 
     private var restorationTimelinePosition: AppKitChatTimelinePosition? {
-        initialTimelinePosition ?? presentationState.position
+        initialTimelinePosition
     }
 
     private var displayedDetail: CodexThreadDetail? {
@@ -3557,11 +3527,11 @@ struct DetailView: View {
                 .fill(Color.white.opacity(0.001))
         )
         .onAppear {
-            restorePreheatedDisplayCacheIfNeeded()
+            restoreCachedProjectionDisplayCacheIfNeeded()
             restoreMissingHistoryAnchorIfNeeded()
         }
-        .onChange(of: preheatedDisplayCache?.signature) { _, _ in
-            restorePreheatedDisplayCacheIfNeeded()
+        .onChange(of: cachedDisplayProjection?.signature) { _, _ in
+            restoreCachedProjectionDisplayCacheIfNeeded()
             restoreMissingHistoryAnchorIfNeeded()
         }
         .onChange(of: sessionId) { _, _ in
@@ -3609,7 +3579,7 @@ struct DetailView: View {
             guard backendClient.selectedSession?.id == sessionId else { return }
             displaysLoadingDetail = isLoading
         }
-        .onReceive(backendClient.$workspaceRecoveryStatus) { status in
+        .onReceive(backendClient.supplementaryDataController.$workspaceRecoveryStatus) { status in
             guard backendClient.selectedSession?.id == sessionId else { return }
             displayedWorkspaceRecoveryStatus = status
         }
@@ -3627,7 +3597,7 @@ struct DetailView: View {
 
     private var currentSessionDisplayEntries: [ChatDisplayEntry] {
         guard cachedSessionId == sessionId else {
-            return preheatedDisplayCache?.displayEntries ?? []
+            return cachedDisplayProjection?.displayEntries ?? []
         }
         return cachedDisplayEntries
     }
@@ -4202,7 +4172,7 @@ struct DetailView: View {
             cachedVisibleMessageLimit = preparedDisplay.visibleMessageLimit
             cachedDisplayEntries = preparedDisplay.displayEntries
             cachedAppKitRows = nextAppKitRows
-            presentationStore.store(preparedDisplay)
+            presentationCache.store(preparedDisplay)
         }
     }
 
@@ -4358,17 +4328,17 @@ struct DetailView: View {
     }
 
     private var hasPreheatedDisplayCacheForCurrentSession: Bool {
-        preheatedDisplayCache?.sessionId == sessionId && preheatedDisplayCache?.displayEntries.isEmpty == false
+        cachedDisplayProjection?.sessionId == sessionId && cachedDisplayProjection?.displayEntries.isEmpty == false
     }
 
-    private func restorePreheatedDisplayCacheIfNeeded() {
-        guard let preheatedDisplayCache,
-              preheatedDisplayCache.sessionId == sessionId else {
+    private func restoreCachedProjectionDisplayCacheIfNeeded() {
+        guard let cachedDisplayProjection,
+              cachedDisplayProjection.sessionId == sessionId else {
             return
         }
         if hasPreparedDisplayCacheForCurrentSession {
             // DetailView is intentionally recreated when switching Sessions.
-            // Its immutable display entries survive in presentationStore, but
+            // Its immutable display entries survive in presentationCache, but
             // native rows are renderer state. Materialize them once on mount
             // instead of rebuilding them from body on every publication.
             if cachedAppKitRows.count != cachedDisplayEntries.count {
@@ -4378,19 +4348,19 @@ struct DetailView: View {
             }
             return
         }
-        PerfStopwatch.event("会话切换.restorePreheated", value: preheatedDisplayCache.displayEntries.count)
+        PerfStopwatch.event("会话切换.restoreCachedProjection", value: cachedDisplayProjection.displayEntries.count)
         cachedSessionId = sessionId
-        updateCachedSourceTail(from: preheatedDisplayCache.displayItems)
-        cachedDisplayEntries = preheatedDisplayCache.displayEntries
+        updateCachedSourceTail(from: cachedDisplayProjection.displayItems)
+        cachedDisplayEntries = cachedDisplayProjection.displayEntries
         cachedAppKitRows = PerfStopwatch.measure("会话切换.appKitRow重建") {
-            preheatedDisplayCache.displayEntries.map { appKitRow($0) }
+            cachedDisplayProjection.displayEntries.map { appKitRow($0) }
         }
-        cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
-        cachedVisibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
-        visibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
-        cachedItemsSignature = preheatedDisplayCache.signature
-        cachedDetailSourceSignature = preheatedDisplayCache.sourceSignature
-        presentationStore.store(preheatedDisplayCache)
+        cachedTotalDisplayEntryCount = cachedDisplayProjection.totalDisplayEntryCount
+        cachedVisibleMessageLimit = cachedDisplayProjection.visibleMessageLimit
+        visibleMessageLimit = cachedDisplayProjection.visibleMessageLimit
+        cachedItemsSignature = cachedDisplayProjection.signature
+        cachedDetailSourceSignature = cachedDisplayProjection.sourceSignature
+        presentationCache.store(cachedDisplayProjection)
     }
 
     private func restoreDisplayCacheForCurrentSession() {
@@ -4406,22 +4376,21 @@ struct DetailView: View {
             cachedDetailSourceSignature = cache.sourceSignature
             return
         }
-        // 切会话时内部字典未命中（会话首次在本视图打开），但外层 SessionsView
-        // 可能已预热好该会话的 display 缓存。同步从预热缓存恢复，避免先清空再等
-        // onAppear 延迟填充导致的空态闪动（消息页跳动 / 滚动条跳）。
-        if let preheatedDisplayCache,
-           preheatedDisplayCache.sessionId == sessionId,
-           !preheatedDisplayCache.displayEntries.isEmpty {
+        // 切会话时内部字典未命中，直接绑定活跃同步链路维护的 display 缓存，
+        // 避免先清空再等 onAppear 填充导致的空态闪动或滚动条跳变。
+        if let cachedDisplayProjection,
+           cachedDisplayProjection.sessionId == sessionId,
+           !cachedDisplayProjection.displayEntries.isEmpty {
             cachedSessionId = sessionId
-            updateCachedSourceTail(from: preheatedDisplayCache.displayItems)
-            cachedDisplayEntries = preheatedDisplayCache.displayEntries
-            cachedAppKitRows = preheatedDisplayCache.displayEntries.map { appKitRow($0) }
-            cachedTotalDisplayEntryCount = preheatedDisplayCache.totalDisplayEntryCount
-            cachedVisibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
-            visibleMessageLimit = preheatedDisplayCache.visibleMessageLimit
-            cachedItemsSignature = preheatedDisplayCache.signature
-            cachedDetailSourceSignature = preheatedDisplayCache.sourceSignature
-            presentationStore.store(preheatedDisplayCache)
+            updateCachedSourceTail(from: cachedDisplayProjection.displayItems)
+            cachedDisplayEntries = cachedDisplayProjection.displayEntries
+            cachedAppKitRows = cachedDisplayProjection.displayEntries.map { appKitRow($0) }
+            cachedTotalDisplayEntryCount = cachedDisplayProjection.totalDisplayEntryCount
+            cachedVisibleMessageLimit = cachedDisplayProjection.visibleMessageLimit
+            visibleMessageLimit = cachedDisplayProjection.visibleMessageLimit
+            cachedItemsSignature = cachedDisplayProjection.signature
+            cachedDetailSourceSignature = cachedDisplayProjection.sourceSignature
+            presentationCache.store(cachedDisplayProjection)
             return
         }
         cachedSessionId = ""

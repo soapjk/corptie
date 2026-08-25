@@ -548,6 +548,23 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         )
     }
 
+    func testExplicitTurnJumpIsAnAuthoritativeProgrammaticScroll() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<40).map { index in
+            row(
+                id: "turn-jump-row-\(index)",
+                text: "Message \(index)",
+                expandableTurnId: "turn-\(index)"
+            )
+        }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.scrollToTurn("turn-18")
+        await settleMainQueue()
+
+        XCTAssertTrue(harness.tableView.visibleRect.intersects(harness.tableView.rect(ofRow: 18)))
+        XCTAssertFalse(harness.followState.value)
+    }
+
     func testDocumentAndScrollerShareTheLastMessageAsTheirNaturalBottom() async throws {
         let harness = makeHarness(followsLatest: false, height: 180)
         let rows = (0..<20).map { row(id: "bounded-scroll-\($0)", text: "Message \($0)") }
@@ -610,7 +627,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertFalse(harness.followState.value)
     }
 
-    func testSavedSessionPositionFallsBackToAbsoluteScrollWhenAnchorIsMissing() async {
+    func testMissingSemanticAnchorIgnoresStaleAbsoluteYAndDegradesToLatest() async {
         let harness = makeHarness(followsLatest: true, height: 180)
         let rows = (0..<30).map { row(id: "fallback-row-\($0)", text: "Row \($0)") }
         harness.coordinator.apply(rows: rows)
@@ -624,8 +641,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         ))
         await settleMainQueue()
 
-        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 240, accuracy: 2)
-        XCTAssertFalse(harness.followState.value)
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertNotEqual(harness.scrollView.contentView.bounds.minY, 240, accuracy: 2)
+        XCTAssertTrue(harness.followState.value)
     }
 
     func testPendingSessionRestoreSurvivesAProjectionChangeBeforeLayoutCompletes() async {
@@ -787,6 +805,52 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 0, accuracy: 1)
         XCTAssertFalse(harness.followState.value)
         XCTAssertFalse(isNearBottom(harness))
+    }
+
+    func testUserGestureCancelsQueuedProgrammaticScrollBeforeItRuns() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<30).map { row(id: "gesture-authority-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.coordinator.scrollToBottom()
+        harness.coordinator.userDidBeginScrolling()
+        await settleMainQueue()
+
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 0, accuracy: 1)
+        XCTAssertFalse(harness.followState.value)
+    }
+
+    func testVirtualSixtySecondContinuousScrollHasZeroReverseDisplacement() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        var rows = (0..<160).map { row(id: "continuous-scroll-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.window.layoutIfNeeded()
+        harness.scrollView.contentView.scroll(to: .zero)
+        var reverseDisplacement: CGFloat = 0
+
+        // 600 deterministic 100 ms gesture ticks model one minute of continuous
+        // wheel/trackpad ownership without making the test wait for wall clock.
+        for tick in 0..<600 {
+            let before = harness.scrollView.contentView.bounds.minY
+            let maximumY = max(0, harness.tableView.bounds.height - harness.scrollView.contentView.bounds.height)
+            let intendedY = min(maximumY, before + 1)
+            harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: intendedY))
+            harness.coordinator.scrollToBottom()
+            harness.coordinator.userDidBeginScrolling()
+            if tick.isMultiple(of: 20) {
+                rows[rows.count - 1] = row(
+                    id: "continuous-scroll-159",
+                    revision: tick + 1,
+                    text: "Tail status update \(tick)\n\nwithout viewport authority"
+                )
+                harness.coordinator.apply(rows: rows)
+            }
+            await settleMainQueue()
+            reverseDisplacement += max(0, intendedY - harness.scrollView.contentView.bounds.minY)
+        }
+
+        XCTAssertEqual(reverseDisplacement, 0, accuracy: 0.5)
+        XCTAssertFalse(harness.followState.value)
     }
 
     func testGoalAndRegularTimelineFollowStateRemainCoordinatorLocal() async {
@@ -957,7 +1021,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let warmHitches = warmSamples.filter { $0 > 16.67 }.count
         print("[perf] session switch cold-p50=\(String(format: "%.2f", coldP50))ms warm-p50=\(String(format: "%.2f", warmP50))ms warm-p95=\(String(format: "%.2f", warmP95))ms warm-hitches=\(warmHitches)/\(warmSamples.count)")
 
-        XCTAssertLessThan(warmP95, 16.67)
+        XCTAssertLessThan(warmP95, 16)
         XCTAssertEqual(warmHitches, 0)
         XCTAssertLessThan(warmP50, coldP50)
         XCTAssertTrue(host.scrollView === stableScrollView)

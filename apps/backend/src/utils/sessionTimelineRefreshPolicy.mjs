@@ -24,29 +24,18 @@ export class SessionTimelineRefreshScheduler {
 
   schedule(session) {
     if (this.closed) return;
+    // Revisioned Provider/product events are the only refresh authority. SSE
+    // reconnect already emits a stored snapshot, so periodic sampling adds no
+    // correctness and previously multiplied Session/Binding/Worktree/Timeline
+    // queries every 750ms per active view.
     this.clearTimer(this.refreshTimer);
-    const isActive = this.supportsDelta && timelineSessionIsActive(session);
-    const delay = isActive ? this.intervals.activeMilliseconds
-      : (this.supportsDelta ? this.intervals.consistencyMilliseconds : this.intervals.legacyMilliseconds);
-    this.refreshTimer = this.setTimer(
-      () => this.onRefresh({ fullConsistency: !isActive }),
-      delay
-    );
-    this.refreshTimer?.unref?.();
-    if (isActive && this.consistencyTimer == null) {
-      this.consistencyTimer = this.setTimer(() => {
-        this.consistencyTimer = null;
-        this.onRefresh({ fullConsistency: true });
-      }, this.intervals.consistencyMilliseconds);
-      this.consistencyTimer?.unref?.();
-    } else if (!isActive) {
-      this.clearTimer(this.consistencyTimer);
-      this.consistencyTimer = null;
-    }
+    this.clearTimer(this.consistencyTimer);
+    this.refreshTimer = null;
+    this.consistencyTimer = null;
   }
 
   wake(event) {
-    if (this.closed || !this.supportsDelta || !sessionEventMatchesTimeline(event, this.sessionId)) {
+    if (this.closed || !sessionEventMatchesTimeline(event, this.sessionId)) {
       return false;
     }
     this.clearTimer(this.eventTimer);
