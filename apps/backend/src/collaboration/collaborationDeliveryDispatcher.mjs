@@ -1,99 +1,40 @@
 import { formatTrustedCollaborationEvent } from "./trustedCollaborationEvent.mjs";
+import { CollaborationDeliveryRouteResolver } from "./collaborationDeliveryRouteResolver.mjs";
 
 export class CollaborationDeliveryDispatcher {
   constructor(options) {
     this.core = options.core;
     this.runtime = options.runtime;
     this.clock = options.clock ?? (() => new Date().toISOString());
-    this.intervalMs = options.intervalMs ?? 2000;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.retryBaseMs = options.retryBaseMs ?? 2000;
     this.onEvent = options.onEvent ?? (() => {});
     this.ensureRecipientSession = options.ensureRecipientSession ?? null;
-    this.timer = null;
-    this.ticking = false;
+    this.routeResolver = options.routeResolver ?? new CollaborationDeliveryRouteResolver({
+      core: this.core,
+      ensureRecipientSession: this.ensureRecipientSession
+    });
   }
 
-  start() {
-    if (this.timer) return;
-    const recovered = this.core.recoverInterruptedDeliveries();
-    if (recovered > 0) this.onEvent("CollaborationDeliveriesRecovered", { count: recovered });
-    this.timer = setInterval(() => {
-      this.tick().catch((error) => this.onEvent("CollaborationDeliveryDispatcherError", { error: error.message }));
-    }, this.intervalMs);
-    this.timer.unref?.();
-    this.tick().catch((error) => this.onEvent("CollaborationDeliveryDispatcherError", { error: error.message }));
-  }
-
-  stop() {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
-  }
-
-  async tick() {
-    if (this.ticking) return;
-    this.ticking = true;
-    try {
-      const deliveries = this.core.listPendingDeliveries(100, this.maxAttempts);
-      for (const delivery of deliveries) await this.dispatch(delivery.deliveryId);
-      const queued = this.core.listQueuedDeliveries(100);
-      for (const delivery of queued) await this.dispatch(delivery.deliveryId);
-    } finally {
-      this.ticking = false;
-    }
-  }
-
-  async drainSession(sessionId) {
-    const agent = this.core.getAgentForSession(sessionId);
-    if (!agent) return;
-    const deliveries = this.core.listQueuedDeliveriesForAgent(agent.agentId);
-    for (const delivery of deliveries) {
-      await this.dispatch(delivery.deliveryId);
-      const state = await this.runtime.inspect(sessionId);
-      if (state === "running") break;
-    }
-  }
-
-  async dispatch(deliveryId) {
+  async dispatch(deliveryId, { resolvedRoute = null } = {}) {
     let envelope = this.core.getDeliveryEnvelope(deliveryId);
     if (!envelope || envelope.delivery.status === "delivered") return envelope?.delivery ?? null;
-    let directRoute = null;
-    try {
-      directRoute = this.core.resolveDirectReplyRoute(deliveryId);
-    } catch (error) {
-      this.onEvent("CollaborationChannelRouteFailed", {
-        deliveryId,
-        taskId: envelope.task.taskId,
-        code: error.code ?? "COLLABORATION_CHANNEL_UNAVAILABLE",
-        error: error.message
-      });
-      return this.#fail(envelope, error.message, "collaboration_channel_unavailable");
-    }
-    if (!directRoute && this.ensureRecipientSession) {
+    let route = resolvedRoute;
+    if (!route) {
       try {
-        await this.ensureRecipientSession(envelope.task, { reason: "delivery_preflight" });
+        route = await this.routeResolver.resolve(envelope, { reason: "delivery_preflight" });
         envelope = this.core.getDeliveryEnvelope(deliveryId) ?? envelope;
       } catch (error) {
-        this.onEvent("CollaborationRecipientRouteFailed", {
-          deliveryId,
-          taskId: envelope.task.taskId,
-          code: error.code ?? "RECIPIENT_ROUTE_FAILED",
-          error: error.message
-        });
-        return this.#fail(envelope, `Recipient route recovery failed: ${error.message}`, "recipient_route_failed");
+        return this.failRoute(deliveryId, error, { envelope });
+      }
+    } else {
+      try {
+        route = this.routeResolver.assertCurrent(envelope, route);
+      } catch (error) {
+        return this.failRoute(deliveryId, error, { envelope, eventType: "execution_route_changed" });
       }
     }
-    const agent = this.core.getAgent(envelope.delivery.recipientAgentId);
-    const routed = envelope.task.recipientSessionId
-      ? (this.core.store.getLogicalSession(envelope.task.recipientSessionId)
-        ?? this.core.store.getLogicalSessionByLegacySessionId(envelope.task.recipientSessionId))
-      : null;
-    const sessionId = directRoute?.providerSessionId ?? routed?.legacySessionId
-      ?? (!envelope.task.recipientSessionId ? agent?.currentSessionId : null);
-    if (!sessionId) {
-      return this.#fail(envelope, "Recipient logical Session has no active resolvable Provider route.", "recipient_unavailable");
-    }
+    const sessionId = route.providerSessionId;
 
     let state;
     try {
@@ -124,7 +65,7 @@ export class CollaborationDeliveryDispatcher {
         status: "delivered",
         deliveredAt: this.clock(),
         targetTurnId: result?.turnId ?? result?.turn?.id ?? null,
-        targetSessionId: directRoute?.sessionId ?? sessionId,
+        targetSessionId: route.sessionId,
         nextAttemptAt: null,
         lastError: null
       });
@@ -134,14 +75,14 @@ export class CollaborationDeliveryDispatcher {
         attemptCount: delivered.attemptCount
       });
       this.onEvent("CollaborationDeliverySucceeded", { delivery: delivered, sessionId });
-      if (directRoute) {
+      if (route.mode === "channel" || route.mode === "fallback") {
         this.onEvent("CollaborationChannelDeliverySucceeded", {
-          channelId: directRoute.channel?.channelId ?? null,
+          channelId: route.channelId,
           taskId: envelope.task.taskId,
           deliveryId,
           senderSessionId: envelope.message.envelope.sender.sessionId,
-          recipientSessionId: directRoute.sessionId,
-          routeMode: directRoute.mode
+          recipientSessionId: route.sessionId,
+          routeMode: route.mode
         });
       }
       return delivered;
@@ -158,6 +99,42 @@ export class CollaborationDeliveryDispatcher {
       }
       return this.#fail(this.core.getDeliveryEnvelope(deliveryId) ?? envelope, error.message, "delivery_failed", false);
     }
+  }
+
+  failRoute(deliveryId, error, { envelope = null, eventType = "delivery_route_failed" } = {}) {
+    const currentEnvelope = envelope ?? this.core.getDeliveryEnvelope(deliveryId);
+    const code = error?.code ?? "RECIPIENT_ROUTE_FAILED";
+    const message = error?.message ?? String(error);
+    this.onEvent("CollaborationDeliveryRouteFailed", {
+      deliveryId,
+      taskId: currentEnvelope?.task?.taskId ?? null,
+      sessionId: currentEnvelope?.task?.recipientSessionId ?? null,
+      code,
+      error: message
+    });
+    if (!currentEnvelope) return this.#failOrphanedDelivery(deliveryId, message, eventType);
+    return this.#fail(currentEnvelope, message, eventType);
+  }
+
+  #failOrphanedDelivery(deliveryId, message, eventType) {
+    const delivery = this.core.getDelivery(deliveryId);
+    if (!delivery) return null;
+    const attempts = delivery.attemptCount + 1;
+    const exhausted = attempts >= this.maxAttempts;
+    const failed = this.core.updateDelivery(deliveryId, {
+      status: "failed",
+      incrementAttempt: true,
+      nextAttemptAt: exhausted
+        ? null
+        : new Date(Date.parse(this.clock()) + this.retryBaseMs * (2 ** Math.max(0, attempts - 1))).toISOString(),
+      lastError: message
+    });
+    this.onEvent(exhausted ? "CollaborationDeliveryExhausted" : "CollaborationDeliveryRetryScheduled", {
+      delivery: failed,
+      eventType,
+      orphanedEnvelope: true
+    });
+    return failed;
   }
 
   #fail(envelope, message, eventType, incrementAttempt = true) {
