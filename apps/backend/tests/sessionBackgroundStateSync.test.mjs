@@ -64,10 +64,12 @@ test("every background Session status transition is revisioned without a detail 
   }
 });
 
-test("multiple unopened Sessions publish independent timeline cursors in one coalesced state repair", async () => {
+test("multiple unopened Sessions publish independent timeline cursors without dirtying control-plane state", async () => {
   const f = await fixture(24);
   try {
     const clientRevision = f.sync.snapshot().revision;
+    const timelineChanges = [];
+    f.store.setTimelineDirtyListener((change) => timelineChanges.push(change));
     for (let index = 0; index < 24; index += 1) {
       f.store.upsertItemSnapshot(`session:${index}`, {
         id: `message:${index}`,
@@ -80,13 +82,10 @@ test("multiple unopened Sessions publish independent timeline cursors in one coa
       });
     }
 
-    const changes = f.sync.changesAfter(clientRevision);
-    assert.equal(changes.snapshotRequired, false);
-    assert.equal(changes.upserts.sessions.length, 24);
-    assert.deepEqual(
-      changes.upserts.sessions.map((session) => session.timelineRevision),
-      Array(24).fill(1)
-    );
+    assert.equal(f.store.stateRevision(), clientRevision);
+    assert.equal(f.sync.changesAfter(clientRevision).upserts.sessions.length, 0);
+    assert.equal(timelineChanges.length, 24);
+    assert.deepEqual(timelineChanges.map((change) => change.revision), Array(24).fill(1));
     for (let index = 0; index < 24; index += 1) {
       const delta = f.store.sessionTimelineChangesAfter(`session:${index}`, 0);
       assert.equal(delta.snapshotRequired, false);
