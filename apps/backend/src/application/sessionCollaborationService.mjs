@@ -21,19 +21,26 @@ export class SessionCollaborationService {
     }
   }
 
-  capabilities(metadata = {}, actorId = null) {
-    const scope = this.#scope(metadata, actorId, { mutation: false });
+  capabilities(metadata = {}, actorId = null, options = {}) {
+    const scope = this.#scope(metadata, actorId, {
+      mutation: false,
+      validateContext: options.validateContext === true
+    });
     const canCreate = scope.session.sessionKind === "objectiveChat"
       || (scope.session.sessionKind === "worker" && Boolean(scope.session.workItemId));
+    const requestDenial = this.#collaborationRequestDenial(scope);
     return {
       actorAgentId: scope.agent.agentId,
       sourceSessionId: scope.logicalSessionId,
+      providerSessionId: scope.session.id,
       sessionKind: scope.session.sessionKind,
       objectiveId: scope.session.objectiveId,
       workItemId: scope.session.workItemId,
-      actions: ["sessions.discover", "sessions.get", "work_items.list", "work_items.get", "work_items.result", ...(canCreate
+      actions: ["sessions.discover", "sessions.get", "work_items.list", "work_items.get", "work_items.result",
+        ...(!requestDenial ? ["collaboration.request"] : []), ...(canCreate
         ? ["work_items.create", "work_items.relate", "work_items.start", "work_items.cancel"]
         : [])],
+      denials: requestDenial ? { "collaboration.request": requestDenial } : {},
       destructiveActions: [],
       arbitraryUpdate: false
     };
@@ -213,10 +220,56 @@ export class SessionCollaborationService {
     const bound = this.collaborationCore.getAgentForSession(session.id);
     if (!bound || bound.agentId !== actorId) throw coded("SOURCE_SESSION_ACTOR_MISMATCH", "Authenticated Agent does not own the source Session.");
     const logical = this.store.getLogicalSession(sourceId) ?? this.store.getLogicalSessionByLegacySessionId(session.id);
+    const claimedObjectiveId = optional(metadata?.objectiveId);
+    const claimedWorkItemId = optional(metadata?.workItemId);
+    if ((options.mutation || options.validateContext) && claimedObjectiveId && claimedObjectiveId !== session.objectiveId) {
+      throw coded(
+        "COLLABORATION_CONTEXT_MISMATCH",
+        `Runtime Objective ${claimedObjectiveId} does not match authenticated Session ${logical?.logicalSessionId ?? session.id} bound Objective ${session.objectiveId ?? "none"}. Refresh the Session route before retrying.`,
+        409
+      );
+    }
+    if ((options.mutation || options.validateContext) && claimedWorkItemId && claimedWorkItemId !== session.workItemId) {
+      throw coded(
+        "COLLABORATION_CONTEXT_MISMATCH",
+        `Runtime parent WorkItem ${claimedWorkItemId} does not match authenticated Session ${logical?.logicalSessionId ?? session.id} bound WorkItem ${session.workItemId ?? "none"}. Refresh the Session route before retrying.`,
+        409
+      );
+    }
     if (options.mutation && logical && logical.activeBinding?.state !== "active") {
       throw coded("STALE_SESSION_ROUTE", "The source Session route is superseded; recover the active Session before mutating collaboration state.", 409);
     }
     return { agent: bound, session, logical, logicalSessionId: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id };
+  }
+
+  #collaborationRequestDenial(scope) {
+    if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(scope.session.sessionKind)) {
+      return {
+        code: "COLLABORATION_REQUEST_FORBIDDEN",
+        reason: "collaboration.request requires an Objective Chat or Worker Session bound to an Objective."
+      };
+    }
+    if (scope.session.sessionKind === "objectiveChat") return null;
+    if (!scope.session.workItemId) {
+      return {
+        code: "COLLABORATION_REQUEST_FORBIDDEN",
+        reason: "collaboration.request requires the Worker Session to be bound to a current parent WorkItem."
+      };
+    }
+    const workItem = this.store.getWorkItem(scope.session.workItemId);
+    if (!workItem || workItem.objective_id !== scope.session.objectiveId) {
+      return {
+        code: "COLLABORATION_REQUEST_FORBIDDEN",
+        reason: `The Worker Session parent WorkItem ${scope.session.workItemId} is missing or outside its bound Objective.`
+      };
+    }
+    if (["done", "complete", "completed", "canceled", "cancelled"].includes(workItem.status)) {
+      return {
+        code: "COLLABORATION_REQUEST_FORBIDDEN",
+        reason: `The Worker Session parent WorkItem ${scope.session.workItemId} is terminal and cannot initiate a new collaboration request.`
+      };
+    }
+    return null;
   }
 
   #visibleSessions(scope, filters = {}) {
