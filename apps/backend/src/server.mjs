@@ -90,6 +90,7 @@ import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishu
 import { isClearCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDeliveryDispatcher.mjs";
+import { CollaborationDeliveryRouteResolver } from "./collaboration/collaborationDeliveryRouteResolver.mjs";
 import { formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
 import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
@@ -134,6 +135,7 @@ import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from
 import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
 import { SessionTimelineProjection } from "./application/sessionTimelineProjection.mjs";
+import { providerLifecycleMetadataDecision } from "./application/providerLifecycleOrdering.mjs";
 import {
   buildHistoricalSessionContext,
   composeLogicalSessionTimeline
@@ -387,6 +389,10 @@ const skillRegistryService = new SkillRegistryService({
 agentContextService.resolveAgentSkills = (agentId) => {
   return skillRegistryService.skillsForAgent(agentId);
 };
+const collaborationDeliveryRouteResolver = new CollaborationDeliveryRouteResolver({
+  core: collaborationCore,
+  ensureRecipientSession: (task, options) => sessionCollaborationService.ensureTaskRecipientSession(task, options)
+});
 const collaborationDispatcher = new CollaborationDeliveryDispatcher({
   core: collaborationCore,
   runtime: {
@@ -394,8 +400,17 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
     resume: resumeCollaborationSession,
     startTurn: startCollaborationTurn
   },
-  ensureRecipientSession: (task, options) => sessionCollaborationService.ensureTaskRecipientSession(task, options),
-  onEvent: (type, payload) => emitEvent(type, payload)
+  routeResolver: collaborationDeliveryRouteResolver,
+  onEvent: (type, payload) => {
+    const routed = payload?.sessionId
+      ? (store.getLogicalSession(payload.sessionId)
+        ?? store.getLogicalSessionByLegacySessionId(payload.sessionId))
+      : null;
+    emitEvent(type, payload, {
+      sessionId: routed?.legacySessionId ?? (store.getSession(payload?.sessionId) ? payload.sessionId : null),
+      source: { type: "collaboration", taskId: payload?.taskId ?? null, deliveryId: payload?.deliveryId ?? null }
+    });
+  }
 });
 const scheduledSessionTaskService = new ScheduledSessionTaskService({
   store,
@@ -3392,12 +3407,39 @@ function handleCodexAppServerNotification(message) {
 
   // Provider notifications own materialization. A client snapshot read must
   // never be what first makes a background message durable in Corptie.
-  sessionTimelineProjection.persistChangedItem({
+  const timelineChanged = sessionTimelineProjection.persistChangedItem({
     sessionId,
     eventName: method,
     itemId: params.item?.id,
     liveItems
   });
+  const lifecycleDecision = providerLifecycleMetadataDecision({
+    eventName: method,
+    eventTurnId: params.turn?.id ?? params.turnId ?? null,
+    session
+  });
+  if (!lifecycleDecision.applyMetadata
+      && ["item/started", "item/completed", "turn/completed"].includes(method)) {
+    if (timelineChanged) {
+      emitEvent("SessionTimelineChanged", {
+        sessionId,
+        threadId,
+        itemId: params.item?.id ?? null,
+        turnId: params.turn?.id ?? params.turnId ?? null,
+        reason: lifecycleDecision.reason
+      }, {
+        sessionId,
+        source: { type: "codex-app-server" }
+      });
+    }
+    sessionStateDiagnostics.record(sessionId, "staleProviderEvent", {
+      eventName: method,
+      turnId: params.turn?.id ?? params.turnId ?? null,
+      reason: lifecycleDecision.reason,
+      timelineChanged
+    });
+    return;
+  }
 
   if (method === "corptie/codexApprovalRequested") {
     const approvalItem = liveItems.slice().reverse().find((item) => item.type === "approval" && Array.isArray(item.options) && item.options.length > 0);
@@ -3486,6 +3528,7 @@ function handleCodexAppServerNotification(message) {
         external: {
           ...session.external,
           activeTurnId: null,
+          lastSettledTurnId: turn.id ?? session.external?.lastSettledTurnId ?? null,
           rawStatus: turn.status ?? (failed ? "failed" : (cancelled ? "cancelled" : "complete"))
         }
       };
@@ -5747,6 +5790,13 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
     let envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId);
     if (!envelope) {
       console.warn(`[collaboration-routing] event=delivery_envelope_missing deliveryId=${delivery.deliveryId}`);
+      const error = Object.assign(
+        new Error(`Collaboration delivery ${delivery.deliveryId} has no recoverable envelope.`),
+        { code: "COLLABORATION_ENVELOPE_MISSING" }
+      );
+      collaborationDispatcher.failRoute(delivery.deliveryId, error, {
+        eventType: "delivery_envelope_missing"
+      });
       continue;
     }
     let route;
@@ -5755,6 +5805,10 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       envelope = collaborationCore.getDeliveryEnvelope(delivery.deliveryId) ?? envelope;
     } catch (error) {
       console.error(`[collaboration-routing] event=enqueue_route_failed taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
+      collaborationDispatcher.failRoute(delivery.deliveryId, error, {
+        envelope,
+        eventType: "enqueue_route_failed"
+      });
       continue;
     }
     const existingWork = store.getAgentWorkItemForDelivery(delivery.deliveryId);
@@ -5788,12 +5842,7 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       continue;
     }
     const agent = collaborationCore.getAgent(delivery.recipientAgentId);
-    const recipientLogical = envelope?.task?.recipientSessionId
-      ? (store.getLogicalSession(envelope.task.recipientSessionId)
-        ?? store.getLogicalSessionByLegacySessionId(envelope.task.recipientSessionId))
-      : null;
-    const sessionId = route.providerSessionId ?? recipientLogical?.legacySessionId
-      ?? (!envelope?.task?.recipientSessionId ? agent?.currentSessionId : null);
+    const sessionId = route.providerSessionId;
     if (!envelope || !agent || !sessionId) continue;
     const workItem = store.enqueueAgentWorkItem({
       workItemId: `delivery:${delivery.deliveryId}`,
@@ -5835,19 +5884,9 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
 }
 
 async function resolveCollaborationDeliveryRoute(envelope, reason) {
-  const direct = collaborationCore.resolveDirectReplyRoute(envelope.delivery.deliveryId);
-  if (direct) {
-    console.info(`[collaboration-routing] event=direct_reply_route taskId=${envelope.task.taskId} deliveryId=${envelope.delivery.deliveryId} channelId=${direct.channel?.channelId ?? "none"} routeMode=${direct.mode} senderSessionId=${envelope.message.envelope.sender.sessionId} recipientSessionId=${direct.sessionId}`);
-    return {
-      task: envelope.task,
-      sessionId: direct.sessionId,
-      providerSessionId: direct.providerSessionId,
-      created: false,
-      mode: direct.mode,
-      channelId: direct.channel?.channelId ?? null
-    };
-  }
-  return sessionCollaborationService.ensureTaskRecipientSession(envelope.task, { reason });
+  const route = await collaborationDeliveryRouteResolver.resolve(envelope, { reason });
+  console.info(`[collaboration-routing] event=route_resolved taskId=${envelope.task.taskId} deliveryId=${envelope.delivery.deliveryId} channelId=${route.channelId ?? "none"} routeMode=${route.mode} logicalSessionId=${route.sessionId} providerSessionId=${route.providerSessionId}`);
+  return route;
 }
 
 async function drainAgentWork(sessionId) {
@@ -5889,6 +5928,7 @@ async function drainAgentWorkSession(sessionId) {
 
   const next = store.listQueuedAgentWorkItemsForSession(sessionId, 1)[0];
   if (!next) return;
+  let collaborationRoute = null;
   if (next.kind === "collaboration") {
     const envelope = collaborationCore.getDeliveryEnvelope(next.deliveryId);
     if (!envelope) {
@@ -5900,16 +5940,28 @@ async function drainAgentWorkSession(sessionId) {
       return;
     }
     try {
-      const route = await resolveCollaborationDeliveryRoute(envelope, "agent_work_dequeue_preflight");
-      if (route.providerSessionId !== sessionId) {
-        const source = { ...next.source, recipientSessionId: route.sessionId };
-        store.updateAgentWorkItem(next.workItemId, { sessionId: route.providerSessionId, source });
-        console.info(`[collaboration-routing] event=dequeue_route_changed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} fromSessionId=${sessionId} toSessionId=${route.providerSessionId}`);
-        scheduleAgentWorkDrain(route.providerSessionId);
+      collaborationRoute = await resolveCollaborationDeliveryRoute(envelope, "agent_work_dequeue_preflight");
+      if (collaborationRoute.providerSessionId !== sessionId) {
+        const source = { ...next.source, recipientSessionId: collaborationRoute.sessionId };
+        store.updateAgentWorkItem(next.workItemId, { sessionId: collaborationRoute.providerSessionId, source });
+        console.info(`[collaboration-routing] event=dequeue_route_changed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} fromSessionId=${sessionId} toSessionId=${collaborationRoute.providerSessionId}`);
+        scheduleAgentWorkDrain(collaborationRoute.providerSessionId);
         return;
       }
     } catch (error) {
       console.error(`[collaboration-routing] event=dequeue_route_failed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} code=${error.code ?? "RECIPIENT_ROUTE_FAILED"} error=${JSON.stringify(error.message)}`);
+      const delivery = collaborationDispatcher.failRoute(next.deliveryId, error, {
+        envelope,
+        eventType: "dequeue_route_failed"
+      });
+      const failedWork = store.updateAgentWorkItem(next.workItemId, {
+        status: "failed",
+        lastError: delivery?.lastError ?? error.message
+      });
+      emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
+        sessionId,
+        source: next.source
+      });
       return;
     }
   }
@@ -5946,7 +5998,9 @@ async function drainAgentWorkSession(sessionId) {
   try {
     let turnId = null;
     if (claimed.kind === "collaboration") {
-      const delivered = await collaborationDispatcher.dispatch(claimed.deliveryId);
+      const delivered = await collaborationDispatcher.dispatch(claimed.deliveryId, {
+        resolvedRoute: collaborationRoute
+      });
       if (delivered?.status !== "delivered") {
         store.updateAgentWorkItem(claimed.workItemId, {
           status: delivered?.status === "failed" ? "failed" : "queued",
