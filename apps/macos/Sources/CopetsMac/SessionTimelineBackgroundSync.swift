@@ -63,6 +63,11 @@ enum SessionTimelineChangeMerger {
         guard baseRevision == localRevision else { return .requiresSnapshot }
 
         var itemsByID = Dictionary(detail.items.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        var canonicalUserIDByFingerprint = Dictionary(
+            uniqueKeysWithValues: canonicalSessionTimelineItems(detail.items).compactMap { item in
+                sessionTimelineUserFingerprint(item).map { ($0, item.id) }
+            }
+        )
         var expectedRevision = localRevision
         for change in changes {
             guard change.revision == expectedRevision + 1 else { return .requiresSnapshot }
@@ -72,15 +77,34 @@ enum SessionTimelineChangeMerger {
                 guard let item = change.item, item.id == change.itemId else {
                     return .requiresSnapshot
                 }
+                if let fingerprint = sessionTimelineUserFingerprint(item),
+                   let canonicalID = canonicalUserIDByFingerprint[fingerprint],
+                   canonicalID != item.id {
+                    // Keep the already-present row identity. The backend's
+                    // semantic projection will emit a delete for this alias;
+                    // replacing the row here would disturb viewport anchors.
+                    itemsByID[item.id] = nil
+                    continue
+                }
                 itemsByID[item.id] = item
+                if let fingerprint = sessionTimelineUserFingerprint(item) {
+                    canonicalUserIDByFingerprint[fingerprint] = item.id
+                }
             case "delete":
+                if let removed = itemsByID[change.itemId],
+                   let fingerprint = sessionTimelineUserFingerprint(removed),
+                   canonicalUserIDByFingerprint[fingerprint] == change.itemId {
+                    canonicalUserIDByFingerprint[fingerprint] = nil
+                }
                 itemsByID[change.itemId] = nil
             default:
                 return .requiresSnapshot
             }
         }
         guard expectedRevision == revision else { return .requiresSnapshot }
-        let ordered = itemsByID.values.sorted(by: timelineItemPrecedes)
+        let ordered = canonicalSessionTimelineItems(
+            itemsByID.values.sorted(by: timelineItemPrecedes)
+        )
         return .applied(
             detail: replacingItems(in: detail, with: ordered),
             revision: revision
@@ -121,6 +145,67 @@ enum SessionTimelineChangeMerger {
             actions: detail.actions
         )
     }
+}
+
+/// Provider item ids are transport identities, not always stable message
+/// identities. Reconnect/compaction may replay one prompt under a new id. A
+/// turn has one user prompt, so identical normalized user text in that turn is
+/// one UI message. Keep Provider order and leave every other item type intact.
+func canonicalSessionTimelineItems(_ items: [CodexThreadItem]) -> [CodexThreadItem] {
+    var userFingerprints = Set<String>()
+    var result: [CodexThreadItem] = []
+    result.reserveCapacity(items.count)
+    for item in items {
+        guard item.type == "userMessage" else {
+            result.append(item)
+            continue
+        }
+        guard let fingerprint = sessionTimelineUserFingerprint(item) else {
+            result.append(item)
+            continue
+        }
+        guard userFingerprints.insert(fingerprint).inserted else { continue }
+        result.append(item)
+    }
+    return result
+}
+
+private func sessionTimelineUserFingerprint(_ item: CodexThreadItem) -> String? {
+    guard item.type == "userMessage" else { return nil }
+    let normalized = item.text
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+    guard !normalized.isEmpty else { return nil }
+    return "\(item.turnId)\u{0}\(normalized)"
+}
+
+func canonicalSessionTimelineDetail(_ detail: CodexThreadDetail) -> CodexThreadDetail {
+    let items = canonicalSessionTimelineItems(detail.items)
+    guard items != detail.items else { return detail }
+    return CodexThreadDetail(
+        id: detail.id,
+        title: detail.title,
+        status: detail.status,
+        source: detail.source,
+        connectionStatus: detail.connectionStatus,
+        currentModel: detail.currentModel,
+        currentReasoningLevel: detail.currentReasoningLevel,
+        activityStatus: detail.activityStatus,
+        cwd: detail.cwd,
+        createdAt: detail.createdAt,
+        updatedAt: detail.updatedAt,
+        canSend: detail.canSend,
+        sendUnavailableReason: detail.sendUnavailableReason,
+        capabilities: detail.capabilities,
+        turnCount: detail.turnCount,
+        items: items,
+        lastAgentMessageSequence: detail.lastAgentMessageSequence,
+        hasMoreHistory: detail.hasMoreHistory,
+        historyItemsCount: detail.historyItemsCount,
+        actions: detail.actions
+    )
 }
 
 actor SessionTimelineNetworkPermitPool {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { StateSyncService } from "../src/application/stateSyncService.mjs";
+import { deliveredStateRevision, StateSyncService } from "../src/application/stateSyncService.mjs";
 
 function fixture({ revision = 0, oldest = revision, changes = [], state = {} } = {}) {
   const store = {
@@ -21,7 +21,7 @@ test("state snapshot normalizes every control-plane collection", () => {
   assert.deepEqual(snapshot.state.integrationRuns, []);
 });
 
-test("state snapshot never retries or caches across a concurrent revision", () => {
+test("state snapshot retries until payload and revision are one immutable state", () => {
   let revision = 4;
   let projections = 0;
   const store = {
@@ -33,15 +33,36 @@ test("state snapshot never retries or caches across a concurrent revision", () =
     store,
     snapshot: () => {
       projections += 1;
-      if (projections === 1) revision = 5;
-      return { sessions: [{ id: "created" }] };
+      if (projections === 1) {
+        revision = 5;
+        return { sessions: [{ id: "session", status: "running" }] };
+      }
+      return { sessions: [{ id: "session", status: "complete" }] };
     }
   });
 
   const snapshot = service.snapshot();
   assert.equal(snapshot.revision, 5);
-  assert.deepEqual(snapshot.state.sessions, [{ id: "created" }]);
-  assert.equal(projections, 1);
+  assert.deepEqual(snapshot.state.sessions, [{ id: "session", status: "complete" }]);
+  assert.equal(projections, 2);
+  assert.equal(service.diagnostics().snapshotBuilds, 1);
+});
+
+test("state snapshot refuses to publish when no stable revision can be read", () => {
+  let revision = 1;
+  const service = new StateSyncService({
+    store: {
+      stateRevision: () => revision,
+      oldestStateChangeRevision: () => revision,
+      stateChangesAfter: () => []
+    },
+    snapshot: () => {
+      revision += 1;
+      return { sessions: [{ id: "session", status: "running" }] };
+    }
+  });
+
+  assert.throws(() => service.snapshot(), { code: "STATE_SNAPSHOT_UNSTABLE" });
   assert.equal(service.diagnostics().snapshotBuilds, 0);
 });
 
@@ -187,4 +208,17 @@ test("state sync compatibility switch retains the uncached projection path", () 
   service.snapshot();
   assert.equal(projections, 2);
   assert.equal(service.diagnostics().optimized, false);
+});
+
+test("SSE delivery cursor acknowledges the serialized frame instead of a newer Store revision", () => {
+  const snapshot = { revision: 41, state: { sessions: [{ id: "session", status: "running" }] } };
+  const snapshotRequired = { snapshotRequired: true, currentRevision: 41 };
+  // A terminal commit can advance the Store to 42 immediately after this
+  // snapshot is built. The connection must remain at 41 so revision 42 is sent.
+  assert.equal(deliveredStateRevision(snapshotRequired, snapshot), 41);
+  assert.equal(deliveredStateRevision({ snapshotRequired: false, revision: 42 }), 42);
+  assert.throws(
+    () => deliveredStateRevision({ snapshotRequired: true }, null),
+    { code: "STATE_DELIVERY_REVISION_INVALID" }
+  );
 });

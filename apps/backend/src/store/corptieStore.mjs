@@ -5107,8 +5107,7 @@ export class CorptieStore {
         text=excluded.text,
         options_json=excluded.options_json,
         raw_metadata_json=excluded.raw_metadata_json,
-        status=excluded.status,
-        created_at=excluded.created_at
+        status=excluded.status
       WHERE session_items.turn_id IS NOT excluded.turn_id
          OR session_items.turn_status IS NOT excluded.turn_status
          OR session_items.type IS NOT excluded.type
@@ -5116,8 +5115,7 @@ export class CorptieStore {
          OR session_items.text IS NOT excluded.text
          OR session_items.options_json IS NOT excluded.options_json
          OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
-         OR session_items.status IS NOT excluded.status
-         OR session_items.created_at IS NOT excluded.created_at`,
+         OR session_items.status IS NOT excluded.status`,
       [
         item.id,
         sessionId,
@@ -5163,7 +5161,23 @@ export class CorptieStore {
   // activity. Persist them without mirroring assistant/user events; mirroring
   // would advance unread cursors every time an old transcript is refreshed.
   upsertItemSnapshot(sessionId, item) {
-    const createdAt = createdAtFromOrNow(item);
+    const userAlias = item.type === "userMessage"
+      ? this.resolveUserMessageSnapshotAlias(sessionId, item)
+      : null;
+    const targetId = userAlias?.canonical?.id ?? item.id;
+    const createdAt = userAlias?.canonical?.created_at ?? createdAtFromOrNow(item);
+    const rawMetadataJSON = userAlias?.canonical && targetId !== item.id
+      ? userAlias.canonical.raw_metadata_json
+      : (typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null);
+    let removedAliases = 0;
+    if (userAlias?.duplicateIDs.length > 0) {
+      const placeholders = userAlias.duplicateIDs.map(() => "?").join(", ");
+      this.db.run(
+        `DELETE FROM session_items WHERE session_id = ? AND id IN (${placeholders})`,
+        [sessionId, ...userAlias.duplicateIDs]
+      );
+      removedAliases = this.db.getRowsModified();
+    }
     this.db.run(
       `INSERT INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json, status, created_at
@@ -5176,8 +5190,7 @@ export class CorptieStore {
         text=excluded.text,
         options_json=excluded.options_json,
         raw_metadata_json=excluded.raw_metadata_json,
-        status=excluded.status,
-        created_at=excluded.created_at
+        status=excluded.status
       WHERE session_items.turn_id IS NOT excluded.turn_id
          OR session_items.turn_status IS NOT excluded.turn_status
          OR session_items.type IS NOT excluded.type
@@ -5185,10 +5198,9 @@ export class CorptieStore {
          OR session_items.text IS NOT excluded.text
          OR session_items.options_json IS NOT excluded.options_json
          OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
-         OR session_items.status IS NOT excluded.status
-         OR session_items.created_at IS NOT excluded.created_at`,
+         OR session_items.status IS NOT excluded.status`,
       [
-        item.id,
+        targetId,
         sessionId,
         item.turnId || sessionId,
         item.turnStatus || "completed",
@@ -5196,17 +5208,43 @@ export class CorptieStore {
         item.title || "Agent",
         item.text || "",
         Array.isArray(item.options) ? JSON.stringify(item.options) : null,
-        typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null,
+        rawMetadataJSON,
         item.status || null,
         createdAt
       ]
     );
-    const changed = this.db.getRowsModified() > 0;
+    const changed = removedAliases > 0 || this.db.getRowsModified() > 0;
     if (changed) {
       this.scheduleSave();
       this.notifyTimelineDirty(sessionId);
     }
     return changed;
+  }
+
+  // A Provider can replay one logical prompt under a new item id after
+  // compaction or reconnect. Within a turn, identical normalized user text is
+  // one message identity. Preserve the earliest durable row and delete aliases
+  // so incremental clients receive explicit delete revisions for old copies.
+  resolveUserMessageSnapshotAlias(sessionId, item) {
+    const turnId = item.turnId || sessionId;
+    const fingerprint = normalizeUserText(item.text || "");
+    if (!fingerprint) return null;
+    const matches = this.selectAll(
+      `SELECT rowid AS storage_order, id, created_at, raw_metadata_json, text
+       FROM session_items
+       WHERE session_id = ? AND turn_id = ? AND type = 'userMessage'
+       ORDER BY created_at ASC, rowid ASC`,
+      [sessionId, turnId]
+    ).filter((row) => normalizeUserText(row.text) === fingerprint);
+    if (matches.length === 0) return null;
+    const canonical = matches[0];
+    return {
+      canonical,
+      duplicateIDs: matches
+        .slice(1)
+        .map((row) => row.id)
+        .filter((id) => id !== canonical.id)
+    };
   }
 
   removeItem(sessionId, itemId) {
@@ -5819,20 +5857,7 @@ export class CorptieStore {
     const pageLimit = Math.max(1, Math.min(500, Number.isFinite(limit) && Number(limit) > 0
       ? Math.floor(Number(limit))
       : 240));
-    const rows = this.selectAll(
-      `SELECT id, turn_id, turn_status, type, title, text, options_json,
-              raw_metadata_json, status, created_at
-       FROM (
-         SELECT id, turn_id, turn_status, type, title, text, options_json,
-                raw_metadata_json, status, created_at
-         FROM session_items
-         WHERE session_id = ?
-         ORDER BY created_at DESC, id DESC
-         LIMIT ?
-       )
-       ORDER BY created_at ASC, id ASC`,
-      [sessionId, pageLimit]
-    );
+    const rows = this.latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit);
     const items = rows
       .map((row) => ({
         id: row.id,
@@ -5851,6 +5876,68 @@ export class CorptieStore {
       .map((item) => normalizeStoredItem(item, provider))
       .filter((item, index, items) => !isAdjacentDuplicateUserMessage(item, items[index - 1]));
     return items;
+  }
+
+  latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit) {
+    const columns = `id, turn_id, turn_status, type, title, text, options_json,
+                     raw_metadata_json, status, created_at`;
+    const baseRows = this.selectAll(
+      `SELECT id, turn_id, turn_status, type, title, text, options_json,
+              raw_metadata_json, status, created_at
+       FROM (
+         SELECT id, turn_id, turn_status, type, title, text, options_json,
+                raw_metadata_json, status, created_at
+         FROM session_items
+         WHERE session_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?
+       )
+       ORDER BY created_at ASC, id ASC`,
+      [sessionId, pageLimit]
+    );
+    const representedTurns = [...new Set(baseRows
+      .filter((row) => row.type !== "userMessage" && row.type !== "agentMessage")
+      .map((row) => row.turn_id)
+      .filter(Boolean))].slice(-8);
+    if (representedTurns.length === 0) return baseRows;
+    const placeholders = representedTurns.map(() => "?").join(", ");
+    const conversationRows = this.selectAll(
+      `SELECT rowid AS storage_order, ${columns} FROM session_items
+       WHERE session_id = ? AND turn_id IN (${placeholders})
+         AND type IN ('userMessage', 'agentMessage')
+       ORDER BY rowid ASC`,
+      [sessionId, ...representedTurns]
+    );
+    const boundaryByTurn = new Map();
+    for (const turnId of representedTurns) {
+      const rows = conversationRows.filter((row) => row.turn_id === turnId);
+      boundaryByTurn.set(turnId, {
+        user: rows.find((row) => row.type === "userMessage") ?? null,
+        agent: rows.findLast((row) => row.type === "agentMessage") ?? null
+      });
+    }
+    const lastIndexByTurn = new Map();
+    baseRows.forEach((row, index) => lastIndexByTurn.set(row.turn_id, index));
+    const result = [];
+    const emitted = new Set();
+    for (let index = 0; index < baseRows.length; index += 1) {
+      const row = baseRows[index];
+      const boundary = boundaryByTurn.get(row.turn_id);
+      if (boundary?.user && !emitted.has(boundary.user.id)) {
+        result.push(boundary.user);
+        emitted.add(boundary.user.id);
+      }
+      if (!emitted.has(row.id)) {
+        result.push(row);
+        emitted.add(row.id);
+      }
+      if (lastIndexByTurn.get(row.turn_id) === index
+        && boundary?.agent && !emitted.has(boundary.agent.id)) {
+        result.push(boundary.agent);
+        emitted.add(boundary.agent.id);
+      }
+    }
+    return result;
   }
 
   getTimelineItemWindow(
@@ -5926,14 +6013,7 @@ export class CorptieStore {
     const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
     const columns = `id, turn_id, turn_status, type, title, text, options_json,
                      raw_metadata_json, status, created_at`;
-    const rows = this.selectAll(
-      `SELECT ${columns} FROM (
-         SELECT ${columns} FROM session_items
-         WHERE session_id = ?
-         ORDER BY created_at DESC, id DESC LIMIT ?
-       ) ORDER BY created_at ASC, id ASC`,
-      [sessionId, pageLimit]
-    );
+    const rows = this.latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit);
     if (rows.length === 0) return null;
     const first = rows[0];
     const hasEarlier = Boolean(this.selectOne(
