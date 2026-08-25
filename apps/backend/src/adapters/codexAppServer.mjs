@@ -985,8 +985,14 @@ function mergeItems(historyItems, liveItems, turnOrder = new Map()) {
   const signatures = new Set();
   const itemIdsBySignature = new Map();
   for (const item of historyItems) {
-    merged.set(item.id, item);
     const signature = itemSignature(item);
+    // Provider reconnect/compaction can reissue the same logical user prompt
+    // under a different item id inside history itself. Identity is scoped to a
+    // turn and content role, so keep the first provider-ordered occurrence.
+    // The Store applies the same provider-neutral rule when materializing the
+    // durable Timeline, which also repairs aliases written by older builds.
+    if (item.type === "userMessage" && signatures.has(signature)) continue;
+    merged.set(item.id, item);
     signatures.add(signature);
     itemIdsBySignature.set(signature, item.id);
   }
