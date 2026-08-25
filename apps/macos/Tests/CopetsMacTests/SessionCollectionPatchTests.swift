@@ -26,6 +26,28 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func terminalStatusChangeUpdatesOnlyTheStableSessionRow() {
+        let running = makeSession(id: "one", status: .running)
+        let completed = makeSession(id: "one", status: .complete)
+        let store = SessionIndexStore()
+        store.apply(
+            SessionCollectionDiffer.patch(from: [], to: [running], revision: 1),
+            authoritativeSessions: [running]
+        )
+        let row = store.row(id: running.id)
+
+        store.apply(
+            SessionCollectionDiffer.patch(from: [running], to: [completed], revision: 2),
+            authoritativeSessions: [completed]
+        )
+
+        #expect(store.row(id: running.id) === row)
+        #expect(row?.session.status == .complete)
+        #expect(row?.changedFields == [.status])
+        #expect(store.orderedIDs == [running.id])
+    }
+
+    @Test
     func structuralPatchDescribesInsertRemoveAndMove() {
         let one = makeSession(id: "one")
         let two = makeSession(id: "two")

@@ -2851,6 +2851,7 @@ final class BackendClient: ObservableObject {
         for sessionId: String,
         timelineRevision: Int? = nil
     ) {
+        let detail = canonicalSessionTimelineDetail(detail)
         SessionTimelineRepository.shared.publish(
             detail,
             for: sessionId,
@@ -5002,6 +5003,7 @@ final class BackendClient: ObservableObject {
     private var deferredDetailPublishTask: Task<Void, Never>?
 
     private func publishSelectedDetailIfSafe(_ detail: CodexThreadDetail) {
+        let detail = canonicalSessionTimelineDetail(detail)
         guard let currentSession = selectedSession,
               detailBelongsToSelectedSession(detail, currentSession) else { return }
         if let selectedDetail,
@@ -5096,6 +5098,7 @@ final class BackendClient: ObservableObject {
     }
 
     private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {
+        let detail = canonicalSessionTimelineDetail(detail)
         let pending = pendingUserMessagesByThread[detail.id] ?? []
         let merged = mergedItems(serverItems: detail.items, pendingItems: pending)
         pendingUserMessagesByThread[detail.id] = remainingPendingItems(afterMerging: detail.items, pendingItems: pending)

@@ -100,6 +100,30 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         )
     }
 
+    func testProviderUserMessageAliasesCollapseAcrossSnapshotAndIncrementalMerge() throws {
+        let duplicateItems = [
+            item("item-47", turnID: "turn-a", type: "userMessage", text: "Sent only once"),
+            item("provider-native-id", turnID: "turn-a", type: "userMessage", text: "Sent   only once")
+        ]
+        XCTAssertEqual(canonicalSessionTimelineItems(duplicateItems).map(\.id), ["item-47"])
+
+        let envelope = try decodeEnvelope("""
+        {"snapshotRequired": false, "baseRevision": 3, "revision": 4,
+         "currentRevision": 4, "changes": [
+           {"revision": 4, "itemId": "provider-native-id", "operation": "upsert", "item": {
+             "id": "provider-native-id", "turnId": "turn-a", "turnStatus": "complete",
+             "type": "userMessage", "title": "User", "text": "Sent only once"
+           }}
+         ]}
+        """)
+        guard case .applied(let merged, _) = SessionTimelineChangeMerger.merge(
+            envelope,
+            into: detail(items: [duplicateItems[0]]),
+            localRevision: 3
+        ) else { return XCTFail("Expected alias delta to apply") }
+        XCTAssertEqual(merged.items.map(\.id), ["item-47"])
+    }
+
     func testGapOutOfOrderAndMissingPayloadRequireSnapshot() throws {
         let gap = try decodeEnvelope("""
         {"snapshotRequired": true, "currentRevision": 20}
@@ -205,14 +229,20 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         )
     }
 
-    private func item(_ id: String, at createdAt: String = "2026-08-24T00:00:00Z") -> CodexThreadItem {
+    private func item(
+        _ id: String,
+        turnID: String? = nil,
+        type: String = "agentMessage",
+        text: String? = nil,
+        at createdAt: String = "2026-08-24T00:00:00Z"
+    ) -> CodexThreadItem {
         CodexThreadItem(
             id: id,
-            turnId: "turn-\(id)",
+            turnId: turnID ?? "turn-\(id)",
             turnStatus: "complete",
-            type: "agentMessage",
-            title: "Agent",
-            text: id,
+            type: type,
+            title: type == "userMessage" ? "User" : "Agent",
+            text: text ?? id,
             options: nil,
             status: nil,
             createdAt: createdAt
