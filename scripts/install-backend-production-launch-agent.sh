@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BACKEND_DIR="${ROOT}/apps/backend"
 NODE_BIN=""
-LOGIN_NODE="$(/bin/zsh -lic 'command -v node' 2>/dev/null || true)"
-for candidate in "${LOGIN_NODE}" "${HOME}"/.nvm/versions/node/*/bin/node "${HOME}"/.fnm/node-versions/*/installation/bin/node "${HOME}/.asdf/shims/node" "${HOME}/.local/share/mise/shims/node" /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
+# LaunchAgents must not depend on interactive shell startup files being safe.
+for candidate in "${HOME}"/.nvm/versions/node/*/bin/node "${HOME}"/.fnm/node-versions/*/installation/bin/node "${HOME}/.asdf/shims/node" "${HOME}/.local/share/mise/shims/node" /opt/homebrew/bin/node /usr/local/bin/node "$(command -v node 2>/dev/null || true)"; do
   if [ -x "${candidate}" ] && "${candidate}" -e 'require("node:sqlite").DatabaseSync' >/dev/null 2>&1; then
     NODE_BIN="${candidate}"
     break
