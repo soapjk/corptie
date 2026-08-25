@@ -32,6 +32,24 @@ private struct GlobalEventReplayRequiredEnvelope: Decodable {
     let latestCursor: Int
 }
 
+private struct SessionTimelineChangedEventEnvelope: Decodable {
+    let payload: Payload
+
+    struct Payload: Decodable {
+        let sessionId: String
+        let timelineRevision: Int
+    }
+}
+
+private struct SessionTimelineRevisionIndex: Decodable {
+    let sessions: [Entry]
+
+    struct Entry: Decodable {
+        let sessionId: String
+        let timelineRevision: Int
+    }
+}
+
 struct ProjectWorktreeIntegrationLaunchGate: Equatable {
     private(set) var isRunning = false
 
@@ -249,6 +267,8 @@ final class BackendClient: ObservableObject {
     private var detailPrefetchTasks: [String: Task<CodexThreadDetail?, Never>] = [:]
     private var backgroundTimelineSyncTasks: [String: Task<Void, Never>] = [:]
     private var desiredTimelineRevisionBySessionID: [String: Int] = [:]
+    private var knownTimelineRevisionBySessionID: [String: Int] = [:]
+    private var hasReconciledTimelineRevisionIndex = false
     private let timelineNetworkPermits = SessionTimelineNetworkPermitPool(limit: 4)
     private var globalEventCursor = 0
     private static let historyPageSize = 200
@@ -380,6 +400,8 @@ final class BackendClient: ObservableObject {
         backgroundTimelineSyncTasks.values.forEach { $0.cancel() }
         backgroundTimelineSyncTasks.removeAll()
         desiredTimelineRevisionBySessionID.removeAll()
+        knownTimelineRevisionBySessionID.removeAll()
+        hasReconciledTimelineRevisionIndex = false
     }
 
     func reportNavigationError(sessionId: String) {
@@ -407,6 +429,7 @@ final class BackendClient: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     self.markBackendConnectedFromSessionStream()
+                    await self.reconcileTimelineRevisionIndex()
                     await self.loadAutomations()
                     if let selectedSession = self.selectedSession {
                         await self.loadScheduledTasks(for: selectedSession)
@@ -525,6 +548,7 @@ final class BackendClient: ObservableObject {
             // timelines have their own durable authorities, so repair those
             // directly instead of replaying ambiguous side effects.
             await AppStateSyncController.shared.refreshSnapshot()
+            await reconcileTimelineRevisionIndex()
             await loadAutomations()
             if let selectedSession {
                 await loadScheduledTasks(for: selectedSession)
@@ -533,6 +557,18 @@ final class BackendClient: ObservableObject {
                     desiredRevision: selectedSession.timelineRevision ?? 0
                 )
             }
+            return
+        }
+        if eventName == "SessionTimelineChanged" {
+            guard let payload = data.data(using: .utf8),
+                  let event = try? JSONDecoder().decode(
+                    SessionTimelineChangedEventEnvelope.self,
+                    from: payload
+                  ) else { return }
+            applyTimelineRevisionAdvance(
+                sessionId: event.payload.sessionId,
+                revision: event.payload.timelineRevision
+            )
             return
         }
         if eventName == "ProjectWorkspaceChanged"
@@ -1205,6 +1241,7 @@ final class BackendClient: ObservableObject {
             backgroundTimelineSyncTasks[sessionID]?.cancel()
             backgroundTimelineSyncTasks[sessionID] = nil
             desiredTimelineRevisionBySessionID[sessionID] = nil
+            knownTimelineRevisionBySessionID[sessionID] = nil
             SessionTimelineRepository.shared.remove(sessionID)
         }
 
@@ -1216,6 +1253,10 @@ final class BackendClient: ObservableObject {
         let previousByID = Dictionary(uniqueKeysWithValues: (previousSessions ?? []).map { ($0.id, $0) })
         for session in nextSessions {
             let desiredRevision = session.timelineRevision ?? 0
+            knownTimelineRevisionBySessionID[session.id] = max(
+                knownTimelineRevisionBySessionID[session.id] ?? 0,
+                desiredRevision
+            )
             let localRevision = SessionTimelineRepository.shared.timelineRevision(for: session.id)
             let resident = SessionTimelineRepository.shared.detail(for: session.id) != nil
             let unread = (session.lastAgentMessageSequence ?? 0) > (session.lastReadMessageSequence ?? 0)
@@ -2870,6 +2911,42 @@ final class BackendClient: ObservableObject {
             guard let session = sessionsByID[sessionID] else { continue }
             prefetchDetail(for: session)
         }
+    }
+
+    private func reconcileTimelineRevisionIndex() async {
+        do {
+            let (data, response) = try await URLSession.shared.data(
+                from: baseURL.appending(path: "session-timelines/revisions")
+            )
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 200 else { return }
+            let index = try JSONDecoder().decode(SessionTimelineRevisionIndex.self, from: data)
+            let isInitialIndex = !hasReconciledTimelineRevisionIndex
+            hasReconciledTimelineRevisionIndex = true
+            for entry in index.sessions {
+                if isInitialIndex, knownTimelineRevisionBySessionID[entry.sessionId] == nil {
+                    knownTimelineRevisionBySessionID[entry.sessionId] = entry.timelineRevision
+                    continue
+                }
+                applyTimelineRevisionAdvance(
+                    sessionId: entry.sessionId,
+                    revision: entry.timelineRevision
+                )
+            }
+        } catch {
+            // The state stream remains independently authoritative for Session
+            // lifecycle. A future timeline event or reconnect retries this
+            // lightweight index without marking the whole backend offline.
+        }
+    }
+
+    private func applyTimelineRevisionAdvance(sessionId: String, revision: Int) {
+        guard revision > 0 else { return }
+        let previous = knownTimelineRevisionBySessionID[sessionId] ?? 0
+        knownTimelineRevisionBySessionID[sessionId] = max(previous, revision)
+        guard revision > previous,
+              let session = sessions.first(where: { $0.id == sessionId }) else { return }
+        scheduleBackgroundTimelineSync(for: session, desiredRevision: revision)
     }
 
     private func scheduleBackgroundTimelineSync(

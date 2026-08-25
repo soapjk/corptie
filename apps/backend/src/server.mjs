@@ -246,6 +246,7 @@ import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.m
 import { SingleFlight } from "./utils/singleFlight.mjs";
 import { ReplayEventLog } from "./utils/replayEventLog.mjs";
 import { StateSyncService } from "./application/stateSyncService.mjs";
+import { SessionTimelineChangePublisher } from "./application/sessionTimelineChangePublisher.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
 import {
   MAX_SESSION_HISTORY_PAGE,
@@ -282,6 +283,7 @@ const sseClients = new Set();
 const stateSyncClients = new Map();
 let stateSyncConsistencyTimer = null;
 let stateSyncPublishTimer = null;
+let timelineChangePublisher = null;
 let activeSessionReconciliationTimer = null;
 let activeSessionReconciliationInFlight = false;
 const activeSessionReconciledAt = new Map();
@@ -2136,7 +2138,7 @@ function emitEvent(type, payload, options = {}) {
   scheduleStateSyncPublish();
 
   const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
-  if (sessionId && store.db) {
+  if (sessionId && store.db && options.recordSessionEvent !== false) {
     try {
       const sessionEvent = store.appendSessionEvent({
         eventId: options.eventId || randomUUID(),
@@ -2400,6 +2402,10 @@ function scheduleStateSyncPublish() {
     publishStateChangesIfNeeded();
   }, 20);
   stateSyncPublishTimer.unref?.();
+}
+
+function scheduleTimelineChangePublish(change = {}) {
+  timelineChangePublisher?.schedule(change);
 }
 
 async function reconcileActiveSessionProviderProjections() {
@@ -7682,6 +7688,16 @@ function route(request, response) {
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/session-timelines/revisions") {
+    sendJson(response, 200, {
+      sessions: [...store.listSessionTimelineRevisions()].map(([sessionId, revision]) => ({
+        sessionId,
+        timelineRevision: revision
+      }))
+    });
+    return;
+  }
+
   const storedSessionSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/stored-snapshot$/);
   if (request.method === "GET" && storedSessionSnapshotMatch) {
     const sessionId = decodeURIComponent(storedSessionSnapshotMatch[1]);
@@ -9009,7 +9025,17 @@ if (recoveredWorktreeIntegrationJobs > 0) {
   console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
 }
 stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
+timelineChangePublisher = new SessionTimelineChangePublisher({
+  emit: ({ sessionId, timelineRevision }) => emitEvent("SessionTimelineChanged", {
+    sessionId,
+    timelineRevision
+  }, {
+    sessionId,
+    recordSessionEvent: false
+  })
+});
 store.setStateDirtyListener(scheduleStateSyncPublish);
+store.setTimelineDirtyListener(scheduleTimelineChangePublish);
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
@@ -9222,6 +9248,7 @@ function shutdown() {
     if (activeSessionReconciliationTimer) clearInterval(activeSessionReconciliationTimer);
     if (stateSyncConsistencyTimer) clearInterval(stateSyncConsistencyTimer);
     if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
+    timelineChangePublisher?.close();
     scheduledSessionTaskService.stop();
     codexResetForecastMonitor?.stop();
     openClackyManager.stop();
