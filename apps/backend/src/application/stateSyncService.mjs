@@ -37,16 +37,17 @@ export class StateSyncService {
     if (this.optimized && this.cachedSnapshot?.revision === currentRevision) {
       return this.cachedSnapshot;
     }
-    // Snapshot projection may repair a missing Provider session projection and
-    // advance the store revision while it is being assembled. Retry a bounded
-    // number of times so payload and revision describe the same stable state.
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const revision = this.store.stateRevision();
-      const state = normalizeSnapshot(this.snapshotProvider());
-      if (revision === this.store.stateRevision()) return this.cacheSnapshot({ revision, state });
-    }
+    // A snapshot is a read model, never a repair hook. Build it exactly once:
+    // no revision retry can re-enter Provider projection or amplify a write.
+    // The native SQLite layer may commit unrelated background work during this
+    // synchronous projection. Stamp that concurrent revision but do not cache
+    // the potentially cross-revision view; the revision stream will reconcile
+    // the client without crashing the HTTP process.
+    const revision = currentRevision;
     const state = normalizeSnapshot(this.snapshotProvider());
-    return this.cacheSnapshot({ revision: this.store.stateRevision(), state });
+    const completedRevision = this.store.stateRevision();
+    if (completedRevision !== revision) return { revision: completedRevision, state };
+    return this.cacheSnapshot({ revision, state });
   }
 
   changesAfter(requestedRevision) {

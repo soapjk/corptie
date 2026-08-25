@@ -53,9 +53,9 @@ struct MarkdownMessageView: View {
 
 /// Caches both Corptie's link preparation and MarkdownUI's parsed block tree.
 ///
-/// Keeping only the session snapshot warm still leaves Markdown parsing on the
-/// main-thread click path. SessionsView preheats this cache incrementally, and
-/// normal rendering uses the same entry point so a miss is still correct.
+/// The active Timeline pipeline prepares this cache off the selection path;
+/// normal rendering uses the same entry point so a cold archived miss remains
+/// correct without hover-based preloading.
 @MainActor
 final class MarkdownRenderCache {
     private struct Key: Hashable {

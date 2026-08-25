@@ -211,7 +211,7 @@ final class CodexResetSystemNotificationManager {
     }
 
     func start() {
-        cancellable = client.$selectedSessionUsage
+        cancellable = client.supplementaryDataController.$selectedSessionUsage
             .compactMap { $0 }
             .sink { [weak self] usage in self?.handle(usage) }
     }

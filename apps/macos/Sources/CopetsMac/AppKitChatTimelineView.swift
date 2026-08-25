@@ -927,6 +927,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 firstLayoutScrollView.onLayout = { [weak self] in
                     self?.restoreInitialViewportSynchronouslyIfNeeded()
                 }
+                firstLayoutScrollView.onUserScroll = { [weak self] in
+                    self?.userDidBeginScrolling()
+                }
             }
             tableView.dataSource = self
             tableView.delegate = self
@@ -1242,6 +1245,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         private func viewportDidScroll() {
             guard let scrollView, !rows.isEmpty else { return }
+            if let eventType = NSApp.currentEvent?.type,
+               eventType == .scrollWheel || eventType == .leftMouseDragged {
+                userDidBeginScrolling()
+            }
             let nearBottom = isViewportNearBottom()
             followsLatest = nearBottom
             if followsLatestBinding.wrappedValue != nearBottom {
@@ -1263,6 +1270,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         @objc private func viewportBoundsDidChange(_ notification: Notification) {
             viewportDidScroll()
+        }
+
+        /// User input is the highest viewport authority. Cancel every queued
+        /// follow/restore/compensation command before AppKit applies the wheel
+        /// delta, so no later layout block can reverse the gesture.
+        func userDidBeginScrolling() {
+            scrollCommandGeneration &+= 1
+            pendingRestorePosition = nil
+            pendingInitialScrollToBottom = false
+            lastRequestedRestorePosition = nil
+            followsLatest = false
+            if followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = false }
         }
 
         @objc private func containerFrameDidChange(_ notification: Notification) {
@@ -1481,10 +1500,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                     let anchorY = tableView.rect(ofRow: row).minY + CGFloat(position.offset)
                     clipView.scroll(to: NSPoint(x: 0, y: min(max(0, anchorY), maximumY)))
                 } else {
-                    clipView.scroll(to: NSPoint(
-                        x: 0,
-                        y: min(max(0, CGFloat(position.absoluteScrollY)), maximumY)
-                    ))
+                    // Absolute Y belongs to a different row/height window and
+                    // is never a valid cross-revision fallback. A deleted or
+                    // missing semantic anchor degrades once to latest.
+                    clipView.scroll(to: NSPoint(x: 0, y: maximumY))
                 }
             } else if pendingInitialScrollToBottom {
                 clipView.scroll(to: NSPoint(x: 0, y: maximumY))
@@ -2085,6 +2104,12 @@ private enum NativeTimelineCardPalette {
 
 private final class FirstLayoutRestoringScrollView: NSScrollView {
     var onLayout: (() -> Void)?
+    var onUserScroll: (() -> Void)?
+
+    override func scrollWheel(with event: NSEvent) {
+        onUserScroll?()
+        super.scrollWheel(with: event)
+    }
 
     override func layout() {
         super.layout()

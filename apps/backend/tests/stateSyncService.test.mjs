@@ -21,7 +21,7 @@ test("state snapshot normalizes every control-plane collection", () => {
   assert.deepEqual(snapshot.state.integrationRuns, []);
 });
 
-test("state snapshot retries when projection repair advances the revision", () => {
+test("state snapshot never retries or caches across a concurrent revision", () => {
   let revision = 4;
   let projections = 0;
   const store = {
@@ -39,10 +39,10 @@ test("state snapshot retries when projection repair advances the revision", () =
   });
 
   const snapshot = service.snapshot();
-
   assert.equal(snapshot.revision, 5);
-  assert.equal(projections, 2);
   assert.deepEqual(snapshot.state.sessions, [{ id: "created" }]);
+  assert.equal(projections, 1);
+  assert.equal(service.diagnostics().snapshotBuilds, 0);
 });
 
 test("Skill deletes and assignment-driven Agent upserts share the revision stream", () => {

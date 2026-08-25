@@ -3,7 +3,7 @@ import XCTest
 @testable import CorptieMac
 
 @MainActor
-final class SessionPresentationStoreTests: XCTestCase {
+final class SessionPresentationCacheTests: XCTestCase {
     func testCachedTimelineWinsOverTransportLoadingForTheFirstFrame() {
         XCTAssertEqual(
             sessionDetailContentPhase(
@@ -28,7 +28,7 @@ final class SessionPresentationStoreTests: XCTestCase {
     }
 
     func testDefaultProjectionCacheRetainsNormalSessionBrowsingSet() {
-        let store = SessionPresentationStore()
+        let store = SessionPresentationCache()
         for index in 0..<32 {
             store.store(cache(sessionID: "session-\(index)"))
         }
@@ -51,7 +51,7 @@ final class SessionPresentationStoreTests: XCTestCase {
             )
         }.value
 
-        let store = SessionPresentationStore()
+        let store = SessionPresentationCache()
         XCTAssertEqual(store.cacheRevision, 0)
         store.store(cache)
         XCTAssertEqual(store.cacheRevision, 1)
@@ -61,24 +61,8 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertEqual(store.cacheRevision, 1, "An identical projection must not invalidate the Session surface")
     }
 
-    func testViewportSurvivesActiveListPruningWhileProjectionIsReleased() {
-        let store = SessionPresentationStore(positionDefaults: nil)
-        let position = AppKitChatTimelinePosition(
-            rowID: "message-42",
-            offset: 8,
-            absoluteScrollY: 420,
-            followsLatest: false
-        )
-        store.store(position, for: "session-a")
-
-        XCTAssertEqual(store.position(for: "session-a"), position)
-        store.prune(to: ["session-b"])
-        XCTAssertEqual(store.position(for: "session-a"), position)
-        XCTAssertNil(store.cache(for: "session-a"))
-    }
-
-    func testViewportPersistsAcrossPresentationStoreRecreation() throws {
-        let suiteName = "SessionPresentationStoreTests.\(UUID().uuidString)"
+    func testViewportPersistsAcrossControllerRecreation() throws {
+        let suiteName = "SessionPresentationCacheTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let position = AppKitChatTimelinePosition(
@@ -88,22 +72,22 @@ final class SessionPresentationStoreTests: XCTestCase {
             followsLatest: false
         )
 
-        let writer = SessionPresentationStore(
-            positionDefaults: defaults,
-            positionDefaultsKey: "positions"
+        let writer = SessionViewportController(
+            defaults: defaults,
+            defaultsKey: "positions"
         )
         writer.store(position, for: "session-a")
-        writer.persistPositionsNow()
+        writer.persistNow()
 
-        let reader = SessionPresentationStore(
-            positionDefaults: defaults,
-            positionDefaultsKey: "positions"
+        let reader = SessionViewportController(
+            defaults: defaults,
+            defaultsKey: "positions"
         )
         XCTAssertEqual(reader.position(for: "session-a"), position)
     }
 
     func testTerminationPhaseSynchronouslyPersistsFinalCompatibilityPosition() throws {
-        let suiteName = "SessionPresentationStoreTests.termination.\(UUID().uuidString)"
+        let suiteName = "SessionPresentationCacheTests.termination.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let position = AppKitChatTimelinePosition(
@@ -112,47 +96,117 @@ final class SessionPresentationStoreTests: XCTestCase {
             absoluteScrollY: 999,
             followsLatest: false
         )
-        let writer = SessionPresentationStore(
-            positionDefaults: defaults,
-            positionDefaultsKey: "termination"
+        let writer = SessionViewportController(
+            defaults: defaults,
+            defaultsKey: "termination"
         )
         writer.store(position, for: "session-final")
 
         NotificationCenter.default.post(name: .persistSessionTimelinePositions, object: nil)
 
-        let reader = SessionPresentationStore(
-            positionDefaults: defaults,
-            positionDefaultsKey: "termination"
+        let reader = SessionViewportController(
+            defaults: defaults,
+            defaultsKey: "termination"
         )
         XCTAssertEqual(reader.position(for: "session-final"), position)
     }
 
     func testPersistedViewportLRUIsBounded() throws {
-        let suiteName = "SessionPresentationStoreTests.\(UUID().uuidString)"
+        let suiteName = "SessionPresentationCacheTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let store = SessionPresentationStore(
-            positionCapacity: 2,
-            positionDefaults: defaults,
-            positionDefaultsKey: "bounded"
+        let store = SessionViewportController(
+            hotCapacity: 2,
+            defaults: defaults,
+            defaultsKey: "bounded"
         )
         for id in ["a", "b", "c"] {
             store.store(.init(rowID: "message:\(id)", offset: 0, absoluteScrollY: 0, followsLatest: false), for: id)
         }
-        store.persistPositionsNow()
+        store.persistNow()
 
-        let restored = SessionPresentationStore(
-            positionCapacity: 2,
-            positionDefaults: defaults,
-            positionDefaultsKey: "bounded"
+        let restored = SessionViewportController(
+            hotCapacity: 2,
+            defaults: defaults,
+            defaultsKey: "bounded"
         )
         XCTAssertNil(restored.position(for: "a"))
         XCTAssertNotNil(restored.position(for: "b"))
         XCTAssertNotNil(restored.position(for: "c"))
     }
 
+    func testGestureViewportStoresDoNotInvalidateSwiftUITree() {
+        let controller = SessionViewportController(defaults: nil, repository: nil)
+        var invalidations = 0
+        let cancellable = controller.objectWillChange.sink { invalidations += 1 }
+
+        for index in 0..<1_000 {
+            controller.store(
+                .init(
+                    rowID: "message:\(index)",
+                    offset: Double(index % 11),
+                    absoluteScrollY: Double(index),
+                    followsLatest: false
+                ),
+                for: "session-a"
+            )
+        }
+
+        XCTAssertEqual(invalidations, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testSelectionSupplementaryAndCommandInvalidationsAreIndependent() {
+        let selection = SessionSelectionController()
+        let supplementary = SessionSupplementaryDataController()
+        let commands = SessionCommandController()
+        var selectionInvalidations = 0
+        var supplementaryInvalidations = 0
+        var commandInvalidations = 0
+        var cancellables = Set<AnyCancellable>()
+        selection.objectWillChange.sink { selectionInvalidations += 1 }.store(in: &cancellables)
+        supplementary.objectWillChange.sink { supplementaryInvalidations += 1 }.store(in: &cancellables)
+        commands.objectWillChange.sink { commandInvalidations += 1 }.store(in: &cancellables)
+
+        selection.select("session-a")
+        supplementary.select("session-a")
+        supplementary.update("session-a") { $0.isLoading = true }
+        commands.begin(sessionID: "session-a", command: "send")
+
+        XCTAssertEqual(selectionInvalidations, 1)
+        XCTAssertEqual(supplementaryInvalidations, 2)
+        XCTAssertEqual(commandInvalidations, 1)
+    }
+
+    func testConcreteSupplementaryAndCommandUpdatesDoNotInvalidateIndexOrTimeline() {
+        let index = SessionIndexStore()
+        let timeline = SessionTimelineState(sessionID: "session-a")
+        let supplementary = SessionSupplementaryDataController()
+        let commands = SessionCommandController()
+        var indexInvalidations = 0
+        var timelineInvalidations = 0
+        var supplementaryInvalidations = 0
+        var commandInvalidations = 0
+        var cancellables = Set<AnyCancellable>()
+        index.objectWillChange.sink { indexInvalidations += 1 }.store(in: &cancellables)
+        timeline.objectWillChange.sink { timelineInvalidations += 1 }.store(in: &cancellables)
+        supplementary.objectWillChange.sink { supplementaryInvalidations += 1 }.store(in: &cancellables)
+        commands.objectWillChange.sink { commandInvalidations += 1 }.store(in: &cancellables)
+
+        supplementary.isLoadingContextReferences = true
+        supplementary.isLoadingProjectWorktrees = true
+        supplementary.isLoadingScheduledTasks = true
+        commands.isSendingMessage = true
+        commands.scheduledTaskMutationIds.insert("task-a")
+
+        XCTAssertEqual(indexInvalidations, 0)
+        XCTAssertEqual(timelineInvalidations, 0)
+        XCTAssertEqual(supplementaryInvalidations, 3)
+        XCTAssertEqual(commandInvalidations, 2)
+    }
+
     func testProjectionCacheUsesBoundedLRUEviction() {
-        let store = SessionPresentationStore(cacheCapacity: 2)
+        let store = SessionPresentationCache(capacity: 2)
         store.store(cache(sessionID: "a"))
         store.store(cache(sessionID: "b"))
         _ = store.cache(for: "a")
@@ -163,8 +217,27 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertNotNil(store.cache(for: "c"))
     }
 
+    func testEveryActivePresentationRemainsResidentWhileArchivedEntriesEvict() {
+        let store = SessionPresentationCache(capacity: 2)
+        store.pin(["active-a", "active-b", "active-c"])
+        for id in ["active-a", "active-b", "active-c"] {
+            store.store(cache(sessionID: id))
+        }
+
+        XCTAssertNotNil(store.cache(for: "active-a"))
+        XCTAssertNotNil(store.cache(for: "active-b"))
+        XCTAssertNotNil(store.cache(for: "active-c"))
+
+        store.pin(["active-c"])
+        store.store(cache(sessionID: "archived-on-demand"))
+        XCTAssertNil(store.cache(for: "active-a"))
+        XCTAssertNil(store.cache(for: "active-b"))
+        XCTAssertNotNil(store.cache(for: "active-c"))
+        XCTAssertNotNil(store.cache(for: "archived-on-demand"))
+    }
+
     func testProjectionPublicationInvalidatesOnlyItsSessionState() {
-        let store = SessionPresentationStore(positionDefaults: nil)
+        let store = SessionPresentationCache()
         let stateA = store.state(for: "a")
         let stateB = store.state(for: "b")
         var storeInvalidations = 0
@@ -181,19 +254,6 @@ final class SessionPresentationStoreTests: XCTestCase {
         XCTAssertEqual(stateAInvalidations, 1)
         XCTAssertEqual(stateBInvalidations, 0)
         XCTAssertEqual(stateA.cache?.sessionId, "a")
-    }
-
-    func testCompleteHostPoolKeepsRecentSessionsInLRUOrder() {
-        let store = SessionPresentationStore(hostCapacity: 3)
-        store.activateHost(for: "a")
-        store.activateHost(for: "b")
-        store.activateHost(for: "c")
-        store.activateHost(for: "a")
-        store.activateHost(for: "d")
-
-        XCTAssertEqual(store.hostedSessionIDs, ["c", "a", "d"])
-        store.prune(to: ["a", "d"])
-        XCTAssertEqual(store.hostedSessionIDs, ["a", "d"])
     }
 
     func testABAProjectionCannotCommitAnOlderGeneration() {
