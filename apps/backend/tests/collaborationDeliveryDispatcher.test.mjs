@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "../src/collaboration/collaborationDeliveryDispatcher.mjs";
+import { CollaborationDeliveryRouteResolver } from "../src/collaboration/collaborationDeliveryRouteResolver.mjs";
 import { formatTrustedCollaborationEvent } from "../src/collaboration/trustedCollaborationEvent.mjs";
 import { collaborationMessagePresentationRoute } from "../src/collaboration/collaborationPresentationRoute.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -69,6 +70,8 @@ function createRequest(core, suffix = "1") {
   return core.createTask({
     initiatorAgentId: "agent-a",
     recipientAgentId: "agent-b",
+    initiatorSessionId: "session:thread-a",
+    recipientSessionId: "session:thread-b",
     serviceId: "service-b",
     type: "change_request",
     title: "Fix completion state",
@@ -126,8 +129,7 @@ test("idle delivery starts one trusted turn and remains idempotently delivered",
     assert.match(turn.text, /当前消息：\nCompletion is stale/);
     assert.match(turn.text, /验收标准：\n- Completed means completed/);
     assert.match(turn.text, /建议动作：选择 accept、reject 或 ask/);
-    assert.match(turn.text, /缺少 recipientSessionId 或 routingVersion/);
-    assert.match(turn.text, /必须先调用 get_task/);
+    assert.match(turn.text, /路由字段完整/);
     assert.doesNotMatch(turn.text, /delivery|message_id|context_id|iteration|task_status/i);
     assert.match(turn.text, /&lt;\/corptie_collaboration_event&gt;/);
     assert.doesNotMatch(turn.text, /<\/corptie_collaboration_event> 1/);
@@ -294,10 +296,10 @@ test("an invalid channel falls back to the original reply Session and missing fa
     assert.equal(runtime.calls.filter((call) => call.type === "startTurn").at(-1).sessionId, "codex:thread-a");
     assert.equal(value.core.getChannel(task.taskId).status, "invalid");
 
+    value.core.bindSession({ agentId: "agent-b", sessionId: "codex:thread-b" });
     const other = createRequest(value.core, "missing-fallback");
     runtime.setState("idle");
     await dispatcher.dispatch(value.core.listPendingDeliveries()[0].deliveryId);
-    value.core.bindSession({ agentId: "agent-b", sessionId: "codex:thread-b" });
     value.core.accept(other.taskId, "agent-b", "session:thread-b");
     value.core.startWorking(other.taskId, "agent-b", "session:thread-b");
     value.core.submitResult(other.taskId, "agent-b", {
@@ -525,7 +527,7 @@ test("running delivery queues without consuming an attempt and drains when the S
     assert.equal(queued.status, "queued");
     assert.equal(queued.attemptCount, 0);
     runtime.setState("idle");
-    await dispatcher.drainSession("codex:thread-b");
+    await dispatcher.dispatch(delivery.deliveryId);
     assert.equal(value.core.getDelivery(delivery.deliveryId).status, "delivered");
     assert.equal(runtime.calls.filter((call) => call.type === "startTurn").length, 1);
   } finally {
@@ -583,6 +585,47 @@ test("delivery preflight reroutes when the selected Session closes before startT
   }
 });
 
+test("an enqueue route proof fails closed when the logical binding changes before execution", async () => {
+  const value = await fixture();
+  try {
+    const task = createRequest(value.core, "route-proof");
+    const delivery = value.core.listPendingDeliveries()[0];
+    const resolver = new CollaborationDeliveryRouteResolver({ core: value.core });
+    const envelope = value.core.getDeliveryEnvelope(delivery.deliveryId);
+    const selected = await resolver.resolve(envelope);
+
+    const replacementProviderId = "provider:route-proof-replacement";
+    const replacementLogicalId = "session:route-proof-replacement";
+    value.store.createSession({
+      id: replacementProviderId,
+      title: "Route proof replacement",
+      agentId: "agent-b",
+      sessionKind: "worker",
+      objectiveId: task.targetObjectiveId,
+      workItemId: task.workItemId,
+      cwd: value.directory
+    });
+    value.store.createLogicalSessionRoute({
+      logicalSessionId: replacementLogicalId,
+      legacySessionId: replacementProviderId,
+      providerThreadId: replacementProviderId,
+      providerSessionId: replacementProviderId,
+      providerId: "codex-app-server",
+      boundCwd: value.directory,
+      sessionName: "Route proof replacement"
+    });
+    value.core.bindSession({ agentId: "agent-b", sessionId: replacementProviderId });
+    value.core.rerouteTaskRecipient(task.taskId, replacementLogicalId, { reason: "test_race" });
+
+    assert.throws(
+      () => resolver.assertCurrent(envelope, selected),
+      (error) => error.code === "COLLABORATION_ROUTE_CHANGED"
+    );
+  } finally {
+    await cleanup(value);
+  }
+});
+
 test("stopped Sessions resume before turn/start", async () => {
   const value = await fixture();
   try {
@@ -625,17 +668,103 @@ test("missing Sessions retry finitely and emit an exhausted event after three at
   }
 });
 
-test("dispatcher startup recovers deliveries interrupted while delivering", async () => {
+test("queue preflight route failures persist backoff and an observable error event", async () => {
+  const value = await fixture();
+  try {
+    const task = createRequest(value.core, "route-failure");
+    const delivery = value.core.listPendingDeliveries()[0];
+    const observed = [];
+    const routeError = Object.assign(new Error("Recipient binding is stale."), {
+      code: "STALE_RECIPIENT_ROUTE"
+    });
+    const dispatcher = new CollaborationDeliveryDispatcher({
+      core: value.core,
+      runtime: fakeRuntime("idle"),
+      clock: () => "2026-07-17T08:00:00.000Z",
+      retryBaseMs: 2_000,
+      routeResolver: { async resolve() { throw routeError; } },
+      onEvent: (type, payload) => observed.push({ type, payload })
+    });
+
+    const failed = dispatcher.failRoute(delivery.deliveryId, routeError, {
+      envelope: value.core.getDeliveryEnvelope(delivery.deliveryId),
+      eventType: "enqueue_route_failed"
+    });
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.attemptCount, 1);
+    assert.equal(failed.nextAttemptAt, "2026-07-17T08:00:02.000Z");
+    assert.equal(failed.lastError, "Recipient binding is stale.");
+    assert.equal(value.core.listPendingDeliveries().length, 0, "backoff must suppress the hot queue tick");
+    assert.ok(value.core.getTask(task.taskId).events.some((event) => (
+      event.type === "enqueue_route_failed"
+      && event.payload.deliveryId === delivery.deliveryId
+      && event.payload.error === "Recipient binding is stale."
+    )));
+    assert.deepEqual(observed.at(-1), {
+      type: "CollaborationDeliveryFailed",
+      payload: { delivery: failed }
+    });
+    assert.equal(observed[0].type, "CollaborationDeliveryRouteFailed");
+    assert.equal(observed[0].payload.code, "STALE_RECIPIENT_ROUTE");
+  } finally {
+    await cleanup(value);
+  }
+});
+
+test("an orphaned delivery envelope is durably backed off instead of hot-looping", () => {
+  let delivery = {
+    deliveryId: "delivery:orphaned",
+    status: "pending",
+    attemptCount: 0,
+    nextAttemptAt: null,
+    lastError: null
+  };
+  const observed = [];
+  const core = {
+    getDeliveryEnvelope: () => null,
+    getDelivery: () => delivery,
+    updateDelivery: (_deliveryId, patch) => {
+      delivery = {
+        ...delivery,
+        ...patch,
+        attemptCount: delivery.attemptCount + (patch.incrementAttempt ? 1 : 0)
+      };
+      delete delivery.incrementAttempt;
+      return delivery;
+    }
+  };
+  const dispatcher = new CollaborationDeliveryDispatcher({
+    core,
+    runtime: fakeRuntime("idle"),
+    clock: () => "2026-07-17T08:00:00.000Z",
+    retryBaseMs: 2_000,
+    onEvent: (type, payload) => observed.push({ type, payload })
+  });
+  const error = Object.assign(new Error("Delivery envelope is missing."), {
+    code: "COLLABORATION_ENVELOPE_MISSING"
+  });
+
+  const failed = dispatcher.failRoute(delivery.deliveryId, error, {
+    eventType: "delivery_envelope_missing"
+  });
+
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.attemptCount, 1);
+  assert.equal(failed.nextAttemptAt, "2026-07-17T08:00:02.000Z");
+  assert.equal(failed.lastError, "Delivery envelope is missing.");
+  assert.equal(observed[0].type, "CollaborationDeliveryRouteFailed");
+  assert.equal(observed[0].payload.code, "COLLABORATION_ENVELOPE_MISSING");
+  assert.equal(observed[1].type, "CollaborationDeliveryRetryScheduled");
+  assert.equal(observed[1].payload.orphanedEnvelope, true);
+});
+
+test("the Agent work queue startup owner recovers interrupted deliveries", async () => {
   const value = await fixture();
   try {
     createRequest(value.core);
     const delivery = value.core.listPendingDeliveries()[0];
     value.core.claimDelivery(delivery.deliveryId);
-    const runtime = fakeRuntime("running");
-    const dispatcher = new CollaborationDeliveryDispatcher({ core: value.core, runtime, intervalMs: 60_000 });
-    dispatcher.start();
-    dispatcher.stop();
-    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(value.core.recoverInterruptedDeliveries(), 1);
     assert.notEqual(value.core.getDelivery(delivery.deliveryId).status, "delivering");
   } finally {
     await cleanup(value);
