@@ -256,6 +256,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     throw error;
   }
   const value = await handler();
+  if (name === "corptie_collaboration_request") requireStagedConfirmation(value);
   return afterSendToolNames.has(name)
     ? {
         ...value,
@@ -269,6 +270,13 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
         }
       }
     : value;
+}
+
+function requireStagedConfirmation(value) {
+  if (typeof value?.confirmation?.confirmationId === "string" && value.confirmation.confirmationId.trim()) return value;
+  const error = new Error("Corptie collaboration request did not return a staged confirmation ID.");
+  error.code = "COLLABORATION_REQUEST_EMPTY_RESPONSE";
+  throw error;
 }
 
 const afterSendToolNames = new Set([
