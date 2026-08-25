@@ -5173,10 +5173,12 @@ export class CorptieStore {
         createdAt
       ]
     );
-    if (this.db.getRowsModified() > 0) {
+    const changed = this.db.getRowsModified() > 0;
+    if (changed) {
       this.scheduleSave();
       this.notifyTimelineDirty(sessionId);
     }
+    return changed;
   }
 
   removeItem(sessionId, itemId) {
@@ -8794,6 +8796,7 @@ export class CorptieStore {
         threadId,
         sessionId: rawStatus.sessionId ?? threadId,
         activeTurnId: rawStatus.activeTurnId ?? null,
+        lastSettledTurnId: rawStatus.lastSettledTurnId ?? null,
         sandbox: rawStatus.sandbox ?? rawStatus.sandboxMode ?? null,
         approvalPolicy: rawStatus.approvalPolicy ?? null,
         logicalSessionId: logicalIdentity?.logical_session_id ?? rawStatus.logicalSessionId ?? null,
@@ -9569,6 +9572,7 @@ function toRawStatus(session) {
     threadId: session.external?.threadId ?? null,
     sessionId: session.external?.sessionId ?? null,
     activeTurnId: session.external?.activeTurnId ?? null,
+    lastSettledTurnId: session.external?.lastSettledTurnId ?? null,
     activityStatus: session.activityStatus ?? null,
     source: session.external?.source ?? null,
     sandbox: session.external?.sandbox ?? session.sandbox ?? null,
