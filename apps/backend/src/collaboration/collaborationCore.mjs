@@ -530,6 +530,23 @@ export class CollaborationCore {
     return row ? taskConfirmationFromRow(row, this) : null;
   }
 
+  discardPendingTaskConfirmation(confirmationId) {
+    const confirmation = this.getTaskConfirmation(confirmationId);
+    if (!confirmation) return false;
+    if (confirmation.status !== "pending" || confirmation.taskId) {
+      throw domainError(
+        "CONFIRMATION_NOT_DISCARDABLE",
+        "Only a pending collaboration confirmation without a Task may be discarded after staging fails."
+      );
+    }
+    this.store.db.run(
+      "DELETE FROM collaboration_request_confirmations WHERE confirmation_id = ? AND status = 'pending' AND task_id IS NULL",
+      [confirmationId]
+    );
+    this.store.scheduleSave();
+    return true;
+  }
+
   listTaskConfirmationsForSession(sessionId) {
     return this.store.selectAll(
       `SELECT * FROM collaboration_request_confirmations
