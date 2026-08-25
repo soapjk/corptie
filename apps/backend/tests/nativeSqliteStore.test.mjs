@@ -22,7 +22,7 @@ test("Session activity status survives store restart", async () => {
       provider: "codex-app-server",
       status: "running",
       activityStatus: "Running command",
-      external: { activeTurnId: "turn:active" }
+      external: { activeTurnId: "turn:active", lastSettledTurnId: "turn:previous" }
     });
     await first.close();
 
@@ -32,6 +32,7 @@ test("Session activity status survives store restart", async () => {
       const session = restarted.getSession("codex:active-session");
       assert.equal(session.activityStatus, "Running command");
       assert.equal(session.external.activeTurnId, "turn:active");
+      assert.equal(session.external.lastSettledTurnId, "turn:previous");
     } finally {
       await restarted.close();
     }
