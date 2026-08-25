@@ -15,7 +15,10 @@ enum SessionTimelineBackgroundSyncPolicy {
             // cursor. Any advance must synchronize an unopened Session too.
             return desiredServerRevision > previousServerRevision || isSelected
         }
-        return isSelected || hasResidentDetail || isUnread
+        // The first authoritative index hydrates every active Session, not a
+        // correctness sample around the current selection. Archived Sessions
+        // are excluded before this policy is called and remain on-demand.
+        return true
     }
 }
 
@@ -143,6 +146,87 @@ actor SessionTimelineNetworkPermitPool {
             available += 1
         } else {
             waiters.removeFirst().resume()
+        }
+    }
+}
+
+/// Owns the complete lifecycle of active Timeline synchronization. BackendClient
+/// only forwards authoritative index revisions; selection never starts, stops,
+/// or waits for these jobs.
+@MainActor
+final class ActiveTimelineSyncEngine {
+    private struct Job {
+        var session: TaskSession
+        var desiredRevision: Int
+        var task: Task<Void, Never>?
+    }
+
+    private var jobs: [String: Job] = [:]
+    private let permits: SessionTimelineNetworkPermitPool
+    private let localRevision: (String) -> Int
+    private let synchronize: (TaskSession, Int) async -> Bool
+
+    init(
+        concurrencyLimit: Int = 4,
+        localRevision: @escaping (String) -> Int,
+        synchronize: @escaping (TaskSession, Int) async -> Bool
+    ) {
+        permits = SessionTimelineNetworkPermitPool(limit: concurrencyLimit)
+        self.localRevision = localRevision
+        self.synchronize = synchronize
+    }
+
+    func retainActiveSessions(_ activeSessionIDs: Set<String>) {
+        for sessionID in jobs.keys where !activeSessionIDs.contains(sessionID) {
+            jobs[sessionID]?.task?.cancel()
+            jobs[sessionID] = nil
+        }
+    }
+
+    func schedule(_ session: TaskSession, desiredRevision: Int) {
+        guard desiredRevision > localRevision(session.id) else { return }
+        var job = jobs[session.id] ?? Job(session: session, desiredRevision: desiredRevision, task: nil)
+        job.session = session
+        job.desiredRevision = max(job.desiredRevision, desiredRevision)
+        guard job.task == nil else {
+            jobs[session.id] = job
+            return
+        }
+        job.task = Task { @MainActor [weak self] in
+            await self?.run(sessionID: session.id)
+        }
+        jobs[session.id] = job
+    }
+
+    func stop() {
+        jobs.values.forEach { $0.task?.cancel() }
+        jobs.removeAll()
+    }
+
+    var scheduledSessionCount: Int { jobs.count }
+
+    private func run(sessionID: String) async {
+        defer { jobs[sessionID] = nil }
+        var failureCount = 0
+        while !Task.isCancelled, let job = jobs[sessionID] {
+            let revision = localRevision(sessionID)
+            if revision >= job.desiredRevision { return }
+            await permits.acquire()
+            if Task.isCancelled {
+                await permits.release()
+                return
+            }
+            let succeeded = await synchronize(job.session, revision)
+            await permits.release()
+            if succeeded, localRevision(sessionID) > revision {
+                failureCount = 0
+            } else {
+                // A duplicate/empty response that reports success without
+                // advancing local authority must not become a main-actor spin.
+                failureCount += 1
+                let delay = min(30, 1 << min(failureCount, 4))
+                try? await Task.sleep(for: .seconds(delay))
+            }
         }
     }
 }

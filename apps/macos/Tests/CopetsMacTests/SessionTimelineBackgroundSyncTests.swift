@@ -21,7 +21,7 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         ))
     }
 
-    func testReconnectWarmsUnreadResidentAndSelectedTimelinesOnlyWhenStale() {
+    func testReconnectWarmsEveryActiveTimelineWhenStale() {
         for flags in [(true, false, false), (false, true, false), (false, false, true)] {
             XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
                 previousServerRevision: nil,
@@ -32,6 +32,14 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
                 isUnread: flags.2
             ))
         }
+        XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
+            previousServerRevision: nil,
+            desiredServerRevision: 12,
+            localRevision: 9,
+            isSelected: false,
+            hasResidentDetail: false,
+            isUnread: false
+        ))
         XCTAssertFalse(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: nil,
             desiredServerRevision: 12,
@@ -144,6 +152,32 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         let finalCounts = await counts.snapshot()
         XCTAssertEqual(finalCounts.maximum, 2)
         XCTAssertEqual(finalCounts.current, 0)
+    }
+
+    @MainActor
+    func testActiveSyncEngineReleasesCompletedAndArchivedJobs() async {
+        let fixture = ChatPerformanceFixture.make(configuration: .init(
+            turnCount: 1,
+            rawItemCount: 3,
+            longMessageCharacters: 8
+        ))
+        var revisions: [String: Int] = [:]
+        let engine = ActiveTimelineSyncEngine(
+            localRevision: { revisions[$0] ?? 0 },
+            synchronize: { session, _ in
+                revisions[session.id] = 3
+                return true
+            }
+        )
+
+        engine.schedule(fixture.session, desiredRevision: 3)
+        for _ in 0..<20 where engine.scheduledSessionCount != 0 { await Task.yield() }
+        XCTAssertEqual(revisions[fixture.session.id], 3)
+        XCTAssertEqual(engine.scheduledSessionCount, 0)
+
+        engine.schedule(fixture.session, desiredRevision: 4)
+        engine.retainActiveSessions([])
+        XCTAssertEqual(engine.scheduledSessionCount, 0, "Archived Sessions must release their scheduler immediately")
     }
 
     private func decodeEnvelope(_ json: String) throws -> SessionTimelineChangeEnvelope {

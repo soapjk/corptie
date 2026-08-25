@@ -98,65 +98,6 @@ enum ScheduledTaskListLoadOutcome: Sendable {
     case failure(String)
 }
 
-enum SessionDetailPreloadPolicy {
-    // Warm a small navigation neighborhood. Projection now runs off-main and
-    // Provider reads are single-flight on the backend, so four nearby rows no
-    // longer create the old main-thread Markdown burst or duplicate snapshots.
-    // Keep this bounded: the Session list itself can contain hundreds of rows.
-    static let batchLimit = 4
-
-    /// Prefer the rows nearest to the current selection so normal up/down
-    /// browsing hits memory. With no selection, warm the first visible page.
-    static func prioritizedSessionIDs(
-        _ sessionIDs: [String],
-        selectedSessionID: String?,
-        limit: Int = batchLimit
-    ) -> [String] {
-        guard limit > 0 else { return [] }
-        let uniqueIDs = sessionIDs.reduce(into: [String]()) { result, id in
-            guard !result.contains(id) else { return }
-            result.append(id)
-        }
-        guard let selectedSessionID,
-              let selectedIndex = uniqueIDs.firstIndex(of: selectedSessionID) else {
-            return Array(uniqueIDs.prefix(limit))
-        }
-
-        var prioritized: [String] = []
-        var offset = 1
-        while prioritized.count < limit,
-              selectedIndex + offset < uniqueIDs.count || selectedIndex - offset >= 0 {
-            let nextIndex = selectedIndex + offset
-            if nextIndex < uniqueIDs.count {
-                prioritized.append(uniqueIDs[nextIndex])
-            }
-            let previousIndex = selectedIndex - offset
-            if prioritized.count < limit, previousIndex >= 0 {
-                prioritized.append(uniqueIDs[previousIndex])
-            }
-            offset += 1
-        }
-        return prioritized
-    }
-
-    /// A Session list update carries the durable agent-message cursor even for
-    /// rows whose detail stream is not mounted. Refresh only rows whose cursor
-    /// advanced, so completed background Sessions are warm without polling all
-    /// cached transcripts again.
-    static func sessionsWithAdvancedAgentMessages(
-        previous: [TaskSession],
-        current: [TaskSession],
-        excluding selectedSessionID: String?
-    ) -> [TaskSession] {
-        let previousByID = Dictionary(uniqueKeysWithValues: previous.map { ($0.id, $0) })
-        return current.filter { session in
-            guard session.id != selectedSessionID else { return false }
-            let previousCursor = previousByID[session.id]?.lastAgentMessageSequence ?? 0
-            return (session.lastAgentMessageSequence ?? 0) > previousCursor
-        }
-    }
-}
-
 @MainActor
 final class BackendClient: ObservableObject {
     static let shared = BackendClient()
@@ -164,7 +105,7 @@ final class BackendClient: ObservableObject {
     private let appState = AppStateStore.shared
     private let timelinePersistenceRepository = SessionTimelinePositionRepository.shared
     var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
-    let sessionListStore = SessionListStore()
+    let sessionIndexStore = SessionIndexStore()
 
     private static let iso8601Formatter = ISO8601DateFormatter()
 
@@ -182,6 +123,8 @@ final class BackendClient: ObservableObject {
     }
 
     let sessionsDidChange = CurrentValueSubject<[TaskSession], Never>([])
+    let supplementaryDataController = SessionSupplementaryDataController()
+    let sessionCommandController = SessionCommandController()
     @Published private(set) var archivedSessions: [TaskSession] = []
     @Published private(set) var selectedSession: TaskSession?
     @Published private(set) var selectedDetail: CodexThreadDetail? {
@@ -195,8 +138,14 @@ final class BackendClient: ObservableObject {
     var suppressBackgroundPolling = false
     @Published private(set) var viewingHistoricalThreadId: String?
     @Published private(set) var isLoadingDetail = false
-    @Published private(set) var isSendingMessage = false
-    @Published private(set) var sendStatusMessage: String?
+    private(set) var isSendingMessage: Bool {
+        get { sessionCommandController.isSendingMessage }
+        set { sessionCommandController.isSendingMessage = newValue }
+    }
+    private(set) var sendStatusMessage: String? {
+        get { sessionCommandController.sendStatusMessage }
+        set { sessionCommandController.sendStatusMessage = newValue }
+    }
     @Published private(set) var isOnline = false
     @Published private(set) var lastError: String?
     @Published private(set) var isCreatingTask = false
@@ -213,48 +162,86 @@ final class BackendClient: ObservableObject {
     @Published private(set) var codexDefaultReasoningLevel: String?
     @Published private(set) var loadedModelProvider: String?
     @Published private(set) var isLoadingCodexModels = false
-    @Published private(set) var isSwitchingModel = false
-    @Published private(set) var isSwitchingReasoning = false
-    @Published private(set) var connectionTransitionSessionIds = Set<String>()
-    @Published private(set) var restartingSessionIds = Set<String>()
-    @Published private(set) var restartActivityBySessionId: [String: SessionRestartActivity] = [:]
-    @Published private(set) var undoneCodexTurnIds = Set<String>()
+    private(set) var isSwitchingModel: Bool { get { sessionCommandController.isSwitchingModel } set { sessionCommandController.isSwitchingModel = newValue } }
+    private(set) var isSwitchingReasoning: Bool { get { sessionCommandController.isSwitchingReasoning } set { sessionCommandController.isSwitchingReasoning = newValue } }
+    private(set) var connectionTransitionSessionIds: Set<String> { get { sessionCommandController.connectionTransitionSessionIds } set { sessionCommandController.connectionTransitionSessionIds = newValue } }
+    private(set) var restartingSessionIds: Set<String> { get { sessionCommandController.restartingSessionIds } set { sessionCommandController.restartingSessionIds = newValue } }
+    private(set) var restartActivityBySessionId: [String: SessionRestartActivity] { get { sessionCommandController.restartActivityBySessionId } set { sessionCommandController.restartActivityBySessionId = newValue } }
+    private(set) var undoneCodexTurnIds: Set<String> { get { sessionCommandController.undoneCodexTurnIds } set { sessionCommandController.undoneCodexTurnIds = newValue } }
     @Published private(set) var isLoadingArchivedSessions = false
-    @Published private(set) var selectedSessionUsage: SessionUsageResponse?
-    @Published private(set) var selectedContextReferences: [SessionContextReference] = []
-    @Published private(set) var isLoadingContextReferences = false
-    @Published private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse?
-    @Published private(set) var selectedProjectIntegrationStatus: ProjectIntegrationStatusResponse?
-    @Published private(set) var projectWorktreeLoadError: String?
-    @Published private(set) var projectWorktreeActionError: String?
-    @Published private(set) var isLoadingProjectWorktrees = false
-    @Published private(set) var projectWorktreeActionIds = Set<String>()
-    @Published private(set) var isCleaningMergedProjectWorktrees = false
-    @Published private(set) var isIntegratingCompletedWorktrees = false
-    @Published private(set) var isCreatingIntegrationConflictWorkItem = false
-    @Published private(set) var gitHubPushPreparation: GitHubPushPreparation?
-    @Published private(set) var gitHubPushError: String?
-    @Published private(set) var isPreparingGitHubPush = false
-    @Published private(set) var isGeneratingGitHubCommitMessage = false
-    @Published private(set) var gitHubPushingSessionId: String?
-    @Published private(set) var workspaceRecoveryStatus: WorkspaceRecoveryStatus?
-    @Published private(set) var isRecoveringWorkspace = false
+    private(set) var selectedSessionUsage: SessionUsageResponse? {
+        get { supplementaryDataController.selectedSessionUsage }
+        set { supplementaryDataController.selectedSessionUsage = newValue }
+    }
+    private(set) var selectedContextReferences: [SessionContextReference] {
+        get { supplementaryDataController.selectedContextReferences }
+        set { supplementaryDataController.selectedContextReferences = newValue }
+    }
+    private(set) var isLoadingContextReferences: Bool {
+        get { supplementaryDataController.isLoadingContextReferences }
+        set { supplementaryDataController.isLoadingContextReferences = newValue }
+    }
+    private(set) var selectedProjectWorktreeStatus: ProjectWorktreeStatusResponse? {
+        get { supplementaryDataController.selectedProjectWorktreeStatus }
+        set { supplementaryDataController.selectedProjectWorktreeStatus = newValue }
+    }
+    private(set) var selectedProjectIntegrationStatus: ProjectIntegrationStatusResponse? {
+        get { supplementaryDataController.selectedProjectIntegrationStatus }
+        set { supplementaryDataController.selectedProjectIntegrationStatus = newValue }
+    }
+    private(set) var projectWorktreeLoadError: String? {
+        get { supplementaryDataController.projectWorktreeLoadError }
+        set { supplementaryDataController.projectWorktreeLoadError = newValue }
+    }
+    private(set) var projectWorktreeActionError: String? { get { sessionCommandController.projectWorktreeActionError } set { sessionCommandController.projectWorktreeActionError = newValue } }
+    private(set) var isLoadingProjectWorktrees: Bool {
+        get { supplementaryDataController.isLoadingProjectWorktrees }
+        set { supplementaryDataController.isLoadingProjectWorktrees = newValue }
+    }
+    private(set) var projectWorktreeActionIds: Set<String> { get { sessionCommandController.projectWorktreeActionIds } set { sessionCommandController.projectWorktreeActionIds = newValue } }
+    private(set) var isCleaningMergedProjectWorktrees: Bool { get { sessionCommandController.isCleaningMergedProjectWorktrees } set { sessionCommandController.isCleaningMergedProjectWorktrees = newValue } }
+    private(set) var isIntegratingCompletedWorktrees: Bool { get { sessionCommandController.isIntegratingCompletedWorktrees } set { sessionCommandController.isIntegratingCompletedWorktrees = newValue } }
+    private(set) var isCreatingIntegrationConflictWorkItem: Bool { get { sessionCommandController.isCreatingIntegrationConflictWorkItem } set { sessionCommandController.isCreatingIntegrationConflictWorkItem = newValue } }
+    private(set) var gitHubPushPreparation: GitHubPushPreparation? { get { sessionCommandController.gitHubPushPreparation } set { sessionCommandController.gitHubPushPreparation = newValue } }
+    private(set) var gitHubPushError: String? { get { sessionCommandController.gitHubPushError } set { sessionCommandController.gitHubPushError = newValue } }
+    private(set) var isPreparingGitHubPush: Bool { get { sessionCommandController.isPreparingGitHubPush } set { sessionCommandController.isPreparingGitHubPush = newValue } }
+    private(set) var isGeneratingGitHubCommitMessage: Bool { get { sessionCommandController.isGeneratingGitHubCommitMessage } set { sessionCommandController.isGeneratingGitHubCommitMessage = newValue } }
+    private(set) var gitHubPushingSessionId: String? { get { sessionCommandController.gitHubPushingSessionId } set { sessionCommandController.gitHubPushingSessionId = newValue } }
+    private(set) var workspaceRecoveryStatus: WorkspaceRecoveryStatus? {
+        get { supplementaryDataController.workspaceRecoveryStatus }
+        set { supplementaryDataController.workspaceRecoveryStatus = newValue }
+    }
+    private(set) var isRecoveringWorkspace: Bool {
+        get { sessionCommandController.isRecoveringWorkspace }
+        set { sessionCommandController.isRecoveringWorkspace = newValue }
+    }
     @Published private(set) var worktreeCommitReviewPrompt: WorktreeCommitReviewPrompt?
-    @Published private(set) var isGeneratingWorktreeCommitMessage = false
-    @Published private(set) var selectedScheduledTasks: [ScheduledSessionTask] = []
+    private(set) var isGeneratingWorktreeCommitMessage: Bool { get { sessionCommandController.isGeneratingWorktreeCommitMessage } set { sessionCommandController.isGeneratingWorktreeCommitMessage = newValue } }
+    private(set) var selectedScheduledTasks: [ScheduledSessionTask] {
+        get { supplementaryDataController.selectedScheduledTasks }
+        set { supplementaryDataController.selectedScheduledTasks = newValue }
+    }
     @Published private(set) var automations: [ScheduledSessionTask] = []
     @Published private(set) var isLoadingAutomations = false
     @Published private(set) var automationsError: String?
-    @Published private(set) var isLoadingScheduledTasks = false
-    @Published private(set) var scheduledTaskMutationIds = Set<String>()
-    @Published private(set) var scheduledTaskError: String?
+    private(set) var isLoadingScheduledTasks: Bool {
+        get { supplementaryDataController.isLoadingScheduledTasks }
+        set { supplementaryDataController.isLoadingScheduledTasks = newValue }
+    }
+    private(set) var scheduledTaskMutationIds: Set<String> {
+        get { sessionCommandController.scheduledTaskMutationIds }
+        set { sessionCommandController.scheduledTaskMutationIds = newValue }
+    }
+    private(set) var scheduledTaskError: String? {
+        get { sessionCommandController.scheduledTaskError }
+        set { sessionCommandController.scheduledTaskError = newValue }
+    }
     let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("corptie", isDirectory: true).path
     }
-    private var pollingTask: Task<Void, Never>?
     private var eventStreamTask: Task<Void, Never>?
     private var detailStreamTask: Task<Void, Never>?
     private var detailStreamWatchdogTask: Task<Void, Never>?
@@ -270,12 +257,13 @@ final class BackendClient: ObservableObject {
     private var performanceFixtureStreamTask: Task<Void, Never>?
     private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
-    private var detailPrefetchTasks: [String: Task<CodexThreadDetail?, Never>] = [:]
-    private var backgroundTimelineSyncTasks: [String: Task<Void, Never>] = [:]
-    private var desiredTimelineRevisionBySessionID: [String: Int] = [:]
     private var knownTimelineRevisionBySessionID: [String: Int] = [:]
-    private var hasReconciledTimelineRevisionIndex = false
-    private let timelineNetworkPermits = SessionTimelineNetworkPermitPool(limit: 4)
+    private lazy var activeTimelineSyncEngine = ActiveTimelineSyncEngine(
+        localRevision: { SessionTimelineRepository.shared.timelineRevision(for: $0) },
+        synchronize: { [weak self] session, revision in
+            await self?.synchronizeStoredTimeline(for: session, localRevision: revision) ?? false
+        }
+    )
     private var globalEventCursor = 0
     private static let historyPageSize = 200
     private var historyLoadSessionIDs = Set<String>()
@@ -306,10 +294,17 @@ final class BackendClient: ObservableObject {
     )?
     private var appStateCancellable: AnyCancellable?
     private var reachabilityCancellable: AnyCancellable?
+    private var pageControllerCancellables = Set<AnyCancellable>()
     private var lastProjectedSessions: [TaskSession]?
     private var completedWorktreeIntegrationGate = ProjectWorktreeIntegrationLaunchGate()
 
     init() {
+        supplementaryDataController.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &pageControllerCancellables)
+        sessionCommandController.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &pageControllerCancellables)
         appStateCancellable = appState.$state
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.projectSessionsFromAppState() }
@@ -327,7 +322,6 @@ final class BackendClient: ObservableObject {
     }
 
     func start() {
-        pollingTask?.cancel()
         eventStreamTask?.cancel()
         detailStreamTask?.cancel()
         detailStreamWatchdogTask?.cancel()
@@ -345,6 +339,7 @@ final class BackendClient: ObservableObject {
         }
         Task {
             await loadSettings()
+            await syncNewSessionDefaultsFromPreferences()
             await loadProviders()
             if let providerId = defaultSessionProviderId,
                agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
@@ -361,22 +356,9 @@ final class BackendClient: ObservableObject {
             startDetailStream(for: selectedSession)
             scheduleExecutionPreparation(for: selectedSession, generation: selectionGeneration)
         }
-        pollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                if self?.appState.syncError != nil { await AppStateSyncController.shared.refreshSnapshot() }
-                await self?.syncNewSessionDefaultsFromPreferences()
-                await self?.refreshSelectedDetailFromPolling()
-                guard SessionListPerformanceFlags.current.pollingEnabled else {
-                    return
-                }
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
     }
 
     func stop() {
-        pollingTask?.cancel()
-        pollingTask = nil
         eventStreamTask?.cancel()
         eventStreamTask = nil
         AppStateSyncController.shared.stop()
@@ -402,13 +384,8 @@ final class BackendClient: ObservableObject {
         projectStatusRefreshTask = nil
         projectStatusEventRefreshTask?.cancel()
         projectStatusEventRefreshTask = nil
-        detailPrefetchTasks.values.forEach { $0.cancel() }
-        detailPrefetchTasks.removeAll()
-        backgroundTimelineSyncTasks.values.forEach { $0.cancel() }
-        backgroundTimelineSyncTasks.removeAll()
-        desiredTimelineRevisionBySessionID.removeAll()
+        activeTimelineSyncEngine.stop()
         knownTimelineRevisionBySessionID.removeAll()
-        hasReconciledTimelineRevisionIndex = false
     }
 
     func reportNavigationError(sessionId: String) {
@@ -626,7 +603,7 @@ final class BackendClient: ObservableObject {
                 || eventName == "ScheduledSessionRunStarted"
                 || eventName == "ScheduledSessionRunCompleted"
                 || eventName == "ScheduledSessionRunFailed" {
-                await refreshSelectedDetailFromPolling()
+                await refreshSelectedDetailIfStreamUnavailable()
             }
             return
         }
@@ -767,7 +744,7 @@ final class BackendClient: ObservableObject {
             || eventName == "AgentWorkStarted"
             || eventName == "AgentWorkCompleted"
             || eventName == "AgentWorkFailed" {
-            await refreshSelectedDetailFromPolling()
+            await refreshSelectedDetailIfStreamUnavailable()
         }
     }
 
@@ -1246,23 +1223,16 @@ final class BackendClient: ObservableObject {
         let previousSessions = lastProjectedSessions
         lastProjectedSessions = nextSessions
         let activeSessionIDs = Set(nextSessions.map(\.id))
-        let removedPrefetchIDs = detailPrefetchTasks.keys.filter { !activeSessionIDs.contains($0) }
-        for sessionID in removedPrefetchIDs {
-            detailPrefetchTasks[sessionID]?.cancel()
-            detailPrefetchTasks[sessionID] = nil
-        }
-        let removedSyncIDs = backgroundTimelineSyncTasks.keys.filter { !activeSessionIDs.contains($0) }
-        for sessionID in removedSyncIDs {
-            backgroundTimelineSyncTasks[sessionID]?.cancel()
-            backgroundTimelineSyncTasks[sessionID] = nil
-            desiredTimelineRevisionBySessionID[sessionID] = nil
+        activeTimelineSyncEngine.retainActiveSessions(activeSessionIDs)
+        retainResidentSessionCaches(activeSessionIDs: activeSessionIDs)
+        for sessionID in knownTimelineRevisionBySessionID.keys where !activeSessionIDs.contains(sessionID) {
             knownTimelineRevisionBySessionID[sessionID] = nil
             SessionTimelineRepository.shared.remove(sessionID)
         }
 
-        let previous = sessionListStore.sessions
+        let previous = sessionIndexStore.sessions
         let patch = SessionCollectionDiffer.patch(from: previous, to: nextSessions, revision: UInt64(max(0, appState.revision)))
-        sessionListStore.apply(patch, authoritativeSessions: nextSessions)
+        sessionIndexStore.apply(patch, authoritativeSessions: nextSessions)
         archivedSessions = appState.sessions.filter { $0.archived == true }
         sessionsDidChange.send(nextSessions)
         let previousByID = Dictionary(uniqueKeysWithValues: (previousSessions ?? []).map { ($0.id, $0) })
@@ -1290,6 +1260,15 @@ final class BackendClient: ObservableObject {
         }
         syncSelectedSessionFromSessions()
         syncSelectedDetailMetadataFromSessions()
+    }
+
+    private func retainResidentSessionCaches(activeSessionIDs: Set<String>? = nil) {
+        var residentSessionIDs = activeSessionIDs ?? Set(sessions.map(\.id))
+        if let selectedSession { residentSessionIDs.insert(selectedSession.id) }
+        SessionTimelineRepository.shared.pin(residentSessionIDs)
+        SessionTimelineRepository.shared.prune(to: residentSessionIDs)
+        SessionPresentationCache.shared.pin(residentSessionIDs)
+        SessionPresentationCache.shared.prune(to: residentSessionIDs)
     }
 
     func refreshArchivedSessions() async {
@@ -1699,8 +1678,8 @@ final class BackendClient: ObservableObject {
             sendStatusMessage = L10nFormat("Selected %@", option.label)
             if selectedSession?.id == session.id {
                 await loadDetail(for: session)
-            } else if let detail = await fetchDetail(for: session) {
-                syncSessionSummary(from: detail)
+            } else {
+                _ = await fetchDetail(for: session)
             }
             await refresh()
         } catch {
@@ -1768,6 +1747,7 @@ final class BackendClient: ObservableObject {
         deferredDetailPublishTask = nil
         viewingHistoricalThreadId = nil
         selectedSession = session
+        retainResidentSessionCaches()
         selectedScheduledTasks = []
         scheduledTaskError = nil
         Task { [weak self] in
@@ -2882,52 +2862,6 @@ final class BackendClient: ObservableObject {
         SessionTimelineRepository.shared.remove(sessionId)
     }
 
-    func prefetchDetail(for session: TaskSession) {
-        guard SessionTimelineRepository.shared.detail(for: session.id) == nil,
-              detailPrefetchTasks[session.id] == nil else {
-            return
-        }
-
-        detailPrefetchTasks[session.id] = Task { @MainActor [weak self] in
-            guard let self else {
-                return nil
-            }
-            defer { self.detailPrefetchTasks[session.id] = nil }
-            guard let snapshot = await self.fetchStoredDetail(for: session) else { return nil }
-            self.storeCachedDetail(
-                snapshot.detail,
-                for: session.id,
-                timelineRevision: snapshot.timelineRevision
-            )
-            return snapshot.detail
-        }
-    }
-
-    /// Returns the same provider-neutral snapshot used by speculative prefetch.
-    /// Callers can build presentation caches without issuing a duplicate request.
-    func detailForPreheating(_ session: TaskSession) async -> CodexThreadDetail? {
-        if let cached = cachedDetail(for: session.id) {
-            return cached
-        }
-        prefetchDetail(for: session)
-        if let task = detailPrefetchTasks[session.id] {
-            return await task.value ?? cachedDetail(for: session.id)
-        }
-        return cachedDetail(for: session.id)
-    }
-
-    func preloadSessionDetails(_ sessions: [TaskSession], centeredOn selectedSessionId: String?) {
-        let sessionsByID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        let candidateIDs = SessionDetailPreloadPolicy.prioritizedSessionIDs(
-            sessions.map(\.id),
-            selectedSessionID: selectedSessionId
-        )
-        for sessionID in candidateIDs {
-            guard let session = sessionsByID[sessionID] else { continue }
-            prefetchDetail(for: session)
-        }
-    }
-
     private func reconcileTimelineRevisionIndex() async {
         do {
             let (data, response) = try await URLSession.shared.data(
@@ -2936,13 +2870,7 @@ final class BackendClient: ObservableObject {
             guard let http = response as? HTTPURLResponse,
                   http.statusCode == 200 else { return }
             let index = try JSONDecoder().decode(SessionTimelineRevisionIndex.self, from: data)
-            let isInitialIndex = !hasReconciledTimelineRevisionIndex
-            hasReconciledTimelineRevisionIndex = true
             for entry in index.sessions {
-                if isInitialIndex, knownTimelineRevisionBySessionID[entry.sessionId] == nil {
-                    knownTimelineRevisionBySessionID[entry.sessionId] = entry.timelineRevision
-                    continue
-                }
                 applyTimelineRevisionAdvance(
                     sessionId: entry.sessionId,
                     revision: entry.timelineRevision
@@ -2968,52 +2896,7 @@ final class BackendClient: ObservableObject {
         for session: TaskSession,
         desiredRevision: Int
     ) {
-        guard desiredRevision > 0 else { return }
-        desiredTimelineRevisionBySessionID[session.id] = max(
-            desiredTimelineRevisionBySessionID[session.id] ?? 0,
-            desiredRevision
-        )
-        guard backgroundTimelineSyncTasks[session.id] == nil else { return }
-
-        backgroundTimelineSyncTasks[session.id] = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer {
-                self.backgroundTimelineSyncTasks[session.id] = nil
-                if SessionTimelineRepository.shared.timelineRevision(for: session.id)
-                    >= (self.desiredTimelineRevisionBySessionID[session.id] ?? 0) {
-                    self.desiredTimelineRevisionBySessionID[session.id] = nil
-                }
-            }
-            var failureCount = 0
-            while !Task.isCancelled,
-                  let currentSession = self.sessions.first(where: { $0.id == session.id }),
-                  let desired = self.desiredTimelineRevisionBySessionID[session.id] {
-                let localRevision = SessionTimelineRepository.shared.timelineRevision(for: session.id)
-                if localRevision >= desired,
-                   SessionTimelineRepository.shared.detail(for: session.id) != nil {
-                    return
-                }
-
-                await self.timelineNetworkPermits.acquire()
-                if Task.isCancelled {
-                    await self.timelineNetworkPermits.release()
-                    return
-                }
-                let synchronized = await self.synchronizeStoredTimeline(
-                    for: currentSession,
-                    localRevision: localRevision
-                )
-                await self.timelineNetworkPermits.release()
-
-                if synchronized {
-                    failureCount = 0
-                    continue
-                }
-                failureCount += 1
-                let delay = min(30, 1 << min(failureCount, 4))
-                try? await Task.sleep(for: .seconds(delay))
-            }
-        }
+        activeTimelineSyncEngine.schedule(session, desiredRevision: desiredRevision)
     }
 
     private func synchronizeStoredTimeline(
@@ -3029,11 +2912,13 @@ final class BackendClient: ObservableObject {
                 localRevision: localRevision
             ) {
             case .applied(let detail, let revision):
+                let projectedDetail = Self.applyingSessionMetadata(session, to: detail)
                 storeCachedDetail(
-                    Self.applyingSessionMetadata(session, to: detail),
+                    projectedDetail,
                     for: session.id,
                     timelineRevision: revision
                 )
+                await warmPresentationCache(projectedDetail, for: session.id)
                 return true
             case .duplicate:
                 return true
@@ -3047,7 +2932,25 @@ final class BackendClient: ObservableObject {
             for: session.id,
             timelineRevision: snapshot.timelineRevision
         )
+        await warmPresentationCache(snapshot.detail, for: session.id)
         return true
+    }
+
+    private func warmPresentationCache(_ detail: CodexThreadDetail, for sessionID: String) async {
+        let visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
+        let restorationAnchorRowID = SessionViewportController.shared.position(for: sessionID).flatMap {
+            $0.followsLatest ? nil : $0.rowID
+        }
+        let cache = await Task.detached(priority: .utility) {
+            makeDetailDisplayCache(
+                for: detail,
+                sessionId: sessionID,
+                visibleMessageLimit: visibleMessageLimit,
+                restorationAnchorRowID: restorationAnchorRowID
+            )
+        }.value
+        guard sessions.contains(where: { $0.id == sessionID }) else { return }
+        SessionPresentationCache.shared.store(cache)
     }
 
     private func fetchTimelineChanges(
@@ -3088,7 +2991,13 @@ final class BackendClient: ObservableObject {
                 try JSONDecoder().decode(StoredSessionTimelineSnapshotHeader.self, from: data)
             }.value
             async let detail = decodeDetail(data, for: session, threadId: threadId)
-            return try await (detail, header.timelineRevision)
+            let result = try await (detail, header.timelineRevision)
+            try? await timelinePersistenceRepository.storeTimelineWindow(
+                data,
+                sessionID: session.id,
+                revision: Int64(max(0, result.1))
+            )
+            return result
         } catch {
             return nil
         }
@@ -3212,7 +3121,7 @@ final class BackendClient: ObservableObject {
         let result = await performTurnChangesAction("undo", sessionId: sessionId, turnId: turnId)
         if case .success = result {
             undoneCodexTurnIds.insert(turnId)
-            await refreshSelectedDetailFromPolling()
+            await refreshSelectedDetailIfStreamUnavailable()
         }
         return result
     }
@@ -3993,7 +3902,7 @@ final class BackendClient: ObservableObject {
         reconnect(session: selectedSession)
     }
 
-    private func refreshSelectedDetailFromPolling() async {
+    private func refreshSelectedDetailIfStreamUnavailable() async {
         guard let selectedSession,
               ChatDetailRefreshPolicy.shouldPoll(
                   sessionId: selectedSession.id,
@@ -4819,7 +4728,6 @@ final class BackendClient: ObservableObject {
             if let selectedSession {
                 storeCachedDetail(mergedDetail, for: selectedSession.id)
             }
-            syncSessionSummary(from: mergedDetail)
             if lastError != nil {
                 lastError = nil
             }
@@ -4861,7 +4769,6 @@ final class BackendClient: ObservableObject {
                 markDetailStreamHealthy(for: expectedSession)
                 publishSelectedDetailIfSafe(mergedDetail)
                 storeCachedDetail(mergedDetail, for: expectedSession.id)
-                syncSessionSummary(from: mergedDetail)
                 lastError = nil
             case .duplicate:
                 markDetailStreamHealthy(for: expectedSession)
@@ -4940,26 +4847,12 @@ final class BackendClient: ObservableObject {
             }
         }
 
-        let detail: CodexThreadDetail?
-        if let prefetchTask = detailPrefetchTasks[session.id] {
-            if let prefetchedDetail = await prefetchTask.value {
-                detail = prefetchedDetail
-            } else {
-                // A speculative request is intentionally silent. Once the user
-                // selects the row, retry through the foreground path so the UI
-                // gets a real result or a visible error instead of an endless
-                // empty placeholder.
-                detail = await fetchDetail(for: session)
-            }
-        } else {
-            detail = await fetchDetail(for: session)
-        }
+        let detail = await fetchDetail(for: session)
         guard !Task.isCancelled,
               selectionGeneration == requiredGeneration,
               selectedSession?.id == session.id,
               let detail else { return }
         publishSelectedDetailIfSafe(detail)
-        syncSessionSummary(from: detail)
     }
 
     private func decodeDetail(_ data: Data, for session: TaskSession, threadId: String) async throws -> CodexThreadDetail {
@@ -4969,75 +4862,6 @@ final class BackendClient: ObservableObject {
             authoritativeCwd: session.external?.cwd,
             workspacePath: session.external?.workspace?.path
         )
-    }
-
-    private func syncSessionSummary(from detail: CodexThreadDetail) {
-        let latestSummary = detail.items.reversed().first { item in
-            item.type != "userMessage"
-                && item.type != "system"
-                && !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }?.text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        let nextSessions = sessions.map { session in
-            guard session.external?.threadId == detail.id else {
-                return session
-            }
-
-            let pendingChoice = detail.items.reversed().first { item in
-                item.status != "selected" && !(item.options ?? []).isEmpty
-            }
-            let pendingPrompt = pendingChoice?.text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            return TaskSession(
-                id: session.id,
-                title: session.title,
-                agent: session.agent,
-                agentId: session.agentId,
-                sessionKind: session.sessionKind,
-                objectiveId: session.objectiveId,
-                workItemId: session.workItemId,
-                status: detail.status,
-                progress: session.progress,
-                summary: latestSummary?.isEmpty == false ? latestSummary! : session.summary,
-                suggestedOptions: pendingChoice?.options ?? session.suggestedOptions,
-                suggestedPrompt: pendingPrompt?.isEmpty == false ? pendingPrompt : session.suggestedPrompt,
-                activityStatus: Self.reconciledActivityStatus(
-                    authoritativeStatus: detail.status,
-                    authoritativeActivityStatus: detail.activityStatus,
-                    fallbackActivityStatus: session.activityStatus
-                ),
-                updatedAt: detail.updatedAt,
-                lastMessageAt: session.lastMessageAt,
-                lastAgentMessageSequence: session.lastAgentMessageSequence,
-                lastReadMessageSequence: session.lastReadMessageSequence,
-                timelineRevision: session.timelineRevision,
-                accent: session.accent,
-                archived: session.archived,
-                pinned: session.pinned,
-                sortOrder: session.sortOrder,
-                capabilities: detail.capabilities ?? session.capabilities,
-                external: ExternalSession(
-                    provider: session.external?.provider ?? detail.source ?? "",
-                    threadId: session.external?.threadId,
-                    sessionId: session.external?.sessionId,
-                    agentSessionId: session.external?.agentSessionId,
-                    connectionStatus: detail.connectionStatus ?? session.external?.connectionStatus,
-                    currentModel: detail.currentModel ?? session.external?.currentModel,
-                    currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel,
-                    cwd: session.external?.cwd ?? detail.cwd,
-                    sandbox: session.external?.sandbox,
-                    approvalPolicy: session.external?.approvalPolicy,
-                    source: session.external?.source ?? detail.source,
-                    logicalSessionId: session.external?.logicalSessionId,
-                    workspace: session.external?.workspace,
-                    routingVersion: session.external?.routingVersion,
-                    providerSwitchInFlight: session.external?.providerSwitchInFlight,
-                    providerTransition: session.external?.providerTransition
-                ),
-                pendingCollaborationConfirmation: session.pendingCollaborationConfirmation
-            )
-        }
-        applySessionSnapshot(nextSessions)
     }
 
     private func syncSelectedSessionFromSessions() {
@@ -5092,9 +4916,6 @@ final class BackendClient: ObservableObject {
                 fileChanges: item.fileChanges,
                 turnDiff: item.turnDiff
             )
-        }
-        if let selectedDetail {
-            syncSessionSummary(from: selectedDetail)
         }
     }
 
