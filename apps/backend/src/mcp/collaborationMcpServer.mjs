@@ -326,7 +326,9 @@ export function createCollaborationMcpServer(options) {
       context_id: z.string().min(1).optional()
     },
     afterSend: true,
-    handler: (input) => client.post("/internal/collaboration/task-confirmations", mapRequest(input))
+    handler: async (input) => requireStagedConfirmation(
+      await client.post("/internal/collaboration/task-confirmations", mapRequest(input))
+    )
   });
 
   register(server, "corptie.memory.search", {
@@ -699,6 +701,13 @@ function required(value, field) {
 
 function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+function requireStagedConfirmation(value) {
+  if (typeof value?.confirmation?.confirmationId === "string" && value.confirmation.confirmationId.trim()) return value;
+  const error = new Error("Corptie collaboration request did not return a staged confirmation ID.");
+  error.code = "COLLABORATION_REQUEST_EMPTY_RESPONSE";
+  throw error;
 }
 
 async function main() {

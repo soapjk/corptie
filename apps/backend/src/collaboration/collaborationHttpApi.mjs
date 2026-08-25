@@ -176,16 +176,27 @@ export function handleCollaborationHttpRequest({
 
       if (request.method === "GET" && url.pathname === "/internal/collaboration/agents") {
         const requestedStatus = url.searchParams.get("status") || undefined;
+        const sourceCapabilities = sessionCollaborationService && sessionMetadata.sessionId
+          ? sessionCollaborationService.capabilities(sessionMetadata, actorAgentId)
+          : null;
         return sendJson(response, 200, {
-          agents: core.listAgents({ status: requestedStatus }),
+          agents: core.listAgents({ status: requestedStatus }).map((agent) => agent.agentId === actorAgentId && sourceCapabilities
+            ? withAuthoritativeBinding(agent, sourceCapabilities)
+            : agent),
           actorAgentId
         });
       }
 
       const agentMatch = url.pathname.match(/^\/internal\/collaboration\/agents\/([^/]+)$/);
       if (request.method === "GET" && agentMatch) {
-        const agent = core.getAgent(decodeURIComponent(agentMatch[1]));
+        let agent = core.getAgent(decodeURIComponent(agentMatch[1]));
         if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent was not found.", 404);
+        if (agent.agentId === actorAgentId && sessionCollaborationService && sessionMetadata.sessionId) {
+          agent = withAuthoritativeBinding(
+            agent,
+            sessionCollaborationService.capabilities(sessionMetadata, actorAgentId)
+          );
+        }
         return sendJson(response, 200, { agent, actorAgentId });
       }
 
@@ -221,7 +232,19 @@ export function handleCollaborationHttpRequest({
       if (request.method === "POST" && url.pathname === "/internal/collaboration/task-confirmations") {
         const input = await readJson(request);
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session-scoped collaboration is unavailable.", 503);
-        const sourceCapabilities = sessionCollaborationService.capabilities(sessionMetadata, actorAgentId);
+        const sourceCapabilities = sessionCollaborationService.capabilities(
+          sessionMetadata,
+          actorAgentId,
+          { validateContext: true }
+        );
+        if (!sourceCapabilities.actions.includes("collaboration.request")) {
+          const denial = sourceCapabilities.denials?.["collaboration.request"];
+          throw apiError(
+            denial?.code ?? "COLLABORATION_REQUEST_FORBIDDEN",
+            denial?.reason ?? "The authenticated Session does not have collaboration.request permission.",
+            403
+          );
+        }
         let recipientSessionDescriptor = null;
         if (input.recipientSessionId) {
           recipientSessionDescriptor = resolveRecipientSession(
@@ -281,7 +304,12 @@ export function handleCollaborationHttpRequest({
           sourceSessionId: sessionMetadata.sessionId,
           sourceTurnId: runningWork?.targetTurnId ?? null
         });
-        await onConfirmationStaged?.(confirmation);
+        try {
+          await onConfirmationStaged?.(confirmation);
+        } catch (error) {
+          core.discardPendingTaskConfirmation(confirmation.confirmationId);
+          throw error;
+        }
         return sendJson(response, 201, { confirmation });
       }
 
@@ -329,6 +357,25 @@ function memoryMetadata(request) {
     sessionId: headerText(request, "x-corptie-session-id"),
     objectiveId: headerText(request, "x-corptie-objective-id"),
     workItemId: headerText(request, "x-corptie-work-item-id")
+  };
+}
+
+function withAuthoritativeBinding(agent, capabilities) {
+  return {
+    ...agent,
+    sessionId: capabilities.sourceSessionId,
+    providerSessionId: capabilities.providerSessionId,
+    currentSessionId: capabilities.sourceSessionId,
+    currentObjectiveId: capabilities.objectiveId,
+    currentWorkItemId: capabilities.workItemId,
+    runtimeBinding: {
+      authoritative: true,
+      sessionId: capabilities.sourceSessionId,
+      providerSessionId: capabilities.providerSessionId,
+      sessionKind: capabilities.sessionKind,
+      objectiveId: capabilities.objectiveId,
+      workItemId: capabilities.workItemId
+    }
   };
 }
 

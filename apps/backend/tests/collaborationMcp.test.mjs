@@ -428,6 +428,29 @@ test("MCP tool failures are returned as tool errors instead of crashing the serv
   }
 });
 
+test("legacy MCP request delegates to the unified endpoint and rejects an empty success response", async () => {
+  const { client } = await connectMcp({
+    get: async () => ({}),
+    post: async () => ({})
+  });
+  try {
+    const result = await client.callTool({
+      name: "corptie.collaboration.request",
+      arguments: {
+        recipient_agent_id: "agent:peer",
+        routing_intent: "best_available",
+        type: "change_request",
+        title: "Route request",
+        summary: "Use the unified collaboration endpoint."
+      }
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /COLLABORATION_REQUEST_EMPTY_RESPONSE/);
+  } finally {
+    await client.close();
+  }
+});
+
 test("authenticated MCP workspace routes preserve the calling Agent identity", async () => {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-workspace-mcp-http-test-"));
   const store = new CorptieStore({

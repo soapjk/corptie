@@ -28,7 +28,7 @@ test("dynamic request maps tool input to the authenticated collaboration HTTP co
   const client = {
     post: async (path, body) => {
       calls.push({ path, body });
-      return { confirmation: { id: "confirmation-a" } };
+      return { confirmation: { confirmationId: "confirmation-a" } };
     }
   };
 
@@ -52,6 +52,18 @@ test("dynamic request maps tool input to the authenticated collaboration HTTP co
   }]);
   assert.equal(result.coordination.delivery, "awaiting_user_confirmation");
   assert.equal(result.coordination.nextAction, "end_current_turn");
+});
+
+test("dynamic request rejects an empty success response instead of reporting coordination success", async () => {
+  await assert.rejects(
+    callCollaborationDynamicTool({ post: async () => ({}) }, "corptie_collaboration_request", {
+      recipient_agent_id: "agent-b",
+      type: "change_request",
+      title: "Update API",
+      summary: "Add the endpoint"
+    }),
+    (error) => error.code === "COLLABORATION_REQUEST_EMPTY_RESPONSE"
+  );
 });
 
 test("dynamic read tools use the same backend endpoints as the MCP transport", async () => {
