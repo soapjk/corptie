@@ -22,8 +22,7 @@ function stableSessionFields(previous, next) {
     || previous.external?.threadId !== next.external?.threadId
     || previous.external?.routingVersion !== next.external?.routingVersion) fields.push("workspace");
   if (JSON.stringify(previous.suggestedOptions) !== JSON.stringify(next.suggestedOptions)
-    || previous.suggestedPrompt !== next.suggestedPrompt
-    || JSON.stringify(previous.pendingCollaborationConfirmation) !== JSON.stringify(next.pendingCollaborationConfirmation)) {
+    || previous.suggestedPrompt !== next.suggestedPrompt) {
     fields.push("suggestedOptions");
   }
   if (previous.pinned !== next.pinned

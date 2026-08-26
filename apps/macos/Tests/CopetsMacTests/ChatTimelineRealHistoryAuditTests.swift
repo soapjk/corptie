@@ -25,7 +25,7 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             let candidates = sessions.filter { $0.external?.provider == provider }
             var snapshots: [(TaskSession, CodexThreadDetail)] = []
             for session in candidates {
-                let data = try Data(contentsOf: baseURL.appending(path: "sessions/\(session.id)/snapshot"))
+                let data = try Data(contentsOf: baseURL.appending(path: "sessions/\(session.id)/stored-snapshot"))
                 snapshots.append((
                     session,
                     try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: data).session
@@ -72,7 +72,7 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             }.mapValues(\.count)
             let scrollMetrics = exerciseTableReuse(entries: visibleEntries)
             let pipelineMetrics = measureSnapshotPipeline(
-                data: try Data(contentsOf: baseURL.appending(path: "sessions/\(largest.0.id)/snapshot")),
+                data: try Data(contentsOf: baseURL.appending(path: "sessions/\(largest.0.id)/stored-snapshot")),
                 iterations: 30
             )
             let cellCreationLimit = Int64(max(20, visibleEntries.count / 2))

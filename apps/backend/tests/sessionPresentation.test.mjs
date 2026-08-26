@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   applyWorkspaceContinuationPresentation,
   composeStoredSessionList,
-  mergeAuthoritativeStoredSessionPresentation,
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
@@ -108,40 +107,6 @@ test("a stored Agent binding survives merging with a provider session", () => {
   );
 
   assert.equal(merged.agentId, "assistant");
-});
-
-test("a durable terminal projection wins over a stale running Provider list cache", () => {
-  const merged = mergeAuthoritativeStoredSessionPresentation(
-    {
-      id: "stable:session-a",
-      status: "running",
-      progress: 0.5,
-      summary: "Still working",
-      activityStatus: "Running command",
-      updatedAt: "2026-08-23T12:00:00.000Z",
-      capabilities: { canInterrupt: true },
-      external: { provider: "codex-app-server", activeTurnId: "turn:stale" }
-    },
-    {
-      id: "stable:session-a",
-      status: "complete",
-      progress: 1,
-      summary: "Finished",
-      updatedAt: "2026-08-23T12:00:01.000Z",
-      capabilities: { canInterrupt: false },
-      activityStatus: "Stale stored activity must be cleared",
-      rawStatus: { activeTurnId: null },
-      external: { provider: "codex-app-server", activeTurnId: null }
-    }
-  );
-
-  assert.equal(merged.status, "complete");
-  assert.equal(merged.progress, 1);
-  assert.equal(merged.summary, "Finished");
-  assert.equal(merged.activityStatus, null);
-  assert.equal(merged.updatedAt, "2026-08-23T12:00:01.000Z");
-  assert.equal(merged.capabilities.canInterrupt, false);
-  assert.equal(merged.external.activeTurnId, null);
 });
 
 test("a stored provider-neutral session kind survives provider refresh", () => {

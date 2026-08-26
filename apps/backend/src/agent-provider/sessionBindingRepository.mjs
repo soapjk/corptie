@@ -4,13 +4,9 @@
 export class SessionBindingRepository {
   constructor(options = {}) {
     this.store = options.store;
-    this.findSession = options.findSession;
     this.normalizeLegacySessionId = options.normalizeLegacySessionId ?? defaultNormalizeLegacySessionId;
     this.resolveProviderId = options.resolveProviderId ?? defaultResolveProviderId;
     if (!this.store) throw new TypeError("SessionBindingRepository requires a store.");
-    if (typeof this.findSession !== "function") {
-      throw new TypeError("SessionBindingRepository requires findSession().");
-    }
   }
 
   resolve(requestedSessionId) {
@@ -19,7 +15,10 @@ export class SessionBindingRepository {
     const logical = this.store.getLogicalSession(requested)
       ?? this.store.getLogicalSessionByLegacySessionId(requested);
     const legacySessionId = logical?.legacySessionId ?? requested;
-    const session = this.findSession(legacySessionId) ?? this.store.getSession(legacySessionId);
+    // Binding resolution is on every command and Timeline request path. It is
+    // an indexed point read; constructing the complete Session collection here
+    // turns active background sync into an N-by-N query loop.
+    const session = this.store.getSession(legacySessionId);
     if (!session) return null;
     const binding = logical?.activeBinding ?? null;
     const providerId = binding?.providerId ?? providerIdForLegacySession(session, this.resolveProviderId);

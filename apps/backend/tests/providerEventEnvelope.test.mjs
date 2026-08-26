@@ -60,8 +60,46 @@ test("Codex maps final item and terminal turn into the shared Provider envelope"
   assert.equal(turnEvent.providerId, "codex-app-server");
 });
 
+test("Codex persists the native completed item when its live cache has not caught up", () => {
+  const itemEvent = mapCodexProviderNotification({
+    binding: bindings.codex,
+    message: {
+      method: "item/completed",
+      params: {
+        threadId: "codex-thread",
+        turnId: "turn:one",
+        item: {
+          id: "item:native-final",
+          turnId: "turn:one",
+          turnStatus: "completed",
+          type: "agentMessage",
+          text: "native final answer",
+          phase: "finalAnswer",
+          status: "completed"
+        }
+      }
+    },
+    liveItems: [],
+    receivedAt: "2026-08-26T10:00:00.000Z"
+  });
+
+  assert.equal(itemEvent.type, "assistant.message.completed");
+  assert.equal(itemEvent.payload.item.id, "item:native-final");
+  assert.equal(itemEvent.payload.item.text, "native final answer");
+  assert.equal(itemEvent.payload.item.presentationRole, "final_answer");
+});
+
 test("Claude terminal callback maps completed, cancelled, and failed without Provider-specific product types", () => {
-  assert.equal(mapClaudeTurnSettled({ binding: bindings.claude, event: { status: "completed", turnId: "t1" } }).type, "turn.completed");
+  const completed = mapClaudeTurnSettled({
+    binding: bindings.claude,
+    event: {
+      status: "completed",
+      turnId: "t1",
+      items: [{ id: "claude:final", turnId: "t1", type: "agentMessage", text: "done", presentationRole: "finalAnswer" }]
+    }
+  });
+  assert.equal(completed.type, "turn.completed");
+  assert.equal(completed.payload.items[0].presentationRole, "final_answer");
   assert.equal(mapClaudeTurnSettled({ binding: bindings.claude, event: { status: "cancelled", turnId: "t2" } }).type, "turn.cancelled");
   assert.equal(mapClaudeTurnSettled({ binding: bindings.claude, event: { status: "failed", turnId: "t3" } }).type, "turn.failed");
 });

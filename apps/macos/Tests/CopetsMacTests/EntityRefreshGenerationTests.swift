@@ -83,7 +83,6 @@ struct EntityRefreshGenerationTests {
             capabilities: nil,
             external: nil,
             actions: nil,
-            pendingCollaborationConfirmation: nil
         )
     }
 

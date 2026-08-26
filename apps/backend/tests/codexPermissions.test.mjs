@@ -8,12 +8,10 @@ import {
   codexRuntimeWorkspaceRoots,
   codexTurnPermissionOptions,
   hasCodexSessionPermissions,
-  readInitialCodexPermissionsFromRollout,
   withCodexSessionPermissions
 } from "../src/utils/codexPermissions.mjs";
 import {
   hasCodexSessionRuntimeConfig,
-  readLatestCodexRuntimeConfigFromRollout,
   withCodexSessionRuntimeConfig
 } from "../src/utils/codexRuntimeConfig.mjs";
 import {
@@ -140,31 +138,6 @@ test("app-server sandbox variants normalize back to persisted CLI names", () => 
   assert.equal(session.external.sandbox, "danger-full-access");
 });
 
-test("legacy sessions recover their creation-time permission context from the rollout", () => {
-  const rollout = [
-    JSON.stringify({
-      type: "turn_context",
-      payload: {
-        approval_policy: "never",
-        sandbox_policy: { type: "danger-full-access" }
-      }
-    }),
-    "partially written line",
-    JSON.stringify({
-      type: "turn_context",
-      payload: {
-        approval_policy: "on-request",
-        sandbox_policy: { type: "read-only" }
-      }
-    })
-  ].join("\n");
-
-  assert.deepEqual(readInitialCodexPermissionsFromRollout(rollout), {
-    sandbox: "danger-full-access",
-    approvalPolicy: "never"
-  });
-});
-
 test("new Codex sessions resolve an explicit model and a supported reasoning level", () => {
   const models = [
     {
@@ -195,24 +168,5 @@ test("new Codex sessions resolve an explicit model and a supported reasoning lev
   }), {
     model: "gpt-5.6-sol",
     reasoningLevel: "low"
-  });
-});
-
-test("legacy sessions recover their latest model and reasoning from the rollout", () => {
-  const rollout = [
-    JSON.stringify({
-      type: "turn_context",
-      payload: { model: "gpt-5.5", effort: "high" }
-    }),
-    "partially written line",
-    JSON.stringify({
-      type: "turn_context",
-      payload: { model: "gpt-5.6-sol", effort: "xhigh" }
-    })
-  ].join("\n");
-
-  assert.deepEqual(readLatestCodexRuntimeConfigFromRollout(rollout), {
-    model: "gpt-5.6-sol",
-    reasoningLevel: "xhigh"
   });
 });

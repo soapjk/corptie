@@ -13,10 +13,8 @@ export class CodexProviderRuntime {
   ensureThreadResumed(...args) { return this.client.ensureThreadResumed(...args); }
   forkThread(...args) { return this.client.forkThread(...args); }
   interruptTurn(...args) { return this.client.interruptTurn(...args); }
-  listThreads(...args) { return this.client.listThreads(...args); }
   liveItemsForThread(...args) { return this.client.liveItemsForThread(...args); }
   readAccountRateLimits(...args) { return this.client.readAccountRateLimits(...args); }
-  readThread(...args) { return this.client.readThread(...args); }
   respondToApproval(...args) { return this.client.respondToApproval(...args); }
   resumeThread(...args) { return this.client.resumeThread(...args); }
   runEphemeralPrompt(...args) { return this.client.runEphemeralPrompt(...args); }
@@ -24,7 +22,6 @@ export class CodexProviderRuntime {
   startThread(...args) { return this.client.startThread(...args); }
   startTurn(...args) { return this.client.startTurn(...args); }
   tokenUsageForThread(...args) { return this.client.tokenUsageForThread(...args); }
-  turnDiffsForThread(...args) { return this.client.turnDiffsForThread(...args); }
   updateThreadSettings(...args) { return this.client.updateThreadSettings(...args); }
 }
 

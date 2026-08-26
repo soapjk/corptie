@@ -37,6 +37,23 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func independentlyReplacedArchiveIndexNeverMutatesTheActiveIndex() {
+        let active = SessionIndexStore()
+        let archive = SessionIndexStore()
+        let activeSession = makeSession(id: "active", sessionKind: .worker)
+        let archivedSession = makeSession(id: "archived", sessionKind: .worker, archived: true)
+
+        active.replaceAll(with: [activeSession])
+        archive.replaceAll(with: [archivedSession])
+
+        #expect(active.sessions.map(\.id) == ["active"])
+        #expect(archive.sessions.map(\.id) == ["archived"])
+        archive.replaceAll(with: [])
+        #expect(active.sessions.map(\.id) == ["active"])
+        #expect(archive.sessions.isEmpty)
+    }
+
+    @Test
     func terminalStatusChangeUpdatesOnlyTheStableSessionRow() {
         let running = makeSession(id: "one", status: .running)
         let completed = makeSession(id: "one", status: .complete)
@@ -56,6 +73,52 @@ struct SessionCollectionPatchTests {
         #expect(row?.session.status == .complete)
         #expect(row?.changedFields == [.status])
         #expect(store.orderedIDs == [running.id])
+    }
+
+    @Test
+    func authoritativeStatusAdvanceDuringDragUpdatesTheRowWithoutStealingLocalOrder() {
+        let first = makeSession(id: "first", status: .running)
+        let second = makeSession(id: "second", status: .running)
+        let store = SessionIndexStore()
+        store.replaceAll(with: [first, second])
+        let stableFirstRow = store.row(id: first.id)
+
+        store.beginReorder()
+        store.move(second.id, before: first.id)
+        var completedFirst = first
+        completedFirst.executionStatus = "completed"
+        store.apply(
+            SessionCollectionDiffer.patch(
+                from: [first, second],
+                to: [completedFirst, second],
+                revision: 2
+            ),
+            authoritativeSessions: [completedFirst, second]
+        )
+
+        #expect(store.orderedIDs == [second.id, first.id])
+        #expect(store.row(id: first.id) === stableFirstRow)
+        #expect(store.row(id: first.id)?.session.executionTaskStatus == .complete)
+        #expect(store.row(id: first.id)?.changedFields == [.status])
+    }
+
+    @Test
+    func completedDragReconcilesToTheServerOrderAndPreservesStableRows() {
+        let first = makeSession(id: "first")
+        let second = makeSession(id: "second")
+        let third = makeSession(id: "third")
+        let store = SessionIndexStore()
+        store.replaceAll(with: [first, second, third])
+        let stableRows = Dictionary(uniqueKeysWithValues: store.rows.map { ($0.id, $0) })
+
+        store.beginReorder()
+        store.move(third.id, before: first.id)
+        store.endReorder(authoritativeSessions: [second, third, first])
+
+        #expect(store.orderedIDs == [second.id, third.id, first.id])
+        #expect(store.row(id: first.id) === stableRows[first.id])
+        #expect(store.row(id: second.id) === stableRows[second.id])
+        #expect(store.row(id: third.id) === stableRows[third.id])
     }
 
     @Test
@@ -196,7 +259,7 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func activeWorkerSessionsExcludeCompletedWorkItemsAndGroupByObjective() {
+    func activeWorkerSessionsIncludeCompletedButUnarchivedWorkItemsAndGroupByObjective() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
@@ -226,9 +289,8 @@ struct SessionCollectionPatchTests {
 
         #expect(groups.map(\.key) == ["worker-objective:objective:1", "worker-objective:__no_objective__"])
         #expect(groups.map(\.title) == ["Sessions UI", L10n("No Objective")])
-        #expect(groups[0].rows.map(\.id) == ["active-worker"])
+        #expect(groups[0].rows.map(\.id) == ["active-worker", "completed-worker"])
         #expect(groups[1].rows.map(\.id) == ["orphaned-worker"])
-        #expect(!groups.flatMap(\.rows).contains(where: { $0.id == completed.id }))
     }
 
     @Test
@@ -295,7 +357,7 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func archivedWorkerSessionsContainOnlyCompletedWorkItemsGroupedByObjective() {
+    func archivedWorkerSessionsUseTheSessionArchiveFlagRatherThanWorkItemStatus() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
@@ -304,7 +366,8 @@ struct SessionCollectionPatchTests {
         let completed = SessionRowModel(session: makeSession(
             id: "completed-worker",
             sessionKind: .worker,
-            workItemId: "work-item:completed"
+            workItemId: "work-item:completed",
+            archived: true
         ))
 
         let groups = makeSessionGroups(
@@ -334,19 +397,14 @@ struct SessionCollectionPatchTests {
         let completed = SessionRowModel(session: makeSession(
             id: "completed-worker",
             sessionKind: .worker,
-            workItemId: "work-item:completed"
+            workItemId: "work-item:completed",
+            archived: true
         ))
-        let workItems = [
-            makeWorkItem(id: "work-item:active", status: "in_progress"),
-            makeWorkItem(id: "work-item:completed", status: "done")
-        ]
-
         #expect(resolvedSessionSelection(
             category: .worker,
             rows: [completed, active],
             selectedSessionId: "completed-worker",
             lastSelectedId: nil,
-            workItems: workItems,
             workerScope: .active
         ) == "active-worker")
         #expect(resolvedSessionSelection(
@@ -354,7 +412,6 @@ struct SessionCollectionPatchTests {
             rows: [active, completed],
             selectedSessionId: "active-worker",
             lastSelectedId: nil,
-            workItems: workItems,
             workerScope: .archived
         ) == "completed-worker")
     }
@@ -455,35 +512,37 @@ struct SessionCollectionPatchTests {
             lastReadMessageSequence: 8
         )
 
-        let updated = BackendClient.applyingReadReceipt(
-            receipt,
-            requestedSessionID: "logical-session",
-            to: [unread, untouched]
-        )
+        let store = AppStateStore()
+        _ = store.apply(snapshot: .init(
+            revision: 1,
+            state: emptyControlPlaneState(sessions: [unread, untouched])
+        ))
+        store.acceptReadReceipt(receipt, requestedSessionID: "logical-session")
+        let updated = store.session("logical-session")
 
-        #expect(updated[0].lastAgentMessageSequence == 8)
-        #expect(updated[0].lastReadMessageSequence == 8)
-        #expect(!isSessionUnread(updated[0]))
-        #expect(updated[1] == untouched)
+        #expect(updated?.lastAgentMessageSequence == 8)
+        #expect(updated?.lastReadMessageSequence == 8)
+        #expect(updated.map(isSessionUnread) == false)
+        #expect(store.session("other-session") == untouched)
 
         let concurrent = makeSession(
             id: "logical-session",
             lastAgentMessageSequence: 9,
             lastReadMessageSequence: 3
         )
-        let concurrentUpdate = BackendClient.applyingReadReceipt(
-            receipt,
-            requestedSessionID: "logical-session",
-            to: [concurrent]
-        )
-        #expect(concurrentUpdate[0].lastAgentMessageSequence == 9)
-        #expect(concurrentUpdate[0].lastReadMessageSequence == 8)
-        #expect(isSessionUnread(concurrentUpdate[0]))
+        let concurrentStore = AppStateStore()
+        _ = concurrentStore.apply(snapshot: .init(
+            revision: 1,
+            state: emptyControlPlaneState(sessions: [concurrent])
+        ))
+        concurrentStore.acceptReadReceipt(receipt, requestedSessionID: "logical-session")
+        #expect(concurrentStore.sessions[0].lastAgentMessageSequence == 9)
+        #expect(concurrentStore.sessions[0].lastReadMessageSequence == 8)
+        #expect(isSessionUnread(concurrentStore.sessions[0]))
     }
 
     @Test
     func notificationScopeExcludesArchivedSessions() {
-        let workItems = [makeWorkItem(id: "work-item:done", status: "done")]
         let snapshots = SessionNotificationScope.activeSnapshots(from: [
             makeSession(id: "active", lastAgentMessageSequence: 2),
             makeSession(id: "archived", lastAgentMessageSequence: 3, archived: true),
@@ -493,9 +552,9 @@ struct SessionCollectionPatchTests {
                 workItemId: "work-item:done",
                 lastAgentMessageSequence: 4
             )
-        ], workItems: workItems)
+        ])
 
-        #expect(snapshots.map(\.id) == ["active"])
+        #expect(snapshots.map(\.id) == ["active", "completed-work-item"])
         #expect(snapshots.first?.needsUserAttention == true)
     }
 
@@ -511,7 +570,8 @@ struct SessionCollectionPatchTests {
             id: "archived-worker",
             sessionKind: .worker,
             workItemId: "work-item:done",
-            lastAgentMessageSequence: 1
+            lastAgentMessageSequence: 1,
+            archived: true
         )
         let objective = makeSession(
             id: "objective",
@@ -525,25 +585,17 @@ struct SessionCollectionPatchTests {
             status: .running
         )
         let sessions = [activeWorker, archivedWorker, objective, assistant]
-        let workItems = [
-            makeWorkItem(id: "work-item:active", status: "in_progress"),
-            makeWorkItem(id: "work-item:done", status: "done")
-        ]
-
         #expect(countUnreadSessions(
             in: sessions,
-            category: .worker,
-            workItems: workItems
+            category: .worker
         ) == 1)
         #expect(countUnreadSessions(
             in: sessions,
-            category: .objective,
-            workItems: workItems
+            category: .objective
         ) == 1)
         #expect(countUnreadSessions(
             in: sessions,
-            category: .assistant,
-            workItems: workItems
+            category: .assistant
         ) == 0)
     }
 
@@ -577,8 +629,7 @@ struct SessionCollectionPatchTests {
         ) == nil)
         #expect(countUnreadSessions(
             in: [makeSession(id: "legacy-unread", lastAgentMessageSequence: 1)],
-            category: .assistant,
-            workItems: []
+            category: .assistant
         ) == 0)
     }
 
@@ -663,7 +714,8 @@ private func makeSession(
     lastAgentMessageSequence: Int? = nil,
     lastReadMessageSequence: Int? = nil,
     timelineRevision: Int? = nil,
-    archived: Bool = false
+    archived: Bool = false,
+    pinned: Bool = false
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -686,12 +738,23 @@ private func makeSession(
         timelineRevision: timelineRevision,
         accent: .cyan,
         archived: archived,
-        pinned: false,
+        pinned: pinned,
         sortOrder: nil,
         capabilities: nil,
         external: nil,
         actions: nil,
-        pendingCollaborationConfirmation: nil
+    )
+}
+
+private func emptyControlPlaneState(sessions: [TaskSession]) -> ControlPlaneStatePayload {
+    .init(
+        sessions: sessions,
+        workItems: [],
+        objectives: [],
+        agents: [],
+        skills: [],
+        repositories: [],
+        integrationRuns: []
     )
 }
 

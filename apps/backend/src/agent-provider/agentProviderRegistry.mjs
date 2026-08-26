@@ -134,35 +134,6 @@ export class AgentProviderRegistry {
     return withSessionActions(session, this.get(providerId).descriptor);
   }
 
-  async listSessions(options = {}) {
-    const results = await Promise.all(
-      Array.from(this.providers.values()).map(async (provider) => {
-        const sessions = await provider.listSessions(options);
-        return sessions.map((session) => withSessionActions(session, provider.descriptor));
-      })
-    );
-    return sortedSessions(results.flat());
-  }
-
-  // Compatibility path for the current synchronous store-backed call sites.
-  // New application services should use listSessions().
-  listSessionsSync(options = {}) {
-    const results = Array.from(this.providers.values()).map((provider) => {
-      const sessions = provider.listSessions(options);
-      if (sessions && typeof sessions.then === "function") {
-        throw new AgentProviderContractError(
-          `Agent Provider ${provider.descriptor.id} returned an asynchronous Session list to a synchronous caller.`,
-          { providerId: provider.descriptor.id, method: "listSessions" }
-        );
-      }
-      return sessions.map((session) => withSessionActions(session, provider.descriptor));
-    });
-    return sortedSessions(results.flat());
-  }
-}
-
-function sortedSessions(sessions) {
-  return sessions.sort(compareSessionOrder);
 }
 
 function normalizedProviderId(value) {
@@ -178,14 +149,4 @@ function normalizedProviderIdentity(value) {
 function normalizedOptionalProviderId(value) {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   return normalized || null;
-}
-
-function compareSessionOrder(left, right) {
-  const leftPinned = left?.pinned === true ? 1 : 0;
-  const rightPinned = right?.pinned === true ? 1 : 0;
-  if (leftPinned !== rightPinned) return rightPinned - leftPinned;
-  const leftOrder = Number.isFinite(left?.sortOrder) ? left.sortOrder : 0;
-  const rightOrder = Number.isFinite(right?.sortOrder) ? right.sortOrder : 0;
-  if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-  return String(right?.updatedAt ?? "").localeCompare(String(left?.updatedAt ?? ""));
 }

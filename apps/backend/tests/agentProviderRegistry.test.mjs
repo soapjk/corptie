@@ -128,7 +128,7 @@ test("registry returns a structured error for unknown Providers", () => {
   );
 });
 
-test("registry aggregates canonical Sessions without exposing Provider routing", async () => {
+test("registry exposes Provider descriptors without a product Session read surface", async () => {
   const registry = new AgentProviderRegistry([
     fakeProvider({
       id: "provider.b",
@@ -139,7 +139,7 @@ test("registry aggregates canonical Sessions without exposing Provider routing",
       sessions: [{ id: "logical-a", updatedAt: "2026-08-08T00:00:00.000Z", pinned: true }]
     })
   ]);
-  assert.deepEqual((await registry.listSessions()).map((session) => session.id), ["logical-a", "logical-b"]);
-  assert.deepEqual(registry.listSessionsSync().map((session) => session.id), ["logical-a", "logical-b"]);
+  assert.equal(typeof registry.listSessions, "undefined");
+  assert.equal(typeof registry.listSessionsSync, "undefined");
   assert.deepEqual(registry.descriptors().map((descriptor) => descriptor.id), ["provider.a", "provider.b"]);
 });

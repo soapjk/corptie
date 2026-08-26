@@ -6,17 +6,85 @@ import {
   errorResponse,
   RpcErrorCode,
 } from "../src/dsh-adapter/dshWireCodec.mjs";
-import { mapEvent, mapHistory, mapFallbackEvent } from "../src/dsh-adapter/dshEventMapper.mjs";
+import { mapEvent } from "../src/dsh-adapter/dshEventMapper.mjs";
 import { mapSessionSummary, mapSessionList } from "../src/dsh-adapter/dshSessionSummaryMapper.mjs";
 import {
   mapWorkspaceList,
   settingsDescribe,
   settingsMutate,
-  historyFromCodexRollout,
+  historyFromStoredTimelineItems,
+  dispatchDshRequest,
   sessionPrompt,
   sessionModels,
   sessionSelectModel,
 } from "../src/dsh-adapter/dshRpcAdapter.mjs";
+
+test("DSH Session list and host handshake read only the injected Corptie Store projection", async () => {
+  const sessions = [{ id: "session:stored", title: "Stored", status: "complete", external: { cwd: "/tmp/stored" } }];
+  const deps = {
+    listStoredSessions: () => sessions,
+    store: { listSessionTimelineRevisions: () => new Map([["session:stored", 2]]) },
+    sessionApplicationService: {
+      listSessions: () => { throw new Error("Provider Session list must not be called"); }
+    }
+  };
+  const listed = await dispatchDshRequest("session.list", {}, deps);
+  const host = await dispatchDshRequest("host.describe", {}, deps);
+  assert.equal(listed.items.length, 1);
+  assert.equal(listed.items[0].blank, false);
+  assert.equal(host.attachedSessions, 1);
+  assert.equal(host.cwd, "/tmp/stored");
+});
+
+test("DSH Session list marks revision-zero Sessions reusable without detail reads", async () => {
+  const listed = await dispatchDshRequest("session.list", {}, {
+    listStoredSessions: () => [{ id: "session:blank", status: "complete" }],
+    store: {
+      listSessionTimelineRevisions: () => new Map([["session:blank", 0]]),
+      getDetail: () => { throw new Error("detail reads are forbidden on Session list"); }
+    }
+  });
+  assert.equal(listed.items[0].blank, true);
+});
+
+test("DSH Session creation inherits an existing Objective Agent instead of inventing identity", async () => {
+  const calls = [];
+  const result = await dispatchDshRequest("session.create", { workspaceId: "objective:one" }, {
+    store: {
+      listSessions: () => [{
+        id: "session:existing",
+        objectiveId: "objective:one",
+        agentId: "agent:one",
+        sessionKind: "objectiveChat",
+        updatedAt: "2026-08-26T10:00:00Z",
+        external: { cwd: "/repo" }
+      }]
+    },
+    createSession: async (...args) => {
+      calls.push(args);
+      return { id: "session:new" };
+    }
+  });
+  assert.deepEqual(result, { sessionId: "session:new" });
+  assert.deepEqual(calls, [[
+    { cwd: "/repo", sessionKind: "objectiveChat" },
+    {
+      actorId: "agent:one",
+      objectiveId: "objective:one",
+      sessionKind: "objectiveChat"
+    }
+  ]]);
+});
+
+test("DSH Session creation refuses an Objective with no existing Agent binding", async () => {
+  await assert.rejects(
+    dispatchDshRequest("session.create", { workspaceId: "objective:empty" }, {
+      store: { listSessions: () => [] },
+      createSession: async () => ({ id: "must-not-create" })
+    }),
+    /requires an existing Agent/
+  );
+});
 
 // ---- wire codec ----
 
@@ -125,32 +193,34 @@ test("session.selectModel 同时应用模型与 reasoning effort", async () => {
 
 test("mapEvent 映射 user/message 为 DSH 事件", () => {
   const event = mapEvent({
+    eventId: "event:user",
     sequence: 1,
     type: "user/message",
     createdAt: "2026-08-16T00:00:00.000Z",
-    payload: { text: "hello", itemType: "userMessage" },
+    payload: { itemId: "message:user", text: "hello", itemType: "userMessage" },
   });
   assert.equal(event.type, "user/message");
   assert.equal(event.seq, 1);
   assert.equal(event.time, Date.parse("2026-08-16T00:00:00.000Z"));
   assert.equal(event.surfaceOp, "append");
   assert.equal(event.data.role, "user");
-  assert.equal(typeof event.data.id, "string");
+  assert.equal(event.data.id, "message:user");
   assert.deepEqual(event.data.content, [{ type: "text", text: "hello" }]);
 });
 
 test("mapEvent 映射 assistant/message 为 DSH 事件", () => {
   const event = mapEvent({
+    eventId: "event:assistant",
     sequence: 2,
     type: "assistant/message",
     createdAt: "2026-08-16T00:00:01.000Z",
-    payload: { text: "world", itemType: "agentMessage" },
+    payload: { itemId: "message:assistant", text: "world", itemType: "agentMessage" },
   });
   assert.equal(event.type, "assistant/message");
   assert.equal(event.seq, 2);
   assert.equal(event.surfaceOp, "append");
   assert.equal(event.data.message.role, "assistant");
-  assert.equal(typeof event.data.message.id, "string");
+  assert.equal(event.data.message.id, "message:assistant");
   assert.equal(event.data.message.source.kind, "model");
   assert.equal(typeof event.data.message.source.provider, "string");
   assert.equal(typeof event.data.message.source.model, "string");
@@ -159,69 +229,6 @@ test("mapEvent 映射 assistant/message 为 DSH 事件", () => {
 
 test("mapEvent 对未知类型返回 null", () => {
   assert.equal(mapEvent({ sequence: 3, type: "some/unknown", payload: {} }), null);
-});
-
-test("mapHistory 跳过未知类型，只保留可映射事件", () => {
-  const entries = mapHistory([
-    { sequence: 1, type: "user/message", createdAt: "2026-08-16T00:00:00.000Z", payload: { text: "a" } },
-    { sequence: 2, type: "internal/noise", payload: {} },
-    { sequence: 3, type: "assistant/message", createdAt: "2026-08-16T00:00:02.000Z", payload: { text: "b" } },
-  ]);
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0].event.type, "user/message");
-  assert.equal(entries[1].event.type, "assistant/message");
-});
-
-// ---- fallback event mapper (底层事件兜底) ----
-
-test("mapFallbackEvent 映射 SessionUserMessageCreated → user/message", () => {
-  const event = mapFallbackEvent({
-    sequence: 5,
-    type: "SessionUserMessageCreated",
-    createdAt: "2026-08-16T00:00:00.000Z",
-    payload: { sessionId: "s1", message: { id: "m1", type: "userMessage", text: "hi there" } },
-  });
-  assert.equal(event.type, "user/message");
-  assert.equal(event.seq, 5);
-  assert.deepEqual(event.data.content, [{ type: "text", text: "hi there" }]);
-  assert.equal(event.data.source.kind, "user");
-});
-
-test("mapFallbackEvent 映射 Task* 的 summary → assistant/message", () => {
-  const event = mapFallbackEvent({
-    sequence: 6,
-    type: "TaskProgressChanged",
-    createdAt: "2026-08-16T00:00:01.000Z",
-    payload: { session: { summary: "Working in the background.", progress: 0.5 } },
-  });
-  assert.equal(event.type, "assistant/message");
-  assert.equal(event.data.message.role, "assistant");
-  assert.deepEqual(event.data.message.content, [{ type: "text", text: "Working in the background." }]);
-});
-
-test("mapFallbackEvent 对无正文底层事件返回 null", () => {
-  assert.equal(mapFallbackEvent({ sequence: 7, type: "SessionUsageUpdated", payload: {} }), null);
-  assert.equal(mapFallbackEvent({ sequence: 8, type: "SessionUserMessageCreated", payload: { message: { text: "" } } }), null);
-});
-
-test("mapHistory 在 surface 事件缺失时回退到底层事件", () => {
-  const entries = mapHistory([
-    { sequence: 1, type: "SessionUserMessageCreated", createdAt: "2026-08-16T00:00:00.000Z", payload: { message: { text: "hello" } } },
-    { sequence: 2, type: "TaskProgressChanged", createdAt: "2026-08-16T00:00:01.000Z", payload: { session: { summary: "working" } } },
-  ]);
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0].event.type, "user/message");
-  assert.equal(entries[1].event.type, "assistant/message");
-});
-
-test("mapHistory 优先 surface 事件，不回退底层事件", () => {
-  const entries = mapHistory([
-    { sequence: 1, type: "user/message", createdAt: "2026-08-16T00:00:00.000Z", payload: { text: "surface" } },
-    { sequence: 2, type: "SessionUserMessageCreated", createdAt: "2026-08-16T00:00:01.000Z", payload: { message: { text: "fallback" } } },
-  ]);
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].event.type, "user/message");
-  assert.deepEqual(entries[0].event.data.content, [{ type: "text", text: "surface" }]);
 });
 
 // ---- session summary mapper ----
@@ -298,148 +305,27 @@ test("mapWorkspaceList 空输入返回空数组", () => {
   assert.deepEqual(mapWorkspaceList(undefined, undefined), []);
 });
 
-// ---- codex rollout 对话回退 (historyFromCodexRollout) ----
+// ---- stored Corptie Timeline projection ----
 
-test("historyFromCodexRollout 生成完整 turn/step 生命周期的 DSH 事件列表", async () => {
-  const events = await historyFromCodexRollout("codex:abc", async () => [
-    { kind: "message", role: "user", text: "请完成工作项" },
-    { kind: "message", role: "assistant", text: "我先检查仓库现状" },
-    { kind: "message", role: "assistant", text: "已完成" },
-    { kind: "message", role: "user", text: "hi" },
-    { kind: "message", role: "assistant", text: "嗨！" },
-  ]);
-
-  // 期望事件序列：每个 user 开启 turn，连续 assistant 是该 turn 内递增 step。
-  // turn0: turn/start → user/message → step/start → assistant/message → step/end
-  //         → step/start → assistant/message → step/end → turn/end
-  // turn1: turn/start → user/message → step/start → assistant/message → step/end → turn/end
-  const types = events.map((e) => e.event.type);
-  assert.deepEqual(types, [
-    "turn/start", "user/message", "step/start", "assistant/message", "step/end",
-    "step/start", "assistant/message", "step/end", "turn/end",
-    "turn/start", "user/message", "step/start", "assistant/message", "step/end", "turn/end",
-  ]);
-
-  // seq 从 0 连续递增。
-  assert.deepEqual(events.map((e) => e.event.seq), events.map((_, i) => i));
-
-  // 每个元素必须是 { event: SessionEvent } 信封。
-  for (const entry of events) {
-    assert.equal(typeof entry.event, "object");
-    assert.equal(typeof entry.event.type, "string");
-  }
-
-  // 索引定位：turn0 的 user/message 在 idx1，assistant/message 在 idx3 和 idx6。
-  const user0 = events[1].event;
-  const asst0 = events[3].event;
-  const asst1 = events[6].event;
-  const user1 = events[10].event;
-
-  // surface 事件必须携带 surfaceOp:'append'；boundary 事件不携带。
-  assert.equal(user0.surfaceOp, "append");
-  assert.equal(asst0.surfaceOp, "append");
-  assert.equal(events[0].event.surfaceOp, undefined); // turn/start 无 surfaceOp
-
-  // user 事件 data 是完整 UserMessage。
-  assert.equal(user0.data.role, "user");
-  assert.equal(typeof user0.data.id, "string");
-  assert.ok(user0.data.id.length > 0);
-  assert.deepEqual(user0.data.content, [{ type: "text", text: "请完成工作项" }]);
-  assert.equal(user0.data.source.kind, "user");
-
-  // assistant 事件 data 携带 turn/step 坐标 + message（AssistantMessage）。
-  assert.equal(asst0.data.turn, 0);
-  assert.equal(asst0.data.step, 0);
-  assert.equal(asst1.data.turn, 0);
-  assert.equal(asst1.data.step, 1); // 同一 turn 内连续 assistant 递增 step
-  assert.equal(asst0.data.message.role, "assistant");
-  assert.equal(typeof asst0.data.message.id, "string");
-  assert.ok(asst0.data.message.id.length > 0);
-  assert.deepEqual(asst0.data.message.content, [{ type: "text", text: "我先检查仓库现状" }]);
-  assert.equal(asst0.data.message.source.kind, "model");
-  assert.equal(asst0.data.message.source.provider, "codex");
-  assert.equal(asst0.data.message.source.model, "codex");
-
-  // 第二个 turn 的坐标从 turn1 重新开始。
-  assert.equal(user1.data.role, "user");
-  const asst2 = events[12].event;
-  assert.equal(asst2.data.turn, 1);
-  assert.equal(asst2.data.step, 0);
-
-  // turn/end 携带 reason。
-  assert.deepEqual(events[8].event.data, { turn: 0, reason: { kind: "completed" } });
+test("historyFromStoredTimelineItems renders stable user, assistant, and tool identities", () => {
+  const events = historyFromStoredTimelineItems([
+    { id: "message:user", turnId: "turn:1", type: "userMessage", text: "Question", createdAt: "2026-08-26T10:00:00Z" },
+    { id: "tool:1", turnId: "turn:1", type: "commandExecution", title: "shell", text: "swift test", createdAt: "2026-08-26T10:00:01Z" },
+    { id: "message:assistant", turnId: "turn:1", type: "agentMessage", text: "Answer", createdAt: "2026-08-26T10:00:02Z" }
+  ], 20);
+  const user = events.find((entry) => entry.event.type === "user/message");
+  const assistant = events.find((entry) => entry.event.type === "assistant/message");
+  const tool = events.find((entry) => entry.event.type === "tool/call");
+  assert.equal(user.event.data.id, "message:user");
+  assert.equal(assistant.event.data.message.id, "message:assistant");
+  assert.equal(tool.event.data.callId, "tool:1");
+  assert.equal(events.at(-1).event.seq, 20);
 });
 
-test("historyFromCodexRollout 在 rollout 不可用/空时返回 null", async () => {
-  assert.equal(await historyFromCodexRollout("codex:abc", async () => []), null);
-  assert.equal(await historyFromCodexRollout("codex:abc", async () => { throw new Error("no file"); }), null);
+test("historyFromStoredTimelineItems never needs a Provider reader", () => {
+  assert.deepEqual(historyFromStoredTimelineItems([]), []);
 });
 
-test("historyFromCodexRollout 将尾序列对齐持久事件流", async () => {
-  const events = await historyFromCodexRollout("codex:abc", async () => [
-    { kind: "message", role: "user", text: "hello" },
-    { kind: "message", role: "assistant", text: "world" },
-  ], 120);
-  assert.equal(events.at(-1).event.seq, 120);
-  assert.deepEqual(
-    events.map((entry) => entry.event.seq),
-    Array.from({ length: events.length }, (_, index) => 120 - events.length + 1 + index)
-  );
-});
-
-test("historyFromCodexRollout 使用 rollout 消息时间而不是 Unix epoch", async () => {
-  const timestamp = "2026-08-16T12:34:56.789Z";
-  const events = await historyFromCodexRollout("codex:abc", async () => [
-    { kind: "message", role: "user", text: "hello", createdAt: timestamp },
-    { kind: "message", role: "assistant", text: "world", createdAt: timestamp },
-  ]);
-  assert.equal(events.find((entry) => entry.event.type === "user/message").event.time, Date.parse(timestamp));
-  assert.equal(events.find((entry) => entry.event.type === "assistant/message").event.time, Date.parse(timestamp));
-});
-
-test("historyFromCodexRollout 将工具调用/结果映射为 tool/call 与 tool/result 事件", async () => {
-  const events = await historyFromCodexRollout("codex:abc", async () => [
-    { kind: "message", role: "user", text: "执行检查" },
-    { kind: "message", role: "assistant", text: "开始检查" },
-    { kind: "tool-call", callId: "call_1", name: "exec", arguments: "ls -la" },
-    { kind: "tool-output", callId: "call_1", output: "total 4" },
-    { kind: "message", role: "assistant", text: "检查完成" },
-  ]);
-
-  // 工具调用/结果归属触发它的 assistant message 所属的 step（而非下一个未开启的 step），
-  // 因此 step/end 在工具调用序列结束、下一个 assistant message 到来时才闭合。
-  const types = events.map((e) => e.event.type);
-  assert.deepEqual(types, [
-    "turn/start", "user/message", "step/start", "assistant/message",
-    "tool/call", "tool/result", "step/end",
-    "step/start", "assistant/message", "step/end", "turn/end",
-  ]);
-
-  const toolCall = events[4].event;
-  assert.equal(toolCall.type, "tool/call");
-  assert.equal(toolCall.data.turn, 0);
-  assert.equal(toolCall.data.step, 0);
-  assert.equal(toolCall.data.callId, "call_1");
-  assert.equal(toolCall.data.name, "exec");
-  assert.equal(toolCall.data.arguments, "ls -la");
-  // tool/call 非 surface 事件，不能带 surfaceOp。
-  assert.equal(toolCall.surfaceOp, undefined);
-
-  const toolResult = events[5].event;
-  assert.equal(toolResult.type, "tool/result");
-  assert.equal(toolResult.surfaceOp, "append"); // tool/result 是 surface-eligible 类型
-  assert.equal(toolResult.data.turn, 0);
-  assert.equal(toolResult.data.step, 0);
-  const msg = toolResult.data.message;
-  assert.equal(msg.role, "user");
-  assert.equal(msg.source.kind, "tool");
-  assert.equal(msg.source.callId, "call_1");
-  assert.deepEqual(msg.content, [
-    { type: "tool-result", toolCallId: "call_1", content: "total 4", isError: false },
-  ]);
-});
-
-// ---- settings (欢迎通知 ui-onboarding) ----
 
 test("settingsDescribe 返回已确认的 ui-onboarding 命名空间，欢迎通知不弹窗", async () => {
   const result = await settingsDescribe({});

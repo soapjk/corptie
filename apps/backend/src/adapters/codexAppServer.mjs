@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
@@ -97,28 +96,6 @@ export class CodexAppServerClient {
     });
 
     this.initialized = true;
-  }
-
-  async listThreads(params = {}) {
-    await this.initialize();
-    return this.request("thread/list", {
-      limit: params.limit ?? 12,
-      archived: params.archived ?? false,
-      useStateDbOnly: params.useStateDbOnly ?? true,
-      cwd: params.cwd ?? undefined,
-      searchTerm: params.searchTerm ?? undefined,
-      sourceKinds: params.sourceKinds ?? undefined,
-      sortKey: params.sortKey ?? "updated_at",
-      sortDirection: params.sortDirection ?? "desc"
-    }, params.requestTimeoutMs ?? this.requestTimeoutMs);
-  }
-
-  async readThread(threadId, options = {}) {
-    await this.initialize();
-    return this.request("thread/read", {
-      threadId,
-      includeTurns: options.includeTurns ?? true
-    });
   }
 
   async setThreadName(threadId, name) {
@@ -510,10 +487,6 @@ export class CodexAppServerClient {
     ];
   }
 
-  turnDiffsForThread(threadId) {
-    return new Map(this.turnDiffsByThread.get(threadId) ?? []);
-  }
-
   tokenUsageForThread(threadId) {
     return this.tokenUsageByThread.get(threadId) ?? null;
   }
@@ -855,52 +828,25 @@ export function normalizeCodexTokenUsage(rawUsage, fallback = {}) {
   };
 }
 
-export async function readCodexRolloutTokenUsage(path) {
-  if (!path) return null;
-  try {
-    return tokenUsageFromCodexRolloutText(await readFile(path, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-export function tokenUsageFromCodexRolloutText(text = "") {
-  const lines = String(text).split("\n");
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index].includes('"token_count"')) continue;
-    try {
-      const entry = JSON.parse(lines[index]);
-      const payload = entry?.type === "event_msg" ? entry.payload : null;
-      if (payload?.type !== "token_count") continue;
-      const usage = normalizeCodexTokenUsage(payload.info);
-      if (usage) return usage;
-    } catch {
-      // Ignore partial or malformed rollout lines and keep searching backwards.
-    }
-  }
-  return null;
-}
-
 function finiteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 export function mapCodexThreadToSession(thread) {
-  const status = mapCodexStatus(thread.status, thread.turns);
   const preview = thread.preview || thread.name || "Untitled Codex thread";
   const cwd = thread.cwd ? ` in ${thread.cwd}` : "";
-  const items = threadItems(thread);
-  const latestAgentText = latestAgentMessageTextFromItems(items);
 
   const permissions = codexPermissionsFromThread(thread);
   return {
     id: `codex:${thread.id}`,
     title: preview.length > 72 ? `${preview.slice(0, 69)}...` : preview,
     agent: "Codex",
-    status,
-    progress: status === "running" ? 0.5 : 1,
-    summary: latestAgentText || `${thread.source || "codex"} thread${cwd}`,
+    // This mapper is used only for thread/start command responses. Product
+    // execution state is projected from persisted lifecycle events.
+    status: "complete",
+    progress: 1,
+    summary: `${thread.source || "codex"} thread${cwd}`,
     capabilities: codexAppServerCapabilities(),
     updatedAt: new Date((thread.updatedAt ?? thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
     accent: "cyan",
@@ -909,7 +855,7 @@ export function mapCodexThreadToSession(thread) {
       threadId: thread.id,
       sessionId: thread.sessionId,
       connectionStatus: "app-server connected",
-      rawStatus: thread.status,
+      rawStatus: "transport-ready",
       cwd: thread.cwd,
       source: thread.source,
       currentModel: thread.currentModel ?? thread.model ?? null,
@@ -917,66 +863,6 @@ export function mapCodexThreadToSession(thread) {
       ...(permissions ?? {})
     }
   };
-}
-
-export function mapCodexThreadToDetail(thread, liveItems = [], turnDiffs = new Map()) {
-  const items = threadItems(thread);
-  const turnOrder = threadTurnOrder(thread);
-
-  const mergedItems = mergeItems(items, liveItems.filter((item) => item.type !== "taskComplete"), turnOrder);
-  attachTurnFileChanges(mergedItems, turnDiffs);
-
-  return {
-    id: thread.id,
-    title: thread.name || thread.preview || "Untitled Codex thread",
-    status: mapCodexStatus(thread.status, thread.turns),
-    source: thread.source,
-    connectionStatus: "app-server connected",
-    cwd: thread.cwd,
-    createdAt: new Date((thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
-    updatedAt: new Date((thread.updatedAt ?? thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
-    rawStatus: thread.status,
-    currentModel: thread.currentModel ?? thread.model ?? null,
-    currentReasoningLevel: thread.currentReasoningLevel ?? thread.reasoningEffort ?? null,
-    capabilities: codexAppServerCapabilities(),
-    canSend: true,
-    sendUnavailableReason: null,
-    turnCount: thread.turns?.length ?? 0,
-    items: mergedItems
-  };
-}
-
-function threadItems(thread) {
-  const items = [];
-  for (const turn of thread.turns ?? []) {
-    for (const item of turn.items ?? []) {
-      const mapped = mapThreadItem(turn, item);
-      if (mapped.type !== "taskComplete") {
-        items.push(mapped);
-      }
-    }
-  }
-  return items;
-}
-
-function threadTurnOrder(thread) {
-  const order = new Map();
-  for (const [index, turn] of (thread.turns ?? []).entries()) {
-    if (turn.id) {
-      order.set(turn.id, index);
-    }
-  }
-  return order;
-}
-
-function latestAgentMessageTextFromItems(items = []) {
-  for (const item of items.slice().reverse()) {
-    const text = typeof item.text === "string" ? item.text.trim() : "";
-    if (item.type === "agentMessage" && text) {
-      return text;
-    }
-  }
-  return "";
 }
 
 function codexAppServerCapabilities() {
@@ -987,72 +873,6 @@ function codexAppServerCapabilities() {
     canInterrupt: true,
     canReconnect: false
   };
-}
-
-function mergeItems(historyItems, liveItems, turnOrder = new Map()) {
-  const merged = new Map();
-  const signatures = new Set();
-  const itemIdsBySignature = new Map();
-  for (const item of historyItems) {
-    const signature = itemSignature(item);
-    // Provider reconnect/compaction can reissue the same logical user prompt
-    // under a different item id inside history itself. Identity is scoped to a
-    // turn and content role, so keep the first provider-ordered occurrence.
-    // The Store applies the same provider-neutral rule when materializing the
-    // durable Timeline, which also repairs aliases written by older builds.
-    if (item.type === "userMessage" && signatures.has(signature)) continue;
-    merged.set(item.id, item);
-    signatures.add(signature);
-    itemIdsBySignature.set(signature, item.id);
-  }
-  for (const item of liveItems) {
-    const signature = itemSignature(item);
-    if (signatures.has(signature)) {
-      const existingId = itemIdsBySignature.get(signature);
-      const existing = existingId ? merged.get(existingId) : null;
-      if (existing && !existing.createdAt && item.createdAt) {
-        merged.set(existingId, { ...existing, createdAt: item.createdAt });
-      }
-      continue;
-    }
-    merged.set(item.id, item);
-    signatures.add(signature);
-    itemIdsBySignature.set(signature, item.id);
-  }
-  return Array.from(merged.values()).sort((left, right) => {
-    const leftTurn = turnOrder.has(left.turnId) ? turnOrder.get(left.turnId) : Number.MAX_SAFE_INTEGER;
-    const rightTurn = turnOrder.has(right.turnId) ? turnOrder.get(right.turnId) : Number.MAX_SAFE_INTEGER;
-    if (leftTurn !== rightTurn) {
-      return leftTurn - rightTurn;
-    }
-    return itemDisplayRank(left) - itemDisplayRank(right);
-  });
-}
-
-function itemSignature(item) {
-  return `${item.turnId}|${item.type}|${item.text}`;
-}
-
-function itemDisplayRank(item) {
-  switch (item.type) {
-    case "userMessage":
-      return 0;
-    case "reasoning":
-    case "plan":
-    case "commandExecution":
-    case "fileChange":
-    case "mcpToolCall":
-    case "dynamicToolCall":
-    case "webSearch":
-    case "warning":
-      return 1;
-    case "approval":
-      return 2;
-    case "agentMessage":
-      return 2;
-    default:
-      return 3;
-  }
 }
 
 function isApprovalServerRequest(request) {
@@ -1187,326 +1007,6 @@ function approvalOptionIdForDecision(decision) {
   return "approved";
 }
 
-export async function readCodexRolloutDetail(thread, readError) {
-  const reason = friendlyCodexError(readError);
-  const fallbackItem = {
-    id: `${thread.id}:read-error`,
-    turnId: thread.id,
-    turnStatus: "completed",
-    type: "warning",
-    title: "Codex detail fallback",
-    text: `This thread is currently read-only in Corptie.\n${reason}`,
-    status: null
-  };
-
-  if (!thread.path) {
-    return mapCodexThreadListDetail(thread, [fallbackItem]);
-  }
-
-  try {
-    const text = await readFile(thread.path, "utf8");
-    const items = [];
-
-    for (const [index, line] of text.split("\n").entries()) {
-      if (!line.trim()) {
-        continue;
-      }
-
-      let entry;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-
-      const mapped = mapRolloutEntry(thread.id, index, entry);
-      if (mapped) {
-        items.push(mapped);
-      }
-    }
-
-    return mapCodexThreadListDetail(thread, [fallbackItem, ...items]);
-  } catch (error) {
-    return mapCodexThreadListDetail(thread, [
-      fallbackItem,
-      {
-        id: `${thread.id}:fallback-error`,
-        turnId: thread.id,
-        turnStatus: "failed",
-        type: "error",
-        title: "Rollout read failed",
-        text: error.message,
-        status: null
-      }
-    ]);
-  }
-}
-
-function mapCodexThreadListDetail(thread, items) {
-  return {
-    id: thread.id,
-    title: thread.name || thread.preview || "Untitled Codex thread",
-    status: mapCodexStatus(thread.status, thread.turns),
-    source: thread.source,
-    connectionStatus: "app-server disconnected",
-    cwd: thread.cwd,
-    createdAt: new Date((thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
-    updatedAt: new Date((thread.updatedAt ?? thread.createdAt ?? Date.now() / 1000) * 1000).toISOString(),
-    rawStatus: thread.status,
-    canSend: false,
-    sendUnavailableReason: "Codex app-server cannot resume this thread. It can be displayed from local history, but Corptie cannot safely send a follow-up yet.",
-    turnCount: countTurnMarkers(items),
-    items
-  };
-}
-
-function friendlyCodexError(error) {
-  const message = error?.message ?? String(error ?? "");
-  try {
-    const parsed = JSON.parse(message);
-    return parsed.message ?? message;
-  } catch {
-    return message;
-  }
-}
-
-function mapRolloutEntry(threadId, index, entry) {
-  if (entry.type === "event_msg") {
-    const payload = entry.payload ?? {};
-    if (payload.type === "agent_message" || payload.type === "final_answer") {
-      return rolloutItem(threadId, index, "agentMessage", "Codex", payload.message ?? "", "completed");
-    }
-    if (payload.type === "task_complete") {
-      return rolloutItem(threadId, index, "taskComplete", "Task complete", payload.last_agent_message ?? "", "completed");
-    }
-    return null;
-  }
-
-  if (entry.type !== "response_item") {
-    return null;
-  }
-
-  const payload = entry.payload ?? {};
-  switch (payload.type) {
-    case "message":
-      return rolloutItem(
-        threadId,
-        index,
-        payload.role === "user" ? "userMessage" : "agentMessage",
-        payload.role === "user" ? "User" : "Codex",
-        contentText(payload.content),
-        payload.phase ?? null
-      );
-    case "function_call":
-      return rolloutItem(
-        threadId,
-        index,
-        "commandExecution",
-        payload.name ?? "Tool call",
-        `${payload.name ?? "tool"} ${payload.arguments ?? ""}`,
-        "started"
-      );
-    case "function_call_output":
-      return rolloutItem(
-        threadId,
-        index,
-        "commandExecution",
-        "Tool output",
-        truncate(payload.output ?? "", 1400),
-        "completed"
-      );
-    case "reasoning":
-      return rolloutItem(threadId, index, "reasoning", "Reasoning", (payload.summary ?? []).join("\n"), null);
-    default:
-      return null;
-  }
-}
-
-function rolloutItem(threadId, index, type, title, text, status) {
-  return {
-    id: `${threadId}:${index}`,
-    turnId: threadId,
-    turnStatus: status ?? "completed",
-    type,
-    title,
-    text: text ?? "",
-    status
-  };
-}
-
-function contentText(content) {
-  if (!Array.isArray(content)) {
-    return "";
-  }
-
-  return content
-    .map((item) => item.text ?? item.output_text ?? item.input_text ?? "")
-    .filter(Boolean)
-    .join("\n");
-}
-
-function countTurnMarkers(items) {
-  return Math.max(1, new Set(items.map((item) => item.turnId)).size);
-}
-
-/**
- * 从 codex rollout JSONL 文本中提取干净的逐条对话消息。
- *
- * codex 的 rollout 是 app-server 的持久化事件流（每条一行 JSON），其中
- * `response_item` type=message 承载了完整的 user/assistant 对话正文（role 为
- * user / assistant / developer）。developer 是系统提示（应过滤），user 是用户
- * 输入，assistant 是 agent 的逐条回复（含过程性播报与最终回复）。
- *
- * 与 readCodexRolloutDetail 的区别：这里只返回「对话消息」这一层（按 rollout
- * 时间顺序、每条仅一次），不掺入 function_call / reasoning / warning 等内部 item，
- * 适合作为 DSH session.history 在 surface 事件缺失时的干净回退数据源。
- *
- * 额外过滤两类非对话正文：
- *   1. developer role（系统提示，如身份定义、multi-agent 模式说明）。
- *   2. codex 注入的「系统上下文 user 消息」——codex 会在每个 turn 把
- *      <recommended_plugins> / <environment_context> 等 XML 式上下文块以 role=user
- *      的 message 注入对话流（不是用户真实输入）。这类块以 "<" 开头（首个非空白
- *      字符是 "<"），据此过滤。
- *
- * @param {string} text - rollout 文件全文（JSONL）
- * @returns {Array<{role: 'user'|'assistant', text: string, index: number}>}
- *   按 rollout 原始顺序的对话消息；text 为空的消息会被跳过。
- */
-export function parseCodexRolloutConversation(text) {
-  const messages = [];
-  if (typeof text !== "string" || !text) return messages;
-
-  for (const [index, line] of text.split("\n").entries()) {
-    if (!line.trim()) continue;
-
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    // 对话正文只存在于 response_item 的 message 类型（对应 mapRolloutEntry 的
-    // case "message"）。event_msg 的 agent_message/final_answer 是「状态播报」，
-    // 与 response_item 的 assistant message 正文重叠，跳过以避免重复。
-    if (entry.type !== "response_item") continue;
-    const payload = entry.payload ?? {};
-    if (payload.type !== "message") continue;
-
-    const role = payload.role;
-    if (role !== "user" && role !== "assistant") continue;
-
-    const text = contentText(payload.content);
-    if (!text) continue;
-
-    // codex 注入的系统上下文块（role=user 但内容是 <xxx> 标签，非用户真实输入）。
-    if (role === "user" && text.trimStart().startsWith("<")) continue;
-
-    messages.push({ role, text, index });
-  }
-
-  return messages;
-}
-
-/**
- * 从 codex rollout JSONL 文本提取完整的有序时间线（对话 + 工具调用/结果）。
- *
- * 与 parseCodexRolloutConversation 相比，这里保留 rollout 里所有「可见」的
- * response_item 条目，按原始顺序返回，供 DSH 轨迹（trajectory）视图还原原生
- * DSH 的详细程度：agent 在一个 turn 内会交替产生 assistant message 与工具调用
- * （custom_tool_call / custom_tool_call_output），这些正是 DSH 轨迹里
- * tool/call + tool/result 事件的数据源。
- *
- * 条目 shape：
- *   { kind:'message', role:'user'|'assistant', text, index }
- *   { kind:'tool-call', callId, name, arguments, index }
- *   { kind:'tool-output', callId, output, index }
- *
- * 过滤规则与 parseCodexRolloutConversation 一致：
- *   - 只读 response_item；跳过 event_msg 状态播报。
- *   - 跳过 developer 系统提示与 codex 注入的 "<xxx" 系统上下文 user 消息。
- *   - reasoning 的 content 是 encrypted_content（不可读），summary 常为空，
- *     故不产出 reasoning 条目（无明文可渲染）。
- *
- * 工具调用的 payload 有两套历史命名：新 rollout 用 custom_tool_call /
- * custom_tool_call_output（含 call_id / name / input / output），旧 rollout 用
- * function_call / function_call_output（含 name / arguments / output）。两者都支持。
- *
- * @param {string} text - rollout 文件全文（JSONL）
- * @returns {Array<object>} 有序时间线条目。
- */
-export function parseCodexRolloutTimeline(text) {
-  const items = [];
-  if (typeof text !== "string" || !text) return items;
-
-  for (const [index, line] of text.split("\n").entries()) {
-    if (!line.trim()) continue;
-
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (entry.type !== "response_item") continue;
-    const payload = entry.payload ?? {};
-    const ptype = payload.type;
-
-    if (ptype === "message") {
-      const role = payload.role;
-      if (role !== "user" && role !== "assistant") continue;
-      const text = contentText(payload.content);
-      if (!text) continue;
-      if (role === "user" && text.trimStart().startsWith("<")) continue;
-      items.push({ kind: "message", role, text, index, createdAt: rolloutEntryTimestamp(entry, payload) });
-      continue;
-    }
-
-    if (ptype === "custom_tool_call" || ptype === "function_call") {
-      const callId = payload.call_id ?? payload.callId ?? payload.id ?? "";
-      const name = payload.name ?? payload.tool ?? "";
-      const argumentsText = payload.input ?? payload.arguments ?? "";
-      items.push({
-        kind: "tool-call",
-        callId: String(callId),
-        name: String(name),
-        arguments: typeof argumentsText === "string" ? argumentsText : JSON.stringify(argumentsText ?? {}),
-        index,
-        createdAt: rolloutEntryTimestamp(entry, payload),
-      });
-      continue;
-    }
-
-    if (ptype === "custom_tool_call_output" || ptype === "function_call_output") {
-      const callId = payload.call_id ?? payload.callId ?? "";
-      const output = toolOutputText(payload.output);
-      items.push({ kind: "tool-output", callId: String(callId), output, index, createdAt: rolloutEntryTimestamp(entry, payload) });
-      continue;
-    }
-
-    // reasoning / 其它内部条目：无明文，跳过。
-  }
-
-  return items;
-}
-
-function rolloutEntryTimestamp(entry, payload) {
-  return entry?.timestamp ?? entry?.created_at ?? entry?.createdAt
-    ?? payload?.timestamp ?? payload?.created_at ?? payload?.createdAt
-    ?? null;
-}
-
-/** 归一化工具输出（字符串或 ContentPart 数组）为纯文本。 */
-function toolOutputText(output) {
-  if (typeof output === "string") return output;
-  if (!Array.isArray(output)) return output == null ? "" : String(output);
-  return output
-    .map((item) => item?.text ?? item?.output_text ?? item?.input_text ?? "")
-    .filter(Boolean)
-    .join("\n");
-}
-
 function mapThreadItem(turn, item) {
   const mapped = {
     id: item.id,
@@ -1516,7 +1016,7 @@ function mapThreadItem(turn, item) {
     title: itemTitle(item),
     text: itemText(item),
     status: item.status ?? null,
-    presentationRole: item.phase ?? item.presentationRole ?? null,
+    presentationRole: normalizedCodexPresentationRole(item.phase ?? item.presentationRole),
     createdAt: createdAtFrom(item, turn),
     rawMetadataJSON: providerRawMetadataJSON("codex-app-server", item, { source: "provider_item" })
   };
@@ -1530,33 +1030,13 @@ function mapThreadItem(turn, item) {
   return mapped;
 }
 
-function attachTurnFileChanges(items, turnDiffs) {
-  const byTurn = new Map();
-  for (const item of items) {
-    if (!byTurn.has(item.turnId)) {
-      byTurn.set(item.turnId, []);
-    }
-    byTurn.get(item.turnId).push(item);
-  }
-
-  for (const [turnId, turnItems] of byTurn) {
-    const changes = turnItems
-      .filter((item) => item.type === "fileChange")
-      .flatMap((item) => item.fileChanges ?? []);
-    if (changes.length === 0) {
-      continue;
-    }
-    const finalAgentMessage = turnItems.slice().reverse().find((item) => item.type === "agentMessage");
-    if (!finalAgentMessage) {
-      continue;
-    }
-    const latestByPath = new Map();
-    for (const change of changes) {
-      latestByPath.set(change.path, change);
-    }
-    finalAgentMessage.fileChanges = Array.from(latestByPath.values()).map(({ path, kind }) => ({ path, kind }));
-    finalAgentMessage.turnDiff = turnDiffs.get(turnId) || changes.map((change) => change.diff).filter(Boolean).join("\n");
-  }
+function normalizedCodexPresentationRole(value) {
+  const normalized = typeof value === "string"
+    ? value.trim().toLowerCase().replaceAll("-", "_")
+    : "";
+  if (["final", "finalanswer", "final_answer"].includes(normalized)) return "final_answer";
+  if (["analysis", "commentary", "progress"].includes(normalized)) return "commentary";
+  return normalized || null;
 }
 
 function fileChangeKind(kind) {
@@ -1630,64 +1110,4 @@ function truncate(text, maxLength) {
     return text ?? "";
   }
   return `${text.slice(0, maxLength - 3)}...`;
-}
-
-function mapCodexStatus(status, turns = []) {
-  if (typeof status === "string") {
-    switch (status) {
-      case "running":
-      case "active":
-        return "running";
-      case "blocked":
-        return "blocked";
-      case "failed":
-      case "systemError":
-        return "failed";
-      case "interrupted":
-      case "cancelled":
-        return "cancelled";
-      case "complete":
-      case "idle":
-      default:
-        return "complete";
-    }
-  }
-
-  if (!status || typeof status !== "object") {
-    return "complete";
-  }
-
-  switch (status.type) {
-    case "active":
-      return "running";
-    case "systemError":
-      return "failed";
-    case "notLoaded":
-      return statusFromLatestTurn(turns) ?? "complete";
-    case "idle":
-    default:
-      return "complete";
-  }
-}
-
-function statusFromLatestTurn(turns = []) {
-  const latestStatus = turns.at(-1)?.status;
-  const value = typeof latestStatus === "object" ? latestStatus?.type : latestStatus;
-  switch (value) {
-    case "running":
-    case "active":
-    case "inProgress":
-      return "running";
-    case "failed":
-    case "systemError":
-      return "failed";
-    case "interrupted":
-    case "cancelled":
-      return "cancelled";
-    case "complete":
-    case "completed":
-      return "complete";
-    default:
-      return null;
-  }
 }

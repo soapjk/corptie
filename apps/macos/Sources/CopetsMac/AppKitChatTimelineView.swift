@@ -838,6 +838,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var pendingInitialScrollToBottom = false
         private var isRestoringInitialViewport = false
         private var isAwaitingSessionRows = false
+        private var userOwnsViewport = false
+        private var isProcessingUserScrollEvent = false
         private var needsExactWidthReflow = false
         private var lastReflowMeasurementWidth: CGFloat?
 
@@ -901,6 +903,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             lastRequestedRestorePosition = nil
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
+            userOwnsViewport = false
             nearTopTriggered = false
             isAwaitingSessionRows = true
             tableView?.reloadData()
@@ -912,6 +915,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func restoreIfNeeded(position: AppKitChatTimelinePosition) {
+            guard !userOwnsViewport else { return }
             guard position != lastRequestedRestorePosition else { return }
             restore(position: position)
         }
@@ -927,8 +931,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 firstLayoutScrollView.onLayout = { [weak self] in
                     self?.restoreInitialViewportSynchronouslyIfNeeded()
                 }
-                firstLayoutScrollView.onUserScroll = { [weak self] in
-                    self?.userDidBeginScrolling()
+                firstLayoutScrollView.onUserScrollWillBegin = { [weak self] in
+                    self?.userScrollEventWillBegin()
+                }
+                firstLayoutScrollView.onUserScrollDidEnd = { [weak self] in
+                    self?.userScrollEventDidEnd()
                 }
             }
             tableView.dataSource = self
@@ -1102,7 +1109,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 if followedLatestBeforeUpdate, !pendingInitialScrollToBottom {
                     scrollToBottom()
                 } else if let prependAnchor {
-                    restore(anchor: prependAnchor, in: tableView)
+                    restoreClosestAvailableAnchor(
+                        prependAnchor,
+                        previousIDs: oldIDs,
+                        in: tableView
+                    )
                 }
                 // Reused Session hosts may already have completed an empty
                 // layout pass before their rows arrive. Restore immediately
@@ -1130,14 +1141,16 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                         onToggleExpansion: onToggleExpansion,
                         onAction: onAction
                     )
-                    noteHeightChange(for: row, rowID: nextRows[row].id, in: tableView)
                 }
             }
+            tableView.noteHeightOfRows(withIndexesChanged: changed)
             synchronizeDocumentHeight(in: tableView)
             if followedLatestBeforeUpdate,
                !pendingInitialScrollToBottom,
                oldTailRevision != newTailRevision {
                 scrollToBottom()
+            } else if let prependAnchor {
+                restore(anchor: prependAnchor, in: tableView)
             }
             restoreInitialViewportSynchronouslyIfNeeded()
             schedulePendingInitialViewportRestoreIfNeeded()
@@ -1185,17 +1198,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
         }
 
-        private func noteHeightChange(for row: Int, rowID: String, in tableView: NSTableView) {
-            let indexes = IndexSet(integer: row)
-            // Keep expansion geometry on the table's single layout clock.
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0
-                context.allowsImplicitAnimation = false
-                tableView.noteHeightOfRows(withIndexesChanged: indexes)
-            }
-            synchronizeDocumentHeight(in: tableView)
-        }
-
         private func synchronizeDocumentHeight(in tableView: NSTableView) {
             tableView.layoutSubtreeIfNeeded()
             let contentHeight = rows.isEmpty
@@ -1206,7 +1208,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func scrollToBottom() {
-            guard let tableView, !rows.isEmpty else { return }
+            guard !isProcessingUserScrollEvent,
+                  let tableView, !rows.isEmpty else { return }
             // Explicit jump-to-latest and automatic follow both opt in here.
             // If the user leaves the bottom before the queued layout pass,
             // viewportDidScroll flips this back to false and the command is
@@ -1279,9 +1282,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             scrollCommandGeneration &+= 1
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
-            lastRequestedRestorePosition = nil
+            userOwnsViewport = true
             followsLatest = false
             if followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = false }
+        }
+
+        func userScrollEventWillBegin() {
+            isProcessingUserScrollEvent = true
+            userDidBeginScrolling()
+        }
+
+        func userScrollEventDidEnd() {
+            isProcessingUserScrollEvent = false
         }
 
         @objc private func containerFrameDidChange(_ notification: Notification) {
@@ -1414,7 +1426,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         @discardableResult
         private func restore(anchor: (id: String, offset: CGFloat), in tableView: NSTableView) -> Bool {
-            guard let row = rows.firstIndex(where: { $0.id == anchor.id }),
+            guard !isProcessingUserScrollEvent,
+                  let row = rows.firstIndex(where: { $0.id == anchor.id }),
                   let clipView = scrollView?.contentView else { return false }
             suppressNearTopDuringLayout()
             scrollCommandGeneration &+= 1
@@ -1432,14 +1445,19 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func restore(position: AppKitChatTimelinePosition) {
+            guard !isProcessingUserScrollEvent else { return }
             prepareInitialPosition(position)
             schedulePendingInitialViewportRestoreIfNeeded()
         }
 
         func scrollToTurn(_ turnID: String) {
-            guard let tableView,
+            guard !isProcessingUserScrollEvent,
+                  let tableView,
                   let clipView = scrollView?.contentView,
                   let row = AppKitChatTimelineView.rowIndex(forTurnID: turnID, in: rows) else { return }
+            scrollCommandGeneration &+= 1
+            pendingRestorePosition = nil
+            pendingInitialScrollToBottom = false
             suppressNearTopDuringLayout()
             followsLatest = false
             if followsLatestBinding.wrappedValue { followsLatestBinding.wrappedValue = false }
@@ -1448,6 +1466,27 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             clipView.scroll(to: NSPoint(x: 0, y: max(0, tableView.rect(ofRow: row).minY - 10)))
             scrollView?.reflectScrolledClipView(clipView)
             schedulePositionPublish()
+        }
+
+        @discardableResult
+        private func restoreClosestAvailableAnchor(
+            _ anchor: (id: String, offset: CGFloat),
+            previousIDs: [String],
+            in tableView: NSTableView
+        ) -> Bool {
+            if restore(anchor: anchor, in: tableView) { return true }
+            guard let removedIndex = previousIDs.firstIndex(of: anchor.id) else { return false }
+            let successor = previousIDs.dropFirst(removedIndex + 1).first(where: { candidate in
+                rows.contains(where: { $0.id == candidate })
+            })
+            if let successor {
+                return restore(anchor: (successor, anchor.offset), in: tableView)
+            }
+            let predecessor = previousIDs[..<removedIndex].reversed().first(where: { candidate in
+                rows.contains(where: { $0.id == candidate })
+            })
+            guard let predecessor else { return false }
+            return restore(anchor: (predecessor, anchor.offset), in: tableView)
         }
 
         func prepareInitialPosition(_ position: AppKitChatTimelinePosition) {
@@ -1471,7 +1510,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         private func schedulePendingInitialViewportRestoreIfNeeded() {
-            guard pendingRestorePosition != nil || pendingInitialScrollToBottom else { return }
+            guard !isProcessingUserScrollEvent,
+                  pendingRestorePosition != nil || pendingInitialScrollToBottom else { return }
             scrollCommandGeneration &+= 1
             let generation = scrollCommandGeneration
             DispatchQueue.main.async { [weak self] in
@@ -2104,10 +2144,12 @@ private enum NativeTimelineCardPalette {
 
 private final class FirstLayoutRestoringScrollView: NSScrollView {
     var onLayout: (() -> Void)?
-    var onUserScroll: (() -> Void)?
+    var onUserScrollWillBegin: (() -> Void)?
+    var onUserScrollDidEnd: (() -> Void)?
 
     override func scrollWheel(with event: NSEvent) {
-        onUserScroll?()
+        onUserScrollWillBegin?()
+        defer { onUserScrollDidEnd?() }
         super.scrollWheel(with: event)
     }
 

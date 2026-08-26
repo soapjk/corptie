@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -33,8 +33,6 @@ export function resolveCorptieClaudeRuntimePaths(options = {}) {
     credentialsPath: join(runtimeRoot, ".credentials.json"),
     sourceCredentialsPath: resolve(options.sourceCredentialsPath ?? join(home, ".claude", ".credentials.json")),
     credentialsBootstrapMarkerPath: join(runtimeRoot, ".corptie-credentials-bootstrap-v1.json"),
-    legacyClaudeHome: resolve(options.legacyClaudeHome ?? join(home, ".claude")),
-    migrationMarkerPath: join(runtimeRoot, ".corptie-session-migration-v1.json"),
     pluginPath,
     manifestPath: join(pluginPath, ".claude-plugin", "plugin.json"),
     skillPath,
@@ -67,7 +65,6 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
     paths.claudeMemoryPath
   );
   const credentialsCopied = await bootstrapCredentials(paths);
-  const sessionMigration = await migrateLegacySessions(paths, options.legacySessionIds ?? []);
   const manifestChanged = await syncManagedContent(
     `${JSON.stringify(PLUGIN_MANIFEST, null, 2)}\n`,
     paths.manifestPath,
@@ -84,7 +81,6 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
     agentMemory,
     memoryLinkChanged,
     credentialsCopied,
-    sessionMigration,
     manifestChanged,
     skillChanged,
     projectToolsReferenceChanged,
@@ -122,40 +118,6 @@ async function writeBootstrapMarker(paths, source) {
     completedAt: new Date().toISOString(),
     source
   }, null, 2)}\n`, 0o600);
-}
-
-async function migrateLegacySessions(paths, legacySessionIds) {
-  if (await isFile(paths.migrationMarkerPath)) {
-    return { performed: false, fileCount: 0 };
-  }
-  const sessionIds = new Set(legacySessionIds.map((value) => String(value ?? "").trim()).filter(Boolean));
-  let fileCount = 0;
-  const sourceRoot = join(paths.legacyClaudeHome, "projects");
-  const destinationRoot = join(paths.configDir, "projects");
-  if (sessionIds.size > 0 && paths.legacyClaudeHome !== paths.configDir && await isDirectory(sourceRoot)) {
-    for (const entry of await readdir(sourceRoot, { withFileTypes: true, recursive: true })) {
-      if (!entry.isFile()) continue;
-      const parentPath = entry.parentPath ?? entry.path ?? sourceRoot;
-      const source = join(parentPath, entry.name);
-      const relativePath = source.slice(sourceRoot.length + 1);
-      const segments = relativePath.split(/[\\/]/);
-      const matches = [...sessionIds].some((sessionId) => (
-        entry.name === `${sessionId}.jsonl` || segments.includes(sessionId)
-      ));
-      if (!matches) continue;
-      const destination = join(destinationRoot, relativePath);
-      await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-      await copyFile(source, destination);
-      fileCount += 1;
-    }
-  }
-  await atomicWrite(paths.migrationMarkerPath, `${JSON.stringify({
-    version: 1,
-    migratedAt: new Date().toISOString(),
-    requestedSessionCount: sessionIds.size,
-    fileCount
-  }, null, 2)}\n`, 0o600);
-  return { performed: true, fileCount };
 }
 
 async function syncManagedFile(source, destination, mode) {

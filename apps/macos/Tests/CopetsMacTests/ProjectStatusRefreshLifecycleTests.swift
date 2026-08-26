@@ -35,6 +35,22 @@ struct ProjectStatusRefreshLifecycleTests {
         #expect(!selection.contains("sessionApplicationService"))
     }
 
+    @Test
+    func selectionHasOneStoredAuthority() throws {
+        let backend = try backendClientSource()
+        let testFile = URL(fileURLWithPath: #filePath)
+        let root = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let sessionsView = try String(
+            contentsOf: root.appendingPathComponent("Sources/CopetsMac/SessionsView.swift"),
+            encoding: .utf8
+        )
+
+        #expect(backend.contains("guard let id = sessionSelectionController.selectedSessionID"))
+        #expect(!backend.contains("@Published private(set) var selectedSession"))
+        #expect(!backend.contains("private var selectionGeneration"))
+        #expect(!sessionsView.contains("@State private var selectedSession"))
+    }
+
     private func backendClientSource() throws -> String {
         let testFile = URL(fileURLWithPath: #filePath)
         let root = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

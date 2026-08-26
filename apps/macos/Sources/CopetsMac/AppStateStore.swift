@@ -161,6 +161,14 @@ final class AppStateStore: ObservableObject {
         isReachable = false
     }
 
+    /// A successful State SSE HTTP handshake is authoritative reachability
+    /// even when the client already has the latest revision and the server
+    /// correctly emits no redundant state frame.
+    func reportStateStreamConnected() {
+        syncError = nil
+        isReachable = true
+    }
+
     // A successful creation response is committed server state and provides the
     // command's read-your-write guarantee. Merge it into the one normalized
     // client store immediately without inventing a server revision; the next
@@ -176,6 +184,42 @@ final class AppStateStore: ObservableObject {
         return next.sessions[session.id] ?? session
     }
 
+    /// `/clear` commits the replacement before returning it. Apply that exact
+    /// command result atomically without exposing a generic Session snapshot
+    /// mutation API to presentation code.
+    func acceptSessionReplacement(previousSessionID: String, session: TaskSession) {
+        var next = state
+        next.sessions[previousSessionID] = nil
+        next.sessions[session.id] = session
+        pendingCreatedSessionIDs.remove(previousSessionID)
+        pendingCreatedSessionIDs.insert(session.id)
+        state = next
+    }
+
+    /// A read-receipt response is a committed Corptie projection. Merge only
+    /// its monotonic cursors so a concurrent newer message cannot be cleared.
+    func acceptReadReceipt(_ receipt: SessionReadReceiptResponse, requestedSessionID: String) {
+        let matchingIDs = Set([
+            requestedSessionID,
+            receipt.sessionId,
+            receipt.legacySessionId
+        ].compactMap { $0 })
+        var next = state
+        for id in matchingIDs {
+            guard var session = next.sessions[id] else { continue }
+            session.lastAgentMessageSequence = max(
+                session.lastAgentMessageSequence ?? 0,
+                receipt.lastAgentMessageSequence
+            )
+            session.lastReadMessageSequence = max(
+                session.lastReadMessageSequence ?? 0,
+                receipt.lastReadMessageSequence
+            )
+            next.sessions[id] = session
+        }
+        state = next
+    }
+
     @discardableResult
     func acceptWorkItem(_ workItem: WorkItem) -> WorkItem {
         var next = state
@@ -184,10 +228,10 @@ final class AppStateStore: ObservableObject {
         return workItem
     }
 
-    func replaceActiveSessions(_ sessions: [TaskSession]) {
+    func installPerformanceFixtureSession(_ session: TaskSession) {
         var next = state
         next.sessions = next.sessions.filter { $0.value.archived == true }
-        Self.upsert(sessions, into: &next.sessions, id: \TaskSession.id)
+        next.sessions[session.id] = session
         state = next
     }
 

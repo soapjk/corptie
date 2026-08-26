@@ -14,11 +14,8 @@ pkill -f "$repo_root/apps/macos/.build/.*/CorptieMac" 2>/dev/null || true
 CORPTIE_ENV=development \
 CORPTIE_CHAT_PERFORMANCE_FIXTURE=standard \
 CORPTIE_CHAT_PERFORMANCE_STREAM=1 \
-CORPTIE_CHAT_UI_BATCHING=1 \
 CORPTIE_CHAT_UI_BATCH_INTERVAL_MS=100 \
-CORPTIE_CHAT_DELTA_TIMELINE=1 \
 CORPTIE_CHAT_INITIAL_DISPLAY_WEIGHT=500 \
-CORPTIE_CHAT_RENDERER=appKitNativeText \
 "$binary" >"$report_dir/app.log" 2>&1 &
 benchmark_pid=$!
 

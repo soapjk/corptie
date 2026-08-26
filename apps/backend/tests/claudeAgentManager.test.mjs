@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  ClaudeAgentManager,
-  claudeTranscriptItems,
-  loadClaudeTranscriptMessages,
-  mergeClaudeTranscriptItems
-} from "../src/adapters/claudeAgentManager.mjs";
+import { ClaudeAgentManager } from "../src/adapters/claudeAgentManager.mjs";
 
 test("Claude exposes context use and subscription rate-limit windows through its live SDK query", async () => {
   const manager = new ClaudeAgentManager();
@@ -80,57 +75,36 @@ test("Claude sends resolved Session context without exposing it as the visible u
 
   assert.equal(session.items.at(-1).text, "Fix the bug");
   assert.equal(providerMessage.message.content[0].text, "[[CORPTIE_CONTEXT_V1:17]]Reference contextFix the bug");
-  const replayed = claudeTranscriptItems(session, [providerMessage]);
-  assert.equal(replayed[0].text, "Fix the bug");
 });
 
-test("Claude transcript loader pages past the SDK's earliest-message limit", async () => {
-  const source = Array.from({ length: 7 }, (_, index) => ({ index }));
-  const calls = [];
-  const messages = await loadClaudeTranscriptMessages(
-    "sdk-session",
-    { dir: "/tmp/project", pageSize: 3, maxMessages: 20 },
-    async (_sessionId, options) => {
-      calls.push({ limit: options.limit, offset: options.offset });
-      return source.slice(options.offset, options.offset + options.limit);
-    }
+test("Claude emits Provider-neutral turn and incremental item events without writing product projections", async () => {
+  const events = [];
+  const storeWrites = [];
+  const manager = new ClaudeAgentManager({
+    store: {
+      getSession: () => null,
+      upsertSession: (...args) => storeWrites.push(["session", ...args]),
+      appendItem: (...args) => storeWrites.push(["item", ...args])
+    },
+    onProviderEvent: (event) => events.push(event)
+  });
+  manager.start({ id: "claude-events" });
+  manager.ensureQueryStarted = async () => {};
+  manager.enqueueInput = () => {};
+
+  await manager.send("claude-events", "Run it", { localVisibility: "status_only", turnId: "turn:events" });
+  manager.handleSdkMessage(
+    manager.get("claude-events"),
+    sdkAssistant([{ type: "text", text: "Working" }])
   );
+  await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(messages, source);
-  assert.deepEqual(calls, [
-    { limit: 3, offset: 0 },
-    { limit: 3, offset: 3 },
-    { limit: 3, offset: 6 }
-  ]);
+  assert.deepEqual(events.map((event) => event.type), ["turn.started", "assistant.message.delta"]);
+  assert.equal(events[1].item.text, "Working");
+  assert.deepEqual(storeWrites, []);
 });
 
-test("Claude transcript replay retains Corptie-hosted handled choices", () => {
-  const transcript = [
-    { id: "user-1", type: "userMessage", text: "Choose one", createdAt: "2026-08-09T10:00:00.000Z" },
-    { id: "agent-1", type: "agentMessage", text: "Continuing", createdAt: "2026-08-09T10:02:00.000Z" }
-  ];
-  const selectedChoice = {
-    id: "choice-1",
-    type: "choice",
-    text: "Which option?",
-    status: "selected",
-    createdAt: "2026-08-09T10:01:00.000Z",
-    options: [
-      { id: "a", label: "A", selected: false },
-      { id: "b", label: "B", selected: true }
-    ]
-  };
-
-  const merged = mergeClaudeTranscriptItems(transcript, [
-    selectedChoice,
-    { ...selectedChoice, id: "pending", status: "pending" }
-  ]);
-
-  assert.deepEqual(merged.map((item) => item.id), ["user-1", "choice-1", "agent-1"]);
-  assert.equal(merged[1].options[1].selected, true);
-});
-
-test("Claude reconnect restores a handled choice alongside SDK transcript history", async () => {
+test("Claude reconnect restores Corptie-owned history without importing the SDK transcript", async () => {
   const selectedChoice = {
     id: "choice-restored",
     turnId: "claude-restored-choice:turn:1",
@@ -162,20 +136,10 @@ test("Claude reconnect restores a handled choice alongside SDK transcript histor
     upsertSession: () => {}
   };
   const manager = new ClaudeAgentManager({ store });
-  manager.loadTranscriptItems = async () => [{
-    id: "agent-restored",
-    turnId: "claude-restored-choice:turn:1",
-    turnStatus: "complete",
-    type: "agentMessage",
-    title: "Claude Code",
-    text: "Done",
-    createdAt: "2026-08-09T10:02:00.000Z"
-  }];
-
   await manager.reconnect("claude-restored-choice", { startQuery: false });
 
   const restored = manager.detail("claude-restored-choice").items;
-  assert.deepEqual(restored.map((item) => item.id), ["choice-restored", "agent-restored"]);
+  assert.deepEqual(restored.map((item) => item.id), ["choice-restored"]);
   assert.equal(restored[0].status, "selected");
   assert.equal(restored[0].options[0].selected, true);
 });
@@ -198,8 +162,6 @@ test("Claude reconnect clears a stale running state left by a backend restart", 
       upsertSession: () => {}
     }
   });
-  manager.loadTranscriptItems = async () => [];
-
   await manager.reconnect("claude-stale-running", { startQuery: false });
 
   assert.equal(manager.detail("claude-stale-running").status, "complete");
@@ -261,39 +223,6 @@ test("Claude Query receives Corptie MCP, skills, plugin, and project settings", 
   ]);
   assert.deepEqual(capturedOptions.disallowedTools, ["EnterWorktree", "ExitWorktree"]);
   assert.match(capturedOptions.systemPrompt.append, /Corptie collaboration/);
-});
-
-test("Claude transcript keeps SDK tool results inside the originating user turn", () => {
-  const session = { id: "claude-a" };
-  const items = claudeTranscriptItems(session, [
-    sdkUser([{ type: "text", text: "Research this" }]),
-    sdkAssistant([
-      { type: "text", text: "I will inspect the project." },
-      { type: "tool_use", name: "Bash", input: { command: "git status" } }
-    ]),
-    sdkUser([{ type: "tool_result", tool_use_id: "tool-a", content: "clean" }]),
-    sdkAssistant([
-      { type: "text", text: "The tree is clean; I will check the docs." },
-      { type: "tool_use", name: "Read", input: { file_path: "/repo/README.md" } }
-    ]),
-    sdkUser([{ type: "tool_result", tool_use_id: "tool-b", content: "docs" }]),
-    sdkAssistant([{ type: "text", text: "The project is ready." }])
-  ]);
-
-  assert.equal(new Set(items.map((item) => item.turnId)).size, 1);
-  assert.deepEqual(items.map((item) => item.type), [
-    "userMessage",
-    "agentMessage",
-    "commandExecution",
-    "agentMessage",
-    "mcpToolCall",
-    "agentMessage"
-  ]);
-  assert.deepEqual(
-    items.filter((item) => item.type === "agentMessage").map((item) => item.presentationRole),
-    ["commentary", "commentary", "final_answer"]
-  );
-  assert.ok(items.every((item) => item.turnStatus === "complete"));
 });
 
 test("Claude live messages become process items until the result marks a final answer", () => {
@@ -494,6 +423,7 @@ test("Claude reports a normalized turn-settled event to product orchestration", 
   assert.deepEqual(await settled, {
     providerSessionId: "claude-settled",
     session: manager.toSessionSummary(session),
+    items: session.items.filter((item) => item.turnId === "claude-settled:turn:1"),
     hasAgentMessage: true,
     turnId: "claude-settled:turn:1",
     status: "completed",

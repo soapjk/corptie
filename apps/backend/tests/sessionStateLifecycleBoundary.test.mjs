@@ -18,6 +18,40 @@ test("authoritative Session projection is callback-owned and never snapshot-read
   assert.match(snapshotBody, /getStoredSessionSnapshot/);
   assert.doesNotMatch(snapshotBody, /readSessionDetailWithStoredFallback/);
   assert.doesNotMatch(snapshotBody, /sessionApplicationService\.readSession/);
+  assert.equal(source.includes("readCodexProviderSession("), false);
+  assert.equal(source.includes("listCodexProviderSessions("), false);
+});
+
+test("Codex notifications and commands cannot fall back to legacy lifecycle projection", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const notificationBegin = source.indexOf("function handleCodexAppServerNotification(message)");
+  const notificationEnd = source.indexOf("function handleCommittedCodexProviderEvent", notificationBegin);
+  const notificationBody = source.slice(notificationBegin, notificationEnd);
+  assert.notEqual(notificationBegin, -1);
+  assert.notEqual(notificationEnd, -1);
+  assert.match(notificationBody, /providerEventIngestion\.ingest/);
+  assert.doesNotMatch(notificationBody, /SessionTimelineProjection|CodexThreadProgressChanged|CodexThreadCompleted/);
+  assert.doesNotMatch(notificationBody, /upsertManagedCodexSession|store\.renameSession/);
+
+  const sendBegin = source.indexOf("async function sendCodexProviderMessage");
+  const sendEnd = source.indexOf("function agentWorkTimelineItem", sendBegin);
+  const sendBody = source.slice(sendBegin, sendEnd);
+  assert.doesNotMatch(sendBody, /upsertManagedCodexSession|CodexThreadProgressChanged/);
+  assert.doesNotMatch(sendBody, /readThread|findCodexRolloutBySessionId|readCodexRollout/);
+});
+
+test("initial prompts are persisted after Session and Binding creation before Provider dispatch", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const createBegin = source.indexOf("async function createSessionThroughApplication");
+  const createEnd = source.indexOf("function prepareCodexProviderSessionInput", createBegin);
+  const createBody = source.slice(createBegin, createEnd);
+  const bindingIndex = createBody.indexOf("sessionApplicationService.createSession");
+  const deliveryIndex = createBody.indexOf("sendUnifiedSessionMessage");
+  assert.ok(bindingIndex >= 0 && deliveryIndex > bindingIndex);
+
+  const providerCreateBegin = source.indexOf("async function createCodexProviderSession");
+  const providerCreateEnd = source.indexOf("async function resumeCodexProviderSession", providerCreateBegin);
+  assert.doesNotMatch(source.slice(providerCreateBegin, providerCreateEnd), /startTurn/);
 });
 
 test("every supported streaming Provider isolates lifecycle callback failures", async () => {

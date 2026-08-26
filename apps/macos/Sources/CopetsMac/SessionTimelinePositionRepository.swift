@@ -7,13 +7,6 @@ struct StoredSessionTimelinePosition: Equatable, Sendable {
     let savedAtMilliseconds: Int64
 }
 
-struct StoredSessionTimelineWindow: Equatable, Sendable {
-    let sessionID: String
-    let payload: Data
-    let revision: Int64
-    let savedAtMilliseconds: Int64
-}
-
 enum SessionTimelinePositionRepositoryError: Error, Equatable {
     case invalidSessionID
     case invalidPosition
@@ -29,9 +22,6 @@ enum SessionTimelinePositionRepositoryError: Error, Equatable {
 /// contracts: a viewport belongs to this Mac UI, not to an Agent thread. The
 /// actor serializes SQLite access while callers retain only a bounded hot cache.
 actor SessionTimelinePositionRepository {
-    private static let maximumTimelineWindowBytes = 64 * 1_024 * 1_024
-    private static let maximumTimelineWindowCount = 256
-    private static let maximumSingleWindowBytes = 8 * 1_024 * 1_024
     @MainActor
     static let shared: SessionTimelinePositionRepository = {
         let support = FileManager.default.urls(
@@ -225,96 +215,6 @@ actor SessionTimelinePositionRepository {
         }
     }
 
-    func loadTimelineWindow(sessionID: String) throws -> StoredSessionTimelineWindow? {
-        guard !sessionID.isEmpty, sessionID.utf8.count <= 512 else {
-            throw SessionTimelinePositionRepositoryError.invalidSessionID
-        }
-        if let startupError { throw startupError }
-        guard let database else { throw SessionTimelinePositionRepositoryError.openFailed }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(
-            database,
-            """
-            SELECT payload_json, revision, saved_at_ms
-            FROM session_timeline_windows_v1
-            WHERE session_id = ? LIMIT 1
-            """,
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            throw SessionTimelinePositionRepositoryError.readFailed
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, sessionID, -1, Self.sqliteTransient)
-        let result = sqlite3_step(statement)
-        if result == SQLITE_DONE { return nil }
-        guard result == SQLITE_ROW,
-              let bytes = sqlite3_column_blob(statement, 0) else {
-            throw SessionTimelinePositionRepositoryError.readFailed
-        }
-        let byteCount = Int(sqlite3_column_bytes(statement, 0))
-        let record = StoredSessionTimelineWindow(
-            sessionID: sessionID,
-            payload: Data(bytes: bytes, count: byteCount),
-            revision: sqlite3_column_int64(statement, 1),
-            savedAtMilliseconds: sqlite3_column_int64(statement, 2)
-        )
-        touchTimelineWindow(sessionID: sessionID)
-        return record
-    }
-
-    func storeTimelineWindow(
-        _ payload: Data,
-        sessionID: String,
-        revision: Int64,
-        savedAtMilliseconds: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
-    ) throws {
-        guard !sessionID.isEmpty, sessionID.utf8.count <= 512 else {
-            throw SessionTimelinePositionRepositoryError.invalidSessionID
-        }
-        guard !payload.isEmpty, payload.count <= Self.maximumSingleWindowBytes,
-              revision >= 0, savedAtMilliseconds >= 0 else {
-            throw SessionTimelinePositionRepositoryError.invalidPosition
-        }
-        if let startupError { throw startupError }
-        guard let database else { throw SessionTimelinePositionRepositoryError.openFailed }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(
-            database,
-            """
-            INSERT INTO session_timeline_windows_v1 (
-              session_id, payload_json, revision, byte_count, saved_at_ms, accessed_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-              payload_json = excluded.payload_json,
-              revision = excluded.revision,
-              byte_count = excluded.byte_count,
-              saved_at_ms = excluded.saved_at_ms,
-              accessed_at_ms = excluded.accessed_at_ms
-            WHERE excluded.revision >= session_timeline_windows_v1.revision
-            """,
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else {
-            throw SessionTimelinePositionRepositoryError.writeFailed
-        }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_text(statement, 1, sessionID, -1, Self.sqliteTransient)
-        _ = payload.withUnsafeBytes { buffer in
-            sqlite3_bind_blob(statement, 2, buffer.baseAddress, Int32(buffer.count), Self.sqliteTransient)
-        }
-        sqlite3_bind_int64(statement, 3, revision)
-        sqlite3_bind_int64(statement, 4, Int64(payload.count))
-        sqlite3_bind_int64(statement, 5, savedAtMilliseconds)
-        sqlite3_bind_int64(statement, 6, savedAtMilliseconds)
-        guard sqlite3_step(statement) == SQLITE_DONE else {
-            throw SessionTimelinePositionRepositoryError.writeFailed
-        }
-        try trimTimelineWindowsIfNeeded()
-    }
-
     func delete(sessionID: String) throws {
         if let startupError { throw startupError }
         guard let database else { throw SessionTimelinePositionRepositoryError.openFailed }
@@ -356,61 +256,8 @@ actor SessionTimelinePositionRepository {
             && record.savedAtMilliseconds >= 0
     }
 
-    private func touchTimelineWindow(sessionID: String) {
-        guard let database else { return }
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(
-            database,
-            "UPDATE session_timeline_windows_v1 SET accessed_at_ms = ? WHERE session_id = ?",
-            -1,
-            &statement,
-            nil
-        ) == SQLITE_OK else { return }
-        defer { sqlite3_finalize(statement) }
-        sqlite3_bind_int64(statement, 1, Int64(Date().timeIntervalSince1970 * 1_000))
-        sqlite3_bind_text(statement, 2, sessionID, -1, Self.sqliteTransient)
-        _ = sqlite3_step(statement)
-    }
-
-    private func trimTimelineWindowsIfNeeded() throws {
-        guard let database else { throw SessionTimelinePositionRepositoryError.openFailed }
-        while true {
-            guard let totals = try? scalarPair(
-                database,
-                sql: "SELECT COUNT(*), COALESCE(SUM(byte_count), 0) FROM session_timeline_windows_v1"
-            ) else { throw SessionTimelinePositionRepositoryError.readFailed }
-            guard totals.0 > Self.maximumTimelineWindowCount
-                    || totals.1 > Self.maximumTimelineWindowBytes else { return }
-            guard sqlite3_exec(
-                database,
-                """
-                DELETE FROM session_timeline_windows_v1 WHERE session_id = (
-                  SELECT session_id FROM session_timeline_windows_v1
-                  ORDER BY accessed_at_ms ASC, session_id ASC LIMIT 1
-                )
-                """,
-                nil,
-                nil,
-                nil
-            ) == SQLITE_OK else {
-                throw SessionTimelinePositionRepositoryError.writeFailed
-            }
-        }
-    }
-
-    private func scalarPair(_ database: OpaquePointer, sql: String) throws -> (Int, Int) {
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-            throw SessionTimelinePositionRepositoryError.readFailed
-        }
-        defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_ROW else {
-            throw SessionTimelinePositionRepositoryError.readFailed
-        }
-        return (Int(sqlite3_column_int64(statement, 0)), Int(sqlite3_column_int64(statement, 1)))
-    }
-
     private static let schemaSQL = """
+    DROP TABLE IF EXISTS session_timeline_windows_v1;
     CREATE TABLE IF NOT EXISTS timeline_viewport_positions_v1 (
       session_id TEXT PRIMARY KEY NOT NULL,
       anchor_row_id TEXT NOT NULL,
@@ -422,16 +269,6 @@ actor SessionTimelinePositionRepository {
     );
     CREATE INDEX IF NOT EXISTS idx_timeline_viewport_positions_saved_at
     ON timeline_viewport_positions_v1(saved_at_ms);
-    CREATE TABLE IF NOT EXISTS session_timeline_windows_v1 (
-      session_id TEXT PRIMARY KEY NOT NULL,
-      payload_json BLOB NOT NULL,
-      revision INTEGER NOT NULL,
-      byte_count INTEGER NOT NULL,
-      saved_at_ms INTEGER NOT NULL,
-      accessed_at_ms INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_session_timeline_windows_accessed_at
-    ON session_timeline_windows_v1(accessed_at_ms);
     """
 
     private static let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

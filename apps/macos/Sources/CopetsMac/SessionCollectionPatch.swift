@@ -128,8 +128,7 @@ enum SessionCollectionDiffer {
             fields.insert(.workspace)
         }
         if previous.suggestedOptions != next.suggestedOptions
-            || previous.suggestedPrompt != next.suggestedPrompt
-            || previous.pendingCollaborationConfirmation != next.pendingCollaborationConfirmation {
+            || previous.suggestedPrompt != next.suggestedPrompt {
             fields.insert(.suggestedOptions)
         }
         if previous.pinned != next.pinned
