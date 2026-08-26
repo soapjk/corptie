@@ -661,6 +661,77 @@ test("Session execution projection is derived from durable Turns instead of a st
   }
 });
 
+test("restart repairs a terminal Provider turn regressed by a late item event", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-terminal-turn-repair-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  let store = new CorptieStore({ dbPath, configPath });
+  await store.initialize();
+  try {
+    store.upsertSession({
+      id: "regressed-session",
+      title: "Regressed",
+      agent: "Agent",
+      provider: "provider:test",
+      status: "running",
+      activityStatus: "Using tool",
+      external: { activeTurnId: "turn:one" },
+      capabilities: { canInterrupt: true }
+    });
+    store.upsertSessionTurn({
+      sessionId: "regressed-session",
+      bindingId: "binding:one",
+      routingVersion: 1,
+      turnId: "turn:one",
+      executionStatus: "completed",
+      endedAt: "2026-08-26T10:00:00.000Z",
+      updatedAt: "2026-08-26T10:00:00.000Z"
+    });
+    const terminalEvent = {
+      providerId: "provider:test",
+      providerSessionId: "thread:one",
+      providerEventId: "event:turn-completed",
+      bindingId: "binding:one",
+      routingVersion: 1,
+      turnId: "turn:one",
+      type: "turn.completed",
+      occurredAt: "2026-08-26T10:00:00.000Z",
+      receivedAt: "2026-08-26T10:00:00.010Z",
+      payload: {}
+    };
+    store.insertProviderInboxEvent(terminalEvent, "regressed-session");
+    store.markProviderInboxEvent(
+      terminalEvent.providerId,
+      terminalEvent.providerSessionId,
+      terminalEvent.providerEventId,
+      { status: "applied", appliedAt: terminalEvent.receivedAt }
+    );
+    // Reproduce a database written by the previous release, before terminal
+    // state became monotonic.
+    store.db.run(
+      "UPDATE session_turns SET execution_status = 'running', ended_at = NULL, updated_at = ? WHERE session_id = ?",
+      ["2026-08-26T10:06:00.000Z", "regressed-session"]
+    );
+    await store.close();
+
+    store = new CorptieStore({ dbPath, configPath });
+    await store.initialize();
+
+    const turn = store.getSessionTurn("regressed-session", "binding:one", "turn:one");
+    const session = store.getSession("regressed-session");
+    assert.equal(turn.execution_status, "completed");
+    assert.equal(turn.ended_at, terminalEvent.occurredAt);
+    assert.equal(session.status, "complete");
+    assert.equal(session.executionStatus, "completed");
+    assert.equal(session.external.activeTurnId, null);
+    assert.equal(session.activityStatus, null);
+    assert.equal(session.capabilities.canInterrupt, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("identical Provider Session and history projections do not rewrite rows or advance revision", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-projection-noop-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
