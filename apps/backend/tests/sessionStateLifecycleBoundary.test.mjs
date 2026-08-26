@@ -54,6 +54,28 @@ test("initial prompts are persisted after Session and Binding creation before Pr
   assert.doesNotMatch(source.slice(providerCreateBegin, providerCreateEnd), /startTurn/);
 });
 
+test("Worker initial prompts drain only after WorkItem ownership finalization", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const serviceBegin = source.indexOf("workItemStartService = new WorkItemStartService");
+  const serviceEnd = source.indexOf("projectWorktreeIntegrationService", serviceBegin);
+  const serviceBody = source.slice(serviceBegin, serviceEnd);
+
+  assert.match(serviceBody, /deferInitialPromptUntilBound:\s*true/);
+  const finalizeIndex = serviceBody.indexOf("finalizeStart:");
+  const activateIndex = serviceBody.indexOf("activateSession:");
+  assert.ok(finalizeIndex >= 0 && activateIndex > finalizeIndex);
+  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, workItemExecutionPrompt\(workItem\)/);
+});
+
+test("a replaced Worker Session cannot overwrite its WorkItem lifecycle", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const settleBegin = source.indexOf("function settleEntityWorkItemFromSession");
+  const settleEnd = source.indexOf("function scheduleWorkItemMemoryExtraction", settleBegin);
+  const settleBody = source.slice(settleBegin, settleEnd);
+  assert.match(settleBody, /workItem\.current_session_id !== session\.id/);
+  assert.ok(settleBody.indexOf("current_session_id") < settleBody.indexOf("workItemExecutionPatch"));
+});
+
 test("every supported streaming Provider isolates lifecycle callback failures", async () => {
   const source = await readFile(sourceURL, "utf8");
   assert.match(source, /onNotification:\s*\(message\)[\s\S]*handleCodexAppServerNotificationSafely/);
