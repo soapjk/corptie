@@ -2381,6 +2381,7 @@ export class CorptieStore {
     this.ensureSkillTables();
     this.ensureStateSyncTables();
     this.ensureProviderEventPipelineTables();
+    this.repairRegressedTerminalSessionTurns();
     this.dropColumnIfExists("agents", "provider");
     this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
@@ -2769,6 +2770,71 @@ export class CorptieStore {
       "connection_status",
       "TEXT NOT NULL DEFAULT 'disconnected' CHECK (connection_status IN ('connected', 'reconnecting', 'disconnected'))"
     );
+  }
+
+  repairRegressedTerminalSessionTurns() {
+    const terminalStatus = {
+      "turn.completed": "completed",
+      "turn.failed": "failed",
+      "turn.cancelled": "cancelled"
+    };
+    const terminalEvents = this.selectAll(
+      `SELECT turns.session_id, turns.binding_id, turns.turn_id,
+              inbox.event_type, inbox.occurred_at, inbox.received_at,
+              inbox.provider_event_id
+       FROM session_turns turns
+       JOIN provider_event_inbox inbox
+         ON inbox.binding_id = turns.binding_id AND inbox.turn_id = turns.turn_id
+       WHERE turns.execution_status IN ('idle', 'running', 'blocked')
+         AND inbox.status = 'applied'
+         AND inbox.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
+       ORDER BY inbox.received_at DESC, inbox.provider_event_id DESC`
+    );
+    const repairedSessions = new Set();
+    const repairedTurns = new Set();
+    for (const event of terminalEvents) {
+      const key = `${event.session_id}\u0000${event.binding_id}\u0000${event.turn_id}`;
+      if (repairedTurns.has(key)) continue;
+      repairedTurns.add(key);
+      const settledAt = event.occurred_at ?? event.received_at;
+      this.db.run(
+        `UPDATE session_turns
+         SET execution_status = ?, ended_at = COALESCE(ended_at, ?),
+             updated_at = CASE WHEN updated_at < ? THEN ? ELSE updated_at END
+         WHERE session_id = ? AND binding_id = ? AND turn_id = ?
+           AND execution_status IN ('idle', 'running', 'blocked')`,
+        [
+          terminalStatus[event.event_type], settledAt, event.received_at, event.received_at,
+          event.session_id, event.binding_id, event.turn_id
+        ]
+      );
+      if (this.db.getRowsModified() > 0) repairedSessions.add(event.session_id);
+    }
+
+    for (const sessionId of repairedSessions) {
+      if (this.listUnsettledSessionTurns(sessionId).length > 0) continue;
+      const session = this.selectOne("SELECT status, raw_json FROM sessions WHERE id = ?", [sessionId]);
+      if (!session || !["running", "blocked"].includes(session.status)) continue;
+      const latest = this.selectOne(
+        `SELECT turn_id, execution_status FROM session_turns
+         WHERE session_id = ? AND execution_status IN ('completed', 'failed', 'cancelled')
+         ORDER BY COALESCE(ended_at, updated_at) DESC, turn_id DESC LIMIT 1`,
+        [sessionId]
+      );
+      if (!latest) continue;
+      const rawStatus = parseJson(session.raw_json, {});
+      rawStatus.activeTurnId = null;
+      rawStatus.activityStatus = null;
+      rawStatus.lastSettledTurnId = latest.turn_id;
+      if (rawStatus.capabilities && typeof rawStatus.capabilities === "object") {
+        rawStatus.capabilities.canInterrupt = false;
+      }
+      this.db.run(
+        "UPDATE sessions SET status = ?, progress = 1, raw_json = ? WHERE id = ?",
+        [latest.execution_status === "completed" ? "complete" : latest.execution_status, JSON.stringify(rawStatus), sessionId]
+      );
+    }
+    return repairedTurns.size;
   }
 
   migrateSessionEventAgentMessageFlag() {
