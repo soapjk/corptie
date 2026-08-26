@@ -8,6 +8,16 @@ export function historicalProviderSessionUnavailable(value) {
   return /no rollout found for thread id\b/i.test(String(value ?? ""));
 }
 
+export function historicalWorkItemBindingUnavailable(value) {
+  return /^WorkItem\s+\S+\s+points to no Session, not active Worker Session\s+\S+\.?$/i
+    .test(String(value ?? "").trim());
+}
+
+export function historicalPreExecutionSessionFailure(value) {
+  return historicalProviderSessionUnavailable(value)
+    || historicalWorkItemBindingUnavailable(value);
+}
+
 export function evaluateWorkItemSessionRepair(input = {}) {
   const status = String(input.workItem?.status ?? "").trim().toLowerCase();
   if (!input.workItem?.id || TERMINAL_WORK_ITEM_STATUSES.has(status)) return denied("WORK_ITEM_TERMINAL");
@@ -21,7 +31,7 @@ export function evaluateWorkItemSessionRepair(input = {}) {
   }
   const uncertain = Array.isArray(input.uncertainDeliveries) ? input.uncertainDeliveries : [];
   if (uncertain.some((delivery) => delivery.status !== "delivery_unknown"
-    || !historicalProviderSessionUnavailable(delivery.last_error))) {
+    || !historicalPreExecutionSessionFailure(delivery.last_error))) {
     return denied("DELIVERY_OUTCOME_AMBIGUOUS");
   }
   if (Number(input.repairCount ?? 0) >= MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS) {
