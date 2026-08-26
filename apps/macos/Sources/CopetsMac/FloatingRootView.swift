@@ -4192,9 +4192,19 @@ struct DetailView: View {
         guard previousEntries.count == previousRows.count else {
             return nextEntries.map { appKitRow($0) }
         }
-        let commonPrefixCount = zip(previousEntries, nextEntries)
-            .prefix { previous, next in previous.id == next.id }
-            .count
+        let previousIdentities = previousRows.map {
+            AppKitChatRowReuseIdentity(id: $0.id, contentRevision: $0.contentRevision)
+        }
+        let nextIdentities = nextEntries.map {
+            AppKitChatRowReuseIdentity(
+                id: $0.id,
+                contentRevision: appKitContentRevision($0, expandedTurnIds: expandedProcessTurnIds)
+            )
+        }
+        let commonPrefixCount = AppKitChatRowReusePolicy.commonPrefixCount(
+            previous: previousIdentities,
+            next: nextIdentities
+        )
         if commonPrefixCount == previousEntries.count,
            nextEntries.count >= previousEntries.count {
             return previousRows + nextEntries.dropFirst(commonPrefixCount).map { appKitRow($0) }
@@ -4204,9 +4214,7 @@ struct DetailView: View {
               let nextTailStart = nextEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
               let previousTailStart = previousEntries.firstIndex(where: { chatDisplayEntryTurnId($0) == nextTailTurnId }),
               nextTailStart == previousTailStart,
-              zip(nextEntries[..<nextTailStart], previousEntries[..<previousTailStart]).allSatisfy({ next, previous in
-                  next.id == previous.id
-              }) else {
+              zip(nextIdentities[..<nextTailStart], previousIdentities[..<previousTailStart]).allSatisfy(==) else {
             return nextEntries.map { appKitRow($0) }
         }
         return Array(previousRows[..<previousTailStart]) + nextEntries[nextTailStart...].map { appKitRow($0) }
