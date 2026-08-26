@@ -29,6 +29,7 @@ struct AutomationsView: View {
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
     @StateObject private var backendClient = BackendClient.shared
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @State private var category: AutomationCategory? = .all
     @State private var editingAutomation: ScheduledSessionTask?
 

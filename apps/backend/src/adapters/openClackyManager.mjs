@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { providerMessageWithSessionContext, userMessageWithoutSessionContext } from "../utils/sessionContextMessage.mjs";
-import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
+import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:7070";
 
@@ -19,8 +18,6 @@ export class OpenClackyManager {
     this.onSessionChanged = options.onSessionChanged ?? null;
     this.onDetailChanged = options.onDetailChanged ?? null;
     this.resolveOwnedSessionIds = options.resolveOwnedSessionIds ?? (() => []);
-    this.listStoredSessions = options.listStoredSessions ?? (() => []);
-    this.refreshIntervalMs = options.refreshIntervalMs ?? 10_000;
     // Corptie-owned isolated runtime options. When present, every created Session
     // is bootstrapped with the Corptie Agent identity, runtime instructions, scope
     // and permission boundary through the session bootstrap payload. The user's
@@ -42,13 +39,10 @@ export class OpenClackyManager {
     };
     this.ownedSessionIds = new Set();
     this.sessions = new Map();
-    this.details = new Map();
     this.sockets = new Map();
     this.eventCursors = new Map();
     this.deliveryAcks = new Map();
     this.toolHosts = new Map();
-    this.refreshTimer = null;
-    this.lastSnapshotSignature = null;
     this.connectionErrorMessage = null;
     // Runtime probe results. Null until the first successful probe.
     this.probe = null;
@@ -57,19 +51,18 @@ export class OpenClackyManager {
 
   start() {
     void this.probeRuntime().catch((error) => this.reportConnectionError(error));
-    void this.refresh().catch((error) => this.reportConnectionError(error));
-    if (this.refreshIntervalMs > 0 && !this.refreshTimer) {
-      this.refreshTimer = setInterval(() => {
-        void this.refresh().catch((error) => this.reportConnectionError(error));
-      }, this.refreshIntervalMs);
-      this.refreshTimer.unref?.();
-    }
+    Promise.resolve(this.resolveOwnedSessionIds()).then((sessionIds) => {
+      for (const sessionId of Array.isArray(sessionIds) ? sessionIds : []) {
+        const id = optionalText(sessionId);
+        if (!id) continue;
+        this.ownedSessionIds.add(id);
+        this.ensureSocket(id);
+      }
+    }).catch((error) => this.reportConnectionError(error));
     return this;
   }
 
   stop() {
-    if (this.refreshTimer) clearInterval(this.refreshTimer);
-    this.refreshTimer = null;
     for (const socket of this.sockets.values()) socket.close?.();
     this.sockets.clear();
   }
@@ -131,66 +124,6 @@ export class OpenClackyManager {
     }
   }
 
-  list(options = {}) {
-    const archived = options.archived === true;
-    // In-memory sessions carry the live status (running/complete/…), but they are
-    // refilled asynchronously by `refresh()` and can be momentarily incomplete while
-    // the provider rewrites a session file. The persisted session table is the
-    // authoritative inventory, so backfill any stored session the in-memory map is
-    // currently missing — the same merge the Claude SDK manager performs — instead of
-    // letting a transient gap silently drop idle sessions from the control plane.
-    // Order is applied downstream by `listGatewaySessions` via persisted order.
-    const live = Array.from(this.sessions.values())
-      .filter((session) => Boolean(session.archived) === archived);
-    const liveIds = new Set(live.map((session) => session.id));
-    const stored = (this.listStoredSessions({ archived }) ?? [])
-      .filter((session) => !liveIds.has(session.id));
-    return [...live, ...stored];
-  }
-
-  async refresh() {
-    const persistedIds = await this.resolveOwnedSessionIds();
-    if (!Array.isArray(persistedIds)) {
-      throw new Error("OpenClacky Session ownership resolver returned an invalid result.");
-    }
-    const ownedIds = new Set([
-      ...this.ownedSessionIds,
-      ...persistedIds.map(optionalText).filter(Boolean)
-    ]);
-    const seen = new Set();
-    for (const sessionId of ownedIds) {
-      try {
-        const payload = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
-        const summary = openClackySessionSummary(payload?.session ?? payload);
-        if (summary.external.sessionId !== sessionId) {
-          throw new Error(`OpenClacky returned Session ${summary.external.sessionId} for ${sessionId}.`);
-        }
-        seen.add(sessionId);
-        this.sessions.set(sessionId, summary);
-      } catch (error) {
-        if (error.statusCode === 404) {
-          // A 404 is not a deletion signal: the provider can be mid-write on a
-          // session file (non-atomic save) or momentarily unreachable, which makes
-          // `load` return nil transiently. Keep the last known state so a still-owned
-          // session doesn't vanish from the control plane until the provider confirms
-          // removal via DELETE or drops it from the owned-session list.
-          seen.add(sessionId);
-          continue;
-        }
-        throw error;
-      }
-    }
-    for (const id of this.sessions.keys()) {
-      if (!seen.has(id)) this.sessions.delete(id);
-    }
-    const signature = JSON.stringify(this.list().map((session) => [session.id, session.status, session.updatedAt]));
-    const changed = signature !== this.lastSnapshotSignature;
-    this.lastSnapshotSignature = signature;
-    this.connectionErrorMessage = null;
-    if (changed) this.onSessionChanged?.({ type: "refreshed", sessions: this.list() });
-    return this.list();
-  }
-
   // ---- Session bootstrap: Corptie-owned isolated runtime ------------------
 
   async create(input = {}) {
@@ -250,57 +183,6 @@ export class OpenClackyManager {
     };
   }
 
-  // ---- Read / paginated history -------------------------------------------
-
-  async read(sessionId) {
-    const [sessionPayload, messagePayload] = await Promise.all([
-      this.request(`/api/sessions/${encodeURIComponent(sessionId)}`),
-      this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=100`)
-    ]);
-    const row = sessionPayload?.session ?? sessionPayload;
-    const summary = openClackySessionSummary(row);
-    const page = normalizeMessagePage(messagePayload);
-    const events = page.events;
-    const detail = openClackySessionDetail(summary, events);
-    this.sessions.set(sessionId, summary);
-    this.details.set(sessionId, detail);
-    this.onDetailChanged?.(detail);
-    if (page.cursor) this.eventCursors.set(sessionId, page.cursor);
-    this.ensureSocket(sessionId);
-    return detail;
-  }
-
-  // Fetch the complete (paginated) history for a session, following `before` /
-  // `has_more` cursors. Deduplicates by stable event id and preserves ordering.
-  async readHistory(sessionId, options = {}) {
-    const maxPages = options.maxPages ?? 200;
-    const events = [];
-    const seen = new Set();
-    let before = options.before ?? null;
-    let hasMore = true;
-    let pageCount = 0;
-    while (hasMore && pageCount < maxPages) {
-      const query = new URLSearchParams({ limit: "100" });
-      if (before) query.set("before", before);
-      const payload = await this.request(
-        `/api/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`
-      );
-      const page = normalizeMessagePage(payload);
-      for (const event of page.events) {
-        const id = stableEventId(event, events.length + seen.size);
-        if (seen.has(id)) continue;
-        seen.add(id);
-        events.push(event);
-      }
-      hasMore = page.hasMore === true;
-      before = page.cursor ?? null;
-      if (!before) hasMore = false;
-      pageCount += 1;
-    }
-    events.reverse();
-    return { events, hasMore, cursor: before };
-  }
-
   async resume(sessionId, options = {}) {
     const toolHost = await this.prepareToolHost(options.toolHost);
     if (toolHost) {
@@ -310,8 +192,12 @@ export class OpenClackyManager {
       });
       this.toolHosts.set(sessionId, toolHost.context);
     }
-    await this.read(sessionId);
-    return this.sessions.get(sessionId);
+    this.ownedSessionIds.add(sessionId);
+    this.ensureSocket(sessionId);
+    return this.sessions.get(sessionId) ?? {
+      id: `openclacky:${sessionId}`,
+      external: { provider: "openclacky", sessionId }
+    };
   }
 
   async delete(sessionId) {
@@ -320,7 +206,6 @@ export class OpenClackyManager {
     this.sockets.delete(sessionId);
     this.ownedSessionIds.delete(sessionId);
     this.sessions.delete(sessionId);
-    this.details.delete(sessionId);
     this.eventCursors.delete(sessionId);
     this.toolHosts.delete(sessionId);
     this.onSessionChanged?.({ type: "deleted", sessionId });
@@ -404,10 +289,13 @@ export class OpenClackyManager {
   }
 
   async refreshOne(sessionId) {
-    const payload = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
-    const summary = openClackySessionSummary(payload?.session ?? payload);
+    const summary = this.sessions.get(sessionId) ?? {
+      id: `openclacky:${sessionId}`,
+      title: "OpenClacky",
+      status: "complete",
+      external: { provider: "openclacky", sessionId }
+    };
     this.sessions.set(sessionId, summary);
-    this.onSessionChanged?.({ type: "updated", session: summary });
     return summary;
   }
 
@@ -462,7 +350,12 @@ export class OpenClackyManager {
     if (this.accessKey) url.searchParams.set("access_key", this.accessKey);
     const socket = new this.WebSocket(url);
     socket.__corptieSessionId = sessionId;
-    socket.__corptieQueue = [{ type: "subscribe", session_id: sessionId }];
+    const cursor = this.eventCursors.get(sessionId) ?? null;
+    socket.__corptieQueue = [{
+      type: "subscribe",
+      session_id: sessionId,
+      ...(cursor ? { cursor, after: cursor } : {})
+    }];
     socket.__corptieReconnectAttempts = 0;
     socket.addEventListener("open", () => {
       socket.__corptieReconnectAttempts = 0;
@@ -485,29 +378,9 @@ export class OpenClackyManager {
     const timer = setTimeout(() => {
       if (this.ownedSessionIds.has(sessionId) && !this.sockets.has(sessionId)) {
         this.ensureSocket(sessionId);
-        void this.replayMissedEvents(sessionId);
       }
     }, delayMs);
     timer.unref?.();
-  }
-
-  async replayMissedEvents(sessionId) {
-    const cursor = this.eventCursors.get(sessionId);
-    if (!cursor) return;
-    try {
-      const { events } = await this.readHistory(sessionId, { before: cursor });
-      const current = this.details.get(sessionId);
-      if (current) {
-        let next = current;
-        for (const event of events) {
-          next = appendOpenClackyEvent(next, event);
-        }
-        this.details.set(sessionId, next);
-        this.onDetailChanged?.(next);
-      }
-    } catch {
-      // Best-effort replay; the next full read will reconcile.
-    }
   }
 
   sendSocket(sessionId, message) {
@@ -542,12 +415,7 @@ export class OpenClackyManager {
       const summary = openClackySessionSummary(row);
       this.sessions.set(sessionId, summary);
     }
-    const current = this.details.get(sessionId);
-    const nextDetail = current ? appendOpenClackyEvent(current, event) : null;
-    if (nextDetail) {
-      this.details.set(sessionId, nextDetail);
-      this.onDetailChanged?.(nextDetail);
-    }
+    const nextDetail = null;
     const currentSummary = this.sessions.get(sessionId);
     if (currentSummary) {
       const status = nextDetail?.status ?? openClackyEventStatus(event, currentSummary.status);
@@ -700,18 +568,6 @@ export function probeRuntimeResult(version, bridgeProtocol, bridgeHealthy, flags
   };
 }
 
-// ---- Event / history normalization ----------------------------------------
-
-function normalizeMessagePage(payload) {
-  if (Array.isArray(payload)) return { events: payload, hasMore: false, cursor: null };
-  const events = Array.isArray(payload?.events) ? payload.events : [];
-  return {
-    events,
-    hasMore: payload?.has_more === true || payload?.hasMore === true,
-    cursor: optionalText(payload?.next_cursor ?? payload?.cursor ?? payload?.before)
-  };
-}
-
 // Stable event id: prefer the upstream id; otherwise derive a deterministic id from
 // a stable key (session + index + type + created_at) so replay/dedup is reliable.
 function stableEventId(event, fallbackIndex = 0) {
@@ -770,142 +626,6 @@ export function openClackySessionSummary(row = {}, options = {}) {
   };
 }
 
-export function openClackySessionDetail(summary, events = []) {
-  const sessionId = summary.external.sessionId;
-  const items = [];
-  let currentTurnId = null;
-  for (const [index, event] of events.entries()) {
-    const explicitTurnId = optionalText(event?.turn_id);
-    if (explicitTurnId) {
-      currentTurnId = explicitTurnId;
-    } else if (!currentTurnId || isOpenClackyUserEvent(event)) {
-      currentTurnId = fallbackOpenClackyTurnId(sessionId, index);
-    }
-    items.push(...openClackyEventItems(sessionId, event, index, currentTurnId));
-  }
-  return {
-    id: sessionId,
-    title: summary.title,
-    status: summary.status,
-    source: "openclacky",
-    connectionStatus: "connected",
-    currentModel: summary.external.currentModel,
-    currentReasoningLevel: summary.external.currentReasoningLevel,
-    activityStatus: summary.activityStatus,
-    cwd: summary.external.cwd,
-    createdAt: isoTimestamp(summary.external.raw?.created_at),
-    updatedAt: summary.updatedAt,
-    canSend: summary.capabilities.canSend,
-    sendUnavailableReason: summary.capabilities.canSend ? null : "OpenClacky is busy or waiting for confirmation.",
-    capabilities: summary.capabilities,
-    usage: summary.external.raw?.usage ?? null,
-    turnCount: Math.max(1, items.filter((item) => item.type === "userMessage").length),
-    items
-  };
-}
-
-function appendOpenClackyEvent(detail, event) {
-  const index = detail.items.length;
-  const explicitTurnId = optionalText(event?.turn_id);
-  const fallbackTurnId = explicitTurnId
-    ?? (isOpenClackyUserEvent(event)
-      ? fallbackOpenClackyTurnId(detail.id, index)
-      : detail.items.at(-1)?.turnId ?? fallbackOpenClackyTurnId(detail.id, index));
-  const items = openClackyEventItems(detail.id, event, index, fallbackTurnId);
-  const status = event.type === "session_update"
-    ? openClackyStatus(event.session?.status ?? event.status)
-    : event.type === "request_confirmation"
-      ? "blocked"
-      : event.type === "task_finished" || event.type === "interrupted" ? "complete" : detail.status;
-  const usage = mergeUsage(detail.usage, event);
-  return {
-    ...detail,
-    status,
-    activityStatus: status === "running" ? "working" : status,
-    updatedAt: new Date().toISOString(),
-    canSend: status === "complete" || status === "failed",
-    usage,
-    items: [...detail.items, ...items]
-  };
-}
-
-function mergeUsage(current, event) {
-  if (event?.type !== "token_usage" || !event.usage) return current;
-  const incoming = event.usage;
-  const prev = current && typeof current === "object" ? current : {};
-  return {
-    ...prev,
-    inputTokens: (prev.inputTokens ?? 0) + Number(incoming.input_tokens ?? incoming.prompt_tokens ?? 0),
-    outputTokens: (prev.outputTokens ?? 0) + Number(incoming.output_tokens ?? incoming.completion_tokens ?? 0),
-    totalTokens: (prev.totalTokens ?? 0) + Number(incoming.total_tokens ?? incoming.input_tokens ?? 0) + Number(incoming.output_tokens ?? 0),
-    cacheReadInputTokens: (prev.cacheReadInputTokens ?? 0) + Number(incoming.cache_read_input_tokens ?? 0)
-  };
-}
-
-function openClackyEventItems(sessionId, event, index, fallbackTurnId) {
-  const type = String(event?.type ?? "");
-  const base = {
-    id: String(event?.id ?? stableEventId(event, index)),
-    turnId: String(event?.turn_id ?? fallbackTurnId ?? fallbackOpenClackyTurnId(sessionId, index)),
-    turnStatus: "complete",
-    title: "OpenClacky",
-    rawMetadataJSON: providerRawMetadataJSON("openclacky", event, { source: "provider_event" }),
-    // OpenClacky history commonly exposes Unix seconds for authored messages
-    // and no timestamp at all for assistant/tool events. Preserve the absence
-    // instead of fabricating a snapshot-read time: a made-up "now" would make
-    // the frontend sort every authored message ahead of the rest of history.
-    createdAt: isoTimestamp(event?.created_at, null)
-  };
-  if (type === "history_user_message" || type === "user_message") {
-    return [{ ...base, type: "userMessage", title: "You", text: userMessageWithoutSessionContext(event.content) }];
-  }
-  if (type === "assistant_message") {
-    return [{ ...base, type: "agentMessage", text: String(event.content ?? "") }];
-  }
-  if (type === "tool_call") {
-    return [{ ...base, type: "commandExecution", title: String(event.summary ?? event.name ?? "Tool"), text: stringify(event.args), status: "running" }];
-  }
-  if (type === "tool_result") {
-    return [{ ...base, type: "commandExecution", title: "Tool result", text: stringify(event.result), status: "complete" }];
-  }
-  if (type === "tool_error") {
-    return [{ ...base, type: "commandExecution", title: "Tool error", text: stringify(event.error ?? event.message), status: "failed" }];
-  }
-  if (type === "request_confirmation") {
-    const options = [{ id: "yes", label: "Yes", role: "approve" }, { id: "no", label: "No", role: "deny" }];
-    return [{ ...base, type: "choice", title: "Confirmation", text: String(event.message ?? ""), options, status: "pending" }];
-  }
-  if (type === "request_feedback") {
-    const options = Array.isArray(event.options) ? event.options.map(String) : [];
-    const optionText = options.length ? `\n\n${options.map((option) => `- ${option}`).join("\n")}` : "";
-    return [{ ...base, type: "agentMessage", title: "Question", text: `${event.question ?? ""}${optionText}`, feedback: { requestId: optionalText(event.id) } }];
-  }
-  if (type === "feedback") {
-    return [{ ...base, type: "system", title: "Feedback", text: stringify(event.feedback ?? event.value ?? event.content) }];
-  }
-  if (type === "subagent_start") {
-    return [{ ...base, type: "system", title: "Subagent", text: `Subagent started: ${String(event.name ?? event.subagent_id ?? "")}` }];
-  }
-  if (type === "subagent_end") {
-    return [{ ...base, type: "system", title: "Subagent", text: "Subagent finished." }];
-  }
-  if (type === "token_usage") {
-    // Usage is aggregated on the detail; it is not a visible chat item.
-    return [];
-  }
-  if (type === "task_finished") {
-    return [{ ...base, type: "system", title: "Task finished", text: String(event.message ?? event.summary ?? "") }];
-  }
-  if (["error", "warning", "info"].includes(type)) {
-    return [{ ...base, type: "system", title: type, text: String(event.message ?? event.error ?? "") }];
-  }
-  return [];
-}
-
-function isOpenClackyUserEvent(event) {
-  return event?.type === "history_user_message" || event?.type === "user_message";
-}
-
 function openClackyEventStatus(event, fallback) {
   switch (String(event?.type ?? "")) {
     case "task_finished":
@@ -925,10 +645,6 @@ function openClackyEventStatus(event, fallback) {
     default:
       return fallback;
   }
-}
-
-function fallbackOpenClackyTurnId(sessionId, index) {
-  return `${sessionId}:turn:${index + 1}`;
 }
 
 function openClackyStatus(value) {
@@ -985,9 +701,4 @@ function isoTimestamp(value, fallback = new Date().toISOString()) {
 
 function safeJson(value) {
   try { return JSON.parse(value); } catch { return { error: value }; }
-}
-
-function stringify(value) {
-  if (typeof value === "string") return value;
-  try { return JSON.stringify(value ?? "", null, 2); } catch { return String(value ?? ""); }
 }

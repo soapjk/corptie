@@ -97,6 +97,5 @@ private func makeWorkItemSession(
         capabilities: nil,
         external: nil,
         actions: nil,
-        pendingCollaborationConfirmation: nil
     )
 }

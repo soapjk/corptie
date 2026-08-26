@@ -1590,6 +1590,7 @@ export class CorptieStore {
         continuation_state TEXT NOT NULL DEFAULT 'none'
           CHECK (continuation_state IN ('none', 'pending', 'queued', 'running', 'completed', 'failed')),
         continuation_turn_id TEXT,
+        handoff_turn_id TEXT,
         continuation_error TEXT,
         phase TEXT NOT NULL
           CHECK (phase IN (
@@ -2201,6 +2202,7 @@ export class CorptieStore {
     this.ensureColumn("workspace_transitions", "continuation_prompt", "TEXT");
     this.ensureColumn("workspace_transitions", "continuation_state", "TEXT NOT NULL DEFAULT 'none'");
     this.ensureColumn("workspace_transitions", "continuation_turn_id", "TEXT");
+    this.ensureColumn("workspace_transitions", "handoff_turn_id", "TEXT");
     this.db.run(`UPDATE sessions SET agent_id = (
         SELECT bindings.agent_id FROM agent_sessions bindings
         WHERE bindings.session_id = sessions.id
@@ -4243,7 +4245,7 @@ export class CorptieStore {
     try {
       this.db.run(
         `UPDATE workspace_transitions
-         SET phase = ?, strategy = ?, last_completed_turn_id = ?, new_thread_id = ?,
+         SET phase = ?, strategy = ?, last_completed_turn_id = ?, new_thread_id = ?, handoff_turn_id = ?,
              error_json = ?,
              continuation_state = CASE
                WHEN ? = 'failed' AND continuation_state = 'pending' THEN 'failed'
@@ -4260,6 +4262,7 @@ export class CorptieStore {
           update.strategy ?? transition.strategy,
           update.lastCompletedTurnId ?? transition.lastCompletedTurnId,
           update.newThreadId ?? transition.newThreadId,
+          update.handoffTurnId ?? transition.handoffTurnId,
           update.error === undefined ? (transition.error ? JSON.stringify(transition.error) : null) : JSON.stringify(update.error),
           update.phase,
           update.phase,
@@ -5328,12 +5331,12 @@ export class CorptieStore {
     return this.getSession(id);
   }
 
-  appendItem(sessionId, item) {
+  // session_items is the materialized Timeline projection. Domain events are
+  // appended by the ingestion transaction before this projector runs, so an
+  // upsert here must never synthesize a second user/assistant event.
+  upsertTimelineItemProjection(sessionId, item) {
     const createdAt = createdAtFromOrNow(item);
-    const existing = this.selectOne(
-      "SELECT 1 FROM session_items WHERE session_id = ? AND id = ?",
-      [sessionId, item.id]
-    );
+    const rawMetadataJSON = typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null;
     this.db.run(
       `INSERT INTO session_items (
         id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json,
@@ -5346,10 +5349,10 @@ export class CorptieStore {
         title=excluded.title,
         text=excluded.text,
         options_json=excluded.options_json,
-        raw_metadata_json=excluded.raw_metadata_json,
+        raw_metadata_json=COALESCE(excluded.raw_metadata_json, session_items.raw_metadata_json),
         binding_id=COALESCE(excluded.binding_id, session_items.binding_id),
-        presentation_role=excluded.presentation_role,
-        presentation_text=excluded.presentation_text,
+        presentation_role=COALESCE(excluded.presentation_role, session_items.presentation_role),
+        presentation_text=COALESCE(excluded.presentation_text, session_items.presentation_text),
         status=excluded.status
       WHERE session_items.turn_id IS NOT excluded.turn_id
          OR session_items.turn_status IS NOT excluded.turn_status
@@ -5357,106 +5360,13 @@ export class CorptieStore {
          OR session_items.title IS NOT excluded.title
          OR session_items.text IS NOT excluded.text
          OR session_items.options_json IS NOT excluded.options_json
-         OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
+         OR (excluded.raw_metadata_json IS NOT NULL AND session_items.raw_metadata_json IS NOT excluded.raw_metadata_json)
          OR (excluded.binding_id IS NOT NULL AND session_items.binding_id IS NOT excluded.binding_id)
-         OR session_items.presentation_role IS NOT excluded.presentation_role
-         OR session_items.presentation_text IS NOT excluded.presentation_text
+         OR (excluded.presentation_role IS NOT NULL AND session_items.presentation_role IS NOT excluded.presentation_role)
+         OR (excluded.presentation_text IS NOT NULL AND session_items.presentation_text IS NOT excluded.presentation_text)
          OR session_items.status IS NOT excluded.status`,
       [
         item.id,
-        sessionId,
-        item.turnId || sessionId,
-        item.turnStatus || "running",
-        item.type || "terminalOutput",
-        item.title || "Agent",
-        item.text || "",
-        Array.isArray(item.options) ? JSON.stringify(item.options) : null,
-        typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null,
-        item.bindingId || null,
-        item.presentationRole || null,
-        item.presentationText || null,
-        item.status || null,
-        createdAt
-      ]
-    );
-    // 单一真相源（10）：模型可见消息在写入 session_items 的同时，同步进事件流。
-    // 仅在「新建」时写事件（append-only），同 id 的更新覆盖不产生重复正文事件。
-    if (!existing) {
-      const mapped = itemTypeToEventType(item.type);
-      if (mapped) {
-        try {
-          this.appendSessionEvent({
-            eventId: `item:${item.id}`,
-            sessionId,
-            type: mapped.type,
-            producer: mapped.producer,
-            surface: true,
-            payload: { text: item.text, itemType: item.type, title: item.title, status: item.status },
-            createdAt
-          });
-        } catch (error) {
-          // 事件流写入失败不得阻断消息列表写入；记录告警供对账。
-          console.error(`[session-events] item mirror failed for session=${sessionId} item=${item.id}: ${error.message}`);
-        }
-      }
-    }
-    if (this.db.getRowsModified() > 0) {
-      this.scheduleSave();
-      this.notifyTimelineDirty(sessionId);
-    }
-  }
-
-  // Provider history snapshots are a materialized read model, not new chat
-  // activity. Persist them without mirroring assistant/user events; mirroring
-  // would advance unread cursors every time an old transcript is refreshed.
-  upsertItemSnapshot(sessionId, item) {
-    const userAlias = item.type === "userMessage"
-      ? this.resolveUserMessageSnapshotAlias(sessionId, item)
-      : null;
-    const targetId = userAlias?.canonical?.id ?? item.id;
-    const createdAt = userAlias?.canonical?.created_at ?? createdAtFromOrNow(item);
-    const rawMetadataJSON = userAlias?.canonical && targetId !== item.id
-      ? userAlias.canonical.raw_metadata_json
-      : (typeof item.rawMetadataJSON === "string" ? item.rawMetadataJSON : null);
-    let removedAliases = 0;
-    if (userAlias?.duplicateIDs.length > 0) {
-      const placeholders = userAlias.duplicateIDs.map(() => "?").join(", ");
-      this.db.run(
-        `DELETE FROM session_items WHERE session_id = ? AND id IN (${placeholders})`,
-        [sessionId, ...userAlias.duplicateIDs]
-      );
-      removedAliases = this.db.getRowsModified();
-    }
-    this.db.run(
-      `INSERT INTO session_items (
-        id, session_id, turn_id, turn_status, type, title, text, options_json, raw_metadata_json,
-        binding_id, presentation_role, presentation_text, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(session_id, id) DO UPDATE SET
-        turn_id=excluded.turn_id,
-        turn_status=excluded.turn_status,
-        type=excluded.type,
-        title=excluded.title,
-        text=excluded.text,
-        options_json=excluded.options_json,
-        raw_metadata_json=excluded.raw_metadata_json,
-        binding_id=COALESCE(excluded.binding_id, session_items.binding_id),
-        presentation_role=excluded.presentation_role,
-        presentation_text=excluded.presentation_text,
-        status=excluded.status
-      WHERE session_items.turn_id IS NOT excluded.turn_id
-         OR session_items.turn_status IS NOT excluded.turn_status
-         OR session_items.type IS NOT excluded.type
-         OR session_items.title IS NOT excluded.title
-         OR session_items.text IS NOT excluded.text
-         OR session_items.options_json IS NOT excluded.options_json
-         OR session_items.raw_metadata_json IS NOT excluded.raw_metadata_json
-         OR (excluded.binding_id IS NOT NULL AND session_items.binding_id IS NOT excluded.binding_id)
-         OR session_items.presentation_role IS NOT excluded.presentation_role
-         OR session_items.presentation_text IS NOT excluded.presentation_text
-         OR session_items.status IS NOT excluded.status`,
-      [
-        targetId,
         sessionId,
         item.turnId || sessionId,
         item.turnStatus || "completed",
@@ -5472,38 +5382,12 @@ export class CorptieStore {
         createdAt
       ]
     );
-    const changed = removedAliases > 0 || this.db.getRowsModified() > 0;
+    const changed = this.db.getRowsModified() > 0;
     if (changed) {
       this.scheduleSave();
       this.notifyTimelineDirty(sessionId);
     }
     return changed;
-  }
-
-  // A Provider can replay one logical prompt under a new item id after
-  // compaction or reconnect. Within a turn, identical normalized user text is
-  // one message identity. Preserve the earliest durable row and delete aliases
-  // so incremental clients receive explicit delete revisions for old copies.
-  resolveUserMessageSnapshotAlias(sessionId, item) {
-    const turnId = item.turnId || sessionId;
-    const fingerprint = normalizeUserText(item.text || "");
-    if (!fingerprint) return null;
-    const matches = this.selectAll(
-      `SELECT rowid AS storage_order, id, created_at, raw_metadata_json, text
-       FROM session_items
-       WHERE session_id = ? AND turn_id = ? AND type = 'userMessage'
-       ORDER BY created_at ASC, rowid ASC`,
-      [sessionId, turnId]
-    ).filter((row) => normalizeUserText(row.text) === fingerprint);
-    if (matches.length === 0) return null;
-    const canonical = matches[0];
-    return {
-      canonical,
-      duplicateIDs: matches
-        .slice(1)
-        .map((row) => row.id)
-        .filter((id) => id !== canonical.id)
-    };
   }
 
   removeItem(sessionId, itemId) {
@@ -5938,6 +5822,32 @@ export class CorptieStore {
     return row ? agentWorkItemFromRow(row) : null;
   }
 
+  claimRunningAgentWorkItemForProviderTurn(sessionId, turnId) {
+    if (!turnId) return null;
+    const existing = this.getAgentWorkItemForTurn(sessionId, turnId);
+    if (existing) return existing;
+    const candidates = this.selectAll(
+      `SELECT work_item_id FROM agent_work_items
+       WHERE session_id = ? AND status = 'running' AND target_turn_id IS NULL
+       ORDER BY started_at ASC, created_at ASC LIMIT 2`,
+      [sessionId]
+    );
+    // A Provider event must never guess between multiple possible commands.
+    if (candidates.length !== 1) return null;
+    this.db.run(
+      `UPDATE agent_work_items SET target_turn_id = ?, updated_at = ?
+       WHERE work_item_id = ? AND status = 'running' AND target_turn_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_work_items
+           WHERE session_id = ? AND target_turn_id = ?
+         )`,
+      [turnId, createdAtFromOrNow(), candidates[0].work_item_id, sessionId, turnId]
+    );
+    if (this.db.getRowsModified() === 0) return this.getAgentWorkItemForTurn(sessionId, turnId);
+    this.scheduleSave();
+    return this.getAgentWorkItem(candidates[0].work_item_id);
+  }
+
   getRunningAgentWorkItemForSession(sessionId) {
     const row = this.selectOne(
       "SELECT * FROM agent_work_items WHERE session_id = ? AND status = 'running' ORDER BY started_at ASC LIMIT 1",
@@ -6133,11 +6043,36 @@ export class CorptieStore {
         status: row.status,
         createdAt: row.created_at
       }))
-      .filter((item) => item.text)
-      .filter((item) => !isAgentNoise(item.text))
-      .map((item) => normalizeStoredItem(item, provider))
-      .filter((item, index, items) => !isAdjacentDuplicateUserMessage(item, items[index - 1]));
+      .filter((item) => !item.text || !isAgentNoise(item.text))
+      .map((item) => normalizeStoredItem(item, provider));
     return items;
+  }
+
+  getItemsForTurn(sessionId, turnId, provider = "") {
+    const rows = this.selectAll(
+      `SELECT id, turn_id, turn_status, type, title, text, options_json,
+              raw_metadata_json, binding_id, presentation_role, presentation_text,
+              status, created_at
+       FROM session_items
+       WHERE session_id = ? AND turn_id = ?
+       ORDER BY created_at ASC, id ASC`,
+      [sessionId, turnId]
+    );
+    return rows.map((row) => normalizeStoredItem({
+      id: row.id,
+      turnId: row.turn_id,
+      turnStatus: row.turn_status,
+      type: row.type,
+      title: row.title,
+      text: normalizeStoredText(row.text, provider),
+      options: parseJson(row.options_json, null),
+      rawMetadataJSON: row.raw_metadata_json ?? null,
+      bindingId: row.binding_id ?? null,
+      presentationRole: row.presentation_role ?? null,
+      presentationText: row.presentation_text ?? null,
+      status: row.status,
+      createdAt: row.created_at
+    }, provider));
   }
 
   latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit) {
@@ -6278,13 +6213,76 @@ export class CorptieStore {
     };
   }
 
+  getSessionTimelineHistoryPage(sessionId, { beforeId = null, limit = 200, provider = "" } = {}) {
+    const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
+    const columns = `id, turn_id, turn_status, type, title, text, options_json,
+                     raw_metadata_json, binding_id, presentation_role, presentation_text,
+                     status, created_at`;
+    let boundary = null;
+    if (beforeId) {
+      boundary = this.selectOne(
+        "SELECT created_at, id FROM session_items WHERE session_id = ? AND id = ? LIMIT 1",
+        [sessionId, beforeId]
+      );
+      if (!boundary) {
+        return { items: [], hasMoreHistory: false, historyItemsCount: 0 };
+      }
+    }
+    const rows = this.selectAll(
+      `SELECT ${columns} FROM session_items
+       WHERE session_id = ?
+         ${boundary ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
+       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      boundary
+        ? [sessionId, boundary.created_at, boundary.created_at, boundary.id, pageLimit]
+        : [sessionId, pageLimit]
+    ).reverse();
+    if (rows.length === 0) {
+      return { items: [], hasMoreHistory: false, historyItemsCount: 0 };
+    }
+    const first = rows[0];
+    const count = this.selectOne(
+      `SELECT COUNT(*) AS count FROM session_items
+       WHERE session_id = ?
+         AND (created_at < ? OR (created_at = ? AND id < ?))`,
+      [sessionId, first.created_at, first.created_at, first.id]
+    );
+    const historyItemsCount = Number(count?.count ?? 0);
+    return {
+      items: rows.map((row) => normalizeStoredItem({
+        id: row.id,
+        turnId: row.turn_id,
+        turnStatus: row.turn_status,
+        type: row.type,
+        title: row.title,
+        text: normalizeStoredText(row.text, provider),
+        options: parseJson(row.options_json, null),
+        rawMetadataJSON: row.raw_metadata_json ?? null,
+        bindingId: row.binding_id ?? null,
+        presentationRole: row.presentation_role ?? null,
+        presentationText: row.presentation_text ?? null,
+        status: row.status,
+        createdAt: row.created_at
+      }, provider)),
+      hasMoreHistory: historyItemsCount > 0,
+      historyItemsCount
+    };
+  }
+
   getLatestTimelineItemWindow(sessionId, { limit = 200, provider = "" } = {}) {
     const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
     const columns = `id, turn_id, turn_status, type, title, text, options_json,
                      raw_metadata_json, binding_id, presentation_role, presentation_text,
                      status, created_at`;
     const rows = this.latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit);
-    if (rows.length === 0) return null;
+    // An existing Session with no Timeline items still has a valid, fully
+    // authoritative local window. Returning null used to route the read into
+    // the legacy detail/supplementary composer, which performed several
+    // unrelated queue, collaboration, and automation queries per active
+    // Session. Empty is data, not a cache miss.
+    if (rows.length === 0) {
+      return { items: [], hasEarlier: false, hasLater: false };
+    }
     const first = rows[0];
     const hasEarlier = Boolean(this.selectOne(
       `SELECT 1 FROM session_items WHERE session_id = ?
@@ -6751,6 +6749,23 @@ export class CorptieStore {
     );
   }
 
+  latestCompletedSessionTurn(sessionId, bindingId = null) {
+    const row = bindingId
+      ? this.selectOne(
+        `SELECT * FROM session_turns
+         WHERE session_id = ? AND binding_id = ? AND execution_status = 'completed'
+         ORDER BY COALESCE(ended_at, updated_at) DESC, turn_id DESC LIMIT 1`,
+        [sessionId, bindingId]
+      )
+      : this.selectOne(
+        `SELECT * FROM session_turns
+         WHERE session_id = ? AND execution_status = 'completed'
+         ORDER BY COALESCE(ended_at, updated_at) DESC, turn_id DESC LIMIT 1`,
+        [sessionId]
+      );
+    return row ?? null;
+  }
+
   enqueueEventOutbox({ outboxId, topic, sessionId = null, revision = null, eventType, payload, createdAt }) {
     this.db.run(
       `INSERT INTO event_outbox (
@@ -6800,6 +6815,39 @@ export class CorptieStore {
     return row ? messageDeliveryFromRow(row) : null;
   }
 
+  claimDispatchingMessageDeliveryForProviderTurn(
+    sessionId,
+    bindingId,
+    providerTurnId,
+    acknowledgedAt = createdAtFromOrNow()
+  ) {
+    if (!providerTurnId) return null;
+    const existing = this.getMessageDeliveryForProviderTurn(sessionId, bindingId, providerTurnId);
+    if (existing) return existing;
+    const candidates = this.selectAll(
+      `SELECT * FROM message_deliveries
+       WHERE session_id = ? AND binding_id = ?
+         AND provider_turn_id IS NULL AND status = 'dispatching'
+       ORDER BY last_attempt_at ASC, created_at ASC, delivery_id ASC
+       LIMIT 2`,
+      [sessionId, bindingId]
+    );
+    if (candidates.length === 0) return null;
+    if (candidates.length > 1) {
+      const error = new Error("More than one dispatching Delivery can claim the Provider Turn.");
+      error.code = "MESSAGE_DELIVERY_CORRELATION_AMBIGUOUS";
+      throw error;
+    }
+    const delivery = messageDeliveryFromRow(candidates[0]);
+    return this.updateMessageDelivery(delivery.deliveryId, {
+      status: "processing",
+      providerTurnId,
+      providerAcknowledgedAt: acknowledgedAt,
+      lastError: null,
+      updatedAt: acknowledgedAt
+    });
+  }
+
   createUserMessageDelivery({
     deliveryId,
     messageId,
@@ -6842,7 +6890,7 @@ export class CorptieStore {
       }
       let outbox = null;
       if (inserted) {
-        this.upsertItemSnapshot(sessionId, {
+        this.upsertTimelineItemProjection(sessionId, {
           id: messageId,
           bindingId: binding.bindingId,
           turnId: `delivery:${deliveryId}`,
@@ -9856,8 +9904,24 @@ function sessionProjectionSelectSQL() {
      LEFT JOIN agents ON agents.agent_id = bindings.agent_id
      WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
      LIMIT 1) AS projection_agent_role,
-    CASE sessions.status
-      WHEN 'complete' THEN 'completed'
+    CASE
+      WHEN EXISTS (
+        SELECT 1 FROM session_turns turns
+        WHERE turns.session_id = sessions.id AND turns.execution_status = 'blocked'
+      ) THEN 'blocked'
+      WHEN EXISTS (
+        SELECT 1 FROM session_turns turns
+        WHERE turns.session_id = sessions.id AND turns.execution_status = 'running'
+      ) THEN 'running'
+      WHEN EXISTS (
+        SELECT 1 FROM session_turns turns WHERE turns.session_id = sessions.id
+      ) THEN (
+        SELECT turns.execution_status FROM session_turns turns
+        WHERE turns.session_id = sessions.id
+        ORDER BY turns.updated_at DESC, turns.rowid DESC
+        LIMIT 1
+      )
+      WHEN sessions.status = 'complete' THEN 'completed'
       ELSE sessions.status
     END AS projection_execution_status,
     (SELECT deliveries.status FROM message_deliveries deliveries
@@ -10027,6 +10091,7 @@ function workspaceTransitionFromRow(row) {
     continuationPrompt: row.continuation_prompt || null,
     continuationState: row.continuation_state || "none",
     continuationTurnId: row.continuation_turn_id || null,
+    handoffTurnId: row.handoff_turn_id || null,
     continuationError: row.continuation_error || null,
     phase: row.phase,
     strategy: row.strategy,
@@ -10657,21 +10722,18 @@ function isAgentNoise(text = "") {
 }
 
 function normalizeStoredItem(item, provider) {
-  return item;
+  // Product timeline projections may carry provider-neutral presentation
+  // fields that are intentionally not first-class SQLite columns (automation,
+  // collaboration, system-event metadata). Keep the indexed identity/content
+  // columns authoritative while restoring those optional fields on reads.
+  const metadata = parseJson(item.rawMetadataJSON, null);
+  return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+    ? { ...metadata, ...item }
+    : item;
 }
 
 function normalizeStoredText(text = "", provider = "") {
   return text;
-}
-
-function isAdjacentDuplicateUserMessage(item, previous) {
-  return previous?.type === "userMessage"
-    && item.type === "userMessage"
-    && normalizeUserText(previous.text) === normalizeUserText(item.text);
-}
-
-function normalizeUserText(text = "") {
-  return text.replace(/^›\s*/, "").replace(/\s+/g, " ").trim();
 }
 
 async function defaultDataDir() {
@@ -10827,28 +10889,5 @@ function safeJsonValue(value, fallback) {
     return JSON.parse(value);
   } catch {
     return fallback;
-  }
-}
-
-// 会话日志事件溯源（10）：session_items 的 item.type → 事件类型 + producer。
-// 返回 null 表示该 item 是内部状态（非模型可见消息），不进事件流 surface。
-function itemTypeToEventType(itemType) {
-  switch (itemType) {
-    case "userMessage":
-    case "user":
-    case "inputText":
-      return { type: "user/message", producer: "user" };
-    case "agentMessage":
-    case "text":
-    case "reasoning":
-    case "taskComplete":
-    case "workspaceWrite":
-      return { type: "assistant/message", producer: "agent" };
-    case "mcpToolCall":
-      return { type: "tool/call", producer: "agent" };
-    case "approval":
-      return { type: "approval/request", producer: "agent" };
-    default:
-      return null;
   }
 }

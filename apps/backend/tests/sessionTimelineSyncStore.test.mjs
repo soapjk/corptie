@@ -28,7 +28,7 @@ test("timeline item mutations expose ordered replayable revisions", async () => 
     const stateRevision = store.stateRevision();
     const timelineNotifications = [];
     store.setTimelineDirtyListener((change) => timelineNotifications.push(change));
-    store.upsertItemSnapshot("session:timeline", {
+    store.upsertTimelineItemProjection("session:timeline", {
       id: "message:1",
       turnId: "turn:1",
       turnStatus: "inProgress",
@@ -38,7 +38,7 @@ test("timeline item mutations expose ordered replayable revisions", async () => 
       status: "inProgress",
       createdAt: "2026-08-24T01:00:00.000Z"
     });
-    store.upsertItemSnapshot("session:timeline", {
+    store.upsertTimelineItemProjection("session:timeline", {
       id: "message:1",
       turnId: "turn:1",
       turnStatus: "completed",
@@ -84,13 +84,13 @@ test("Provider item identity is scoped to its Session", async () => {
       status: "running"
     });
     const sharedProviderId = "item-1";
-    store.upsertItemSnapshot("session:timeline", {
+    store.upsertTimelineItemProjection("session:timeline", {
       id: sharedProviderId,
       type: "agentMessage",
       text: "first Session",
       createdAt: "2026-08-24T01:00:00.000Z"
     });
-    store.upsertItemSnapshot("session:other", {
+    store.upsertTimelineItemProjection("session:other", {
       id: sharedProviderId,
       type: "agentMessage",
       text: "second Session",
@@ -130,7 +130,7 @@ test("legacy global item primary key migrates without losing rows", async () => 
       provider: "codex-app-server",
       status: "complete"
     });
-    store.upsertItemSnapshot("session:legacy", {
+    store.upsertTimelineItemProjection("session:legacy", {
       id: "item-1",
       type: "agentMessage",
       text: "preserved",
@@ -189,7 +189,7 @@ test("legacy global item primary key migrates without losing rows", async () => 
       provider: "codex-app-server",
       status: "running"
     });
-    store.upsertItemSnapshot("session:new", {
+    store.upsertTimelineItemProjection("session:new", {
       id: "item-1",
       type: "agentMessage",
       text: "same Provider id, different Session",
@@ -218,9 +218,9 @@ test("timeline deletes replay by stable item id and duplicate snapshots are no-o
       status: "completed",
       createdAt: "2026-08-24T01:00:00.000Z"
     };
-    store.upsertItemSnapshot("session:timeline", item);
+    store.upsertTimelineItemProjection("session:timeline", item);
     const insertedRevision = store.sessionTimelineRevision("session:timeline");
-    store.upsertItemSnapshot("session:timeline", item);
+    store.upsertTimelineItemProjection("session:timeline", item);
     assert.equal(
       store.sessionTimelineRevision("session:timeline"),
       insertedRevision,
@@ -248,7 +248,7 @@ test("baseline timelines require a stored snapshot instead of fabricated deltas"
   try {
     // Simulate a timeline that existed before the change-log protocol.
     store.db.run("DROP TRIGGER session_timeline_insert");
-    store.upsertItemSnapshot("session:timeline", {
+    store.upsertTimelineItemProjection("session:timeline", {
       id: "legacy",
       type: "agentMessage",
       text: "historical",

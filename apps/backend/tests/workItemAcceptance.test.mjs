@@ -186,14 +186,19 @@ test("provider-neutral WorkItem tool reports evidence as the authenticated Agent
   assert.equal(workItemAcceptanceDynamicTools[0].name, "corptie_work_item_report_acceptance");
   assert.equal(workItemAcceptanceDynamicTools[0].inputSchema.additionalProperties, false);
   const calls = [];
-  const result = await callWorkItemAcceptanceDynamicTool((actorId, input) => {
-    calls.push({ actorId, input });
+  const result = await callWorkItemAcceptanceDynamicTool((actorId, input, metadata) => {
+    calls.push({ actorId, input, metadata });
     return { completionSuggestion: { recommended: true } };
   }, {
     actorId: "agent-one",
     tool: "corptie_work_item_report_acceptance",
+    metadata: { sessionId: "session-one", workItemId: "work-item-one" },
     arguments: { results: passingInput.results }
   });
   assert.equal(result.completionSuggestion.recommended, true);
-  assert.deepEqual(calls, [{ actorId: "agent-one", input: { results: passingInput.results } }]);
+  assert.deepEqual(calls, [{
+    actorId: "agent-one",
+    input: { results: passingInput.results },
+    metadata: { sessionId: "session-one", workItemId: "work-item-one" }
+  }]);
 });

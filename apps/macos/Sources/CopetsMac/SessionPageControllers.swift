@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 final class SessionSelectionController: ObservableObject {
     @Published private(set) var selectedSessionID: String?
+    @Published private(set) var selectedSessionRevision: UInt64 = 0
     private(set) var generation: UInt64 = 0
 
     @discardableResult
@@ -19,6 +20,13 @@ final class SessionSelectionController: ObservableObject {
         guard selectedSessionID != nil else { return }
         generation &+= 1
         selectedSessionID = nil
+    }
+
+    /// The Session value remains in SessionIndexStore/AppStateStore. This
+    /// revision only invalidates the selected surface when that one row changes.
+    func notifySelectedSessionChanged(_ sessionID: String) {
+        guard selectedSessionID == sessionID else { return }
+        selectedSessionRevision &+= 1
     }
 }
 
@@ -69,7 +77,6 @@ final class SessionCommandController: ObservableObject {
     @Published var connectionTransitionSessionIds = Set<String>()
     @Published var restartingSessionIds = Set<String>()
     @Published var restartActivityBySessionId: [String: SessionRestartActivity] = [:]
-    @Published var undoneCodexTurnIds = Set<String>()
     @Published var projectWorktreeActionError: String?
     @Published var projectWorktreeActionIds = Set<String>()
     @Published var isCleaningMergedProjectWorktrees = false

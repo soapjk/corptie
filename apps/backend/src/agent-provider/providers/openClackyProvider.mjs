@@ -45,8 +45,6 @@ export function createOpenClackyProvider(manager, options = {}) {
     },
     capabilities: openClackyCapabilities(manager, options)
   }, {
-    listSessions: (listOptions) => manager.list(listOptions),
-    readSession: (reference) => manager.read(reference.providerSessionId),
     createSession: (input) => manager.create(input),
     resumeSession: (reference, context = {}) => manager.resume(reference.providerSessionId, {
       toolHost: context.toolHost ?? null

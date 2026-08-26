@@ -156,7 +156,6 @@ private func makeRow(
         capabilities: nil,
         external: external,
         actions: nil,
-        pendingCollaborationConfirmation: nil
     )
     return SessionRowModel(session: session)
 }

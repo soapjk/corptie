@@ -52,10 +52,10 @@ export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
   [AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE]: "manageTurnChanges"
 });
 
-const REQUIRED_PROVIDER_METHODS = Object.freeze([
-  "listSessions",
-  "readSession"
-]);
+// Product reads are Corptie Store operations, not Provider operations. A
+// Provider may expose private transport diagnostics, but the shared product
+// contract intentionally has no Session list/history/snapshot read method.
+const REQUIRED_PROVIDER_METHODS = Object.freeze([]);
 
 const OPTIONAL_PROVIDER_METHODS = Object.freeze([
   "prepareSessionInput"

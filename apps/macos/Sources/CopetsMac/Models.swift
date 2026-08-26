@@ -89,7 +89,6 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let capabilities: SessionCapabilities?
     let external: ExternalSession?
     var actions: SessionActions? = nil
-    var pendingCollaborationConfirmation: PendingCollaborationConfirmation? = nil
 
     var isConnected: Bool {
         SessionConnectionPresentation.isConnected(
@@ -1048,32 +1047,6 @@ struct SessionTransitionEventEnvelope: Decodable {
 
 struct SessionTransitionEventPayload: Decodable {
     let sessionId: String?
-}
-
-struct SessionProviderSwitchPendingEventEnvelope: Decodable {
-    let payload: SessionProviderSwitchPendingEventPayload
-}
-
-struct SessionProviderSwitchPendingEventPayload: Decodable {
-    let sessionId: String?
-}
-
-struct SessionProviderSwitchedEventEnvelope: Decodable {
-    let payload: SessionProviderSwitchedEventPayload
-}
-
-struct SessionProviderSwitchedEventPayload: Decodable {
-    let sessionId: String?
-}
-
-struct ProviderSessionChangedEventEnvelope: Decodable {
-    let payload: ProviderSessionChangedEventPayload
-}
-
-struct ProviderSessionChangedEventPayload: Decodable {
-    let sessionId: String?
-    let type: String?
-    let eventType: String?
 }
 
 struct CodexAccountUsage: Decodable, Equatable {

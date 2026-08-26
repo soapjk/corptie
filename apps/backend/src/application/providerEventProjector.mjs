@@ -19,7 +19,7 @@ const ITEM_EVENT_TYPES = new Set([
 
 export class ProviderEventProjector {
   constructor({ store }) {
-    if (!store?.upsertSessionTurn || !store?.upsertItemSnapshot) {
+    if (!store?.upsertSessionTurn || !store?.upsertTimelineItemProjection) {
       throw new Error("ProviderEventProjector requires a Provider event projection Store.");
     }
     this.store = store;
@@ -30,6 +30,19 @@ export class ProviderEventProjector {
     const session = this.store.getSession(sessionId);
     if (!session) throw projectionError("SESSION_NOT_FOUND", `Session ${sessionId} is not registered.`);
 
+    const correlatedDelivery = event.turnId
+      ? this.store.getMessageDeliveryForProviderTurn?.(sessionId, event.bindingId, event.turnId)
+        ?? this.store.claimDispatchingMessageDeliveryForProviderTurn?.(
+          sessionId,
+          event.bindingId,
+          event.turnId,
+          event.receivedAt
+        )
+      : null;
+    const correlatedWork = event.turnId
+      ? this.store.getAgentWorkItemForTurn?.(sessionId, event.turnId)
+        ?? this.store.claimRunningAgentWorkItemForProviderTurn?.(sessionId, event.turnId)
+      : null;
     let timelineChanged = false;
     let usage = null;
     if (event.type === "usage.updated") {
@@ -45,12 +58,24 @@ export class ProviderEventProjector {
       }
     }
     if (ITEM_EVENT_TYPES.has(event.type) && event.payload?.item) {
-      timelineChanged = this.persistItem(sessionId, event.payload.item, event.bindingId) || timelineChanged;
+      timelineChanged = this.persistItem(
+        sessionId,
+        event.payload.item,
+        event.bindingId,
+        correlatedDelivery,
+        correlatedWork
+      ) || timelineChanged;
     }
     if (TERMINAL_EVENT_STATUS.has(event.type)) {
       for (const item of event.payload?.items ?? []) {
         if (!event.turnId || item?.turnId === event.turnId) {
-          timelineChanged = this.persistItem(sessionId, item, event.bindingId) || timelineChanged;
+          timelineChanged = this.persistItem(
+            sessionId,
+            item,
+            event.bindingId,
+            correlatedDelivery,
+            correlatedWork
+          ) || timelineChanged;
         }
       }
     }
@@ -71,7 +96,7 @@ export class ProviderEventProjector {
         failure: event.type === "turn.failed" ? event.payload?.error ?? {} : null,
         updatedAt: event.receivedAt
       });
-      const delivery = this.store.getMessageDeliveryForProviderTurn?.(
+      const delivery = correlatedDelivery ?? this.store.getMessageDeliveryForProviderTurn?.(
         sessionId,
         event.bindingId,
         event.turnId
@@ -112,7 +137,9 @@ export class ProviderEventProjector {
       });
     }
     return {
-      surface: event.type === "user.message.accepted" || event.type === "assistant.message.completed",
+      surface: event.type === "user.message.accepted"
+        || event.type === "assistant.message.completed"
+        || (TERMINAL_EVENT_STATUS.has(event.type) && Boolean(finalItemForTurn(event.payload, event.turnId))),
       timelineChanged,
       session: updatedSession ?? session,
       usage,
@@ -120,9 +147,37 @@ export class ProviderEventProjector {
     };
   }
 
-  persistItem(sessionId, item, bindingId) {
+  persistItem(sessionId, item, bindingId, delivery = null, workItem = null) {
     if (!item?.id) return false;
-    return this.store.upsertItemSnapshot(sessionId, { ...item, bindingId }) !== false;
+    let canonicalItem = item;
+    if (item.type === "userMessage" && delivery) {
+      canonicalItem = {
+        ...item,
+        id: delivery.messageId,
+        turnId: delivery.providerTurnId ?? item.turnId,
+        status: delivery.status
+      };
+    } else if (item.type === "userMessage" && workItem) {
+      const canonicalId = workItem.kind === "user"
+        ? (workItem.source?.messageId ?? workItem.workItemId)
+        : `work:${workItem.workItemId}`;
+      const existing = this.store.getSessionItem?.(sessionId, canonicalId);
+      canonicalItem = {
+        ...item,
+        id: canonicalId,
+        turnId: workItem.targetTurnId ?? item.turnId,
+        title: existing?.title ?? item.title,
+        status: workItem.status,
+        presentationRole: existing?.presentationRole ?? item.presentationRole,
+        presentationText: existing?.presentationText ?? item.presentationText,
+        rawMetadataJSON: mergedItemMetadata(existing?.rawMetadataJSON, item.rawMetadataJSON, {
+          workItemId: workItem.workItemId,
+          sourceChannel: workItem.source?.type ?? null,
+          collaborationTaskId: workItem.source?.taskId ?? null
+        })
+      };
+    }
+    return this.store.upsertTimelineItemProjection(sessionId, { ...canonicalItem, bindingId }) !== false;
   }
 
   projectSession(session, event, binding) {
@@ -172,6 +227,23 @@ export class ProviderEventProjector {
     });
     return this.store.getSession(binding.sessionId);
   }
+}
+
+function mergedItemMetadata(existingJSON, incomingJSON, additions) {
+  const parse = (value) => {
+    if (typeof value !== "string" || !value) return {};
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+  return JSON.stringify({
+    ...parse(existingJSON),
+    ...parse(incomingJSON),
+    ...Object.fromEntries(Object.entries(additions).filter(([, value]) => value != null))
+  });
 }
 
 function normalizeContextUsage(value) {

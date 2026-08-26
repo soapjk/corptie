@@ -31,19 +31,6 @@ export class ClaudeWorkspaceTransitionPort {
     return this.response(routeId, providerSessionId, session, options.cwd);
   }
 
-  async readThread(routeId) {
-    const providerSessionId = this.providerSessionIdForRoute(routeId);
-    const session = await this.manager.read(providerSessionId);
-    const currentTurnId = this.manager.get(providerSessionId)?.currentTurnId ?? null;
-    return {
-      thread: {
-        id: routeId,
-        cwd: session?.external?.cwd,
-        turns: currentTurnId ? [{ id: currentTurnId, status: "completed", items: [] }] : []
-      }
-    };
-  }
-
   async startTurn(routeId, prompt) {
     const providerSessionId = this.providerSessionIdForRoute(routeId);
     await this.manager.send(providerSessionId, prompt, { localVisibility: "status_only" });

@@ -820,6 +820,80 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertFalse(harness.followState.value)
     }
 
+    func testUserGestureRejectsLaterSwiftUIPositionFeedback() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<40).map { row(id: "feedback-row-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.restore(position: .init(
+            rowID: "feedback-row-20",
+            offset: 4,
+            absoluteScrollY: 0,
+            followsLatest: false
+        ))
+        await settleMainQueue()
+
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.coordinator.userDidBeginScrolling()
+        harness.coordinator.restoreIfNeeded(position: .init(
+            rowID: "feedback-row-25",
+            offset: 6,
+            absoluteScrollY: 0,
+            followsLatest: false
+        ))
+        await settleMainQueue()
+
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 0, accuracy: 1)
+        XCTAssertFalse(harness.followState.value)
+    }
+
+    func testRowReflowCannotQueueAnchorRestoreInsideWheelEvent() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        var rows = (0..<50).map { row(id: "wheel-reflow-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 420))
+
+        // The Binding update caused by wheel ownership can synchronously
+        // re-enter updateNSView before NSScrollView applies the wheel delta.
+        // A row reflow in that window must not enqueue a later anchor restore.
+        harness.coordinator.userScrollEventWillBegin()
+        rows[0] = row(
+            id: "wheel-reflow-0",
+            revision: 1,
+            text: String(repeating: "A much taller row above the viewport. ", count: 80)
+        )
+        harness.coordinator.apply(rows: rows)
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 360))
+        harness.coordinator.userScrollEventDidEnd()
+        await settleMainQueue()
+
+        XCTAssertEqual(harness.scrollView.contentView.bounds.minY, 360, accuracy: 1)
+        XCTAssertFalse(harness.followState.value)
+    }
+
+    func testExplicitTurnJumpCancelsQueuedInitialRestore() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<40).map { index in
+            row(
+                id: "jump-cancel-row-\(index)",
+                text: "Row \(index)",
+                expandableTurnId: "jump-cancel-turn-\(index)"
+            )
+        }
+        harness.coordinator.apply(rows: rows)
+        harness.coordinator.restore(position: .init(
+            rowID: "jump-cancel-row-30",
+            offset: 4,
+            absoluteScrollY: 0,
+            followsLatest: false
+        ))
+        harness.coordinator.scrollToTurn("jump-cancel-turn-8")
+        await settleMainQueue()
+
+        XCTAssertTrue(harness.tableView.visibleRect.intersects(harness.tableView.rect(ofRow: 8)))
+        XCTAssertFalse(harness.tableView.visibleRect.intersects(harness.tableView.rect(ofRow: 30)))
+    }
+
     func testVirtualSixtySecondContinuousScrollHasZeroReverseDisplacement() async {
         let harness = makeHarness(followsLatest: false, height: 180)
         var rows = (0..<160).map { row(id: "continuous-scroll-\($0)", text: "Row \($0)") }

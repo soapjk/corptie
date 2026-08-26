@@ -61,10 +61,11 @@ final class SessionPresentationCacheTests: XCTestCase {
         XCTAssertEqual(store.cacheRevision, 1, "An identical projection must not invalidate the Session surface")
     }
 
-    func testViewportPersistsAcrossControllerRecreation() throws {
-        let suiteName = "SessionPresentationCacheTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+    func testViewportPersistsAcrossControllerRecreation() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionViewport-\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let repository = SessionTimelinePositionRepository(databaseURL: databaseURL)
         let position = AppKitChatTimelinePosition(
             rowID: "message:persisted-42",
             offset: 7,
@@ -73,23 +74,26 @@ final class SessionPresentationCacheTests: XCTestCase {
         )
 
         let writer = SessionViewportController(
-            defaults: defaults,
-            defaultsKey: "positions"
+            repository: repository
         )
         writer.store(position, for: "session-a")
-        writer.persistNow()
+        await writer.flush()
 
         let reader = SessionViewportController(
-            defaults: defaults,
-            defaultsKey: "positions"
+            repository: repository
         )
+        reader.hydrate("session-a")
+        for _ in 0..<50 where reader.position(for: "session-a") == nil {
+            try await Task.sleep(for: .milliseconds(1))
+        }
         XCTAssertEqual(reader.position(for: "session-a"), position)
     }
 
-    func testTerminationPhaseSynchronouslyPersistsFinalCompatibilityPosition() throws {
-        let suiteName = "SessionPresentationCacheTests.termination.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+    func testExplicitFlushPersistsFinalSemanticPosition() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionViewport-final-\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let repository = SessionTimelinePositionRepository(databaseURL: databaseURL)
         let position = AppKitChatTimelinePosition(
             rowID: "message:final",
             offset: 9,
@@ -97,46 +101,30 @@ final class SessionPresentationCacheTests: XCTestCase {
             followsLatest: false
         )
         let writer = SessionViewportController(
-            defaults: defaults,
-            defaultsKey: "termination"
+            repository: repository
         )
         writer.store(position, for: "session-final")
+        await writer.flush()
 
-        NotificationCenter.default.post(name: .persistSessionTimelinePositions, object: nil)
-
-        let reader = SessionViewportController(
-            defaults: defaults,
-            defaultsKey: "termination"
-        )
-        XCTAssertEqual(reader.position(for: "session-final"), position)
+        let stored = try await repository.load(sessionID: "session-final")
+        XCTAssertEqual(stored?.position, position)
     }
 
-    func testPersistedViewportLRUIsBounded() throws {
-        let suiteName = "SessionPresentationCacheTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+    func testViewportHotLRUIsBounded() {
         let store = SessionViewportController(
             hotCapacity: 2,
-            defaults: defaults,
-            defaultsKey: "bounded"
+            repository: nil
         )
         for id in ["a", "b", "c"] {
             store.store(.init(rowID: "message:\(id)", offset: 0, absoluteScrollY: 0, followsLatest: false), for: id)
         }
-        store.persistNow()
-
-        let restored = SessionViewportController(
-            hotCapacity: 2,
-            defaults: defaults,
-            defaultsKey: "bounded"
-        )
-        XCTAssertNil(restored.position(for: "a"))
-        XCTAssertNotNil(restored.position(for: "b"))
-        XCTAssertNotNil(restored.position(for: "c"))
+        XCTAssertNil(store.position(for: "a"))
+        XCTAssertNotNil(store.position(for: "b"))
+        XCTAssertNotNil(store.position(for: "c"))
     }
 
     func testGestureViewportStoresDoNotInvalidateSwiftUITree() {
-        let controller = SessionViewportController(defaults: nil, repository: nil)
+        let controller = SessionViewportController(repository: nil)
         var invalidations = 0
         let cancellable = controller.objectWillChange.sink { invalidations += 1 }
 
@@ -176,6 +164,28 @@ final class SessionPresentationCacheTests: XCTestCase {
         XCTAssertEqual(selectionInvalidations, 1)
         XCTAssertEqual(supplementaryInvalidations, 2)
         XCTAssertEqual(commandInvalidations, 1)
+    }
+
+    func testSelectionControllerOwnsIdentityAndGeneration() {
+        let selection = SessionSelectionController()
+
+        let first = selection.select("session-a")
+        XCTAssertEqual(selection.selectedSessionID, "session-a")
+        XCTAssertEqual(first, 1)
+        XCTAssertEqual(selection.select("session-a"), first, "Reselecting one identity is not a new generation")
+
+        let second = selection.select("session-b")
+        XCTAssertEqual(second, first + 1)
+        XCTAssertEqual(selection.selectedSessionID, "session-b")
+
+        selection.notifySelectedSessionChanged("session-a")
+        XCTAssertEqual(selection.selectedSessionRevision, 0, "An unselected row cannot invalidate the detail surface")
+        selection.notifySelectedSessionChanged("session-b")
+        XCTAssertEqual(selection.selectedSessionRevision, 1)
+
+        selection.clear()
+        XCTAssertNil(selection.selectedSessionID)
+        XCTAssertEqual(selection.generation, second + 1)
     }
 
     func testConcreteSupplementaryAndCommandUpdatesDoNotInvalidateIndexOrTimeline() {

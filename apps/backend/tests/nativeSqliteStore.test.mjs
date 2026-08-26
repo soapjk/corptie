@@ -153,7 +153,7 @@ test("Session items persist Provider raw metadata for diagnostics", async () => 
       status: "running"
     });
     const rawMetadataJSON = JSON.stringify({ provider: "claude-sdk", payload: { command: "npm test" } });
-    store.appendItem("raw-session", {
+    store.upsertTimelineItemProjection("raw-session", {
       id: "command-1",
       turnId: "turn-1",
       turnStatus: "running",
@@ -226,10 +226,20 @@ test("stored Session detail reads its complete local timeline without Provider a
       provider: "openclacky",
       status: "complete"
     });
-    store.appendItem("offline-session", {
-      id: "stored-message",
-      type: "agentMessage",
-      text: "Available offline"
+    store.runInTransaction(() => {
+      store.appendSessionEvent({
+        eventId: "assistant-message:stored-message",
+        sessionId: "offline-session",
+        type: "assistant/message",
+        producer: "agent",
+        surface: true,
+        payload: { itemId: "stored-message", text: "Available offline" }
+      });
+      store.upsertTimelineItemProjection("offline-session", {
+        id: "stored-message",
+        type: "agentMessage",
+        text: "Available offline"
+      });
     });
 
     const rowsModifiedBeforeRead = store.db.getRowsModified();
@@ -241,7 +251,7 @@ test("stored Session detail reads its complete local timeline without Provider a
     assert.deepEqual(store.getLatestTimelineItemWindow("offline-session", { limit: 50 }).items.map((item) => item.id), ["stored-message"]);
     assert.deepEqual(
       store.listSessionEvents("offline-session").map((event) => event.eventId),
-      ["item:stored-message"]
+      ["assistant-message:stored-message"]
     );
     assert.equal(store.db.getRowsModified(), rowsModifiedBeforeRead, "product reads must execute zero SQLite writes");
     assert.equal(store.stateRevision(), stateRevisionBeforeRead, "product reads must not advance state revision");
@@ -263,7 +273,7 @@ test("stored item window returns the newest records in stable ascending order", 
   try {
     store.upsertSession({ id: "latest-items", title: "Latest", agent: "Codex", provider: "codex-app-server", status: "complete" });
     for (let index = 0; index < 260; index += 1) {
-      store.upsertItemSnapshot("latest-items", {
+      store.upsertTimelineItemProjection("latest-items", {
         id: `item-${String(index).padStart(3, "0")}`,
         type: "agentMessage",
         text: `message ${index}`,
@@ -287,7 +297,7 @@ test("stored timeline anchor window uses bounded keyset queries", async () => {
   try {
     store.upsertSession({ id: "anchor-window", title: "Anchor", agent: "Codex", provider: "codex-app-server", status: "complete" });
     for (let index = 0; index < 1_000; index += 1) {
-      store.upsertItemSnapshot("anchor-window", {
+      store.upsertTimelineItemProjection("anchor-window", {
         id: `item-${String(index).padStart(4, "0")}`,
         turnId: index >= 500 && index <= 502 ? "turn-anchor" : `turn-${index}`,
         type: "agentMessage",
@@ -349,7 +359,7 @@ test("stored latest timeline window is bounded and reports earlier history", asy
   try {
     store.upsertSession({ id: "latest-window", title: "Latest", agent: "Codex", provider: "codex-app-server", status: "complete" });
     for (let index = 0; index < 500; index += 1) {
-      store.upsertItemSnapshot("latest-window", {
+      store.upsertTimelineItemProjection("latest-window", {
         id: `item-${String(index).padStart(4, "0")}`,
         type: "agentMessage",
         text: `message ${index}`,
@@ -369,17 +379,105 @@ test("stored latest timeline window is bounded and reports earlier history", asy
   }
 });
 
+test("Timeline history uses stable keyset pages and never needs a reconstructed detail", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-history-keyset-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "history-keyset", title: "History", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    for (let index = 0; index < 12; index += 1) {
+      store.upsertTimelineItemProjection("history-keyset", {
+        id: `item-${String(index).padStart(2, "0")}`,
+        type: index % 2 === 0 ? "userMessage" : "agentMessage",
+        text: `message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString()
+      });
+    }
+
+    const first = store.getSessionTimelineHistoryPage("history-keyset", {
+      beforeId: "item-10",
+      limit: 4
+    });
+    assert.deepEqual(first.items.map((item) => item.id), ["item-06", "item-07", "item-08", "item-09"]);
+    assert.equal(first.hasMoreHistory, true);
+    assert.equal(first.historyItemsCount, 6);
+
+    const second = store.getSessionTimelineHistoryPage("history-keyset", {
+      beforeId: first.items[0].id,
+      limit: 4
+    });
+    assert.deepEqual(second.items.map((item) => item.id), ["item-02", "item-03", "item-04", "item-05"]);
+    assert.equal(second.historyItemsCount, 2);
+    assert.deepEqual(
+      store.getSessionTimelineHistoryPage("history-keyset", { beforeId: "missing", limit: 4 }),
+      { items: [], hasMoreHistory: false, historyItemsCount: 0 }
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an empty stored timeline is an authoritative window instead of a legacy fallback miss", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-empty-window-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "empty-window", title: "Empty", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    assert.deepEqual(store.getLatestTimelineItemWindow("empty-window"), {
+      items: [],
+      hasEarlier: false,
+      hasLater: false
+    });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stored timeline items restore provider-neutral supplementary presentation metadata", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-timeline-metadata-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "metadata-window", title: "Metadata", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    store.upsertTimelineItemProjection("metadata-window", {
+      id: "automation:event-1",
+      turnId: "automation:event-1",
+      turnStatus: "completed",
+      type: "automationEvent",
+      title: "Automation",
+      text: "Run checks",
+      createdAt: "2026-08-26T10:00:00.000Z",
+      rawMetadataJSON: JSON.stringify({
+        id: "must-not-override-indexed-identity",
+        automationId: "automation:1",
+        automationName: "Nightly checks",
+        automationEventType: "ScheduledSessionTaskCreated"
+      })
+    });
+    const [item] = store.getLatestTimelineItemWindow("metadata-window").items;
+    assert.equal(item.id, "automation:event-1");
+    assert.equal(item.automationId, "automation:1");
+    assert.equal(item.automationName, "Nightly checks");
+    assert.equal(item.automationEventType, "ScheduledSessionTaskCreated");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("stored latest window preserves conversation boundaries for a process-heavy turn", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-process-boundaries-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
   try {
     store.upsertSession({ id: "process-boundaries", title: "Long turn", agent: "Codex", provider: "codex-app-server", status: "complete" });
-    store.upsertItemSnapshot("process-boundaries", {
+    store.upsertTimelineItemProjection("process-boundaries", {
       id: "prompt", turnId: "turn-long", type: "userMessage", text: "Original request", createdAt: "2026-01-01T00:00:00.000Z"
     });
     for (let index = 0; index < 260; index += 1) {
-      store.upsertItemSnapshot("process-boundaries", {
+      store.upsertTimelineItemProjection("process-boundaries", {
         id: `process-${String(index).padStart(3, "0")}`,
         turnId: "turn-long",
         type: "commandExecution",
@@ -387,7 +485,7 @@ test("stored latest window preserves conversation boundaries for a process-heavy
         createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString()
       });
     }
-    store.upsertItemSnapshot("process-boundaries", {
+    store.upsertTimelineItemProjection("process-boundaries", {
       id: "final", turnId: "turn-long", type: "agentMessage", text: "Final answer", createdAt: "2026-01-01T00:00:01.000Z"
     });
 
@@ -410,10 +508,10 @@ test("item snapshot updates never move the original creation time", async () => 
   await store.initialize();
   try {
     store.upsertSession({ id: "stable-item-time", title: "Stable", agent: "Codex", provider: "codex-app-server", status: "running" });
-    store.upsertItemSnapshot("stable-item-time", {
+    store.upsertTimelineItemProjection("stable-item-time", {
       id: "process", turnId: "turn", type: "commandExecution", text: "running", createdAt: "2026-01-01T00:00:00.000Z"
     });
-    store.upsertItemSnapshot("stable-item-time", {
+    store.upsertTimelineItemProjection("stable-item-time", {
       id: "process", turnId: "turn", type: "commandExecution", text: "completed", createdAt: "2026-08-25T00:00:00.000Z"
     });
 
@@ -429,7 +527,7 @@ test("item snapshot updates never move the original creation time", async () => 
   }
 });
 
-test("user message Provider aliases collapse to one durable item and emit a delete delta", async () => {
+test("distinct user message IDs are never collapsed merely because turn and text match", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-user-message-alias-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
@@ -439,26 +537,16 @@ test("user message Provider aliases collapse to one durable item and emit a dele
       turnId: "turn-one", type: "userMessage", title: "User", text: "Sent only once",
       turnStatus: "completed", createdAt: "2026-08-25T15:42:34.000Z"
     };
-    store.upsertItemSnapshot("alias-session", { ...prompt, id: "item-47" });
-    // Simulate an older build having accepted an alias before the repair runs.
-    store.db.run(
-      `INSERT INTO session_items (
-         id, session_id, turn_id, turn_status, type, title, text, status, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ["provider-native-id", "alias-session", "turn-one", "completed", "userMessage", "User", "Sent only once", "completed", "2026-08-25T15:55:20.000Z"]
-    );
-    const revisionBeforeRepair = store.sessionTimelineRevision("alias-session");
-
-    assert.equal(store.upsertItemSnapshot("alias-session", { ...prompt, id: "item-47" }), true);
+    store.upsertTimelineItemProjection("alias-session", { ...prompt, id: "item-47" });
+    assert.equal(store.upsertTimelineItemProjection("alias-session", {
+      ...prompt,
+      id: "item-48",
+      createdAt: "2026-08-25T15:55:20.000Z"
+    }), true);
     assert.deepEqual(
       store.getItems("alias-session").filter((item) => item.type === "userMessage").map((item) => item.id),
-      ["item-47"]
+      ["item-47", "item-48"]
     );
-    const changes = store.sessionTimelineChangesAfter("alias-session", revisionBeforeRepair);
-    assert.equal(changes.snapshotRequired, false);
-    assert.deepEqual(changes.changes.map(({ itemId, operation }) => ({ itemId, operation })), [
-      { itemId: "provider-native-id", operation: "delete" }
-    ]);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -471,7 +559,7 @@ test("Timeline presentation semantics survive SQLite round-trip and raw metadata
   await store.initialize();
   try {
     store.upsertSession({ id: "presentation-session", title: "Presentation", agent: "Codex", provider: "codex-app-server", status: "running" });
-    store.upsertItemSnapshot("presentation-session", {
+    store.upsertTimelineItemProjection("presentation-session", {
       id: "final", turnId: "turn-one", turnStatus: "completed", type: "agentMessage",
       title: "Codex", text: "Final answer", status: "completed",
       presentationRole: "final_answer", presentationText: "Presented final answer"
@@ -533,6 +621,46 @@ test("persisted running Session state survives backend store restart", async () 
   }
 });
 
+test("Session execution projection is derived from durable Turns instead of a stale legacy status", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-execution-projection-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({
+      id: "execution-session",
+      title: "Execution",
+      agent: "Agent",
+      provider: "provider:test",
+      status: "running"
+    });
+    store.upsertSessionTurn({
+      sessionId: "execution-session",
+      bindingId: "binding:one",
+      routingVersion: 1,
+      turnId: "turn:one",
+      executionStatus: "completed",
+      endedAt: "2026-08-26T10:00:01.000Z",
+      updatedAt: "2026-08-26T10:00:01.000Z"
+    });
+
+    assert.equal(store.getSession("execution-session").status, "running");
+    assert.equal(store.getSession("execution-session").executionStatus, "completed");
+
+    store.upsertSessionTurn({
+      sessionId: "execution-session",
+      bindingId: "binding:one",
+      routingVersion: 1,
+      turnId: "turn:two",
+      executionStatus: "blocked",
+      updatedAt: "2026-08-26T10:00:02.000Z"
+    });
+    assert.equal(store.getSession("execution-session").executionStatus, "blocked");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("identical Provider Session and history projections do not rewrite rows or advance revision", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-projection-noop-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
@@ -550,7 +678,7 @@ test("identical Provider Session and history projections do not rewrite rows or 
       updatedAt: "2026-08-23T00:00:01.000Z"
     };
     store.upsertSession(session);
-    store.upsertItemSnapshot(session.id, {
+    store.upsertTimelineItemProjection(session.id, {
       id: "stable-item",
       type: "agentMessage",
       text: "done",
@@ -558,7 +686,7 @@ test("identical Provider Session and history projections do not rewrite rows or 
     });
     const revision = store.stateRevision();
     store.upsertSession({ ...session, updatedAt: "2026-08-23T00:10:00.000Z" });
-    store.upsertItemSnapshot(session.id, {
+    store.upsertTimelineItemProjection(session.id, {
       id: "stable-item",
       type: "agentMessage",
       text: "done",
@@ -573,8 +701,8 @@ test("identical Provider Session and history projections do not rewrite rows or 
   }
 });
 
-test("Provider history snapshots never create unread message events", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "corptie-history-snapshot-"));
+test("Timeline projection upserts never duplicate unread domain events", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-timeline-projection-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
     configPath: join(directory, "config.json")
@@ -587,7 +715,7 @@ test("Provider history snapshots never create unread message events", async () =
       provider: "openclacky",
       status: "complete"
     });
-    store.upsertItemSnapshot("snapshot-session", {
+    store.upsertTimelineItemProjection("snapshot-session", {
       id: "old-agent-message",
       type: "agentMessage",
       text: "Already existed at the Provider",

@@ -117,7 +117,7 @@ export function handleCollaborationHttpRequest({
         return sendJson(
           response,
           200,
-          await onReportWorkItemAcceptance(actorAgentId, await readJson(request))
+          await onReportWorkItemAcceptance(actorAgentId, await readJson(request), sessionMetadata)
         );
       }
 

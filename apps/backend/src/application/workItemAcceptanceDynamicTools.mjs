@@ -71,5 +71,5 @@ export async function callWorkItemAcceptanceDynamicTool(reportAcceptance, input 
     error.code = "WORK_ITEM_ACCEPTANCE_UNAVAILABLE";
     throw error;
   }
-  return reportAcceptance(actorId, input.arguments ?? {});
+  return reportAcceptance(actorId, input.arguments ?? {}, input.metadata ?? {});
 }

@@ -71,7 +71,7 @@ test("multiple unopened Sessions publish independent timeline cursors without di
     const timelineChanges = [];
     f.store.setTimelineDirtyListener((change) => timelineChanges.push(change));
     for (let index = 0; index < 24; index += 1) {
-      f.store.upsertItemSnapshot(`session:${index}`, {
+      f.store.upsertTimelineItemProjection(`session:${index}`, {
         id: `message:${index}`,
         turnId: `turn:${index}`,
         turnStatus: "completed",

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 @testable import CorptieMac
 
@@ -49,50 +50,42 @@ final class SessionTimelinePositionRepositoryTests: XCTestCase {
 
         let restored = try await repository.load(sessionID: "session:a")
         XCTAssertEqual(restored?.position, newest)
-
-        try await repository.storeTimelineWindow(
-            Data("newest".utf8),
-            sessionID: "session:a",
-            revision: 20,
-            savedAtMilliseconds: 20
-        )
-        try await repository.storeTimelineWindow(
-            Data("old".utf8),
-            sessionID: "session:a",
-            revision: 10,
-            savedAtMilliseconds: 30
-        )
-        let restoredWindow = try await repository.loadTimelineWindow(sessionID: "session:a")
-        XCTAssertEqual(restoredWindow?.payload, Data("newest".utf8))
     }
 
-    func testTimelineWindowsUseBoundedLRUWithoutDeletingViewportPositions() async throws {
+    func testMigrationDropsTheObsoleteTimelineWindowCacheTable() async throws {
         let databaseURL = temporaryDatabaseURL()
         defer { try? FileManager.default.removeItem(at: databaseURL.deletingLastPathComponent()) }
-        let repository = SessionTimelinePositionRepository(databaseURL: databaseURL)
-        let position = AppKitChatTimelinePosition(
-            rowID: "message:permanent",
-            offset: 3,
-            absoluteScrollY: 30,
-            followsLatest: false
+        try FileManager.default.createDirectory(
+            at: databaseURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
         )
-        try await repository.upsert(position, for: "session:000", savedAtMilliseconds: 1)
+        var handle: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &handle), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(
+            handle,
+            "CREATE TABLE session_timeline_windows_v1 (session_id TEXT PRIMARY KEY, payload_json BLOB)",
+            nil,
+            nil,
+            nil
+        ), SQLITE_OK)
+        sqlite3_close(handle)
 
-        for index in 0..<257 {
-            try await repository.storeTimelineWindow(
-                Data("{\"session\":\(index)}".utf8),
-                sessionID: "session:\(String(format: "%03d", index))",
-                revision: Int64(index),
-                savedAtMilliseconds: Int64(index + 1)
-            )
-        }
+        let repository = SessionTimelinePositionRepository(databaseURL: databaseURL)
+        _ = try await repository.loadAll()
 
-        let evictedWindow = try await repository.loadTimelineWindow(sessionID: "session:000")
-        let retainedWindow = try await repository.loadTimelineWindow(sessionID: "session:256")
-        let retainedPosition = try await repository.load(sessionID: "session:000")
-        XCTAssertNil(evictedWindow)
-        XCTAssertNotNil(retainedWindow)
-        XCTAssertEqual(retainedPosition?.position, position)
+        handle = nil
+        XCTAssertEqual(sqlite3_open_v2(databaseURL.path, &handle, SQLITE_OPEN_READONLY, nil), SQLITE_OK)
+        defer { sqlite3_close(handle) }
+        var statement: OpaquePointer?
+        XCTAssertEqual(sqlite3_prepare_v2(
+            handle,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_timeline_windows_v1'",
+            -1,
+            &statement,
+            nil
+        ), SQLITE_OK)
+        defer { sqlite3_finalize(statement) }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
     }
 
     private func temporaryDatabaseURL() -> URL {

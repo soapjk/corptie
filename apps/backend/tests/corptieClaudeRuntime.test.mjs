@@ -13,14 +13,11 @@ test("Claude runtime installs the Corptie collaboration Skill as a local plugin"
   const bundledMemoryPath = join(directory, "source", "global-instructions.md");
   const sourceCredentialsPath = join(directory, "native-claude", ".credentials.json");
   await mkdir(join(directory, "source"), { recursive: true });
-  await mkdir(join(directory, "native-claude", "projects", "project-a", "sdk-session-one", "tool-results"), { recursive: true });
+  await mkdir(join(directory, "native-claude"), { recursive: true });
   await writeFile(bundledSkillPath, "---\nname: corptie-collaboration\n---\n", "utf8");
   await writeFile(bundledReferencePath, "# Project tools\n", "utf8");
   await writeFile(bundledMemoryPath, "# Shared memory\n\nEnvironment: {{CORPTIE_ENVIRONMENT}}\n", "utf8");
   await writeFile(sourceCredentialsPath, "{\"token\":\"test\"}\n", "utf8");
-  await writeFile(join(directory, "native-claude", "projects", "project-a", "sdk-session-one.jsonl"), "session\n", "utf8");
-  await writeFile(join(directory, "native-claude", "projects", "project-a", "sdk-session-one", "tool-results", "result.txt"), "result\n", "utf8");
-  await writeFile(join(directory, "native-claude", "projects", "project-a", "unrelated.jsonl"), "unrelated\n", "utf8");
 
   try {
     const runtime = await ensureCorptieClaudeRuntime({
@@ -29,9 +26,7 @@ test("Claude runtime installs the Corptie collaboration Skill as a local plugin"
       bundledMemoryPath,
       bundledSkillPath,
       bundledProjectToolsReferencePath: bundledReferencePath,
-      sourceCredentialsPath,
-      legacyClaudeHome: join(directory, "native-claude"),
-      legacySessionIds: ["sdk-session-one"]
+      sourceCredentialsPath
     });
 
     const manifest = JSON.parse(await readFile(runtime.manifestPath, "utf8"));
@@ -46,15 +41,6 @@ test("Claude runtime installs the Corptie collaboration Skill as a local plugin"
     assert.equal((await lstat(runtime.claudeMemoryPath)).isSymbolicLink(), true);
     assert.equal(await realpath(runtime.claudeMemoryPath), await realpath(runtime.sharedMemoryPath));
     assert.match(await readFile(runtime.claudeMemoryPath, "utf8"), /Environment: development/);
-    assert.deepEqual(runtime.sessionMigration, { performed: true, fileCount: 2 });
-    assert.equal(
-      await readFile(join(runtime.configDir, "projects", "project-a", "sdk-session-one.jsonl"), "utf8"),
-      "session\n"
-    );
-    await assert.rejects(
-      readFile(join(runtime.configDir, "projects", "project-a", "unrelated.jsonl")),
-      /ENOENT/
-    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -221,6 +221,15 @@ export function normalizeProviderEvent(input, now = () => new Date().toISOString
 }
 
 export function deterministicProviderEventId(event) {
+  // Some Providers expose lifecycle notifications without a native event ID
+  // or sequence. The normalized product event type alone is not enough to
+  // identify those notifications: for example Codex item/started and
+  // item/completed both project to user.message.accepted. Preserve the stable
+  // native phase in the generated identity so reconnect replays stay
+  // idempotent without collapsing two different physical events.
+  const nativeEventDiscriminator = optionalText(
+    event.payload?.nativeMethod ?? event.payload?.nativeType
+  );
   const needsPayloadDiscriminator = event.providerSequence == null && [
     "assistant.message.delta",
     "tool.progress",
@@ -235,6 +244,7 @@ export function deterministicProviderEventId(event) {
     turnId: event.turnId ?? null,
     itemId: event.itemId ?? null,
     type: event.type,
+    nativeEventDiscriminator,
     ...(needsPayloadDiscriminator ? { payload: event.payload ?? {} } : {})
   });
   return `generated:${createHash("sha256").update(identity).digest("hex")}`;

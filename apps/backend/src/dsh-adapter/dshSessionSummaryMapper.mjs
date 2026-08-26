@@ -52,9 +52,10 @@ export function mapSessionSummary(session) {
     sessionId,
     updatedAt: toEpochMs(session?.updatedAt),
     running: isRunning(session?.status),
-    // Corptie 无「blank」投影，保守返回 false（表示有内容），
-    // 避免前端把真实 session 当成空会话隐藏。
-    blank: false,
+    // Blank is supplied by the Corptie Timeline authority. DSH uses it only
+    // to reuse an already-created workspace Session instead of creating one
+    // on every UI reconnect.
+    blank: session?.blank === true,
     ...(session?.external?.cwd ? { cwd: session.external.cwd } : {}),
     ...(projections ? { projections } : {}),
   };

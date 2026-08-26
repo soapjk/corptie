@@ -240,7 +240,7 @@ private extension TaskSession {
             summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
             updatedAt: "2026-08-18T00:00:00Z", accent: .cyan, archived: false,
             pinned: false, sortOrder: 0, capabilities: nil, external: nil,
-            actions: nil, pendingCollaborationConfirmation: nil
+            actions: nil
         )
     }
 }
