@@ -149,22 +149,11 @@ final class AppStateSyncController {
             guard generation == streamGeneration else { return }
             store.reportStateStreamConnected()
             streamLastActivityAt = Date()
-            var eventName = ""
-            var dataLines: [String] = []
-            for try await line in bytes.lines {
+            for try await event in ServerSentEventStream.events(from: bytes) {
                 guard !Task.isCancelled, generation == streamGeneration else { return }
-                // Heartbeat comment lines carry no state payload, but they are
-                // authoritative proof that this long-lived stream is alive.
                 streamLastActivityAt = Date()
-                if line.isEmpty {
-                    await applyFrame(eventName: eventName, data: dataLines.joined(separator: "\n"))
-                    eventName = ""
-                    dataLines.removeAll(keepingCapacity: true)
-                } else if line.hasPrefix("event:") {
-                    eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                } else if line.hasPrefix("data:") {
-                    dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-                }
+                if event.isComment { continue }
+                await applyFrame(eventName: event.name, data: event.data)
             }
         } catch {
             guard !Task.isCancelled else { return }

@@ -587,6 +587,20 @@ struct AppKitChatTimelineRow: Identifiable {
     }
 }
 
+struct AppKitChatRowReuseIdentity: Equatable {
+    let id: String
+    let contentRevision: Int
+}
+
+enum AppKitChatRowReusePolicy {
+    static func commonPrefixCount(
+        previous: [AppKitChatRowReuseIdentity],
+        next: [AppKitChatRowReuseIdentity]
+    ) -> Int {
+        zip(previous, next).prefix(while: ==).count
+    }
+}
+
 /// Deterministic width contract for native AppKit timeline rows.
 @MainActor
 enum ChatBubbleWidthPolicy {
