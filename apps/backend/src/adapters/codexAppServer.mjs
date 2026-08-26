@@ -580,7 +580,7 @@ export class CodexAppServerClient {
 
       this.pending.delete(message.id);
       if ("error" in message) {
-        pending.reject(new Error(JSON.stringify(message.error)));
+        pending.reject(codexResponseError(message.error));
       } else {
         pending.resolve(message.result);
       }
@@ -799,6 +799,16 @@ export class CodexAppServerClient {
       });
     }
   }
+}
+
+export function codexResponseError(payload) {
+  const error = new Error(JSON.stringify(payload));
+  const message = typeof payload?.message === "string" ? payload.message.trim() : "";
+  if (/^no rollout found for thread id\b/i.test(message)) {
+    error.code = "PROVIDER_SESSION_UNAVAILABLE";
+    error.safeToRetry = true;
+  }
+  return error;
 }
 
 export function normalizeCodexTokenUsage(rawUsage, fallback = {}) {

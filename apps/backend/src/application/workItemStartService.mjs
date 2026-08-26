@@ -9,11 +9,12 @@ export class WorkItemStartService {
     this.prepareWorkspace = options.prepareWorkspace;
     this.createSession = options.createSession;
     this.finalizeStart = options.finalizeStart;
+    this.activateSession = options.activateSession ?? (() => {});
     this.onChanged = options.onChanged ?? (() => {});
     this.onAudit = options.onAudit ?? (() => {});
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.inFlight = new Map();
-    for (const method of ["validateStart", "prepareWorkspace", "createSession", "finalizeStart"]) {
+    for (const method of ["validateStart", "prepareWorkspace", "createSession", "finalizeStart", "activateSession"]) {
       if (typeof this[method] !== "function") throw new TypeError(`WorkItemStartService requires ${method}().`);
     }
     if (!this.store) throw new TypeError("WorkItemStartService requires a Store.");
@@ -84,7 +85,10 @@ export class WorkItemStartService {
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
     const workItem = this.store.getWorkItem(workItemId);
     if (!workItem) throw coded("WORK_ITEM_NOT_FOUND", `WorkItem not found: ${workItemId}`, 404);
-    if (workItem.current_session_id) return this.#runningReceipt(workItem, true);
+    const replacingSessionId = optionalText(input.replacingSessionId);
+    if (workItem.current_session_id && workItem.current_session_id !== replacingSessionId) {
+      return this.#runningReceipt(workItem, true);
+    }
 
     const normalized = {
       workItemId,
@@ -95,7 +99,8 @@ export class WorkItemStartService {
       idempotencyKey,
       title: optionalText(input.title),
       source: optionalText(input.source) ?? "application",
-      actorId: optionalText(input.actorId)
+      actorId: optionalText(input.actorId),
+      replacingSessionId
     };
     const fingerprint = fingerprintFor(normalized);
     const operationId = operationIdFor(workItemId, idempotencyKey);
@@ -190,6 +195,10 @@ export class WorkItemStartService {
         workspace
       });
       const updated = finalized.workItem ?? this.store.getWorkItem(operation.workItemId);
+      // A Worker Session cannot execute queued work until finalizeStart has
+      // atomically established its WorkItem, Agent, and logical-route ownership.
+      // Activate the provider-neutral queue only after that binding exists.
+      this.activateSession({ ...operation, ...context, session, workspace, finalized });
       this.#audit({
         event: "work_item_start_succeeded",
         ...this.#auditContext(operation, workspace),
@@ -401,7 +410,8 @@ function fingerprintFor(input) {
     objectiveId: input.objectiveId,
     agentId: input.agentId,
     providerId: input.providerId,
-    title: input.title
+    title: input.title,
+    replacingSessionId: input.replacingSessionId
   })).digest("hex");
 }
 
