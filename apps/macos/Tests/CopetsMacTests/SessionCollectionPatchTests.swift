@@ -259,7 +259,7 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func activeWorkerSessionsIncludeCompletedButUnarchivedWorkItemsAndGroupByObjective() {
+    func activeWorkerSessionsExcludeBackendResolvedCompletedWorkItemsAndGroupByObjective() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
@@ -268,7 +268,8 @@ struct SessionCollectionPatchTests {
         let completed = SessionRowModel(session: makeSession(
             id: "completed-worker",
             sessionKind: .worker,
-            workItemId: "work-item:completed"
+            workItemId: "work-item:completed",
+            archived: true
         ))
         let orphaned = SessionRowModel(session: makeSession(
             id: "orphaned-worker",
@@ -289,7 +290,7 @@ struct SessionCollectionPatchTests {
 
         #expect(groups.map(\.key) == ["worker-objective:objective:1", "worker-objective:__no_objective__"])
         #expect(groups.map(\.title) == ["Sessions UI", L10n("No Objective")])
-        #expect(groups[0].rows.map(\.id) == ["active-worker", "completed-worker"])
+        #expect(groups[0].rows.map(\.id) == ["active-worker"])
         #expect(groups[1].rows.map(\.id) == ["orphaned-worker"])
     }
 
@@ -385,6 +386,25 @@ struct SessionCollectionPatchTests {
         #expect(groups.map(\.title) == ["Sessions UI"])
         #expect(groups.flatMap(\.rows).map(\.id) == ["completed-worker"])
         #expect(groups.map(\.showsHeader) == [true])
+    }
+
+    @Test
+    func onlyAssistantSessionsAllowManualArchiveOperations() {
+        let assistant = makeSession(id: "assistant", sessionKind: .assistantChat)
+        let objective = makeSession(
+            id: "objective",
+            sessionKind: .objectiveChat,
+            objectiveId: "objective:1"
+        )
+        let worker = makeSession(
+            id: "worker",
+            sessionKind: .worker,
+            workItemId: "work-item:1"
+        )
+
+        #expect(assistant.allowsManualArchive)
+        #expect(!objective.allowsManualArchive)
+        #expect(!worker.allowsManualArchive)
     }
 
     @Test

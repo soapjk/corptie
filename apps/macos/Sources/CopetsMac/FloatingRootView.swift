@@ -1134,12 +1134,14 @@ private struct SessionContextMenuContent: View {
             )
         }
 
-        Divider()
+        if session.allowsManualArchive {
+            Divider()
 
-        Button {
-            backendClient.setArchived(true, session: session)
-        } label: {
-            Label(L10n("Archive"), systemImage: "archivebox")
+            Button {
+                backendClient.setArchived(true, session: session)
+            } label: {
+                Label(L10n("Archive"), systemImage: "archivebox")
+            }
         }
 
         Divider()

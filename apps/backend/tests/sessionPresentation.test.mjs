@@ -300,7 +300,7 @@ test("a gateway snapshot uses the provider path only when no saved project path 
   );
 });
 
-test("the archived session list includes only explicitly archived sessions", () => {
+test("the archived session list applies the shared explicit and Worker lifecycle policy", () => {
   const sessions = composeStoredSessionList({
     archived: true,
     ptySessions: [{ id: "pty:archived", archived: true }],
@@ -311,6 +311,7 @@ test("the archived session list includes only explicitly archived sessions", () 
     codexSessions: [
       { id: "codex:archived", archived: true },
       { id: "codex:active", archived: false },
+      { id: "codex:completed-worker", sessionKind: "worker", workItemStatus: "done", archived: false },
       { id: "codex:history-without-archive-marker" }
     ],
     mockSessions: [{ id: "mock:a" }]
@@ -319,12 +320,15 @@ test("the archived session list includes only explicitly archived sessions", () 
   assert.deepEqual(sessions.map((session) => session.id), [
     "pty:archived",
     "claude:archived",
-    "codex:archived"
+    "codex:archived",
+    "codex:completed-worker"
   ]);
-  assert.ok(sessions.every((session) => session.sessionKind === "legacy"));
+  assert.equal(sessions.find((session) => session.id === "codex:completed-worker").sessionKind, "worker");
+  assert.ok(sessions.filter((session) => session.id !== "codex:completed-worker")
+    .every((session) => session.sessionKind === "legacy"));
 });
 
-test("the active session list excludes explicitly archived sessions", () => {
+test("the active session list excludes every effectively archived session", () => {
   const sessions = composeStoredSessionList({
     archived: false,
     ptySessions: [
@@ -333,6 +337,7 @@ test("the active session list excludes explicitly archived sessions", () => {
     ],
     codexSessions: [
       { id: "codex:active", archived: false },
+      { id: "codex:completed-worker", sessionKind: "worker", workItemStatus: "completed" },
       { id: "codex:legacy-active" }
     ],
     mockSessions: [{ id: "mock:active" }]

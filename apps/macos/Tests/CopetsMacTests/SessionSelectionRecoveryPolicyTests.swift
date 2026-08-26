@@ -22,11 +22,14 @@ struct SessionSelectionRecoveryPolicyTests {
         ) == accessibleOlder.id)
     }
 
-    @Test func completedWorkerSessionRemainsAccessibleUntilExplicitlyArchived() {
-        let workItem = makeRecoveryWorkItem(id: "work-item:one", status: "completed")
-        let session = makeRecoverySession(id: "session:one", workItemID: workItem.id)
+    @Test func backendResolvedCompletedWorkerSessionCannotBecomeARecoveryTarget() {
+        let session = makeRecoverySession(
+            id: "session:one",
+            workItemID: "work-item:one",
+            archived: true
+        )
 
-        #expect(SessionSelectionRecoveryPolicy.isAccessible(
+        #expect(!SessionSelectionRecoveryPolicy.isAccessible(
             session,
             sessions: [session]
         ))
