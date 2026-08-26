@@ -27,7 +27,7 @@ async function fixture(overrides = {}) {
     title: "Duplicated title",
     mainAgentId: agent.agentId
   });
-  const calls = { validate: 0, workspace: 0, create: 0, finalize: 0 };
+  const calls = { validate: 0, workspace: 0, create: 0, finalize: 0, activate: 0 };
   const audits = [];
   const createWorkerSession = async ({ providerId, workspace }) => {
     calls.create += 1;
@@ -73,6 +73,13 @@ async function fixture(overrides = {}) {
     finalizeStart: (input) => {
       calls.finalize += 1;
       return store.finalizeWorkItemStart(input);
+    },
+    activateSession: ({ session, workItem: activatedWorkItem }) => {
+      calls.activate += 1;
+      assert.equal(activatedWorkItem.id, workItem.id);
+      const bound = store.getWorkItem(workItem.id);
+      assert.equal(bound.current_session_id, session.id);
+      assert.equal(store.getSession(session.id).workItemId, workItem.id);
     },
     onAudit: (entry, metadata) => audits.push({ entry, metadata }),
     ...overrides
@@ -190,6 +197,36 @@ test("binding finalization preserves a Provider-created Worker Session's complet
     assert.equal(result.session.objectiveId, f.objective.id);
     assert.equal(result.session.workItemId, f.workItem.id);
     assert.equal(result.workItem.current_session_id, result.session.id);
+    assert.equal(f.calls.activate, 1, "initial work activates only after ownership is finalized");
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("self-repair replaces exactly the currently bound abnormal Session", async () => {
+  const f = await fixture();
+  try {
+    const first = await f.service.start(startInput());
+    const replacement = await f.service.start({
+      ...startInput(),
+      idempotencyKey: "self-repair:provider-worker-1",
+      source: "self-repair",
+      replacingSessionId: first.session.id
+    });
+
+    assert.notEqual(replacement.session.id, first.session.id);
+    assert.equal(replacement.workItem.current_session_id, replacement.session.id);
+    assert.equal(f.calls.create, 2);
+
+    const staleRepair = await f.service.start({
+      ...startInput(),
+      idempotencyKey: "self-repair:stale",
+      source: "self-repair",
+      replacingSessionId: first.session.id
+    });
+    assert.equal(staleRepair.session.id, replacement.session.id);
+    assert.equal(staleRepair.idempotentReplay, true);
+    assert.equal(f.calls.create, 2, "a stale repair proof cannot replace the newer Session");
   } finally {
     await cleanup(f);
   }
