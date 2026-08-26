@@ -368,7 +368,7 @@ test("startTurn forwards application context for rules that must apply to an exi
   });
 });
 
-test("ensureThreadResumed skips redundant resume and reloads when runtime context changes", async () => {
+test("a fresh empty thread starts its first turn without an invalid resume", async () => {
   const calls = [];
   const client = new CodexAppServerClient();
   client.initialize = async () => {};
@@ -393,7 +393,46 @@ test("ensureThreadResumed skips redundant resume and reloads when runtime contex
     ...initial,
     dynamicTools: [{ name: "tool-b" }]
   });
-  assert.deepEqual(calls.map((call) => call.method), ["thread/start", "thread/resume"]);
+  assert.deepEqual(calls.map((call) => call.method), ["thread/start"]);
+
+  await client.startTurn("thread-a", "first instruction");
+  await client.ensureThreadResumed("thread-a", {
+    ...initial,
+    dynamicTools: [{ name: "tool-c" }]
+  });
+  assert.equal(client.freshThreadIds.has("thread-a"), false);
+  assert.deepEqual(calls.map((call) => call.method), [
+    "thread/start",
+    "turn/start",
+    "thread/resume"
+  ]);
+});
+
+test("a restored thread reloads when runtime context changes", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return { thread: { id: params.threadId } };
+  };
+  client.threadResumeFingerprints.set("thread-a", JSON.stringify({
+    cwd: "/repo",
+    runtimeWorkspaceRoots: ["/repo"],
+    config: null,
+    developerInstructions: null,
+    dynamicTools: [{ name: "tool-a" }],
+    dynamicToolAgentId: "agent-a",
+    dynamicToolMetadata: null
+  }));
+
+  await client.ensureThreadResumed("thread-a", {
+    cwd: "/repo",
+    runtimeWorkspaceRoots: ["/repo"],
+    dynamicToolAgentId: "agent-a",
+    dynamicTools: [{ name: "tool-b" }]
+  });
+  assert.deepEqual(calls.map((call) => call.method), ["thread/resume"]);
 });
 
 test("ensureThreadResumed coalesces selection prewarm with foreground send", async () => {

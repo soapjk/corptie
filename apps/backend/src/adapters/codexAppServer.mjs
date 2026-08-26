@@ -39,6 +39,10 @@ export class CodexAppServerClient {
     this.dynamicToolMetadataByThread = new Map();
     this.threadResumeFingerprints = new Map();
     this.threadResumePromises = new Map();
+    // thread/start creates an in-memory thread before Codex has written its
+    // first rollout. Such a thread can accept turn/start in this app-server
+    // process, but thread/resume is invalid until the first turn exists.
+    this.freshThreadIds = new Set();
     this.initialized = false;
   }
 
@@ -71,6 +75,7 @@ export class CodexAppServerClient {
       this.readline = null;
       this.threadResumeFingerprints.clear();
       this.threadResumePromises.clear();
+      this.freshThreadIds.clear();
     });
 
     this.readline = createInterface({
@@ -116,6 +121,7 @@ export class CodexAppServerClient {
       this.dynamicToolMetadataByThread.delete(threadId);
       this.threadResumeFingerprints.delete(threadId);
       this.threadResumePromises.delete(threadId);
+      this.freshThreadIds.delete(threadId);
     }
   }
 
@@ -141,6 +147,7 @@ export class CodexAppServerClient {
     }
     if (result?.thread?.id) {
       this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
+      this.freshThreadIds.add(result.thread.id);
     }
     return result;
   }
@@ -173,6 +180,14 @@ export class CodexAppServerClient {
   async ensureThreadResumed(threadId, options = {}) {
     await this.initialize();
     const fingerprint = threadResumeFingerprint(options);
+    if (this.freshThreadIds.has(threadId)) {
+      if (options.dynamicToolAgentId) {
+        this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
+        this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
+      }
+      this.threadResumeFingerprints.set(threadId, fingerprint);
+      return { alreadyLoaded: true, fresh: true, thread: { id: threadId } };
+    }
     if (this.threadResumeFingerprints.get(threadId) === fingerprint) {
       return { alreadyLoaded: true, thread: { id: threadId } };
     }
@@ -251,7 +266,7 @@ export class CodexAppServerClient {
 
   async startTurn(threadId, text, options = {}) {
     await this.initialize();
-    return this.request("turn/start", {
+    const result = await this.request("turn/start", {
       threadId,
       input: [
         {
@@ -267,6 +282,8 @@ export class CodexAppServerClient {
       model: options.model ?? undefined,
       effort: options.reasoningEffort ?? undefined
     });
+    this.freshThreadIds.delete(threadId);
+    return result;
   }
 
   async interruptTurn(threadId, turnId) {
@@ -476,6 +493,7 @@ export class CodexAppServerClient {
     this.initialized = false;
     this.threadResumeFingerprints.clear();
     this.threadResumePromises.clear();
+    this.freshThreadIds.clear();
   }
 
   liveItemsForThread(threadId) {

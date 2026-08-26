@@ -2,7 +2,9 @@ const TERMINAL_WORK_ITEM_STATUSES = new Set([
   "done", "complete", "completed", "canceled", "cancelled"
 ]);
 
-export const MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS = 3;
+// Keep recovery bounded while leaving one upgrade-time attempt for legacy
+// replacement chains that were themselves created by the empty-thread bug.
+export const MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS = 4;
 
 export function historicalProviderSessionUnavailable(value) {
   return /no rollout found for thread id\b/i.test(String(value ?? ""));
