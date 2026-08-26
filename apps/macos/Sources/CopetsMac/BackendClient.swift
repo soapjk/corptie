@@ -2750,8 +2750,10 @@ final class BackendClient: ObservableObject {
         guard revision > 0 else { return }
         let previous = knownTimelineRevisionBySessionID[sessionId] ?? 0
         knownTimelineRevisionBySessionID[sessionId] = max(previous, revision)
-        guard revision > previous,
-              let session = sessions.first(where: { $0.id == sessionId }) else { return }
+        // State patches and Timeline wake events race. Always let the sync
+        // engine compare this desired revision with resident authority instead
+        // of dropping a wake because another channel observed it first.
+        guard let session = sessions.first(where: { $0.id == sessionId }) else { return }
         scheduleBackgroundTimelineSync(for: session, desiredRevision: revision)
     }
 
@@ -2776,12 +2778,13 @@ final class BackendClient: ObservableObject {
             )
             switch mergeResult {
             case .applied(let detail, let revision):
+                let reconciledDetail = detailByMergingPendingMessages(detail)
                 storeCachedDetail(
-                    detail,
+                    reconciledDetail,
                     for: session.id,
                     timelineRevision: revision
                 )
-                await warmPresentationCache(detail, for: session.id)
+                await warmPresentationCache(reconciledDetail, for: session.id)
                 return true
             case .duplicate:
                 return true
@@ -2790,12 +2793,13 @@ final class BackendClient: ObservableObject {
             }
         }
         guard let snapshot = await fetchStoredDetail(for: session) else { return false }
+        let reconciledDetail = detailByMergingPendingMessages(snapshot.detail)
         storeCachedDetail(
-            snapshot.detail,
+            reconciledDetail,
             for: session.id,
             timelineRevision: snapshot.timelineRevision
         )
-        await warmPresentationCache(snapshot.detail, for: session.id)
+        await warmPresentationCache(reconciledDetail, for: session.id)
         return true
     }
 

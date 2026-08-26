@@ -22,10 +22,9 @@ final class SessionTimelineState: ObservableObject {
         // newer resident items while retaining the newer revision number.
         if let timelineRevision {
             if timelineRevision < self.timelineRevision { return }
-            // Equal durable revisions carry no new timeline information. Keep
-            // a richer selected-session live projection that may already
-            // contain token deltas not represented by this stored revision.
-            if timelineRevision == self.timelineRevision, self.detail != nil { return }
+            // Equal durable revisions may still replace a local optimistic
+            // projection. The stored snapshot is authoritative for message
+            // delivery state even when no newer item revision is required.
         }
         let nextRevision = max(self.timelineRevision, timelineRevision ?? self.timelineRevision)
         guard self.detail != detail || self.timelineRevision != nextRevision else { return }

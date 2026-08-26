@@ -6,16 +6,12 @@ enum SessionTimelineBackgroundSyncPolicy {
         desiredServerRevision: Int,
         localRevision: Int
     ) -> Bool {
-        guard desiredServerRevision > localRevision else { return false }
-        if let previousServerRevision {
-            // Timeline freshness is independent of the final-answer unread
-            // cursor. Any advance must synchronize an unopened Session too.
-            return desiredServerRevision > previousServerRevision
-        }
-        // The first authoritative index hydrates every active Session, not a
-        // correctness sample around the current selection. Archived Sessions
-        // are excluded before this policy is called and remain on-demand.
-        return true
+        _ = previousServerRevision
+        // Wake notifications and Session collection patches can arrive in
+        // either order. The resident Timeline revision is the only freshness
+        // authority; deduplicating against the last observed server revision
+        // can otherwise suppress the fetch that would reconcile local state.
+        return desiredServerRevision > localRevision
     }
 }
 
